@@ -1,0 +1,11 @@
+{"context":{"contextId":"00000000-0000-4000-8000-000000000001","field":{"kind":"text","multiline":true,"sensitive":false,"autocapitalize":"none","enterKeyHint":"enter"},"caret":null}}
+{"id":1,"event":{"type":"beforeinput","inputType":"insertText","data":"t"},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":2,"event":{"type":"input","inputType":"insertText","composing":false,"proxy":{"value":"t","selectionStart":1,"selectionEnd":1}},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":3,"event":{"type":"beforeinput","inputType":"insertText","data":"e"},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":4,"event":{"type":"input","inputType":"insertText","composing":false,"proxy":{"value":"te","selectionStart":2,"selectionEnd":2}},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":5,"event":{"type":"beforeinput","inputType":"insertText","data":"h"},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":6,"event":{"type":"input","inputType":"insertText","composing":false,"proxy":{"value":"teh","selectionStart":3,"selectionEnd":3}},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":7,"event":{"type":"beforeinput","inputType":"deleteContentBackward","data":null},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":8,"event":{"type":"input","inputType":"deleteContentBackward","composing":false,"proxy":{"value":"","selectionStart":0,"selectionEnd":0}},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":9,"event":{"type":"beforeinput","inputType":"insertText","data":"the "},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":10,"event":{"type":"input","inputType":"insertText","composing":false,"proxy":{"value":"the ","selectionStart":4,"selectionEnd":4}},"contextId":"00000000-0000-4000-8000-000000000001"}

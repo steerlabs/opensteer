@@ -1,0 +1,36 @@
+name: Agent context budget
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-context-budget-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  budget:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      BUDGET: tests/agent-context-budget.json
+      ALLOW_INCREASE: ${{ contains(github.event.pull_request.labels.*.name, 'agent-context-increase') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - name: Compare with origin/main
+        run: |
+          git fetch --quiet --depth=1 origin main
+          if ! git cat-file -e "FETCH_HEAD:$BUDGET" 2>/dev/null; then
+            echo "main has no agent context budget yet."
+            exit 0
+          fi
+          git show "FETCH_HEAD:$BUDGET" > "$RUNNER_TEMP/agent-context-main.json"
+          node scripts/check-agent-context-budget.mjs "$RUNNER_TEMP/agent-context-main.json" "$BUDGET"

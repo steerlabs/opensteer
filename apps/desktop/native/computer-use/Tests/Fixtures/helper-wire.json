@@ -1,0 +1,998 @@
+{
+  "apps" : {
+    "apple-calendar" : {
+      "create_event" : {
+        "contract" : "7N6QV50YMWFrVCqzPV-aZd15ITATvG7s1r21bN6DDN0",
+        "effect" : "write",
+        "output" : {
+          "event" : {
+            "allDay" : true,
+            "attendees" : [
+
+            ],
+            "calendarId" : "B7A1C2D3-E4F5-4A6B-8C7D-9E0F1A2B3C4D",
+            "end" : "2026-10-03",
+            "id" : "A1B2C3D4-E5F6-4789-9ABC-DEF012345678@1790924400",
+            "location" : null,
+            "notes" : null,
+            "notesTruncated" : false,
+            "recurring" : false,
+            "start" : "2026-10-02",
+            "status" : "tentative",
+            "timeZone" : null,
+            "title" : "Offsite",
+            "url" : null
+          }
+        }
+      },
+      "delete_event" : {
+        "contract" : "MIlREQok4OFy5xJDdVCnMlv7VAOKCb0jJNaGKesaLTg",
+        "effect" : "write",
+        "output" : {
+          "deleted" : true
+        }
+      },
+      "list_calendars" : {
+        "contract" : "1niiGcOSzXCLp71yTh2NYcB0VypqQTTBA0zS5iYnfKo",
+        "effect" : "read",
+        "output" : {
+          "calendars" : [
+            {
+              "account" : "iCloud",
+              "id" : "B7A1C2D3-E4F5-4A6B-8C7D-9E0F1A2B3C4D",
+              "isDefault" : true,
+              "title" : "Home",
+              "writable" : true
+            },
+            {
+              "account" : null,
+              "id" : "0C1D2E3F-4A5B-4C6D-8E7F-9A0B1C2D3E4F",
+              "isDefault" : false,
+              "title" : "Holidays",
+              "writable" : false
+            }
+          ]
+        }
+      },
+      "list_events" : {
+        "contract" : "sQvqitxL7NumcJMI3zI2G6j3iXUmuIhPeg6Fsd30ydM",
+        "effect" : "read",
+        "output" : {
+          "events" : [
+            {
+              "allDay" : false,
+              "attendees" : [
+                {
+                  "email" : "ada@engines.example",
+                  "isMe" : true,
+                  "name" : "Ada Lovelace",
+                  "status" : "accepted"
+                },
+                {
+                  "email" : null,
+                  "isMe" : false,
+                  "name" : "Room 4",
+                  "status" : "unknown"
+                }
+              ],
+              "calendarId" : "B7A1C2D3-E4F5-4A6B-8C7D-9E0F1A2B3C4D",
+              "end" : "2026-10-01T10:00:00-07:00",
+              "id" : "6F1E2D3C-4B5A-4978-8695-A4B3C2D1E0F9:0F9E8D7C-6B5A-4938-2716-05F4E3D2C1B0@1790870400",
+              "location" : "Studio",
+              "notes" : "Bring the prototype.",
+              "notesTruncated" : false,
+              "recurring" : true,
+              "start" : "2026-10-01T09:00:00-07:00",
+              "status" : "confirmed",
+              "timeZone" : "America/Los_Angeles",
+              "title" : "Design review",
+              "url" : "https://meet.example.com/design"
+            }
+          ],
+          "nextCursor" : "b363f2b849c36b7903495486.1"
+        }
+      },
+      "update_event" : {
+        "contract" : "5JGtgT0j2tZe8v8lYeje-zs52sg-QAReT2HthdYf3g4",
+        "effect" : "write",
+        "output" : {
+          "event" : {
+            "allDay" : false,
+            "attendees" : [
+              {
+                "email" : "ada@engines.example",
+                "isMe" : true,
+                "name" : "Ada Lovelace",
+                "status" : "accepted"
+              },
+              {
+                "email" : null,
+                "isMe" : false,
+                "name" : "Room 4",
+                "status" : "unknown"
+              }
+            ],
+            "calendarId" : "B7A1C2D3-E4F5-4A6B-8C7D-9E0F1A2B3C4D",
+            "end" : "2026-10-01T10:00:00-07:00",
+            "id" : "6F1E2D3C-4B5A-4978-8695-A4B3C2D1E0F9:0F9E8D7C-6B5A-4938-2716-05F4E3D2C1B0@1790870400",
+            "location" : "Studio",
+            "notes" : "Bring the prototype.",
+            "notesTruncated" : false,
+            "recurring" : true,
+            "start" : "2026-10-01T09:00:00-07:00",
+            "status" : "confirmed",
+            "timeZone" : "America/Los_Angeles",
+            "title" : "Design review",
+            "url" : "https://meet.example.com/design"
+          }
+        }
+      }
+    },
+    "apple-contacts" : {
+      "search_contacts" : {
+        "contract" : "3jIkyOGdGD_IZnx58GNe_TRdSPv6jU_fcUxq1OYpl7k",
+        "effect" : "read",
+        "output" : {
+          "contacts" : [
+            {
+              "birthday" : "1815-12-10",
+              "emails" : [
+                {
+                  "label" : "work",
+                  "value" : "ada@engines.example"
+                }
+              ],
+              "id" : "410FE041-5C4E-48DA-B4DE-04C15EA3DBAC:ABPerson",
+              "name" : "Ada Lovelace",
+              "organization" : "Analytical Engines",
+              "phones" : [
+                {
+                  "label" : "mobile",
+                  "value" : "+1 (555) 123-4567"
+                }
+              ]
+            },
+            {
+              "birthday" : null,
+              "emails" : [
+
+              ],
+              "id" : "8E6B1F2A-0B9C-4B8D-9E2F-3A4B5C6D7E8F:ABPerson",
+              "name" : null,
+              "organization" : "Acme Plumbing",
+              "phones" : [
+
+              ]
+            }
+          ],
+          "nextCursor" : null
+        }
+      }
+    },
+    "apple-messages" : {
+      "list_conversations" : {
+        "contract" : "qIhr3-7WcJioDBhUWXLErBpu9t4ONniJ371woOX3C-0",
+        "effect" : "read",
+        "output" : {
+          "conversations" : [
+            {
+              "conversationId" : "iMessage;+;chat483920",
+              "displayName" : "Weekend Trip",
+              "isGroup" : true,
+              "lastMessageAt" : "2024-03-02T23:00:00-08:00",
+              "participants" : [
+                "+15551234567",
+                "work@example.com"
+              ],
+              "service" : "iMessage"
+            },
+            {
+              "conversationId" : "iMessage;-;work@example.com",
+              "displayName" : null,
+              "isGroup" : false,
+              "lastMessageAt" : null,
+              "participants" : [
+                "work@example.com"
+              ],
+              "service" : "iMessage"
+            }
+          ],
+          "nextCursor" : null
+        }
+      },
+      "read_messages" : {
+        "contract" : "DDtwQgo5r_jfiGq6N2mQoSTK6BgLb7lYXb3dyOoqKRo",
+        "effect" : "read",
+        "output" : {
+          "messages" : [
+            {
+              "conversationId" : "iMessage;-;+15551234567",
+              "hasAttachments" : false,
+              "id" : "8C5A1E2F-3B4D-4E6F-8A9B-0C1D2E3F4A5B",
+              "isFromMe" : false,
+              "sender" : "+15551234567",
+              "sentAt" : "2024-03-01T02:00:00-08:00",
+              "service" : "iMessage",
+              "text" : "Lunch at one?",
+              "truncated" : false,
+              "undecoded" : false
+            },
+            {
+              "conversationId" : "iMessage;-;+15551234567",
+              "hasAttachments" : true,
+              "id" : "1F2E3D4C-5B6A-4798-8A7B-6C5D4E3F2A1B",
+              "isFromMe" : true,
+              "sender" : "me",
+              "sentAt" : "2024-03-01T01:55:00-08:00",
+              "service" : "iMessage",
+              "text" : null,
+              "truncated" : false,
+              "undecoded" : true
+            }
+          ],
+          "nextCursor" : "e3b0c44298fc1c149afbf4c8.759952500000000000.2"
+        }
+      },
+      "send_message" : {
+        "contract" : "6DllRKp2ve1qELJ7htQj6Dk3w4wwUUHZgbjAVCTWh2A",
+        "effect" : "write",
+        "output" : {
+          "accepted" : true
+        }
+      }
+    },
+    "apple-reminders" : {
+      "create_reminder" : {
+        "contract" : "z_aLtqQm3vJVlVwKo8rim_cSSNZCEdcXdcjxcslucYk",
+        "effect" : "write",
+        "output" : {
+          "reminder" : {
+            "completed" : false,
+            "completedAt" : null,
+            "due" : "2026-10-05T09:00:00-07:00",
+            "id" : "5D4C3B2A-1908-4F7E-9D6C-5B4A39281706",
+            "listId" : "7E6D5C4B-3A29-4817-8F6E-5D4C3B2A1908",
+            "notes" : "Photos first",
+            "notesTruncated" : false,
+            "priority" : "high",
+            "recurring" : false,
+            "title" : "Renew passport",
+            "url" : null
+          }
+        }
+      },
+      "delete_reminder" : {
+        "contract" : "F_2BsIVUqWyGlaRsb9bV1RkXxH-Qt6u-SKn_3hrtEu8",
+        "effect" : "write",
+        "output" : {
+          "deleted" : true
+        }
+      },
+      "list_reminder_lists" : {
+        "contract" : "wJi434_7bRzQ_FxeiOiKgrSZc7DuSXpRaTgWA5NpNkQ",
+        "effect" : "read",
+        "output" : {
+          "lists" : [
+            {
+              "account" : "iCloud",
+              "id" : "7E6D5C4B-3A29-4817-8F6E-5D4C3B2A1908",
+              "isDefault" : true,
+              "title" : "Reminders",
+              "writable" : true
+            }
+          ]
+        }
+      },
+      "list_reminders" : {
+        "contract" : "oIqniBVX81fcevDO75J35dLiA5-RpVYGayNMq1jL0nw",
+        "effect" : "read",
+        "output" : {
+          "nextCursor" : null,
+          "reminders" : [
+            {
+              "completed" : false,
+              "completedAt" : null,
+              "due" : "2026-10-05T09:00:00-07:00",
+              "id" : "5D4C3B2A-1908-4F7E-9D6C-5B4A39281706",
+              "listId" : "7E6D5C4B-3A29-4817-8F6E-5D4C3B2A1908",
+              "notes" : "Photos first",
+              "notesTruncated" : false,
+              "priority" : "high",
+              "recurring" : false,
+              "title" : "Renew passport",
+              "url" : null
+            }
+          ]
+        }
+      },
+      "update_reminder" : {
+        "contract" : "mYwXncOOp5cDdj7etbhp4IHn5JRoH1g9rl12GEDO0eQ",
+        "effect" : "write",
+        "output" : {
+          "reminder" : {
+            "completed" : true,
+            "completedAt" : "2026-09-29T11:30:00-07:00",
+            "due" : "2026-09-30",
+            "id" : "9A8B7C6D-5E4F-4321-8765-43210FEDCBA9",
+            "listId" : "7E6D5C4B-3A29-4817-8F6E-5D4C3B2A1908",
+            "notes" : null,
+            "notesTruncated" : false,
+            "priority" : "none",
+            "recurring" : true,
+            "title" : "Book flights",
+            "url" : "https://airline.example.com/booking"
+          }
+        }
+      }
+    }
+  },
+  "error" : {
+    "error" : {
+      "code" : "busy",
+      "message" : "This app is already being used by another task."
+    },
+    "id" : 7
+  },
+  "events" : {
+    "display.owner-input" : {
+      "controlId" : "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "message" : {
+        "outcome" : "dispatched",
+        "sequence" : 0,
+        "type" : "display.input.result"
+      },
+      "source" : {
+        "generation" : 1,
+        "kind" : "owner-view",
+        "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      },
+      "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    },
+    "display.source-changed" : {
+      "reason" : "session-ended",
+      "source" : {
+        "appKey" : "com.apple.notes",
+        "kind" : "task-session",
+        "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
+      },
+      "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    },
+    "display.source-ended" : {
+      "reason" : "owner-ended",
+      "source" : {
+        "appKey" : "com.apple.notes",
+        "kind" : "task-session",
+        "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
+      },
+      "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    },
+    "display.state" : {
+      "generation" : 1,
+      "height" : 720,
+      "state" : "live",
+      "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "width" : 1280
+    },
+    "session.stopped" : {
+      "reason" : "user",
+      "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
+    }
+  },
+  "requests" : {
+    "data.invoke" : {
+      "id" : 10,
+      "method" : "data.invoke",
+      "params" : {
+        "access" : "read",
+        "arguments" : {
+          "limit" : 5,
+          "query" : "Ada"
+        },
+        "contract" : "3jIkyOGdGD_IZnx58GNe_TRdSPv6jU_fcUxq1OYpl7k",
+        "definitionId" : "apple-contacts",
+        "effect" : "read",
+        "operation" : "search_contacts"
+      },
+      "timeoutMs" : 20000
+    },
+    "data.request" : {
+      "id" : 9,
+      "method" : "data.request",
+      "params" : {
+        "grant" : "contacts"
+      }
+    },
+    "display.attach" : {
+      "id" : 20,
+      "method" : "display.attach",
+      "params" : {
+        "token" : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "display.control" : {
+      "id" : 20,
+      "method" : "display.control",
+      "params" : {
+        "access" : "read-write",
+        "action" : "acquire",
+        "controlId" : "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "source" : {
+          "generation" : 1,
+          "kind" : "owner-view",
+          "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        },
+        "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "display.demand" : {
+      "id" : 20,
+      "method" : "display.demand",
+      "params" : {
+        "revision" : 1,
+        "sources" : [
+          {
+            "appKey" : "com.apple.notes",
+            "kind" : "task-session",
+            "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
+          }
+        ],
+        "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "display.input" : {
+      "id" : 20,
+      "method" : "display.input",
+      "params" : {
+        "controlId" : "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "events" : [
+          {
+            "kind" : "copy"
+          }
+        ],
+        "geometry" : 1,
+        "sequence" : 0,
+        "source" : {
+          "generation" : 1,
+          "kind" : "owner-view",
+          "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        },
+        "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "display.refresh" : {
+      "id" : 20,
+      "method" : "display.refresh",
+      "params" : {
+        "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "display.resolve" : {
+      "id" : 20,
+      "method" : "display.resolve",
+      "params" : {
+        "source" : {
+          "appKey" : "com.apple.notes",
+          "kind" : "task-session",
+          "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
+        }
+      }
+    },
+    "display.start" : {
+      "id" : 20,
+      "method" : "display.start",
+      "params" : {
+        "maxFps" : 30,
+        "maxLongSide" : 1280,
+        "sources" : [
+          {
+            "appKey" : "com.apple.notes",
+            "kind" : "task-session",
+            "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
+          }
+        ],
+        "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "target" : {
+          "bindingId" : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "kind" : "mac-window"
+        }
+      }
+    },
+    "display.stop" : {
+      "id" : 20,
+      "method" : "display.stop",
+      "params" : {
+        "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "imessage.poll" : {
+      "id" : 11,
+      "method" : "imessage.poll",
+      "params" : {
+        "accountId" : "A1B2C3D4-0000-4000-8000-000000000001",
+        "after" : {
+          "guid" : "8C5A1E2F-3B4D-4E6F-8A9B-0C1D2E3F4A5B",
+          "rowId" : 4182
+        },
+        "limit" : 100,
+        "owner" : "cha_01J9Z6Q0Y2E8C9T8Q5V6X7W8Y9"
+      },
+      "timeoutMs" : 15000
+    },
+    "imessage.send" : {
+      "id" : 12,
+      "method" : "imessage.send",
+      "params" : {
+        "accountId" : "A1B2C3D4-0000-4000-8000-000000000001",
+        "key" : "cdl_01J9Z6Q0Y2E8C9T8Q5V6X7W8Z0",
+        "owner" : "cha_01J9Z6Q0Y2E8C9T8Q5V6X7W8Y9",
+        "text" : "On it.",
+        "to" : "+15551230000"
+      },
+      "timeoutMs" : 30000
+    },
+    "permissions.request" : {
+      "id" : 5,
+      "method" : "permissions.request",
+      "params" : {
+        "pane" : "screen-recording"
+      }
+    },
+    "session.act" : {
+      "id" : 8,
+      "method" : "session.act",
+      "params" : {
+        "actions" : [
+          {
+            "target" : {
+              "index" : 4
+            },
+            "text" : "Milk",
+            "type" : "type"
+          },
+          {
+            "text" : ", eggs",
+            "type" : "type"
+          }
+        ],
+        "app" : {
+          "access" : "read-write",
+          "identity" : {
+            "bundleId" : "com.apple.Notes",
+            "displayName" : "Notes",
+            "teamId" : null
+          }
+        },
+        "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74",
+        "snapshot" : "9f2c41ab7e0d5638",
+        "window" : "window-1"
+      },
+      "timeoutMs" : 45000
+    },
+    "session.bind" : {
+      "id" : 21,
+      "method" : "session.bind",
+      "params" : {
+        "app" : {
+          "access" : "read",
+          "identity" : {
+            "bundleId" : "com.apple.Notes",
+            "displayName" : "Notes",
+            "teamId" : null
+          }
+        },
+        "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74",
+        "window" : 42
+      },
+      "timeoutMs" : 30000
+    },
+    "session.observe" : {
+      "id" : 7,
+      "method" : "session.observe",
+      "params" : {
+        "app" : {
+          "access" : "read",
+          "identity" : {
+            "bundleId" : "com.apple.Notes",
+            "displayName" : "Notes",
+            "teamId" : null
+          }
+        },
+        "includeScreenshot" : true,
+        "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74",
+        "window" : "window-1"
+      },
+      "timeoutMs" : 30000
+    },
+    "session.open" : {
+      "id" : 6,
+      "method" : "session.open",
+      "params" : {
+        "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74",
+        "threadTitle" : "Plan the week"
+      }
+    },
+    "session.windows" : {
+      "id" : 20,
+      "method" : "session.windows",
+      "params" : {
+        "app" : {
+          "access" : "read",
+          "identity" : {
+            "bundleId" : "com.apple.Notes",
+            "displayName" : "Notes",
+            "teamId" : null
+          }
+        },
+        "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
+      },
+      "timeoutMs" : 30000
+    },
+    "view.open" : {
+      "id" : 23,
+      "method" : "view.open",
+      "params" : {
+        "generation" : 1,
+        "leaseDurationMs" : 30000,
+        "target" : {
+          "app" : {
+            "bundleId" : "com.apple.Notes",
+            "displayName" : "Notes",
+            "teamId" : null
+          },
+          "kind" : "app",
+          "window" : 42
+        },
+        "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      },
+      "timeoutMs" : 30000
+    },
+    "view.windows" : {
+      "id" : 22,
+      "method" : "view.windows",
+      "params" : {
+        "app" : {
+          "bundleId" : "com.apple.Notes",
+          "displayName" : "Notes",
+          "teamId" : null
+        }
+      },
+      "timeoutMs" : 30000
+    }
+  },
+  "results" : {
+    "app.resolve" : {
+      "app" : {
+        "allowed" : true,
+        "identity" : {
+          "bundleId" : "com.google.Chrome",
+          "displayName" : "Google Chrome",
+          "teamId" : "EQHXZ8M8AV"
+        },
+        "path" : "/Applications/Google Chrome.app",
+        "reason" : "A browser can reach every site this Mac is signed in to.",
+        "risk" : "elevated",
+        "running" : true
+      }
+    },
+    "apps.installed" : {
+      "apps" : [
+        {
+          "iconPng" : "iVBORw0KGgo=",
+          "identity" : {
+            "bundleId" : "com.apple.Notes",
+            "displayName" : "Notes",
+            "teamId" : null
+          },
+          "running" : true
+        },
+        {
+          "identity" : {
+            "bundleId" : "com.google.Chrome",
+            "displayName" : "Google Chrome",
+            "teamId" : "EQHXZ8M8AV"
+          },
+          "running" : false
+        }
+      ],
+      "total" : 2
+    },
+    "data.invoke" : {
+      "value" : {
+        "contacts" : [
+          {
+            "birthday" : "1815-12-10",
+            "emails" : [
+              {
+                "label" : "work",
+                "value" : "ada@engines.example"
+              }
+            ],
+            "id" : "410FE041-5C4E-48DA-B4DE-04C15EA3DBAC:ABPerson",
+            "name" : "Ada Lovelace",
+            "organization" : "Analytical Engines",
+            "phones" : [
+              {
+                "label" : "mobile",
+                "value" : "+1 (555) 123-4567"
+              }
+            ]
+          },
+          {
+            "birthday" : null,
+            "emails" : [
+
+            ],
+            "id" : "8E6B1F2A-0B9C-4B8D-9E2F-3A4B5C6D7E8F:ABPerson",
+            "name" : null,
+            "organization" : "Acme Plumbing",
+            "phones" : [
+
+            ]
+          }
+        ],
+        "nextCursor" : null
+      }
+    },
+    "data.request" : {
+      "grants" : {
+        "automation" : "granted",
+        "calendars" : "granted",
+        "contacts" : "granted",
+        "full-disk-access" : "granted",
+        "reminders" : "denied"
+      }
+    },
+    "data.status" : {
+      "grants" : {
+        "automation" : "unknown",
+        "calendars" : "requestable",
+        "contacts" : "granted",
+        "full-disk-access" : "denied",
+        "reminders" : "denied"
+      }
+    },
+    "display.attach" : {
+
+    },
+    "display.control" : {
+      "controlId" : "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "state" : "held"
+    },
+    "display.demand" : {
+
+    },
+    "display.input" : {
+      "outcome" : "dispatched",
+      "sequence" : 0
+    },
+    "display.refresh" : {
+
+    },
+    "display.resolve" : {
+      "target" : {
+        "bindingId" : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "kind" : "mac-window"
+      }
+    },
+    "display.start" : {
+      "attachmentToken" : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    },
+    "display.stop" : {
+
+    },
+    "hello" : {
+      "helperVersion" : "0.1.79",
+      "minProtocolVersion" : 10,
+      "ownerViewVersion" : 3,
+      "permissions" : {
+        "accessibility" : "granted",
+        "screenRecording" : "granted"
+      },
+      "protocolVersion" : 10,
+      "routes" : {
+        "windowGroups" : true,
+        "windowLocation" : true
+      }
+    },
+    "imessage.account" : {
+      "account" : {
+        "handle" : "bot@example.com",
+        "id" : "A1B2C3D4-0000-4000-8000-000000000001"
+      },
+      "end" : {
+        "guid" : "8C5A1E2F-3B4D-4E6F-8A9B-0C1D2E3F4A5B",
+        "rowId" : 4182
+      }
+    },
+    "imessage.poll" : {
+      "account" : "current",
+      "claim" : "held",
+      "cursor" : "valid",
+      "rows" : [
+        {
+          "guid" : "1F2E3D4C-5B6A-4798-8A7B-6C5D4E3F2A1B",
+          "message" : {
+            "handle" : "+15551230000",
+            "sentAt" : "2026-09-22T10:00:00Z",
+            "text" : "What's on today?"
+          },
+          "rowId" : 4183
+        },
+        {
+          "guid" : "2A3B4C5D-6E7F-4801-9A2B-3C4D5E6F7A8B",
+          "message" : null,
+          "rowId" : 4184
+        }
+      ]
+    },
+    "imessage.send" : {
+      "key" : "cdl_01J9Z6Q0Y2E8C9T8Q5V6X7W8Z0",
+      "sentAt" : "2026-09-22T10:00:05Z"
+    },
+    "permissions.get" : {
+      "permissions" : {
+        "accessibility" : "granted",
+        "screenRecording" : "denied"
+      }
+    },
+    "permissions.request" : {
+      "permissions" : {
+        "accessibility" : "granted",
+        "screenRecording" : "granted"
+      }
+    },
+    "session.act" : {
+      "error" : null,
+      "performed" : [
+        "Typed \"Milk\" into \"Note body\"",
+        "Typed 6 characters"
+      ]
+    },
+    "session.bind" : {
+      "window" : {
+        "current" : true,
+        "focused" : true,
+        "frame" : {
+          "height" : 620,
+          "width" : 900,
+          "x" : 240,
+          "y" : 118
+        },
+        "id" : 42,
+        "main" : true,
+        "minimized" : false,
+        "modal" : false,
+        "onScreen" : true,
+        "ref" : "window-1",
+        "title" : "Shopping list"
+      }
+    },
+    "session.close" : {
+
+    },
+    "session.observe" : {
+      "observation" : {
+        "alone" : false,
+        "app" : {
+          "bundleId" : "com.apple.Notes",
+          "displayName" : "Notes",
+          "teamId" : null
+        },
+        "blockedBy" : [
+
+        ],
+        "capturedAt" : "2025-09-21T16:00:00.000Z",
+        "elementCount" : 5,
+        "focusChanged" : false,
+        "geometry" : {
+          "height" : 890,
+          "width" : 1292
+        },
+        "screenshot" : {
+          "base64" : "/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAqADAAQAAAABAAAAAgAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAgACAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICBAICBAUEBAQFBwUFBQUHCQcHBwcHCQsJCQkJCQkLCwsLCwsLCw0NDQ0NDQ8PDw8PEREREREREREREf/bAEMBAwMDBAQEBwQEBxIMCgwSEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEv/dAAQAAf/aAAwDAQACEQMRAD8A/fyiiigD/9k=",
+          "height" : 890,
+          "mime" : "image/jpeg",
+          "width" : 1292
+        },
+        "snapshot" : "9f2c41ab7e0d5638",
+        "tree" : "[0] window \"Shopping list\" (0,0 1292×890)\n  [1] toolbar (0,0 1292×75)\n    [2] button \"New Note\" (17,17 138×40)\n    [3] button \"Delete\" (172,17 103×40) (disabled)\n  [4] textarea \"Milk, eggs, bread\" (316,92 953×775) (focused)",
+        "truncated" : false,
+        "window" : {
+          "frame" : {
+            "height" : 620,
+            "width" : 900,
+            "x" : 240,
+            "y" : 118
+          },
+          "id" : 42,
+          "ref" : "window-1",
+          "scale" : 1.4355555555555555,
+          "title" : "Shopping list"
+        },
+        "windows" : [
+          {
+            "current" : true,
+            "focused" : true,
+            "frame" : {
+              "height" : 620,
+              "width" : 900,
+              "x" : 240,
+              "y" : 118
+            },
+            "id" : 42,
+            "main" : true,
+            "minimized" : false,
+            "modal" : false,
+            "onScreen" : true,
+            "ref" : "window-1",
+            "title" : "Shopping list"
+          }
+        ]
+      }
+    },
+    "session.open" : {
+      "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
+    },
+    "session.windows" : {
+      "windows" : [
+        {
+          "current" : true,
+          "focused" : true,
+          "frame" : {
+            "height" : 620,
+            "width" : 900,
+            "x" : 240,
+            "y" : 118
+          },
+          "id" : 42,
+          "main" : true,
+          "minimized" : false,
+          "modal" : false,
+          "onScreen" : true,
+          "ref" : "window-1",
+          "title" : "Shopping list"
+        }
+      ]
+    },
+    "view.activate" : {
+      "captureTargetId" : "target-1",
+      "generation" : 1,
+      "state" : "ready",
+      "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    },
+    "view.close" : {
+      "captureTargetId" : null,
+      "generation" : 1,
+      "state" : "closed",
+      "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    },
+    "view.open" : {
+      "captureTargetId" : "target-1",
+      "generation" : 1,
+      "state" : "ready",
+      "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "window" : {
+        "id" : 42,
+        "title" : "Shopping list"
+      }
+    },
+    "view.renew" : {
+      "captureTargetId" : "target-1",
+      "generation" : 1,
+      "state" : "ready",
+      "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    },
+    "view.windows" : {
+      "windows" : [
+        {
+          "focused" : true,
+          "id" : 42,
+          "main" : true,
+          "minimized" : false,
+          "onScreen" : true,
+          "title" : "Shopping list"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,29 @@
+name: CI dependencies
+description: Frozen install with toolchain and dependency caches
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      with:
+        node-version: "24.13.0"
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version-file: apps/runner/native-fs-helper/go.mod
+        cache-dependency-path: |
+          apps/runner/native-fs-helper/go.mod
+          apps/runner/native-fs-helper/go.sum
+          apps/desktop/process-supervisor/go.mod
+          apps/desktop/process-supervisor/go.sum
+    - shell: bash
+      run: corepack enable
+    - id: store
+      shell: bash
+      run: |
+        echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+        echo "version=$(pnpm --version)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ steps.store.outputs.path }}
+        key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.store.outputs.version }}-${{ hashFiles('pnpm-lock.yaml') }}
+    - shell: bash
+      run: pnpm install --frozen-lockfile

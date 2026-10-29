@@ -1,0 +1,68 @@
+{
+  "name": "@opensteer/runner",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "browser-harness": "./browser-harness/browser-harness.mjs",
+    "opensteer-runner": "./dist/main.js"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsup --config tsup.config.ts",
+    "build:integration": "tsup --config tsup.integration.config.ts",
+    "build:native-fs": "tsx scripts/build-native-fs.ts",
+    "build:native-fs:test": "tsx scripts/build-native-fs.ts --test",
+    "clean": "rm -rf dist dist-integration native-fs-helper/opensteer-native-fs native-fs-helper/opensteer-native-fs-test *.tsbuildinfo",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test:native-fs": "go -C native-fs-helper test -timeout=2m ./...",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "catalog:",
+    "@anthropic-ai/sdk": "0.116.0",
+    "@earendil-works/pi-coding-agent": "catalog:",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@openai/codex": "catalog:",
+    "@opensteer/agent-tools": "workspace:*",
+    "@opensteer/browser-profile": "workspace:*",
+    "@opensteer/config": "workspace:*",
+    "@opensteer/control-plane-protocol": "workspace:*",
+    "@opensteer/core": "workspace:*",
+    "@opensteer/messaging-module": "workspace:*",
+    "@opensteer/channel-imessage": "workspace:*",
+    "@opensteer/harness": "workspace:*",
+    "@opensteer/harness-claude": "workspace:*",
+    "@opensteer/harness-codex": "workspace:*",
+    "@opensteer/harness-cursor": "workspace:*",
+    "@opensteer/harness-opencode": "workspace:*",
+    "@opensteer/harness-pi": "workspace:*",
+    "@opensteer/integration-adapters": "workspace:*",
+    "@opensteer/integration-catalog": "workspace:*",
+    "@opensteer/integration-core": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
+    "@opensteer/runner-auth": "workspace:*",
+    "@opensteer/runner-client": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "@opensteer/triggers": "workspace:*",
+    "@opensteer/workspace": "workspace:*",
+    "@opensteer/workspace-local": "workspace:*",
+    "@opensteer/workspace-portablefs": "workspace:*",
+    "opencode-ai": "catalog:",
+    "sharp": "catalog:",
+    "typebox": "1.3.7",
+    "ws": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/ws": "catalog:",
+    "tsup": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -1,0 +1,26 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+		A10000000000000000000001 = {isa = PBXBuildFile; fileRef = A10000000000000000000002; };
+		A10000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000003 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IphoneAppsFixture.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000004 = {isa = PBXGroup; children = (A10000000000000000000005, A10000000000000000000006); sourceTree = "<group>"; };
+		A10000000000000000000005 = {isa = PBXGroup; children = (A10000000000000000000002); path = IphoneAppsFixture; sourceTree = "<group>"; };
+		A10000000000000000000006 = {isa = PBXGroup; children = (A10000000000000000000003); name = Products; sourceTree = "<group>"; };
+		A10000000000000000000007 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+		A10000000000000000000008 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A10000000000000000000009 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A1000000000000000000000A = {isa = PBXNativeTarget; buildConfigurationList = A1000000000000000000000B; buildPhases = (A10000000000000000000007, A10000000000000000000008, A10000000000000000000009); buildRules = (); dependencies = (); name = IphoneAppsFixture; productName = IphoneAppsFixture; productReference = A10000000000000000000003; productType = "com.apple.product-type.application"; };
+		A1000000000000000000000C = {isa = PBXProject; attributes = { LastUpgradeCheck = 1600; TargetAttributes = { A1000000000000000000000A = { CreatedOnToolsVersion = 16.0; }; }; }; buildConfigurationList = A1000000000000000000000D; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = A10000000000000000000004; productRefGroup = A10000000000000000000006; projectDirPath = ""; projectRoot = ""; targets = (A1000000000000000000000A); };
+		A1000000000000000000000B = {isa = XCConfigurationList; buildConfigurations = (A1000000000000000000000E, A1000000000000000000000F); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A1000000000000000000000D = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000010, A10000000000000000000011); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A1000000000000000000000E = {isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES; CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "iPhone Apps Fixture"; INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Seed and inspect synthetic calendar records for Opensteer testing."; INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Seed and inspect synthetic reminders for Opensteer testing."; INFOPLIST_KEY_NSContactsUsageDescription = "Seed and inspect synthetic contacts for Opensteer testing."; IPHONEOS_DEPLOYMENT_TARGET = 16.4; PRODUCT_BUNDLE_IDENTIFIER = com.opensteer.iphoneapps.fixture; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SWIFT_VERSION = 5.9; TARGETED_DEVICE_FAMILY = "1"; }; name = Debug; };
+		A1000000000000000000000F = {isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES; CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "iPhone Apps Fixture"; INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Seed and inspect synthetic calendar records for Opensteer testing."; INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Seed and inspect synthetic reminders for Opensteer testing."; INFOPLIST_KEY_NSContactsUsageDescription = "Seed and inspect synthetic contacts for Opensteer testing."; IPHONEOS_DEPLOYMENT_TARGET = 16.4; PRODUCT_BUNDLE_IDENTIFIER = com.opensteer.iphoneapps.fixture; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SWIFT_VERSION = 5.9; TARGETED_DEVICE_FAMILY = "1"; }; name = Release; };
+		A10000000000000000000010 = {isa = XCBuildConfiguration; buildSettings = { ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CODE_SIGNING_ALLOWED = NO; IPHONEOS_DEPLOYMENT_TARGET = 16.4; SDKROOT = iphoneos; SWIFT_VERSION = 5.9; }; name = Debug; };
+		A10000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = { ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CODE_SIGNING_ALLOWED = NO; IPHONEOS_DEPLOYMENT_TARGET = 16.4; SDKROOT = iphoneos; SWIFT_VERSION = 5.9; }; name = Release; };
+	};
+	rootObject = A1000000000000000000000C;
+}

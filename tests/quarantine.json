@@ -1,0 +1,449 @@
+[
+  {
+    "file": "tests/browser-sessions.integration.test.ts",
+    "name": [
+      "Browser Sessions through a whole deployment",
+      "admits automatic page references after delayed forms and document changes"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "Automatic page references after delayed forms or document changes remain flaky. A rejected synchronous title-refresh approach made five reads take 12.0–18.5 s in Target.getTargetInfo, compared with 0.136–0.200 ms without CDP calls. Preserve the unchanged Chromium <1,000 ms assertion.",
+      "Required design points:\n\n- A document-bound acknowledgement carrying identity, full URL and title together;\n  ledger generation guards and URL equality cannot attribute a title across CDP\n  sessions. Define bootstrap, same-URL reload and BFCache incarnation semantics.\n- Recovery driven by the existing catalog revision, surviving the Host's 100 ms\n  coalescing and `D → null → D`; preserve draft/freeze/selection guards and avoid\n  duplicate work. Do not rotate document identity to signal readiness.\n- A per-page refresh lifecycle with registration/reconnection reconciliation,\n  retained dirty state, supersession, bounded failure handling and explicit\n  recovery triggers. Failed or never-settling work cannot block another page or\n  teardown; never promote the old-title fallback into a new document.\n- Screencast recovery and browser-view navigation acknowledgement use private\n  document identity. Optional-field parsing alone does not establish semantic\n  compatibility with the previous release.\n\nRequired acceptance, failing first:\n\n- Gate sampling across same-URL reload, BFCache, redirects, fragments, bootstrap,\n  popups, closure and reversed event delivery on separate CDP sessions.\n- Cover empty/same titles, discovery disabled, failed/never-settling refreshes,\n  recovery and exact target ownership/record incarnation.\n- Exercise pending-to-ready through actual Host coalescing, catalog-revision\n  recovery, all composer guards, screencast recovery and recent-site recording;\n  include previous-release parsing and behavior.\n- Require zero candidate-triggered CDP calls and repeatable sub-millisecond busy\n  reads; preserve the unchanged Chromium `<1,000 ms`, paused/crashed-renderer and\n  257-frame assertions.\n- Deliberately replace the old synchronous-unnotified-title and read-time-sampling\n  test contracts with gated background-publication safety checks. Keep the\n  URL-ahead refusal and independent case-2 tests. Reuse one journey for each\n  affected flow; run focused regression checks locally and retain repeatable\n  qualification artifacts."
+    ]
+  },
+  {
+    "file": "tests/browser-sessions.integration.test.ts",
+    "name": [
+      "Browser Sessions through a whole deployment",
+      "attributes reply page chips only to exact pages used by each concurrent Run"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "Concurrent Runs can attribute reply page chips to the wrong page. Reproduce with the named whole-deployment journey and gated actor-token races. Acceptance: each reply refers only to the exact pages used by that Run; deployment qualification remains pending."
+    ]
+  },
+  {
+    "file": "apps/browser-runtime/src/browser/chromium-runtime.test.ts",
+    "name": [
+      "real Chromium runtime",
+      "gives an agent page-level power and none of a signed-in session's cookies, headers, or storage"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "Page-level browser power must not expose signed-in cookies, headers or storage. Run the named real-Chromium journey against the current source and retain its isolation assertions. A reported root fix has not established repeatable qualification; no single failing SHA is asserted."
+    ]
+  },
+  {
+    "file": "apps/browser-runtime/src/browser/chromium-runtime.test.ts",
+    "name": [
+      "real Chromium runtime",
+      "persists full-navigation fragments and detects durable URL overflow in the real engine"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "7e5319f4e96cb10fa1996e6262cd2cb221d838a3",
+    "evidence": [
+      "The durable-URL overflow assertion race is resolved by b6fb0a9e6: wait for the ledger navigation acknowledgement rather than an independent Playwright live URL. Controlled delayed frame delivery reproduced the previous 9000-character URL, never an over-limit raw URL; the synchronous persistence bound and assertions remain intact. The separate historical 5000 ms timeout with nine workers remains OPEN under this unchanged deadline; one successful file run does not establish its cause. Earlier isolated runs took 1.78–1.88 s. Evidence: ~/.local/state/opensteer/work/flaky-integration/overflow-conversation/."
+    ]
+  },
+  {
+    "file": "apps/host/src/triggers/trigger-authority.integration.test.ts",
+    "name": [
+      "Trigger authority through real Host services and PostgreSQL",
+      "A6/F14/F16: Chat programs keep owner authority and the person bypasses agent tiers"
+    ],
+    "area": "Triggers",
+    "owner": "Triggers maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "fcb85f46de95511be73b22f057c9c72ba7380d12",
+    "evidence": [
+      "Trigger authority cases timed out, followed by a fixture TRUNCATE deadlock. Aggregate run load is not evidence of per-case load or causation. Deterministic cancellation reproduction remains pending. Reproduce this exact named case with real Host services and PostgreSQL, then exercise cancellation before fixture cleanup. Acceptance: its original authority, delegation and lock-order assertions pass and teardown releases transactions before TRUNCATE."
+    ]
+  },
+  {
+    "file": "apps/host/src/triggers/trigger-authority.integration.test.ts",
+    "name": [
+      "Trigger authority through real Host services and PostgreSQL",
+      "A7/F13b: detail omits downstream Runs on an unrelated reused work Thread"
+    ],
+    "area": "Triggers",
+    "owner": "Triggers maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "fcb85f46de95511be73b22f057c9c72ba7380d12",
+    "evidence": [
+      "Trigger authority cases timed out, followed by a fixture TRUNCATE deadlock. Aggregate run load is not evidence of per-case load or causation. Deterministic cancellation reproduction remains pending. Reproduce this exact named case with real Host services and PostgreSQL, then exercise cancellation before fixture cleanup. Acceptance: its original authority, delegation and lock-order assertions pass and teardown releases transactions before TRUNCATE."
+    ]
+  },
+  {
+    "file": "apps/host/src/triggers/trigger-authority.integration.test.ts",
+    "name": [
+      "Trigger authority through real Host services and PostgreSQL",
+      "A10: overlapping Trigger delegation and mutation respect Thread-before-Trigger lock order"
+    ],
+    "area": "Triggers",
+    "owner": "Triggers maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "fcb85f46de95511be73b22f057c9c72ba7380d12",
+    "evidence": [
+      "Trigger authority cases timed out, followed by a fixture TRUNCATE deadlock. Aggregate run load is not evidence of per-case load or causation. Deterministic cancellation reproduction remains pending. Reproduce this exact named case with real Host services and PostgreSQL, then exercise cancellation before fixture cleanup. Acceptance: its original authority, delegation and lock-order assertions pass and teardown releases transactions before TRUNCATE."
+    ]
+  },
+  {
+    "file": "apps/host/src/triggers/trigger-authority.integration.test.ts",
+    "name": [
+      "Trigger authority through real Host services and PostgreSQL",
+      "A11/F19/F20: preserves pending schedule work, suppresses the deferred enqueue and resumes cadence"
+    ],
+    "area": "Triggers",
+    "owner": "Triggers maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "fcb85f46de95511be73b22f057c9c72ba7380d12",
+    "evidence": [
+      "Trigger authority cases timed out, followed by a fixture TRUNCATE deadlock. Aggregate run load is not evidence of per-case load or causation. Deterministic cancellation reproduction remains pending. Reproduce this exact named case with real Host services and PostgreSQL, then exercise cancellation before fixture cleanup. Acceptance: its original authority, delegation and lock-order assertions pass and teardown releases transactions before TRUNCATE."
+    ]
+  },
+  {
+    "file": "apps/host/src/agents/run-grants.integration.test.ts",
+    "name": [
+      "Run tool authority",
+      "keeps a held Run's engine token visible after its token-less title process starts"
+    ],
+    "area": "Run lifecycle",
+    "owner": "Run lifecycle maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "A token-less title process can race capture of a held Run engine token. Reproduce with the named Run-tool-authority journey. Acceptance: the held Run token remains visible after title startup. A reported fix still needs repeatable qualification."
+    ]
+  },
+  {
+    "file": "tests/browser-tab-groups.integration.test.ts",
+    "name": [
+      "agent organization and durable ownership",
+      "repeats organization and exact tab closure across a Host restart"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "Runner restart readiness can lose tab organization or exact closure. Gate re-registration discard after its first read, exercise the no-row gap, then repeat organization and exact tab closure across Host restart. Passing an old polling path alone does not establish recovery."
+    ]
+  },
+  {
+    "file": "apps/browser-runtime/src/browser/harness-actions.integration.test.ts",
+    "name": [
+      "Browser Harness element actions / real hosted Chromium",
+      "A15-failed-op-release a program ending on a failed action still has its object group released before it detaches"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "An action failure can let a session detach before its object group is released. The historical journey failed on two of three identical-source runs; its test file is currently absent. Recreate the named failed-action release journey. Acceptance: release settles before detach, with no leaked object group."
+    ]
+  },
+  {
+    "file": "apps/browser-runtime/src/browser/harness-actions.integration.test.ts",
+    "name": [
+      "Browser Harness element actions / real hosted Chromium",
+      "A15-slow-release a release slower than the grace on a page that still answers is awaited before the session detaches"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "Session teardown must await an object-group release slower than the grace period while the page still answers. The historical test file is currently absent. Recreate the named slow-release journey and prove release settles before detach; redesign remains unqualified."
+    ]
+  },
+  {
+    "file": "tests/local-runner-startup.integration.test.ts",
+    "name": [
+      "local Runner startup with a real credentialed worker",
+      "reaps a post-fork catalog failure once and can connect on a later start"
+    ],
+    "area": "Release tooling",
+    "owner": "Release tooling maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "The file-wide journey lacked its worker-build prerequisite; this is not evidence of a separately observed failure for every parameter. Build the credentialed worker, inject the named post-fork failure, and retry startup. Acceptance: the failed worker is reaped exactly once and a later start connects, with the original assertions preserved."
+    ]
+  },
+  {
+    "file": "tests/local-runner-startup.integration.test.ts",
+    "name": [
+      "local Runner startup with a real credentialed worker",
+      "reaps a post-fork credentials failure once and can connect on a later start"
+    ],
+    "area": "Release tooling",
+    "owner": "Release tooling maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "The file-wide journey lacked its worker-build prerequisite; this is not evidence of a separately observed failure for every parameter. Build the credentialed worker, inject the named post-fork failure, and retry startup. Acceptance: the failed worker is reaped exactly once and a later start connects, with the original assertions preserved."
+    ]
+  },
+  {
+    "file": "tests/local-runner-startup.integration.test.ts",
+    "name": [
+      "local Runner startup with a real credentialed worker",
+      "reaps a post-fork output failure once and can connect on a later start"
+    ],
+    "area": "Release tooling",
+    "owner": "Release tooling maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "The file-wide journey lacked its worker-build prerequisite; this is not evidence of a separately observed failure for every parameter. Build the credentialed worker, inject the named post-fork failure, and retry startup. Acceptance: the failed worker is reaped exactly once and a later start connects, with the original assertions preserved."
+    ]
+  },
+  {
+    "file": "apps/host/src/integrations/computer-use-journey.integration.test.ts",
+    "name": [
+      "Computer use, end to end as a model sees it",
+      "computer REPL revocation tears down globals and handles before the next call"
+    ],
+    "area": "Computer Use",
+    "owner": "Computer Use maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "78d583ecfa19af5db83a8add395b410bbc6519c1",
+    "evidence": [
+      "The phone observation unexpectedly returned isError=true instead of undefined during REPL revocation. Cause is unknown. Reproduce the named end-to-end journey. Acceptance: revocation tears down globals and handles before the next call and the phone observation succeeds."
+    ]
+  },
+  {
+    "file": "tests/browser-tab-groups.integration.test.ts",
+    "name": [
+      "agent organization and durable ownership",
+      "keeps collapsed groups across restart and restores one sleeping member attached to the Run"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "78d583ecfa19af5db83a8add395b410bbc6519c1",
+    "evidence": [
+      "A restarted Runner returned retryable HTTP 409 Preparing Vertical account during collapsed-group restoration. Catalog readiness is suspected. Reproduce the named restart journey; acceptance preserves collapsed groups and restores exactly one sleeping member attached to its Run."
+    ]
+  },
+  {
+    "file": "apps/host/src/agents/runner-reattach.integration.test.ts",
+    "name": [
+      "Runs that outlive their connection",
+      "queues recovery when a Runner stays away beyond its lease"
+    ],
+    "area": "Run lifecycle",
+    "owner": "Run lifecycle maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "78d583ecfa19af5db83a8add395b410bbc6519c1",
+    "evidence": [
+      "Recovery after a Runner lease expires timed out at 180000 ms. Another candidate completed in 51.7 s, but readiness is not established as the cause. Reproduce the named lost-Runner journey and require queued recovery within the existing assertions."
+    ]
+  },
+  {
+    "file": "apps/host/src/agents/runner-reattach.integration.test.ts",
+    "name": [
+      "Runs that outlive their connection",
+      "recovers at once after a lost lease, though the engine never ended the stopped turn"
+    ],
+    "area": "Run lifecycle",
+    "owner": "Run lifecycle maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "1e8ceb3c8de57649b7ddba4743f41129dfe823ff",
+    "evidence": [
+      "A recovered Run failed with runner_event_refused and a stale or invalid binding. Paired reruns did not reproduce the symptom. Reproduce lease loss while the engine retains its stopped turn; acceptance requires immediate recovery with a valid binding."
+    ]
+  },
+  {
+    "file": "apps/host/src/agents/runner-reattach.integration.test.ts",
+    "name": [
+      "Runs that outlive their connection",
+      "keeps a turn that finished while the Host was down for longer than two leases"
+    ],
+    "area": "Run lifecycle",
+    "owner": "Run lifecycle maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-10-27T00:00:00Z",
+    "deadline": "2026-11-03T00:00:00Z",
+    "sha": "285a2836a73ced2ca813ce63e474cb85e1b13c1b",
+    "evidence": [
+      "The journey timed out waiting for done, then passed in 44.9 s on the same SHA. An earlier run produced six assistant messages instead of three. Reproduce a completed turn while the Host remains down for more than two leases; preserve the existing completion and exact-message assertions."
+    ]
+  },
+  {
+    "file": "apps/host/src/agents/live-streaming.integration.test.ts",
+    "name": [
+      "live streaming across the deployment",
+      "fails only the Run whose event the Host refuses, keeping the Runner and its other Runs"
+    ],
+    "area": "Live streaming",
+    "owner": "Live streaming maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-10-28T01:24:00Z",
+    "deadline": "2026-11-04T01:24:00Z",
+    "sha": "914f24ef5c2f8a810e5c17019bf0112a97628da7",
+    "evidence": [
+      "Timed out waiting for refused: neither event refusal nor the <=10 s expired-lease sweep failed the Run within 30 s. A same-SHA file rerun passed three tests in 18.7 s. Reproduce Host refusal under concurrent Runs; acceptance fails only the refused Run and retains its Runner and other Runs, within existing budgets."
+    ]
+  },
+  {
+    "file": "tests/browser-sessions.integration.test.ts",
+    "name": [
+      "Browser Sessions through a whole deployment",
+      "reports a refused final-save lease promptly with its typed reason"
+    ],
+    "area": "Runner",
+    "owner": "Runner maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-10-28T00:00:00Z",
+    "deadline": "2026-11-04T00:00:00Z",
+    "sha": "97437475de2acfa90f98ef5c8c59b45bac4cf592",
+    "evidence": [
+      "The case passed but teardown emitted an uncaught WebSocket was closed before the connection was established. A same-SHA rerun passed in 6.54 s. Reproduce cancellation after temporary handshake listeners are removed; acceptance requires the typed final-save refusal promptly and teardown with no uncaught socket error."
+    ]
+  },
+  {
+    "file": "apps/desktop/native/computer-use/Tests/Fixtures/ChromeBackgroundJourney/Journey.swift",
+    "name": ["R2", "chrome", "batch"],
+    "area": "computer-use helper / key chords",
+    "owner": "computer-use helper / key chords maintainers",
+    "status": "known-failure",
+    "firstSeen": "2026-10-28T00:00:00Z",
+    "deadline": "2026-11-04T00:00:00Z",
+    "sha": "5b2ca8f41b358e52b5cb0cb87bca773949ce8f18",
+    "evidence": [
+      "R2 batch is invalid: the field reads Batchj instead of Batch because the batch Ctrl-Option-J also types j. The standalone shortcut also types j and passes. A control-character payload and an NSEvent with separate charactersIgnoringModifiers both failed to correct this behavior. Reproduce the named batch on its browser or AppKit target. Acceptance: the existing journey reads exactly Batch and the chord behavior matches its contract; see docs/computer-use.md for the posted-control-chord limitation."
+    ]
+  },
+  {
+    "file": "apps/desktop/native/computer-use/Tests/Fixtures/ChromeBackgroundJourney/Journey.swift",
+    "name": ["R2", "appkit", "batch"],
+    "area": "computer-use helper / key chords",
+    "owner": "computer-use helper / key chords maintainers",
+    "status": "known-failure",
+    "firstSeen": "2026-10-28T00:00:00Z",
+    "deadline": "2026-11-04T00:00:00Z",
+    "sha": "5b2ca8f41b358e52b5cb0cb87bca773949ce8f18",
+    "evidence": [
+      "R2 batch is invalid: the field reads Batchj instead of Batch because the batch Ctrl-Option-J also types j. The standalone shortcut also types j and passes. A control-character payload and an NSEvent with separate charactersIgnoringModifiers both failed to correct this behavior. Reproduce the named batch on its browser or AppKit target. Acceptance: the existing journey reads exactly Batch and the chord behavior matches its contract; see docs/computer-use.md for the posted-control-chord limitation."
+    ]
+  },
+  {
+    "file": "apps/host/src/agent-phone/agent-phone-display.device.test.ts",
+    "name": ["'native phone editing' on Android API 30"],
+    "area": "Agent Phone / API30 limited editing",
+    "owner": "Agent Phone / API30 limited editing maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-28T14:25:00Z",
+    "deadline": "2026-11-04T14:25:00Z",
+    "sha": "f67496a0d4698c5acdfeb331e2b7d4b08fa62374",
+    "evidence": [
+      "Android API 30 editing evidence was lost when a reboot cleared temporary artifacts, so the earlier report cannot be independently verified. Reproduce the native-phone editing journey on API 30 and retain a durable command, SHA, phase results and cleanup artifact. Verify WebView focus, short Unicode input, large paste and sensitive-fixture admission; this entry grants no pass or exemption."
+    ]
+  },
+  {
+    "file": "scripts/test-vm/contract-journey.ts",
+    "name": ["retention"],
+    "area": "VM test infrastructure",
+    "owner": "VM test infrastructure maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-28T19:20:43Z",
+    "deadline": "2026-11-04T00:00:00Z",
+    "sha": "597e2e384f88cbc88332448539150facf81b24d0",
+    "evidence": [
+      "Run pnpm exec tsx scripts/test-vm/contract-journey.ts retention (mocked; starts no VM). The payload cache listing intermittently retains unused, unreferenced payload 1111111111111111111111111111111111111111, contrary to the existing deep-equality assertion. Failed two of three clean-source runs and four of six candidate runs. Suspected cause: equally old cache entries are ordered by SHA while some lack usable last-used timestamps. Acceptance: the existing retention journey consistently deletes the unused cache and preserves referenced caches; do not relax the assertion."
+    ]
+  },
+  {
+    "file": "apps/browser-runtime/src/browser/chromium-follow-view.test.ts",
+    "name": [
+      "real Chromium pages follow the person's view",
+      "keeps the person's view free while Chromium holds an agent's size write under a dialog"
+    ],
+    "area": "Browser runtime",
+    "owner": "Browser runtime maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-10-28T17:10:11Z",
+    "deadline": "2026-11-04T17:10:11Z",
+    "sha": "3454f17616588b3001bb1b591e1b903aeec40a50",
+    "evidence": [
+      "The named real-Chromium follow-view journey failed once under concurrent load; a same-SHA rerun passed alongside watch-supervisor (25/25). Reproduce an agent size write held under a dialog. Acceptance: the person view stays free and all original journey assertions pass."
+    ]
+  },
+  {
+    "file": "apps/desktop/scripts/test-computer-use-window-groups.sh",
+    "name": ["window-groups focus selection", "N6 independent app was not foreground"],
+    "area": "Computer use",
+    "owner": "Computer-use owner",
+    "status": "investigating",
+    "firstSeen": "2026-10-29T01:41:08Z",
+    "deadline": "2026-11-05T01:41:08Z",
+    "sha": null,
+    "evidence": [
+      "The window-groups `focus` selection is not in the post-merge journeys: its N6 person-takeover check failed in 5 s with 'N6 independent app was not foreground' (VM run ~/.local/state/opensteer/vm-runs/20261029T013921Z-1fb3906a), while the live plain-to-secure receipt scene in the same run passed unchanged and now runs as `receipt-switch`. Historical N6 runs also failed on takeover expectations; decide whether N6 is a fixture or product issue and either fix it or delete it."
+    ]
+  },
+  {
+    "file": "apps/desktop/native/computer-use/Tests/Fixtures/MacOwnerInputJourney/run-vm.sh",
+    "name": ["owner-input appkit", "local-cover-invariants"],
+    "area": "Computer use",
+    "owner": "Remote-input owner",
+    "status": "known-failure",
+    "firstSeen": "2026-10-29T03:07:30Z",
+    "deadline": "2026-11-05T03:07:30Z",
+    "sha": "0ef61ecc415122eea8ed1f6fbf7a5df49b5913b5",
+    "evidence": [
+      "Owner input reorders a person's local keystrokes, never loses them: in VM run 20261029T030730Z-d2ca0afa (direct AppKit owner-input), 3 of 2071 numbered tokens arrived reordered, e.g. '1038|1039|1040|' as '1038|039|11040|', right after an owner input dispatch, with no front app, pointer or Space change. A person key routed to the owner's target during the guarded dispatch reaches it late and is sent on after later keys went directly to the person's app; PersonKeyOrder orders only keys typed after a key is sent on. The fix ends each hold with a barrier through the target and lands red-first after the open-source cutover, because it changes the frozen focus files."
+    ]
+  }
+]

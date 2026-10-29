@@ -1,0 +1,81 @@
+# syntax=docker/dockerfile:1.7
+
+ARG GO_IMAGE=golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36
+ARG UBUNTU_IMAGE=ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /source
+COPY vcs/go.mod vcs/go.sum ./vcs/
+COPY vcs/third_party ./vcs/third_party
+RUN --mount=type=cache,id=portablefs-local-go-mod,target=/go/pkg/mod \
+    go -C vcs mod download
+COPY vcs ./vcs
+ARG PORTABLEFS_RELEASE_ID
+RUN test -n "${PORTABLEFS_RELEASE_ID}" && \
+    mkdir -p /output && \
+    for command in portablefs-manager portablefs-cell-agent portablefs-cell-helper portablefs-authority portablefs-authority-launcher portablefs-archiver portablefs-hydrator; do \
+      CGO_ENABLED=0 go -C vcs build -trimpath \
+        -ldflags="-s -w -buildid= -X main.version=${PORTABLEFS_RELEASE_ID}" \
+        -o "/output/${command}" "./cmd/${command}"; \
+    done
+
+FROM ${UBUNTU_IMAGE} AS common
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && \
+    apt-get install --yes --no-install-recommends ca-certificates curl tini util-linux && \
+    rm -rf /var/lib/apt/lists/* && \
+    install --directory --owner root --group root --mode 0755 \
+      /portablefs-pki /portablefs-pki/cell /portablefs-pki/manager /portablefs-pki/operator
+
+FROM common AS manager
+RUN groupadd --system --gid 200101 portablefs-manager && \
+    useradd --system --uid 200101 --gid 200101 --home-dir /var/lib/portablefs-manager \
+      --shell /usr/sbin/nologin portablefs-manager && \
+    install --directory --owner 200101 --group 200101 --mode 0700 /var/lib/portablefs-manager
+COPY --from=build --chmod=0555 /output/portablefs-manager /usr/local/bin/portablefs-manager
+COPY --from=opensteer --chmod=0555 deploy/portablefs-local/manager-entrypoint.sh /usr/local/bin/portablefs-local-manager-entrypoint
+COPY --from=opensteer --chmod=0555 deploy/portablefs-local/bootstrap-cell.sh /usr/local/bin/portablefs-local-bootstrap-cell
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/portablefs-local-manager-entrypoint"]
+
+FROM ${UBUNTU_IMAGE} AS cell
+ENV DEBIAN_FRONTEND=noninteractive container=docker
+RUN apt-get update -qq && \
+    apt-get install --yes --no-install-recommends \
+      ca-certificates dbus systemd systemd-sysv systemd-resolved uidmap util-linux xfsprogs && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd --system --gid 200100 portablefs-agent && \
+    useradd --system --uid 200100 --gid 200100 --home-dir /var/lib/portablefs-agent \
+      --shell /usr/sbin/nologin portablefs-agent && \
+    install --directory --owner 200100 --group 200100 --mode 0700 /var/lib/portablefs-agent && \
+    install --directory --owner root --group root --mode 0755 \
+      /etc/portablefs /etc/portablefs/cells /etc/portablefs/trust /etc/portablefs/volumes \
+      /opt/portablefs/systemd /run/portablefs-volume /srv/portablefs \
+      /srv/portablefs-volume /var/lib/portablefs /var/lib/portablefs-cell \
+      /var/lib/portablefs-volume && \
+    systemctl mask \
+      console-getty.service getty@.service systemd-networkd.service systemd-networkd-wait-online.service \
+      systemd-timesyncd.service >/dev/null
+COPY --from=build --chmod=0555 /output/portablefs-cell-agent /usr/local/bin/portablefs-cell-agent
+COPY --from=build --chmod=0555 /output/portablefs-authority /usr/local/bin/portablefs-authority
+COPY --from=build --chmod=0555 /output/portablefs-archiver /usr/local/bin/portablefs-archiver
+COPY --from=build --chmod=0555 /output/portablefs-hydrator /usr/local/bin/portablefs-hydrator
+COPY --from=build --chmod=0555 /output/portablefs-cell-helper /usr/local/libexec/portablefs-cell-helper
+COPY --from=build --chmod=0555 /output/portablefs-authority-launcher /usr/local/libexec/portablefs-authority-launcher
+COPY --chmod=0444 deploy/systemd/portablefs-cell-agent@.service /opt/portablefs/systemd/
+COPY --chmod=0444 deploy/systemd/portablefs-cell-helper@.service /opt/portablefs/systemd/
+COPY --chmod=0444 deploy/systemd/portablefs-authority@.socket /opt/portablefs/systemd/
+COPY --chmod=0444 deploy/systemd/portablefs-authority@.service /opt/portablefs/systemd/
+COPY --chmod=0444 deploy/systemd/portablefs-archiver@.service /opt/portablefs/systemd/
+COPY --chmod=0444 deploy/systemd/portablefs-hydrator@.service /opt/portablefs/systemd/
+COPY --from=opensteer --chmod=0444 deploy/portablefs-local/cell-storage.service /opt/portablefs/systemd/portablefs-local-cell-storage.service
+COPY --from=opensteer --chmod=0555 deploy/portablefs-local/cell-storage.sh /usr/local/libexec/portablefs-local-cell-storage
+COPY --from=opensteer --chmod=0555 deploy/portablefs-local/cell-entrypoint.sh /usr/local/bin/portablefs-local-cell-entrypoint
+# PortableFS >= 0.3.0 systemd units exec from the versioned release layout
+# (/opt/portablefs/current/{bin,libexec}) rather than /usr/local.
+RUN install --directory --owner root --group root --mode 0755 /opt/portablefs/current && \
+    ln --symbolic /usr/local/bin /opt/portablefs/current/bin && \
+    ln --symbolic /usr/local/libexec /opt/portablefs/current/libexec
+STOPSIGNAL SIGRTMIN+3
+ENTRYPOINT ["/usr/local/bin/portablefs-local-cell-entrypoint"]
+CMD ["/usr/lib/systemd/systemd"]

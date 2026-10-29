@@ -1,0 +1,8 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Ubuntu mediates unprivileged user namespaces even for an outer unconfined
+# container. The hosted Runner nodes do not use this host policy.
+profile opensteer-runner-smoke /usr/local/bin/bwrap flags=(unconfined) {
+  userns,
+}

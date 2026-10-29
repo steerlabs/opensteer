@@ -1,0 +1,48 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.opensteer
+.pnpm-store
+coverage
+deploy/self-host/secrets
+deploy/self-host/portablefs-identity
+deploy/self-host/state
+dist
+apps/runner/dist-integration/
+apps/*/release
+apps/desktop/generated-native
+apps/desktop/generated-resources
+apps/desktop/.electron-smoke
+apps/runner/native-fs-helper/opensteer-native-fs
+apps/runner/native-fs-helper/opensteer-native-fs-test
+apps/runner/native-fs-helper/native-fs-helper
+node_modules
+playwright-report
+test-results
+*.tsbuildinfo
+
+# Local investigation reports and scratch renders
+/output/
+/tmp/
+
+# Local coding-agent handoff material
+/.claude/handoff/
+
+# Generated Chrome extension distribution
+apps/web/public/browser-extension.zip
+
+# The Agent Phone APK and manifest `pnpm build:agent-phone` places for setup in Chrome
+apps/web/public/agent-phone/
+
+# Gradle and Kotlin build output of the Agent Phone app
+apps/agent-phone/.gradle/
+apps/agent-phone/.kotlin/
+apps/agent-phone/build/
+apps/agent-phone/app/build/
+apps/agent-phone/fixture/build/
+
+# Native Expo phone decoder build output.
+apps/mobile/modules/*/android/build/
+
+/apps/desktop/build/generated/

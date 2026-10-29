@@ -1,0 +1,15 @@
+[Unit]
+Description=PortableFS local XFS storage cell
+Before=portablefs-cell-helper@.service portablefs-cell-agent@.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/portablefs/local-cell.env
+ExecStart=/usr/local/libexec/portablefs-local-cell-storage mount
+ExecStop=/usr/local/libexec/portablefs-local-cell-storage unmount
+RemainAfterExit=yes
+TimeoutStartSec=120s
+TimeoutStopSec=60s
+
+[Install]
+WantedBy=multi-user.target

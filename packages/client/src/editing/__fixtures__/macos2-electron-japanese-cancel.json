@@ -1,0 +1,451 @@
+{
+  "native": true,
+  "engine": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Electron/44.9.2 Safari/537.36",
+  "scenario": "japanese-cancel",
+  "inputSource": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+  "intent": "Physical native electron-japanese-cancel followup. Expectations describe the actual typed edits and marked selection; failed intent/trust qualifications are retained.",
+  "expected": {
+    "value": "",
+    "producers": [],
+    "transactionCommits": [0],
+    "keystrokes": [],
+    "compositions": [
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "k",
+        "selectionStart": 1,
+        "selectionEnd": 1,
+        "before": "",
+        "after": ""
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "か",
+        "selectionStart": 1,
+        "selectionEnd": 1
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "か",
+        "selectionStart": 1,
+        "selectionEnd": 1
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "",
+        "selectionStart": 0,
+        "selectionEnd": 0
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "",
+        "selectionStart": 0,
+        "selectionEnd": 0
+      }
+    ],
+    "proxy": {
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    "caret": 0,
+    "untrustedEvents": [
+      {
+        "type": "compositionend",
+        "data": ""
+      }
+    ]
+  },
+  "sourceSha": "e082eb7139132d47a6878168edddd8099386657b",
+  "sourceSelection": {
+    "current": {
+      "bundleId": "com.apple.inputmethod.Kotoeri.RomajiTyping",
+      "enabled": true,
+      "id": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardInputMode"
+    },
+    "requested": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+    "select": 0,
+    "statuses": [
+      {
+        "enable": 0,
+        "id": "com.apple.inputmethod.Kotoeri.RomajiTyping"
+      },
+      {
+        "enable": 0,
+        "id": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese"
+      }
+    ]
+  },
+  "sourceAfterKeys": {
+    "current": {
+      "bundleId": "com.apple.inputmethod.Kotoeri.RomajiTyping",
+      "enabled": true,
+      "id": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardInputMode"
+    },
+    "frontPid": 927
+  },
+  "events": [
+    {
+      "type": "selection",
+      "time": 28431.600000000006,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 28758.00000000003,
+      "trusted": true,
+      "key": "k",
+      "code": "KeyK",
+      "keyCode": 229,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "compositionstart",
+      "time": 28758.100000000006,
+      "trusted": true,
+      "data": "",
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "compositionupdate",
+      "time": 28758.100000000006,
+      "trusted": true,
+      "data": "k",
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "beforeinput",
+      "time": 28758.100000000006,
+      "trusted": true,
+      "data": "k",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "input",
+      "time": 28758.399999999994,
+      "trusted": true,
+      "data": "k",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "k",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 28758.50000000003,
+      "trusted": true,
+      "value": "k",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 28783.50000000003,
+      "trusted": true,
+      "key": "k",
+      "code": "KeyK",
+      "keyCode": 75,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "k",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 28954.00000000003,
+      "trusted": true,
+      "key": "a",
+      "code": "KeyA",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "k",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "compositionupdate",
+      "time": 28954.199999999983,
+      "trusted": true,
+      "data": "か",
+      "value": "k",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 28954.199999999983,
+      "trusted": true,
+      "data": "か",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "k",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 28954.600000000006,
+      "trusted": true,
+      "data": "か",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "か",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 28955.199999999983,
+      "trusted": true,
+      "value": "か",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 29007.899999999994,
+      "trusted": true,
+      "key": "a",
+      "code": "KeyA",
+      "keyCode": 65,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "か",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 29162.00000000003,
+      "trusted": true,
+      "key": "Escape",
+      "code": "Escape",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "か",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "compositionupdate",
+      "time": 29162.199999999983,
+      "trusted": true,
+      "data": "か",
+      "value": "か",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 29162.199999999983,
+      "trusted": true,
+      "data": "か",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "か",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 29162.300000000017,
+      "trusted": true,
+      "data": "か",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "か",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 29162.899999999994,
+      "trusted": true,
+      "value": "か",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 29232.600000000006,
+      "trusted": true,
+      "key": "Escape",
+      "code": "Escape",
+      "keyCode": 27,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "か",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 29381.300000000017,
+      "trusted": true,
+      "key": "Escape",
+      "code": "Escape",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "か",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "compositionupdate",
+      "time": 29381.600000000006,
+      "trusted": true,
+      "data": "",
+      "value": "か",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 29381.800000000017,
+      "trusted": true,
+      "data": "",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "か",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 29382.300000000017,
+      "trusted": true,
+      "data": null,
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "compositionend",
+      "time": 29382.399999999994,
+      "trusted": false,
+      "data": "",
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "selection",
+      "time": 29382.800000000017,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keyup",
+      "time": 29436.300000000017,
+      "trusted": true,
+      "key": "Escape",
+      "code": "Escape",
+      "keyCode": 27,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    }
+  ],
+  "final": {
+    "value": "",
+    "selectionStart": 0,
+    "selectionEnd": 0,
+    "composing": false
+  },
+  "captureIntent": {
+    "keys": ["40", "0", "53", "53"],
+    "click": false,
+    "picker": false,
+    "phases": [
+      {
+        "phase": "initial",
+        "keys": ["40", "0", "53", "53"],
+        "value": "",
+        "composing": false,
+        "eventCount": 27
+      }
+    ]
+  },
+  "platform": "mac",
+  "qualification": "failed-native-trust"
+}

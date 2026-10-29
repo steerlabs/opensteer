@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <EditText
+        android:id="@+id/fixture_rebound_field"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:importantForAutofill="no"
+        android:inputType="text" />
+
+    <Button
+        android:id="@+id/fixture_rebind"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/rebind_field" />
+
+    <Button
+        android:id="@+id/fixture_change_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/change_field_text" />
+</LinearLayout>

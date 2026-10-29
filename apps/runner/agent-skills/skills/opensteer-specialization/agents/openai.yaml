@@ -1,0 +1,4 @@
+interface:
+  display_name: "Opensteer Specialization"
+  short_description: "Maintain reusable Workspace instructions, skills, and code"
+  default_prompt: "Use $opensteer-specialization to preserve useful knowledge and procedures for future Runs."

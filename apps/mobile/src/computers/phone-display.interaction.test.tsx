@@ -1,0 +1,618 @@
+// @vitest-environment happy-dom
+import { act, useEffect, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, expect, it, vi } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { encodeDisplayViewerFrame } from "@opensteer/protocol";
+import type { HostClient, WebSocketClient } from "@opensteer/client/host";
+import type { EditingProxyEvent } from "@opensteer/client/editing";
+const state = vi.hoisted(() => ({
+  os: "android",
+  epoch: "",
+  ready: null as
+    null | ((event: { nativeEvent: { epoch: string; width: number; height: number } }) => void),
+  touch: null as null | Record<
+    string,
+    (event: {
+      nativeEvent: { locationX: number; locationY: number; timestamp: number; touches: unknown[] };
+    }) => void
+  >,
+  layout: null as
+    null | ((event: { nativeEvent: { layout: { width: number; height: number } } }) => void),
+  proxy: null as null | { onEvent(event: EditingProxyEvent): unknown; context: unknown },
+  copy: vi.fn(async () => true),
+  appState: null as null | ((value: string) => void),
+}));
+vi.mock("react-native", () => ({
+  Platform: {
+    get OS() {
+      return state.os;
+    },
+  },
+  PixelRatio: { get: () => 1 },
+  AppState: {
+    currentState: "active",
+    addEventListener: (_: string, callback: (v: string) => void) => {
+      state.appState = callback;
+      return {
+        remove() {
+          state.appState = null;
+        },
+      };
+    },
+  },
+  StyleSheet: { create: (v: unknown) => v, absoluteFill: {}, hairlineWidth: 1 },
+  ActivityIndicator: () => null,
+  View: (props: {
+    children?: ReactNode;
+    testID?: string;
+    onLayout?: typeof state.layout;
+    onTouchStart?: unknown;
+  }) => {
+    if (props.testID === "display-input") {
+      state.touch = props as typeof state.touch;
+      state.layout = props.onLayout ?? null;
+    }
+    return <div>{props.children}</div>;
+  },
+  Pressable: ({
+    children,
+    onPress,
+    accessibilityLabel,
+    disabled,
+  }: {
+    children: ReactNode;
+    onPress(): void;
+    accessibilityLabel?: string;
+    disabled?: boolean;
+  }) => (
+    <button aria-label={accessibilityLabel} onClick={onPress} disabled={disabled}>
+      {children}
+    </button>
+  ),
+}));
+vi.mock("expo", async () => {
+  const React = await import("react");
+  return {
+    requireNativeView: () =>
+      React.forwardRef((props: { onReady: typeof state.ready }, ref) => {
+        state.ready = props.onReady;
+        React.useImperativeHandle(ref, () => ({
+          reset: async (epoch: string) => {
+            state.epoch = epoch;
+          },
+          decode: async (frame: { epoch: string }) => {
+            state.epoch = frame.epoch;
+            return true;
+          },
+        }));
+        return <div />;
+      }),
+  };
+});
+vi.mock("expo-clipboard", () => ({
+  setStringAsync: state.copy,
+  StringFormat: { PLAIN_TEXT: "plain", HTML: "html" },
+}));
+vi.mock("../../modules/remote-text-input/src/remote-text-input.js", () => ({
+  RemoteTextInput: (props: NonNullable<typeof state.proxy>) => {
+    state.proxy = props;
+    useEffect(
+      () => () => {
+        state.proxy = null;
+      },
+      [],
+    );
+    return <div />;
+  },
+}));
+vi.mock("../browser/surface-header.js", () => ({ useSurfaceHeader: () => undefined }));
+vi.mock("../ui/primitives.js", () => ({
+  AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+}));
+import { ComputerDisplay, ComputerTaskView, ComputerOwnerView } from "./phone-display.js";
+class Socket implements WebSocketClient {
+  readyState = 0;
+  binaryType: "arraybuffer" | "blob" = "arraybuffer";
+  sent: Record<string, unknown>[] = [];
+  listeners = new Map<string, ((event: never) => void)[]>();
+  addEventListener(type: string, fn: (event: never) => void) {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+  }
+  emit(type: string, event: unknown) {
+    for (const fn of this.listeners.get(type) ?? []) (fn as (event: unknown) => void)(event);
+  }
+  send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+    if (typeof data === "string") this.sent.push(JSON.parse(data));
+  }
+  close() {
+    this.readyState = 3;
+  }
+  json(data: unknown) {
+    this.emit("message", { data: JSON.stringify(data) });
+  }
+}
+const sessionId = "cus_11111111-1111-4111-8111-111111111111";
+const controlId = "dcl_22222222-2222-4222-8222-222222222222";
+const context = {
+  contextId: "00000000-0000-4000-8000-000000000001",
+  field: { kind: "text", multiline: true, sensitive: false },
+  caret: { x: 0.4, y: 0.5, height: 0.02 },
+} as const;
+let root: Root | null = null;
+let socket: Socket;
+let container: HTMLDivElement;
+const evidence: unknown[] = [];
+afterEach(async () => {
+  evidence.push({ case: expect.getState().currentTestName, messages: socket?.sent });
+  const dir = process.env.OPENSTEER_MOBILE_EDITING_EVIDENCE_DIR ?? "/tmp/opensteer-mobile-editing";
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(`${dir}/display-journey.json`, JSON.stringify(evidence, null, 2));
+  await act(async () => root?.unmount());
+  root = null;
+  container?.remove();
+  state.copy.mockClear();
+  state.proxy = null;
+});
+async function setup(
+  phone = true,
+  os = "android",
+  owner = false,
+  interactive = true,
+  screen: "display" | "task" | "owner" = "display",
+) {
+  state.os = os;
+  socket = new Socket();
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  const snapshot = {
+    session: "authenticated",
+    user: { id: "person" },
+    deploymentId: "deployment",
+    machines: [
+      {
+        id: "machine",
+        status: "online",
+        kind: "personal",
+        computerUse: {
+          displayStreamSupported: true,
+          ownerViews: owner
+            ? [
+                {
+                  viewId: "owner-view",
+                  generation: 1,
+                  state: "ready",
+                  target: { kind: "app", app: { displayName: "Notes" } },
+                  expiresAt: "2099-01-01T00:00:00.000Z",
+                },
+              ]
+            : [],
+          state: "ready",
+          sessions: [
+            {
+              sessionId,
+              display: phone,
+              apps: [{ bundleId: "com.apple.Notes", displayName: "Notes", teamId: null }],
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const connect = vi.fn((_source: unknown, _options?: unknown) => socket);
+  const client = {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => undefined,
+    subscribeLifecycle: () => () => undefined,
+    connectComputerDisplay: connect,
+    retainComputerView: () => ({ release: () => undefined }),
+  } as unknown as HostClient;
+  const render = async (active = true) =>
+    act(async () =>
+      root!.render(
+        screen === "task" ? (
+          <ComputerTaskView
+            active={active}
+            hostClient={client}
+            computerSessionId={sessionId}
+            machineId="machine"
+            appKey={phone ? null : "com.apple.notes"}
+          />
+        ) : screen === "owner" ? (
+          <ComputerOwnerView
+            active={active}
+            hostClient={client}
+            viewId="owner-view"
+            generation={1}
+            machineId="machine"
+            appKey={phone ? null : "com.apple.notes"}
+          />
+        ) : (
+          <ComputerDisplay
+            active={active}
+            interactive={interactive}
+            phone={phone}
+            label={phone ? "Phone" : "Notes"}
+            hostClient={client}
+            source={
+              owner
+                ? { kind: "owner-view", viewId: "owner-view", generation: 1 }
+                : {
+                    kind: "task-session",
+                    sessionId,
+                    ...(phone ? {} : { appKey: "com.apple.notes" }),
+                  }
+            }
+          />
+        ),
+      ),
+    );
+  await render();
+  if (os === "ios" && !phone) return { connect, render };
+  await act(async () => {
+    socket.readyState = 1;
+    socket.emit("open", {});
+    socket.json({
+      type: "display.state",
+      state: "live",
+      generation: 1,
+      width: 200,
+      height: 400,
+      editingVersion: 1,
+    });
+    socket.emit("message", {
+      data: encodeDisplayViewerFrame(
+        {
+          generation: 1,
+          sequence: 1,
+          ptsUs: 1000,
+          width: 200,
+          height: 400,
+          key: true,
+          codec: "avc1.42C01F",
+        },
+        new Uint8Array([0, 0, 1, 0x65]),
+      ).slice().buffer,
+    });
+  });
+  await act(async () =>
+    state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
+  );
+  return { connect, render };
+}
+async function press(label: string) {
+  const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  expect(button).not.toBeNull();
+  await act(async () => button!.click());
+}
+function input() {
+  return socket.sent.filter((m) => m.type === "display.input");
+}
+it("takes over, maps touch, edits, reports receipts, copies and releases on hide through the real display transport", async () => {
+  const { connect, render } = await setup();
+  expect(connect.mock.calls[0]?.[1]).toEqual({ editing: 1 });
+  await press("Take over");
+  expect(socket.sent).toContainEqual({ type: "display.control", action: "acquire" });
+  await act(async () => socket.json({ type: "display.control", state: "held", controlId }));
+  await act(async () => state.layout?.({ nativeEvent: { layout: { width: 400, height: 400 } } }));
+  const touch = { nativeEvent: { locationX: 200, locationY: 200, timestamp: 10, touches: [{}] } };
+  await act(async () => {
+    state.touch?.onTouchStart?.(touch);
+    state.touch?.onTouchEnd?.({
+      ...touch,
+      nativeEvent: { ...touch.nativeEvent, timestamp: 20, touches: [] },
+    });
+  });
+  expect(input().map((m) => m.events)).toEqual([
+    [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 10 }],
+    [{ kind: "pointer", phase: "up", x: 0.5, y: 0.5, t: 20 }],
+  ]);
+  await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
+  await press("Keyboard");
+  await act(async () =>
+    state.proxy?.onEvent({
+      type: "input",
+      inputType: "insertText",
+      composing: false,
+      proxy: { value: "한👩‍💻", selectionStart: 6, selectionEnd: 6 },
+    }),
+  );
+  expect(input().at(-1)?.events).toEqual([
+    { kind: "edit", edit: { contextId: context.contextId, before: "", after: "", text: "한👩‍💻" } },
+  ]);
+  await act(async () =>
+    socket.json({
+      type: "display.input.result",
+      sequence: input().at(-1)?.sequence,
+      outcome: "stale",
+      reason: "stale",
+    }),
+  );
+  expect(container.textContent).toContain("The field changed");
+  await act(async () => state.proxy?.onEvent({ type: "cut" }));
+  expect(container.textContent).toContain("Cut isn’t supported");
+  await act(async () =>
+    state.proxy?.onEvent({
+      type: "paste",
+      items: [{ type: "text/html", bytes: new TextEncoder().encode("<b>x</b>") }],
+    }),
+  );
+  await act(async () =>
+    socket.json({
+      type: "display.input.result",
+      sequence: input().at(-1)?.sequence,
+      outcome: "refused",
+      reason: "unsupported",
+    }),
+  );
+  expect(container.textContent).toContain("doesn’t support this edit");
+  await act(async () => state.proxy?.onEvent({ type: "copy" }));
+  const sequence = input().at(-1)?.sequence;
+  await act(async () =>
+    socket.json({ type: "display.clipboard", sequence, outcome: "copied", text: "selected" }),
+  );
+  expect(state.copy).toHaveBeenCalledExactlyOnceWith("selected", { inputFormat: "plain" });
+  evidence.push({
+    case: "phone-takeover",
+    messages: socket.sent,
+    clipboard: "selected",
+    status: "passed-scripted-component-journey",
+  });
+  await render(false);
+  expect(socket.sent).toContainEqual({ type: "display.control", action: "release" });
+  expect(socket.readyState).toBe(3);
+});
+
+async function holdAndType() {
+  await press("Take over");
+  await act(async () => socket.json({ type: "display.control", state: "held", controlId }));
+  await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
+  await press("Keyboard");
+}
+
+it("copies sequence zero and ignores an unrelated refusal while awaiting the exact copy sequence", async () => {
+  await setup();
+  await holdAndType();
+  await act(async () => state.proxy?.onEvent({ type: "copy" }));
+  expect(input().at(-1)?.sequence).toBe(0);
+  await act(async () => {
+    socket.json({
+      type: "display.input.result",
+      sequence: 99,
+      outcome: "refused",
+      reason: "unsupported",
+    });
+    socket.json({
+      type: "display.clipboard",
+      sequence: 99,
+      outcome: "copied",
+      text: "unsolicited",
+    });
+    socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "first" });
+  });
+  expect(state.copy).toHaveBeenCalledExactlyOnceWith("first", { inputFormat: "plain" });
+  await act(async () => state.proxy?.onEvent({ type: "copy" }));
+  await act(async () => {
+    socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "late" });
+    socket.json({ type: "display.clipboard", sequence: 1, outcome: "copied", text: "second" });
+  });
+  expect(state.copy.mock.calls).toEqual([
+    ["first", { inputFormat: "plain" }],
+    ["second", { inputFormat: "plain" }],
+  ]);
+});
+
+it("retires pending copy and editing context when the display generation changes", async () => {
+  await setup();
+  await holdAndType();
+  await act(async () => state.proxy?.onEvent({ type: "copy" }));
+  await act(async () => {
+    socket.json({
+      type: "display.state",
+      state: "live",
+      generation: 2,
+      width: 200,
+      height: 400,
+      editingVersion: 1,
+    });
+    socket.json({
+      type: "display.clipboard",
+      sequence: 0,
+      outcome: "copied",
+      text: "old generation",
+    });
+    socket.emit("message", {
+      data: encodeDisplayViewerFrame(
+        {
+          generation: 2,
+          sequence: 2,
+          ptsUs: 2000,
+          width: 200,
+          height: 400,
+          key: true,
+          codec: "avc1.42C01F",
+        },
+        new Uint8Array([0, 0, 1, 0x65]),
+      ).slice().buffer,
+    });
+  });
+  await act(async () =>
+    state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
+  );
+  expect(state.copy).not.toHaveBeenCalled();
+  expect(container.querySelector('button[aria-label="Keyboard"]')).toBeNull();
+  expect(state.proxy?.context ?? null).toBeNull();
+  await act(async () =>
+    socket.json({
+      type: "display.editing",
+      generation: 2,
+      context: { ...context, contextId: "00000000-0000-4000-8000-000000000002" },
+    }),
+  );
+  await press("Keyboard");
+  await act(async () => state.proxy?.onEvent({ type: "copy" }));
+  await act(async () => {
+    socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "still old" });
+    socket.json({
+      type: "display.clipboard",
+      sequence: input().at(-1)?.sequence,
+      outcome: "copied",
+      text: "new generation",
+    });
+  });
+  expect(state.copy).toHaveBeenCalledExactlyOnceWith("new generation", { inputFormat: "plain" });
+});
+
+it("retires pending copy when control is reacquired and waits for the new operation", async () => {
+  await setup();
+  await holdAndType();
+  await act(async () => state.proxy?.onEvent({ type: "copy" }));
+  await press("Give back");
+  await act(async () => socket.json({ type: "display.control", state: "released" }));
+  await press("Take over");
+  await act(async () =>
+    socket.json({
+      type: "display.control",
+      state: "held",
+      controlId: "dcl_33333333-3333-4333-8333-333333333333",
+    }),
+  );
+  await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
+  await press("Keyboard");
+  await act(async () => state.proxy?.onEvent({ type: "copy" }));
+  const sequence = input().at(-1)?.sequence;
+  await act(async () =>
+    socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "old control" }),
+  );
+  expect(state.copy).not.toHaveBeenCalled();
+  await act(async () =>
+    socket.json({ type: "display.clipboard", sequence, outcome: "copied", text: "new control" }),
+  );
+  expect(state.copy).toHaveBeenCalledExactlyOnceWith("new control", { inputFormat: "plain" });
+});
+
+it("uses shared bounded paste batches and handles every split-frame receipt", async () => {
+  await setup();
+  await holdAndType();
+  const text = "x".repeat(29999) + "🦊" + "\u0001".repeat(60001);
+  await act(async () =>
+    state.proxy?.onEvent({
+      type: "paste",
+      items: [{ type: "text/plain", bytes: new TextEncoder().encode(text) }],
+    }),
+  );
+  const batches = input();
+  const pieces = batches.flatMap((batch) =>
+    (batch.events as { text: string }[]).map((event) => event.text),
+  );
+  expect(pieces.join("")).toBe(text);
+  expect(batches.length).toBeGreaterThan(1);
+  expect(pieces.every((piece) => piece.length <= 30000 && !/[\uD800-\uDBFF]$/u.test(piece))).toBe(
+    true,
+  );
+  for (const batch of batches) {
+    expect(new TextEncoder().encode(JSON.stringify(batch)).byteLength).toBeLessThanOrEqual(
+      256 * 1024,
+    );
+    await act(async () =>
+      socket.json({
+        type: "display.input.result",
+        sequence: batch.sequence,
+        outcome: "dispatched",
+      }),
+    );
+  }
+});
+it("offers Mac input only where its video is available", async () => {
+  const { connect } = await setup(false, "ios");
+  expect(connect).not.toHaveBeenCalled();
+  expect(container.textContent).toContain("Mac window video is unavailable on iOS");
+  await act(async () => root!.unmount());
+  root = null;
+  await setup(false, "android");
+  await press("Take over");
+  expect(socket.sent).toContainEqual({ type: "display.control", action: "acquire" });
+});
+
+it("shows owner-view control refusals with the server's reason", async () => {
+  await setup(false, "android", true);
+  await press("Take over");
+  await act(async () => socket.json({ type: "display.control", state: "refused", reason: "busy" }));
+  expect(container.textContent).toContain("Control refused: busy");
+});
+
+it("cancels a held touch before the stage moves and refuses stale picture input", async () => {
+  await setup();
+  await press("Take over");
+  await act(async () => socket.json({ type: "display.control", state: "held", controlId }));
+  await act(async () => state.layout?.({ nativeEvent: { layout: { width: 400, height: 400 } } }));
+  const touch = { nativeEvent: { locationX: 200, locationY: 200, timestamp: 10, touches: [{}] } };
+  await act(async () => state.touch?.onTouchStart?.(touch));
+  await act(async () => state.layout?.({ nativeEvent: { layout: { width: 300, height: 400 } } }));
+  expect(input().at(-1)?.events).toEqual([
+    { kind: "pointer", phase: "cancel", x: 0.5, y: 0.5, t: 10 },
+  ]);
+  const sent = input().length;
+  await act(async () => {
+    socket.json({
+      type: "display.state",
+      state: "live",
+      generation: 2,
+      width: 400,
+      height: 200,
+      editingVersion: 1,
+    });
+    state.touch?.onTouchEnd?.({
+      ...touch,
+      nativeEvent: { ...touch.nativeEvent, timestamp: 20, touches: [] },
+    });
+  });
+  expect(input()).toHaveLength(sent);
+});
+
+it("keeps passive grid previews free of editing negotiation and take-over controls", async () => {
+  const { connect } = await setup(true, "android", false, false);
+  expect(connect.mock.calls[0]?.[1]).toBeUndefined();
+  expect(container.querySelector('button[aria-label="Take over"]')).toBeNull();
+});
+
+it("keeps Mac task screens and phone owner screens passive", async () => {
+  let opened = await setup(false, "android", false, true, "task");
+  expect(opened.connect.mock.calls[0]?.[1]).toBeUndefined();
+  expect(container.querySelector('button[aria-label="Take over"]')).toBeNull();
+  await act(async () => root!.unmount());
+  root = null;
+  opened = await setup(true, "android", true, true, "owner");
+  expect(opened.connect.mock.calls[0]?.[1]).toBeUndefined();
+  expect(container.querySelector('button[aria-label="Take over"]')).toBeNull();
+});
+
+it("commits local preedit before giving back control when its screen hides", async () => {
+  const { render } = await setup();
+  await press("Take over");
+  await act(async () => socket.json({ type: "display.control", state: "held", controlId }));
+  await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
+  await press("Keyboard");
+  await act(async () => {
+    state.proxy?.onEvent({
+      type: "compositionstart",
+      proxy: { value: "", selectionStart: 0, selectionEnd: 0 },
+    });
+    state.proxy?.onEvent({
+      type: "compositionupdate",
+      data: "に",
+      proxy: { value: "に", selectionStart: 1, selectionEnd: 1, markedRange: { start: 0, end: 1 } },
+    });
+  });
+  await render(false);
+  const committed = socket.sent.findIndex(
+    (message) =>
+      message.type === "display.input" && JSON.stringify(message.events).includes('"text":"に"'),
+  );
+  const released = socket.sent.findIndex(
+    (message) => message.type === "display.control" && message.action === "release",
+  );
+  expect(committed).toBeGreaterThanOrEqual(0);
+  expect(released).toBeGreaterThan(committed);
+});

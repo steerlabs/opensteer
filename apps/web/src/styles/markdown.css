@@ -1,0 +1,224 @@
+/* Assistant markdown output + on-palette syntax highlighting. */
+
+.md-prose {
+  font-size: var(--text-2xl);
+  line-height: 1.65;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7em;
+  min-width: 0;
+}
+
+.md-prose--plain {
+  white-space: pre-wrap;
+}
+
+.md-prose h1,
+.md-prose h2,
+.md-prose h3,
+.md-prose h4 {
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+  margin-top: 0.5em;
+}
+
+.md-prose h1 {
+  font-size: 1.3em;
+}
+
+.md-prose h2 {
+  font-size: 1.17em;
+}
+
+.md-prose h3 {
+  font-size: 1.05em;
+}
+
+.md-prose h4 {
+  font-size: 1em;
+}
+
+.md-prose ul,
+.md-prose ol {
+  padding-left: 1.4em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+}
+
+.md-prose li > ul,
+.md-prose li > ol {
+  margin-top: 0.3em;
+}
+
+.md-prose a {
+  color: var(--ember);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.md-prose blockquote {
+  margin: 0;
+  padding: var(--space-2) 0 var(--space-2) var(--space-14);
+  border-left: 2px solid var(--ember-line);
+  color: var(--text-soft);
+}
+
+.md-prose code {
+  font-size: 0.86em;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px var(--space-6);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.md-prose pre {
+  margin: 0;
+  padding: var(--space-12) var(--space-14);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-code);
+  overflow-x: auto;
+  font-size: var(--text-md);
+  line-height: 1.55;
+  max-width: 100%;
+  overscroll-behavior-inline: contain;
+}
+
+.md-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  white-space: pre;
+  word-break: normal;
+  color: var(--text-soft);
+}
+
+.md-prose hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0.4em 0;
+}
+
+.md-prose table {
+  border-collapse: collapse;
+  font-size: var(--text-lg);
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  overscroll-behavior-inline: contain;
+}
+
+/* A cell breaks between words only, so a narrow column scrolls the table
+   sideways instead of splitting its words letter by letter. */
+.md-prose th,
+.md-prose td {
+  overflow-wrap: normal;
+  border: 1px solid var(--line-strong);
+  padding: var(--space-6) var(--space-12);
+  text-align: left;
+}
+
+.md-prose th {
+  background: var(--surface-elevated);
+  font-weight: var(--weight-bold);
+}
+
+.md-prose img {
+  border-radius: var(--radius-sm);
+}
+
+@media (max-width: 680px) {
+  .md-prose {
+    gap: 0.6em;
+    line-height: 1.58;
+  }
+
+  .md-prose h1,
+  .md-prose h2,
+  .md-prose h3,
+  .md-prose h4 {
+    margin-top: 0.35em;
+  }
+
+  .md-prose ul,
+  .md-prose ol {
+    gap: 0.2em;
+    padding-left: 1.25em;
+  }
+
+  .md-prose pre {
+    padding: var(--space-10) var(--space-12);
+  }
+
+  .md-prose th,
+  .md-prose td {
+    padding: var(--space-6) var(--space-10);
+  }
+}
+
+/* highlight.js tokens tuned to the ember palette */
+.hljs-comment,
+.hljs-quote {
+  color: var(--muted-dim);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-name {
+  color: var(--ember);
+}
+
+.hljs-string,
+.hljs-attr,
+.hljs-template-tag,
+.hljs-regexp {
+  color: var(--green);
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-meta {
+  color: var(--amber);
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-function,
+.hljs-class .hljs-title,
+.hljs-title.class_,
+.hljs-title.function_ {
+  color: var(--blue);
+}
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--text-soft);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: var(--weight-heavy);
+}
+
+.hljs-addition {
+  color: var(--green);
+  background: var(--green-wash);
+}
+
+.hljs-deletion {
+  color: var(--red);
+  background: var(--red-wash);
+}

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The web palette's warm ember and ink, adapted for light surfaces. -->
+    <color name="launcher_background">#080808</color>
+    <color name="phone_background">#F5F4F2</color>
+    <color name="phone_surface">#FFFFFF</color>
+    <color name="phone_text">#1B120E</color>
+    <color name="phone_text_soft">#514742</color>
+    <color name="phone_muted">#6B625E</color>
+    <color name="phone_line">#E3DDD8</color>
+    <color name="phone_accent">#A85538</color>
+    <color name="phone_success">#287A5C</color>
+    <color name="phone_warning">#8D621F</color>
+    <color name="phone_danger">#B54840</color>
+    <color name="phone_ripple">#208D621F</color>
+</resources>

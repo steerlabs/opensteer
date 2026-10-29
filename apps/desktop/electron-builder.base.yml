@@ -1,0 +1,166 @@
+asar: true
+# The local Runner's image decoder loads its addon and libvips from real files,
+# as sharp's Electron guidance requires: https://sharp.pixelplumbing.com/install#electron
+asarUnpack:
+  - "**/node_modules/sharp/**/*"
+  - "**/node_modules/@img/**/*"
+beforePack: scripts/before-pack.cjs
+afterPack: scripts/after-pack.cjs
+afterSign: scripts/after-sign.cjs
+afterAllArtifactBuild: scripts/after-all-artifact-build.cjs
+files:
+  - dist/**
+  - package.json
+  - "!dist/**/*.map"
+  - "!node_modules/@opensteer/**"
+  # Ship the Agent SDK JavaScript; Claude Code is installed by the person.
+  - "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+  # The web build copies its public Agent Phone APK into `dist/web`; the app
+  # reads the copy in `agent-phone` below through its bridge, so the archive
+  # carries no second one.
+  - "!dist/web/agent-phone/**"
+extraResources:
+  - from: ../../THIRD_PARTY_NOTICES.md
+    to: THIRD_PARTY_NOTICES.md
+  # The Agent Phone app the Computers page installs over USB. A release build
+  # runs `pnpm build:agent-phone` before `prepare:release-resources`, which
+  # stages it; after-pack checks the APK against its manifest and refuses a
+  # release without a release build.
+  - from: generated-resources/agent-phone
+    to: agent-phone
+    filter:
+      - opensteer-agent-phone.apk
+      - agent-phone.json
+  - from: generated-resources/cloudflared
+    to: cloudflared
+    filter:
+      - cloudflared
+      - cloudflared.exe
+      - release.json
+  - from: generated-resources/portablefs
+    to: portablefs
+    filter:
+      - install.sh
+      - release.json
+  # `Opensteer Computer Use.app`, which the helper build already signed.
+  - from: generated-resources/computer-use
+    to: computer-use
+    filter:
+      - "**/*"
+  # `Opensteer Passwords.app` and its import worker, which the broker build
+  # already signed with its provisioning profile.
+  - from: generated-resources/passwords
+    to: passwords
+    filter:
+      - "**/*"
+  - from: generated-resources/personal-runtime
+    to: personal-runtime
+    filter:
+      - "**/*"
+      - "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+  - from: generated-resources/process-supervisor
+    to: process-supervisor
+    filter:
+      - opensteer-process-supervisor
+      - opensteer-process-supervisor.exe
+      - release.json
+  - from: generated-resources/runner
+    to: runner
+    filter:
+      - opensteer-native-fs
+      - opensteer-native-fs.exe
+      - release.json
+npmRebuild: false
+publish: null
+toolsets:
+  appimage: "1.0.3"
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  loadBrowserProcessSpecificV8Snapshot: false
+  grantFileProtocolExtraPrivileges: false
+  resetAdHocDarwinSignature: true
+mac:
+  minimumSystemVersion: "13.0"
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  # macOS names the app in its own permission prompt, so these say why
+  # Opensteer is asking. A folder shared from the Computers page is read by
+  # this app's own Runner, and without them the prompt would be unattributed.
+  extendInfo:
+    NSDesktopFolderUsageDescription: Opensteer reads your Desktop only for folders you share with agents on your other computers.
+    NSDocumentsFolderUsageDescription: Opensteer reads your Documents only for folders you share with agents on your other computers.
+    NSDownloadsFolderUsageDescription: Opensteer reads your Downloads only for folders you share with agents on your other computers. Opensteer saves files you download there.
+    NSLocalNetworkUsageDescription: Opensteer connects to your other computers and to model servers you add on your network, such as Ollama or LM Studio.
+    NSPhotoLibraryUsageDescription: Opensteer reads your photo library only for folders you share with agents on your other computers.
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  hardenedRuntime: true
+  notarize: true
+  # Reviewed release inputs already carry the release signing identity and the
+  # hardened runtime, and their manifest digests are pinned before packaging
+  # starts. Re-signing them here would rewrite those exact bytes and invalidate
+  # the digests the after-pack and after-sign gates verify.
+  signIgnore:
+    # The Agent Phone APK is Android code, not Mac code: setup and the
+    # after-pack gate check its exact bytes against its manifest and receipt.
+    - /Contents/Resources/agent-phone/
+    - /Contents/Resources/cloudflared/
+    # The helper holds the two macOS grants, so its signature is its identity:
+    # `build-computer-use-helper.ts` signs the bundle and the release
+    # resources step pins and verifies it. Re-signing it here would rewrite
+    # those exact bytes and invalidate the pin.
+    - /Contents/Resources/computer-use/
+    # The broker's signature, entitlements and embedded provisioning profile
+    # are what grant its keychain group; `build-passwords-broker.ts` signs
+    # it and the worker inside it, and re-signing would drop both.
+    - /Contents/Resources/passwords/
+    - /Contents/Resources/personal-runtime/
+    - /Contents/Resources/process-supervisor/
+    - /Contents/Resources/runner/
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+nsis:
+  allowElevation: true
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
+  oneClick: true
+  perMachine: false
+linux:
+  category: Utility
+  description: Opensteer connects this computer to a durable agent Workspace and can run approved work locally.
+  desktop:
+    entry:
+      Categories: Utility;Development;
+      Comment: Run durable Opensteer agent work on this computer
+      Terminal: false
+  maintainer: SteerLabs
+  synopsis: Opensteer desktop and local agent runtime
+  syncDesktopName: true
+  target:
+    - AppImage
+    - deb
+deb:
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - fuse3
+  packageCategory: utils
+  priority: optional

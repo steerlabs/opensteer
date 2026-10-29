@@ -1,0 +1,876 @@
+{
+  "version": 1,
+  "context": {
+    "auxiliaryChallenge": {
+      "challengeId": "rch_44444444-4444-4444-8444-444444444444",
+      "expiresAt": "2026-10-11T12:00:30.000Z",
+      "hostSessionId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "module": "integrations",
+      "nonce": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "type": "host.auxiliary.challenge"
+    },
+    "challenge": {
+      "challengeId": "rch_11111111-1111-4111-8111-111111111111",
+      "expiresAt": "2026-10-11T12:00:15.000Z",
+      "hostSessionId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "nonce": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "proofFormatVersion": 2,
+      "type": "host.challenge"
+    },
+    "runnerPublicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n",
+    "verifyAt": "2026-10-11T12:00:05.000Z"
+  },
+  "primary": {
+    "authenticate": {
+      "proofFormatVersion": 2,
+      "challengeId": "rch_11111111-1111-4111-8111-111111111111",
+      "descriptor": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "capabilities": [],
+        "device": {
+          "form": "phone",
+          "platform": "android"
+        },
+        "modules": {
+          "integrations": {
+            "platform": "android",
+            "protocolVersion": 4
+          }
+        },
+        "name": "Pixel 9 — Alex's \"agent\" phone",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "runnerKind": "local",
+        "runtimeVersion": "0.1.117"
+      },
+      "signature": "IfvSmo-nCGlTVog7uZecb7Zg5PwaSPzr6Cm3KPsW4USQ6J1ISDuKZugfCOF5jkb0vVL0GaOhh6yl2MJBTEanBg",
+      "type": "runner.authenticate"
+    },
+    "enroll": {
+      "proofFormatVersion": 2,
+      "challengeId": "rch_11111111-1111-4111-8111-111111111111",
+      "credential": {
+        "enrollmentToken": "enrollment-token-0123456789abcdefghijklmnopqrstuvwxyz",
+        "kind": "host-enrollment-token"
+      },
+      "descriptor": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "capabilities": [],
+        "device": {
+          "form": "phone",
+          "platform": "android"
+        },
+        "modules": {
+          "integrations": {
+            "platform": "android",
+            "protocolVersion": 4
+          }
+        },
+        "name": "Pixel 9 — Alex's \"agent\" phone",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "runnerKind": "local",
+        "runtimeVersion": "0.1.117"
+      },
+      "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n",
+      "signature": "1kPDZl5ObUqBMuop1MD-DhOSSvqaL5pBxpkQruUKIb3Cz6q5hfL5yCBDVoJFrjFA9TfY9uNjoSjs6kZ00Z1GDw",
+      "type": "runner.enroll"
+    },
+    "heartbeat": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "activeRunIds": [],
+      "activeTriggerOccurrenceIds": [],
+      "activeWatchActivationIds": [],
+      "sentAt": "2026-10-11T12:00:15.001Z",
+      "type": "runner.heartbeat"
+    },
+    "modulesReport": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "modules": [
+        {
+          "checkedAt": "2026-10-11T12:00:16.000Z",
+          "detail": null,
+          "module": "integrations",
+          "readiness": "ready"
+        }
+      ],
+      "type": "runner.modules.report"
+    },
+    "ticketRequest": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "module": "integrations",
+      "requestId": "aux:dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "type": "runner.auxiliary.ticket-request"
+    }
+  },
+  "auxiliary": {
+    "authenticate": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "challengeId": "rch_44444444-4444-4444-8444-444444444444",
+      "module": "integrations",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "signature": "Y7qmWmH0AnHwAIOb9MNvVf4LYOzyk2nQmjz9qPZYzQjCcY_yMeitkZzGTRHNDHFnlOnHsm4OaIlJ7hnTu4Z9AA",
+      "ticket": "eyJhbGciOiJFZERTQSJ9.eyJ4IjoxfQ.c2ln",
+      "type": "runner.auxiliary.authenticate"
+    },
+    "heartbeat": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "sentAt": "2026-10-11T12:00:17.000Z",
+      "type": "runner.auxiliary.heartbeat"
+    }
+  },
+  "integrations": {
+    "status": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "apps": [
+        {
+          "definitionId": "android-phone",
+          "operations": [
+            {
+              "detail": null,
+              "operation": "observe",
+              "remedy": null,
+              "state": "ready"
+            },
+            {
+              "detail": null,
+              "operation": "act",
+              "remedy": null,
+              "state": "ready"
+            },
+            {
+              "detail": null,
+              "operation": "release",
+              "remedy": null,
+              "state": "ready"
+            }
+          ]
+        }
+      ],
+      "captureSupported": false,
+      "displayAvailable": true,
+      "type": "runner.integrations.status"
+    },
+    "statusPaused": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "apps": [
+        {
+          "definitionId": "android-phone",
+          "operations": [
+            {
+              "detail": "Paused on the phone",
+              "operation": "observe",
+              "remedy": null,
+              "state": "unavailable"
+            },
+            {
+              "detail": "Paused on the phone",
+              "operation": "act",
+              "remedy": null,
+              "state": "unavailable"
+            },
+            {
+              "detail": "Paused on the phone",
+              "operation": "release",
+              "remedy": null,
+              "state": "unavailable"
+            }
+          ]
+        }
+      ],
+      "captureSupported": false,
+      "displayAvailable": true,
+      "type": "runner.integrations.status"
+    },
+    "observe": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:observe",
+      "result": {
+        "kind": "ok",
+        "value": {
+          "observation": {
+            "capturedAt": "2026-10-11T12:00:20.000Z",
+            "elementCount": 2,
+            "foreground": {
+              "label": "Agent Phone fixture",
+              "packageName": "com.opensteer.agentphone.fixture"
+            },
+            "geometry": {
+              "height": 1440,
+              "width": 648
+            },
+            "locked": false,
+            "observationId": "obs_0001",
+            "rotation": 0,
+            "screen": "on",
+            "screenshot": {
+              "base64": "/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+              "height": 1440,
+              "mime": "image/jpeg",
+              "width": 648
+            },
+            "screenshotUnavailable": null,
+            "secureLock": false,
+            "tree": "[0] textview \"Receipts\" (24,96 600×60)\n[1] edittext \"Type here\" (24,180 600×80) editable focused",
+            "truncated": false
+          }
+        }
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "observeWithoutScreenshot": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:observe-2",
+      "result": {
+        "kind": "ok",
+        "value": {
+          "observation": {
+            "capturedAt": "2026-10-11T12:00:20.000Z",
+            "elementCount": 2,
+            "foreground": {
+              "label": "Agent Phone fixture",
+              "packageName": "com.opensteer.agentphone.fixture"
+            },
+            "geometry": {
+              "height": 1440,
+              "width": 648
+            },
+            "locked": false,
+            "observationId": "obs_0002",
+            "rotation": 0,
+            "screen": "on",
+            "screenshot": null,
+            "screenshotUnavailable": "not-requested",
+            "secureLock": false,
+            "tree": "[0] textview \"Receipts\" (24,96 600×60)\n[1] edittext \"Type here\" (24,180 600×80) editable focused",
+            "truncated": false
+          }
+        }
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "observeScreenOff": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:observe-4",
+      "result": {
+        "kind": "ok",
+        "value": {
+          "observation": {
+            "capturedAt": "2026-10-11T12:00:20.000Z",
+            "elementCount": 0,
+            "foreground": null,
+            "geometry": {
+              "height": 648,
+              "width": 1440
+            },
+            "locked": true,
+            "observationId": "obs_0004",
+            "rotation": 90,
+            "screen": "off",
+            "screenshot": null,
+            "screenshotUnavailable": "screen-off",
+            "secureLock": true,
+            "tree": "",
+            "truncated": false
+          }
+        }
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "observeOpensteerApp": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:observe-5",
+      "result": {
+        "kind": "ok",
+        "value": {
+          "observation": {
+            "capturedAt": "2026-10-11T12:00:20.000Z",
+            "elementCount": 0,
+            "foreground": {
+              "label": "Opensteer Agent Phone",
+              "packageName": "com.opensteer.agentphone"
+            },
+            "geometry": {
+              "height": 1440,
+              "width": 648
+            },
+            "locked": false,
+            "observationId": "obs_0005",
+            "rotation": 0,
+            "screen": "on",
+            "screenshot": null,
+            "screenshotUnavailable": "opensteer-app",
+            "secureLock": false,
+            "tree": "",
+            "truncated": false
+          }
+        }
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "act": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:act",
+      "result": {
+        "kind": "ok",
+        "value": {
+          "error": null,
+          "observation": {
+            "capturedAt": "2026-10-11T12:00:20.000Z",
+            "elementCount": 2,
+            "foreground": {
+              "label": "Agent Phone fixture",
+              "packageName": "com.opensteer.agentphone.fixture"
+            },
+            "geometry": {
+              "height": 1440,
+              "width": 648
+            },
+            "locked": false,
+            "observationId": "obs_0001",
+            "rotation": 0,
+            "screen": "on",
+            "screenshot": {
+              "base64": "/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+              "height": 1440,
+              "mime": "image/jpeg",
+              "width": 648
+            },
+            "screenshotUnavailable": null,
+            "secureLock": false,
+            "tree": "[0] textview \"Receipts\" (24,96 600×60)\n[1] edittext \"Type here\" (24,180 600×80) editable focused",
+            "truncated": false
+          },
+          "performed": [
+            "Turned the screen on",
+            "Tapped \"Send\""
+          ]
+        }
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "actStopped": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:act-2",
+      "result": {
+        "kind": "ok",
+        "value": {
+          "error": {
+            "code": "stopped-by-user",
+            "message": "The phone's owner stopped this task on the phone."
+          },
+          "observation": null,
+          "performed": [
+            "Typed 8 characters into \"Password\""
+          ]
+        }
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "actStale": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:act-3",
+      "result": {
+        "code": "stale-observation",
+        "kind": "error",
+        "message": "Observation obs_0001 is not the latest; observe again."
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "actOutOfTime": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:act-5",
+      "result": {
+        "kind": "ok",
+        "value": {
+          "error": {
+            "code": "failed",
+            "message": "The request ran out of time; the actions after the last one performed did not run. Observe to see the screen."
+          },
+          "observation": null,
+          "performed": [
+            "Tapped \"Send\""
+          ]
+        }
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "actExpired": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:act-6",
+      "result": {
+        "code": "failed",
+        "kind": "error",
+        "message": "The request expired before it ran."
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "installedApps": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:apps",
+      "result": {
+        "kind": "ok",
+        "value": {
+          "apps": [
+            {
+              "label": "Agent Phone fixture",
+              "packageName": "com.opensteer.agentphone.fixture"
+            },
+            {
+              "label": "Settings",
+              "packageName": "com.android.settings"
+            }
+          ],
+          "total": 2
+        }
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "actOpensteerApp": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:act-4",
+      "result": {
+        "code": "app-not-allowed",
+        "kind": "error",
+        "message": "The Opensteer Agent Phone app is in front, and agents may not operate it. Navigate home or launch another app first."
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "close": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:close",
+      "result": {
+        "kind": "ok",
+        "value": {}
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "busy": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "cu:busy",
+      "result": {
+        "code": "busy",
+        "kind": "error",
+        "message": "Another task is using this phone."
+      },
+      "type": "runner.integrations.computer-use-result"
+    },
+    "stopped": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "event": {
+        "event": "session.stopped",
+        "params": {
+          "reason": "user",
+          "runId": "run_dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          "sessionId": "cus_cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        }
+      },
+      "type": "runner.integrations.computer-use-event"
+    },
+    "invokeRefused": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "requestId": "inv:1",
+      "result": {
+        "code": "unsupported",
+        "kind": "error",
+        "message": "This app is not available on an Android phone."
+      },
+      "type": "runner.integrations.result"
+    },
+    "mcpClosed": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 7,
+      "connectionId": "rcn_99999999-9999-4999-8999-999999999999",
+      "connectionLeaseId": "rls_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "module": "integrations",
+      "error": {
+        "code": "unapproved",
+        "message": "An Android phone runs no MCP servers."
+      },
+      "sessionId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "type": "runner.integrations.mcp.closed"
+    }
+  },
+  "displayFrames": [
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.source-ended",
+      "display": "main",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "source": {
+        "kind": "owner-view",
+        "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+        "generation": 1
+      },
+      "reason": "owner-expired"
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.state",
+      "display": "main",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "state": "starting",
+      "generation": 1,
+      "width": 720,
+      "height": 1280,
+      "rotation": 0
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.state",
+      "display": "main",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "state": "live",
+      "generation": 1,
+      "width": 720,
+      "height": 1280,
+      "rotation": 0
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.state",
+      "display": "main",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "state": "protected",
+      "reason": "locked-screen",
+      "generation": 1,
+      "width": 720,
+      "height": 1280,
+      "rotation": 0
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.state",
+      "display": "main",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "state": "screen-off",
+      "generation": 1,
+      "width": 720,
+      "height": 1280,
+      "rotation": 0
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.state",
+      "display": "main",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "state": "stopped",
+      "generation": 1,
+      "width": 720,
+      "height": 1280,
+      "rotation": 0
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.state",
+      "display": "main",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "state": "failed",
+      "reason": "encoder-failed",
+      "generation": 1,
+      "width": 720,
+      "height": 1280,
+      "rotation": 0
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.control-state",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+      "controlId": "dcl_22222222-2222-4222-8222-222222222222",
+      "state": "held"
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.control-state",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+      "controlId": "dcl_22222222-2222-4222-8222-222222222222",
+      "state": "released",
+      "reason": "viewer-gone"
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.control-state",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+      "controlId": "dcl_22222222-2222-4222-8222-222222222222",
+      "state": "refused",
+      "reason": "busy"
+    }
+  ],
+  "displayMedia": [
+    "AAAAl3sic3RyZWFtSWQiOiJkc3BfMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiZ2VuZXJhdGlvbiI6MSwic2VxdWVuY2UiOjAsInB0c1VzIjowLCJrZXkiOnRydWUsImNvZGVjIjoiYXZjMS40MkMwMUYiLCJ3aWR0aCI6MTgwLCJoZWlnaHQiOjMyMH0AAAABZ0LAH9oMCnn8BEAAAAMAQAAADyPGDKgAAAABaM4PyAAAAAFliIQEv///D0UAAS+/JycnJycnJycnJyddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddeA",
+    "AAAAhnsic3RyZWFtSWQiOiJkc3BfMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiZ2VuZXJhdGlvbiI6MSwic2VxdWVuY2UiOjEsInB0c1VzIjozMzMzMywia2V5IjpmYWxzZSwid2lkdGgiOjE4MCwiaGVpZ2h0IjozMjB9AAAAAUGaIBPwHjA="
+  ],
+  "setupStatus": {
+    "unpaired": {
+      "accessibility": {
+        "enabled": false,
+        "connected": false
+      },
+      "app": {
+        "versionCode": 1117,
+        "versionName": "0.1.117"
+      },
+      "batteryOptimizationExempt": false,
+      "connection": "unpaired",
+      "issue": null,
+      "pairing": null,
+      "paused": false,
+      "version": 1
+    },
+    "online": {
+      "accessibility": {
+        "enabled": true,
+        "connected": true
+      },
+      "app": {
+        "versionCode": 1117,
+        "versionName": "0.1.117"
+      },
+      "batteryOptimizationExempt": true,
+      "connection": "online",
+      "issue": null,
+      "pairing": {
+        "deploymentId": "dep_55555555-5555-4555-8555-555555555555",
+        "deploymentName": "Mac mini",
+        "enrollmentId": "enr_fixture",
+        "hostUrl": "https://phone.example.com",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333"
+      },
+      "paused": false,
+      "version": 1
+    },
+    "protocolError": {
+      "accessibility": {
+        "enabled": true,
+        "connected": true
+      },
+      "app": {
+        "versionCode": 1117,
+        "versionName": "0.1.117"
+      },
+      "batteryOptimizationExempt": true,
+      "connection": "offline",
+      "issue": {
+        "code": "protocol-error",
+        "detail": "This phone and Opensteer on Mac mini could not understand each other. Adding the phone again over USB installs the app this Opensteer carries."
+      },
+      "pairing": {
+        "deploymentId": "dep_55555555-5555-4555-8555-555555555555",
+        "deploymentName": "Mac mini",
+        "enrollmentId": "enr_fixture",
+        "hostUrl": "https://phone.example.com",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333"
+      },
+      "paused": false,
+      "version": 1
+    },
+    "expired": {
+      "accessibility": {
+        "enabled": true,
+        "connected": true
+      },
+      "app": {
+        "versionCode": 1117,
+        "versionName": "0.1.117"
+      },
+      "batteryOptimizationExempt": true,
+      "connection": "pairing",
+      "issue": {
+        "code": "enrollment-expired",
+        "detail": "The setup code expired before this phone could use it."
+      },
+      "pairing": {
+        "deploymentId": "dep_55555555-5555-4555-8555-555555555555",
+        "deploymentName": "Mac mini",
+        "enrollmentId": "enr_fixture",
+        "hostUrl": "http://127.0.0.1:4310",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333"
+      },
+      "paused": false,
+      "version": 1
+    }
+  }
+}

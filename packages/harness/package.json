@@ -1,0 +1,27 @@
+{
+  "name": "@opensteer/harness",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./process-supervisor": "./src/process-supervisor.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@opensteer/core": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "sharp": "catalog:",
+    "yaml": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}

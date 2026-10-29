@@ -1,0 +1,3252 @@
+/* The shared workspace: the sidebar's three sections, the place raised in the
+   middle, the conversation beside it or alone, and the agent — its mark and
+   its cursor — as the one memorable element. Everything else stays on the
+   base material and keeps quiet. */
+
+/* ---- Layout: Talk and Work ---- */
+
+.workspace {
+  --place-row-height: 43px;
+  /* The dock's slide: long enough to follow, short enough never to wait for. */
+  --duration-dock: 200ms;
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  /* A dock slid away sits past the right edge, out of sight and out of reach. */
+  overflow: clip;
+  padding-bottom: var(--keyboard-inset, 0px);
+}
+
+.workspace__middle {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 6px 6px 0;
+}
+
+.workspace__middle[hidden] {
+  display: none;
+}
+
+.app-shell--sidebar-collapsed .workspace__middle {
+  padding-left: 6px;
+}
+
+.workspace__conversation {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* The page takes its final size in one layout; only conversation contents glide. */
+.workspace--work:not(.workspace--phone-stage) .workspace__conversation {
+  flex: none;
+  width: var(--dock-width);
+  margin-right: 0;
+}
+.workspace--work:not(.workspace--phone-stage):not(.workspace--dock-closed) .workspace__middle {
+  padding-right: 0;
+}
+
+.workspace--work > .pane-resize-handle {
+  margin-inline: 3px;
+}
+
+/* Put away without unmounting the draft, scroll or selection. */
+.workspace--work.workspace--dock-closed .workspace__conversation {
+  margin-right: calc(-1 * (var(--dock-width) + 7px));
+  visibility: hidden;
+  pointer-events: none;
+}
+.workspace--dock-exiting .workspace__conversation {
+  pointer-events: none;
+}
+.workspace__conversation--entering {
+  opacity: 0;
+}
+
+.workspace--dock-closed > .pane-resize-handle {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* ---- The place: the one raised object ---- */
+
+.place {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-raised);
+}
+
+.place > .browser-view,
+.place > .computer-watch {
+  flex: 1;
+  min-height: 0;
+}
+
+/* The place starts 7px below the workspace top; its divider meets the 50px header. */
+.place .surface-row {
+  height: var(--place-row-height);
+  min-height: var(--place-row-height);
+  padding: var(--space-4) var(--space-8) var(--space-4) var(--space-10);
+  gap: var(--space-6);
+}
+
+/* An unavailable place keeps its chrome; the card says what happened in place. */
+.place-state {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: var(--space-6);
+  padding: var(--space-32);
+  color: var(--muted);
+  text-align: center;
+  background: var(--surface-elevated);
+}
+
+.place-state__title {
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
+}
+
+.place-state__detail {
+  max-width: 36rem;
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.place__marks {
+  margin-left: var(--space-2);
+}
+
+/* The conversation, put away: its mark and name. */
+.chat-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  max-width: 200px;
+  height: 30px;
+  margin-left: var(--space-4);
+  padding: 0 var(--space-12) 0 var(--space-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  --ring-bg: var(--surface);
+}
+
+.chat-btn > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-btn:hover {
+  border-color: var(--line-hover);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.chat-btn > svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* The sidebar's way in — the drawer below 1200px, or back from being put away —
+   with the count of tasks that need you. */
+.drawer-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  height: 30px;
+  padding: 0 var(--space-6);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+}
+
+.drawer-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.drawer-btn > svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* ---- Task marks ---- */
+
+/* Task identity and lifecycle use independent space. */
+.task-mark,
+.chat-orb {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+}
+.task-mark--16 {
+  width: 16px;
+  height: 16px;
+}
+.task-mark--20 {
+  width: 20px;
+  height: 20px;
+}
+.task-mark--22 {
+  width: 22px;
+  height: 22px;
+}
+.task-mark > svg {
+  display: block;
+  overflow: visible;
+}
+.task-mark--16 > svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.25;
+}
+/* A task's mark draws as large as a tab's site icon, in the same 20px column. */
+.task-mark--20 > svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.25;
+}
+.task-mark--22 > svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.1;
+}
+.task-mark--quiet {
+  opacity: 0.6;
+}
+.chat-orb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 50%;
+  filter: drop-shadow(0 1px 3px color-mix(in srgb, var(--bg) 38%, transparent));
+}
+.task-state {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+.task-state__spinner {
+  width: 14px;
+  height: 14px;
+  animation: spin 1s linear infinite;
+}
+.task-state__pause {
+  width: 12px;
+  height: 12px;
+}
+.task-state__disc {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--amber);
+  color: var(--ink-on-ember);
+  font: 800 10px/1 var(--font-sans);
+}
+.task-state--failed .task-state__disc {
+  background: var(--red);
+}
+.task-state__disc svg {
+  width: 12px;
+  height: 12px;
+}
+.task-request-mark {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+}
+.task-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -2px;
+  display: grid;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--ring-bg, var(--bg));
+}
+.occupant-mark > .task-badge {
+  right: 1px;
+  bottom: 1px;
+}
+.task-badge .task-state {
+  width: 9px;
+  height: 9px;
+}
+.task-badge .task-state__disc {
+  width: 9px;
+  height: 9px;
+  font-size: 7px;
+}
+.task-badge .task-state__disc svg {
+  width: 9px;
+  height: 9px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-state__spinner {
+    animation: none;
+  }
+}
+
+/* Marks on a place: who is there now, each its own button. */
+.occupant-marks {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+}
+
+.occupant-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-xs);
+  --ring-bg: var(--bg);
+}
+
+.place .occupant-mark,
+.chat-btn .chat-orb {
+  --ring-bg: var(--surface);
+}
+
+.occupant-mark:hover {
+  background: rgb(255 255 255 / 8%);
+  --ring-bg: #1d1d1d;
+}
+
+.place .occupant-mark {
+  width: 28px;
+  height: 28px;
+}
+
+.occupant-marks__more {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 24px;
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Sidebar ---- */
+
+.sidebar {
+  background: var(--bg);
+  border-right: 0;
+}
+
+/* Search and collapse only: Chat's row below, with Opensteer's orb, is the brand and the way home. */
+.sidebar__header {
+  justify-content: flex-end;
+  padding: var(--space-10) var(--space-10) var(--space-6) var(--space-8);
+  min-height: 50px;
+}
+
+/* A row and the 1px between rows: the sections' floors are counted in these. */
+.sidebar {
+  --side-pitch: 37px;
+  --side-head: 40px;
+}
+
+/* Between the header and the footer: the lists, and search's results over
+   them while there is a query. The lists stay laid out underneath, unseen
+   and inert, so closing search shows them as they stood. */
+.sidebar__body {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar__lists {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar__lists[inert] {
+  visibility: hidden;
+}
+
+/* Tasks and Tabs each scroll on their own, so both headings (and their + and
+   count) stay in reach at any height. One shared scroll would push Tabs, and
+   its +, below the fold. They split the height by Tasks' share, in
+   ten-thousandths (`--side-tasks-share`, even until the line between them is
+   moved): a section that needs less than its share keeps every row and
+   leaves the rest to the other, and neither drops below its first three
+   rows. Tabs, last, runs to the footer's line. */
+.side-section {
+  --side-floor-rows: 0;
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  padding: 0 var(--space-6);
+}
+
+.side-section--tasks,
+.side-section--tabs {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: max-content;
+  min-height: calc(var(--side-head) + var(--side-floor-rows) * var(--side-pitch) + 1px);
+}
+
+.side-section--tasks {
+  flex: var(--side-tasks-share) 1 0;
+}
+
+.side-section--tabs {
+  flex: calc(10000 - var(--side-tasks-share)) 1 0;
+}
+
+/* The line between Tasks and Tabs takes no height of its own: its grip
+   reaches a little over Tasks' last row and into Tabs' heading, and it lights
+   only where it can move. */
+.side-split {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  height: 0;
+  cursor: row-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.side-split::before {
+  position: absolute;
+  inset: -3px 0 -7px;
+  content: "";
+}
+
+.side-split::after {
+  position: absolute;
+  inset: -1px var(--space-6) auto;
+  height: 1px;
+  background: transparent;
+  content: "";
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.side-split[data-fixed] {
+  cursor: default;
+}
+
+.side-split:not([data-fixed]):hover::after,
+.side-split[data-resizing]::after {
+  background: color-mix(in srgb, var(--ember) 36%, transparent);
+}
+
+.side-split:not([data-fixed]):focus-visible::after {
+  background: color-mix(in srgb, var(--ember) 58%, transparent);
+}
+
+.is-resizing-split,
+.is-resizing-split * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
+/* Search's results take the lists' place: Tasks and Tabs under the same
+   headings, the best first, each row as the list draws it. */
+.side-results {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 var(--space-6);
+}
+
+.side-results__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  padding-bottom: var(--space-6);
+}
+
+.side-result {
+  cursor: pointer;
+}
+
+.side-result__lit {
+  background: none;
+  color: color-mix(in srgb, currentColor 80%, var(--text));
+  text-decoration: underline solid var(--ember) 1px;
+  text-underline-offset: 0.18em;
+}
+
+.side-result__hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-tab.side-result .side-tab__title {
+  flex: 1 1 auto;
+}
+
+.side-tab.side-result .side-result__hint {
+  flex: 0 0 auto;
+  max-width: 40%;
+}
+
+.side-result .pbadge {
+  display: grid;
+}
+
+.side-result .side-result__profile-match {
+  box-shadow:
+    0 0 0 1.5px var(--ring-bg),
+    0 0 0 3px var(--ember-line);
+}
+
+.side-result {
+  transition: none;
+}
+
+.side-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: var(--side-head);
+  padding: var(--space-10) var(--space-4) var(--space-4) var(--space-10);
+}
+
+.side-head__title {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  font-weight: var(--weight-strong);
+  letter-spacing: 0.005em;
+}
+
+.side-head__action {
+  width: 26px;
+  height: 26px;
+  color: var(--muted);
+}
+
+.side-head__action:hover,
+.side-head__action[aria-current="page"] {
+  color: var(--text);
+}
+
+.side-head__action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.side-profile-filter.is-active {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  max-width: 50%;
+  gap: var(--space-4);
+  padding-inline: var(--space-4);
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.side-profile-filter .pavatar {
+  flex: none;
+}
+
+.side-profile-filter > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+
+.side-profile-clear {
+  width: 22px;
+}
+
+.side-profile-count {
+  margin-inline-start: auto;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The count of tasks that need you: an amber "!" and a number, nothing else. */
+.side-needs {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-4);
+  height: 22px;
+  padding: 0 var(--space-8) 0 var(--space-4);
+  border-radius: var(--radius-full);
+  background: var(--amber-wash);
+  color: var(--amber-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-heavy);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+button.side-needs:hover {
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
+}
+
+.side-needs__bang {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--amber);
+  color: #1b120e;
+  font: 800 10px/1 var(--font-sans);
+}
+
+.side-needs--inline {
+  height: 20px;
+  padding-right: var(--space-6);
+}
+
+/* On touch the count keeps its drawn size; only its hit area grows to a finger. */
+@media (hover: none) {
+  .side-needs {
+    position: relative;
+    min-height: 0;
+  }
+
+  .side-needs::after {
+    position: absolute;
+    inset: -11px -4px;
+    content: "";
+  }
+}
+
+.side-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  margin-right: -4px;
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+/* Rows land whole: the lists snap to row tops, and their script ends each
+   window at a row's foot — by its height when the layout changes, by
+   `--side-cut` inside the section when a scroll comes to rest. */
+.side-section--tasks .side-list {
+  --side-cut: 0px;
+  align-self: start;
+  height: calc(100% - var(--side-cut));
+  max-height: 100%;
+  scroll-snap-type: y mandatory;
+}
+
+/* Tabs runs to the footer, whose line is its only edge: a row in part under
+   it says there is more. */
+.side-section--tabs .side-list {
+  height: 100%;
+  border-bottom-width: 0;
+  scroll-snap-type: y mandatory;
+}
+
+.side-list > li {
+  scroll-snap-align: start;
+}
+
+/* A list with more above or below says so with a hairline at that edge, and
+   only then; no row is ever dimmed by scrolling. Its scrollbar is slim and
+   shows while the list is hovered or scrolling, in a gutter it always keeps. */
+[data-scroll-edges] {
+  border-block: 1px solid transparent;
+  scrollbar-color: transparent transparent;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    scrollbar-color var(--duration-fast) var(--ease-out);
+}
+
+[data-scroll-edges][data-more-above] {
+  border-top-color: var(--line);
+}
+
+[data-scroll-edges][data-more-below] {
+  border-bottom-color: var(--line);
+}
+
+[data-scroll-edges]:is(:hover, :focus-within, [data-scrolling]) {
+  scrollbar-color: rgb(255 255 255 / 18%) transparent;
+}
+
+/* Rows: the place in the middle is the active tab, in the place card's own
+   material; one outline for the conversation beside it; hover links a task to
+   its tabs and back. */
+.side-home,
+.side-task,
+.side-tab,
+.side-new {
+  --ring-bg: var(--bg);
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+}
+
+.side-home {
+  margin: 0 var(--space-6) var(--space-2);
+}
+
+.side-home:hover,
+.side-task:hover,
+.side-tab:hover,
+.side-result.is-selected {
+  --ring-bg: #131313;
+  background: rgb(255 255 255 / 4%);
+}
+
+.side-task.is-match,
+.side-tab.is-match {
+  --ring-bg: #0f0f0f;
+  background: rgb(255 255 255 / 2.6%);
+}
+
+.side-home.is-filled,
+.side-task.is-filled {
+  --ring-bg: var(--surface-raised);
+  background: var(--surface-raised);
+}
+
+/* Tabs as a browser's vertical tabs: inactive ones are flat and hover only
+   washes one, so it never outshines the active tab. The active tab is a piece
+   of the place card — its border and soft lift — filled one step up, because
+   the card's own --surface sits a bare 3% above the sidebar and a row that
+   small would read as an outline, the open conversation's mark. */
+.side-tab {
+  -webkit-touch-callout: none;
+}
+
+.side-tab.is-active,
+.side-tab.is-active:hover {
+  --ring-bg: var(--surface-raised);
+  background: var(--surface-raised);
+  box-shadow:
+    inset 0 0 0 1px var(--line),
+    0 1px 2px rgb(0 0 0 / 45%),
+    0 4px 14px rgb(0 0 0 / 30%);
+}
+
+.side-home.is-open,
+.side-task.is-open {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.side-home__main,
+.side-task__main,
+.side-tab__main,
+.side-new__main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-10);
+  min-width: 0;
+  min-height: 36px;
+  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-10);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  text-align: left;
+}
+
+.side-home__main:hover,
+.side-task__main:hover {
+  text-decoration: none;
+}
+
+.side-home__main:focus-visible,
+.side-task__main:focus-visible,
+.side-tab__main:focus-visible,
+.side-new__main:focus-visible {
+  outline-offset: -2px;
+}
+
+.side-home__title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.side-home__spinner {
+  width: 12px;
+  height: 12px;
+}
+
+.side-bang {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--amber);
+  color: #1b120e;
+  font: 800 10.5px/1 var(--font-sans);
+}
+
+.side-task.has-ask .side-task__main {
+  align-items: flex-start;
+}
+
+.side-task.has-ask .task-mark {
+  margin-top: 1px;
+}
+
+.side-task__text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.side-task__title,
+.side-tab__title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  line-height: 1.32;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-task__title {
+  color: var(--text);
+}
+
+.side-task.is-open .side-task__title,
+.side-task.is-filled .side-task__title,
+.side-tab.is-active .side-tab__title {
+  color: var(--text);
+}
+
+.side-task--finished .side-task__title,
+.side-task--failed .side-task__title {
+  color: var(--text-soft);
+}
+
+/* The one second line: what the task asks of you, in amber. */
+.side-task__ask {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--amber-text);
+  font-size: var(--text-sm);
+  line-height: 1.36;
+  overflow-wrap: anywhere;
+}
+
+.side-row-action {
+  display: none;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-right: var(--space-4);
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+}
+
+.side-row-action:hover {
+  background: rgb(255 255 255 / 9%);
+  color: var(--text);
+}
+
+.side-row-action svg {
+  width: 12px;
+  height: 12px;
+}
+
+.side-task:is(:hover, :focus-within) .side-row-action {
+  display: grid;
+}
+
+/* A tab's × keeps its column, shown on hover and focus and always on the
+   active tab, so nothing in the row moves when it appears; rows without one
+   keep the column empty, and every row's marks stand in one line. */
+.side-tab .side-row-action {
+  display: grid;
+  visibility: hidden;
+}
+
+.side-tab:is(:hover, :focus-within, .is-active) .side-row-action {
+  visibility: visible;
+}
+
+.side-tab__close-slot {
+  flex: none;
+  width: 24px;
+  margin-right: var(--space-4);
+}
+
+.side-tab__main {
+  gap: var(--space-10);
+  padding-right: var(--space-4);
+}
+
+.side-tab__title {
+  flex: 0 1 auto;
+}
+
+/* Marks sit in the marks' 20px column, so every row's title starts on one line. */
+.side-tab .place-mark,
+.side-new__main svg {
+  margin-inline: 2px;
+}
+
+.side-tab__device {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-tab__marks {
+  padding-right: var(--space-2);
+}
+
+/* A loading page spins where its icon sits, as a browser's tab does. */
+.place-mark--loading .spinner {
+  width: 13px;
+  height: 13px;
+  border-width: 1.75px;
+}
+
+/* Between a browser's tabs and the Mac apps and phones: a hairline in the
+   rows' own 1px gap, so every tab row stays one pitch from the next and a
+   window of whole rows stays whole as the list scrolls. */
+.side-divider {
+  position: relative;
+  flex: none;
+  height: 0;
+  margin: -1px var(--space-10) 0;
+  scroll-snap-align: none;
+}
+
+.side-divider::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: var(--line);
+  content: "";
+}
+
+/* A place that ended keeps its row, dimmed, until it is closed or unlisted. */
+.side-tab.is-unavailable .side-tab__main {
+  opacity: 0.48;
+}
+
+.side-new__main {
+  gap: var(--space-10);
+  color: var(--muted);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+.side-new__main:hover {
+  color: var(--text);
+}
+
+.side-new__main svg {
+  width: 16px;
+  height: 16px;
+}
+
+.place-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.place-mark .site-mark,
+.place-mark .computer-use__app-mark {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+}
+
+.place-mark--glyph svg {
+  width: 15px;
+  height: 15px;
+  color: var(--text-soft);
+}
+
+.device-glyph {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  margin-left: calc(var(--space-6) * -1);
+  color: var(--muted-dim);
+}
+
+.device-glyph svg {
+  width: 13px;
+  height: 13px;
+}
+
+.sidebar__footer {
+  border-top: 1px solid var(--line);
+  margin: 0 var(--space-6);
+  padding: var(--space-6) 0 var(--space-6);
+}
+
+.sidebar__place {
+  width: 100%;
+  text-align: left;
+}
+
+/* ---- Agents' cursors ---- */
+
+.cursor-layer {
+  position: absolute;
+  inset: 0;
+  z-index: var(--layer-raised);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The motion module writes only the transform and these state classes, so
+   motion stays on the compositor. */
+.acur {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: var(--acur-color);
+  opacity: 0;
+  will-change: transform;
+  transition: opacity 180ms var(--ease-out);
+}
+
+.acur--on {
+  opacity: 1;
+}
+
+.acur--leaving,
+.acur--swap {
+  opacity: 0;
+}
+
+.cursor-layer--still .acur {
+  transition-duration: 90ms;
+}
+
+.acur__ptr {
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  width: 16px;
+  height: 18px;
+  overflow: visible;
+  filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / 28%));
+  transform-origin: 2px 2px;
+}
+
+.acur--arrive .acur__ptr {
+  animation: acur-arrive 220ms var(--ease-out);
+}
+
+@keyframes acur-arrive {
+  from {
+    scale: 0.7;
+  }
+}
+
+/* Its offset from the tip is the motion module's `labelOffset`. */
+.acur__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  position: absolute;
+  top: 15px;
+  left: 11px;
+  max-width: 26ch;
+  overflow: hidden;
+  padding: 1px 6px 2px;
+  border-radius: 5px;
+  background: var(--acur-color);
+  color: var(--text-on-color);
+  font: 600 11px/16px var(--font-sans);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 20%);
+  transform-origin: 0 0;
+  transition:
+    opacity 220ms var(--ease-out),
+    transform 220ms var(--ease-out);
+}
+
+.acur__name > .workspace-icon-glyph {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  stroke-width: 3;
+}
+.acur__name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acur__name:empty {
+  display: none;
+}
+
+.acur--flip-x .acur__name {
+  right: 4px;
+  left: auto;
+  transform-origin: 100% 0;
+}
+
+.acur--flip-y .acur__name {
+  top: auto;
+  bottom: 6px;
+}
+
+.acur--quiet .acur__name {
+  opacity: 0;
+  transform: scale(0.92);
+}
+
+.cursor-layer--still .acur__name {
+  transform: none;
+  transition: opacity 220ms var(--ease-out);
+}
+
+/* ---- The viewfinder ---- */
+
+.viewfinder-slot {
+  display: flex;
+}
+
+.viewfinder {
+  display: grid;
+  width: min(100%, 340px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: inherit;
+  text-align: left;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.viewfinder:hover {
+  border-color: var(--line-hover);
+}
+
+.viewfinder:active {
+  transform: scale(0.99);
+}
+
+.viewfinder__frame {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 9;
+  max-height: 190px;
+  overflow: hidden;
+  background: var(--surface-elevated);
+}
+
+.viewfinder__picture {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+}
+
+.viewfinder__image {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  width: 100%;
+  aspect-ratio: var(--browser-frame-aspect);
+  transition: transform 300ms var(--ease-out);
+}
+
+.viewfinder__image--still {
+  transition: none;
+}
+
+.viewfinder__image > canvas {
+  display: block;
+}
+
+.viewfinder__canvas--empty {
+  visibility: hidden;
+}
+
+.viewfinder__native {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.viewfinder__native .computer-watch--compact {
+  height: 100%;
+}
+
+/* ---- Conversation header ---- */
+
+.conv-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  height: 50px;
+  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-16);
+  border-bottom: 1px solid transparent;
+  background: var(--bg);
+}
+
+.workspace--work .conv-header {
+  border-bottom-color: var(--line);
+  padding-left: var(--space-14);
+}
+
+.conv-header__mark {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  --ring-bg: var(--bg);
+}
+
+.conv-header__mark > .task-badge {
+  right: -2px;
+  bottom: -1px;
+}
+
+/* A task at work: a slow arc around its mark instead of a word beside it. */
+.conv-header__ring {
+  position: absolute;
+  inset: -4px;
+  width: 28px;
+  height: 28px;
+  animation: spin 1.4s linear infinite;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conv-header__ring {
+    animation: none;
+  }
+}
+
+.conv-header__text {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex: 1;
+  min-width: 0;
+}
+
+.conv-header__title {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: min(120px, 60%);
+  margin: 0;
+  font-size: inherit;
+  outline: none;
+}
+
+.conv-header__switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  max-width: 100%;
+  min-width: 0;
+  /* A negative margin would subtract from intrinsic width and truncate the name. */
+  margin-left: 0;
+  padding: var(--space-4) var(--space-6);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+
+.conv-header__switcher:hover,
+.conv-header__switcher[aria-expanded="true"] {
+  background: rgb(255 255 255 / 5%);
+}
+
+.conv-header__name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.conv-header__name--static {
+  padding: var(--space-4) 0;
+}
+
+.conv-header__chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+/* The reason gives way before the name, but remains available on hover. */
+.conv-header__cause {
+  flex: 0 1000 auto;
+  min-width: min(72px, 25%);
+  max-width: 40%;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.conv-header__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.conv-header__actions .icon-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.thread__connection {
+  max-width: 100%;
+}
+
+/* ---- Switcher ---- */
+
+/* Only the list scrolls: the search above it and the task's own actions below
+   it stay in view however many tasks there are. */
+.popover--switcher {
+  display: flex;
+  flex-direction: column;
+  width: min(340px, calc(100vw - 24px));
+  padding: 0;
+  overflow: hidden;
+}
+
+.switcher {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.switcher__search {
+  flex: none;
+  margin: var(--space-8);
+}
+
+.switcher__list {
+  display: grid;
+  align-content: start;
+  gap: 1px;
+  min-height: 0;
+  padding: 0 var(--space-6) var(--space-6);
+  overflow-y: auto;
+}
+
+.switcher__row {
+  --ring-bg: var(--surface-elevated);
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-height: 36px;
+  padding: var(--space-6) var(--space-10);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  text-align: left;
+}
+
+.switcher__row:hover,
+.switcher__row:focus-visible {
+  --ring-bg: var(--surface-hover);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.switcher__row[aria-current] {
+  color: var(--text);
+}
+
+.switcher__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher__row > svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.switcher__empty {
+  padding: var(--space-8) var(--space-10);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+/* The open task's own actions, under the list that switches away from it. */
+.switcher__actions {
+  display: grid;
+  flex: none;
+  padding: var(--space-6);
+  border-top: 1px solid var(--line);
+}
+
+.switcher__actions .kbd {
+  margin-left: auto;
+}
+
+.switcher__confirm {
+  padding: var(--space-16);
+}
+
+/* ---- Talk: the conversation alone, in a column ---- */
+
+.workspace--talk .conv-header {
+  padding-inline: var(--space-16) var(--space-14);
+}
+
+.workspace--work .transcript {
+  padding-inline: var(--space-16);
+}
+
+.workspace--work .composer-dock,
+.workspace--work .request-stack {
+  padding-inline: var(--space-12);
+}
+
+/* ---- The start page (New tab) ---- */
+
+.launcher__spacer,
+.computer-watch__spacer {
+  flex: 1;
+}
+
+/* Back, forward and reload stay where a page's are, quiet: there is no page yet. */
+.start-page__controls {
+  opacity: 0.45;
+}
+
+.start-page {
+  container-type: inline-size;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--surface);
+  overscroll-behavior: contain;
+}
+
+.start-page__column {
+  width: min(620px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: clamp(28px, 12vh, 120px) 0 72px;
+}
+
+/* One field for websites and apps; it accepts addresses too. */
+.start-page__field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  height: 52px;
+  padding: 0 var(--space-8) 0 var(--space-18);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface-elevated);
+  color: var(--muted);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.start-page__field:focus-within {
+  border-color: var(--ember-line);
+  box-shadow: var(--ring-ember);
+}
+
+.start-page__glass {
+  flex: none;
+  width: 17px;
+  height: 17px;
+}
+
+.start-page__spinner {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+
+.start-page__input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 15px;
+  outline: none;
+}
+
+.start-page__input::placeholder {
+  color: var(--muted);
+}
+
+.start-page__clear {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+}
+
+.start-page__clear:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.start-page__clear svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Browse with: the identity a new page opens as, said before it opens. */
+.start-page__with {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-6);
+  margin-top: var(--space-10);
+  padding-left: var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.start-page__pill {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-6);
+  max-width: min(240px, 100%);
+  height: 26px;
+  padding: 0 var(--space-6) 0 var(--space-4);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-strong);
+}
+
+.start-page__pill:hover,
+.start-page__pill.is-open {
+  background: rgb(255 255 255 / 7%);
+}
+
+.start-page__pill-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.start-page__chevron {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+
+.start-page__dot {
+  color: var(--muted);
+}
+
+.start-page__link {
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.start-page__link:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* A refusal says what didn't happen and the one way on; the typed words stay. */
+.start-page__refusal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-12);
+  margin-top: var(--space-14);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-md);
+  background: var(--amber-wash);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.start-page__refusal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.start-page__refusal .btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.start-page__quiet {
+  margin-top: var(--space-28);
+  padding-left: var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+/* Recent sites: one row, the selected profile's only. */
+.start-page__recents {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin: var(--space-28) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.start-tile {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-6);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-10) var(--space-2) var(--space-8);
+  border-radius: var(--radius-md);
+  color: var(--text-soft);
+  outline: none;
+}
+
+.start-tile:hover {
+  background: rgb(255 255 255 / 5%);
+  color: var(--text);
+}
+
+.start-tile:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ember-line);
+  color: var(--text);
+}
+
+.start-tile.is-unavailable .start-tile__app {
+  opacity: 0.45;
+}
+
+.start-tile__label {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--text-xs);
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.start-tile__site .site-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  font-size: 18px;
+}
+
+/* Apps & devices: this computer's first, then the others', then phones. */
+.start-page__apps {
+  margin-top: var(--space-28);
+}
+
+.start-page__heading {
+  margin: 0 0 var(--space-6) var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+}
+
+.start-apps__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 6fr);
+  align-items: start;
+}
+
+.start-apps__caption {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  height: 64px;
+  padding-left: var(--space-6);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+}
+
+.start-apps__caption span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.start-apps__caption svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+}
+
+/* A computer that can't show its apps: its name and why, one quiet line
+   after every row that opens. Only one waiting on its owner is a button. */
+.start-apps__away {
+  margin-top: var(--space-4);
+}
+
+.start-apps__row--away {
+  align-items: center;
+  width: 100%;
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+
+.start-apps__row--away .start-apps__caption {
+  height: 36px;
+  color: var(--muted);
+}
+
+.start-apps__row--away .start-apps__caption svg {
+  opacity: 0.7;
+}
+
+button.start-apps__row--away {
+  outline: none;
+}
+
+button.start-apps__row--away:hover {
+  background: rgb(255 255 255 / 5%);
+}
+
+button.start-apps__row--away:hover .start-apps__caption,
+button.start-apps__row--away:hover .start-apps__status {
+  color: var(--text-soft);
+}
+
+button.start-apps__row--away:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ember-line);
+}
+
+.start-apps__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  padding-left: var(--space-10);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.start-apps__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--muted-dim);
+  opacity: 0.6;
+}
+
+.start-apps__dot--attention {
+  background: var(--amber);
+  box-shadow: var(--ring-amber);
+  opacity: 1;
+}
+
+.start-result__action .start-apps__dot {
+  display: inline-block;
+  margin-right: var(--space-6);
+  vertical-align: 1px;
+}
+
+.start-apps__tiles {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.start-tile__app {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+}
+
+.start-tile__app .computer-use__app-mark {
+  --intg-icon-size: 44px;
+  border: 0;
+  border-radius: 11px;
+  background: none;
+  font-size: 19px;
+}
+
+.start-tile__app .intg-icon--monogram {
+  background: var(--surface-raised);
+}
+
+.start-tile__app .spinner {
+  width: 18px;
+  height: 18px;
+}
+
+.start-tile__phone {
+  width: 28px;
+  height: 44px;
+}
+
+.start-tile__all {
+  border-radius: 11px;
+  background: var(--surface-raised);
+}
+
+.start-tile__all svg {
+  width: 18px;
+  height: 18px;
+  fill: var(--text-soft);
+}
+
+.start-tile__all .icon {
+  fill: none;
+  color: var(--muted);
+}
+
+/* A task in the app wears its mark on the tile's corner. */
+.start-tile__mark {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  --ring-bg: var(--surface);
+}
+
+/* Typing: one list whose rows say what Enter does. */
+.start-page__results {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1px;
+  margin: var(--space-14) 0 0;
+  padding: var(--space-6);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-elevated);
+  list-style: none;
+}
+
+.start-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-height: 40px;
+  padding: 0 var(--space-10);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+/* An app whose computer is only away: found and said, never chosen. */
+.start-result.is-inert {
+  cursor: default;
+}
+
+.start-result.is-active {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.start-result.is-unavailable .start-result__title,
+.start-result.is-unavailable .start-result__mark {
+  opacity: 0.5;
+}
+
+.start-result__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--muted);
+}
+
+.start-result__mark > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.start-result__mark .place-mark {
+  width: 18px;
+  height: 18px;
+}
+
+.start-result__mark .computer-use__app-mark {
+  --intg-icon-size: 20px;
+  border: 0;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.start-result__mark .spinner {
+  width: 13px;
+  height: 13px;
+}
+
+.start-result__text {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.start-result__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.start-result__detail {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.start-result__action {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.start-result.is-active .start-result__action {
+  color: var(--text-soft);
+}
+
+.start-result__enter {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 18px;
+  margin-left: calc(var(--space-4) * -1);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--muted);
+  font: var(--weight-strong) 11px/1 var(--font-sans);
+}
+
+/* A narrow middle — a phone, or a small window beside the dock: each
+   computer's name above its apps, and a result's words over two lines so
+   what Enter does is never cut off. */
+@container (max-width: 520px) {
+  .start-page__column {
+    width: calc(100% - 32px);
+    padding-top: var(--space-24);
+  }
+
+  .start-apps__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .start-apps__caption {
+    height: auto;
+    padding: var(--space-12) 0 var(--space-2) var(--space-6);
+  }
+
+  /* A folded computer stays one line: its name, then why. */
+  .start-apps__row--away {
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  }
+
+  .start-apps__row--away .start-apps__caption {
+    height: 36px;
+    padding: 0 0 0 var(--space-6);
+  }
+
+  .start-apps__tiles {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .start-page__recents {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .start-page__recents li:nth-child(n + 5) {
+    display: none;
+  }
+
+  .start-result {
+    min-height: 48px;
+    padding-block: var(--space-6);
+  }
+
+  .start-result__text {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1px;
+  }
+
+  .start-result__title,
+  .start-result__detail {
+    display: block;
+    text-overflow: ellipsis;
+  }
+
+  .start-result__detail .pavatar {
+    vertical-align: -2px;
+    margin-right: var(--space-4);
+  }
+}
+
+/* ---- Profiles: a lettered disc or Guest's dashed ring ---- */
+
+.pavatar {
+  --pavatar-size: 16px;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: var(--pavatar-size);
+  height: var(--pavatar-size);
+  border-radius: 50%;
+  background: var(--pavatar-tint);
+  color: #fff;
+  font: 800 calc(var(--pavatar-size) * 0.6) / 1 var(--font-sans);
+  letter-spacing: -0.03em;
+}
+
+.pavatar--14 {
+  --pavatar-size: 14px;
+  font-size: 9px;
+}
+
+.pavatar--18 {
+  --pavatar-size: 18px;
+  font-size: 10.5px;
+}
+
+.pavatar--26 {
+  --pavatar-size: 26px;
+  font-size: 14px;
+}
+
+.pavatar--guest {
+  background: none;
+}
+
+.pavatar--guest .pavatar__ground {
+  fill: var(--ring-bg, transparent);
+}
+
+.pavatar--guest .pavatar__ring {
+  fill: none;
+  stroke: #b3aea9;
+  stroke-width: 1.4;
+  stroke-dasharray: 2.4 2;
+}
+
+/* On a site's icon: the badge sits over its corner, ringed in the row's own ground. */
+.place-mark-badged {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+}
+
+.pbadge {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--ring-bg, var(--bg));
+}
+
+.pbadge.pavatar--guest {
+  box-shadow: none;
+}
+
+/* ---- Native chrome ---- */
+
+/* The name keeps its own width, so who is in the app sits right beside it. */
+.place .computer-watch__source {
+  flex: 0 1 auto;
+}
+
+.computer-watch__state {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.computer-watch__stop {
+  flex: none;
+}
+
+.place .computer-watch__status--over {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- Tasks page ---- */
+
+.tasks-page__body {
+  width: min(100%, var(--transcript-max-width));
+  margin: 0 auto;
+  padding: var(--space-16) var(--space-20) var(--space-40);
+  overflow-y: auto;
+}
+
+.tasks-page__search {
+  width: 100%;
+  margin-bottom: var(--space-12);
+}
+
+.tasks-page__empty {
+  padding: var(--space-16) var(--space-10);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.tasks-page__more {
+  margin-top: var(--space-12);
+}
+
+.task-row__link .task-mark {
+  --ring-bg: var(--bg);
+}
+
+/* ---- Shortcuts ---- */
+
+/* The browser's keys beside Opensteer's own, side by side where the dialog has room. */
+.shortcuts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: var(--space-12) var(--space-22);
+}
+
+.shortcuts__title {
+  margin: 0 0 var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.shortcuts__list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.shortcuts__row {
+  display: grid;
+  grid-template-columns: minmax(8rem, auto) 1fr;
+  align-items: center;
+  gap: var(--space-16);
+  padding: var(--space-6) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.shortcuts__row dt {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.shortcuts__row kbd {
+  padding: 2px var(--space-6);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text-soft);
+  font: var(--weight-medium) var(--text-sm) / 1.4 var(--font-sans);
+}
+
+.shortcuts__row dd {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+
+.shortcuts__note {
+  margin-top: var(--space-12);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+/* ---- Narrow screens ---- */
+
+@media (max-width: 1199px) {
+  .workspace__middle {
+    padding-left: 6px;
+  }
+
+  .conv-header {
+    padding-left: var(--space-8);
+  }
+}
+
+/* ≤ 700px: one surface at a time. A place fills the screen and the
+   conversation is a sheet under it. */
+@media (max-width: 700px) {
+  .workspace--phone-stage {
+    flex-direction: column;
+  }
+
+  .workspace--phone-stage .workspace__middle {
+    flex: 1 1 auto;
+    padding: 0;
+  }
+
+  .workspace--phone-stage .place {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .workspace--phone-stage .workspace__conversation {
+    flex: none;
+    width: 100%;
+    max-height: 78dvh;
+    border-top: 1px solid var(--line-strong);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    background: var(--surface);
+    box-shadow: 0 -12px 32px rgb(0 0 0 / 45%);
+  }
+
+  /* Open, the conversation takes all but the place's own bar. */
+  .workspace--phone-stage .workspace__conversation:has(> .thread--sheet-open) {
+    height: calc(100% - 64px - env(safe-area-inset-top, 0px));
+    max-height: none;
+  }
+
+  .workspace--phone-stage .workspace__conversation > :not(.thread) {
+    max-height: 56dvh;
+    overflow-y: auto;
+  }
+
+  .workspace--phone-stage .thread--sheet {
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  .workspace--phone-stage .thread--sheet > .conv-header {
+    display: none;
+  }
+
+  .side-home__main,
+  .side-task__main,
+  .side-tab__main,
+  .side-new__main {
+    min-height: var(--touch-target);
+  }
+
+  .occupant-mark,
+  .side-row-action,
+  .side-tab__close-slot {
+    width: 36px;
+    height: 36px;
+  }
+
+  .side-row-action {
+    display: grid;
+  }
+
+  .side-tab .side-row-action {
+    visibility: visible;
+  }
+}
+
+/* Fingers: every row, mark and close lands under a thumb. */
+@media (hover: none) and (pointer: coarse) {
+  .side-home__main,
+  .side-task__main,
+  .side-tab__main,
+  .side-new__main,
+  .switcher__row {
+    min-height: var(--touch-target);
+  }
+
+  .occupant-mark,
+  .side-row-action,
+  .side-tab__close-slot,
+  .context-chip__remove {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  .side-row-action {
+    display: grid;
+  }
+
+  .side-tab .side-row-action {
+    visibility: visible;
+  }
+}
+
+.side-tab--grouped {
+  margin-left: var(--space-14);
+}
+.side-tab--grouped::before,
+.side-tab[data-sort-place="group"]::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * var(--space-8));
+  width: var(--space-2);
+  background: var(--tab-group-color);
+  content: "";
+}
+
+/* Drag-and-drop in the tab list. While a row is lifted the rows move by
+   `translate` alone and nothing lays out; the slides between orders use
+   `transform`, so the two compose. A row joining or leaving a group eases
+   in and out of the group's indent. */
+.side-section--tabs .side-list {
+  position: relative;
+  /* Rows re-sort under the reader; the browser must not scroll to chase one. */
+  overflow-anchor: none;
+}
+.side-tab {
+  transition: margin-left var(--duration-fast) var(--ease-out);
+}
+/* A snapped list follows the row it is snapped to, through a new order and
+   through a slide's transforms alike: while rows are lifted or sliding it
+   does not snap, and they land it on whole rows themselves. */
+.side-list[data-sorting],
+.side-list[data-moving] {
+  scroll-snap-type: none;
+}
+.side-list[data-sorting] > [data-motion-key] {
+  transition:
+    translate 170ms var(--ease-out),
+    margin-left var(--duration-fast) var(--ease-out);
+}
+.side-list[data-sorting] > [data-sort="lifted"],
+.side-list[data-sorting] > [data-sort="away"] {
+  z-index: 2;
+  background: var(--surface-raised);
+  box-shadow:
+    inset 0 0 0 1px var(--line-strong),
+    0 2px 6px rgb(0 0 0 / 35%),
+    0 10px 28px rgb(0 0 0 / 45%);
+  transition:
+    margin-left var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+.side-list[data-sorting] > [data-sort="away"] {
+  opacity: 0.55;
+}
+.side-tab[data-sort-place="root"] {
+  margin-left: 0;
+}
+.side-tab[data-sort-place="root"]::before {
+  content: none;
+}
+.side-tab[data-sort-place="group"] {
+  margin-left: var(--space-14);
+}
+.side-tab[data-sort-place="group"]::before {
+  background: var(--sort-group-color);
+}
+/* A collapsed group a tab would drop into takes the group's colour. */
+.side-tab-group[data-sort="target"] {
+  background: color-mix(in srgb, var(--tab-group-color) 16%, transparent);
+  box-shadow: inset 0 0 0 1px var(--tab-group-color);
+}
+html[data-tab-sorting] {
+  user-select: none;
+}
+html[data-tab-sorting],
+html[data-tab-sorting] * {
+  cursor: grabbing !important;
+}
+.side-tab-group__main {
+  gap: var(--space-8);
+}
+.side-tab-group__chevron {
+  display: flex;
+  color: var(--muted);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+.side-tab-group__chevron svg {
+  width: var(--space-12);
+  height: var(--space-12);
+}
+.side-tab-group__chevron.is-expanded {
+  transform: rotate(90deg);
+}
+.side-tab-group__chip {
+  overflow: hidden;
+  padding: var(--space-2) var(--space-8);
+  border-radius: var(--radius-xs);
+  background: var(--tab-group-color);
+  color: var(--ink-on-tab-group);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-tab-group__chip--empty,
+.tab-group-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: var(--space-8);
+  height: var(--space-8);
+  padding: 0;
+  border-radius: var(--radius-full);
+  background: var(--tab-group-color);
+}
+.side-tab-group__count {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.popover--tab-group {
+  /* The nine swatches set this compact editor width. */
+  width: min(270px, calc(100vw - var(--space-20)));
+}
+.tab-group-editor__name {
+  padding: var(--space-10) var(--space-10) var(--space-6);
+}
+.tab-group-editor__name input {
+  width: 100%;
+  padding: var(--space-8) var(--space-10);
+  /* A one-pixel hairline keeps the field quiet beside the filled swatches. */
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.tab-group-editor__colors {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-12) var(--space-12);
+}
+.tab-group-editor__swatch {
+  display: grid;
+  width: var(--space-22);
+  height: var(--space-22);
+  place-items: center;
+  border: var(--space-2) solid transparent;
+  border-radius: var(--radius-full);
+  background: var(--tab-group-color);
+  color: var(--ink-on-tab-group);
+}
+.tab-group-editor__swatch[aria-pressed="true"] {
+  /* A one-pixel ring leaves the selected swatch the same size as its neighbours. */
+  outline: 1px solid var(--tab-group-color);
+  outline-offset: var(--space-2);
+}
+.tab-group-editor__swatch svg {
+  width: var(--space-14);
+  height: var(--space-14);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side-tab,
+  .side-list[data-sorting] > [data-motion-key],
+  .side-tab-group__chevron,
+  .workspace--work:not(.workspace--phone-stage) .workspace__conversation,
+  .workspace--work.workspace--dock-closed .workspace__conversation,
+  .workspace--work:not(.workspace--phone-stage) .workspace__middle {
+    transition: none;
+  }
+
+  .viewfinder__image {
+    transition: none;
+  }
+}
+
+/* ---- Composer: what the draft carries ---- */
+
+/* Exactly the composer's width: an implicit column grows to a chip's whole
+   untruncated title, and the chips' 100% cap then resolves against that. */
+.context-chips {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+  padding: var(--space-10) var(--space-12) 0;
+}
+
+.context-chips__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.context-chip {
+  --ring-bg: var(--surface-raised);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  max-width: min(100%, 320px);
+  height: 36px;
+  padding: 0 var(--space-4) 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+
+.context-chip__thumb {
+  flex: none;
+  width: 44px;
+  height: 28px;
+  border-radius: 5px;
+  object-fit: cover;
+  object-position: top;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.context-chip:not(:has(.context-chip__thumb)) {
+  padding-left: var(--space-10);
+}
+
+.context-chip__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-chip__remove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+}
+
+.context-chip__remove:hover {
+  background: rgb(255 255 255 / 8%);
+  color: var(--text);
+}
+
+.context-chip__remove svg {
+  width: 11px;
+  height: 11px;
+}
+
+.context-chip--gone {
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+
+/* Picked, and still being read: present, quiet, cancellable; the send waits for it. */
+.context-chip--pending {
+  color: var(--muted);
+}
+
+.context-chip--pending .context-chip__title {
+  animation: chip-reading 1.2s var(--ease-out) infinite alternate;
+}
+
+@keyframes chip-reading {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.55;
+  }
+}
+
+/* `+` and `@`: the places, each its mark, name and where it is. */
+.popover--attach {
+  display: flex;
+  flex-direction: column;
+  width: min(320px, calc(100vw - 24px));
+}
+
+.place-pick__search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  margin: var(--space-2) var(--space-2) var(--space-4);
+  padding: 0 var(--space-10);
+  height: 32px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.place-pick__search:focus-within {
+  border-color: var(--ember-line);
+}
+
+.place-pick__search > svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+
+.place-pick__search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-md);
+  outline: none;
+}
+
+.place-pick__list {
+  max-height: min(320px, 46vh);
+  overflow-y: auto;
+}
+
+/* Files stay at the foot, however far the tabs above them scroll. */
+.place-pick__files {
+  flex: none;
+  border-top: 1px solid var(--line);
+}
+
+.place-pick {
+  gap: var(--space-10);
+}
+
+.place-pick__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.place-pick__device {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The `@` list opens just above the words. A conversation's composer keeps
+   its field in a row of its own; elsewhere that row is `display: contents`
+   and has no box to open from, so the composer itself is the list's frame. */
+.composer,
+.composer__entry {
+  position: relative;
+}
+
+.mention-list {
+  position: absolute;
+  bottom: calc(100% + var(--space-6));
+  z-index: var(--layer-popover);
+  display: grid;
+  width: min(300px, 100%);
+  max-height: 240px;
+  padding: var(--space-4);
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-overlay);
+}
+
+.mention-list--below {
+  top: calc(100% + var(--space-6));
+  bottom: auto;
+}
+
+.mention-list .place-pick.is-active {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.msg-places {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-6);
+}
+
+/* ---- Tabs: the start page's row ---- */
+
+.side-tab--start .place-mark--glyph svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* A focused row's whole destination, beside the list, as its pointer's tooltip says it. */
+.row-tip {
+  position: fixed;
+  z-index: var(--layer-popover);
+  max-width: min(420px, calc(100vw - 24px));
+  padding: var(--space-6) var(--space-10);
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateY(-50%);
+  pointer-events: none;
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+/* ---- The omnibox's profile chip and its menu ---- */
+
+.browser-address--chip {
+  padding-left: var(--space-4);
+}
+
+.profile-chip {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  max-width: 200px;
+  height: 24px;
+  padding: 0 var(--space-8) 0 var(--space-4);
+  border-radius: var(--radius-full);
+  background: rgb(255 255 255 / 6%);
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+  white-space: nowrap;
+  --ring-bg: transparent;
+}
+
+.profile-chip:hover,
+.profile-chip.is-open {
+  background: rgb(255 255 255 / 11%);
+}
+
+.profile-chip__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-chip__suffix {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+}
+
+/* A phone's row has room for the disc alone; its name and menu are the same. */
+.browser-toolbar--compact .profile-chip {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  justify-content: center;
+  background: none;
+}
+
+.browser-toolbar--compact .profile-chip .pavatar {
+  --pavatar-size: 20px;
+  font-size: 11.5px;
+}
+
+.browser-toolbar--compact .profile-chip__name,
+.browser-toolbar--compact .profile-chip__suffix {
+  display: none;
+}
+
+.popover--chip {
+  width: min(320px, calc(100vw - 20px));
+}
+
+.chip-menu__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-8) var(--space-10) var(--space-10);
+  --ring-bg: var(--surface-raised);
+}
+
+.chip-menu__words {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chip-menu__using {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.chip-menu__where {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.chip-menu__where svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.chip-menu__note {
+  margin: 0 var(--space-10) var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+/* A tab's menu says first whose browser the tab is in. */
+.tab-menu__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin-bottom: var(--space-4);
+  padding: var(--space-6) var(--space-10) var(--space-8);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  --ring-bg: var(--surface-raised);
+}
+
+.tab-menu__identity span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__row.is-open {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.picker__submenu-mark {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.picker__tick {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--text-soft);
+}
+
+.picker__detail--wrap {
+  white-space: normal;
+}
+
+.popover--profiles,
+.popover--submenu {
+  width: min(320px, calc(100vw - 20px));
+  --ring-bg: var(--surface-raised);
+}
+
+.popover--submenu {
+  width: min(260px, calc(100vw - 20px));
+  min-width: 0;
+}
+
+/* ---- A person's own view of an app or a phone ---- */
+
+.place > .owner-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.owner-view__bar {
+  gap: var(--space-8);
+}
+
+.owner-view__bar .computer-watch__source {
+  flex: 0 1 auto;
+}
+
+/* Said plainly where the controls would be: this is a picture, not the app. */
+.owner-view__view-only {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-4);
+  height: 22px;
+  padding: 0 var(--space-8) 0 var(--space-6);
+  border-radius: var(--radius-full);
+  background: rgb(255 255 255 / 6%);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-strong);
+}
+
+.owner-view__view-only svg {
+  width: 12px;
+  height: 12px;
+}
+
+.owner-view__use {
+  flex: none;
+}
+
+.owner-view__use svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* The picture whole and centred in whatever room the middle has; never
+   cropped, never covered. Actual size scrolls instead. */
+.owner-view__stage {
+  position: relative;
+  container-type: size;
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 0;
+  padding: var(--space-16);
+  overflow: hidden;
+  background: var(--surface-elevated);
+}
+
+.owner-view__stage.is-zoomed {
+  place-items: safe center;
+  overflow: auto;
+}
+
+.owner-view__picture {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  cursor: zoom-in;
+}
+
+.owner-view__stage.is-zoomed .owner-view__picture {
+  width: auto;
+  height: auto;
+  cursor: zoom-out;
+}
+
+.owner-view__image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  border-radius: var(--radius-xs);
+  user-select: none;
+}
+
+.owner-view__stage.is-zoomed .owner-view__image {
+  width: auto;
+  height: auto;
+  max-width: none;
+}
+
+.owner-view__image.is-dim {
+  opacity: 0.35;
+  filter: grayscale(0.4);
+}
+
+.owner-view__state {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-12);
+  max-width: 28rem;
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  line-height: 1.45;
+  text-align: center;
+}
+
+.owner-view__state--over {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  padding: var(--space-14) var(--space-18);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised) 92%, transparent);
+  box-shadow: var(--shadow-overlay);
+  transform: translate(-50%, -50%);
+}
+
+.occupant-mark {
+  position: relative;
+}
+.occupant-mark.is-acting::after {
+  position: absolute;
+  inset: -3px;
+  border: 1.5px solid var(--acting-hue);
+  border-radius: 50%;
+  content: "";
+  pointer-events: none;
+  animation: occupant-acting 1.6s ease-in-out infinite;
+}
+@keyframes occupant-acting {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .occupant-mark.is-acting::after {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+.native-app-cursors {
+  position: absolute;
+  pointer-events: none;
+  overflow: hidden;
+}
+.glass-scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.browser-crop-cue {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.browser-crop-cue::before,
+.browser-crop-cue::after {
+  position: absolute;
+  content: "";
+  pointer-events: none;
+}
+.browser-crop-cue[data-cropped-right="true"]::after,
+[data-cropped-right="true"] > .browser-crop-cue::after {
+  inset: 0 0 0 auto;
+  width: var(--browser-crop-fade-size);
+  background: var(--browser-crop-right-gradient);
+}
+.browser-crop-cue[data-cropped-bottom="true"]::before,
+[data-cropped-bottom="true"] > .browser-crop-cue::before {
+  inset: auto 0 0;
+  height: var(--browser-crop-fade-size);
+  background: var(--browser-crop-bottom-gradient);
+}
+
+.thread-title-editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 4px;
+}
+.thread-title-editor .text-input {
+  width: 100%;
+  min-width: 0;
+}
+.thread-title-editor__error {
+  color: var(--red);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.conv-header__specialist {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+/* Said in words only when the task asks something of the reader. */
+.conv-header__state {
+  flex: none;
+  padding: 2px var(--space-8);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  color: var(--amber-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  white-space: nowrap;
+}
+.side-task--finished:not(:has(.task-row__unread)) .side-task__title {
+  color: var(--muted);
+}
+/* Docked beside the computer, as on a narrow screen, the name keeps the width. */
+.workspace--work .conv-header__specialist {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .conv-header__specialist {
+    display: none;
+  }
+}
+
+.conv-header:not(.conv-header--area) .conv-header__text {
+  flex: 0 1 max-content;
+}
+.conv-header__state,
+.conv-header__actions {
+  margin-left: auto;
+}
+.conv-header__state + .conv-header__actions {
+  margin-left: 0;
+}
+.conv-header__specialist {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.conv-header__specialist > span:last-child {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.browser-profile-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

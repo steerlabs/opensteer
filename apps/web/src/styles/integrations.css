@@ -1,0 +1,471 @@
+/* Integrations surface: catalog grid, integration detail, and grant drift.
+   Everything derives from the shared tokens — the only new note is a
+   per-integration hue used to tint monogram icon tiles. */
+
+.intg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
+  gap: 10px;
+}
+
+.intg-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 15px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.intg-card:hover {
+  border-color: var(--ember-line);
+  background: var(--surface-elevated);
+  transform: translateY(-1px);
+}
+
+.intg-card:focus-visible {
+  outline: none;
+  border-color: var(--ember);
+}
+
+.intg-card__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.intg-card__name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.intg-card__description {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+/* Where the service stands, and who proposed it, under what it does: one row
+   that wraps rather than narrowing the name and description beside the icon. */
+.intg-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.intg-card__state {
+  display: flex;
+  align-items: center;
+}
+
+.intg-card__connect {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ember);
+}
+
+.intg-card__connect svg {
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.intg-card:hover .intg-card__connect svg,
+.intg-card:focus-visible .intg-card__connect svg {
+  transform: translateX(2px);
+}
+
+.intg-permissions,
+.intg-advanced {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.intg-permissions > summary,
+.intg-advanced > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  cursor: pointer;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.intg-permissions > summary span {
+  color: var(--muted);
+  font-weight: 450;
+}
+
+.intg-permissions .check-list,
+.intg-advanced > :not(summary) {
+  margin: 0 12px 12px;
+}
+
+.choice-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.choice-fieldset legend {
+  padding: 0;
+}
+
+.intg-card__connect svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* The icon tile's size is a shared fact: anything that lines up with the
+   text beside an icon — an app row's body, indented past it — measures from
+   this rather than from a number copied into a calc() that can drift. */
+:root {
+  --intg-icon-size: 34px;
+}
+
+.intg-icon {
+  display: grid;
+  place-items: center;
+  width: var(--intg-icon-size);
+  height: var(--intg-icon-size);
+  flex: none;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  font-size: 17px;
+  overflow: hidden;
+}
+
+.intg-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 5px;
+}
+
+/* A shipped mark is a finished tile: no frame around it, no padding inside it. */
+.intg-icon--art {
+  border-color: transparent;
+  background: transparent;
+}
+
+.intg-icon--art img {
+  padding: 0;
+  object-fit: cover;
+}
+
+.intg-icon--monogram {
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: oklch(0.85 0.06 var(--intg-hue));
+  background: oklch(0.24 0.02 var(--intg-hue) / 55%);
+  border-color: oklch(0.5 0.05 var(--intg-hue) / 35%);
+}
+
+.intg-icon--lg {
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius-md);
+  font-size: 23px;
+}
+
+.intg-icon--lg.intg-icon--monogram {
+  font-size: 15px;
+}
+
+.intg-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.intg-hero__copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.intg-hero__name {
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 520;
+  letter-spacing: -0.01em;
+}
+
+.intg-hero__name:focus-visible {
+  outline: none;
+}
+
+.intg-hero__description {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* What the app needs of a computer, or who proposed it, said quietly under
+   what it does. */
+.intg-hero__requirement,
+.intg-hero__provenance,
+.intg-card__requirement {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Who put it here, as a chip sized to its words in a column of copy. */
+.intg-provenance {
+  align-self: flex-start;
+  margin-top: 3px;
+}
+
+.intg-tool-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.intg-account-selection {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-height: 54px;
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.intg-account-selection__icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+}
+
+.intg-account-selection__icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.intg-account-identity {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.intg-account-identity__name,
+.intg-account-identity__identifier {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.intg-account-identity__name {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.intg-account-identity__identifier {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.chip--scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 9px;
+}
+
+.chip--scope svg {
+  width: 11px;
+  height: 11px;
+  color: var(--ember);
+}
+
+.intg-grant + .intg-grant {
+  border-top: 1px solid var(--line);
+}
+
+.intg-grant--drifted {
+  background: color-mix(in srgb, var(--amber) 4%, transparent);
+}
+
+.intg-grant__drift {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 16px 14px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--amber) 7%, transparent);
+}
+
+.intg-grant__drift-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+.intg-grant__drift-title svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 1px;
+  color: var(--amber);
+}
+
+.intg-grant__drift-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.check-list--scroll {
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+/* ---- Connect sheet ----
+   The shared Connect flow renders inside the standard dialog, so it adds only
+   what the dialog has no shape for: the service it is about, the app that signs
+   you in, and the facts of the connection that resulted. */
+
+.connect-sheet__lede {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-12);
+}
+
+.connect-sheet__lede-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  line-height: 1.5;
+  /* Keeps the sentence a person approves inside a comfortable measure. */
+  max-width: 54ch;
+}
+
+.connect-sheet__app {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.connect-sheet__app-copy {
+  flex: 1;
+  min-width: 10rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.connect-sheet__facts {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.connect-sheet__fact {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  gap: var(--space-12);
+  padding: var(--space-10) var(--space-12);
+}
+
+.connect-sheet__fact + .connect-sheet__fact {
+  border-top: 1px solid var(--line);
+}
+
+.connect-sheet__fact dt {
+  color: var(--muted);
+}
+
+.connect-sheet__fact dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .connect-sheet__fact {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+}
+
+@media (max-width: 680px) {
+  .intg-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The copy keeps the width; the setup link goes under it. */
+  .intg-hero {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    row-gap: var(--space-10);
+  }
+
+  .intg-hero__setup {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .intg-card,
+  .page--integrations .card__row {
+    min-height: 44px;
+  }
+
+  .page--integrations .card__row-actions {
+    width: 100%;
+  }
+
+  .page--integrations .card__row-actions .btn,
+  .page--integrations .form-actions .btn {
+    min-height: 44px;
+  }
+}

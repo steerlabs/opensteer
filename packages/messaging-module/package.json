@@ -1,0 +1,26 @@
+{
+  "name": "@opensteer/messaging-module",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opensteer/channel-core": "workspace:*",
+    "@opensteer/channel-protocol": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
+    "@opensteer/runner-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

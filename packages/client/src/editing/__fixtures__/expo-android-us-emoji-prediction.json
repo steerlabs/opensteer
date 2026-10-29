@@ -1,0 +1,92 @@
+{
+  "native": true,
+  "scope": "Production native EditText with native default acknowledgements; not full Expo or remote target qualification. Actual Gboard next-word emoji suggestion selection, no marked composition.",
+  "source": {
+    "commit": "95bb4db7930dfc9dd79307182c2faa26fad92ab8",
+    "platform": "Android API 36",
+    "keyboard": "Gboard 15.1.08.726012951-preload-arm64-v8a",
+    "driver": "ADB touch on actual Gboard keys, then the visible wave-emoji suggestion",
+    "actions": ["h", "e", "l", "l", "o", "Space", "tap wave suggestion at (700,1581)"],
+    "evidence": "/tmp/opensteer-remote-input/expo-4/android-record",
+    "intent": "The final tap was initially aimed at the former toolbar gear position; us-typed.png establishes that it had become the visible wave emoji candidate. The fixture replays its actual delivered emoji, without relabeling the intended settings action as a planned pass."
+  },
+  "provenance": {
+    "rawFile": "expo-android-us-emoji-prediction.jsonl",
+    "rawSha256": "12a45fa256893be963348c2b12b2d68c7abbfd5cd22051d12d8bd02f1e6fc43a",
+    "screenshots": ["us-focused.png", "us-typed.png", "gboard-settings.png"],
+    "actions": "actions.jsonl"
+  },
+  "expected": {
+    "packetCount": 14,
+    "compositionEvents": 0,
+    "operations": [
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "h",
+          "before": "",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "e",
+          "before": "",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "l",
+          "before": "",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "l",
+          "before": "",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "o",
+          "before": "",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": " ",
+          "before": "",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "👋",
+          "before": "",
+          "after": ""
+        }
+      }
+    ],
+    "contexts": {
+      "00000000-0000-4000-8000-000000000001": "hello 👋"
+    },
+    "lastProxy": "hello 👋"
+  }
+}

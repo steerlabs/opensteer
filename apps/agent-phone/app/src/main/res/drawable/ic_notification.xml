@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A phone outline: the notification icon is a silhouette Android tints. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M8,2h8a2,2 0,0 1,2 2v16a2,2 0,0 1,-2 2H8a2,2 0,0 1,-2 -2V4a2,2 0,0 1,2 -2zM8,4v14h8V4H8zM11,19.5h2v1h-2z" />
+</vector>

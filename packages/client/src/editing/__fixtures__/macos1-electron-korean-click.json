@@ -1,0 +1,423 @@
+{
+  "native": true,
+  "engine": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Electron/44.9.2 Safari/537.36",
+  "scenario": "korean-click",
+  "inputSource": "com.apple.inputmethod.Korean.2SetKorean",
+  "intent": "Native korean-click attempt delivered Latin 'gks'. Preserve this failed intended input path, without inventing IME events.",
+  "expected": {
+    "value": "gks",
+    "producers": [
+      {
+        "kind": "key",
+        "text": "g"
+      },
+      {
+        "kind": "key",
+        "text": "k"
+      },
+      {
+        "kind": "key",
+        "text": "s"
+      }
+    ],
+    "transactionCommits": [],
+    "keystrokes": [
+      {
+        "action": "down",
+        "key": "g",
+        "code": "KeyG",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "g"
+      },
+      {
+        "action": "up",
+        "key": "g",
+        "code": "KeyG",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      },
+      {
+        "action": "down",
+        "key": "k",
+        "code": "KeyK",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "k"
+      },
+      {
+        "action": "up",
+        "key": "k",
+        "code": "KeyK",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      },
+      {
+        "action": "down",
+        "key": "s",
+        "code": "KeyS",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "s"
+      },
+      {
+        "action": "up",
+        "key": "s",
+        "code": "KeyS",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      }
+    ],
+    "compositions": [],
+    "proxy": {
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    "caret": 0
+  },
+  "sourceSha": "444f12dce66f4fcb55e5a66015a8f2a62c2181ad",
+  "sourceSelection": {
+    "current": {
+      "bundleId": "com.apple.inputmethod.Korean",
+      "enabled": true,
+      "id": "com.apple.inputmethod.Korean.2SetKorean",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardInputMode"
+    },
+    "requested": "com.apple.inputmethod.Korean.2SetKorean",
+    "select": 0,
+    "statuses": [
+      {
+        "enable": 0,
+        "id": "com.apple.inputmethod.Korean"
+      },
+      {
+        "enable": 0,
+        "id": "com.apple.inputmethod.Korean.2SetKorean"
+      }
+    ]
+  },
+  "sourceAfterKeys": {
+    "current": {
+      "bundleId": "com.apple.inputmethod.Korean",
+      "enabled": true,
+      "id": "com.apple.inputmethod.Korean.2SetKorean",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardInputMode"
+    },
+    "frontPid": 904
+  },
+  "events": [
+    {
+      "type": "selection",
+      "time": 12695.199999999983,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 12996,
+      "trusted": true,
+      "key": "g",
+      "code": "KeyG",
+      "keyCode": 71,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keypress",
+      "time": 12996.199999999983,
+      "trusted": true,
+      "key": "g",
+      "code": "KeyG",
+      "keyCode": 103,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "beforeinput",
+      "time": 12996.199999999983,
+      "trusted": true,
+      "data": "g",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "input",
+      "time": 12996.600000000006,
+      "trusted": true,
+      "data": "g",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "g",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 12997,
+      "trusted": true,
+      "value": "g",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 13052.600000000006,
+      "trusted": true,
+      "key": "g",
+      "code": "KeyG",
+      "keyCode": 71,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "g",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 13206.600000000006,
+      "trusted": true,
+      "key": "k",
+      "code": "KeyK",
+      "keyCode": 75,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "g",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keypress",
+      "time": 13206.699999999983,
+      "trusted": true,
+      "key": "k",
+      "code": "KeyK",
+      "keyCode": 107,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "g",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 13206.799999999988,
+      "trusted": true,
+      "data": "k",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "g",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 13207.100000000006,
+      "trusted": true,
+      "data": "k",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "gk",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "selection",
+      "time": 13207.600000000006,
+      "trusted": true,
+      "value": "gk",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 13272,
+      "trusted": true,
+      "key": "k",
+      "code": "KeyK",
+      "keyCode": 75,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "gk",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keydown",
+      "time": 13427.799999999988,
+      "trusted": true,
+      "key": "s",
+      "code": "KeyS",
+      "keyCode": 83,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "gk",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keypress",
+      "time": 13427.899999999994,
+      "trusted": true,
+      "key": "s",
+      "code": "KeyS",
+      "keyCode": 115,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "gk",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "beforeinput",
+      "time": 13427.899999999994,
+      "trusted": true,
+      "data": "s",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "gk",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "input",
+      "time": 13428.100000000006,
+      "trusted": true,
+      "data": "s",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "gks",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "selection",
+      "time": 13428.600000000006,
+      "trusted": true,
+      "value": "gks",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "keyup",
+      "time": 13487.699999999983,
+      "trusted": true,
+      "key": "s",
+      "code": "KeyS",
+      "keyCode": 83,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "gks",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "pointerdown",
+      "time": 13933.899999999994,
+      "trusted": true,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "gks",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "blur",
+      "time": 13934.100000000006,
+      "trusted": true,
+      "value": "gks",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    }
+  ],
+  "final": {
+    "value": "gks",
+    "selectionStart": 3,
+    "selectionEnd": 3,
+    "composing": false
+  },
+  "captureIntent": {
+    "keys": ["5", "40", "1"],
+    "click": true,
+    "picker": false
+  },
+  "qualification": "failed-native-intent",
+  "platform": "mac"
+}

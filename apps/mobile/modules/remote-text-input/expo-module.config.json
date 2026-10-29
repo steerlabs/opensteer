@@ -1,0 +1,5 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": { "modules": ["RemoteTextInputModule"] },
+  "android": { "modules": ["com.opensteer.remotetextinput.RemoteTextInputModule"] }
+}

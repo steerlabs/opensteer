@@ -1,0 +1,76 @@
+services:
+  host:
+    environment:
+      OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: !reset null
+      OPENSTEER_FILES_SERVICE_URL: http://files:4315
+      OPENSTEER_HOST_PUBLIC_KEY_PATH: /var/lib/opensteer-public/host-public.pem
+      OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN: ${OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN:?set OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN}
+      OPENSTEER_PORTABLEFS_MANAGER_CA_PATH: /run/secrets/portablefs_manager_ca
+      OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH: /run/secrets/portablefs_product_mtls_cert
+      OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH: /run/secrets/portablefs_product_mtls_key
+      OPENSTEER_PORTABLEFS_MANAGER_SERVER_NAME: ${OPENSTEER_PORTABLEFS_MANAGER_SERVER_NAME:-}
+      OPENSTEER_PORTABLEFS_MANAGER_URL: ${OPENSTEER_PORTABLEFS_MANAGER_URL:?set OPENSTEER_PORTABLEFS_MANAGER_URL}
+      OPENSTEER_PORTABLEFS_PRODUCT_ISSUER: ${OPENSTEER_PORTABLEFS_PRODUCT_ISSUER:?set OPENSTEER_PORTABLEFS_PRODUCT_ISSUER}
+      OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH: /run/secrets/portablefs_product_authorization_key
+      OPENSTEER_PORTABLEFS_SERVICE_ID: ${OPENSTEER_PORTABLEFS_SERVICE_ID:?set OPENSTEER_PORTABLEFS_SERVICE_ID}
+      OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES: ${OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES:?set OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES}
+      OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT: ${OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT:?set OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT}
+    secrets:
+      - portablefs_manager_ca
+      - portablefs_product_authorization_key
+      - portablefs_product_mtls_cert
+      - portablefs_product_mtls_key
+    volumes: !override
+      - browser-trust:/var/lib/opensteer-public
+      - host-data:/var/lib/opensteer
+
+  files:
+    image: opensteer-portablefs-files:${OPENSTEER_IMAGE_TAG:-local}
+    build:
+      context: ${OPENSTEER_PORTABLEFS_SOURCE_DIR:?set OPENSTEER_PORTABLEFS_SOURCE_DIR}
+      dockerfile: deploy/files/Containerfile
+    restart: unless-stopped
+    read_only: true
+    command:
+      [
+        "--request-public-key",
+        "/request-trust/host-public.pem",
+        "--request-issuer",
+        "opensteer-host",
+        "--identity-dir",
+        "/var/lib/portablefs-files",
+        "--listen",
+        "0.0.0.0:4315",
+      ]
+    depends_on:
+      host:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:4315/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - control
+      - egress
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:mode=1777
+    volumes:
+      - browser-trust:/request-trust:ro
+      - files-data:/var/lib/portablefs-files
+
+secrets:
+  portablefs_manager_ca:
+    file: ${OPENSTEER_PORTABLEFS_MANAGER_CA_PATH:?set OPENSTEER_PORTABLEFS_MANAGER_CA_PATH}
+  portablefs_product_authorization_key:
+    file: ${OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH:?set OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH}
+  portablefs_product_mtls_cert:
+    file: ${OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH:?set OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH}
+  portablefs_product_mtls_key:
+    file: ${OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH:?set OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH}
+
+volumes:
+  browser-trust: {}
+  files-data: {}

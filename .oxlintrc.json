@@ -1,0 +1,59 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "rules": {
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "@opensteer/shared",
+            "message": "Import the concern-specific @opensteer/shared subpath; the package has no root export."
+          },
+          {
+            "name": "node:fs",
+            "importNames": ["chmodSync"],
+            "message": "Import the filesystem-mode helper from @opensteer/shared/privateFiles."
+          },
+          {
+            "name": "node:fs/promises",
+            "importNames": ["chmod"],
+            "message": "Import the filesystem-mode helper from @opensteer/shared/privateFiles."
+          }
+        ]
+      }
+    ],
+    "typescript/no-floating-promises": "warn",
+    "typescript/no-misused-promises": "error"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.test.tsx"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@opensteer/shared",
+                "message": "Import the concern-specific @opensteer/shared subpath; the package has no root export."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["packages/shared/src/privateFiles.ts"],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    },
+    {
+      "files": ["deploy/container/opensteer-entrypoint.mjs"],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    }
+  ],
+  "ignorePatterns": ["apps/mobile/android/**", "apps/mobile/ios/**", "output/**", "**/.build/**"]
+}

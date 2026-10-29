@@ -1,0 +1,174 @@
+/* Design tokens — the whole visual system in one file.
+
+   The palette is the product's identity — near-black ground, warm ember
+   accent, Inter for chrome and Fraunces for display — and is intentionally
+   unchanged. What follows it are the four scales every stylesheet draws from:
+   space, text, radius, and layer. If a value is not on a scale, it is a
+   deliberate one-off and says so at the site. */
+:root {
+  color-scheme: dark;
+
+  /* ---- Palette ---- */
+
+  --bg: #080808;
+  --surface: #101010;
+  --surface-elevated: #171717;
+  --surface-raised: #1d1d1d;
+  --surface-hover: #242424;
+  --surface-code: #0d0d0d;
+  --text: #f5f4f2;
+  --text-on-color: #fff;
+  /* Ink for text sitting on a filled ember surface. */
+  --ink-on-ember: #1b120e;
+  --text-soft: #cecbc7;
+  --muted: #8e8a86;
+  --muted-dim: #898581;
+  --line: rgb(255 255 255 / 7%);
+  --line-strong: rgb(255 255 255 / 12%);
+  --line-hover: rgb(255 255 255 / 18%);
+  --ember: #e6beb0;
+  --ember-bright: #f1cabe;
+  --green: #71c6a5;
+  --amber: #dfb36b;
+  --red: #e77e76;
+  --blue: #84b5e0;
+
+  /* Chrome dark-mode tab group colours and ink for their filled chips. */
+  --tab-group-grey: #dadce0;
+  --tab-group-blue: #8ab4f8;
+  --tab-group-red: #f28b82;
+  --tab-group-yellow: #fdd663;
+  --tab-group-green: #81c995;
+  --tab-group-pink: #ff8bcb;
+  --tab-group-purple: #c58af9;
+  --tab-group-cyan: #78d9ec;
+  --tab-group-orange: #fcad70;
+  --ink-on-tab-group: #171717;
+
+  /* ---- Tints ----
+     Every accent and status tint is mixed from its base colour at one of
+     three weights, so a hue is never retyped as a raw triplet:
+       wash  — a surface fill behind the tint
+       line  — a border in the tint
+       text  — legible body text in the tint, lifted toward --text */
+  --ember-wash: color-mix(in srgb, var(--ember) 11%, transparent);
+  --ember-line: color-mix(in srgb, var(--ember) 22%, transparent);
+  --ember-dim: color-mix(in srgb, var(--ember) 65%, var(--muted));
+  --green-wash: color-mix(in srgb, var(--green) 9%, transparent);
+  --green-line: color-mix(in srgb, var(--green) 30%, transparent);
+  --amber-wash: color-mix(in srgb, var(--amber) 7%, transparent);
+  --amber-line: color-mix(in srgb, var(--amber) 32%, transparent);
+  --amber-text: color-mix(in srgb, var(--amber) 55%, var(--text));
+  --red-wash: color-mix(in srgb, var(--red) 9%, transparent);
+  --red-line: color-mix(in srgb, var(--red) 34%, transparent);
+  --red-text: color-mix(in srgb, var(--red) 55%, var(--text));
+
+  /* Focus/attention rings: one shape, tinted per state. */
+  --ring-ember: 0 0 0 3px color-mix(in srgb, var(--ember) 9%, transparent);
+  --ring-amber: 0 0 0 3px color-mix(in srgb, var(--amber) 9%, transparent);
+  --ring-red: 0 0 0 3px color-mix(in srgb, var(--red) 9%, transparent);
+  --ring-green: 0 0 0 3px color-mix(in srgb, var(--green) 10%, transparent);
+
+  /* ---- Space ----
+     Padding, margin and gap come from here. The rhythm is a 2px grid through
+     24px — the dense range this UI actually lives in — and 4px steps above
+     it. Everything is even; odd spacing is always a mistake. Larger numbers
+     are layout measures (below), not rhythm. */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-18: 18px;
+  --space-20: 20px;
+  --space-22: 22px;
+  --space-24: 24px;
+  --space-28: 28px;
+  --space-32: 32px;
+  --space-36: 36px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-56: 56px;
+  --space-64: 64px;
+
+  /* The document's inherited size. Prose that declares nothing lands here;
+     everything else picks a step from the scale below. */
+  --text-root: 15px;
+
+  /* ---- Text ----
+     The chrome runs in a tight band, so the steps are close together and
+     each one earns its place. --text-2xl is the reading size: transcript
+     prose and rendered Markdown, nothing else. */
+  --text-3xs: 10.5px;
+  --text-2xs: 11px;
+  --text-xs: 11.5px;
+  --text-sm: 12px;
+  --text-md: 12.5px;
+  --text-lg: 13px;
+  --text-xl: 13.5px;
+  --text-2xl: 14px;
+
+  /* Display sizes climb in 3px steps and belong to titles — page, dialog,
+     hero — usually set in --font-display. */
+  --display-xs: 15px;
+  --display-sm: 18px;
+  --display-md: 21px;
+  --display-lg: 24px;
+  --display-xl: 27px;
+  --display-2xl: 33px;
+
+  /* Inter's weight axis. Five steps: quiet body through the optical weight
+     small uppercase labels need. */
+  --weight-normal: 400;
+  --weight-medium: 520;
+  --weight-strong: 550;
+  --weight-bold: 600;
+  --weight-heavy: 650;
+
+  --font-sans:
+    "Inter Variable", Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-display: "Fraunces Variable", Fraunces, Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Menlo, monospace;
+
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 28px rgb(0 0 0 / 34%);
+  --shadow-overlay: 0 2px 6px rgb(0 0 0 / 45%), 0 24px 68px rgb(0 0 0 / 55%);
+
+  /* ---- Layers ----
+     One ladder for the whole app. Nothing sets a bare z-index; a new surface
+     picks the layer it belongs to, and if none fits, the ladder grows here.
+     Scrims sit one step below the thing they dim. */
+  --layer-base: 1;
+  --layer-raised: 2;
+  --layer-sticky: 20;
+  --layer-pane: 30;
+  --layer-drawer-scrim: 35;
+  --layer-drawer: 40;
+  --layer-panel-scrim: 44;
+  --layer-panel: 45;
+  --layer-dialog: 60;
+  --layer-popover: 70;
+  --layer-toast: 80;
+
+  /* ---- Layout measures ---- */
+  --sidebar-width: 288px;
+  --inspector-width: min(430px, 32vw);
+  --composer-max-width: 46rem;
+  --transcript-max-width: 46rem;
+  --touch-target: 44px;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.5, 1);
+  --duration-fast: 130ms;
+  --duration-med: 220ms;
+  --duration-slow: 380ms;
+}

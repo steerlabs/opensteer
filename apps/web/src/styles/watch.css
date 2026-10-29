@@ -1,0 +1,355 @@
+/* ---- Watching the agent's Mac and browser ----
+   A live view is a picture and the few words that say what the picture is
+   of: the app, the Mac, and a state when there is no current picture. It sits
+   on the stage like a page, edge to edge under one row. */
+
+/* The bar and any notes under it take what they need; the picture the rest. */
+.computer-watch {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  container: computer-watch / inline-size;
+}
+
+.computer-watch > * {
+  flex: none;
+}
+
+.computer-watch > .computer-watch__stage {
+  flex: 1;
+}
+
+.computer-watch__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-height: 52px;
+  padding: var(--space-8) var(--space-12);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-raised);
+}
+
+/* The app, then the Mac it is on, muted, on one line. */
+.computer-watch__source {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.computer-watch__source .computer-use__app-mark {
+  --intg-icon-size: 22px;
+  padding: 0;
+}
+
+.computer-watch__glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+.computer-watch__glyph .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.computer-watch__app {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-watch__place {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-watch__place::before {
+  margin-right: var(--space-8);
+  content: "·";
+}
+
+.computer-watch__source > .live-dot {
+  flex: none;
+}
+
+/* The picture, fitted whole: a window is read, not cropped. */
+.computer-watch__stage {
+  position: relative;
+  container-type: size;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  overflow: hidden;
+  /* The same quiet ground a page sits on. */
+  background: var(--surface-elevated);
+}
+
+/* The picture at its own shape, as large as the stage allows. It is the way
+   into the larger view. */
+.computer-watch__picture {
+  position: relative;
+  grid-area: 1 / 1;
+  display: block;
+  width: min(100cqw, calc(100cqh * var(--picture-ratio)));
+  aspect-ratio: var(--picture-ratio);
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+button.computer-watch__picture {
+  cursor: zoom-in;
+}
+
+.computer-watch__frame {
+  grid-area: 1 / 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+/* Decoding out of sight, in the same place. Showing it is one step with no
+   fade, so a picture replaces the last without a blink. */
+.computer-watch__frame--decoding {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* A picture older than the words over it looks it. */
+.computer-watch__frame--dim {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+
+.computer-watch__failure {
+  margin: 0;
+  padding: var(--space-8) var(--space-12);
+  border-bottom: 1px solid var(--line);
+  color: var(--red);
+  font-size: var(--text-sm);
+}
+
+/* The same view at the size of the window. */
+.watch-theater {
+  position: fixed;
+  z-index: var(--layer-dialog);
+  inset: 0;
+  display: grid;
+  padding: var(--space-16);
+  background: rgb(0 0 0 / 72%);
+  backdrop-filter: blur(10px);
+  animation: fade-in var(--duration-med) var(--ease-out);
+}
+
+.watch-theater__panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-code);
+  box-shadow: var(--shadow-raised);
+}
+
+.watch-theater__head {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-raised);
+}
+
+.watch-theater__head .computer-watch__bar {
+  flex: 1;
+  min-width: 0;
+  border-bottom: 0;
+}
+
+.watch-theater__head > .icon-btn {
+  margin-right: var(--space-10);
+}
+
+.watch-theater__stage {
+  position: relative;
+  flex: 1;
+  container-type: size;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: var(--space-12);
+}
+
+@media (max-width: 700px) {
+  .watch-theater {
+    padding: 0;
+  }
+
+  .watch-theater__panel {
+    border: 0;
+    border-radius: 0;
+  }
+}
+
+.computer-watch__status {
+  grid-area: 1 / 1;
+  display: grid;
+  justify-items: center;
+  gap: var(--space-8);
+  max-width: min(100%, 340px);
+  padding: var(--space-24);
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+  text-align: center;
+}
+
+/* Over a picture, the words are a pill at its foot rather than its centre. */
+.computer-watch__status--over {
+  z-index: var(--layer-raised);
+  align-self: end;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6) var(--space-10);
+  margin: var(--space-12);
+  padding: var(--space-6) var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-soft);
+  background: color-mix(in srgb, var(--surface-elevated) 88%, transparent);
+  box-shadow: var(--shadow-raised);
+}
+
+.computer-watch__mark .computer-use__app-mark {
+  --intg-icon-size: 28px;
+  padding: 0;
+}
+
+.computer-watch__mark .computer-use__app-mark.intg-icon--monogram {
+  border-radius: 7px;
+  font-size: 13px;
+}
+
+.computer-watch__words {
+  color: var(--text-soft);
+  font-weight: var(--weight-medium);
+}
+
+.computer-watch__detail {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+@container computer-watch (max-width: 340px) {
+  .computer-watch__bar {
+    flex-wrap: wrap;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .computer-watch__status .btn {
+    min-height: var(--touch-target);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .watch-theater {
+    animation: none;
+  }
+}
+
+/* ---- A phone's live display ----
+   The canvas sits where a Mac's picture does. It holds its place unseen
+   until a picture is drawn, so the first one appears without a jump. */
+.phone-display__picture--hidden {
+  visibility: hidden;
+}
+
+/* Pressing the picture enlarges it until the owner takes the phone over. */
+.phone-display__enlarge {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+/* The keyboard target while the owner holds the phone: focused and typed into,
+   never seen. It sits at the picture's foot so an IME's candidates appear there. */
+.phone-display__keyboard {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  opacity: 0;
+  resize: none;
+  pointer-events: none;
+}
+
+/* While the owner holds the phone, touch and pen reach the phone, not the page. */
+.phone-display__canvas--control {
+  cursor: default;
+  touch-action: none;
+}
+
+/* Centred under the picture, clear of a conversation docked over the stage's edge. */
+.phone-display__control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6) var(--space-16);
+  min-height: 44px;
+  padding: var(--space-6) var(--space-12);
+  border-top: 1px solid var(--line);
+  background: var(--surface-raised);
+}
+
+.phone-display__note {
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.phone-display__nav {
+  display: flex;
+  flex: none;
+  gap: var(--space-4);
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .phone-display__nav .icon-btn {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+}
+
+/* Preview tiles leave touch scrolling to the overview. */

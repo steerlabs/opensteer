@@ -1,0 +1,1357 @@
+/* The packaged app's native window chrome, and the content only its setup
+   screens carry — the deployment directory, the private-connection form, the
+   verified-identity table, the Personal progress list.
+
+   The card those screens sit in is not here: it is the one `.onboarding__*`
+   vocabulary in onboarding.css, shared with every browser access screen. This
+   file adds no palette and no display treatment of its own — near-black ground,
+   warm ember accent, Fraunces titles and the shared button/field/notice
+   primitives all arrive from the same tokens as the rest of the product. */
+
+html.electron-shell {
+  --desktop-titlebar-height: 52px;
+  --desktop-titlebar-leading-inset: 0px;
+  --desktop-titlebar-trailing-inset: 0px;
+}
+
+html.electron-shell.electron-shell--macos {
+  --desktop-titlebar-leading-inset: 76px;
+}
+
+html.electron-shell.window-controls-overlay {
+  --desktop-titlebar-height: env(titlebar-area-height, 52px);
+  --desktop-titlebar-leading-inset: env(titlebar-area-x, 0px);
+  --desktop-titlebar-trailing-inset: max(
+    0px,
+    calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px))
+  );
+}
+
+html.electron-shell .sidebar__header,
+html.electron-shell .topbar,
+html.electron-shell .conv-header,
+html.electron-shell .workspace__middle,
+html.electron-shell .place .surface-row {
+  app-region: drag;
+  user-select: none;
+}
+
+/* The card is the page's, not the window's: only its row and the gutter
+   around it move the window. */
+html.electron-shell .place {
+  app-region: no-drag;
+}
+
+/* Controls are holes in their own header's native drag region. There is no
+   separate hit target above the header or the routed page. A browser's tabs
+   are one hole that holds still while they scroll inside it, since a scroll
+   can leave the native region out of step with holes that move
+   (electron/electron#52063); the gaps between tabs take the wheel too. */
+html.electron-shell .sidebar__header :is(a, button, input, select, textarea),
+html.electron-shell .topbar :is(a, button, input, select, textarea),
+html.electron-shell .conv-header :is(a, button, input, select, textarea),
+html.electron-shell .place .surface-row :is(a, button, input, select, textarea, form) {
+  app-region: no-drag;
+}
+
+html.electron-shell .sidebar__header {
+  height: var(--desktop-titlebar-height);
+  min-height: var(--desktop-titlebar-height);
+  padding-block: 0;
+}
+
+html.electron-shell .sidebar__header :is(.brand-link, .brand-lockup) {
+  margin-left: var(--desktop-titlebar-leading-inset);
+}
+
+/* Titlebar insets are measured from the window edge, but desktop page headers
+   start after the sidebar. Convert the leading inset into the small remainder
+   that still extends past a collapsed rail so every routed titlebar places its
+   restore control at the same point just beyond the traffic lights. */
+html.electron-shell .app-shell__main {
+  --desktop-pane-leading-inset: var(--desktop-titlebar-leading-inset);
+}
+
+html.electron-shell .topbar {
+  flex-shrink: 0;
+  min-height: var(--desktop-titlebar-height);
+  padding-left: calc(var(--space-12) + var(--desktop-pane-leading-inset));
+  padding-right: calc(var(--space-12) + var(--desktop-titlebar-trailing-inset));
+}
+
+@media (min-width: 1200px) {
+  html.electron-shell .app-shell__main {
+    --desktop-pane-leading-inset: 0px;
+  }
+
+  html.electron-shell .app-shell--sidebar-collapsed .app-shell__main {
+    --desktop-pane-leading-inset: var(--desktop-titlebar-leading-inset);
+  }
+
+  html.electron-shell .topbar:not(.topbar--mobile-only) {
+    display: flex;
+  }
+
+  html.electron-shell .topbar__navigation {
+    visibility: hidden;
+  }
+
+  html.electron-shell .topbar > .sidebar__restore + .topbar__navigation {
+    display: none;
+  }
+}
+
+html.electron-shell .conv-header {
+  height: var(--desktop-titlebar-height);
+  min-height: var(--desktop-titlebar-height);
+  padding-left: calc(var(--space-12) + var(--desktop-pane-leading-inset));
+  padding-block: var(--space-6);
+}
+
+html.electron-shell .workspace--talk .conv-header,
+html.electron-shell .workspace--dock-closed .place .surface-row {
+  padding-right: calc(var(--space-14) + var(--desktop-titlebar-trailing-inset));
+}
+
+/* The card's row is the window's titlebar beside the conversation's head:
+   the two meet at one height across the split. */
+html.electron-shell .workspace {
+  --place-row-height: calc(var(--desktop-titlebar-height) - 5px);
+}
+
+html.electron-shell .place .surface-row {
+  min-height: calc(var(--desktop-titlebar-height) - 6px);
+  padding-left: calc(var(--space-10) + var(--desktop-pane-leading-inset));
+}
+
+/* The pre-shell card is one vocabulary shared with the browser; see
+   onboarding.css. The packaged window only adds what a frameless window needs:
+   everything outside the card drags the window, the card itself does not. */
+html.electron-shell .onboarding,
+html.electron-shell .splash {
+  app-region: drag;
+  user-select: none;
+}
+
+html.electron-shell .onboarding__card,
+html.electron-shell .splash__inner {
+  app-region: no-drag;
+  user-select: text;
+}
+
+/* Three ways to add a place, each a framed row that opens its own form in
+   place — so nothing has to be classified before a field appears. */
+.add-deployment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+.add-deployment__option {
+  display: flex;
+  flex-direction: column;
+}
+
+.add-deployment__option > .option-row[aria-expanded="true"] {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.add-deployment__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-14);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  background: var(--surface);
+}
+
+.add-deployment__form .text-input {
+  min-height: 40px;
+  font-variant-numeric: tabular-nums;
+}
+
+.add-deployment__form .btn {
+  align-self: flex-start;
+}
+
+.desktop-verified-identity {
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.desktop-verified-identity > div {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  gap: var(--space-12);
+  padding: var(--space-12) var(--space-14);
+}
+
+.desktop-verified-identity > div + div {
+  border-top: 1px solid var(--line);
+}
+
+.desktop-verified-identity dt {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.desktop-verified-identity dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+/* The deployment identifier proves nothing to a reader; it stays one
+   disclosure away, in the same quiet voice as the verified address above it. */
+.desktop-verified-diagnostics > summary {
+  padding: var(--space-8) var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.desktop-verified-diagnostics > summary:hover {
+  color: var(--text-soft);
+}
+
+/* One quiet line above the places that were listed but cannot be opened. */
+.desktop-directory__unavailable-note {
+  padding-top: var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  text-align: center;
+  text-wrap: pretty;
+}
+
+.desktop-account-progress,
+.desktop-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-10);
+  min-height: 54px;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  text-align: center;
+}
+
+.desktop-loading {
+  flex-direction: column;
+  color: var(--muted);
+}
+
+.desktop-account-progress__spinner {
+  width: 16px;
+  height: 16px;
+}
+
+.desktop-deployment-list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.desktop-deployment-list > li + li {
+  border-top: 1px solid var(--line);
+}
+
+/* The Account strip stays below the deployments rather than among them. */
+.onboarding .pop-foot {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+/* The narrowed credential disclosure: one quiet line, only when a saved
+   sign-in exists and could not be read. */
+.desktop-directory__account-note {
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  text-align: center;
+  text-wrap: pretty;
+}
+
+.desktop-intent-actions {
+  display: grid;
+  gap: var(--space-10);
+}
+
+.desktop-personal-progress {
+  width: min(100%, 22rem);
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: var(--space-2) 0;
+  list-style: none;
+}
+
+.desktop-personal-progress__step {
+  position: relative;
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 21px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-10);
+  color: var(--muted-dim);
+  font-size: var(--text-md);
+}
+
+.desktop-personal-progress__step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 28px;
+  bottom: -8px;
+  left: 10px;
+  width: 1px;
+  background: var(--line-strong);
+}
+
+.desktop-personal-progress__marker {
+  position: relative;
+  z-index: var(--layer-base);
+  width: 21px;
+  height: 21px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+}
+
+.desktop-personal-progress__marker > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.desktop-personal-progress__step.is-current {
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}
+
+.desktop-personal-progress__step.is-current .desktop-personal-progress__marker {
+  border-color: var(--ember);
+  background: var(--ember);
+  box-shadow: 0 0 0 4px var(--ember-wash);
+}
+
+.desktop-personal-progress__step.is-complete {
+  color: var(--text-soft);
+}
+
+.desktop-personal-progress__step.is-complete .desktop-personal-progress__marker {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+@media (max-width: 600px) {
+  .add-deployment__form .btn {
+    align-self: stretch;
+  }
+
+  .desktop-verified-identity > div {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+}
+
+/* ---- The Full access panel ----
+   A 460×176 transparent, always-on-top window the main process floats beside
+   System Settings while the person grants Full Disk Access. The document draws
+   nothing but one card filling the frame, so `background: transparent` is
+   scoped to this page by the attribute the panel sets on <html>. */
+
+html[data-panel="full-access"],
+html[data-panel="full-access"] body {
+  background: transparent;
+  overflow: hidden;
+}
+
+.full-access-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-20);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-overlay);
+  /* The window has no title bar, so the card itself is what it moves by. */
+  app-region: drag;
+  user-select: none;
+  overflow: hidden;
+}
+
+.full-access-panel__main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+}
+
+/* The icon to look for in the macOS list; it moves the window like the card. */
+.full-access-panel__icon {
+  width: 56px;
+  height: 56px;
+  flex: none;
+  object-fit: contain;
+  filter: drop-shadow(0 3px 9px rgb(0 0 0 / 38%));
+}
+
+.full-access-panel__body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.full-access-panel__headline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-strong);
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.full-access-panel__headline > svg {
+  flex: none;
+  color: var(--green);
+}
+
+.full-access-panel__sub {
+  font-size: var(--text-md);
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.full-access-panel__actions {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.full-access-panel__dismiss {
+  app-region: no-drag;
+}
+
+/* ---- Computer use panels ----
+   Two floating windows, one shape: the permissions card that sits over System
+   Settings, and the approval card that asks the one question. Same bones as
+   the Full access panel — a draggable card, no title bar — with the app, not
+   Opensteer, as the subject of the approval. */
+html[data-panel="computer-use"],
+html[data-panel="computer-use"] body {
+  background: transparent;
+  overflow: hidden;
+}
+
+.cu-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+  padding: var(--space-20);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-overlay);
+  app-region: drag;
+  user-select: none;
+  overflow: hidden;
+}
+
+.cu-panel__head,
+.cu-approve__app {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+}
+
+.cu-panel__icon {
+  width: 48px;
+  height: 48px;
+  flex: none;
+  object-fit: contain;
+  filter: drop-shadow(0 3px 9px rgb(0 0 0 / 38%));
+}
+
+.cu-panel__titles {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.cu-panel__headline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-strong);
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.cu-panel__headline > svg {
+  flex: none;
+  color: var(--green);
+}
+
+.cu-panel__sub {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.cu-panel__sub > strong {
+  color: var(--text-soft);
+  font-weight: var(--weight-strong);
+}
+
+.cu-panel__grants {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.cu-panel__grant {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  padding: var(--space-10) var(--space-12);
+}
+
+.cu-panel__grant + .cu-panel__grant {
+  border-top: 1px solid var(--line);
+}
+
+.cu-panel__grant--current {
+  background: var(--ember-wash);
+}
+
+.cu-panel__mark {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  color: var(--ink-on-ember);
+}
+
+.cu-panel__grant--done .cu-panel__mark {
+  border-color: transparent;
+  background: var(--green);
+}
+
+.cu-panel__mark > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.cu-panel__grant-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cu-panel__grant-label {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.cu-panel__grant--done .cu-panel__grant-label {
+  color: var(--muted);
+}
+
+.cu-panel__grant-why {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.cu-panel__open,
+.cu-panel__dismiss,
+.cu-panel__error .btn {
+  app-region: no-drag;
+}
+
+.cu-panel__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-10);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--red-line);
+  border-radius: var(--radius-sm);
+  background: var(--red-wash);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.cu-panel__actions {
+  margin-top: auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
+}
+
+/* The approval: the app is the subject, so its icon leads and is large. */
+.cu-approve__icon {
+  width: 56px;
+  height: 56px;
+  flex: none;
+  object-fit: contain;
+  filter: drop-shadow(0 3px 9px rgb(0 0 0 / 38%));
+}
+
+.cu-approve__icon--monogram {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-family: var(--font-display, inherit);
+  font-size: 26px;
+}
+
+.cu-approve__path {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--muted-dim);
+  font-size: var(--text-xs);
+}
+
+/* Keep the answer visible while every part of the question can be read. */
+.cu-approve__content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+  overflow-y: auto;
+  overflow-x: hidden;
+  app-region: no-drag;
+  user-select: text;
+}
+
+.cu-approve__content .cu-panel__headline,
+.cu-approve__content .cu-panel__sub {
+  overflow-wrap: anywhere;
+}
+
+.cu-approve__content .cu-panel__headline {
+  display: block;
+}
+
+.cu-approve__actions {
+  flex: none;
+}
+
+.cu-approve__reason {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.cu-approve__consequence {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.55;
+}
+
+/* What an MCP server will run, verbatim; long arguments wrap rather than hide. */
+.cu-approve__launch {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.cu-approve__launch dt {
+  color: var(--text-soft);
+}
+
+.cu-approve__launch dd {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  min-width: 0;
+}
+
+.cu-approve__launch code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.cu-approve__access {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.cu-approve__access-label {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.cu-approve__access-why {
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.cu-approve__elevated {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  margin: 0;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-sm);
+  background: var(--amber-wash);
+  color: var(--amber-text);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.cu-approve__elevated > svg {
+  flex: none;
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+}
+
+html.native-browser-live,
+html.native-browser-live body {
+  background: transparent;
+}
+html.native-browser-live .place--browser {
+  background: transparent;
+}
+html.native-browser-live .place--browser .place-state {
+  background: var(--surface-elevated);
+}
+
+/* ---- Setup panel for an app the helper serves ----
+   A small transparent window the main process floats in the bottom-right
+   corner, beside System Settings. Pictures explain the step: the helper's row
+   as macOS lists it with its switch turning on, an arrow toward System
+   Settings, this app's row struck out, and macOS's question with the pointer
+   on Allow. Every animation stills at its end state for reduced motion. */
+html[data-panel="computer-app-setup"],
+html[data-panel="computer-app-setup"] body {
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+html[data-panel="computer-app-setup"] #root {
+  height: 100%;
+}
+
+.cas-stage {
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: var(--space-8);
+}
+
+.cas-panel {
+  width: 296px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  padding: var(--space-10) var(--space-12) var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text);
+  /* No title bar: the card itself is what moves the window. */
+  app-region: drag;
+  user-select: none;
+  animation: cas-arrive 0.18s ease;
+}
+
+.cas-panel--empty {
+  display: none;
+}
+
+.cas-panel--shake {
+  animation: cas-shake 0.45s ease;
+}
+
+.cas-panel--away {
+  opacity: 0.86;
+}
+
+.cas-no-drag {
+  app-region: no-drag;
+}
+
+.cas-top,
+.cas-offer,
+.cas-offer__foot,
+.cas-target {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.cas-top {
+  min-height: 20px;
+}
+
+.cas-top > .cas-dots {
+  margin-right: auto;
+}
+
+.cas-offer .cas-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+}
+
+.cas-offer__foot {
+  justify-content: space-between;
+}
+
+.cas-icon-button {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.cas-icon-button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.cas-icon-button > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.cas-dots {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.cas-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--line-strong);
+  transition:
+    width 0.2s ease,
+    background 0.2s ease;
+}
+
+.cas-dot--current {
+  width: 14px;
+  background: var(--ember);
+}
+
+.cas-dot--done {
+  background: var(--green);
+}
+
+.cas-app-icon {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  object-fit: contain;
+}
+
+.cas-app-icon--small {
+  width: 20px;
+  height: 20px;
+}
+
+.cas-app-icon--blank {
+  border-radius: 7px;
+  background: var(--surface-raised);
+}
+
+/* The helper's row, drawn as the macOS list draws it. */
+.cas-row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  height: 40px;
+  padding: 0 var(--space-6) 0 var(--space-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+
+.cas-row--drag {
+  border-style: dashed;
+  border-color: var(--ember-line);
+  cursor: grab;
+}
+
+.cas-row--drag:hover {
+  border-color: var(--ember);
+}
+
+.cas-row__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cas-row--wrong {
+  height: 30px;
+  border-color: transparent;
+  background: transparent;
+  opacity: 0.55;
+}
+
+.cas-row--wrong .cas-row__name {
+  text-decoration: line-through;
+  text-decoration-color: var(--red);
+  text-decoration-thickness: 1.5px;
+}
+
+.cas-panel--shake .cas-row--wrong {
+  border-color: var(--red-line);
+  background: var(--red-wash);
+  opacity: 1;
+}
+
+.cas-wrong-mark {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--red);
+  color: var(--surface-elevated);
+}
+
+.cas-wrong-mark > svg {
+  width: 9px;
+  height: 9px;
+  stroke-width: 3;
+}
+
+/* A macOS switch, turning on, over and over until it is on in System Settings. */
+.cas-switch {
+  position: relative;
+  width: 26px;
+  height: 15px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: #4a4a4c;
+}
+
+.cas-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: var(--radius-full);
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 40%);
+}
+
+.cas-switch--turning-on {
+  animation: cas-switch-track 2.4s ease-in-out infinite;
+}
+
+.cas-switch--turning-on::after {
+  animation: cas-switch-knob 2.4s ease-in-out infinite;
+}
+
+.cas-arrow {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ember);
+  cursor: pointer;
+  animation: cas-poke 1.2s ease-in-out infinite;
+}
+
+.cas-arrow > svg {
+  width: 17px;
+  height: 17px;
+}
+
+.cas-pair {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.cas-pair-center {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-2) 0;
+}
+
+.cas-badged {
+  position: relative;
+  display: inline-flex;
+}
+
+.cas-check {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--green);
+  color: var(--surface-elevated);
+  box-shadow: 0 0 0 2px var(--surface-elevated);
+}
+
+.cas-check > svg {
+  width: 9px;
+  height: 9px;
+  stroke-width: 3;
+}
+
+/* The link from the helper to the app: flowing while setup runs. */
+.cas-link {
+  width: 30px;
+  height: 2px;
+  background-image: linear-gradient(90deg, var(--ember) 50%, transparent 0);
+  background-size: 6px 2px;
+  animation: cas-flow 0.8s linear infinite;
+}
+
+.cas-link--still {
+  background-image: linear-gradient(90deg, var(--muted-dim) 50%, transparent 0);
+  animation: none;
+}
+
+.cas-link--done {
+  background: var(--green);
+  animation: none;
+}
+
+/* macOS's question, drawn, with the pointer tapping Allow. */
+.cas-question {
+  position: relative;
+  display: flex;
+  gap: var(--space-6);
+  padding: var(--space-6);
+  border-radius: var(--radius-md);
+  background: #2c2c2e;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+
+.cas-question__button {
+  flex: 1;
+  padding: var(--space-4) 0;
+  border-radius: 7px;
+  background: #4a4a4c;
+  color: #fff;
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.cas-question__button--allow {
+  background: #0a84ff;
+  animation: cas-press 2.2s ease-in-out infinite;
+}
+
+.cas-pointer {
+  position: absolute;
+  top: 52%;
+  left: 72%;
+  width: 16px;
+  height: 16px;
+  color: #fff;
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 70%));
+  animation: cas-tap 2.2s ease-in-out infinite;
+}
+
+.cas-pointer > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.cas-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-4) 0;
+}
+
+.cas-done .cas-app-icon {
+  width: 34px;
+  height: 34px;
+}
+
+.cas-caps {
+  display: flex;
+  gap: var(--space-8);
+}
+
+.cas-cap {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+}
+
+.cas-cap > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.cas-cap__mark {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 13px;
+  height: 13px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--muted-dim);
+  border-radius: var(--radius-full);
+  background: var(--surface-elevated);
+}
+
+.cas-cap__mark--done {
+  border-color: var(--green);
+  background: var(--green);
+  color: var(--surface-elevated);
+}
+
+.cas-cap__mark > svg {
+  width: 8px;
+  height: 8px;
+  stroke-width: 3;
+}
+
+.cas-wide {
+  width: 100%;
+  justify-content: center;
+}
+
+.cas-away {
+  display: inline-flex;
+}
+
+.cas-spin {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--ember-line);
+  border-top-color: var(--ember);
+  border-radius: var(--radius-full);
+  animation: cas-spin 0.9s linear infinite;
+}
+
+@keyframes cas-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes cas-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-6px);
+  }
+  40% {
+    transform: translateX(5px);
+  }
+  60% {
+    transform: translateX(-3px);
+  }
+  80% {
+    transform: translateX(2px);
+  }
+}
+
+@keyframes cas-switch-track {
+  0%,
+  30%,
+  100% {
+    background: #4a4a4c;
+  }
+  42%,
+  88% {
+    background: #0a84ff;
+  }
+}
+
+@keyframes cas-switch-knob {
+  0%,
+  30%,
+  100% {
+    left: 2px;
+  }
+  42%,
+  88% {
+    left: 13px;
+  }
+}
+
+@keyframes cas-poke {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: translateX(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(4px);
+  }
+}
+
+@keyframes cas-flow {
+  to {
+    background-position: 6px 0;
+  }
+}
+
+@keyframes cas-press {
+  0%,
+  48%,
+  64%,
+  100% {
+    filter: none;
+  }
+  54% {
+    filter: brightness(1.45);
+  }
+}
+
+@keyframes cas-tap {
+  0% {
+    opacity: 0;
+    transform: translate(26px, 18px);
+  }
+  15%,
+  85% {
+    opacity: 1;
+  }
+  45%,
+  100% {
+    transform: translate(0, 0);
+  }
+  52% {
+    transform: translate(0, 0) scale(0.82);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes cas-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cas-panel,
+  .cas-panel--shake,
+  .cas-arrow,
+  .cas-link,
+  .cas-question__button--allow,
+  .cas-pointer,
+  .cas-spin {
+    animation: none;
+  }
+
+  /* Still, the switch shows where it should end up: on. */
+  .cas-switch--turning-on,
+  .cas-switch--turning-on::after {
+    animation: none;
+  }
+
+  .cas-switch--turning-on {
+    background: #0a84ff;
+  }
+
+  .cas-switch--turning-on::after {
+    left: 13px;
+  }
+}

@@ -1,0 +1,5 @@
+# The SDK location and project files Android Studio writes; build output is
+# ignored from the root .gitignore, which the repository's formatters read.
+local.properties
+.idea/
+*.iml

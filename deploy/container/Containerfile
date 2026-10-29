@@ -1,0 +1,504 @@
+# syntax=docker/dockerfile:1.7
+
+ARG NODE_IMAGE=node:24.13.0-bookworm-slim@sha256:4660b1ca8b28d6d1906fd644abe34b2ed81d15434d26d845ef0aced307cf4b6f
+ARG GO_IMAGE=golang:1.26.2-bookworm@sha256:47ce5636e9936b2c5cbf708925578ef386b4f8872aec74a67bd13a627d242b19
+ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+ARG CADDY_IMAGE=caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ARG OPENSTEER_AGENT_PHONE_RELEASE_RECEIPT_SHA256
+ARG OPENSTEER_AGENT_PHONE_MODE=none
+
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS agent-phone-tools
+RUN apt-get update && apt-get install --no-install-recommends --yes ca-certificates curl unzip openjdk-17-jre-headless && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/android-sdk
+RUN curl --fail --location --show-error --connect-timeout 10 --max-time 300 \
+      https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip -o /tmp/android-tools.zip && \
+    echo '7ec965280a073311c339e571cd5de778b9975026cfcbe79f2b1cdcb1e15317ee  /tmp/android-tools.zip' | sha256sum --check --strict && \
+    unzip -q /tmp/android-tools.zip -d /tmp/android-tools && mkdir -p cmdline-tools && \
+    mv /tmp/android-tools/cmdline-tools cmdline-tools/19.0 && rm /tmp/android-tools.zip && \
+    curl --fail --location --show-error --connect-timeout 10 --max-time 300 \
+      https://dl.google.com/android/repository/build-tools_r36_linux.zip -o /tmp/build-tools.zip && \
+    echo '5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b  /tmp/build-tools.zip' | sha256sum --check --strict && \
+    unzip -q /tmp/build-tools.zip -d /tmp/build-tools && mkdir -p build-tools && \
+    mv /tmp/build-tools/android-16 build-tools/36.0.0 && rm /tmp/build-tools.zip
+
+FROM ${NODE_IMAGE} AS bubblewrap-build
+ARG BUBBLEWRAP_VERSION=0.11.2
+ARG BUBBLEWRAP_SHA256=69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
+RUN apt-get update && \
+    apt-get install --no-install-recommends --yes build-essential ca-certificates curl libcap-dev meson pkg-config xz-utils && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /source
+RUN curl --connect-timeout 10 --fail --location --max-time 120 --show-error \
+      --output bubblewrap.tar.xz \
+      "https://github.com/containers/bubblewrap/releases/download/v${BUBBLEWRAP_VERSION}/bubblewrap-${BUBBLEWRAP_VERSION}.tar.xz" && \
+    echo "${BUBBLEWRAP_SHA256}  bubblewrap.tar.xz" | sha256sum --check --strict && \
+    tar --extract --file bubblewrap.tar.xz --strip-components=1 && \
+    meson setup build \
+      -Dbash_completion=disabled \
+      -Dman=disabled \
+      -Dselinux=disabled \
+      -Dsupport_setuid=false \
+      -Dtests=false \
+      -Dzsh_completion=disabled && \
+    meson compile -C build bwrap && \
+    install --directory /output && \
+    install --owner root --group root --mode 0555 build/bwrap /output/bwrap && \
+    install --owner root --group root --mode 0444 COPYING /output/COPYING
+
+FROM ${CADDY_IMAGE} AS caddy-capability-free
+USER root
+# The upstream binary carries cap_net_bind_service for ports below 1024. This
+# gateway listens on 4314, so copy the binary without that unnecessary file
+# capability and keep the runtime container capability-free.
+RUN cp /usr/bin/caddy /caddy && chmod 0555 /caddy
+
+FROM ${NODE_IMAGE} AS opensteer-release-record
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+WORKDIR /source
+COPY package.json ./package.json
+COPY scripts/release-identity.cjs ./scripts/release-identity.cjs
+RUN OPENSTEER_RELEASE_VERSION="${OPENSTEER_RELEASE_VERSION}" \
+    OPENSTEER_SOURCE_REVISION="${OPENSTEER_SOURCE_REVISION}" \
+    node -e \
+    'const {mkdirSync,writeFileSync}=require("node:fs"); const {requireCanonicalReleaseIdentity}=require("./scripts/release-identity.cjs"); const identity=requireCanonicalReleaseIdentity("/source",process.env,{verifyRepository:false}); mkdirSync("/release",{recursive:true}); writeFileSync("/release/release.json",JSON.stringify({schemaVersion:1,...identity})+"\n",{mode:0o444});'
+
+# The helper is pure Go, so compile on the builder's native architecture and
+# emit the requested target binary. This keeps local Apple-silicon publication
+# out of QEMU while preserving the same linux/amd64 runtime artifact as CI.
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS runner-native-fs-build
+WORKDIR /source
+COPY apps/runner/native-fs-helper/go.mod apps/runner/native-fs-helper/go.sum ./
+RUN --mount=type=cache,id=opensteer-go-mod,target=/go/pkg/mod go mod download
+COPY apps/runner/native-fs-helper/*.go ./
+ARG TARGETARCH
+ARG TARGETOS
+RUN --mount=type=cache,id=opensteer-go-mod,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags='-s -w -buildid=' -o /output/opensteer-native-fs .
+
+# Root version is selection metadata, not a dependency input. Give the
+# normalized file fixed metadata so COPY stays identical across release stamps.
+FROM ${NODE_IMAGE} AS dependency-manifests
+WORKDIR /source
+COPY package.json ./package.json
+RUN node -e 'const fs=require("node:fs"); const manifest=JSON.parse(fs.readFileSync("package.json")); manifest.version="0.0.0"; fs.mkdirSync("/manifests"); fs.writeFileSync("/manifests/package.json",JSON.stringify(manifest)+"\n",{mode:0o644}); fs.utimesSync("/manifests/package.json",0,0);'
+
+FROM ${NODE_IMAGE} AS dependencies
+WORKDIR /source
+RUN corepack enable && corepack prepare pnpm@10.29.3 --activate
+COPY .npmrc pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
+COPY --from=dependency-manifests /manifests/package.json ./package.json
+RUN pnpm config set store-dir /pnpm/store && pnpm fetch --frozen-lockfile
+# The fast release guards check both install stages against pnpm workspace globs.
+COPY apps/browser-extension/package.json ./apps/browser-extension/package.json
+COPY apps/browser-runtime/package.json ./apps/browser-runtime/package.json
+COPY apps/channel-runtime/package.json ./apps/channel-runtime/package.json
+COPY apps/control-plane/package.json ./apps/control-plane/package.json
+COPY apps/desktop/package.json ./apps/desktop/package.json
+COPY apps/host/package.json ./apps/host/package.json
+COPY apps/mobile/package.json ./apps/mobile/package.json
+COPY apps/runner/package.json ./apps/runner/package.json
+COPY apps/web/package.json ./apps/web/package.json
+COPY evals/agent-tools/package.json ./evals/agent-tools/package.json
+COPY packages/access/package.json ./packages/access/package.json
+COPY packages/agent-phone-setup/package.json ./packages/agent-phone-setup/package.json
+COPY packages/agent-plugins/package.json ./packages/agent-plugins/package.json
+COPY packages/agent-tools/package.json ./packages/agent-tools/package.json
+COPY packages/apple-data/package.json ./packages/apple-data/package.json
+COPY packages/browser-core/package.json ./packages/browser-core/package.json
+COPY packages/browser-profile/package.json ./packages/browser-profile/package.json
+COPY packages/browser-runtime-core/package.json ./packages/browser-runtime-core/package.json
+COPY packages/channel-core/package.json ./packages/channel-core/package.json
+COPY packages/channel-imessage/package.json ./packages/channel-imessage/package.json
+COPY packages/channel-protocol/package.json ./packages/channel-protocol/package.json
+COPY packages/channel-slack/package.json ./packages/channel-slack/package.json
+COPY packages/client/package.json ./packages/client/package.json
+COPY packages/config/package.json ./packages/config/package.json
+COPY packages/control-plane-protocol/package.json ./packages/control-plane-protocol/package.json
+COPY packages/core/package.json ./packages/core/package.json
+COPY packages/database/package.json ./packages/database/package.json
+COPY packages/deployment-authority/package.json ./packages/deployment-authority/package.json
+COPY packages/harness-claude/package.json ./packages/harness-claude/package.json
+COPY packages/harness-codex/package.json ./packages/harness-codex/package.json
+COPY packages/harness-cursor/package.json ./packages/harness-cursor/package.json
+COPY packages/harness-opencode/package.json ./packages/harness-opencode/package.json
+COPY packages/harness-pi/package.json ./packages/harness-pi/package.json
+COPY packages/harness/package.json ./packages/harness/package.json
+COPY packages/identity/package.json ./packages/identity/package.json
+COPY packages/integration-adapters/package.json ./packages/integration-adapters/package.json
+COPY packages/integration-auth/package.json ./packages/integration-auth/package.json
+COPY packages/integration-catalog/package.json ./packages/integration-catalog/package.json
+COPY packages/integration-core/package.json ./packages/integration-core/package.json
+COPY packages/messaging-module/package.json ./packages/messaging-module/package.json
+COPY packages/orchestration/package.json ./packages/orchestration/package.json
+COPY packages/protocol/package.json ./packages/protocol/package.json
+COPY packages/runner-auth/package.json ./packages/runner-auth/package.json
+COPY packages/runner-client/package.json ./packages/runner-client/package.json
+COPY packages/shared/package.json ./packages/shared/package.json
+COPY packages/triggers/package.json ./packages/triggers/package.json
+COPY packages/workspace-local/package.json ./packages/workspace-local/package.json
+COPY packages/workspace-portablefs/package.json ./packages/workspace-portablefs/package.json
+COPY packages/workspace/package.json ./packages/workspace/package.json
+RUN pnpm install --offline --frozen-lockfile
+
+FROM dependencies AS sources
+COPY tsconfig.base.json tsconfig.json tsconfig.package.json ./
+COPY packages ./packages
+COPY scripts ./scripts
+
+FROM sources AS host-build
+COPY apps/host ./apps/host
+COPY apps/runner ./apps/runner
+COPY apps/channel-runtime ./apps/channel-runtime
+RUN pnpm --filter @opensteer/host build && \
+    pnpm --filter @opensteer/host deploy --legacy --prod /output/host && \
+    node scripts/verify-deployed-package.cjs apps/host/package.json /output/host/package.json && \
+    find /output/host -depth -name '*claude-agent-sdk-*' -exec rm -rf {} +
+
+
+FROM sources AS control-plane-build
+COPY apps/control-plane ./apps/control-plane
+RUN pnpm --filter @opensteer/control-plane build && \
+    pnpm --filter @opensteer/control-plane deploy --legacy --prod /output/control-plane && \
+    node scripts/verify-deployed-package.cjs apps/control-plane/package.json /output/control-plane/package.json
+
+
+FROM sources AS runner-build
+COPY apps/runner ./apps/runner
+RUN pnpm --filter @opensteer/runner build && \
+    pnpm --filter @opensteer/runner deploy --legacy --prod /output/runner && \
+    node scripts/verify-deployed-package.cjs apps/runner/package.json /output/runner/package.json && \
+    find /output/runner -depth -name '*claude-agent-sdk-*' -exec rm -rf {} +
+
+
+FROM sources AS browser-runtime-build
+COPY apps/browser-runtime ./apps/browser-runtime
+RUN pnpm --filter @opensteer/browser-runtime build && \
+    pnpm --filter @opensteer/browser-runtime deploy --legacy --prod /output/browser-runtime && \
+    node scripts/verify-deployed-package.cjs apps/browser-runtime/package.json /output/browser-runtime/package.json
+
+
+FROM sources AS channel-runtime-build
+COPY apps/channel-runtime ./apps/channel-runtime
+RUN pnpm --filter @opensteer/channel-runtime build && \
+    pnpm --filter @opensteer/channel-runtime deploy --legacy --prod /output/channel-runtime && \
+    node scripts/verify-deployed-package.cjs apps/channel-runtime/package.json /output/channel-runtime/package.json
+
+
+# Identity generation reads only source manifests. Depending on a full build
+# here would hydrate its entire cached deployment just to stamp a small JSON file.
+FROM ${NODE_IMAGE} AS package-stamps
+WORKDIR /source
+COPY scripts/stamp-release-package.cjs ./scripts/stamp-release-package.cjs
+COPY apps/host/package.json /output/host/package.json
+COPY apps/control-plane/package.json /output/control-plane/package.json
+COPY apps/runner/package.json /output/runner/package.json
+COPY apps/browser-runtime/package.json /output/browser-runtime/package.json
+COPY apps/channel-runtime/package.json /output/channel-runtime/package.json
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+RUN node scripts/stamp-release-package.cjs /output/host/package.json && \
+    node scripts/stamp-release-package.cjs /output/control-plane/package.json && \
+    node scripts/stamp-release-package.cjs /output/runner/package.json && \
+    node scripts/stamp-release-package.cjs /output/browser-runtime/package.json && \
+    node scripts/stamp-release-package.cjs /output/channel-runtime/package.json
+
+# Web assets contain no native dependencies; compile with the builder's Node.
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web-assets
+WORKDIR /source
+RUN corepack enable && corepack prepare pnpm@10.29.3 --activate
+COPY .npmrc pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
+COPY --from=dependency-manifests /manifests/package.json ./package.json
+RUN pnpm config set store-dir /pnpm/store && pnpm fetch --frozen-lockfile
+# The fast release guards check both install stages against pnpm workspace globs.
+COPY apps/browser-extension/package.json ./apps/browser-extension/package.json
+COPY apps/browser-runtime/package.json ./apps/browser-runtime/package.json
+COPY apps/channel-runtime/package.json ./apps/channel-runtime/package.json
+COPY apps/control-plane/package.json ./apps/control-plane/package.json
+COPY apps/desktop/package.json ./apps/desktop/package.json
+COPY apps/host/package.json ./apps/host/package.json
+COPY apps/mobile/package.json ./apps/mobile/package.json
+COPY apps/runner/package.json ./apps/runner/package.json
+COPY apps/web/package.json ./apps/web/package.json
+COPY evals/agent-tools/package.json ./evals/agent-tools/package.json
+COPY packages/access/package.json ./packages/access/package.json
+COPY packages/agent-phone-setup/package.json ./packages/agent-phone-setup/package.json
+COPY packages/agent-plugins/package.json ./packages/agent-plugins/package.json
+COPY packages/agent-tools/package.json ./packages/agent-tools/package.json
+COPY packages/apple-data/package.json ./packages/apple-data/package.json
+COPY packages/browser-core/package.json ./packages/browser-core/package.json
+COPY packages/browser-profile/package.json ./packages/browser-profile/package.json
+COPY packages/browser-runtime-core/package.json ./packages/browser-runtime-core/package.json
+COPY packages/channel-core/package.json ./packages/channel-core/package.json
+COPY packages/channel-imessage/package.json ./packages/channel-imessage/package.json
+COPY packages/channel-protocol/package.json ./packages/channel-protocol/package.json
+COPY packages/channel-slack/package.json ./packages/channel-slack/package.json
+COPY packages/client/package.json ./packages/client/package.json
+COPY packages/config/package.json ./packages/config/package.json
+COPY packages/control-plane-protocol/package.json ./packages/control-plane-protocol/package.json
+COPY packages/core/package.json ./packages/core/package.json
+COPY packages/database/package.json ./packages/database/package.json
+COPY packages/deployment-authority/package.json ./packages/deployment-authority/package.json
+COPY packages/harness-claude/package.json ./packages/harness-claude/package.json
+COPY packages/harness-codex/package.json ./packages/harness-codex/package.json
+COPY packages/harness-cursor/package.json ./packages/harness-cursor/package.json
+COPY packages/harness-opencode/package.json ./packages/harness-opencode/package.json
+COPY packages/harness-pi/package.json ./packages/harness-pi/package.json
+COPY packages/harness/package.json ./packages/harness/package.json
+COPY packages/identity/package.json ./packages/identity/package.json
+COPY packages/integration-adapters/package.json ./packages/integration-adapters/package.json
+COPY packages/integration-auth/package.json ./packages/integration-auth/package.json
+COPY packages/integration-catalog/package.json ./packages/integration-catalog/package.json
+COPY packages/integration-core/package.json ./packages/integration-core/package.json
+COPY packages/messaging-module/package.json ./packages/messaging-module/package.json
+COPY packages/orchestration/package.json ./packages/orchestration/package.json
+COPY packages/protocol/package.json ./packages/protocol/package.json
+COPY packages/runner-auth/package.json ./packages/runner-auth/package.json
+COPY packages/runner-client/package.json ./packages/runner-client/package.json
+COPY packages/shared/package.json ./packages/shared/package.json
+COPY packages/triggers/package.json ./packages/triggers/package.json
+COPY packages/workspace-local/package.json ./packages/workspace-local/package.json
+COPY packages/workspace-portablefs/package.json ./packages/workspace-portablefs/package.json
+COPY packages/workspace/package.json ./packages/workspace/package.json
+RUN pnpm install --offline --frozen-lockfile
+COPY tsconfig.base.json tsconfig.json tsconfig.package.json ./
+COPY packages ./packages
+COPY scripts ./scripts
+COPY apps/web ./apps/web
+COPY apps/browser-extension ./apps/browser-extension
+ARG OPENSTEER_SOURCE_REVISION
+ARG OPENSTEER_RUNNER_SOURCE_REVISION
+ARG OPENSTEER_IMAGE_REGISTRY
+ARG OPENSTEER_RUNNER_ARTIFACT_BASE_URL
+RUN OPENSTEER_SOURCE_REVISION="${OPENSTEER_SOURCE_REVISION}" \
+    OPENSTEER_IMAGE_REGISTRY="${OPENSTEER_IMAGE_REGISTRY}" \
+    OPENSTEER_RUNNER_ARTIFACT_BASE_URL="${OPENSTEER_RUNNER_ARTIFACT_BASE_URL}" \
+    OPENSTEER_RUNNER_SOURCE_REVISION="${OPENSTEER_RUNNER_SOURCE_REVISION}" pnpm --filter @opensteer/web build
+
+# Android/JRE tools are independent of all product source and phone bytes.
+FROM dependencies AS phone-verification-tools
+ENV ANDROID_HOME=/opt/android-sdk
+RUN apt-get update && apt-get install --no-install-recommends --yes openjdk-17-jre-headless && rm -rf /var/lib/apt/lists/*
+COPY --from=agent-phone-tools /opt/android-sdk/build-tools/36.0.0 /opt/android-sdk/build-tools/36.0.0
+
+FROM phone-verification-tools AS agent-phone-verification
+COPY packages ./packages
+COPY scripts ./scripts
+COPY apps/web/public/agent-phone ./apps/web/public/agent-phone
+ARG OPENSTEER_AGENT_PHONE_RELEASE_RECEIPT_SHA256
+ENV ANDROID_HOME=/opt/android-sdk \
+    OPENSTEER_AGENT_PHONE_RELEASE_RECEIPT_SHA256=${OPENSTEER_AGENT_PHONE_RELEASE_RECEIPT_SHA256}
+RUN OPENSTEER_RELEASE_VERSION="$(node -p "require('./apps/web/public/agent-phone/agent-phone-release.json').version")" \
+    OPENSTEER_SOURCE_REVISION="$(node -p "require('./apps/web/public/agent-phone/agent-phone-release.json').sourceRevision")" \
+    node scripts/release-agent-phone.cjs \
+      /source/apps/web/public/agent-phone /source/apps/web/public/agent-phone/agent-phone-release.json
+
+FROM agent-phone-verification AS web-phone-official
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+COPY --from=web-assets /source/apps/web/dist /source/apps/web/dist
+RUN OPENSTEER_RELEASE_VERSION="$(node -p "require('./apps/web/public/agent-phone/agent-phone-release.json').version")" \
+    OPENSTEER_SOURCE_REVISION="$(node -p "require('./apps/web/public/agent-phone/agent-phone-release.json').sourceRevision")" \
+    node scripts/release-agent-phone.cjs \
+      /source/apps/web/dist/agent-phone /source/apps/web/public/agent-phone/agent-phone-release.json && \
+    test -s /source/apps/web/dist/agent-phone/opensteer-agent-phone.apk
+
+# Even a checkout containing local generated phone artifacts must omit them in
+# none mode. This branch never evaluates the official APK verification stage.
+FROM web-assets AS web-phone-none
+RUN rm -rf /source/apps/web/dist/agent-phone
+
+FROM web-phone-${OPENSTEER_AGENT_PHONE_MODE} AS web-build
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+RUN node scripts/write-web-distribution-manifest.mjs \
+      /source/apps/web/dist "${OPENSTEER_RELEASE_VERSION}" && \
+    test -s /source/apps/web/dist/opensteer-web.json && \
+    test -s /source/apps/web/dist/browser-extension.zip
+
+FROM ${NODE_IMAGE} AS sandbox-seccomp-profiles
+ARG TARGETARCH
+WORKDIR /source
+COPY deploy/container/chromium-seccomp.json ./chromium-seccomp.json
+COPY deploy/container/compile-seccomp-profile.mjs ./compile-seccomp-profile.mjs
+RUN node ./compile-seccomp-profile.mjs \
+      ./chromium-seccomp.json /chromium-oci.json "${TARGETARCH}" CAP_SYS_CHROOT && \
+    node ./compile-seccomp-profile.mjs \
+      ./chromium-seccomp.json /runner-oci.json "${TARGETARCH}" CAP_DAC_READ_SEARCH CAP_SYS_ADMIN
+
+FROM ${NODE_IMAGE} AS node-runtime
+COPY --chmod=0444 THIRD_PARTY_NOTICES.md /usr/local/share/licenses/opensteer/THIRD_PARTY_NOTICES.md
+ENV NODE_ENV=production \
+    OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
+RUN apt-get update && \
+    apt-get install --no-install-recommends --yes ca-certificates tini && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd --gid 10001 opensteer && \
+    useradd --create-home --gid 10001 --shell /usr/sbin/nologin --uid 10001 opensteer && \
+    install --directory --owner 10001 --group 10001 --mode 0700 /var/lib/opensteer && \
+    install --directory --owner 10001 --group 10001 --mode 0700 /var/lib/opensteer-public && \
+    install --directory --owner 10001 --group 10001 --mode 0700 /workspaces && \
+    install --directory --owner root --group root --mode 0755 /usr/local/share/opensteer
+COPY --chmod=0555 deploy/container/opensteer-entrypoint.mjs /usr/local/bin/opensteer-entrypoint.mjs
+ENTRYPOINT ["tini", "--", "node", "/usr/local/bin/opensteer-entrypoint.mjs"]
+
+FROM node-runtime AS host
+WORKDIR /app
+ENV OPENSTEER_WEB_DISTRIBUTION_DIRECTORY=/usr/local/share/opensteer/web \
+    OPENSTEER_WEB_DISTRIBUTION_MANIFEST=/usr/local/share/opensteer/web/opensteer-web.json
+COPY --from=host-build --chown=10001:10001 /output/host ./
+COPY --from=package-stamps --chown=10001:10001 /output/host/package.json ./package.json
+COPY --from=runner-native-fs-build --chmod=0555 /output/opensteer-native-fs ./native-fs-helper/opensteer-native-fs
+COPY --from=web-build --chown=10001:10001 /source/apps/web/dist /usr/local/share/opensteer/web
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+ENV OPENSTEER_HOST_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION}
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+USER 10001:10001
+EXPOSE 4310
+CMD ["node", "dist/main.js"]
+
+FROM node-runtime AS control-plane
+WORKDIR /app
+COPY --from=control-plane-build --chown=10001:10001 /output/control-plane ./
+COPY --from=package-stamps --chown=10001:10001 /output/control-plane/package.json ./package.json
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+USER 10001:10001
+EXPOSE 4142
+CMD ["node", "dist/main.js"]
+
+FROM node-runtime AS runner
+USER root
+RUN apt-get update && \
+    apt-get install --no-install-recommends --yes fuse3 libcap2 openssh-client openssl rsync socat && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln --force --symbolic /proc/mounts /etc/mtab && \
+    test -x /usr/bin/socat && \
+    test "$(readlink /etc/mtab)" = /proc/mounts && \
+    if getent group fuse >/dev/null; then usermod --append --groups fuse opensteer; fi && \
+    install --directory --owner root --group root --mode 0755 /opt/opensteer/control && \
+    install --owner root --group root --mode 0555 \
+      /usr/local/bin/opensteer-entrypoint.mjs \
+      /opt/opensteer/control/opensteer-entrypoint.mjs
+COPY --from=bubblewrap-build --chmod=0555 /output/bwrap /usr/local/bin/bwrap
+# bubblewrap is LGPL: its licence travels with the binary.
+COPY --from=bubblewrap-build --chmod=0444 /output/COPYING /usr/local/share/licenses/bubblewrap/COPYING
+COPY --from=sandbox-seccomp-profiles --chmod=0444 /runner-oci.json /usr/local/share/opensteer/runner-oci.json
+WORKDIR /app
+ENV OPENSTEER_BROWSER_HARNESS=/app/browser-harness/browser-harness.mjs
+COPY --from=runner-build --chown=10001:10001 /output/runner ./
+COPY --from=package-stamps --chown=10001:10001 /output/runner/package.json ./package.json
+COPY --from=runner-native-fs-build --chmod=0555 /output/opensteer-native-fs ./native-fs-helper/opensteer-native-fs
+COPY --chmod=0555 apps/runner/browser-harness/browser-harness.mjs apps/runner/browser-harness/page.mjs apps/runner/browser-harness/page-functions.mjs apps/runner/browser-harness/keyboard-layout.mjs ./browser-harness/
+COPY --chmod=0444 apps/runner/browser-harness/LICENSE /usr/local/share/licenses/opensteer-browser-harness/LICENSE
+COPY --chmod=0444 apps/runner/browser-harness/PLAYWRIGHT-LICENSE /usr/local/share/licenses/opensteer-browser-harness/PLAYWRIGHT-LICENSE
+RUN test "$(bwrap --version)" = "bubblewrap 0.11.2" && \
+    test ! -u /usr/local/bin/bwrap && \
+    test "$("$OPENSTEER_BROWSER_HARNESS" --version)" = "0.5.0-opensteer" && \
+    node dist/verify-harness-runtimes-main.js && \
+    test -x /opt/opensteer/control/opensteer-entrypoint.mjs
+RUN install --directory --mode 0700 /tmp/opensteer-native-fs-probe
+RUN printf '%s' '{"operation":"probe","root":"/tmp/opensteer-native-fs-probe","version":1}' | \
+    ./native-fs-helper/opensteer-native-fs | \
+    grep --fixed-strings '"binaryIdentity":"opensteer-native-fs"'
+RUN rmdir /tmp/opensteer-native-fs-probe
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+USER 10001:10001
+CMD ["node", "dist/main.js"]
+
+FROM node-runtime AS browser-egress
+WORKDIR /app
+COPY --from=browser-runtime-build --chown=10001:10001 /output/browser-runtime ./
+COPY --from=package-stamps --chown=10001:10001 /output/browser-runtime/package.json ./package.json
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+USER 10001:10001
+EXPOSE 4313
+CMD ["node", "dist/egress-main.js"]
+
+FROM scratch AS browser-profile-gateway
+COPY --from=caddy-capability-free /caddy /usr/bin/caddy
+COPY --from=caddy-capability-free /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=opensteer-release-record --chmod=0755 /release/release.json /usr/local/share/opensteer/release.json
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+ENV XDG_CONFIG_HOME=/config \
+    XDG_DATA_HOME=/data \
+    OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
+USER 1000:1000
+EXPOSE 4314
+ENTRYPOINT ["/usr/bin/caddy"]
+CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+
+FROM node-runtime AS channel-runtime
+WORKDIR /app
+COPY --from=channel-runtime-build --chown=10001:10001 /output/channel-runtime ./
+COPY --from=package-stamps --chown=10001:10001 /output/channel-runtime/package.json ./package.json
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+USER 10001:10001
+EXPOSE 4320
+CMD ["node", "dist/main.js"]
+
+FROM ${PLAYWRIGHT_IMAGE} AS browser-runtime-base
+ENV NODE_ENV=production \
+    OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
+RUN groupadd --gid 10001 opensteer && \
+    useradd --create-home --gid 10001 --shell /usr/sbin/nologin --uid 10001 opensteer && \
+    install --directory --owner 10001 --group 10001 --mode 0700 /var/lib/opensteer/browser && \
+    install --directory --owner root --group root --mode 0755 /usr/local/share/opensteer
+WORKDIR /app
+COPY --from=browser-runtime-build --chown=10001:10001 /output/browser-runtime ./
+COPY --chmod=0555 deploy/container/opensteer-entrypoint.mjs /usr/local/bin/opensteer-entrypoint.mjs
+# The host container supervisor extracts this exact profile before starting the
+# Runtime. Keeping the policy with the image prevents deployment drift between
+# the Chromium build and the syscalls its sandbox is allowed to use.
+COPY --chmod=0444 deploy/container/chromium-seccomp.json /usr/local/share/opensteer/chromium-seccomp.json
+COPY --from=sandbox-seccomp-profiles --chmod=0444 /chromium-oci.json /usr/local/share/opensteer/chromium-oci.json
+COPY --from=sandbox-seccomp-profiles --chmod=0444 /runner-oci.json /usr/local/share/opensteer/runner-oci.json
+USER 10001:10001
+EXPOSE 4312
+ENTRYPOINT ["node", "/usr/local/bin/opensteer-entrypoint.mjs"]
+CMD ["node", "dist/main.js"]
+
+FROM browser-runtime-base AS browser-runtime
+COPY --from=package-stamps --chown=10001:10001 /output/browser-runtime/package.json ./package.json
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+
+FROM ${CADDY_IMAGE} AS gateway
+COPY deploy/gateway/Caddyfile /etc/caddy/Caddyfile
+COPY --from=web-build /source/apps/web/dist /srv/opensteer-web
+COPY --from=opensteer-release-record --chmod=0755 /release/release.json /usr/local/share/opensteer/release.json
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+ENV OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
+EXPOSE 80 443

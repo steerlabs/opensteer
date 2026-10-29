@@ -1,0 +1,543 @@
+/* Home shares the thread, inbox and composer. This is its conversational measure. */
+.thread--home {
+  --transcript-max-width: 800px;
+  --composer-max-width: 800px;
+}
+
+.thread--home .thread__title {
+  font-size: var(--text-root);
+  line-height: 1.3;
+}
+
+.thread--home .transcript {
+  padding-top: var(--space-28);
+  gap: var(--space-8);
+}
+
+.thread--home .turn {
+  margin: var(--space-8) 0;
+  padding: var(--space-4) 0;
+}
+
+/* ---- A conversation reads as messages ----
+
+   Two voices, one shape: the reader's bubble on the right, Opensteer's on the
+   left, each with its tail toward the side it speaks from. Task cards share
+   that shape, so everything Opensteer says or starts reads as its side. */
+
+.transcript--conversation .msg--user {
+  max-width: min(82%, 560px);
+  margin: var(--space-4) 0;
+  padding: var(--space-12) var(--space-16);
+  background: var(--ember);
+  border-color: transparent;
+  border-radius: 22px 22px 6px 22px;
+  color: var(--ink-on-ember);
+  font-size: var(--text-root);
+  line-height: 1.6;
+}
+
+.transcript--conversation .msg--user::selection {
+  background: var(--ink-on-ember);
+  color: var(--ember-bright);
+}
+
+/* Loading history and reconnecting must not animate a page of old messages. */
+.transcript--conversation .msg--user,
+.transcript--conversation .msg--input,
+.transcript--conversation .turn {
+  animation: none;
+}
+
+.turn--conversation {
+  gap: var(--space-8);
+}
+
+.reply {
+  position: relative;
+  align-self: flex-start;
+  min-width: 0;
+  max-width: min(88%, 640px);
+}
+
+.reply__bubble {
+  padding: var(--space-12) var(--space-16);
+  border: 1px solid transparent;
+  border-radius: 22px 22px 22px 6px;
+  background: var(--surface-elevated);
+  overflow-wrap: anywhere;
+}
+
+.reply__bubble .md-prose {
+  font-size: var(--text-root);
+  line-height: 1.65;
+}
+
+.reply__bubble .msg--assistant__body {
+  margin-top: 0;
+}
+
+.reply__bubble .md-prose > :first-child {
+  margin-top: 0;
+}
+
+/* What can be done with a reply floats on its corner: one More, shown where a
+   pointer rests, focus lands or a finger taps, and kept while its menu is open. */
+.reply__actions {
+  position: absolute;
+  top: -15px;
+  right: var(--space-10);
+  z-index: var(--layer-raised);
+  display: flex;
+  gap: var(--space-2);
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.reply__actions:empty {
+  display: none;
+}
+
+.reply:hover .reply__actions,
+.reply:focus-within .reply__actions,
+.reply--tapped .reply__actions,
+.reply--menu .reply__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.reply__action {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.reply__action:hover,
+.reply__action[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.reply__action .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.popover.reply-menu {
+  min-width: 200px;
+  padding: var(--space-6);
+}
+
+/* Opensteer composing, in the shape its reply will take; pressed, it opens
+   that reply's Activity. A quick answer replaces it before it has faded in. */
+.typing {
+  display: flex;
+  align-self: flex-start;
+  animation: home-reveal var(--duration-med) var(--ease-out) 180ms backwards;
+}
+
+.typing__body {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 var(--space-16);
+  border: 1px solid var(--line);
+  border-radius: 18px 18px 18px 6px;
+  background: var(--surface-elevated);
+  font: inherit;
+}
+
+.typing__body--opens {
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.typing__body--opens:hover,
+.typing__body--opens[aria-expanded="true"] {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.typing__dots {
+  display: flex;
+  gap: 5px;
+}
+
+.typing__dots i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: home-pulse 1200ms ease-in-out infinite;
+}
+
+.typing__dots i:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.typing__dots i:nth-child(3) {
+  animation-delay: 300ms;
+}
+
+/* Activity: what one reply did, opened on request. Beside the conversation it
+   hangs from the control that opened it, so that control stays in view, or
+   under the header for a link; on a narrow screen it is the shared sheet. */
+.popover.activity-popover {
+  display: flex;
+  flex-direction: column;
+  width: min(400px, calc(100vw - 20px));
+  max-width: min(400px, calc(100vw - 20px));
+  max-height: min(560px, calc(100dvh - 160px));
+  padding: 0;
+  overflow: hidden;
+  border-radius: 18px;
+  background: var(--surface-elevated);
+}
+
+.activity__head {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-8) var(--space-6) var(--space-18);
+}
+
+.activity__titles {
+  flex: 1;
+  min-width: 0;
+  padding-top: var(--space-6);
+}
+
+.activity__title {
+  margin: 0;
+  font-size: var(--text-root);
+  font-weight: var(--weight-strong);
+  line-height: 1.3;
+}
+
+.activity__subtitle {
+  margin: var(--space-2) 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog .activity__subtitle {
+  margin: 0;
+}
+
+.activity__body {
+  min-height: 0;
+  padding: var(--space-2) var(--space-14) var(--space-14);
+  overflow-y: auto;
+}
+
+.dialog .activity__body {
+  padding: 0;
+}
+
+.activity__body .md-prose {
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+}
+
+.activity__empty {
+  margin: var(--space-6) var(--space-4) var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.message-disclosure {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-6);
+  min-height: 36px;
+  padding: var(--space-4) 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.message-disclosure:hover {
+  color: var(--text);
+}
+
+.message-disclosure .icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* What another agent or an automation sent: one quiet line between replies,
+   opening in place. It never takes the size or voice of the conversation. */
+.update-line {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: var(--space-4);
+  min-width: 0;
+  margin: var(--space-2) 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.update-line__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+.update-line__glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.update-line__source {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.update-line__source:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.update-line__toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.update-line__toggle:hover {
+  color: var(--text);
+}
+
+.update-line__toggle time {
+  font-variant-numeric: tabular-nums;
+}
+
+.update-line__toggle .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.update-line__body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-8);
+  margin-left: 7px;
+  padding: var(--space-2) 0 var(--space-4) var(--space-16);
+  border-left: 1px solid var(--line-strong);
+  color: var(--text-soft);
+  font-size: var(--text-2xl);
+  animation: home-reveal 160ms var(--ease-out);
+}
+
+.update-line__body .md-prose {
+  font-size: inherit;
+}
+
+.update-line__ask {
+  margin-left: calc(var(--space-8) * -1);
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .update-line__toggle {
+    min-height: var(--touch-target);
+  }
+}
+
+.composer__entry {
+  display: contents;
+}
+
+.composer--conversation {
+  container: conversation-composer / inline-size;
+  border-radius: 28px;
+  background: var(--surface);
+  box-shadow: 0 4px 24px rgb(0 0 0 / 12%);
+}
+
+.composer--conversation .composer__entry {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+  padding: var(--space-6);
+}
+
+/* The words keep room for their whole placeholder (FoldToFit sets it from
+   the field's data-fold-text): the execution control gives up words and
+   pills before the field is squeezed. The line's gap already parts the words
+   from Attach and the controls, so the field adds little of its own; that is
+   what keeps "Ask Opensteer…" whole beside 44px touch targets on a 320px
+   phone. */
+.composer--conversation .composer__input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  padding: var(--space-10) var(--space-4);
+  font-size: var(--text-root);
+  min-height: 44px;
+}
+
+.composer--conversation .composer__attach {
+  flex: none;
+  width: 40px;
+  height: 44px;
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+}
+
+.composer--conversation .composer__attach:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.composer--conversation .composer__send,
+.composer--conversation .composer__stop {
+  width: 36px;
+  height: 36px;
+}
+
+.composer--conversation .composer__footer {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  gap: var(--space-2);
+  min-height: 44px;
+}
+
+/* The AI controls take under half the composer, so the words always lead
+   the line; past that they give up words (see FoldToFit). Send and Stop sit
+   outside this row and are never capped. */
+.composer--conversation .composer__settings {
+  flex: 0 1 auto;
+  max-width: 45cqi;
+}
+
+.thread--home .hero__subtitle:empty {
+  display: none;
+}
+
+@keyframes home-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes home-pulse {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@media (pointer: coarse) {
+  .composer--conversation .composer__input {
+    font-size: 16px;
+  }
+
+  .message-disclosure {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .typing__body--opens {
+    height: 44px;
+  }
+
+  .reply__action {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+@media (max-width: 680px) {
+  .transcript--conversation .reply {
+    max-width: 94%;
+  }
+
+  .transcript--conversation .msg--user {
+    max-width: 90%;
+  }
+
+  .composer--conversation .composer__input {
+    /* Keep typing from zooming the page on mobile Safari. */
+    font-size: 16px;
+  }
+}
+
+@media (hover: none) {
+  .composer--conversation .composer__attach,
+  .composer--conversation .composer__send,
+  .composer--conversation .composer__stop {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing,
+  .typing__dots i,
+  .update-line__body {
+    animation: none;
+  }
+
+  .typing__body--opens {
+    transition: none;
+  }
+}

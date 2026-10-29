@@ -1,0 +1,111 @@
+{
+  "native": true,
+  "engine": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+  "scenario": "emoji-picker",
+  "inputSource": "com.apple.keylayout.US",
+  "intent": "Open the local native Character Viewer with CtrlCmdSpace. No emoji was inserted in this failed capture; the local activation chord must not become a remote held Space.",
+  "expected": {
+    "value": "",
+    "producers": [],
+    "transactionCommits": [],
+    "keystrokes": [],
+    "compositions": [],
+    "proxy": {
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    "caret": 0
+  },
+  "sourceSha": "444f12dce66f4fcb55e5a66015a8f2a62c2181ad",
+  "sourceSelection": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "requested": "com.apple.keylayout.US",
+    "select": 0,
+    "statuses": [
+      {
+        "enable": 0,
+        "id": "com.apple.keylayout.US"
+      }
+    ]
+  },
+  "sourceAfterKeys": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "frontPid": 1017
+  },
+  "events": [
+    {
+      "type": "selection",
+      "time": 46938.899999999965,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 47280.5,
+      "trusted": true,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 32,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": true,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keyup",
+      "time": 47337.59999999998,
+      "trusted": true,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 32,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": true,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    }
+  ],
+  "final": {
+    "value": "",
+    "selectionStart": 0,
+    "selectionEnd": 0,
+    "composing": false
+  },
+  "captureIntent": {
+    "keys": ["49:control:meta"],
+    "click": false,
+    "picker": true
+  },
+  "qualification": "failed-emoji-picker",
+  "platform": "mac"
+}

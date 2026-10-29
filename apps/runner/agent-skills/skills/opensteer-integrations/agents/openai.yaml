@@ -1,0 +1,9 @@
+interface:
+  display_name: "Opensteer Integrations"
+  short_description: "Use connected accounts, APIs, MCP, and plugins"
+  default_prompt: "Use $opensteer-integrations to find and use the right service integration."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "opensteer_integrations"
+      description: "Opensteer integration discovery, requests, and granted tools"

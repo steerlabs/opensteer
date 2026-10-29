@@ -1,0 +1,39 @@
+{
+  "name": "@opensteer/protocol",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./browser": "./src/browser.ts",
+    "./browser-sources": "./src/browser-sources.ts",
+    "./browser-relay": "./src/browser-relay.ts",
+    "./deployment-status": "./src/deployment-status.ts",
+    "./desktop": "./src/desktop.ts",
+    "./display-stream": "./src/display-stream.ts",
+    "./editing": "./src/editing.ts",
+    "./passwords-broker": "./src/passwords-broker.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@opensteer/agent-tools": "workspace:*",
+    "@opensteer/browser-core": "workspace:*",
+    "@opensteer/browser-profile": "workspace:*",
+    "@opensteer/channel-core": "workspace:*",
+    "@opensteer/control-plane-protocol": "workspace:*",
+    "@opensteer/core": "workspace:*",
+    "@opensteer/integration-core": "workspace:*",
+    "@opensteer/triggers": "workspace:*",
+    "@opensteer/workspace": "workspace:*",
+    "zod": "catalog:",
+    "@opensteer/deployment-authority": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}

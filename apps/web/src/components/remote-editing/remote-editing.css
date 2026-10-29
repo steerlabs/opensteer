@@ -1,0 +1,36 @@
+.remote-keyboard-input {
+  position: absolute;
+  width: 1px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0.01;
+  resize: none;
+  overflow: hidden;
+  font-size: 16px;
+  pointer-events: none;
+  z-index: 1;
+}
+.remote-preedit {
+  position: absolute;
+  z-index: 4;
+  max-width: 90%;
+  padding: 3px 6px;
+  color: var(--text, #222);
+  background: var(--surface, #fff);
+  border-bottom: 2px solid currentColor;
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+.remote-editing-error {
+  position: absolute;
+  z-index: 4;
+  left: 12px;
+  bottom: 12px;
+  max-width: calc(100% - 24px);
+  padding: 6px 10px;
+  color: var(--text, #222);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+}

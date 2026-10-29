@@ -1,0 +1,20 @@
+{
+  "accountUrl": "https://accounts.opensteer.com",
+  "application": {
+    "channel": "stable",
+    "id": "com.opensteer.opensteer",
+    "name": "Opensteer"
+  },
+  "capabilities": {
+    "connect": true,
+    "personal": true,
+    "localAgents": true,
+    "portableFs": false
+  },
+  "oauth": {
+    "accountCallback": "com.opensteer.opensteer:/oauth/account-callback",
+    "clientId": "opensteer-desktop",
+    "hostCallback": "com.opensteer.opensteer:/oauth/host-callback"
+  },
+  "schemaVersion": 6
+}

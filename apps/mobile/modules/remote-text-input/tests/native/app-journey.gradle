@@ -1,0 +1,8 @@
+gradle.afterProject { project ->
+  if (project.path == ':app') {
+    project.android.defaultConfig.testInstrumentationRunner = 'androidx.test.runner.AndroidJUnitRunner'
+    project.android.sourceSets.androidTest.java.srcDir(new File(project.rootDir.parentFile, 'modules/remote-text-input/tests/native/android'))
+    project.dependencies.add('androidTestImplementation', 'androidx.test:runner:1.6.2')
+    project.dependencies.add('androidTestImplementation', 'androidx.test.ext:junit:1.2.1')
+  }
+}

@@ -1,0 +1,104 @@
+<!doctype html><meta charset="utf-8" /><title>Opensteer Chrome Background Journey</title>
+<style>
+  body {
+    margin: 24px;
+    background: #eee;
+    font: 24px sans-serif;
+  }
+  button {
+    display: block;
+    width: 600px;
+    height: 200px;
+    font: bold 72px sans-serif;
+    background: #cfe;
+  }
+  input {
+    font: 32px sans-serif;
+    width: 500px;
+  }
+  select {
+    font: 24px sans-serif;
+    width: 300px;
+  }
+  #clock {
+    height: 60px;
+  }
+  #spacer {
+    height: 2400px;
+    background: linear-gradient(#def, #fed);
+  }
+</style>
+<div id="clock">Clock 0</div>
+<button id="counter">Counter 0</button
+><label>Journey input <input id="input" aria-label="Journey input" autofocus /></label>
+<label
+  >Journey popup
+  <select aria-label="Journey popup">
+    <option>First</option>
+    <option>Second</option>
+    <option>Third</option>
+  </select></label
+>
+<canvas
+  id="canvas"
+  width="120"
+  height="80"
+  style="position: absolute; left: 650px; top: 84px"
+  aria-label="Journey canvas"
+></canvas>
+<div id="events" style="font: 12px monospace">Journey events</div>
+<div id="spacer">Scroll control</div>
+<script>
+  let count = 0,
+    tick = 0;
+  const button = document.getElementById("counter");
+  function increment() {
+    button.textContent = `Counter ${++count}`;
+    button.style.background = count % 2 ? "#fc9" : "#9cf";
+  }
+  const input = document.getElementById("input");
+  const effects = { clicks: 0, input: 0, change: 0, shortcuts: 0, scroll: 0, canvas: 0, text: "" };
+  // Shown from load, so a window nothing has reached yet still reports its
+  // zero counts: R3 reads every window's baseline before acting.
+  function show() {
+    document.getElementById("events").textContent = "Journey events " + JSON.stringify(effects);
+  }
+  show();
+  function record(kind) {
+    effects[kind]++;
+    effects.text = input.value;
+    show();
+    increment();
+  }
+  button.addEventListener("click", () => {
+    record("clicks");
+    input.focus();
+  });
+  const canvas = document.getElementById("canvas");
+  function drawCanvas() {
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = effects.canvas % 2 ? "orange" : "cyan";
+    ctx.fillRect(0, 0, 120, 80);
+    ctx.fillStyle = "black";
+    ctx.font = "16px sans-serif";
+    ctx.fillText("Canvas " + effects.canvas, 8, 40);
+  }
+  canvas.addEventListener("click", () => {
+    record("canvas");
+    drawCanvas();
+  });
+  drawCanvas();
+  document.addEventListener("scroll", () => record("scroll"));
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey && event.altKey && event.key.toLowerCase() === "j") record("shortcuts");
+  });
+  input.addEventListener("input", () => record("input"));
+  input.addEventListener("change", () => record("change"));
+  function animate() {
+    const clock = document.getElementById("clock");
+    clock.textContent = `Clock ${++tick}`;
+    clock.style.background = tick % 2 ? "#faf" : "#aff";
+    requestAnimationFrame(animate);
+  }
+  requestAnimationFrame(animate);
+</script>

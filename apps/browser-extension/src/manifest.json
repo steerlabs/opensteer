@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Opensteer",
+  "description": "Lets your Opensteer agents use sites you're signed in to in Chrome, one site at a time, only after you allow it.",
+  "version": "0.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtod6I1G8dkX7GZxYT32Cor8a527ooMOL/5OL1278+v640RmiCKkz8BgNO1/qAV9fLY45GoCHTd111pPxUI2QTeCN3rPf1GlOXT5Z7/yuK32QeZ78ZRVDZFkcoSiUb4QzG7d//QGmK7S6YMY2lwrOZgVCc22lji6THODkZoU/WQEzw4qyZYMM4zi584FlVNkuhmqi2vOpYsKA0Wnd1YE+3NAXYo4B7k5cOFLoB1V+1H6UUidTMvPbnd6wn2ptf3q0vXjT7SIaQPC7zdxZonqhkNujDVc79NU2IbRIEcaEFE0R208PZMFjG1hv3OFkSdA4VjCtUnDZZPcw5sgArjcKFQIDAQAB",
+  "minimum_chrome_version": "130",
+  "incognito": "not_allowed",
+  "permissions": ["alarms", "cookies", "notifications", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "worker.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Opensteer",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["connect.html", "icons/probe.png"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

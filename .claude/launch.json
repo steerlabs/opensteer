@@ -1,0 +1,38 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-preview",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@opensteer/web", "dev"],
+      "port": 43100
+    },
+    {
+      "name": "web-mock",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "OPENSTEER_WEB_PORT=43110 VITE_OPENSTEER_USE_MOCK=true pnpm --filter @opensteer/web dev"
+      ],
+      "port": 43110
+    },
+    {
+      "name": "dev-e2e",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "OPENSTEER_DATABASE_URL=postgres://opensteer:opensteer@127.0.0.1:54329/opensteer_e2e OPENSTEER_HOST_DATA_DIR=.opensteer/e2e-host OPENSTEER_RUNNER_DATA_DIR=.opensteer/e2e-runner OPENSTEER_LOCAL_WORKSPACE_ROOT=.opensteer/e2e-workspaces OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH=.opensteer/e2e-host/local-workspaces.json OPENSTEER_DEV_SERVICES=host,runner,web OPENSTEER_OPEN_BROWSER=false pnpm dev"
+      ],
+      "port": 43100
+    },
+    {
+      "name": "dev-e2e-full",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "OPENSTEER_DATABASE_URL=postgres://opensteer:opensteer@127.0.0.1:54329/opensteer_e2e OPENSTEER_HOST_DATA_DIR=.opensteer/e2e-host OPENSTEER_RUNNER_DATA_DIR=.opensteer/e2e-runner OPENSTEER_LOCAL_WORKSPACE_ROOT=.opensteer/e2e-workspaces OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH=.opensteer/e2e-host/local-workspaces.json OPENSTEER_DEV_SERVICES=host,runner,browser-runtime,web OPENSTEER_OPEN_BROWSER=false pnpm dev"
+      ],
+      "port": 43100
+    }
+  ]
+}

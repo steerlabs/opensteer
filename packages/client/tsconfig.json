@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.package.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    // The proof of portability: this package compiles for browsers, React
+    // Native and Node alike, so it may not reach for Node's type surface.
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "tsBuildInfoFile": "./node_modules/.cache/tsconfig.tsbuildinfo",
+    "types": []
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}

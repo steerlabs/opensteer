@@ -1,0 +1,6 @@
+folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp
+Work,1,login,Example,,"PIN: 0000",0,"https://example.com,androidapp://com.example.app,https://login.example.org/sso",alice@example.com,test-password-123,JBSWY3DPEHPK3PXP
+,,note,A note,fake note body,,0,,,,
+,,login,Steam,,,0,https://store.example.com/,alice,test-password-123,steam://ABCDEFGHIJKLMNOP
+,,login,No password,,,0,https://nopass.example.com/,alice,,
+,,card,A card,,,0,,,,

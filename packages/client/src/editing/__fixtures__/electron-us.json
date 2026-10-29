@@ -1,0 +1,469 @@
+{
+  "engine": "Electron 44.9.2",
+  "native": true,
+  "inputSource": "com.apple.keylayout.US",
+  "events": [
+    {
+      "type": "keydown",
+      "time": 1895.5999999999985,
+      "key": "a",
+      "code": "KeyA",
+      "keyCode": 65,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keypress",
+      "time": 1895.9000000000015,
+      "key": "a",
+      "code": "KeyA",
+      "keyCode": 97,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "beforeinput",
+      "time": 1896.0999999999985,
+      "data": "a",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "input",
+      "time": 1898.699999999997,
+      "data": "a",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "a",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 1898.9000000000015,
+      "key": "a",
+      "code": "KeyA",
+      "keyCode": 65,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "a",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 1899,
+      "key": "s",
+      "code": "KeyS",
+      "keyCode": 83,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "a",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keypress",
+      "time": 1899,
+      "key": "s",
+      "code": "KeyS",
+      "keyCode": 115,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "a",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 1899,
+      "data": "s",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "a",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 1899.4000000000015,
+      "data": "s",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "as",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 1899.5,
+      "key": "s",
+      "code": "KeyS",
+      "keyCode": 83,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "as",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keydown",
+      "time": 1899.5,
+      "key": "d",
+      "code": "KeyD",
+      "keyCode": 68,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "as",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keypress",
+      "time": 1899.5,
+      "key": "d",
+      "code": "KeyD",
+      "keyCode": 100,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "as",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "beforeinput",
+      "time": 1899.5,
+      "data": "d",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "as",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "input",
+      "time": 1899.5999999999985,
+      "data": "d",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "asd",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "keyup",
+      "time": 1899.7999999999956,
+      "key": "d",
+      "code": "KeyD",
+      "keyCode": 68,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "asd",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "keydown",
+      "time": 1899.7999999999956,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 69,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "asd",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "keypress",
+      "time": 1899.7999999999956,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 101,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "asd",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "beforeinput",
+      "time": 1899.7999999999956,
+      "data": "e",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "asd",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "input",
+      "time": 1899.9000000000015,
+      "data": "e",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "asde",
+      "selectionStart": 4,
+      "selectionEnd": 4
+    },
+    {
+      "type": "keyup",
+      "time": 1900.4000000000015,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 69,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "asde",
+      "selectionStart": 4,
+      "selectionEnd": 4
+    },
+    {
+      "type": "keydown",
+      "time": 1900.5999999999985,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 32,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "asde",
+      "selectionStart": 4,
+      "selectionEnd": 4
+    },
+    {
+      "type": "keypress",
+      "time": 1900.5999999999985,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 32,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "asde",
+      "selectionStart": 4,
+      "selectionEnd": 4
+    },
+    {
+      "type": "beforeinput",
+      "time": 1900.5999999999985,
+      "data": " ",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "asde",
+      "selectionStart": 4,
+      "selectionEnd": 4
+    },
+    {
+      "type": "input",
+      "time": 1900.7999999999956,
+      "data": " ",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "asde ",
+      "selectionStart": 5,
+      "selectionEnd": 5
+    },
+    {
+      "type": "keyup",
+      "time": 1900.7999999999956,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 32,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "asde ",
+      "selectionStart": 5,
+      "selectionEnd": 5
+    }
+  ],
+  "intent": "Press physical A, S, D, E and Space with the US source.",
+  "expected": {
+    "value": "asde ",
+    "producers": [
+      {
+        "kind": "key",
+        "text": "a"
+      },
+      {
+        "kind": "key",
+        "text": "s"
+      },
+      {
+        "kind": "key",
+        "text": "d"
+      },
+      {
+        "kind": "key",
+        "text": "e"
+      },
+      {
+        "kind": "key",
+        "text": " "
+      }
+    ],
+    "transactionCommits": [],
+    "keystrokes": [
+      {
+        "action": "down",
+        "key": "a",
+        "code": "KeyA",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "a"
+      },
+      {
+        "action": "up",
+        "key": "a",
+        "code": "KeyA",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      },
+      {
+        "action": "down",
+        "key": "s",
+        "code": "KeyS",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "s"
+      },
+      {
+        "action": "up",
+        "key": "s",
+        "code": "KeyS",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      },
+      {
+        "action": "down",
+        "key": "d",
+        "code": "KeyD",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "d"
+      },
+      {
+        "action": "up",
+        "key": "d",
+        "code": "KeyD",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      },
+      {
+        "action": "down",
+        "key": "e",
+        "code": "KeyE",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "e"
+      },
+      {
+        "action": "up",
+        "key": "e",
+        "code": "KeyE",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      },
+      {
+        "action": "down",
+        "key": " ",
+        "code": "Space",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": " "
+      },
+      {
+        "action": "up",
+        "key": " ",
+        "code": "Space",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      }
+    ],
+    "compositions": [],
+    "proxy": {
+      "value": "asde ",
+      "selectionStart": 5,
+      "selectionEnd": 5
+    },
+    "caret": 5
+  },
+  "qualification": "captured"
+}

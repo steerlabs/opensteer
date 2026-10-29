@@ -1,0 +1,97 @@
+{
+  "encrypted": false,
+  "folders": [
+    {
+      "id": "f-1",
+      "name": "Work"
+    }
+  ],
+  "items": [
+    {
+      "id": "i-1",
+      "organizationId": null,
+      "folderId": "f-1",
+      "type": 1,
+      "reprompt": 0,
+      "name": "Example",
+      "notes": "fake note",
+      "favorite": false,
+      "fields": [
+        {
+          "name": "PIN",
+          "value": "0000",
+          "type": 1,
+          "linkedId": null
+        }
+      ],
+      "login": {
+        "uris": [
+          {
+            "match": null,
+            "uri": "https://example.com/login"
+          },
+          {
+            "match": null,
+            "uri": "androidapp://com.example.app"
+          },
+          {
+            "match": null,
+            "uri": "https://accounts.example.org"
+          }
+        ],
+        "username": "alice@example.com",
+        "password": "  spaced \"quoted\" pa\u0308sswo\u0308rd  ",
+        "totp": "otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example"
+      },
+      "collectionIds": null
+    },
+    {
+      "id": "i-2",
+      "type": 2,
+      "name": "A secure note",
+      "notes": "fake",
+      "secureNote": {
+        "type": 0
+      }
+    },
+    {
+      "id": "i-3",
+      "type": 1,
+      "name": "No password",
+      "login": {
+        "uris": [
+          {
+            "uri": "https://nopass.example.com"
+          }
+        ],
+        "username": "bob",
+        "password": null,
+        "totp": null
+      }
+    },
+    {
+      "id": "i-4",
+      "type": 1,
+      "name": "Insecure",
+      "login": {
+        "uris": [
+          {
+            "uri": "http://insecure.example.com"
+          }
+        ],
+        "username": "bob",
+        "password": "test-password-123",
+        "totp": null
+      }
+    },
+    {
+      "id": "i-5",
+      "type": 3,
+      "name": "A card",
+      "card": {
+        "cardholderName": "Fake Person",
+        "brand": "Visa"
+      }
+    }
+  ]
+}

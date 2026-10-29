@@ -1,0 +1,14 @@
+name: CI Chromium
+description: Cache exact resolved Playwright browsers; always install system dependencies
+runs:
+  using: composite
+  steps:
+    - id: revision
+      shell: bash
+      run: echo "key=$(node -e 'const c=require("node:crypto"); const fs=require("node:fs"); console.log(c.createHash("sha256").update(fs.readFileSync(require("node:path").join(require.resolve("playwright-core/package.json"), "..", "browsers.json"))).digest("hex"))')" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ~/.cache/ms-playwright
+        key: chromium-${{ runner.os }}-${{ runner.arch }}-${{ steps.revision.outputs.key }}
+    - shell: bash
+      run: pnpm exec playwright-core install --with-deps chromium

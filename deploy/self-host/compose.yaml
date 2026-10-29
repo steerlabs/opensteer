@@ -1,0 +1,353 @@
+name: opensteer
+
+services:
+  postgres:
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: opensteer
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_USER: opensteer
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opensteer -d opensteer"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - database
+    secrets:
+      - postgres_password
+    volumes:
+      # PostgreSQL 18 stores versioned clusters below /var/lib/postgresql.
+      - postgres-data:/var/lib/postgresql
+
+  host:
+    image: opensteer-host:${OPENSTEER_IMAGE_TAG:-local}
+    build:
+      args:
+        OPENSTEER_AGENT_PHONE_MODE: none
+        OPENSTEER_RELEASE_VERSION: ${OPENSTEER_RELEASE_VERSION:?set OPENSTEER_RELEASE_VERSION}
+        OPENSTEER_SOURCE_REVISION: ${OPENSTEER_SOURCE_REVISION:?set OPENSTEER_SOURCE_REVISION}
+      context: ../..
+      dockerfile: deploy/container/Containerfile
+      target: host
+    init: false
+    restart: unless-stopped
+    read_only: true
+    environment:
+      OPENSTEER_AUTH_SECRET_FILE: /run/secrets/opensteer_auth_secret
+      OPENSTEER_ACCEPTS_EXTERNAL_RUNNERS: ${OPENSTEER_ACCEPTS_EXTERNAL_RUNNERS:-false}
+      OPENSTEER_BIND_ADDRESS: 0.0.0.0
+      OPENSTEER_BROWSER_ATTACH_KEY_ID: host-v1
+      OPENSTEER_BROWSER_PROFILE_KEY_PATH: /run/secrets/browser_profile_key
+      OPENSTEER_CREDENTIAL_KEY_PATH: /run/secrets/credential_key
+      OPENSTEER_INITIAL_BROWSER_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/browser_runner_enrollment_token
+      OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/messaging_runner_enrollment_token
+      OPENSTEER_DATABASE_URL_FILE: /run/secrets/database_url
+      OPENSTEER_DEFAULT_WORKSPACE_BACKING: ${OPENSTEER_DEFAULT_WORKSPACE_BACKING:?set OPENSTEER_DEFAULT_WORKSPACE_BACKING}
+      OPENSTEER_DEPLOYMENT_KIND: ${OPENSTEER_DEPLOYMENT_KIND:?set OPENSTEER_DEPLOYMENT_KIND}
+      OPENSTEER_DEPLOYMENT_NAME: ${OPENSTEER_DEPLOYMENT_NAME:-}
+      OPENSTEER_HOST_DATA_DIR: /var/lib/opensteer
+      OPENSTEER_HOST_PRIVATE_KEY_PATH: /var/lib/opensteer/keys/host-private.pem
+      OPENSTEER_HOST_PUBLIC_KEY_PATH: /var/lib/opensteer/keys/host-public.pem
+      # Where a Workspace goes when nobody names a machine. The local Runner
+      # overlay requires this value; keep the common Host declaration
+      # non-interpolating so the PortableFS overlay can remove the local-only
+      # contract without demanding a meaningless placeholder first. The
+      # directories themselves belong to the Runner, not to this container.
+      OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: ${OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID:-}
+      OPENSTEER_MODE: ${OPENSTEER_MODE:-production}
+      OPENSTEER_LOCAL_PASSWORD_ENABLED: ${OPENSTEER_LOCAL_PASSWORD_ENABLED:-true}
+      OPENSTEER_NATIVE_OAUTH_ENABLED: ${OPENSTEER_NATIVE_OAUTH_ENABLED:-true}
+      # The built-in desktop and mobile allowlist applies when this is unset;
+      # a self-host that ships its own signed builds declares them here.
+      OPENSTEER_PORT: "4310"
+      OPENSTEER_CANONICAL_ORIGIN: ${OPENSTEER_CANONICAL_ORIGIN:?set OPENSTEER_CANONICAL_ORIGIN}
+      # Capability URLs issued to Runners use one explicitly selected HTTPS
+      # origin. The template selects Caddy's private-CA control listener for a
+      # cohosted stack; remote operators select the public HTTPS origin.
+      OPENSTEER_RUNTIME_ORIGIN: ${OPENSTEER_RUNTIME_ORIGIN:?set OPENSTEER_RUNTIME_ORIGIN}
+      OPENSTEER_SIGNUP_POLICY: ${OPENSTEER_SIGNUP_POLICY:-invite-only}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4310/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - browser
+      - control
+      - database
+      - egress
+    secrets:
+      - browser_profile_key
+      - browser_runner_enrollment_token
+      - messaging_runner_enrollment_token
+      - credential_key
+      - database_url
+      - opensteer_auth_secret
+    stop_grace_period: 45s
+    tmpfs:
+      - /tmp:mode=1777
+    volumes:
+      - host-data:/var/lib/opensteer
+
+  channel-runtime:
+    image: opensteer-channel-runtime:${OPENSTEER_IMAGE_TAG:-local}
+    build:
+      args:
+        OPENSTEER_RELEASE_VERSION: ${OPENSTEER_RELEASE_VERSION:?set OPENSTEER_RELEASE_VERSION}
+        OPENSTEER_SOURCE_REVISION: ${OPENSTEER_SOURCE_REVISION:?set OPENSTEER_SOURCE_REVISION}
+      context: ../..
+      dockerfile: deploy/container/Containerfile
+      target: channel-runtime
+    restart: unless-stopped
+    read_only: true
+    environment:
+      OPENSTEER_MESSAGING_HOST_URL: https://gateway:8443
+      OPENSTEER_MESSAGING_BIND_ADDRESS: 0.0.0.0
+      OPENSTEER_MESSAGING_DATA_DIR: /var/lib/opensteer
+      OPENSTEER_MESSAGING_NAME: Self-hosted messaging service
+      OPENSTEER_MESSAGING_PORT: "4320"
+      OPENSTEER_RUNNER_CONTROL_CA_PATH: /control-ca/root.crt
+      OPENSTEER_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/messaging_runner_enrollment_token
+      OPENSTEER_MODE: ${OPENSTEER_MODE:-production}
+    depends_on:
+      control-ca-export:
+        condition: service_completed_successfully
+      host:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4320/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - control
+      - egress
+    secrets:
+      - messaging_runner_enrollment_token
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:mode=1777
+    volumes:
+      - channel-runtime-data:/var/lib/opensteer
+      - control-ca:/control-ca:ro
+
+  browser-runtime:
+    image: opensteer-browser-runtime:${OPENSTEER_IMAGE_TAG:-local}
+    build:
+      args:
+        OPENSTEER_RELEASE_VERSION: ${OPENSTEER_RELEASE_VERSION:?set OPENSTEER_RELEASE_VERSION}
+        OPENSTEER_SOURCE_REVISION: ${OPENSTEER_SOURCE_REVISION:?set OPENSTEER_SOURCE_REVISION}
+      context: ../..
+      dockerfile: deploy/container/Containerfile
+      target: browser-runtime
+    restart: unless-stopped
+    read_only: true
+    environment:
+      OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE: /run/secrets/browser_bridge_token
+      OPENSTEER_BROWSER_HEADLESS: "true"
+      # The relay reaches this runtime over loopback inside its own container,
+      # so nothing else on the network can drive the browser.
+      OPENSTEER_BROWSER_HOST: 127.0.0.1
+      OPENSTEER_BROWSER_PORT: "4312"
+      OPENSTEER_BROWSER_PROFILE_ROOT: /var/lib/opensteer/browser/profiles
+      OPENSTEER_BROWSER_PROFILE_STATE_INTERNAL_URL: http://host:4310
+      OPENSTEER_BROWSER_PROXY_URL: http://browser-egress:4313
+      OPENSTEER_BROWSER_RELAY_HOST_URL: https://gateway:8443
+      OPENSTEER_BROWSER_RUNTIME_DATA_DIR: /var/lib/opensteer/browser/runner
+      OPENSTEER_BROWSER_RUNTIME_ID: browser-main
+      OPENSTEER_BROWSER_RUNTIME_NAME: Self-hosted browser
+      OPENSTEER_CHROMIUM_SANDBOX: "true"
+      OPENSTEER_MODE: ${OPENSTEER_MODE:-production}
+      OPENSTEER_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/browser_runner_enrollment_token
+      OPENSTEER_RUNNER_CONTROL_CA_PATH: /control-ca/root.crt
+    depends_on:
+      browser-egress:
+        condition: service_healthy
+      control-ca-export:
+        condition: service_completed_successfully
+      host:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4312/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - browser
+      - browser-egress-private
+      - control
+    secrets:
+      - browser_bridge_token
+      - browser_runner_enrollment_token
+    security_opt:
+      # Pinned from Playwright v1.62.1. It retains a deny-by-default syscall
+      # boundary while adding clone, setns, and unshare for Chromium's sandbox.
+      - seccomp=../container/chromium-seccomp.json
+    shm_size: 1gb
+    stop_grace_period: 30s
+    tmpfs:
+      - /home/opensteer:uid=10001,gid=10001,mode=0700,noexec,nosuid,nodev
+      - /tmp:mode=1777
+    volumes:
+      - browser-data:/var/lib/opensteer/browser
+      - control-ca:/control-ca:ro
+
+  browser-egress:
+    image: opensteer-browser-egress:${OPENSTEER_IMAGE_TAG:-local}
+    build:
+      args:
+        OPENSTEER_RELEASE_VERSION: ${OPENSTEER_RELEASE_VERSION:?set OPENSTEER_RELEASE_VERSION}
+        OPENSTEER_SOURCE_REVISION: ${OPENSTEER_SOURCE_REVISION:?set OPENSTEER_SOURCE_REVISION}
+      context: ../..
+      dockerfile: deploy/container/Containerfile
+      target: browser-egress
+    restart: unless-stopped
+    read_only: true
+    environment:
+      OPENSTEER_BROWSER_EGRESS_HOST: 0.0.0.0
+      OPENSTEER_BROWSER_EGRESS_PORT: "4313"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4313/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - browser-egress-private
+      - egress
+    stop_grace_period: 15s
+    tmpfs:
+      - /tmp:mode=1777
+
+  gateway:
+    image: opensteer-gateway:${OPENSTEER_IMAGE_TAG:-local}
+    build:
+      args:
+        OPENSTEER_AGENT_PHONE_MODE: none
+        OPENSTEER_RELEASE_VERSION: ${OPENSTEER_RELEASE_VERSION:?set OPENSTEER_RELEASE_VERSION}
+        OPENSTEER_SOURCE_REVISION: ${OPENSTEER_SOURCE_REVISION:?set OPENSTEER_SOURCE_REVISION}
+      context: ../..
+      dockerfile: deploy/container/Containerfile
+      target: gateway
+    restart: unless-stopped
+    read_only: true
+    environment:
+      # Feed Caddy the same exact origin as the Host so TLS routing, redirects,
+      # cookies, and Origin checks cannot drift through duplicate configuration.
+      OPENSTEER_SITE_ADDRESS: ${OPENSTEER_CANONICAL_ORIGIN:?set OPENSTEER_CANONICAL_ORIGIN}
+    depends_on:
+      host:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - control
+      - edge
+    ports:
+      - "80:80"
+      - "443:443"
+    stop_grace_period: 15s
+    tmpfs:
+      - /config:mode=0700
+      - /tmp:mode=1777
+    volumes:
+      - caddy-data:/data
+
+  control-ca-export:
+    image: opensteer-gateway:${OPENSTEER_IMAGE_TAG:-local}
+    restart: "no"
+    read_only: true
+    depends_on:
+      gateway:
+        condition: service_healthy
+    network_mode: none
+    entrypoint: ["/bin/sh", "-eu", "-c"]
+    command:
+      - |
+        attempt=0
+        while [ "$${attempt}" -lt 30 ] && [ ! -s /caddy-data/caddy/pki/authorities/local/root.crt ]; do
+          attempt="$$(($${attempt} + 1))"
+          sleep 1
+        done
+        test -s /caddy-data/caddy/pki/authorities/local/root.crt
+        cp /caddy-data/caddy/pki/authorities/local/root.crt /control-ca/root.crt.next
+        chmod 0444 /control-ca/root.crt.next
+        mv -f /control-ca/root.crt.next /control-ca/root.crt
+    volumes:
+      - caddy-data:/caddy-data:ro
+      - control-ca:/control-ca
+
+networks:
+  browser:
+    internal: true
+  browser-egress-private:
+    internal: true
+  control:
+    internal: true
+  database:
+    internal: true
+  edge: {}
+  egress: {}
+
+secrets:
+  browser_bridge_token:
+    file: ./secrets/browser_bridge_token
+  browser_profile_key:
+    file: ./secrets/browser_profile_key
+  browser_runner_enrollment_token:
+    file: ./secrets/browser_runner_enrollment_token
+  credential_key:
+    file: ./secrets/credential_key
+  messaging_runner_enrollment_token:
+    file: ./secrets/messaging_runner_enrollment_token
+  database_url:
+    file: ./secrets/database_url
+  opensteer_auth_secret:
+    file: ./secrets/opensteer_auth_secret
+  postgres_password:
+    file: ./secrets/postgres_password
+
+volumes:
+  browser-data: {}
+  caddy-data: {}
+  channel-runtime-data: {}
+  control-ca: {}
+  host-data: {}
+  postgres-data: {}

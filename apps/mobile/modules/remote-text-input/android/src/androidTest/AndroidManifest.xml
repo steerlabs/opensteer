@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <activity android:name="com.opensteer.remotetextinput.NativeKeyboardRecorderActivity" android:exported="true" android:label="Native proxy recorder" android:windowSoftInputMode="stateAlwaysVisible|adjustResize" />
+    <activity android:name="com.opensteer.remotetextinput.NativeKeyboardControlActivity" android:exported="true" android:label="Independent native keyboard control" android:windowSoftInputMode="stateAlwaysVisible|adjustResize" />
+  </application>
+</manifest>

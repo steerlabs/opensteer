@@ -1,0 +1,270 @@
+{
+  "engine": "Electron 44.9.2",
+  "native": true,
+  "inputSource": "com.apple.keylayout.US",
+  "events": [
+    {
+      "type": "keydown",
+      "time": 3429.7999999999956,
+      "key": "å",
+      "code": "KeyA",
+      "keyCode": 65,
+      "composing": false,
+      "repeat": false,
+      "alt": true,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keypress",
+      "time": 3429.9000000000015,
+      "key": "å",
+      "code": "KeyA",
+      "keyCode": 229,
+      "composing": false,
+      "repeat": false,
+      "alt": true,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "beforeinput",
+      "time": 3429.9000000000015,
+      "data": "å",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "input",
+      "time": 3430.2999999999956,
+      "data": "å",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 3432.5,
+      "key": "å",
+      "code": "KeyA",
+      "keyCode": 65,
+      "composing": false,
+      "repeat": false,
+      "alt": true,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 3432.5,
+      "key": "Dead",
+      "code": "KeyE",
+      "keyCode": 229,
+      "composing": false,
+      "repeat": false,
+      "alt": true,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "compositionstart",
+      "time": 3432.699999999997,
+      "data": "",
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "compositionupdate",
+      "time": 3432.699999999997,
+      "data": "´",
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 3432.699999999997,
+      "data": "´",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 3433.2999999999956,
+      "data": "´",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "å´",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 3433.5,
+      "key": "Dead",
+      "code": "KeyE",
+      "keyCode": 69,
+      "composing": true,
+      "repeat": false,
+      "alt": true,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "å´",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keydown",
+      "time": 3433.5999999999985,
+      "key": "é",
+      "code": "KeyE",
+      "keyCode": 229,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "å´",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "compositionupdate",
+      "time": 3433.5999999999985,
+      "data": "é",
+      "value": "å´",
+      "selectionStart": 1,
+      "selectionEnd": 2
+    },
+    {
+      "type": "beforeinput",
+      "time": 3433.5999999999985,
+      "data": "é",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "å´",
+      "selectionStart": 1,
+      "selectionEnd": 2
+    },
+    {
+      "type": "input",
+      "time": 3433.699999999997,
+      "data": "é",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "åé",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "compositionend",
+      "time": 3433.7999999999956,
+      "data": "é",
+      "value": "åé",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 3434.4000000000015,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 69,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "åé",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    }
+  ],
+  "intent": "Press Option+A, then Option+E followed by E.",
+  "expected": {
+    "value": "åé",
+    "producers": [
+      {
+        "kind": "key",
+        "text": "å"
+      },
+      {
+        "kind": "edit",
+        "text": "é",
+        "before": "",
+        "after": ""
+      }
+    ],
+    "transactionCommits": [1],
+    "keystrokes": [
+      {
+        "action": "down",
+        "key": "å",
+        "code": "KeyA",
+        "modifiers": ["alt"],
+        "location": 0,
+        "repeat": false,
+        "text": "å"
+      },
+      {
+        "action": "up",
+        "key": "å",
+        "code": "KeyA",
+        "modifiers": ["alt"],
+        "location": 0,
+        "repeat": false
+      }
+    ],
+    "compositions": [
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "´",
+        "selectionStart": 1,
+        "selectionEnd": 1,
+        "before": "",
+        "after": ""
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "é",
+        "selectionStart": 1,
+        "selectionEnd": 1
+      }
+    ],
+    "proxy": {
+      "value": "åé",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    "caret": 2
+  },
+  "qualification": "captured"
+}

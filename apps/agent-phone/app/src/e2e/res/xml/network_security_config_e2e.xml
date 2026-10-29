@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The debug configuration plus the end-to-end suite's test CA, so the suite
+  serves its Host over TLS without ADB in the data path. Compiled only into a
+  debug build given -PopensteerE2eCa, which also supplies raw/opensteer_e2e_ca
+  (app/build.gradle.kts); a release never contains it.
+-->
+<network-security-config xmlns:tools="http://schemas.android.com/tools" tools:ignore="UnusedResources">
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+            <certificates src="@raw/opensteer_e2e_ca" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

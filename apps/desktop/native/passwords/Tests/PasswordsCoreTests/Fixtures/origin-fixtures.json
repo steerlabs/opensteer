@@ -1,0 +1,286 @@
+[
+  {
+    "input": "https://example.com",
+    "origin": "https://example.com"
+  },
+  {
+    "input": "https://example.com/",
+    "origin": "https://example.com"
+  },
+  {
+    "input": "https://EXAMPLE.COM/Login?Next=/A#Frag",
+    "origin": "https://example.com"
+  },
+  {
+    "input": "HTTPS://Example.com",
+    "origin": "https://example.com"
+  },
+  {
+    "input": "https://example.com#frag",
+    "origin": "https://example.com"
+  },
+  {
+    "input": "https://example.com?q=1",
+    "origin": "https://example.com"
+  },
+  {
+    "input": "https://example.com:443/",
+    "origin": "https://example.com"
+  },
+  {
+    "input": "https://EXAMPLE.com:443",
+    "origin": "https://example.com"
+  },
+  {
+    "input": "https://example.com:8443/login",
+    "origin": "https://example.com:8443"
+  },
+  {
+    "input": "https://login.example.com:8443",
+    "origin": "https://login.example.com:8443"
+  },
+  {
+    "input": "https://example.com:0443/",
+    "origin": null
+  },
+  {
+    "input": "https://example.com:/",
+    "origin": null
+  },
+  {
+    "input": "https://example.com:0/",
+    "origin": null
+  },
+  {
+    "input": "https://example.com:65536/",
+    "origin": null
+  },
+  {
+    "input": "https://example.com:12a/",
+    "origin": null
+  },
+  {
+    "input": "https://www.example.co.uk/path/to/login?x=1",
+    "origin": "https://www.example.co.uk"
+  },
+  {
+    "input": "https://a_b.example.com/",
+    "origin": "https://a_b.example.com"
+  },
+  {
+    "input": "https://bücher.example/login",
+    "origin": "https://xn--bcher-kva.example"
+  },
+  {
+    "input": "https://BÜCHER.example",
+    "origin": null
+  },
+  {
+    "input": "https://Bücher.EXAMPLE/",
+    "origin": "https://xn--bcher-kva.example"
+  },
+  {
+    "input": "https://bücher.example/",
+    "origin": "https://xn--bcher-kva.example"
+  },
+  {
+    "input": "https://xn--bcher-kva.example/",
+    "origin": "https://xn--bcher-kva.example"
+  },
+  {
+    "input": "https://XN--BCHER-KVA.example/",
+    "origin": "https://xn--bcher-kva.example"
+  },
+  {
+    "input": "https://пример.рф/",
+    "origin": "https://xn--e1afmkfd.xn--p1ai"
+  },
+  {
+    "input": "https://ß.example/",
+    "origin": "https://xn--zca.example"
+  },
+  {
+    "input": "https://例え.テスト/",
+    "origin": "https://xn--r8jz45g.xn--zckzah"
+  },
+  {
+    "input": "https://exa​mple.com/",
+    "origin": null
+  },
+  {
+    "input": "https://Ａbc.example.com/",
+    "origin": null
+  },
+  {
+    "input": "https://xn--zz.example/",
+    "origin": null
+  },
+  {
+    "input": "https://example.com./",
+    "origin": null
+  },
+  {
+    "input": "https://example.com../",
+    "origin": null
+  },
+  {
+    "input": "https://.example.com/",
+    "origin": null
+  },
+  {
+    "input": "https://user:pass@example.com/",
+    "origin": null
+  },
+  {
+    "input": "https://user@example.com/",
+    "origin": null
+  },
+  {
+    "input": "https://example.com@evil.example/",
+    "origin": null
+  },
+  {
+    "input": "https://127.0.0.1/",
+    "origin": null
+  },
+  {
+    "input": "https://192.168.0.1:8443/",
+    "origin": null
+  },
+  {
+    "input": "https://0x7f.1/",
+    "origin": null
+  },
+  {
+    "input": "https://example.123/",
+    "origin": null
+  },
+  {
+    "input": "https://[::1]/",
+    "origin": null
+  },
+  {
+    "input": "https://[2001:db8::1]:8443/",
+    "origin": null
+  },
+  {
+    "input": "https://localhost/",
+    "origin": null
+  },
+  {
+    "input": "https://localhost:3000/",
+    "origin": null
+  },
+  {
+    "input": "https://app.localhost/",
+    "origin": null
+  },
+  {
+    "input": "http://example.com/",
+    "origin": null
+  },
+  {
+    "input": "ftp://example.com/",
+    "origin": null
+  },
+  {
+    "input": "android://AAAAfakehash@com.example.app/",
+    "origin": null
+  },
+  {
+    "input": "javascript:alert(1)",
+    "origin": null
+  },
+  {
+    "input": "chrome://settings",
+    "origin": null
+  },
+  {
+    "input": "example.com",
+    "origin": null
+  },
+  {
+    "input": "https://github.io/",
+    "origin": null
+  },
+  {
+    "input": "https://user.github.io/",
+    "origin": "https://user.github.io"
+  },
+  {
+    "input": "https://co.uk/",
+    "origin": null
+  },
+  {
+    "input": "https://s3.amazonaws.com/",
+    "origin": null
+  },
+  {
+    "input": "https://bucket.s3.amazonaws.com/",
+    "origin": "https://bucket.s3.amazonaws.com"
+  },
+  {
+    "input": "https://example/",
+    "origin": null
+  },
+  {
+    "input": "https:example.com",
+    "origin": null
+  },
+  {
+    "input": "https:/example.com",
+    "origin": null
+  },
+  {
+    "input": "https:///example.com",
+    "origin": null
+  },
+  {
+    "input": "https://example.com\\@evil.example/",
+    "origin": null
+  },
+  {
+    "input": "https://example.com\\login",
+    "origin": null
+  },
+  {
+    "input": " https://example.com",
+    "origin": null
+  },
+  {
+    "input": "https://example.com ",
+    "origin": null
+  },
+  {
+    "input": "https://exa mple.com/",
+    "origin": null
+  },
+  {
+    "input": "https://example.com/\tpath",
+    "origin": null
+  },
+  {
+    "input": "https://exa\nmple.com/",
+    "origin": null
+  },
+  {
+    "input": "https://exa%6dple.com/",
+    "origin": null
+  },
+  {
+    "input": "https://-example.com/",
+    "origin": null
+  },
+  {
+    "input": "https://example-.com/",
+    "origin": null
+  },
+  {
+    "input": "",
+    "origin": null
+  },
+  {
+    "input": "https://",
+    "origin": null
+  }
+]

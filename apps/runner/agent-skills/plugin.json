@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "opensteer",
+  "version": "1.0.0",
+  "description": "Opensteer integration, Workspace, Thread, Trigger, Browser, and machine access workflows",
+  "author": {
+    "name": "SteerLabs"
+  }
+}

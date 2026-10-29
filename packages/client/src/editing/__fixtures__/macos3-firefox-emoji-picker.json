@@ -1,0 +1,624 @@
+{
+  "native": true,
+  "engine": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:159.0) Gecko/20100101 Firefox/159.0",
+  "scenario": "emoji-picker",
+  "inputSource": "com.apple.keylayout.US",
+  "intent": "Physical native firefox-emoji-picker after actual Firefox Welcome acceptance and native control actions. Preserve the native event order; failed emoji insertion stays explicitly unqualified.",
+  "expected": {
+    "value": "",
+    "producers": [],
+    "transactionCommits": [],
+    "keystrokes": [],
+    "compositions": [],
+    "proxy": {
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    "caret": 0
+  },
+  "sourceSha": "47e7bfc0da3a6f169030636f0f06f9b430eb86fc",
+  "sourceSelection": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "requested": "com.apple.keylayout.US",
+    "select": 0,
+    "statuses": [
+      {
+        "enable": 0,
+        "id": "com.apple.keylayout.US"
+      }
+    ]
+  },
+  "sourceAfterKeys": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "frontPid": 1069
+  },
+  "pickerApps": [
+    {
+      "bundleId": "com.apple.loginwindow",
+      "name": "loginwindow",
+      "pid": 192
+    },
+    {
+      "bundleId": "",
+      "name": "universalaccessd",
+      "pid": 383
+    },
+    {
+      "bundleId": "com.apple.coreservices.uiagent",
+      "name": "CoreServicesUIAgent",
+      "pid": 380
+    },
+    {
+      "bundleId": "com.apple.Terminal",
+      "name": "Terminal",
+      "pid": 401
+    },
+    {
+      "bundleId": "com.apple.WindowManager",
+      "name": "WindowManager",
+      "pid": 387
+    },
+    {
+      "bundleId": "com.apple.talagent",
+      "name": "talagentd",
+      "pid": 402
+    },
+    {
+      "bundleId": "com.apple.systemuiserver",
+      "name": "SystemUIServer",
+      "pid": 406
+    },
+    {
+      "bundleId": "com.apple.dock",
+      "name": "Dock",
+      "pid": 403
+    },
+    {
+      "bundleId": "com.apple.AccessibilityUIServer",
+      "name": "Accessibility",
+      "pid": 416
+    },
+    {
+      "bundleId": "com.apple.controlcenter",
+      "name": "Control Center",
+      "pid": 404
+    },
+    {
+      "bundleId": "com.apple.finder",
+      "name": "Finder",
+      "pid": 407
+    },
+    {
+      "bundleId": "com.apple.wallpaper.agent",
+      "name": "Wallpaper",
+      "pid": 429
+    },
+    {
+      "bundleId": "com.apple.ViewBridgeAuxiliary",
+      "name": "ViewBridgeAuxiliary",
+      "pid": 433
+    },
+    {
+      "bundleId": "com.apple.quicklook.QuickLookUIService",
+      "name": "QuickLookUIService (Finder)",
+      "pid": 424
+    },
+    {
+      "bundleId": "com.apple.AppSSOAgent",
+      "name": "Single Sign-On",
+      "pid": 447
+    },
+    {
+      "bundleId": "com.apple.notificationcenterui",
+      "name": "Notification Center",
+      "pid": 453
+    },
+    {
+      "bundleId": "com.apple.chronod",
+      "name": "chronod",
+      "pid": 468
+    },
+    {
+      "bundleId": "com.apple.CoreLocationAgent",
+      "name": "CoreLocationAgent",
+      "pid": 438
+    },
+    {
+      "bundleId": "com.apple.IOUIAgent",
+      "name": "IOUIAgent",
+      "pid": 502
+    },
+    {
+      "bundleId": "com.apple.TextInputMenuAgent",
+      "name": "TextInputMenuAgent",
+      "pid": 548
+    },
+    {
+      "bundleId": "com.apple.AirPlayUIAgent",
+      "name": "AirPlay Screen Mirroring",
+      "pid": 545
+    },
+    {
+      "bundleId": "com.apple.UIKitSystemApp",
+      "name": "UIKitSystem",
+      "pid": 518
+    },
+    {
+      "bundleId": "com.apple.dock.extra",
+      "name": "Dock Extra",
+      "pid": 560
+    },
+    {
+      "bundleId": "com.apple.TextInputSwitcher",
+      "name": "TextInputSwitcher",
+      "pid": 558
+    },
+    {
+      "bundleId": "com.apple.SoftwareUpdateNotificationManager",
+      "name": "SoftwareUpdateNotificationManager",
+      "pid": 553
+    },
+    {
+      "bundleId": "com.apple.Spotlight",
+      "name": "Spotlight",
+      "pid": 561
+    },
+    {
+      "bundleId": "com.apple.wifi.WiFiAgent",
+      "name": "Wi-Fi",
+      "pid": 672
+    },
+    {
+      "bundleId": "",
+      "name": "AppSSODaemon",
+      "pid": 451
+    },
+    {
+      "bundleId": "",
+      "name": "GamePolicyAgent",
+      "pid": 710
+    },
+    {
+      "bundleId": "com.apple.WorkflowKit.ShortcutsViewService",
+      "name": "Shortcuts",
+      "pid": 776
+    },
+    {
+      "bundleId": "com.github.Electron",
+      "name": "Electron",
+      "pid": 868
+    },
+    {
+      "bundleId": "com.apple.textkit.nsattributedstringagent",
+      "name": "nsattributedstringagent",
+      "pid": 880
+    },
+    {
+      "bundleId": "com.apple.WebKit.GPU",
+      "name": "nsattributedstringagent Graphics and Media",
+      "pid": 882
+    },
+    {
+      "bundleId": "com.apple.TextInputUI.xpc.CursorUIViewService",
+      "name": "CursorUIViewService",
+      "pid": 918
+    },
+    {
+      "bundleId": "com.apple.SafariPlatformSupport.Helper",
+      "name": "AutoFill (Electron)",
+      "pid": 920
+    },
+    {
+      "bundleId": "com.apple.CharacterPaletteIM",
+      "name": "Emoji & Symbols",
+      "pid": 924
+    },
+    {
+      "bundleId": "com.apple.accessibility.AXVisualSupportAgent",
+      "name": "Accessibility Services",
+      "pid": 936
+    },
+    {
+      "bundleId": "com.apple.backgroundtaskmanagement.agent",
+      "name": "BackgroundTaskManagementAgent",
+      "pid": 947
+    },
+    {
+      "bundleId": "com.apple.AuthenticationServicesCore.AuthenticationServicesAgent",
+      "name": "AuthenticationServicesAgent",
+      "pid": 950
+    },
+    {
+      "bundleId": "org.mozilla.firefox",
+      "name": "Firefox",
+      "pid": 1069
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP Socket Process",
+      "pid": 1074
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP WebExtensions",
+      "pid": 1075
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP RDD Process",
+      "pid": 1076
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP Isolated Web Content",
+      "pid": 1077
+    },
+    {
+      "bundleId": "com.apple.SafariPlatformSupport.Helper",
+      "name": "AutoFill (Firefox)",
+      "pid": 1079
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP Utility Process",
+      "pid": 1082
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP Privileged Content",
+      "pid": 1083
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP Isolated Web Content",
+      "pid": 1085
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP Web Content",
+      "pid": 1086
+    },
+    {
+      "bundleId": "com.apple.appkit.xpc.ThemeWidgetControlViewService",
+      "name": "ThemeWidgetControlViewService (Firefox)",
+      "pid": 1088
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP Web Content",
+      "pid": 1087
+    },
+    {
+      "bundleId": "org.mozilla.plugincontainer",
+      "name": "FirefoxCP Web Content",
+      "pid": 1092
+    },
+    {
+      "bundleId": "com.apple.PressAndHold",
+      "name": "com.apple.PressAndHold",
+      "pid": 1103
+    },
+    {
+      "bundleId": "com.apple.inputmethod.Kotoeri.RomajiTyping",
+      "name": "Japanese Input Method - Romaji",
+      "pid": 1107
+    },
+    {
+      "bundleId": "",
+      "name": "native-keys",
+      "pid": 1141
+    }
+  ],
+  "pickerSelection": {
+    "accessibilityTrusted": true,
+    "button": "grinning face / 😀",
+    "enhancedAccessibilityStatus": -25205,
+    "found": false,
+    "nativeButtons": [
+      {
+        "names": ["Apple"],
+        "role": "AXMenuBarItem"
+      },
+      {
+        "names": ["About This Mac"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["System Information"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["System Settings…"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["App Store"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Recent Items"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Applications"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Safari"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Show “Safari” in Finder"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["System Settings"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Show “System Settings” in Finder"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Terminal"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Show “Terminal” in Finder"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Documents"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Servers"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Clear Menu"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Force Quit…"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Force Quit Emoji & Symbols"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Sleep"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Restart…"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Restart"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Shut Down…"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Shut Down"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Lock Screen"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Log Out Managed via Tart…"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Log Out Managed via Tart"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Emoji & Symbols"],
+        "role": "AXMenuBarItem"
+      },
+      {
+        "names": ["About CharacterViewer"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": ["Settings…"],
+        "role": "AXMenuItem"
+      },
+      {
+        "names": [],
+        "role": "AXMenuItem"
+      }
+    ],
+    "pressStatus": -1,
+    "visited": 229
+  },
+  "events": [
+    {
+      "type": "selection",
+      "time": 40562,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 40862,
+      "trusted": true,
+      "key": "Control",
+      "code": "ControlLeft",
+      "keyCode": 17,
+      "location": 1,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 40904,
+      "trusted": true,
+      "key": "Meta",
+      "code": "MetaLeft",
+      "keyCode": 224,
+      "location": 1,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": true,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 40961,
+      "trusted": true,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 32,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": true,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keyup",
+      "time": 41021,
+      "trusted": true,
+      "key": "Meta",
+      "code": "MetaLeft",
+      "keyCode": 224,
+      "location": 1,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "blur",
+      "time": 41066,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "focus",
+      "time": 45428,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    }
+  ],
+  "final": {
+    "value": "",
+    "selectionStart": 0,
+    "selectionEnd": 0,
+    "composing": false
+  },
+  "captureIntent": {
+    "keys": ["49:control:meta"],
+    "click": false,
+    "picker": true,
+    "phases": [
+      {
+        "phase": "initial",
+        "keys": ["49:control:meta"],
+        "value": "",
+        "composing": false,
+        "eventCount": 6
+      }
+    ]
+  },
+  "captureExpected": {
+    "value": "😀"
+  },
+  "platform": "mac",
+  "qualification": "failed-emoji-picker"
+}

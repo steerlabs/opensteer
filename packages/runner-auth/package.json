@@ -1,0 +1,26 @@
+{
+  "name": "@opensteer/runner-auth",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opensteer/core": "workspace:*",
+    "@opensteer/integration-core": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
+    "@opensteer/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@opensteer/integration-catalog": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

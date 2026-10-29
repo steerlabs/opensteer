@@ -1,0 +1,48 @@
+diff --git a/lib/coreBundle.js b/lib/coreBundle.js
+index d9041dd0f009072511a7d808dec83121ff29e127..a6ddb016fe77fdfcc4261939f32539e30f27e89e 100644
+--- a/lib/coreBundle.js
++++ b/lib/coreBundle.js
+@@ -56857,22 +56857,27 @@ var init_browserServerImpl = __esm({
+           rewriteErrorMessage(e, `${e.message} Failed to launch browser.${log2}`);
+           throw e;
+         }
+-        const path66 = options.wsPath ? options.wsPath.startsWith("/") ? options.wsPath : `/${options.wsPath}` : `/${createGuid()}`;
+-        const server = new PlaywrightServer({ mode: options._sharedBrowser ? "launchServerShared" : "launchServer", path: path66, maxConnections: Infinity, preLaunchedBrowser: browser });
+-        const wsEndpoint = await server.listen(options.port, options.host);
+-        const browserServer = new import_events17.default();
+-        browserServer.process = () => browser.options.browserProcess.process;
+-        browserServer.wsEndpoint = () => wsEndpoint;
+-        browserServer.close = () => browser.options.browserProcess.close();
+-        browserServer[Symbol.asyncDispose] = browserServer.close;
+-        browserServer.kill = () => browser.options.browserProcess.kill();
+-        browserServer._disconnectForTest = () => server.close();
+-        browserServer._userDataDirForTest = browser._userDataDirForTest;
+-        browser.options.browserProcess.onclose = (exitCode, signal) => {
+-          server.close();
+-          browserServer.emit("close", exitCode, signal);
+-        };
+-        return browserServer;
++        try {
++          const path66 = options.wsPath ? options.wsPath.startsWith("/") ? options.wsPath : `/${options.wsPath}` : `/${createGuid()}`;
++          const server = new PlaywrightServer({ mode: options._sharedBrowser ? "launchServerShared" : "launchServer", path: path66, maxConnections: Infinity, preLaunchedBrowser: browser });
++          const wsEndpoint = await server.listen(options.port, options.host);
++          const browserServer = new import_events17.default();
++          browserServer.process = () => browser.options.browserProcess.process;
++          browserServer.wsEndpoint = () => wsEndpoint;
++          browserServer.close = () => browser.options.browserProcess.close();
++          browserServer[Symbol.asyncDispose] = browserServer.close;
++          browserServer.kill = () => browser.options.browserProcess.kill();
++          browserServer._disconnectForTest = () => server.close();
++          browserServer._userDataDirForTest = browser._userDataDirForTest;
++          browser.options.browserProcess.onclose = (exitCode, signal) => {
++            server.close();
++            browserServer.emit("close", exitCode, signal);
++          };
++          return browserServer;
++        } catch (error) {
++          await browser.options.browserProcess.kill();
++          throw error;
++        }
+       }
+     };
+   }

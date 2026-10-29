@@ -1,0 +1,5 @@
+"url","username","password","httpRealm","formActionOrigin","guid","timeCreated","timeLastUsed","timePasswordChanged"
+"https://example.com","alice@example.com","test-password-123",,"https://example.com","{00000000-0000-4000-8000-000000000001}","1700000000000","1700000000000","1700000000000"
+"chrome://FirefoxAccounts","fake-uid","fake-token",,,"{00000000-0000-4000-8000-000000000002}","1700000000000","1700000000000","1700000000000"
+"https://intranet.example.net:8443","alice","test-password-123","Intranet Realm",,"{00000000-0000-4000-8000-000000000003}","1700000000000","1700000000000","1700000000000"
+"https://192.168.1.10","admin","fake-router-pass",,"https://192.168.1.10","{00000000-0000-4000-8000-000000000004}","1700000000000","1700000000000","1700000000000"

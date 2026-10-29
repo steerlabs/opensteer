@@ -1,0 +1,4 @@
+interface:
+  display_name: "Opensteer Computers"
+  short_description: "Reach another computer in this Deployment over SSH"
+  default_prompt: "Use $opensteer-computers to run a command or copy files on another computer."

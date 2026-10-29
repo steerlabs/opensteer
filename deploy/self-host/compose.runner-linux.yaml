@@ -1,0 +1,91 @@
+services:
+  workspace-storage-init:
+    image: opensteer-host:${OPENSTEER_IMAGE_TAG:-local}
+    user: "0:0"
+    read_only: true
+    restart: "no"
+    network_mode: none
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["node", "-e"]
+    command:
+      - |
+        const fs = require('node:fs');
+        for (const path of ['/workspace-data', '/workspace-registry']) {
+          fs.chownSync(path, 10001, 10001);
+          fs.chmodSync(path, 0o700);
+        }
+    volumes:
+      - workspace-data:/workspace-data
+      - workspace-registry:/workspace-registry
+
+  runner:
+    image: opensteer-runner:${OPENSTEER_IMAGE_TAG:-local}
+    build:
+      args:
+        OPENSTEER_RELEASE_VERSION: ${OPENSTEER_RELEASE_VERSION:?set OPENSTEER_RELEASE_VERSION}
+        OPENSTEER_SOURCE_REVISION: ${OPENSTEER_SOURCE_REVISION:?set OPENSTEER_SOURCE_REVISION}
+      context: ../..
+      dockerfile: deploy/container/Containerfile
+      target: runner
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
+    security_opt:
+      - seccomp=./runner-seccomp.json
+      - apparmor=${OPENSTEER_RUNNER_APPARMOR_PROFILE:?set OPENSTEER_RUNNER_APPARMOR_PROFILE; see README.md#runner-sandbox}
+    environment:
+      # Node and the Node-based Claude runtime must trust the same private CA
+      # used by Host-issued callback URLs, not only the control WebSocket.
+      NODE_EXTRA_CA_CERTS: /control-ca/root.crt
+      OPENSTEER_BROWSER_HARNESS: /app/browser-harness/browser-harness.mjs
+      OPENSTEER_DEFAULT_WORKSPACE_BACKING: ${OPENSTEER_DEFAULT_WORKSPACE_BACKING:?set OPENSTEER_DEFAULT_WORKSPACE_BACKING}
+      OPENSTEER_DEPLOYMENT_KIND: ${OPENSTEER_DEPLOYMENT_KIND:?set OPENSTEER_DEPLOYMENT_KIND}
+      OPENSTEER_ENVIRONMENT_ID: ${OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID:?set OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID}
+      OPENSTEER_HOST_URL: https://gateway:8443
+      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: /var/lib/opensteer-workspace-registry/workspace-bindings.v1.json
+      OPENSTEER_LOCAL_WORKSPACE_ROOT: /var/lib/opensteer-workspaces
+      OPENSTEER_MAX_CONCURRENT_RUNS: ${OPENSTEER_MAX_CONCURRENT_RUNS:-4}
+      OPENSTEER_MAX_CONCURRENT_TRIGGER_PROGRAMS: ${OPENSTEER_MAX_CONCURRENT_TRIGGER_PROGRAMS:-4}
+      OPENSTEER_MODE: ${OPENSTEER_MODE:-production}
+      OPENSTEER_NATIVE_FS_HELPER: /app/native-fs-helper/opensteer-native-fs
+      OPENSTEER_RUNNER_CONTROL_CA_PATH: /control-ca/root.crt
+      OPENSTEER_RUNNER_DATA_DIR: /var/lib/opensteer
+      OPENSTEER_RUNNER_KIND: managed
+      OPENSTEER_RUNNER_NAME: ${OPENSTEER_RUNNER_NAME:-Main runner}
+      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: local-directory
+    depends_on:
+      gateway:
+        condition: service_healthy
+      control-ca-export:
+        condition: service_completed_successfully
+      workspace-storage-init:
+        condition: service_completed_successfully
+    networks:
+      - control
+      - egress
+    stop_grace_period: 2m
+    tmpfs:
+      - /tmp:mode=1777
+    volumes:
+      - control-ca:/control-ca:ro
+      # The attachment cache must also stay outside private Runner state.
+      - runner-home:/home/opensteer
+      - runner-data:/var/lib/opensteer
+      - workspace-data:/var/lib/opensteer-workspaces
+      - workspace-registry:/var/lib/opensteer-workspace-registry
+volumes:
+  runner-home: {}
+  runner-data: {}
+  workspace-data: {}
+  workspace-registry: {}

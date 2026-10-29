@@ -1,0 +1,739 @@
+/* Automations: what Opensteer does on its own. One list, grouped by what each
+   automation needs from its owner; each row reads left to right as what it is,
+   where it talks to you, and when it runs next. */
+
+.automations-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-16);
+}
+
+.automations-head .page__header {
+  flex: 1;
+  min-width: 0;
+}
+
+.automations-head__actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-8);
+  padding-bottom: var(--space-2);
+}
+
+.automations-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+.automations-group__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  margin: 0 0 0 var(--space-2);
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+}
+
+.automations-group__count {
+  color: var(--muted-dim);
+  font-weight: var(--weight-normal);
+  font-variant-numeric: tabular-nums;
+}
+
+.automations-group__hint {
+  margin: 0 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.automations-list {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.automations-list > * + * {
+  border-top: 1px solid var(--line);
+}
+
+.automations-list__empty {
+  margin: 0;
+  padding: var(--space-14) var(--space-16);
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+/* One automation ------------------------------------------------------- */
+
+.automation-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "glyph body when chevron";
+  align-items: center;
+  gap: var(--space-14);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-12) var(--space-16);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.automation-row:hover {
+  background: var(--surface-elevated);
+  text-decoration: none;
+}
+
+.automation-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ember-line);
+}
+
+.automation-row__glyph {
+  grid-area: glyph;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--text-soft);
+}
+
+.automation-row__glyph .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.automation-row__body {
+  grid-area: body;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.automation-row__name {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.automation-row__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-12);
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.automation-row__where {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--text-soft);
+}
+
+.automation-row__where .icon {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+
+.automation-row__problem {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-8);
+  min-width: 0;
+  color: var(--red-text);
+}
+
+.automation-row__problem q {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-row__chevron {
+  grid-area: chevron;
+  color: var(--muted-dim);
+}
+
+.automation-row--attention .automation-row__glyph {
+  border-color: var(--red-line);
+  background: var(--red-wash);
+  color: var(--red);
+}
+
+/* A paused automation fades rather than gaining another label. */
+.automation-row--paused .automation-row__glyph,
+.automation-row--paused .automation-row__body {
+  opacity: 0.55;
+}
+
+/* A one-time automation is a moment; its glyph carries the accent. */
+.automation-row__glyph--once {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+.automation-row--example {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "glyph body hint";
+}
+
+.automation-row--example .automation-row__name {
+  grid-area: body;
+  font-weight: var(--weight-medium);
+}
+
+.automation-row--example .automation-row__glyph {
+  border-style: dashed;
+  border-color: var(--ember-line);
+  background: transparent;
+  color: var(--ember);
+}
+
+.automation-row__hint {
+  grid-area: hint;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.automation-row--example:hover .automation-row__hint {
+  color: var(--ember);
+}
+
+.automation-when {
+  grid-area: when;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  text-align: right;
+}
+
+.automation-when__time {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.automation-when__caption {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.automation-row:not(.automation-row--paused) .automation-when__caption:not(:empty) {
+  min-height: 1em;
+}
+
+/* A state is a dot and a word. Fine is quiet — only its dot is green — so
+   the eye goes to amber (waiting on something), red (broken) and ember
+   (happening now). */
+.automation-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-md);
+  white-space: nowrap;
+}
+
+.automation-state__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+
+.automation-state--ok {
+  color: var(--muted);
+}
+
+.automation-state--ok .automation-state__dot {
+  background: var(--green);
+}
+
+.automation-state--warn {
+  color: var(--amber-text);
+}
+
+.automation-state--bad {
+  color: var(--red-text);
+}
+
+.automation-state--accent {
+  color: var(--ember);
+}
+
+.automation-state--accent .automation-state__dot {
+  animation: automation-pulse 1.6s var(--ease-out) infinite;
+}
+
+@keyframes automation-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .automation-state--accent .automation-state__dot {
+    animation: none;
+  }
+}
+
+/* An empty page --------------------------------------------------------- */
+
+.automations-first {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+.automations-first__title {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: var(--display-sm);
+  font-weight: var(--weight-medium);
+}
+
+.automations-first__text {
+  max-width: 36rem;
+  margin: 0 0 var(--space-6);
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  line-height: 1.55;
+}
+
+/* One automation's page ------------------------------------------------- */
+
+.automation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  margin-top: calc(-1 * var(--space-12));
+}
+
+.automation-actions .btn--danger {
+  margin-left: auto;
+}
+
+.automation-confirm {
+  width: min(330px, calc(100vw - 20px));
+  padding: var(--space-16);
+}
+
+.automation-confirm__question {
+  margin: 0 0 var(--space-6);
+  color: var(--text);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-medium);
+}
+
+.automation-confirm__detail {
+  margin: 0 0 var(--space-14);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.automation-confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
+}
+
+.automation-time {
+  display: grid;
+  grid-template-columns: minmax(0, 18rem) auto;
+  align-items: end;
+  gap: var(--space-8) var(--space-12);
+  padding: var(--space-14) var(--space-16);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.automation-time__actions {
+  display: flex;
+  gap: var(--space-8);
+}
+
+.automation-time .form-actions__error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.automation-problem__body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.automation-problem__what,
+.automation-problem__help {
+  margin: 0;
+}
+
+.automation-problem__what {
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}
+
+.automation-problem__help {
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+
+.automation-problem__help a {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.automation-problem__error {
+  max-height: 7.5em;
+  margin: 0;
+  padding: var(--space-8) var(--space-10);
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--surface-code);
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.automation-facts {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.automation-facts__row {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: var(--space-12);
+  padding: var(--space-12) var(--space-16);
+}
+
+.automation-facts__row + .automation-facts__row {
+  border-top: 1px solid var(--line);
+}
+
+.automation-facts dt {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.automation-facts dd {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-lg);
+}
+
+.automation-facts__link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--text);
+}
+
+.automation-facts__link .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.automation-facts__note {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+/* A run: what happened and where Opensteer answered. */
+.automation-run {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: start;
+  gap: var(--space-12);
+  padding: var(--space-12) var(--space-16);
+}
+
+.automation-run__glyph {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: var(--muted);
+}
+
+.automation-run__glyph--ok {
+  color: var(--green);
+}
+
+.automation-run__glyph--bad {
+  color: var(--red);
+}
+
+.automation-run__glyph--warn {
+  color: var(--amber);
+}
+
+.automation-run__glyph--accent {
+  color: var(--ember);
+}
+
+.automation-run__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.automation-run__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-8);
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.automation-run__source {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-normal);
+}
+
+.automation-run__outcome {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-8);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+
+.automation-run__error {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--red-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-run__output {
+  margin-top: var(--space-4);
+}
+
+.automation-contract p {
+  max-width: 44rem;
+  margin: var(--space-6) 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.automation-run__output summary,
+.automation-contract summary,
+.automation-advanced summary {
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  list-style: none;
+}
+
+.automation-run__output summary::-webkit-details-marker,
+.automation-contract summary::-webkit-details-marker,
+.automation-advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.automation-run__output summary::before,
+.automation-contract summary::before,
+.automation-advanced summary::before {
+  content: "›";
+  display: inline-block;
+  width: 1em;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.automation-run__output[open] summary::before,
+.automation-contract[open] summary::before,
+.automation-advanced[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.automation-run__output summary:focus-visible,
+.automation-contract summary:focus-visible,
+.automation-advanced summary:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-ember);
+}
+
+.automation-run__output pre,
+.automation-advanced__code {
+  max-height: 16rem;
+  margin: var(--space-6) 0 0;
+  padding: var(--space-10) var(--space-12);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-code);
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.automation-advanced {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.automation-advanced summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-16);
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.automation-advanced__hint {
+  color: var(--muted);
+  font-size: var(--text-md);
+  font-weight: var(--weight-normal);
+}
+
+.automation-advanced__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: 0 var(--space-16) var(--space-16);
+}
+
+.automation-advanced__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  margin: var(--space-6) 0 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.automation-advanced__label {
+  margin: var(--space-6) 0 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.automation-webhook {
+  display: flex;
+  flex-direction: column;
+}
+
+.automation-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-12) var(--space-16);
+}
+
+.automation-copy__label {
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+}
+
+@media (max-width: 680px) {
+  .automations-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .automation-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "glyph body chevron"
+      "glyph when chevron";
+    row-gap: var(--space-6);
+  }
+
+  .automation-when {
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--space-8);
+    text-align: left;
+  }
+
+  .automation-when:empty {
+    display: none;
+  }
+
+  .automation-row--example {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "glyph body";
+  }
+
+  .automation-row--example .automation-row__hint {
+    display: none;
+  }
+
+  .automation-actions .btn {
+    min-height: var(--touch-target);
+  }
+
+  .automation-time {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .automation-facts__row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .automation-run {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+}

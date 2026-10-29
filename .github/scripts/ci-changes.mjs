@@ -1,0 +1,219 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
+import {
+  defaultTestInclude,
+  defaultTestExclude,
+  integrationTestInclude,
+} from "./ci-test-files.mjs";
+import { matchesGlob, basename, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+export const lanes = [
+  "lint",
+  "build-types",
+  "tests",
+  "integration",
+  "native-mac",
+  "android",
+  "browser-journeys",
+];
+const git = (root, args) =>
+  execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+export function parseDiff(text) {
+  if (!text) return [];
+  if (!text.endsWith("\0")) throw new Error("Diff is not NUL terminated");
+  return text.slice(0, -1).split("\0");
+}
+export function readGraph(root, ref) {
+  const paths = parseDiff(
+    git(root, ref ? ["ls-tree", "-rz", "--name-only", ref] : ["ls-files", "-z"]),
+  );
+  const workspace = ref
+    ? git(root, ["show", `${ref}:pnpm-workspace.yaml`])
+    : readFileSync(resolve(root, "pnpm-workspace.yaml"), "utf8");
+  // Deliberately support only this repository's explicit one-level workspace globs.
+  const groups = [...workspace.matchAll(/^\s*-\s+['"]?([\w-]+)\/\*['"]?\s*$/gm)].map((m) => m[1]);
+  if (!groups.length) throw new Error("Unsupported workspace definition");
+  const manifests = paths.filter(
+    (p) =>
+      groups.some((g) => p.startsWith(g + "/")) &&
+      p.split("/").length === 3 &&
+      p.endsWith("/package.json"),
+  );
+  const graph = manifests.map((file) => {
+    const m = JSON.parse(
+      ref ? git(root, ["show", `${ref}:${file}`]) : readFileSync(resolve(root, file), "utf8"),
+    );
+    if (typeof m.name !== "string") throw new Error(`Missing name: ${file}`);
+    const deps = Object.entries({
+      ...m.dependencies,
+      ...m.devDependencies,
+      ...m.optionalDependencies,
+      ...m.peerDependencies,
+    })
+      .filter(([, v]) => String(v).startsWith("workspace:"))
+      .map(([k]) => k);
+    const dir = file.slice(0, -13);
+    const owned = paths.filter((p) => p.startsWith(dir + "/"));
+    const matches = (file, globs) => globs.some((glob) => matchesGlob(file, glob));
+    const coverage = [];
+    if (owned.some((p) => matches(p, integrationTestInclude))) coverage.push("integration");
+    if (owned.some((p) => matches(p, defaultTestInclude) && !matches(p, defaultTestExclude)))
+      coverage.push("tests");
+    // Swift packages are built/tested on macOS; include their manifest dependency
+    // closure below because the native lane also exercises their TS wire consumers.
+    if (owned.some((p) => p.endsWith(".swift"))) coverage.push("native-mac");
+    // The Android lane builds the standalone Gradle project (handled by path
+    // below), phone setup workspaces and the generated agent-phone wire vectors.
+    if (m.name.includes("agent-phone") || owned.some((p) => basename(p).startsWith("agent-phone-")))
+      coverage.push("android");
+    // Browser journeys are declared in package scripts and use Playwright.
+    // Include every such owner rather than matching a directory-name substring.
+    const scripts = Object.values(m.scripts ?? {});
+    const browser = Object.hasOwn({ ...m.dependencies, ...m.devDependencies }, "playwright-core");
+    if (
+      browser &&
+      (m.scripts?.["test:integration"] || scripts.some((v) => /-journey\.[cm]?[jt]s/.test(v)))
+    )
+      coverage.push("browser-journeys");
+    return { name: m.name, dir, deps, coverage };
+  });
+  const names = new Set(graph.map((p) => p.name));
+  if (
+    !graph.length ||
+    names.size !== graph.length ||
+    graph.some((p) => p.deps.some((d) => !names.has(d)))
+  )
+    throw new Error("Incomplete workspace graph");
+  return graph;
+}
+const docs = (p) =>
+  !/fixture|test-support|(?:^|\/)SKILL\.md$/i.test(p) &&
+  (p.startsWith("docs/") ||
+    /^[^/]+\.md$/.test(p) ||
+    /^(LICENSE|NOTICE|THIRD_PARTY_NOTICES)(\.[^/]*)?$/.test(p));
+const global = (p) =>
+  /(^|\/)(package\.json|tsconfig[^/]*|vitest[^/]*|.*config\.[^/]+)$/.test(p) ||
+  /^(\.github\/|scripts\/|tests\/|patches\/|pnpm-|\.npmrc|\.pnpmfile|go\.(work|mod|sum)|Cargo\.)/.test(
+    p,
+  ) ||
+  /(^|\/)(go\.(mod|sum)|gradle[^/]*|.*\.gradle(\.kts)?|.*lock[^/]*)$/.test(p);
+export function decide(files, graph, baseGraph = graph, full = false) {
+  const reasons = [];
+  const affected = new Set();
+  const combined = new Map();
+  for (const p of [...baseGraph, ...graph]) {
+    const old = combined.get(p.name);
+    combined.set(p.name, {
+      ...p,
+      deps: [...new Set([...(old?.deps ?? []), ...p.deps])],
+      coverage: [...new Set([...(old?.coverage ?? []), ...(p.coverage ?? [])])],
+    });
+  }
+  let all = full;
+  let androidSource = false;
+  if (full) reasons.push("main/manual full run");
+  for (const file of files) {
+    if (docs(file)) continue;
+    if (global(file)) {
+      all = true;
+      reasons.push(`global input: ${file}`);
+      continue;
+    }
+    // This standalone Gradle project intentionally has no Node workspace
+    // manifest. It is the sole APK producer named by the Android lane.
+    if (file.startsWith("apps/agent-phone/")) {
+      androidSource = true;
+      continue;
+    }
+    const owners = [...baseGraph, ...graph].filter((p) => file.startsWith(p.dir + "/"));
+    if (!owners.length) {
+      all = true;
+      reasons.push(`unknown owner: ${file}`);
+    } else owners.forEach((p) => affected.add(p.name));
+    // Non-manifest consumers: generators, embedded native sources, shipped skills and build inputs.
+    if (/\/(scripts|agent-skills)\/|\.(go|sh|proto)$/.test(file)) {
+      all = true;
+      reasons.push(`non-manifest build/runtime consumers: ${file}`);
+    }
+  }
+  if (affected.size && [...baseGraph, ...graph].some((p) => !Array.isArray(p.coverage))) {
+    all = true;
+    reasons.push("missing lane discovery metadata");
+  }
+  if (all) for (const p of combined.values()) affected.add(p.name);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const p of combined.values())
+      if (!affected.has(p.name) && p.deps.some((d) => affected.has(d))) {
+        affected.add(p.name);
+        grew = true;
+      }
+  }
+  const dirs = [...combined.values()].filter((p) => affected.has(p.name)).map((p) => p.dir);
+  // A suite owner and all its transitive workspace dependencies can affect
+  // that suite. Union base/head ownership so deletions cannot erase coverage.
+  const reaches = (lane) => {
+    const pending = [...combined.values()]
+      .filter((p) => p.coverage.includes(lane))
+      .map((p) => p.name);
+    const seen = new Set();
+    while (pending.length) {
+      const name = pending.pop();
+      if (seen.has(name)) continue;
+      seen.add(name);
+      if (affected.has(name)) return true;
+      pending.push(...combined.get(name).deps);
+    }
+    return false;
+  };
+  return {
+    version: 1,
+    full: all,
+    reasons,
+    affected: [...affected].sort(),
+    lanes: {
+      lint: true,
+      "build-types": all || dirs.some((d) => d !== "apps/agent-phone"),
+      // Root tests have no workspace manifest and can read any workspace;
+      // keep their default-test coverage conservative for every workspace edit.
+      tests: all || reaches("tests") || affected.size > 0,
+      integration: all || reaches("integration"),
+      "native-mac": all || reaches("native-mac"),
+      android: all || androidSource || reaches("android"),
+      "browser-journeys": all || reaches("browser-journeys"),
+    },
+  };
+}
+export function detect({
+  root = process.cwd(),
+  event = process.env.EVENT_NAME,
+  base = "HEAD^1",
+} = {}) {
+  try {
+    const graph = readGraph(root);
+    if (event !== "pull_request") return decide([], graph, graph, true);
+    return decide(
+      parseDiff(git(root, ["diff", "--name-only", "-z", "--no-renames", base, "HEAD"])),
+      graph,
+      readGraph(root, base),
+    );
+  } catch (error) {
+    return {
+      version: 1,
+      full: true,
+      detectionError: true,
+      affected: [],
+      reasons: [`detector fail-open: ${error.message}`],
+      lanes: Object.fromEntries(lanes.map((k) => [k, true])),
+    };
+  }
+}
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  const plan = detect();
+  writeFileSync(process.env.CI_PLAN_PATH ?? "ci-plan.json", JSON.stringify(plan, null, 2) + "\n");
+  for (const [key, value] of Object.entries(plan.lanes)) {
+    const line = `${key}=${value}\n`;
+    process.stdout.write(line);
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, line);
+  }
+}

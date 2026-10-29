@@ -1,0 +1,10 @@
+services:
+  host:
+    environment:
+      OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_FILE: /run/secrets/initial_owner_enrollment_token
+    secrets:
+      - initial_owner_enrollment_token
+
+secrets:
+  initial_owner_enrollment_token:
+    file: ./secrets/initial_owner_enrollment_token

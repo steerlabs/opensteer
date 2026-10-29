@@ -1,0 +1,30 @@
+.streamed-context-menu {
+  position: absolute;
+  z-index: 8;
+  min-width: 180px;
+  max-width: calc(100% - 12px);
+  padding: 4px;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 8px;
+  color: var(--text, #222);
+  background: var(--surface, #fff);
+  box-shadow: 0 5px 20px #0002;
+}
+.streamed-context-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.streamed-context-menu button:focus-visible,
+.streamed-context-menu button:hover:enabled {
+  background: var(--surface-hover, #eee);
+  outline: none;
+}
+.streamed-context-menu button:disabled {
+  opacity: 0.45;
+}

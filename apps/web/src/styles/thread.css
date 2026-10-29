@@ -1,0 +1,2281 @@
+/* Thread view: header, transcript, trace entries, composer. */
+
+.thread {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+/* The transcript, and under it the requests waiting on the reader. The
+   transcript keeps its share of the height however many wait; the open
+   request is shown whole, and only past both does the body itself scroll. */
+.thread__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.thread__conversation {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: min(24%, 9rem);
+}
+
+.thread__title {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* ---- Transcript ---- */
+
+.transcript-scroll {
+  /* Positioned transcript children must belong to this scrollport, including
+     offscreen accessibility labels, rather than expanding the outer body. */
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  container: transcript / inline-size;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-bottom: var(--space-56);
+}
+
+.transcript {
+  max-width: var(--transcript-max-width);
+  margin: 0 auto;
+  padding: var(--space-28) var(--space-20) var(--space-36);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.transcript__load-earlier {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: var(--space-6);
+  margin-bottom: var(--space-16);
+}
+
+.transcript__load-earlier .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-10) 0;
+}
+
+/* ---- Input surface: the composer that morphs into the focused request ----
+
+   One bordered container at the foot of the thread. Idle, it is only the
+   composer. When the agent asks for something the action panel docks above
+   the textarea inside the same frame; risk tints the frame instead of chips. */
+
+.input-surface {
+  max-width: var(--composer-max-width);
+  margin: 0 auto;
+}
+
+.input-surface--action {
+  background: var(--surface-elevated);
+  border: 1px solid var(--ember-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-raised);
+  overflow: clip;
+  animation: rise-in var(--duration-med) var(--ease-out);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.input-surface--action:focus-within {
+  box-shadow: var(--shadow-raised), var(--ring-ember);
+}
+
+.input-surface--medium {
+  border-color: var(--amber-line);
+}
+
+.input-surface--medium:focus-within {
+  box-shadow: var(--shadow-raised), var(--ring-amber);
+}
+
+.input-surface--high {
+  border-color: var(--red-line);
+}
+
+.input-surface--high:focus-within {
+  box-shadow: var(--shadow-raised), var(--ring-red);
+}
+
+/* The docked composer sheds its own frame; a hairline divider separates it. */
+.input-surface--action .composer {
+  max-width: none;
+  margin: 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.input-surface--action .composer:focus-within {
+  box-shadow: none;
+}
+
+.action-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  padding: var(--space-14) var(--space-16) var(--space-14);
+}
+
+.composer-dock {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+}
+
+.composer-dock > * {
+  width: 100%;
+}
+
+.action-panel__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+/* ---- Requests: the open one whole, the others one row each ---- */
+
+.request-stack {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-8) calc(var(--space-20) + env(safe-area-inset-right, 0px)) 0
+    calc(var(--space-20) + env(safe-area-inset-left, 0px));
+}
+
+.request-stack > * {
+  width: 100%;
+  max-width: var(--composer-max-width);
+  margin-inline: auto;
+}
+
+/* Who asked, when a task this conversation handed out is asking. */
+.request-card__source {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  width: fit-content;
+  max-width: 100%;
+  margin: var(--space-12) var(--space-16) calc(var(--space-6) * -1);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+
+.request-card__source:hover {
+  color: var(--text);
+}
+
+.request-card__source-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-card__source > .icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+
+.request-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-height: 40px;
+  padding: 0 var(--space-14) 0 var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  text-align: left;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.request-row:hover {
+  border-color: var(--ember-line);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.request-row__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 17px;
+  color: var(--ember);
+}
+
+.request-row--high .request-row__mark {
+  color: var(--red);
+}
+
+.request-row__mark > .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.request-row__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-row__count {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.request-row__chevron {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+
+.action-panel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.action-panel__icon {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  flex: none;
+  color: var(--ember);
+}
+
+.input-surface--medium .action-panel__icon {
+  color: var(--amber);
+}
+
+.input-surface--high .action-panel__icon {
+  color: var(--red);
+}
+
+.action-panel__icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.action-panel__title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  color: var(--text);
+}
+
+/* Who inside the Run asked, when it was a subagent rather than the agent itself. */
+.action-panel__asker {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Detail: the substance of the decision — clamped until asked for. */
+.action-detail__frame {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.action-detail {
+  font-size: var(--text-lg);
+  line-height: 1.55;
+  color: var(--text-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.action-detail--mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.action-detail--clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.action-detail__more {
+  align-self: flex-start;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.action-detail__more:hover {
+  color: var(--text-soft);
+}
+
+/* Option rows: every choice is a full-width target with a digit shortcut. */
+.action-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.action-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-10);
+  width: 100%;
+  padding: var(--space-8);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  font-size: var(--text-lg);
+  color: var(--text-soft);
+  cursor: pointer;
+  animation: rise-in var(--duration-med) var(--ease-out) backwards;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.action-row:nth-child(2) {
+  animation-delay: 30ms;
+}
+
+.action-row:nth-child(3) {
+  animation-delay: 60ms;
+}
+
+.action-row:nth-child(n + 4) {
+  animation-delay: 90ms;
+}
+
+.action-row:hover:not(:disabled),
+.action-row:focus-visible {
+  border-color: var(--line);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.action-row:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.action-row--primary .action-row__label {
+  color: var(--text);
+}
+
+.action-row--selected {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+  color: var(--text);
+}
+
+.action-row__key {
+  flex: none;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  color: var(--muted-dim);
+}
+
+.action-row--primary .action-row__key {
+  border-color: var(--ember-line);
+  color: var(--ember);
+}
+
+.action-row__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.action-row__label {
+  font-weight: var(--weight-strong);
+}
+
+.action-row__desc {
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.action-row__busy {
+  flex: none;
+  align-self: center;
+}
+
+/* Form choices reuse the row shell around a native input. */
+label.action-row input {
+  margin-top: var(--space-4);
+  accent-color: var(--ember);
+}
+
+.action-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.action-form__prompt {
+  font-size: var(--text-xl);
+  color: var(--text);
+}
+
+.action-buttons {
+  display: flex;
+  gap: var(--space-8);
+  justify-content: flex-end;
+}
+
+.action-note {
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+.action-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+/* A field that is a step to take rather than a value to read: "Reconnect …". */
+.action-field__title {
+  font-weight: var(--weight-strong);
+  color: var(--text);
+}
+
+.action-advanced {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.action-advanced summary {
+  cursor: pointer;
+}
+
+.action-advanced a {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--ember);
+}
+
+/* ---- Composer ---- */
+
+.composer-dock {
+  padding: var(--space-8) calc(var(--space-20) + env(safe-area-inset-right, 0px))
+    calc(var(--space-18) + env(safe-area-inset-bottom, 0px))
+    calc(var(--space-20) + env(safe-area-inset-left, 0px));
+  background: linear-gradient(to bottom, transparent, var(--bg) 38%);
+}
+
+/* The usage-limit recovery notice belongs to the composer, so it tracks the
+   composer's measure rather than the dock's full width. */
+.composer-dock > .notice {
+  max-width: var(--composer-max-width);
+  margin: 0 auto var(--space-8);
+}
+
+/* ---- Queued messages: the tray on the composer ----
+
+   What waits for the current turn to end, docked on the composer and tucked
+   under its top edge so the two read as one dock. Each message is its own
+   card, numbered in the order Runs take them; the next one's number is
+   filled in. The number becomes a grip under the pointer, and a card's
+   actions show on hover and focus. Cards only ever move by transform. */
+
+.queue-tray {
+  position: relative;
+  max-width: var(--composer-max-width);
+  margin: 0 auto calc(var(--space-12) * -1);
+  padding: 0 var(--space-6) calc(var(--space-12) + var(--space-6));
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--surface);
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.queue-tray__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-height: 32px;
+  padding: 0 var(--space-4) 0 var(--space-10);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.queue-tray__count {
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-tray__label--paused {
+  color: var(--amber-text);
+}
+
+.queue-tray__paused-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--amber);
+}
+
+.queue-tray__fold {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  transform: rotate(180deg);
+}
+
+.queue-tray__fold svg {
+  width: 13px;
+  height: 13px;
+}
+
+.queue-tray__fold:hover {
+  background: var(--surface-hover);
+  color: var(--text-soft);
+}
+
+.queue-tray__resume {
+  margin-left: auto;
+}
+
+.queue-tray__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.queue-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-height: 36px;
+  padding: 0 var(--space-4) 0 var(--space-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  outline: none;
+  user-select: none;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.queue-card:hover,
+.queue-card:focus-within {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.queue-card:focus-visible {
+  border-color: var(--ember-line);
+  box-shadow: var(--ring-ember);
+}
+
+.queue-card--busy {
+  opacity: 0.6;
+}
+
+.queue-card__ord {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line-hover);
+  border-radius: var(--radius-full);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  touch-action: none;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.queue-card--next .queue-card__ord {
+  border-color: transparent;
+  background: var(--text);
+  color: var(--surface);
+  font-weight: var(--weight-strong);
+}
+
+.queue-card__grip {
+  display: none;
+  width: 15px;
+  height: 15px;
+}
+
+/* Under the pointer, a card that can move trades its number for a grip. */
+.queue-card--movable:hover .queue-card__ord,
+.queue-card--lifted .queue-card__ord {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: grab;
+}
+
+.queue-card--movable:hover .queue-card__num,
+.queue-card--lifted .queue-card__num {
+  display: none;
+}
+
+.queue-card--movable:hover .queue-card__grip,
+.queue-card--lifted .queue-card__grip {
+  display: block;
+}
+
+.queue-card__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-card__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.queue-card:hover .queue-card__actions,
+.queue-card:focus-within .queue-card__actions {
+  opacity: 1;
+}
+
+.queue-card__action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  height: 26px;
+  padding: 0 var(--space-8) 0 var(--space-6);
+  border-radius: var(--radius-xs);
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.queue-card__action--icon {
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+}
+
+.queue-card__action svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.queue-card__action:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.queue-card__action:hover:not(:disabled) svg {
+  color: var(--text-soft);
+}
+
+.queue-card__action--remove:hover:not(:disabled),
+.queue-card__action--remove:hover:not(:disabled) svg {
+  background: var(--red-wash);
+  color: var(--red);
+}
+
+.queue-card__action:disabled {
+  opacity: 0.45;
+}
+
+.queue-card--lifted {
+  z-index: var(--layer-raised);
+  border-color: var(--line-hover);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  color: var(--text);
+  cursor: grabbing;
+}
+
+.queue-card--lifted .queue-card__actions {
+  opacity: 0;
+}
+
+.queue-tray--dragging .queue-card:not(.queue-card--lifted) {
+  transition: transform 200ms var(--ease-out);
+}
+
+/* The middle of a long queue, folded into the edges of the cards behind. */
+.queue-tray__stack {
+  display: flex;
+  justify-content: center;
+}
+
+.queue-tray__more {
+  width: calc(100% - var(--space-24));
+  height: 18px;
+  margin-top: calc(var(--space-4) * -1);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-tray__more:hover {
+  color: var(--text-soft);
+}
+
+.queue-tray__ghosts {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* A pointer that cannot hover still needs to reach the actions, and with them
+   always showing, the words get a second line rather than a few characters. */
+@media (hover: none) {
+  .queue-card__actions {
+    opacity: 1;
+  }
+
+  .queue-card {
+    padding-block: var(--space-6);
+  }
+
+  .queue-card__text {
+    display: -webkit-box;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queue-tray {
+    animation: none;
+  }
+
+  .queue-tray--dragging .queue-card:not(.queue-card--lifted) {
+    transition: none;
+  }
+}
+
+.composer {
+  max-width: var(--composer-max-width);
+  margin: 0 auto;
+  background: var(--surface-elevated);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-raised);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.composer:focus-within {
+  border-color: var(--ember-line);
+  box-shadow: var(--shadow-raised), var(--ring-ember);
+}
+
+.composer__input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  resize: none;
+  padding: var(--space-14) var(--space-14) var(--space-4);
+  font-size: var(--text-2xl);
+  line-height: 1.5;
+  color: var(--text);
+  max-height: 240px;
+}
+
+.composer__input:focus {
+  outline: none;
+}
+
+.composer__input::placeholder {
+  color: var(--muted-dim);
+}
+
+.composer__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-8) var(--space-8) var(--space-8);
+}
+
+/* The controls' row takes whatever the footer leaves and fits itself into it
+   (see FoldToFit); it never grows to push Send out of reach. */
+.composer__settings {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  flex: 1;
+}
+
+.composer__error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-6);
+  margin: var(--space-4) var(--space-14) 0;
+  color: var(--red-text);
+  font-size: var(--text-md);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.composer__error svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-top: 2px;
+  color: var(--red);
+}
+
+/* ---- Fold to fit ----
+   A line of controls whose row folds its words away in stages rather than
+   squeezing them (see FoldToFit). The gauge is how the line is measured: it
+   spans the line's width at no height, so it changes only when the width
+   does. */
+.fold-to-fit {
+  position: relative;
+}
+
+.fold-to-fit__gauge {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.composer__send,
+.composer__stop {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-spring),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+.composer__send {
+  background: var(--ember);
+  color: var(--ink-on-ember);
+}
+
+.composer__send:hover:not(:disabled) {
+  background: var(--ember-bright);
+  transform: scale(1.05);
+}
+
+.composer__send:active:not(:disabled),
+.composer__stop:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.composer__send:disabled {
+  opacity: 0.35;
+}
+
+.composer__send svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* Stop is the one control that must read at a glance mid-run: the page's own
+   ink on a light disc, the inverse of everything around it. */
+.composer__stop {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.composer__stop:hover:not(:disabled) {
+  background: #ffffff;
+  transform: scale(1.05);
+}
+
+.composer__stop:disabled {
+  opacity: 0.45;
+}
+
+.composer__stop svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* Touch keeps Send and Stop a finger's size. Declared after the sizes it
+   overrides, which the base stylesheet's touch rules come before. */
+@media (hover: none) {
+  .composer__send,
+  .composer__stop {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+}
+
+/* Execution controls — quiet pills in the composer footer that open the
+   model and reasoning pickers. Each leads with a mark that names its current
+   value, so when the composer is narrow the words fold away and the marks
+   still say what is chosen. */
+/* Outside a composer (Home's "already running") the pills wrap as a group. */
+.exec-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* In the composer's row they neither wrap nor shrink: FoldToFit folds their
+   words instead, and it measures overflow at the row's edge. */
+.composer__settings .exec-controls {
+  flex: none;
+  flex-wrap: nowrap;
+}
+
+/* A pill keeps its whole width: a squeezed pill is how names became "G…".
+   Narrow rows fold words away instead (see FoldToFit). */
+.exec-pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6);
+  min-width: 28px;
+  padding: var(--space-6) var(--space-8);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.2;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+/* A pill that arrives with a choice — an engine's second account, a model's
+   reasoning — settles in rather than popping, so the row reads as one control
+   changing shape. Layout is untouched, so folding measures the same row. */
+.exec-controls > .exec-pill {
+  animation: pill-in var(--duration-fast) var(--ease-out);
+}
+
+@keyframes pill-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exec-controls > .exec-pill {
+    animation: none;
+  }
+}
+
+.exec-pill:hover:not(:disabled),
+.exec-pill[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text-soft);
+}
+
+.exec-pill:disabled {
+  opacity: 0.5;
+}
+
+/* A choice the reader made that has stopped being runnable. It stays the pill's
+   subject rather than being swapped out, so it has to look answered-for. */
+.exec-pill.is-unavailable,
+.exec-pill.is-unavailable .exec-pill__meta,
+.exec-pill.is-unavailable svg {
+  color: var(--red);
+}
+
+.exec-pill__label {
+  min-width: 0;
+  max-width: 13rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The engine, before the model's name: quieter, and the first to fold. */
+.exec-pill__engine {
+  display: inline-flex;
+  flex: none;
+  gap: var(--space-6);
+  white-space: nowrap;
+}
+
+.exec-pill__dot {
+  color: var(--muted-dim);
+}
+
+/* Before any AI is chosen, choosing one is the composer's primary action. */
+.exec-choose {
+  gap: var(--space-6);
+}
+
+.exec-choose > svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* What the model is set to and where it runs, after its name: read in the
+   same line, quieter, and the first words to leave a narrow row. */
+.exec-pill__summary,
+.exec-pill__meta {
+  display: inline-flex;
+  flex: none;
+  gap: var(--space-6);
+  color: var(--muted-dim);
+  white-space: nowrap;
+}
+
+.exec-pill__meta {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-2xs);
+}
+
+.exec-pill svg {
+  width: 12px;
+  height: 12px;
+  color: var(--muted-dim);
+  flex: none;
+}
+
+/* A folded part leaves the row entirely. The control reduced to its engine's
+   mark has already dropped its chevron, and is a square button its tooltip
+   names. */
+.exec-controls [data-folded] {
+  display: none;
+}
+
+/* A control folded down to its mark is still a finger's width. */
+@media (hover: none) {
+  .exec-pill {
+    min-width: var(--touch-target);
+  }
+}
+
+/* Rising bars: the reasoning level, filled up to the one in force. */
+.exec-pill .level-meter,
+.picker__glyph .level-meter {
+  width: auto;
+  height: 12px;
+}
+
+.level-meter rect {
+  opacity: 0.25;
+}
+
+.level-meter rect.level-meter__on {
+  opacity: 1;
+}
+
+/* The meter is read like the words beside it, so it takes their colour; in
+   the menu, where levels are compared, it is drawn in the brighter ink. */
+.exec-pill .level-meter {
+  color: inherit;
+}
+
+.picker__glyph .level-meter {
+  color: var(--text-soft);
+}
+
+/* The same mark a folded pill shows, beside the name it stands for: the menu
+   is where the marks are learned. */
+.picker__glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  min-width: 16px;
+  color: var(--muted);
+}
+
+.picker__glyph > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.picker__row[aria-checked="true"] .picker__glyph {
+  color: var(--text-soft);
+}
+
+.access-mode-popover {
+  width: min(340px, calc(100vw - 20px));
+}
+
+/* Each mode's description is what teaches its mark, so it is read whole. */
+.access-mode-popover .picker__detail {
+  white-space: normal;
+}
+
+.picker__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-10) var(--space-12) var(--space-10);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted-dim);
+}
+
+.picker__search svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.picker__search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font-size: var(--text-lg);
+  color: var(--text);
+}
+
+.picker__search input::placeholder {
+  color: var(--muted-dim);
+}
+
+.picker__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6);
+}
+
+/* Starting the current AI over: an action, not one of the choices, so it sits
+   below the list behind its own rule. */
+.picker__footer {
+  flex: none;
+  border-top: 1px solid var(--line);
+  padding: var(--space-6);
+}
+
+.picker__empty {
+  padding: var(--space-14) var(--space-12);
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+.picker__heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-8) var(--space-10) var(--space-4);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.01em;
+  color: var(--muted);
+}
+
+.picker__heading .provider-logo {
+  width: 12px;
+  height: 12px;
+  opacity: 0.8;
+}
+
+.provider-logo {
+  flex: none;
+}
+
+.exec-pill .provider-logo {
+  width: 13px;
+  height: 13px;
+  color: inherit;
+}
+
+.picker__section + .picker__section {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.picker__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 36px;
+}
+
+.picker__row {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-8) var(--space-10);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-lg);
+  color: var(--text-soft);
+  text-align: left;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.picker__row:hover:not(:disabled):not(.picker__row--off) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.picker__row[aria-checked="true"],
+.picker__row[aria-pressed="true"] {
+  color: var(--text);
+}
+
+.picker__row--off {
+  color: var(--muted);
+  cursor: default;
+}
+
+.picker__setup {
+  margin-right: var(--space-8);
+  flex: none;
+}
+
+.picker__check {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  flex: none;
+  color: var(--ember);
+}
+
+.picker__check svg {
+  width: 13px;
+  height: 13px;
+}
+
+.picker__label-stack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.picker__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__detail {
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  color: var(--muted-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The engine and model menu: engines down the side, then the browsed engine's
+   accounts and one account's models. It keeps one size while the reader
+   browses, so moving between engines never makes the panel jump. Doubled to
+   outrank the shared popover's own size limits. */
+.popover.popover--engines {
+  display: flex;
+  width: min(600px, calc(100vw - 20px));
+  height: min(500px, 72vh, calc(100dvh - 20px));
+  max-height: none;
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.engine-picker {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+}
+
+.engine-picker__rail {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 172px;
+  padding: var(--space-8) var(--space-6);
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+
+.engine-picker__tab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: 34px;
+  padding: 0 var(--space-10);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--text-md);
+  text-align: left;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.engine-picker__tab:hover {
+  background: var(--surface-hover);
+  color: var(--text-soft);
+}
+
+.engine-picker__tab[aria-selected="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.engine-picker__tab > svg,
+.engine-picker__tab .provider-logo {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+/* An engine with nothing that can run right now still gets a row: its mark
+   recedes and its dot says why it is quiet. */
+.engine-picker__tab--off > svg,
+.engine-picker__tab--off .provider-logo {
+  opacity: 0.55;
+}
+
+.engine-picker__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.engine-picker__rail .status-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.engine-picker__rail .status-dot--ready {
+  background: var(--green);
+}
+
+.engine-picker__rail .status-dot--attention {
+  background: var(--amber);
+}
+
+.engine-picker__rail .status-dot--idle {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--muted-dim);
+}
+
+.engine-picker__manage {
+  display: flex;
+  flex: none;
+  margin-top: auto;
+  padding-top: var(--space-6);
+}
+
+.engine-picker__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.engine-picker__main .picker__search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+/* A new pane settles in rather than snapping: browsing reads as moving
+   through one menu, not as the menu being replaced. */
+.engine-picker__pane,
+.engine-picker__models {
+  animation: pane-in 160ms var(--ease-out);
+}
+
+@keyframes pane-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The account whose models are listed below, while the one in use keeps the
+   check: looking at an account is not choosing it. */
+.picker__row.is-viewing {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* The settings of the choice in force, at the menu's foot: one quiet row
+   each, named on the left, set-to on the right. */
+.engine-picker__settings {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--line);
+}
+
+.engine-picker__settings-heading {
+  overflow: hidden;
+  padding: var(--space-6) var(--space-10) var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: 34px;
+  padding: 0 var(--space-10);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  text-align: left;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.setting-row:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.setting-row__glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  color: var(--muted);
+}
+
+.setting-row__glyph > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.setting-row__glyph .level-meter {
+  width: auto;
+  height: 12px;
+  color: var(--text-soft);
+}
+
+.setting-row__name {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting-row__value {
+  overflow: hidden;
+  max-width: 55%;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setting-row__more {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  color: var(--muted-dim);
+}
+
+/* A mode the chosen engine cannot enforce: named, marked, explained. */
+.setting-row.is-unavailable .setting-row__value,
+.setting-row.is-unavailable .setting-row__glyph {
+  color: var(--red);
+}
+
+.setting-row[role="switch"][aria-checked="true"] .setting-row__value {
+  color: var(--text-soft);
+}
+
+/* A setting's choices take the menu's place, with the way back above them. */
+.engine-picker__detail {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  animation: pane-in 160ms var(--ease-out);
+}
+
+.engine-picker__back {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  min-height: 44px;
+  padding: 0 var(--space-12);
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  text-align: left;
+}
+
+.engine-picker__back:hover {
+  background: var(--surface-hover);
+}
+
+.engine-picker__back > svg {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+
+.engine-picker__detail .picker__detail {
+  white-space: normal;
+}
+
+@media (hover: none) {
+  .setting-row {
+    min-height: var(--touch-target);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .engine-picker__detail {
+    animation: none;
+  }
+}
+
+.engine-picker__blocked {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-10);
+  margin: var(--space-8) var(--space-6);
+  padding: var(--space-12) var(--space-14);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.engine-picker__blocked .picker__setup {
+  margin: 0;
+}
+
+/* Which engine a search result or recent choice runs on, at the row's end. */
+.picker__route-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  margin-left: auto;
+  padding-left: var(--space-8);
+  color: var(--muted-dim);
+}
+
+.picker__route-mark > svg,
+.picker__route-mark .provider-logo {
+  width: 13px;
+  height: 13px;
+}
+
+.picker__glyph .provider-logo {
+  width: 14px;
+  height: 14px;
+}
+
+.switch-review__choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4) calc(-1 * var(--space-6)) var(--space-12);
+}
+
+.switch-review__choices .picker__detail {
+  white-space: normal;
+}
+
+/* On a narrow screen the engines become a row of tabs above the search, so
+   the models keep the panel's whole width. */
+@media (max-width: 620px) {
+  .popover.popover--engines {
+    height: min(500px, 72dvh);
+  }
+
+  .engine-picker {
+    flex-direction: column;
+  }
+
+  .engine-picker__rail {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-4);
+    width: auto;
+    padding: var(--space-6);
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    scrollbar-width: none;
+  }
+
+  .engine-picker__rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  .engine-picker__tab {
+    gap: var(--space-6);
+    min-height: 32px;
+  }
+
+  .engine-picker__name {
+    flex: none;
+  }
+
+  .engine-picker__manage {
+    margin: 0 0 0 auto;
+    padding: 0;
+  }
+}
+
+@media (hover: none) {
+  .engine-picker__tab {
+    min-height: var(--touch-target);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .engine-picker__pane,
+  .engine-picker__models {
+    animation: none;
+  }
+}
+
+/* "Default" beside the account new Threads land on. Inline with the label so
+   it reads as part of the name, not as a status. */
+.picker__tag {
+  margin-left: var(--space-6);
+  padding: 1px var(--space-6);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--ember-line);
+  background: var(--ember-wash);
+  color: var(--ember);
+  font-size: var(--text-3xs);
+  font-weight: var(--weight-bold);
+  vertical-align: 1px;
+}
+
+.picker__manage {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  align-self: flex-start;
+  margin-top: var(--space-2);
+  padding: var(--space-6) var(--space-10);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.picker__manage:hover {
+  background: var(--surface-hover);
+  color: var(--text-soft);
+}
+
+.picker__manage svg {
+  width: 11px;
+  height: 11px;
+}
+
+.picker__state {
+  margin-left: auto;
+  padding-left: var(--space-10);
+  flex: none;
+  font-size: var(--text-3xs);
+  color: var(--muted-dim);
+}
+
+/* ---- Empty thread / home hero ---- */
+
+.hero {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-18);
+  padding: var(--space-24);
+  overflow-y: auto;
+}
+
+.hero__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-18);
+  width: 100%;
+  max-width: var(--composer-max-width);
+  animation: rise-in var(--duration-slow) var(--ease-out);
+}
+
+.hero__workspace {
+  display: flex;
+  justify-content: center;
+}
+
+.hero__title {
+  font-family: var(--font-display);
+  font-size: clamp(var(--display-lg), 4.2vw, var(--display-2xl));
+  font-weight: var(--weight-medium);
+  letter-spacing: -0.02em;
+  text-align: center;
+  text-wrap: balance;
+}
+
+.hero__subtitle {
+  color: var(--muted);
+  font-size: var(--text-2xl);
+  text-align: center;
+  margin-top: calc(var(--space-8) * -1);
+}
+
+.hero .composer {
+  width: 100%;
+}
+
+.hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  justify-content: center;
+}
+
+.hero__suggestions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: var(--space-8);
+  width: 100%;
+}
+
+.hero__suggestion {
+  text-align: left;
+  padding: var(--space-12) var(--space-14);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-lg);
+  line-height: 1.45;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
+}
+
+.hero__suggestion:hover {
+  border-color: var(--ember-line);
+  color: var(--text-soft);
+  background: var(--ember-wash);
+}
+
+/* Who should do it: Opensteer or a specialist, under the composer that will
+   start the task. */
+.assignee {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.assignee__button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  height: 28px;
+  padding: 0 var(--space-10);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  background: var(--surface-elevated);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.assignee__button:hover,
+.assignee__button[aria-expanded="true"] {
+  border-color: var(--line-hover);
+  color: var(--text);
+}
+
+.assignee__button .brand__mark {
+  width: 16px;
+  height: 16px;
+}
+
+.assignee__button > svg {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+
+.assignee__name {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.assignee-popover {
+  width: min(320px, calc(100vw - 20px));
+}
+
+.assignee-popover .brand__mark {
+  width: 16px;
+  height: 16px;
+}
+
+@media (max-width: 900px) {
+  /* The mobile top bar carries the title and panel toggle; the desktop
+     breadcrumb header would duplicate it. */
+}
+
+@media (max-width: 680px) {
+  .transcript {
+    padding: var(--space-18) calc(var(--space-14) + env(safe-area-inset-right, 0px)) var(--space-22)
+      calc(var(--space-14) + env(safe-area-inset-left, 0px));
+  }
+
+  .hero {
+    padding-right: calc(var(--space-24) + env(safe-area-inset-right, 0px));
+    padding-bottom: calc(var(--space-24) + env(safe-area-inset-bottom, 0px));
+    padding-left: calc(var(--space-24) + env(safe-area-inset-left, 0px));
+  }
+
+  .composer-dock {
+    padding: 0 calc(var(--space-12) + env(safe-area-inset-right, 0px))
+      calc(var(--space-12) + env(safe-area-inset-bottom, 0px))
+      calc(var(--space-12) + env(safe-area-inset-left, 0px));
+  }
+}
+
+/* Connection health stays in the existing title chrome, never in the draft. */
+.thread__connection {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex-shrink: 0;
+  min-width: 0;
+  max-width: 70%;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-normal);
+}
+.thread__connection-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread__connection button {
+  color: var(--text-soft);
+  font: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.thread__mobile-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+fieldset.action-panel {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+}
+
+/* ---- Home: quoting, review, reading position, find ---- */
+
+/* An update the next message answers, named and removable. The excerpt is
+   there so the reader knows what they are asking about; only the source id
+   travels with the send. */
+.composer-quote {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  margin: var(--space-10) var(--space-10) 0;
+  padding: var(--space-8) var(--space-10);
+  border-left: 2px solid var(--ember-line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.composer-quote__mark {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.composer-quote__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.composer-quote__attribution {
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+}
+
+.composer-quote__excerpt {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+/* The review step, in the place the picker was. */
+.switch-review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  max-width: 34ch;
+  padding: var(--space-12);
+}
+
+.switch-review__title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+}
+
+.switch-review__body {
+  margin: 0;
+  color: var(--muted);
+}
+
+.switch-review__detail {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.switch-review__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  justify-content: flex-end;
+}
+
+.thread__selection-note {
+  margin: 0 0 var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+/* Where this reader stopped last time. A position, not an alarm. */
+.unread-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin: var(--space-12) 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.unread-divider::before,
+.unread-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.unread-divider__label {
+  flex-shrink: 0;
+}
+
+/* Offered, never taken: arriving work does not move a reader who is elsewhere. */
+.transcript__jump {
+  position: absolute;
+  bottom: var(--space-16);
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-height: var(--touch-target);
+  max-width: calc(100% - var(--space-32));
+  padding: var(--space-10) var(--space-16);
+  transform: translateX(-50%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: var(--text-sm);
+  box-shadow: var(--shadow-raised);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.transcript__jump:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--line-hover);
+}
+
+.transcript__jump .icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.transcript__jump--quiet {
+  width: var(--touch-target);
+  padding: 0;
+  justify-content: center;
+}
+
+.transcript__found {
+  border-radius: var(--radius-sm);
+  outline: 2px solid var(--ember-line);
+  outline-offset: 4px;
+}
+
+.thread-find {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-10) var(--space-16);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+}
+
+.thread-find__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.thread-find__bar .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.thread-find__results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
+.thread-find__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.thread-find__result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 44px;
+  padding: var(--space-8) var(--space-10);
+  border-radius: var(--radius-sm);
+  text-align: left;
+}
+
+.thread-find__result:hover:not(:disabled),
+.thread-find__result:focus-visible {
+  background: var(--surface-2);
+}
+
+.thread-find__result-head {
+  display: flex;
+  gap: var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.thread-find__result-author {
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}
+
+.thread-find__result-excerpt {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* What can be done with an update hangs from its bubble's foot (over its
+   padding, never its words), shown as a reply's More is: where a pointer
+   rests, focus lands or a finger taps. */
+.msg--input--quotable {
+  position: relative;
+}
+
+.msg--input__actions {
+  position: absolute;
+  top: calc(100% - var(--space-8));
+  right: var(--space-10);
+  z-index: var(--layer-raised);
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.msg--input:hover .msg--input__actions,
+.msg--input:focus-within .msg--input__actions,
+.msg--input--tapped .msg--input__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.msg--input__actions .btn {
+  height: 26px;
+  border-radius: 7px;
+}
+
+.workspace-mute {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  align-items: center;
+}
+
+.workspace-mute__note {
+  margin: 0;
+  max-width: 48ch;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+/* The page a message will include: small, inside the box, at its top left. */

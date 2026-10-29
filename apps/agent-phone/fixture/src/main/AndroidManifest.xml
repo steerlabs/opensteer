@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+
+        <activity android:name=".EditingFixtureActivity" android:exported="true" android:windowSoftInputMode="adjustResize" />
+
+        <activity android:name=".PasswordsActivity" android:exported="true" android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".FixtureActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".DisplayFixtureActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ReboundFieldActivity"
+            android:exported="true"
+            android:taskAffinity="com.opensteer.agentphone.fixture.rebound"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".SecureActivity"
+            android:exported="true"
+            android:taskAffinity="com.opensteer.agentphone.fixture.secure" />
+
+        <!--
+          The end-to-end suite reads receipts with `adb shell content query`.
+          The shell holds DUMP; no app does, so nothing else can read or wipe them.
+        -->
+        <provider
+            android:name=".ReceiptsProvider"
+            android:authorities="com.opensteer.agentphone.fixture.receipts"
+            android:exported="true"
+            android:readPermission="android.permission.DUMP"
+            android:writePermission="android.permission.DUMP" />
+    </application>
+</manifest>

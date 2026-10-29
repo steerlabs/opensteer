@@ -1,0 +1,717 @@
+import { describe, expect, it, vi } from "vitest";
+import { defaultBrowserViewport } from "@opensteer/browser-core";
+import { BrowserSessionIdSchema, browserStateImportRuntimeTimeoutMs } from "@opensteer/protocol";
+import { EmptyBrowserProfileSnapshot } from "@opensteer/browser-profile/snapshot";
+import type { BrowserLauncher } from "./browser/backend.js";
+import { BrowserRuntimeError } from "./errors.js";
+import type { BrowserProfileStateClient } from "./profile-state-client.js";
+import { BrowserRuntime } from "./runtime.js";
+import {
+  FakeContext,
+  FakeIsolatingLauncher,
+  FakeLaunchedBrowser,
+  FakeLauncher,
+  FakePage,
+  FakeProfileStateClient,
+  FakeSink,
+  FakeTicketVerifier,
+  flushMicrotasks,
+  freshClaims,
+  testSessionFilesRoot,
+  validClaims,
+} from "./test-support/fakes.js";
+
+/** Any profile-state traffic at all is a failure for a fresh session. */
+const forbiddenProfileState: BrowserProfileStateClient = {
+  commit: () => {
+    throw new Error("A fresh Browser Session must never commit profile state.");
+  },
+  load: () => {
+    throw new Error("A fresh Browser Session must never load profile state.");
+  },
+};
+
+describe("BrowserRuntime", () => {
+  it("sizes only the page a Fit names and leaves the session's other pages alone", async () => {
+    const root = new FakePage({ title: "Root" });
+    const context = new FakeContext([root]);
+    const launcher = new FakeLauncher(new FakeLaunchedBrowser(context));
+    const runtime = new BrowserRuntime({
+      launcher,
+      profileStateClient: forbiddenProfileState,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(freshClaims()),
+    });
+    const sink = new FakeSink();
+    const attachment = await runtime.attach("fresh-ticket", sink);
+    const popup = new FakePage({ opener: root, title: "Popup" });
+    context.addPage(popup);
+    await flushMicrotasks();
+    popup.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () => {
+      throw new Error("a write that reached the popup");
+    });
+    const snapshot = sink.messages.find((message) => message.type === "browser.snapshot");
+    const rootSurface =
+      snapshot?.type === "browser.snapshot"
+        ? snapshot.surfaces.find((surface) => surface.title === "Root")
+        : undefined;
+    if (!rootSurface) throw new Error("Missing root surface");
+
+    await attachment.handle(
+      JSON.stringify({ height: 600, surfaceId: rootSurface.id, type: "viewport.set", width: 900 }),
+    );
+    await flushMicrotasks();
+
+    expect(sink.messages.filter((message) => message.type === "browser.error")).toHaveLength(0);
+    expect(popup.closeCount).toBe(0);
+    expect(root.closeCount).toBe(0);
+    expect(
+      root.cdpSession.sent
+        .filter((command) => command.method === "Emulation.setDeviceMetricsOverride")
+        .at(-1)?.parameters,
+    ).toMatchObject({ height: 600, width: 900 });
+    expect(
+      popup.cdpSession.sent
+        .filter((command) => command.method === "Emulation.setDeviceMetricsOverride")
+        .map((command) => command.parameters),
+    ).toEqual([expect.objectContaining(defaultBrowserViewport)]);
+    expect(runtime.health()).toMatchObject({ sessionCount: 1, state: "ready" });
+
+    await attachment.close();
+    await runtime.shutdown();
+  });
+
+  it("restores the Host-owned profile once and checkpoints it when the Profile Host closes", async () => {
+    const launcher = new FakeLauncher();
+    const profileStateClient = new FakeProfileStateClient();
+    profileStateClient.revision = 4;
+    profileStateClient.snapshot = {
+      cookies: [
+        {
+          domain: "example.test",
+          expires: -1,
+          httpOnly: true,
+          name: "session",
+          path: "/",
+          sameSite: "Lax",
+          secure: true,
+          value: "opaque-cookie",
+        },
+      ],
+      origins: [],
+    };
+    launcher.browser.snapshot = {
+      cookies: [],
+      origins: [
+        {
+          localStorage: [{ name: "theme", value: "dark" }],
+          origin: "https://example.test/",
+        },
+      ],
+    };
+    const runtime = new BrowserRuntime({
+      launcher,
+      profileStateClient,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+    });
+
+    const attachment = await runtime.attach("signed-ticket", new FakeSink());
+    expect(launcher.lastRequest?.snapshot).toEqual(profileStateClient.snapshot);
+    await attachment.close();
+
+    expect(profileStateClient.commits).toEqual([
+      { expectedRevision: 4, snapshot: launcher.browser.snapshot },
+    ]);
+    expect(profileStateClient.revision).toBe(5);
+    await runtime.shutdown();
+  });
+
+  it("runs many isolated sessions in one browser process for the same profile", async () => {
+    const launcher = new FakeLauncher();
+    const verifier = new FakeTicketVerifier();
+    const secondClaims = validClaims({
+      nonce: "nonce_1123456789abcdef",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+    });
+    verifier.setClaims("second-ticket", secondClaims);
+    const profileState = new FakeProfileStateClient();
+    const committedSessionIds: string[] = [];
+    const runtime = new BrowserRuntime({
+      idleProfileHostTimeoutMs: 0,
+      launcher,
+      profileStateClient: {
+        load: () => profileState.load(),
+        commit: (claims, ...parameters) => {
+          committedSessionIds.push(claims.sessionId);
+          return profileState.commit(claims, ...parameters);
+        },
+      },
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+    });
+    const sink = new FakeSink();
+
+    const attachment = await runtime.attach("signed-ticket", sink);
+    expect(runtime.health()).toEqual({
+      checkpointFailures: 0,
+      profileHostCount: 1,
+      runtimeId: "runtime_test",
+      sessionCount: 1,
+      state: "ready",
+    });
+    expect(launcher.launchCount).toBe(1);
+    expect(launcher.lastRequest).toMatchObject({
+      partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000001",
+      sessionId: verifier.claims.sessionId,
+    });
+    const secondAttachment = await runtime.attach("second-ticket", new FakeSink());
+    expect(runtime.health()).toMatchObject({ profileHostCount: 1, sessionCount: 2 });
+    expect(launcher.launchCount).toBe(1);
+    expect(launcher.browser.context.pages()).toHaveLength(2);
+
+    await expect(runtime.attach("second-ticket", new FakeSink())).rejects.toMatchObject({
+      code: "conflict",
+    });
+
+    await attachment.close();
+    await attachment.close();
+    expect(runtime.health()).toMatchObject({
+      profileHostCount: 1,
+      sessionCount: 1,
+      state: "ready",
+    });
+    expect(launcher.browser.closeCount).toBe(0);
+
+    await secondAttachment.close();
+    expect(committedSessionIds).toEqual([secondClaims.sessionId]);
+    expect(runtime.health()).toMatchObject({ profileHostCount: 0, sessionCount: 0, state: "idle" });
+    expect(launcher.browser.closeCount).toBe(1);
+    await runtime.shutdown();
+    await runtime.shutdown();
+    expect(runtime.health().state).toBe("closed");
+  });
+
+  it("keeps a Profile Host and retries after an idle checkpoint failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const delegate = new FakeProfileStateClient();
+      let attempts = 0;
+      const runtime = new BrowserRuntime({
+        checkpointRetryMs: 1_000,
+        idleProfileHostTimeoutMs: 1,
+        launcher: new FakeLauncher(),
+        profileStateClient: {
+          load: () => delegate.load(),
+          commit: async (...parameters) => {
+            attempts += 1;
+            if (attempts === 1) throw new Error("temporary profile vault failure");
+            return delegate.commit(...parameters);
+          },
+        },
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(),
+      });
+      const attachment = await runtime.attach("signed-ticket", new FakeSink());
+      await attachment.close();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runtime.health()).toMatchObject({
+        checkpointFailures: 1,
+        profileHostCount: 1,
+        sessionCount: 0,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(attempts).toBe(2);
+      expect(runtime.health()).toMatchObject({
+        checkpointFailures: 1,
+        profileHostCount: 0,
+      });
+      await runtime.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a failed immediate checkpoint without losing the Profile Host", async () => {
+    vi.useFakeTimers();
+    try {
+      const delegate = new FakeProfileStateClient();
+      let attempts = 0;
+      const runtime = new BrowserRuntime({
+        checkpointRetryMs: 1_000,
+        launcher: new FakeLauncher(),
+        profileStateClient: {
+          load: () => delegate.load(),
+          commit: async (...parameters) => {
+            attempts += 1;
+            if (attempts === 1) throw new Error("temporary profile vault failure");
+            return delegate.commit(...parameters);
+          },
+        },
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(),
+      });
+      const attachment = await runtime.attach("signed-ticket", new FakeSink());
+
+      await expect(attachment.close()).rejects.toThrow(/cleanup/i);
+      expect(runtime.health()).toMatchObject({
+        checkpointFailures: 1,
+        profileHostCount: 1,
+        sessionCount: 0,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(attempts).toBe(2);
+      expect(runtime.health()).toMatchObject({ profileHostCount: 0, state: "idle" });
+      await runtime.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("quiesces live pages before shutdown checkpointing and retries without losing the host", async () => {
+    const page = new FakePage();
+    const browser = new FakeLaunchedBrowser(new FakeContext([page]));
+    const delegate = new FakeProfileStateClient();
+    let attempts = 0;
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(browser),
+      profileStateClient: {
+        load: () => delegate.load(),
+        commit: async (...parameters) => {
+          attempts += 1;
+          expect(page.isClosed()).toBe(true);
+          if (attempts === 1) throw new Error("temporary checkpoint failure");
+          return delegate.commit(...parameters);
+        },
+      },
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+    });
+    await runtime.attach("signed-ticket", new FakeSink());
+
+    await expect(runtime.shutdown()).rejects.toThrow(/checkpointed/i);
+    expect(page.closeCount).toBe(1);
+    expect(browser.closeCount).toBe(0);
+    expect(runtime.health()).toMatchObject({ profileHostCount: 1, sessionCount: 0 });
+
+    await runtime.shutdown();
+    expect(attempts).toBe(2);
+    expect(browser.closeCount).toBe(1);
+    expect(runtime.health().state).toBe("closed");
+  });
+
+  it.each(
+    ["complete", "deadline"].flatMap((outcome) =>
+      [false, true].flatMap((periodicWaiting) =>
+        ["shutdown", "session-close"].map((closePath) => ({ outcome, periodicWaiting, closePath })),
+      ),
+    ),
+  )(
+    "drains an admitted cookie import ($outcome, periodic: $periodicWaiting, $closePath)",
+    async ({ outcome, periodicWaiting, closePath }) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const timeouts = vi.spyOn(globalThis, "setTimeout");
+      const browser = new FakeLaunchedBrowser(new FakeContext([new FakePage()]));
+      const profileState = new FakeProfileStateClient();
+      const exported = vi.spyOn(browser, "exportSnapshot");
+      const started = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      const cookie = {
+        name: "session",
+        value: "imported",
+        domain: "example.test",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax" as const,
+      };
+      const writes = vi
+        .spyOn(browser, "replaceSiteCookies")
+        .mockImplementation(async (_site, _cookies, deadline) => {
+          started.resolve();
+          await released.promise;
+          deadline.throwIfAborted();
+          browser.snapshot = { cookies: [cookie], origins: [] };
+        });
+      const runtime = new BrowserRuntime({
+        checkpointIntervalMs: periodicWaiting ? 1_000 : 120_000,
+        checkpointRetryMs: 1_000,
+        launcher: new FakeLauncher(browser),
+        profileStateClient: profileState,
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(),
+      });
+      let stopping: Promise<void> | undefined;
+      try {
+        const attachment = await runtime.attach("signed-ticket", new FakeSink());
+        const importing = attachment.handle(
+          JSON.stringify({
+            type: "state.import",
+            site: "https://example.test",
+            cookies: [cookie],
+            operationId: "00000000-0000-4000-8000-0000000000b1",
+          }),
+        );
+        await started.promise;
+        if (periodicWaiting) await vi.advanceTimersByTimeAsync(1_100);
+        // Ignore the import's own deadline; the next one belongs to the drain.
+        timeouts.mockClear();
+        stopping = closePath === "shutdown" ? runtime.shutdown() : attachment.close();
+        let settled = false;
+        let stopError: unknown;
+        void stopping.then(
+          () => {
+            settled = true;
+          },
+          (error: unknown) => {
+            settled = true;
+            stopError = error;
+          },
+        );
+        await flushMicrotasks();
+        await vi.advanceTimersByTimeAsync(2_100);
+        // Session removal can precede real filesystem cleanup and the drain timer.
+        await vi.waitFor(() =>
+          expect(timeouts).toHaveBeenCalledWith(
+            expect.any(Function),
+            browserStateImportRuntimeTimeoutMs,
+          ),
+        );
+        expect(runtime.health().sessionCount).toBe(0);
+        expect(settled).toBe(false);
+        expect(exported).not.toHaveBeenCalled();
+        expect(profileState.commits).toEqual([]);
+        expect(browser.closeCount).toBe(0);
+        await attachment.handle(
+          JSON.stringify({
+            type: "state.import",
+            site: "https://example.test",
+            cookies: [],
+            operationId: "00000000-0000-4000-8000-0000000000b2",
+          }),
+        );
+        expect(writes).toHaveBeenCalledOnce();
+        if (outcome === "complete") released.resolve();
+        else {
+          await vi.advanceTimersByTimeAsync(browserStateImportRuntimeTimeoutMs);
+          expect(settled).toBe(true);
+          expect(stopError).toBeInstanceOf(AggregateError);
+          const saveError = stopError instanceof AggregateError ? stopError.errors[0] : undefined;
+          expect(saveError).toBeInstanceOf(BrowserRuntimeError);
+          expect(saveError).toMatchObject({
+            code: "conflict",
+            retryable: true,
+            cause: { name: "AbortError" },
+            message:
+              "Could not save this browser profile because a sign-in import is still pending. Unsaved state remains in memory, and " +
+              (closePath === "shutdown"
+                ? "shutdown did not complete."
+                : "Opensteer will retry saving it automatically."),
+          });
+          expect(exported).not.toHaveBeenCalled();
+          expect(profileState.commits).toEqual([]);
+          expect(browser.closeCount).toBe(0);
+          expect(runtime.health()).toMatchObject({ profileHostCount: 1, sessionCount: 0 });
+          released.resolve();
+        }
+        await importing;
+        await stopping.catch(() => undefined);
+        if (closePath === "session-close" && outcome === "deadline") {
+          await vi.advanceTimersByTimeAsync(1_000);
+          expect(browser.closeCount).toBe(1);
+        }
+        await runtime.shutdown();
+        expect(profileState.commits.at(-1)?.snapshot.cookies).toEqual(
+          outcome === "complete" ? [cookie] : [],
+        );
+        expect(browser.closeCount).toBe(1);
+      } finally {
+        released.resolve();
+        await vi.advanceTimersByTimeAsync(browserStateImportRuntimeTimeoutMs);
+        await stopping?.catch(() => undefined);
+        await runtime.shutdown();
+        timeouts.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("cleans up an unexpected browser process exit", async () => {
+    const browser = new FakeLaunchedBrowser(new FakeContext([new FakePage()]));
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(browser),
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+    });
+    await runtime.attach("signed-ticket", new FakeSink());
+
+    browser.crash();
+    await vi.waitFor(() =>
+      expect(runtime.health()).toMatchObject({
+        profileHostCount: 0,
+        sessionCount: 0,
+        state: "idle",
+      }),
+    );
+    await runtime.shutdown();
+  });
+
+  it("returns to idle with a sanitized error after launch failure", async () => {
+    const launcher: BrowserLauncher = {
+      launch: async () => {
+        throw new Error("private executable detail");
+      },
+    };
+    const runtime = new BrowserRuntime({
+      launcher,
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+    });
+    await expect(runtime.attach("signed-ticket", new FakeSink())).rejects.toMatchObject({
+      code: "internal",
+      message: expect.stringContaining("context-launch"),
+      reason: "session-start.context-launch",
+    });
+    expect(runtime.health().state).toBe("idle");
+  });
+
+  it("does not launch when attach-ticket verification fails", async () => {
+    const launcher = new FakeLauncher();
+    const runtime = new BrowserRuntime({
+      launcher,
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: {
+        verify: async () => {
+          throw new BrowserRuntimeError("forbidden", "Ticket rejected.");
+        },
+      },
+    });
+    await expect(runtime.attach("bad-ticket", new FakeSink())).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(launcher.launchCount).toBe(0);
+    expect(runtime.health().state).toBe("idle");
+  });
+
+  it("leaves lifecycle state usable even when process cleanup reports failure", async () => {
+    const context = new FakeContext([new FakePage()]);
+    const browser = new FakeLaunchedBrowser(context, new Error("close failed"));
+    const runtime = new BrowserRuntime({
+      idleProfileHostTimeoutMs: 0,
+      launcher: { launch: async () => browser },
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+    });
+    const attachment = await runtime.attach("signed-ticket", new FakeSink());
+
+    await expect(attachment.close()).rejects.toThrow(/cleanup/i);
+    expect(runtime.health().state).toBe("idle");
+    await runtime.shutdown();
+    expect(runtime.health().state).toBe("closed");
+  });
+
+  it("launches a fresh session from empty state and never checkpoints it", async () => {
+    const launcher = new FakeLauncher();
+    launcher.browser.snapshot = {
+      cookies: [],
+      origins: [
+        { localStorage: [{ name: "theme", value: "dark" }], origin: "https://example.test/" },
+      ],
+    };
+    const runtime = new BrowserRuntime({
+      launcher,
+      profileStateClient: forbiddenProfileState,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(freshClaims()),
+    });
+
+    const attachment = await runtime.attach("fresh-ticket", new FakeSink());
+    expect(launcher.lastRequest).toMatchObject({
+      partitionKey: "session:bsn_00000000-0000-4000-8000-000000000002",
+      sessionId: "bsn_00000000-0000-4000-8000-000000000002",
+      snapshot: EmptyBrowserProfileSnapshot,
+    });
+
+    await attachment.close();
+    expect(runtime.health()).toMatchObject({ profileHostCount: 0, sessionCount: 0, state: "idle" });
+    expect(launcher.browser.closeCount).toBe(1);
+    await runtime.shutdown();
+    expect(runtime.health().state).toBe("closed");
+  });
+
+  it("discards fresh state on an idle close and on shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      const launcher = new FakeIsolatingLauncher();
+      const verifier = new FakeTicketVerifier(freshClaims());
+      verifier.setClaims(
+        "second-ticket",
+        freshClaims({
+          nonce: "nonce_1123456789abcdef",
+          sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+        }),
+      );
+      const runtime = new BrowserRuntime({
+        idleProfileHostTimeoutMs: 5,
+        launcher,
+        profileStateClient: forbiddenProfileState,
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: verifier,
+      });
+
+      const idle = await runtime.attach("fresh-ticket", new FakeSink());
+      await idle.close();
+      await vi.advanceTimersByTimeAsync(5);
+      expect(runtime.health()).toMatchObject({ checkpointFailures: 0, profileHostCount: 0 });
+
+      await runtime.attach("second-ticket", new FakeSink());
+      await runtime.shutdown();
+      expect(runtime.health().state).toBe("closed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("isolates every fresh session in its own host while profile sessions share one", async () => {
+    const launcher = new FakeIsolatingLauncher();
+    const verifier = new FakeTicketVerifier(freshClaims());
+    verifier.setClaims(
+      "second-fresh",
+      freshClaims({
+        nonce: "nonce_1123456789abcdef",
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+      }),
+    );
+    verifier.setClaims(
+      "profile",
+      validClaims({
+        nonce: "nonce_2123456789abcdef",
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000004"),
+      }),
+    );
+    verifier.setClaims(
+      "same-profile",
+      validClaims({
+        nonce: "nonce_3123456789abcdef",
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000005"),
+      }),
+    );
+    const profileState = new FakeProfileStateClient();
+    const runtime = new BrowserRuntime({
+      launcher,
+      profileStateClient: profileState,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+    });
+
+    await runtime.attach("first-fresh", new FakeSink());
+    await runtime.attach("second-fresh", new FakeSink());
+    await runtime.attach("profile", new FakeSink());
+    await runtime.attach("same-profile", new FakeSink());
+
+    expect(launcher.requests.map((request) => request.partitionKey)).toEqual([
+      "session:bsn_00000000-0000-4000-8000-000000000002",
+      "session:bsn_00000000-0000-4000-8000-000000000003",
+      "profile:bpr_00000000-0000-4000-8000-000000000001",
+    ]);
+    expect(runtime.health()).toMatchObject({ profileHostCount: 3, sessionCount: 4 });
+    // The one profile host loaded once; neither fresh host went near the vault.
+    expect(profileState.loads).toBe(1);
+
+    await runtime.shutdown();
+    expect(profileState.commits).toHaveLength(1);
+  });
+
+  it("serves state.export from the host browser for either identity", async () => {
+    const launcher = new FakeIsolatingLauncher();
+    const verifier = new FakeTicketVerifier(freshClaims());
+    verifier.setClaims(
+      "profile",
+      validClaims({
+        nonce: "nonce_2123456789abcdef",
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+      }),
+    );
+    const runtime = new BrowserRuntime({
+      launcher,
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+    });
+
+    const freshSink = new FakeSink();
+    const fresh = await runtime.attach("fresh-ticket", freshSink);
+    const freshBrowser = launcher.browsersByPartition.get(
+      "session:bsn_00000000-0000-4000-8000-000000000002",
+    );
+    if (!freshBrowser) throw new Error("Expected a fresh host browser.");
+    freshBrowser.snapshot = {
+      cookies: [],
+      origins: [{ localStorage: [{ name: "seen", value: "yes" }], origin: "https://fresh.test/" }],
+    };
+    await fresh.handle(JSON.stringify({ type: "state.export" }));
+    expect(freshSink.messages.filter((message) => message.type === "state.exported")).toEqual([
+      { snapshot: freshBrowser.snapshot, type: "state.exported" },
+    ]);
+
+    const profileSink = new FakeSink();
+    const profile = await runtime.attach("profile", profileSink);
+    await profile.handle(JSON.stringify({ type: "state.export" }));
+    expect(profileSink.messages.filter((message) => message.type === "state.exported")).toEqual([
+      {
+        snapshot: launcher.browsersByPartition.get(
+          "profile:bpr_00000000-0000-4000-8000-000000000001",
+        )?.snapshot,
+        type: "state.exported",
+      },
+    ]);
+
+    await runtime.shutdown();
+  });
+
+  it("counts fresh hosts against the runtime host capacity", async () => {
+    const verifier = new FakeTicketVerifier(freshClaims());
+    verifier.setClaims(
+      "second-fresh",
+      freshClaims({
+        nonce: "nonce_1123456789abcdef",
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+      }),
+    );
+    const runtime = new BrowserRuntime({
+      launcher: new FakeIsolatingLauncher(),
+      maxProfileHosts: 1,
+      profileStateClient: forbiddenProfileState,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+    });
+
+    await runtime.attach("fresh-ticket", new FakeSink());
+    await expect(runtime.attach("second-fresh", new FakeSink())).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await runtime.shutdown();
+  });
+});

@@ -1,0 +1,274 @@
+{
+  "native": true,
+  "engine": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+  "scenario": "dead-key",
+  "inputSource": "com.apple.keylayout.US",
+  "intent": "Physical native chrome-dead-key; preserve actual conversion/preedit/commit and exact trust flags. This failed capture remains unqualified for its requested complete journey.",
+  "expected": {
+    "value": "é",
+    "producers": [
+      {
+        "kind": "edit",
+        "text": "é",
+        "before": "",
+        "after": ""
+      }
+    ],
+    "transactionCommits": [1],
+    "transactionOpen": false,
+    "keystrokes": [],
+    "compositions": [
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "´",
+        "selectionStart": 1,
+        "selectionEnd": 1,
+        "before": "",
+        "after": ""
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "é",
+        "selectionStart": 1,
+        "selectionEnd": 1
+      }
+    ],
+    "proxy": {
+      "value": "é",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    "caret": 1,
+    "untrustedEvents": [
+      {
+        "type": "compositionend",
+        "data": "é"
+      }
+    ]
+  },
+  "sourceSha": "444f12dce66f4fcb55e5a66015a8f2a62c2181ad",
+  "sourceSelection": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "requested": "com.apple.keylayout.US",
+    "select": 0,
+    "statuses": [
+      {
+        "enable": 0,
+        "id": "com.apple.keylayout.US"
+      }
+    ]
+  },
+  "sourceAfterKeys": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "frontPid": 1017
+  },
+  "events": [
+    {
+      "type": "selection",
+      "time": 7940.5,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 8277.899999999965,
+      "trusted": true,
+      "key": "Dead",
+      "code": "KeyE",
+      "keyCode": 229,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": true,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "compositionstart",
+      "time": 8281.899999999965,
+      "trusted": true,
+      "data": "",
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "compositionupdate",
+      "time": 8281.899999999965,
+      "trusted": true,
+      "data": "´",
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "beforeinput",
+      "time": 8282,
+      "trusted": true,
+      "data": "´",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "input",
+      "time": 8282.299999999988,
+      "trusted": true,
+      "data": "´",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "´",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 8285.299999999988,
+      "trusted": true,
+      "value": "´",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 8333,
+      "trusted": true,
+      "key": "Dead",
+      "code": "KeyE",
+      "keyCode": 69,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": true,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "´",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 8485,
+      "trusted": true,
+      "key": "é",
+      "code": "KeyE",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "´",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "compositionupdate",
+      "time": 8486.200000000012,
+      "trusted": true,
+      "data": "é",
+      "value": "´",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 8486.200000000012,
+      "trusted": true,
+      "data": "é",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "´",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 8487.700000000012,
+      "trusted": true,
+      "data": "é",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "é",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "compositionend",
+      "time": 8487.899999999965,
+      "trusted": false,
+      "data": "é",
+      "value": "é",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 8488.5,
+      "trusted": true,
+      "value": "é",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 8549.099999999977,
+      "trusted": true,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 69,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "é",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    }
+  ],
+  "final": {
+    "value": "é",
+    "selectionStart": 1,
+    "selectionEnd": 1,
+    "composing": false
+  },
+  "captureIntent": {
+    "keys": ["14:alt", "14"],
+    "click": false,
+    "picker": false
+  },
+  "qualification": "failed-native-trust",
+  "platform": "mac"
+}

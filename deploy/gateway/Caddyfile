@@ -1,0 +1,87 @@
+{
+	# The gateway runs in an unprivileged container. Trust distribution is an
+	# explicit deployment responsibility handled by control-ca-export, so Caddy
+	# must not try to mutate the container's own OS, Java, or browser trust stores.
+	skip_install_trust
+}
+
+(runtime_callbacks) {
+	# These routes are the complete Host-issued callback surface used by
+	# authenticated Runners. Keep this allowlist shared by the public site and
+	# the private-CA listener so a Deployment can use one callback origin that
+	# every enrolled Runner can actually reach.
+	@runtime_callbacks path /internal/v1/agent-control /internal/v1/browser-cdp /internal/v1/browser-cdp/* /internal/v1/browser-sources/pair /internal/v1/browser-sources/pair/challenge /internal/v1/browser-sources/connect /internal/v1/computer-use/display /internal/v1/egress /internal/v1/integration-mcp /internal/v1/integration-skills /internal/v1/mcp /internal/v1/mount-grants/exchange /internal/v1/runners /internal/v1/runners/agent-phone-update /internal/v1/runners/auxiliary/* /internal/v1/shell/connect /internal/v1/shell/data /internal/v1/trigger-cdp /internal/v1/triggers/revisions/*/program /internal/v1/watch-cdp
+	handle @runtime_callbacks {
+		# Caddy preserves the incoming Host header by default. That is a
+		# security contract here: MCP validates the exact origin host, including
+		# the private listener's non-default 8443 port.
+		reverse_proxy host:4310
+	}
+}
+
+{$OPENSTEER_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	header {
+		-Server
+		# Ignored by browsers on plain-HTTP transports (RFC 6797 §8.1), so this
+		# is inert for local serving and effective once the edge terminates TLS.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Content-Security-Policy "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+
+	import runtime_callbacks
+
+	# Host discovery and OAuth metadata are part of the public Host API. Route
+	# the entire well-known namespace to Host so unknown documents fail closed
+	# as API 404s instead of falling through to the SPA shell.
+	@host_api path /healthz /.well-known/* /v1/*
+	handle @host_api {
+		reverse_proxy host:4310
+	}
+
+	@private_internal path /internal/*
+	handle @private_internal {
+		respond 404
+	}
+
+	@immutable_assets path /assets/*
+	header @immutable_assets Cache-Control "public, max-age=31536000, immutable"
+
+	handle {
+		root * /srv/opensteer-web
+		try_files {path} /index.html
+		header /index.html Cache-Control "no-store"
+		file_server
+	}
+}
+
+# Compose probes this loopback-only listener instead of the public site. A
+# hostname site label enables automatic HTTPS and redirects plain HTTP, which
+# must not make container readiness depend on public DNS, SNI, or the Caddy CA.
+http://127.0.0.1:8080 {
+	handle /ready {
+		respond 200
+	}
+
+	handle {
+		respond 404
+	}
+}
+
+# This listener exists only on the Compose control network. Its private CA is
+# mounted read-only into the enrolled runtimes, and it exposes only their
+# authenticated control and short-lived capability routes.
+https://gateway:8443 {
+	tls internal
+
+	import runtime_callbacks
+
+	handle {
+		respond 404
+	}
+}

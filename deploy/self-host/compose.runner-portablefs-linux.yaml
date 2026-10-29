@@ -1,0 +1,62 @@
+services:
+  runner:
+    image: opensteer-runner:${OPENSTEER_IMAGE_TAG:-local}
+    build:
+      args:
+        OPENSTEER_RELEASE_VERSION: ${OPENSTEER_RELEASE_VERSION:?set OPENSTEER_RELEASE_VERSION}
+        OPENSTEER_SOURCE_REVISION: ${OPENSTEER_SOURCE_REVISION:?set OPENSTEER_SOURCE_REVISION}
+      context: ../..
+      dockerfile: deploy/container/Containerfile
+      target: runner
+    restart: unless-stopped
+    read_only: true
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse:/dev/fuse
+    environment:
+      # Node and the Node-based Claude runtime must trust the same private CA
+      # used by Host-issued callback URLs, not only the control WebSocket.
+      NODE_EXTRA_CA_CERTS: /control-ca/root.crt
+      OPENSTEER_BROWSER_HARNESS: /app/browser-harness/browser-harness.mjs
+      OPENSTEER_DEFAULT_WORKSPACE_BACKING: ${OPENSTEER_DEFAULT_WORKSPACE_BACKING:?set OPENSTEER_DEFAULT_WORKSPACE_BACKING}
+      OPENSTEER_DEPLOYMENT_KIND: ${OPENSTEER_DEPLOYMENT_KIND:?set OPENSTEER_DEPLOYMENT_KIND}
+      OPENSTEER_HOST_URL: https://gateway:8443
+      OPENSTEER_MAX_CONCURRENT_RUNS: ${OPENSTEER_MAX_CONCURRENT_RUNS:-4}
+      OPENSTEER_MAX_CONCURRENT_TRIGGER_PROGRAMS: ${OPENSTEER_MAX_CONCURRENT_TRIGGER_PROGRAMS:-4}
+      OPENSTEER_MODE: ${OPENSTEER_MODE:-production}
+      OPENSTEER_NATIVE_FS_HELPER: /app/native-fs-helper/opensteer-native-fs
+      OPENSTEER_PORTABLEFS_MOUNT_BINARY: /opt/portablefs/portablefs
+      OPENSTEER_PORTABLEFS_MOUNT_SHA256: ${OPENSTEER_PORTABLEFS_SHA256:?set OPENSTEER_PORTABLEFS_SHA256}
+      OPENSTEER_RUNNER_CONTROL_CA_PATH: /control-ca/root.crt
+      OPENSTEER_RUNNER_DATA_DIR: /var/lib/opensteer
+      OPENSTEER_RUNNER_KIND: main
+      OPENSTEER_RUNNER_NAME: ${OPENSTEER_RUNNER_NAME:-Main runner}
+      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: portablefs
+      OPENSTEER_RUNNER_WORKSPACE_ROOT: /workspaces
+    depends_on:
+      gateway:
+        condition: service_healthy
+      control-ca-export:
+        condition: service_completed_successfully
+    networks:
+      - control
+      - egress
+    security_opt:
+      - apparmor=unconfined
+    stop_grace_period: 2m
+    tmpfs:
+      - /tmp:mode=1777
+      - /workspaces:mode=0700,uid=10001,gid=10001
+    volumes:
+      - control-ca:/control-ca:ro
+      - runner-data:/var/lib/opensteer
+      - type: bind
+        source: ${OPENSTEER_PORTABLEFS_ARTIFACT_PATH:?set OPENSTEER_PORTABLEFS_ARTIFACT_PATH}
+        target: /opt/portablefs/portablefs
+        read_only: true
+        bind:
+          create_host_path: false
+
+volumes:
+  runner-data: {}

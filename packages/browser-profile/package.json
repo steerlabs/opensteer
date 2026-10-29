@@ -1,0 +1,29 @@
+{
+  "name": "@opensteer/browser-profile",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./grant": "./src/grant.ts",
+    "./snapshot": "./src/snapshot.ts",
+    "./cookies": "./src/cookies.ts",
+    "./storage-operation": "./src/storage-operation.ts",
+    "./source-state": "./src/source-state.ts"
+  },
+  "scripts": {
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "catalog:",
+    "tldts": "6.1.86"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

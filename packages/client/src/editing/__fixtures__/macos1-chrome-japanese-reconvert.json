@@ -1,0 +1,723 @@
+{
+  "native": true,
+  "engine": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+  "scenario": "japanese-reconvert",
+  "inputSource": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+  "intent": "Physical native chrome-japanese-reconvert; preserve actual conversion/preedit/commit and exact trust flags. This failed capture remains unqualified for its requested complete journey.",
+  "expected": {
+    "value": "日本",
+    "producers": [
+      {
+        "kind": "edit",
+        "text": "日本",
+        "before": "",
+        "after": ""
+      }
+    ],
+    "transactionCommits": [1],
+    "transactionOpen": false,
+    "keystrokes": [],
+    "compositions": [
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "n",
+        "selectionStart": 1,
+        "selectionEnd": 1,
+        "before": "",
+        "after": ""
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "に",
+        "selectionStart": 1,
+        "selectionEnd": 1
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "にh",
+        "selectionStart": 2,
+        "selectionEnd": 2
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "にほ",
+        "selectionStart": 2,
+        "selectionEnd": 2
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "にほn",
+        "selectionStart": 3,
+        "selectionEnd": 3
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "日本",
+        "selectionStart": 0,
+        "selectionEnd": 2
+      },
+      {
+        "contextId": "00000000-0000-4000-8000-000000000001",
+        "text": "日本",
+        "selectionStart": 2,
+        "selectionEnd": 2
+      }
+    ],
+    "proxy": {
+      "value": "日本",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    "caret": 2,
+    "untrustedEvents": [
+      {
+        "type": "compositionend",
+        "data": "日本"
+      }
+    ]
+  },
+  "sourceSha": "444f12dce66f4fcb55e5a66015a8f2a62c2181ad",
+  "sourceSelection": {
+    "current": {
+      "bundleId": "com.apple.inputmethod.Kotoeri.RomajiTyping",
+      "enabled": true,
+      "id": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardInputMode"
+    },
+    "requested": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+    "select": 0,
+    "statuses": [
+      {
+        "enable": 0,
+        "id": "com.apple.inputmethod.Kotoeri.RomajiTyping"
+      },
+      {
+        "enable": 0,
+        "id": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese"
+      }
+    ]
+  },
+  "sourceAfterKeys": {
+    "current": {
+      "bundleId": "com.apple.inputmethod.Kotoeri.RomajiTyping",
+      "enabled": true,
+      "id": "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardInputMode"
+    },
+    "frontPid": 1017
+  },
+  "events": [
+    {
+      "type": "keydown",
+      "time": 36542.899999999965,
+      "trusted": true,
+      "key": "n",
+      "code": "KeyN",
+      "keyCode": 229,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "compositionstart",
+      "time": 36543.20000000001,
+      "trusted": true,
+      "data": "",
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "compositionupdate",
+      "time": 36543.20000000001,
+      "trusted": true,
+      "data": "n",
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "beforeinput",
+      "time": 36543.20000000001,
+      "trusted": true,
+      "data": "n",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "input",
+      "time": 36543.59999999998,
+      "trusted": true,
+      "data": "n",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "n",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 36544.20000000001,
+      "trusted": true,
+      "value": "n",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 36588.29999999999,
+      "trusted": true,
+      "key": "n",
+      "code": "KeyN",
+      "keyCode": 78,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "n",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 36751.09999999998,
+      "trusted": true,
+      "key": "i",
+      "code": "KeyI",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "n",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "compositionupdate",
+      "time": 36751.29999999999,
+      "trusted": true,
+      "data": "に",
+      "value": "n",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 36751.29999999999,
+      "trusted": true,
+      "data": "に",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "n",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 36751.59999999998,
+      "trusted": true,
+      "data": "に",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "に",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 36752.09999999998,
+      "trusted": true,
+      "value": "に",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 36804.5,
+      "trusted": true,
+      "key": "i",
+      "code": "KeyI",
+      "keyCode": 73,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "に",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 36977.79999999999,
+      "trusted": true,
+      "key": "h",
+      "code": "KeyH",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "に",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "compositionupdate",
+      "time": 36977.899999999965,
+      "trusted": true,
+      "data": "にh",
+      "value": "に",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 36977.899999999965,
+      "trusted": true,
+      "data": "にh",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "に",
+      "selectionStart": 0,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 36978.20000000001,
+      "trusted": true,
+      "data": "にh",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "にh",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "selection",
+      "time": 36978.79999999999,
+      "trusted": true,
+      "value": "にh",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 37021.09999999998,
+      "trusted": true,
+      "key": "h",
+      "code": "KeyH",
+      "keyCode": 72,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "にh",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keydown",
+      "time": 37181.59999999998,
+      "trusted": true,
+      "key": "o",
+      "code": "KeyO",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "にh",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "compositionupdate",
+      "time": 37181.79999999999,
+      "trusted": true,
+      "data": "にほ",
+      "value": "にh",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "beforeinput",
+      "time": 37181.79999999999,
+      "trusted": true,
+      "data": "にほ",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "にh",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "input",
+      "time": 37182.20000000001,
+      "trusted": true,
+      "data": "にほ",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "にほ",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "selection",
+      "time": 37182.79999999999,
+      "trusted": true,
+      "value": "にほ",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 37237.5,
+      "trusted": true,
+      "key": "o",
+      "code": "KeyO",
+      "keyCode": 79,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "にほ",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keydown",
+      "time": 37402.29999999999,
+      "trusted": true,
+      "key": "n",
+      "code": "KeyN",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "にほ",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "compositionupdate",
+      "time": 37402.5,
+      "trusted": true,
+      "data": "にほn",
+      "value": "にほ",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "beforeinput",
+      "time": 37402.59999999998,
+      "trusted": true,
+      "data": "にほn",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "にほ",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "input",
+      "time": 37402.79999999999,
+      "trusted": true,
+      "data": "にほn",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "にほn",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "selection",
+      "time": 37403.59999999998,
+      "trusted": true,
+      "value": "にほn",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "keyup",
+      "time": 37456.399999999965,
+      "trusted": true,
+      "key": "n",
+      "code": "KeyN",
+      "keyCode": 78,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "にほn",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "keydown",
+      "time": 37628,
+      "trusted": true,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "にほn",
+      "selectionStart": 3,
+      "selectionEnd": 3
+    },
+    {
+      "type": "compositionupdate",
+      "time": 37628.09999999998,
+      "trusted": true,
+      "data": "日本",
+      "value": "にほn",
+      "selectionStart": 0,
+      "selectionEnd": 3
+    },
+    {
+      "type": "beforeinput",
+      "time": 37628.20000000001,
+      "trusted": true,
+      "data": "日本",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "にほn",
+      "selectionStart": 0,
+      "selectionEnd": 3
+    },
+    {
+      "type": "input",
+      "time": 37628.5,
+      "trusted": true,
+      "data": "日本",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "日本",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "selection",
+      "time": 37629.09999999998,
+      "trusted": true,
+      "value": "日本",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 37679.09999999998,
+      "trusted": true,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 32,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "日本",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keydown",
+      "time": 37828.399999999965,
+      "trusted": true,
+      "key": "Enter",
+      "code": "Enter",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "日本",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 37889.70000000001,
+      "trusted": true,
+      "key": "Enter",
+      "code": "Enter",
+      "keyCode": 13,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "日本",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keydown",
+      "time": 38263.899999999965,
+      "trusted": true,
+      "key": "Enter",
+      "code": "Enter",
+      "keyCode": 229,
+      "location": 0,
+      "composing": true,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "日本",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "compositionupdate",
+      "time": 38264.09999999998,
+      "trusted": true,
+      "data": "日本",
+      "value": "日本",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "beforeinput",
+      "time": 38264.09999999998,
+      "trusted": true,
+      "data": "日本",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "日本",
+      "selectionStart": 0,
+      "selectionEnd": 2
+    },
+    {
+      "type": "input",
+      "time": 38264.399999999965,
+      "trusted": true,
+      "data": "日本",
+      "inputType": "insertCompositionText",
+      "composing": true,
+      "value": "日本",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "compositionend",
+      "time": 38264.399999999965,
+      "trusted": false,
+      "data": "日本",
+      "value": "日本",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "selection",
+      "time": 38264.899999999965,
+      "trusted": true,
+      "value": "日本",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 38321.29999999999,
+      "trusted": true,
+      "key": "Enter",
+      "code": "Enter",
+      "keyCode": 13,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "日本",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    }
+  ],
+  "final": {
+    "value": "日本",
+    "selectionStart": 2,
+    "selectionEnd": 2,
+    "composing": false
+  },
+  "captureIntent": {
+    "keys": ["45", "34", "4", "31", "45", "49", "36", "15:control:shift", "36"],
+    "click": false,
+    "picker": false
+  },
+  "qualification": "failed-native-intent",
+  "platform": "mac"
+}

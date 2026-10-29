@@ -1,0 +1,25 @@
+name: CI changes
+description: Fail-open workspace change plan
+outputs:
+  lint:
+    value: ${{ steps.detect.outputs.lint }}
+  build-types:
+    value: ${{ steps.detect.outputs.build-types }}
+  tests:
+    value: ${{ steps.detect.outputs.tests }}
+  integration:
+    value: ${{ steps.detect.outputs.integration }}
+  native-mac:
+    value: ${{ steps.detect.outputs.native-mac }}
+  android:
+    value: ${{ steps.detect.outputs.android }}
+  browser-journeys:
+    value: ${{ steps.detect.outputs.browser-journeys }}
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+      run: node .github/scripts/ci-changes.mjs

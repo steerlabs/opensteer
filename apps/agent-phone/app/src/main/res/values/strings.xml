@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="state_needs_update">Update Agent Phone</string>
+    <string name="app_name">Opensteer Agent Phone</string>
+    <string name="accessibility_label">Opensteer Agent Phone</string>
+    <string name="accessibility_description">Lets Opensteer agents you approve see and operate this phone. Turn it off to disconnect the phone from Opensteer.</string>
+
+    <string name="phone_brand">OPENSTEER</string>
+    <string name="phone_title">Agent Phone</string>
+    <string name="status_paired">Works for Opensteer on %1$s</string>
+    <string name="status_address">Host address: %1$s</string>
+    <string name="setup_next_step">Plug this phone into your computer. In Opensteer, open Computers and choose Add a phone.</string>
+    <string name="setup_reset_identity">This phone could not read its saved setup. Remove it below, then plug the phone into your computer and add it again from Computers in Opensteer.</string>
+    <string name="removed_next_step">Agents no longer have access to this phone. Plug it into your computer and add it again from Computers in Opensteer.</string>
+    <string name="agents_section">Agents on this phone</string>
+    <string name="health_section">Setup health</string>
+    <string name="state_paused">Paused</string>
+    <string name="pause_explanation">Stops agent access until you switch it off.</string>
+    <string name="battery_open">Open battery settings</string>
+    <string name="battery_charging">Charging. Keep it plugged in for reliable access.</string>
+    <string name="stop_task_description">Stop %1$s from using this phone</string>
+    <string name="state_unpaired">Not set up</string>
+    <string name="state_pairing">Setting up</string>
+    <string name="state_connecting">Connecting</string>
+    <string name="state_online">Online</string>
+    <string name="state_offline">Offline</string>
+    <string name="state_removed">Removed from Opensteer</string>
+    <string name="accessibility_on">Accessibility service: connected.</string>
+    <string name="accessibility_off">The accessibility service is off, so agents cannot use this phone.</string>
+    <string name="accessibility_open">Open accessibility settings</string>
+    <string name="battery_exempt">Battery optimization: unrestricted.</string>
+    <string name="battery_not_exempt">Battery optimization may stop the connection. Set this app to Unrestricted.</string>
+    <string name="battery_unplugged">This phone is meant to stay plugged in. It is running on battery.</string>
+    <string name="pause">Pause agents</string>
+    <string name="session_none">No task is using this phone.</string>
+    <string name="session_in_use">In use by %1$s</string>
+    <string name="stop_task">Stop</string>
+    <string name="untitled_task">an untitled task</string>
+    <string name="unpair">Remove from Opensteer</string>
+    <string name="unpair_title">Remove this phone from Opensteer?</string>
+    <string name="unpair_message">This phone forgets its Opensteer identity and keys. To use it again, set it up again from Opensteer.</string>
+    <string name="unpair_confirm">Remove</string>
+
+    <string name="notification_channel">Agent Phone status</string>
+    <string name="notification_ready">Ready for agents</string>
+    <string name="notification_paused">Paused. Agents cannot use this phone.</string>
+    <string name="notification_in_use">In use by %1$s</string>
+    <string name="notification_unpaired">Not set up</string>
+    <string name="notification_connecting">Connecting to Opensteer</string>
+</resources>

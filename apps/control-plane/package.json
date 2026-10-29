@@ -1,0 +1,48 @@
+{
+  "name": "@opensteer/control-plane",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "start:migrate": "node dist/migrate-main.js",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@better-auth/core": "catalog:",
+    "@better-auth/oauth-provider": "catalog:",
+    "@better-auth/utils": "catalog:",
+    "@better-fetch/fetch": "catalog:",
+    "@opensteer/access": "workspace:*",
+    "@opensteer/config": "workspace:*",
+    "@opensteer/control-plane-protocol": "workspace:*",
+    "@opensteer/core": "workspace:*",
+    "@opensteer/deployment-authority": "workspace:*",
+    "@opensteer/integration-auth": "workspace:*",
+    "@opensteer/integration-catalog": "workspace:*",
+    "@opensteer/integration-core": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "better-auth": "catalog:",
+    "better-call": "catalog:",
+    "fastify": "catalog:",
+    "jose": "catalog:",
+    "kysely": "catalog:",
+    "nanostores": "catalog:",
+    "pg": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@opensteer/database": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "tsup": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

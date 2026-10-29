@@ -1,0 +1,347 @@
+/* Shared modal dialog system, anchored popover, + inspector panel. */
+
+/* Anchored overlay panel; positioned in JS relative to its trigger. */
+.popover {
+  position: fixed;
+  z-index: var(--layer-popover);
+  min-width: 264px;
+  max-width: min(
+    340px,
+    calc(100vw - 20px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))
+  );
+  max-height: min(
+    420px,
+    60vh,
+    calc(100dvh - 20px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px))
+  );
+  overflow-y: auto;
+  padding: var(--space-6);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  animation: rise-in var(--duration-fast) var(--ease-out);
+}
+
+.popover:focus {
+  outline: none;
+}
+
+/* The account pill's menu: one engine's accounts on one work location. */
+.popover--accounts {
+  width: min(340px, calc(100vw - 20px));
+  padding: var(--space-6);
+}
+
+/* The review a session-ending or access-changing choice opens, in the place
+   the picker was. It scrolls as a whole rather than clipping its choices. */
+.popover.popover--review {
+  width: min(380px, calc(100vw - 20px));
+  max-height: min(560px, 80dvh, calc(100dvh - 20px));
+  padding: 0;
+}
+
+.popover--review .switch-review {
+  max-width: none;
+}
+
+.dialog-layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--layer-dialog);
+  display: grid;
+  place-items: center;
+  padding: calc(var(--space-22) + env(safe-area-inset-top, 0px))
+    calc(var(--space-22) + env(safe-area-inset-right, 0px))
+    calc(var(--space-22) + env(safe-area-inset-bottom, 0px))
+    calc(var(--space-22) + env(safe-area-inset-left, 0px));
+}
+
+.dialog-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 58%);
+  border: 0;
+  animation: fade-in var(--duration-med) var(--ease-out);
+}
+
+.dialog {
+  position: relative;
+  width: 100%;
+  max-width: 32rem;
+  max-height: min(84dvh, 44rem);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-elevated);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  animation: dialog-in var(--duration-med) var(--ease-out);
+  overflow: hidden;
+}
+
+.dialog--wide {
+  max-width: 44rem;
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(9px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.dialog__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-16) var(--space-18) var(--space-12);
+  flex: none;
+}
+
+.dialog__title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--display-xs);
+  font-weight: var(--weight-bold);
+}
+
+.dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-18) var(--space-18);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+}
+
+.dialog__footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  /* A footer with more than two actions still fits a 320px viewport. */
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-18) var(--space-16);
+  border-top: 1px solid var(--line);
+}
+
+.dialog__footer .form-actions__error {
+  text-align: left;
+}
+
+.permission-review__kicker {
+  margin: calc(var(--space-8) * -1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+}
+
+.permission-review__facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.permission-review__facts p {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  margin: 0;
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.permission-review__facts svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--green);
+}
+
+.harness-authentication__code {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-16);
+  border: 1px solid var(--ember-line);
+  border-radius: var(--radius-sm);
+  background: var(--ember-wash);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.harness-authentication__code code {
+  color: var(--text);
+  font-size: var(--display-lg);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.12em;
+}
+
+.harness-authentication__copy {
+  align-self: flex-start;
+}
+
+/* Setup-method chooser: each method is one tappable row. */
+.settings-choice--button {
+  width: 100%;
+  align-items: center;
+  text-align: left;
+  color: var(--muted);
+}
+
+.settings-choice--button > svg {
+  width: 15px;
+  height: 15px;
+  margin-left: auto;
+  flex: none;
+}
+
+@media (max-width: 620px) {
+  .dialog-layer {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  .dialog {
+    max-width: 100%;
+    max-height: 92dvh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    border-bottom: 0;
+  }
+
+  .dialog__header {
+    padding-right: calc(var(--space-18) + env(safe-area-inset-right, 0px));
+    padding-left: calc(var(--space-18) + env(safe-area-inset-left, 0px));
+  }
+
+  .dialog__body {
+    padding-right: calc(var(--space-18) + env(safe-area-inset-right, 0px));
+    padding-left: calc(var(--space-18) + env(safe-area-inset-left, 0px));
+  }
+
+  .dialog:not(:has(.dialog__footer)) .dialog__body {
+    padding-bottom: calc(var(--space-18) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .dialog__footer {
+    padding-right: calc(var(--space-18) + env(safe-area-inset-right, 0px));
+    padding-bottom: calc(var(--space-16) + env(safe-area-inset-bottom, 0px));
+    padding-left: calc(var(--space-18) + env(safe-area-inset-left, 0px));
+  }
+}
+
+/* ---- The stage: the pages and apps beside a conversation ---- */
+
+/* ---- Toast ----
+   Transient feedback: it confirms and then leaves. Anything a reader must act
+   on stays on the page as a .notice instead. The layer sits above every other
+   surface so a confirmation is never hidden behind the dialog that caused it. */
+
+.toast-layer {
+  position: fixed;
+  z-index: var(--layer-toast);
+  inset: auto env(safe-area-inset-right, 0px)
+    calc(var(--space-24) + env(safe-area-inset-bottom, 0px)) env(safe-area-inset-left, 0px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  padding: 0 var(--space-16);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-10);
+  max-width: min(30rem, 100%);
+  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-14);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  line-height: 1.45;
+  pointer-events: auto;
+  animation: toast-in var(--duration-med) var(--ease-out);
+}
+
+.toast > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: var(--space-4);
+  color: var(--ember);
+}
+
+.toast__message {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-4) 0;
+}
+
+.toast__dismiss {
+  flex: none;
+  width: 26px;
+  height: 26px;
+}
+
+.toast__dismiss svg {
+  width: 14px;
+  height: 14px;
+}
+
+.toast--error {
+  border-color: var(--red-line);
+  background: color-mix(in srgb, var(--red) 10%, var(--surface-elevated));
+  color: var(--red-text);
+}
+
+.toast--error > svg {
+  color: var(--red);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-10));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast-layer--toolbar {
+  justify-content: center;
+  height: var(--toast-row-height);
+  padding: 0 8px;
+  overflow: hidden;
+}
+.toast-layer--toolbar > .toast {
+  max-height: 32px;
+  align-items: center;
+  padding-block: 3px;
+}
+.toast-layer--toolbar > .toast:not(:last-child) {
+  display: none;
+}
+.toast-layer--toolbar .toast__message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

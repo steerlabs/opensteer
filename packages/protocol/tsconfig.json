@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.package.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.cache/tsconfig.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts", "src/**/*.json"]
+}

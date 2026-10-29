@@ -1,0 +1,10 @@
+services:
+  runner:
+    environment:
+      OPENSTEER_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/runner_enrollment_token
+    secrets:
+      - runner_enrollment_token
+
+secrets:
+  runner_enrollment_token:
+    file: ./secrets/runner_enrollment_token

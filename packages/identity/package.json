@@ -1,0 +1,36 @@
+{
+  "name": "@opensteer/identity",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "reset-local-password": "tsx src/reset-local-password.ts"
+  },
+  "dependencies": {
+    "@better-auth/core": "catalog:",
+    "@better-auth/oauth-provider": "catalog:",
+    "@better-auth/sso": "catalog:",
+    "@better-auth/utils": "catalog:",
+    "@better-fetch/fetch": "catalog:",
+    "@opensteer/core": "workspace:*",
+    "@opensteer/database": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "better-auth": "catalog:",
+    "better-call": "catalog:",
+    "jose": "catalog:",
+    "kysely": "catalog:",
+    "nanostores": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

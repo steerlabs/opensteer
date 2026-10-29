@@ -1,0 +1,1 @@
+CREATE DATABASE opensteer_control_plane;

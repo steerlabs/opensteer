@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Connect Chrome to Opensteer</title>
+    <link rel="icon" href="icons/icon-32.png" />
+    <link rel="stylesheet" href="ui.css" />
+    <link rel="stylesheet" href="connect.css" />
+    <script type="module" src="connect.js"></script>
+  </head>
+  <body>
+    <main class="connect" id="connect" data-state="verifying" aria-busy="true">
+      <div class="mark" aria-hidden="true">
+        <svg class="mark__ring" viewBox="0 0 72 72">
+          <circle class="mark__track" cx="36" cy="36" r="34" />
+          <circle class="mark__arc" cx="36" cy="36" r="34" pathLength="100" />
+        </svg>
+        <img class="orb mark__orb" src="icons/mark.png" alt="" width="44" height="44" />
+        <svg class="mark__check" viewBox="0 0 24 24">
+          <path d="m6.5 12.5 3.8 3.8 7.2-8" pathLength="100" />
+        </svg>
+        <span class="mark__badge"></span>
+      </div>
+      <header class="connect__head">
+        <h1 class="connect__title" id="title" tabindex="-1">Checking this link</h1>
+        <p class="connect__deployment" id="deployment" hidden></p>
+      </header>
+      <p class="connect__body" id="body"></p>
+      <form class="connect__form" id="form" hidden novalidate>
+        <label class="field">
+          <span class="field__label">Name for this Chrome</span>
+          <input
+            class="field__input"
+            id="name"
+            name="name"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="120"
+            required
+          />
+        </label>
+        <p class="connect__note" id="note" hidden></p>
+        <button class="btn btn--primary connect__submit" id="submit" type="submit">Connect</button>
+      </form>
+      <div class="connect__actions" id="actions" hidden></div>
+      <p class="visually-hidden" id="live" role="status" aria-live="polite"></p>
+    </main>
+  </body>
+</html>

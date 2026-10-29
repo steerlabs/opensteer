@@ -1,0 +1,54 @@
+{
+  "name": "@opensteer/client",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./assets/*": "./assets/*",
+    "./auth": "./src/auth/index.ts",
+    "./computers": "./src/computers/index.ts",
+    "./connections": "./src/connections/index.ts",
+    "./editing": "./src/editing/index.ts",
+    "./host": "./src/host/index.ts",
+    "./host-api": "./src/host/host-api-client.ts",
+    "./integrations": "./src/integrations/index.ts",
+    "./mock": "./src/mock/index.ts",
+    "./react": "./src/react/index.ts",
+    "./test-support": "./src/test-support/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.4.0",
+    "@opensteer/browser-profile": "workspace:*",
+    "@opensteer/channel-core": "workspace:*",
+    "@opensteer/control-plane-protocol": "workspace:*",
+    "@opensteer/core": "workspace:*",
+    "@opensteer/deployment-authority": "workspace:*",
+    "@opensteer/integration-core": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "@opensteer/triggers": "workspace:*",
+    "tldts": "6.1.86",
+    "unicode-segmenter": "0.17.3",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "react": "^19.2.8"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@noble/curves": "2.4.0",
+    "@types/react": "19.2.18",
+    "react": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

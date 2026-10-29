@@ -1,0 +1,334 @@
+name: CI
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  push:
+    branches:
+      - main
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      lint: ${{ steps.changes.outputs.lint }}
+      build-types: ${{ steps.changes.outputs.build-types }}
+      tests: ${{ steps.changes.outputs.tests }}
+      integration: ${{ steps.changes.outputs.integration }}
+      native-mac: ${{ steps.changes.outputs.native-mac }}
+      android: ${{ steps.changes.outputs.android }}
+      browser-journeys: ${{ steps.changes.outputs.browser-journeys }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.13.0
+      - id: changes
+        uses: ./.github/actions/ci-changes
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: plan-${{ github.sha }}
+          path: ci-plan.json
+          if-no-files-found: error
+  lint:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.lint != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - run: mkdir -p "$RUNNER_TEMP/evidence"
+      - shell: bash
+        run: |
+          set -o pipefail
+          {
+            pnpm format:check
+            pnpm lint
+            node --test .github/scripts/*.test.mjs
+            node .github/scripts/fork-safety.mjs .github/workflows/ci.yml
+          } 2>&1 | tee "$RUNNER_TEMP/evidence/lint.log"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lint-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence
+          if-no-files-found: error
+  build-types:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.build-types != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - run: mkdir -p "$RUNNER_TEMP/evidence"
+      - shell: bash
+        run: |
+          set -o pipefail
+          {
+            pnpm typecheck
+            pnpm build
+          } 2>&1 | tee "$RUNNER_TEMP/evidence/build-types.log"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: build-types-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence
+          if-no-files-found: error
+  tests:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.tests != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - 1
+          - 2
+    env:
+      CI_LANE: tests
+      CI_SHARD: ${{ matrix.shard }}
+      CI_SHARDS: "2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - run: |-
+          mkdir -p "$RUNNER_TEMP/evidence"
+          {
+            echo "CI_DISCOVERY_PATH=$RUNNER_TEMP/evidence/$CI_LANE-$CI_SHARD.discovered.json"
+            echo "CI_INVENTORY_PATH=$RUNNER_TEMP/evidence/$CI_LANE-$CI_SHARD.inventory.json"
+          } >> "$GITHUB_ENV"
+        shell: bash
+      - uses: ./.github/actions/ci-browser
+      - run: pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH"
+      - shell: bash
+        run: |
+          set -o pipefail
+          pnpm pretest
+          pnpm exec vitest run --shard=${{ matrix.shard }}/2 --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.log"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tests-${{ matrix.shard }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence
+          if-no-files-found: error
+  integration:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.integration != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - 1
+          - 2
+          - 3
+          - 4
+    env:
+      CI_LANE: integration
+      CI_SHARD: ${{ matrix.shard }}
+      CI_SHARDS: "4"
+      OPENSTEER_LOCK_ORDER_MODE: enforce
+      OPENSTEER_TEST_DATABASE_URL: postgres://opensteer:opensteer@127.0.0.1:5432/opensteer
+      OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL: postgres://opensteer:opensteer@127.0.0.1:5432/opensteer_control_plane
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_DB: opensteer
+          POSTGRES_USER: opensteer
+          POSTGRES_PASSWORD: opensteer
+        ports:
+          - 5432:5432
+        options: --health-cmd "pg_isready -U opensteer -d opensteer" --health-interval 2s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - run: |-
+          mkdir -p "$RUNNER_TEMP/evidence"
+          {
+            echo "CI_DISCOVERY_PATH=$RUNNER_TEMP/evidence/$CI_LANE-$CI_SHARD.discovered.json"
+            echo "CI_INVENTORY_PATH=$RUNNER_TEMP/evidence/$CI_LANE-$CI_SHARD.inventory.json"
+            echo "OPENSTEER_LOCK_ORDER_TRACE=$RUNNER_TEMP/evidence/integration-$CI_SHARD.jsonl"
+          } >> "$GITHUB_ENV"
+        shell: bash
+      - uses: ./.github/actions/ci-browser
+      - run: psql -h 127.0.0.1 -U opensteer -d opensteer -c 'CREATE DATABASE opensteer_control_plane;'
+        env:
+          PGPASSWORD: opensteer
+      - run: pnpm exec vitest list --config vitest.integration.config.ts --filesOnly --json "$CI_DISCOVERY_PATH"
+      - shell: bash
+        run: |
+          set -o pipefail
+          pnpm test:integration -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.log"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: integration-${{ matrix.shard }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence
+          if-no-files-found: error
+  native-mac:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.native-mac != 'false' }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - run: mkdir -p "$RUNNER_TEMP/evidence"
+      - run: echo "OPENSTEER_IPHONE_APPS_NATIVE_TESTS=1" >> "$GITHUB_ENV"
+      - shell: bash
+        run: |
+          set -o pipefail
+          {
+            pnpm --filter @opensteer/desktop build:computer-use-helper
+            pnpm --filter @opensteer/desktop build:passwords-broker
+            pnpm exec tsx scripts/generate-apple-data-contracts.ts
+            swift test --package-path packages/apple-data
+            swift test --package-path apps/mobile/modules/iphone-apps/ios
+            swift test --package-path apps/desktop/native/computer-use
+            swift test --package-path apps/desktop/native/passwords
+            pnpm exec vitest run tests/helper-data-contracts.test.ts tests/iphone-apps-wire.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords
+          } 2>&1 | tee "$RUNNER_TEMP/evidence/native-mac.log"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-mac-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence
+          if-no-files-found: error
+  android:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.android != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - run: mkdir -p "$RUNNER_TEMP/evidence"
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: 21.0.10+7
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          cmdline-tools-version: "13114758"
+          packages: platforms;android-36 build-tools;36.0.0
+      - shell: bash
+        run: |
+          set -o pipefail
+          {
+            OPENSTEER_WRITE_AGENT_PHONE_VECTORS=1 pnpm exec vitest run packages/runner-auth/src/agent-phone-vectors.test.ts
+            (cd apps/agent-phone && OPENSTEER_WRITE_WIRE_FIXTURE=1 ./gradlew :app:lint :app:testDebugUnitTest :app:assembleDebug :fixture:assembleDebug --no-daemon --rerun-tasks)
+            git diff --exit-code -- packages/runner-auth/fixtures/agent-phone-vectors.json apps/agent-phone/app/src/test/resources/wire-fixture.json
+            pnpm exec vitest run packages/runner-auth/src/agent-phone-vectors.test.ts packages/runner-auth/src/agent-phone-wire.test.ts
+          } 2>&1 | tee "$RUNNER_TEMP/evidence/android.log"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence
+            apps/agent-phone/**/build/reports
+            apps/agent-phone/**/build/test-results
+            apps/agent-phone/**/build/outputs/apk/debug
+          if-no-files-found: error
+  browser-journeys:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.browser-journeys != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - run: |-
+          mkdir -p "$RUNNER_TEMP/evidence"
+          {
+            echo "OPENSTEER_EXTENSION_REPORT=$RUNNER_TEMP/evidence/extension.json"
+            echo "OPENSTEER_EXTENSION_SCREENSHOTS=$RUNNER_TEMP/evidence/extension-screenshots"
+            echo "OPENSTEER_TRANSCRIPT_LINKS_E2E_ARTIFACT_DIR=$RUNNER_TEMP/evidence/transcript-links"
+            echo "OPENSTEER_START_PAGE_COMPUTERS_E2E_ARTIFACT_DIR=$RUNNER_TEMP/evidence/start-page-computers"
+          } >> "$GITHUB_ENV"
+        shell: bash
+      - uses: ./.github/actions/ci-browser
+      - shell: bash
+        run: |
+          set -o pipefail
+          {
+            pnpm --filter @opensteer/browser-extension build
+            pnpm --filter @opensteer/browser-extension test:integration
+            pnpm --filter @opensteer/web test:transcript-links
+            pnpm --filter @opensteer/web test:start-page-computers
+          } 2>&1 | tee "$RUNNER_TEMP/evidence/browser-journeys.log"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: browser-journeys-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence
+            /tmp/opensteer-*-e2e
+          if-no-files-found: error
+  Check:
+    if: always()
+    needs:
+      - changes
+      - lint
+      - build-types
+      - tests
+      - integration
+      - native-mac
+      - android
+      - browser-journeys
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: ${{ runner.temp }}/evidence
+          merge-multiple: true
+      - run: pnpm exec tsx scripts/ci-check.ts "$RUNNER_TEMP/evidence"
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+          CI_EVENT: ${{ github.event_name }}
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aggregate-${{ github.sha }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error

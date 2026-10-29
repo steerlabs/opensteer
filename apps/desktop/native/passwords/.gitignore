@@ -1,0 +1,8 @@
+.build/
+dist/
+
+# Legacy generated artifacts; retained only so upgrades do not add them to Git.
+Sources/PasswordsBroker/BuildMode.generated.swift
+Sources/PasswordsImportWorker/Info.generated.plist
+
+build/

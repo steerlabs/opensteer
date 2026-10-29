@@ -1,0 +1,42 @@
+{
+  "name": "@opensteer/browser-runtime-core",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./page-policy": "./src/browser/page-policy.ts",
+    "./test-support": "./src/test-support/fakes.ts",
+    "./test-support/passkey-policy": "./src/test-support/passkey-policy-scenario.ts",
+    "./test-support/state-import": "./src/test-support/state-import-scenario.ts",
+    "./test-support/editing-engine": "./src/test-support/editing-engine-journey.ts",
+    "./test-support/harness-transport": "./src/test-support/harness-transport.ts",
+    "./test-support/harness-actions": "./src/test-support/harness-actions-fixture.ts",
+    "./passkeys": "./src/passkeys/index.ts",
+    "./test-support/passkey-test-authenticator": "./src/test-support/passkey-test-authenticator.ts"
+  },
+  "scripts": {
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opensteer/browser-core": "workspace:*",
+    "@opensteer/browser-profile": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "ws": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@simplewebauthn/server": "14.0.3",
+    "@types/node": "catalog:",
+    "@types/ws": "catalog:",
+    "esbuild": "0.28.2",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

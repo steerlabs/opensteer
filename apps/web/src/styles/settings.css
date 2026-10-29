@@ -1,0 +1,551 @@
+/* Settings: a place of its own.
+
+   Entering Settings swaps the conversation sidebar for one settings
+   navigation — a clear way back and a short list of sections. Connection
+   details and the reader's account stay in the footer.
+   The routed section sits to its right as an ordinary `.page`, so banners,
+   the page topbar and native window chrome behave as they do everywhere else.
+
+   Below the shell breakpoint the navigation becomes a drawer rather than a
+   strip, keeping the same destinations and keyboard behavior at every size.
+
+   Every settings page shares one measure and one gutter, declared on the
+   layout, so AI services, Connected apps and Computers start on the same
+   edge. */
+
+.settings-layout {
+  --settings-navigation-width: 280px;
+  --settings-measure: 55rem;
+  --settings-top: var(--space-32);
+  --settings-bottom: var(--space-64);
+  --settings-gutter-start: var(--space-32);
+  --settings-gutter-end: var(--space-32);
+
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---- Navigation ---- */
+
+.settings-navigation {
+  display: flex;
+  width: var(--settings-navigation-width);
+  min-height: 0;
+  flex: none;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-navigation__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+  min-height: 54px;
+  padding: var(--space-12) var(--space-12) 0;
+  flex: none;
+}
+
+.settings-navigation__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  padding: var(--space-8) var(--space-10);
+  border: 1px solid var(--line-hover);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-weight: var(--weight-medium);
+  font-size: var(--text-lg);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.settings-navigation__back:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.settings-navigation__back svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+/* The drawer's own way out; a docked rail has nothing to close. */
+.settings-navigation__close {
+  display: none;
+  flex: none;
+}
+
+.settings-navigation__title {
+  padding: var(--space-24) var(--space-22) var(--space-12);
+  color: var(--text);
+  font-size: var(--display-sm);
+  font-weight: var(--weight-strong);
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+/* Surface connection problems even while its details page is closed. */
+.settings-navigation__status {
+  padding: 0 var(--space-10) var(--space-8);
+  color: var(--amber-text);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.settings-navigation__links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-12) var(--space-16);
+}
+
+.settings-navigation__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* Names what the links under it are for, so "Computers" reads as the
+   computers agents use before anyone has to open it. */
+.settings-navigation__caption {
+  padding: var(--space-4) var(--space-10) var(--space-6);
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 1.4;
+}
+
+.settings-navigation__link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-width: 0;
+  min-height: 42px;
+  padding: var(--space-8) var(--space-10);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.settings-navigation__link:hover {
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+
+.settings-navigation__link.is-active {
+  background: var(--surface-raised);
+}
+
+.settings-navigation__link svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--muted);
+}
+
+.settings-navigation__link.is-active svg {
+  color: var(--ember);
+}
+
+.settings-navigation__link > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.settings-navigation__label {
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  line-height: 1.5;
+}
+
+.settings-navigation__link:hover .settings-navigation__label,
+.settings-navigation__link.is-active .settings-navigation__label {
+  color: var(--text);
+}
+
+.settings-navigation__account {
+  display: flex;
+  margin-top: auto;
+  padding: var(--space-10) var(--space-12) var(--space-12);
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+
+.settings-navigation__connection {
+  font-size: var(--text-lg);
+}
+
+/* Where this Opensteer is: its kind as a picture, its name, and where that
+   is from here. The picture sits in a tile so it reads as the place, not as
+   another navigation icon. */
+.settings-navigation__link > .settings-navigation__place {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+}
+
+.settings-navigation__place svg {
+  width: 17px;
+  height: 17px;
+  color: var(--text-soft);
+}
+
+.settings-navigation__link.is-active .settings-navigation__place svg {
+  color: var(--ember);
+}
+
+.settings-navigation__link > .settings-navigation__connection-text {
+  flex: 1;
+  gap: var(--space-2);
+}
+
+.settings-navigation__connection-name,
+.settings-navigation__connection-detail {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-navigation__connection-name {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+  line-height: 1.35;
+}
+
+.settings-navigation__connection-detail {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.settings-navigation__connection svg:last-child {
+  width: 14px;
+  height: 14px;
+}
+
+.settings-navigation__scrim {
+  display: none;
+}
+
+/* ---- Content ---- */
+
+.settings-layout__main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* A section page holds its topbar still and scrolls only its content, so the
+   one scroll owner is `.settings-content`, never the page around it. */
+.settings {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-content__inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.settings-content__inner,
+.settings-layout__main .page__inner,
+.settings-layout__main .computers-page__content {
+  width: 100%;
+  max-width: var(--settings-measure);
+  margin-inline: auto;
+  padding: var(--settings-top) var(--settings-gutter-end) var(--settings-bottom)
+    var(--settings-gutter-start);
+}
+
+/* Settings is chrome, so its titles speak in the chrome face rather than the
+   display serif the conversation surfaces use. */
+.settings-layout .settings-section__title,
+.settings-layout .page__title {
+  font-family: var(--font-sans);
+  font-size: var(--display-lg);
+  font-weight: var(--weight-strong);
+  letter-spacing: -0.022em;
+  line-height: 1.3;
+}
+
+/* ---- Connected apps ----
+   One page, two kinds of connection. The header and tabs scroll with the
+   embedded page, so a phone does not spend a third of its height on them. */
+
+.connected-apps {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.connected-apps__inner {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.connected-apps__header,
+.connected-apps-tabs {
+  width: 100%;
+  max-width: var(--settings-measure);
+  margin-inline: auto;
+  padding-right: var(--settings-gutter-end);
+  padding-left: var(--settings-gutter-start);
+}
+
+.connected-apps__header {
+  padding-top: var(--settings-top);
+}
+
+.connected-apps__title {
+  font-family: var(--font-sans);
+  font-size: var(--display-lg);
+  font-weight: var(--weight-strong);
+  letter-spacing: -0.022em;
+  line-height: 1.3;
+}
+
+.connected-apps__description {
+  max-width: 38rem;
+  margin-top: var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-lg);
+  line-height: 1.5;
+}
+
+.connected-apps-tabs {
+  display: flex;
+  gap: var(--space-20);
+  padding-top: var(--space-20);
+  border-bottom: 1px solid var(--line);
+}
+
+.connected-apps-tabs__item {
+  margin-bottom: -1px;
+  padding: var(--space-8) var(--space-2) var(--space-10);
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.connected-apps-tabs__item:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.connected-apps-tabs__item.is-active {
+  border-bottom-color: var(--ember);
+  color: var(--ember);
+}
+
+/* The embedded page is content here, not a second scroll owner. */
+.connected-apps__content {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+}
+
+.connected-apps__panel {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
+}
+
+.connected-apps__content .page__inner {
+  padding-top: var(--space-24);
+}
+
+/* ---- Connections ----
+   A calm list of places. The current one is marked by its glyph taking the
+   accent; one that cannot be opened says why in a sentence that wraps. */
+
+.settings-connections .card__row-title {
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.settings-connections .card__row-detail {
+  overflow: visible;
+  line-height: 1.45;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.settings-connections .card__row.is-current .card__row-glyph {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+.settings-connections__actions,
+.settings-connections__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-10);
+}
+
+.settings-connections__footer {
+  margin-top: var(--space-20);
+}
+
+/* ---- Native window chrome ---- */
+
+html.electron-shell .settings-navigation__header {
+  min-height: calc(var(--desktop-titlebar-height) + 38px);
+  padding-top: var(--desktop-titlebar-height);
+  app-region: drag;
+  user-select: none;
+}
+
+html.electron-shell .settings-navigation__header :is(a, button) {
+  app-region: no-drag;
+}
+
+/* Beside a docked navigation the page topbar is nowhere near the window
+   controls, so it drops the leading inset desktop.css gives every topbar. */
+@media (min-width: 901px) {
+  html.electron-shell .settings-layout__main .topbar {
+    padding-left: var(--space-12);
+  }
+}
+
+/* ---- Narrow windows ---- */
+
+@media (max-width: 900px) {
+  .settings-layout {
+    --settings-top: var(--space-24);
+    --settings-bottom: calc(var(--space-48) + env(safe-area-inset-bottom, 0px));
+    --settings-gutter-start: calc(var(--space-16) + env(safe-area-inset-left, 0px));
+    --settings-gutter-end: calc(var(--space-16) + env(safe-area-inset-right, 0px));
+  }
+
+  /* Hidden, not merely off-screen, while closed: a drawer nobody can see must
+     not take keyboard focus. Visibility waits for the slide to finish. */
+  .settings-navigation {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: var(--layer-drawer);
+    width: min(320px, 86vw);
+    padding-left: env(safe-area-inset-left, 0px);
+    visibility: hidden;
+    transform: translateX(-102%);
+    transition:
+      transform var(--duration-med) var(--ease-out),
+      visibility 0s linear var(--duration-med);
+  }
+
+  .settings-navigation--open {
+    visibility: visible;
+    transform: translateX(0);
+    box-shadow: var(--shadow-overlay);
+    transition:
+      transform var(--duration-med) var(--ease-out),
+      visibility 0s;
+  }
+
+  .settings-navigation__header {
+    padding-top: calc(var(--space-14) + env(safe-area-inset-top, 0px));
+  }
+
+  .settings-navigation__close {
+    display: inline-grid;
+  }
+
+  /* Keep drawer controls below native window buttons, even in narrow windows. */
+  html.electron-shell .settings-navigation__header {
+    height: auto;
+    min-height: calc(var(--desktop-titlebar-height) + var(--touch-target));
+    padding-top: var(--desktop-titlebar-height);
+    padding-bottom: var(--space-6);
+  }
+
+  .settings-navigation__account {
+    padding-bottom: calc(var(--space-12) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .settings-navigation__scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: var(--layer-drawer-scrim);
+    border: 0;
+    background: rgb(0 0 0 / 55%);
+    animation: fade-in var(--duration-med) var(--ease-out);
+  }
+}
+
+@media (max-width: 680px) {
+  .settings-layout .settings-section__title,
+  .settings-layout .page__title {
+    font-size: var(--display-md);
+  }
+
+  .settings-content__inner .card__row-actions .btn {
+    min-height: var(--touch-target);
+  }
+
+  .settings-connections .card__row-actions {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 600px) {
+  .connected-apps-tabs {
+    gap: var(--space-16);
+    overflow-x: auto;
+  }
+}
+
+@media (hover: none) {
+  .settings-navigation__back,
+  .settings-navigation__link,
+  .connected-apps-tabs__item {
+    min-height: var(--touch-target);
+  }
+}

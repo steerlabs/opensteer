@@ -1,0 +1,28 @@
+# Every build input of the Agent Phone app is pinned here; Gradle itself is
+# pinned by the wrapper.
+[versions]
+agp = "9.4.1"
+kotlin = "2.4.21"
+# 5.5.0 requires compileSdk 37; 5.4.0 is the newest release that builds against 36.
+okhttp = "5.4.0"
+bouncycastle = "1.86"
+junit = "4.13.2"
+compose-bom = "2025.08.01"
+activity = "1.11.0"
+
+[libraries]
+activity = { module = "androidx.activity:activity", version.ref = "activity" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-foundation = { module = "androidx.compose.foundation:foundation" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+# The Runner connection's WebSockets and the Host discovery read.
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+# Ed25519 through the lightweight API: Android has no platform Ed25519 before API 33.
+bouncycastle-prov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+junit = { module = "junit:junit", version.ref = "junit" }
+
+[plugins]
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+android-application = { id = "com.android.application", version.ref = "agp" }
+# AGP 9 compiles Kotlin itself; this only puts the pinned compiler on the build classpath.
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

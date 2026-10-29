@@ -1,0 +1,233 @@
+{
+  "native": true,
+  "engine": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:159.0) Gecko/20100101 Firefox/159.0",
+  "scenario": "option",
+  "inputSource": "com.apple.keylayout.US",
+  "intent": "Physical native firefox-option after actual Firefox Welcome acceptance and native control actions. Preserve the native event order; failed emoji insertion stays explicitly unqualified.",
+  "expected": {
+    "value": "å",
+    "producers": [
+      {
+        "kind": "key",
+        "text": "å"
+      }
+    ],
+    "transactionCommits": [],
+    "keystrokes": [
+      {
+        "action": "down",
+        "key": "å",
+        "code": "KeyA",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "å"
+      },
+      {
+        "action": "up",
+        "key": "å",
+        "code": "KeyA",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      }
+    ],
+    "compositions": [],
+    "proxy": {
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    "caret": 1
+  },
+  "sourceSha": "47e7bfc0da3a6f169030636f0f06f9b430eb86fc",
+  "sourceSelection": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "requested": "com.apple.keylayout.US",
+    "select": 0,
+    "statuses": [
+      {
+        "enable": 0,
+        "id": "com.apple.keylayout.US"
+      }
+    ]
+  },
+  "sourceAfterKeys": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "frontPid": 1069
+  },
+  "events": [
+    {
+      "type": "selection",
+      "time": 7868,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 8163,
+      "trusted": true,
+      "key": "Alt",
+      "code": "AltLeft",
+      "keyCode": 18,
+      "location": 1,
+      "composing": false,
+      "repeat": false,
+      "alt": true,
+      "altGraph": true,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 8201,
+      "trusted": true,
+      "key": "å",
+      "code": "KeyA",
+      "keyCode": 65,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": true,
+      "altGraph": true,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keypress",
+      "time": 8201,
+      "trusted": true,
+      "key": "å",
+      "code": "KeyA",
+      "keyCode": 229,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": true,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "beforeinput",
+      "time": 8202,
+      "trusted": true,
+      "data": "å",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "input",
+      "time": 8202,
+      "trusted": true,
+      "data": "å",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 8202,
+      "trusted": true,
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 8266,
+      "trusted": true,
+      "key": "å",
+      "code": "KeyA",
+      "keyCode": 65,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": true,
+      "altGraph": true,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 8267,
+      "trusted": true,
+      "key": "Alt",
+      "code": "AltLeft",
+      "keyCode": 18,
+      "location": 1,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "å",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    }
+  ],
+  "final": {
+    "value": "å",
+    "selectionStart": 1,
+    "selectionEnd": 1,
+    "composing": false
+  },
+  "captureIntent": {
+    "keys": ["0:alt"],
+    "click": false,
+    "picker": false,
+    "phases": [
+      {
+        "phase": "initial",
+        "keys": ["0:alt"],
+        "value": "å",
+        "composing": false,
+        "eventCount": 9
+      }
+    ]
+  },
+  "captureExpected": {
+    "value": "å"
+  },
+  "platform": "mac",
+  "qualification": "captured"
+}

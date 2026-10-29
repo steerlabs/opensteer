@@ -1,0 +1,32 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/agent-plugins" },
+    { "path": "./packages/integration-core" },
+    { "path": "./packages/channel-core" },
+    { "path": "./packages/triggers" },
+    { "path": "./packages/channel-protocol" },
+    { "path": "./packages/channel-slack" },
+    { "path": "./packages/protocol" },
+    { "path": "./packages/client" },
+    { "path": "./packages/config" },
+    { "path": "./packages/database" },
+    { "path": "./packages/workspace" },
+    { "path": "./packages/harness" },
+    { "path": "./packages/harness-codex" },
+    { "path": "./packages/harness-claude" },
+    { "path": "./packages/access" },
+    { "path": "./packages/browser-core" },
+    { "path": "./packages/browser-profile" },
+    { "path": "./packages/browser-runtime-core" },
+    { "path": "./packages/runner-client" },
+    { "path": "./packages/orchestration" },
+    { "path": "./apps/host" },
+    { "path": "./apps/channel-runtime" },
+    { "path": "./apps/runner" },
+    { "path": "./apps/browser-runtime" },
+    { "path": "./apps/web" },
+    { "path": "./apps/mobile" }
+  ]
+}

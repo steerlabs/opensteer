@@ -1,0 +1,20 @@
+extends: ./electron-builder.base.yml
+appId: com.steerlabs.opensteer.beta
+productName: Opensteer Beta
+protocols:
+  - name: Opensteer Beta OAuth callback
+    schemes:
+      - com.steerlabs.opensteer.beta
+directories:
+  output: release/beta
+win:
+  artifactName: opensteer-beta-${version}-${arch}-setup.${ext}
+linux:
+  artifactName: opensteer-beta-${version}-${arch}.${ext}
+  desktop:
+    entry:
+      Name: Opensteer Beta
+      StartupWMClass: Opensteer Beta
+  executableName: opensteer-beta
+deb:
+  packageName: opensteer-beta

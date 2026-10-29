@@ -1,0 +1,35 @@
+{
+  "name": "@opensteer/channel-runtime",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opensteer/channel-core": "workspace:*",
+    "@opensteer/channel-protocol": "workspace:*",
+    "@opensteer/channel-slack": "workspace:*",
+    "@opensteer/core": "workspace:*",
+    "@opensteer/messaging-module": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
+    "@opensteer/runner-client": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "fastify": "catalog:",
+    "ws": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/ws": "catalog:",
+    "tsup": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

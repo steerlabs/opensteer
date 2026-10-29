@@ -1,0 +1,8 @@
+.build/
+dist/
+
+# Legacy generated artifacts; retained only so upgrades do not add them to Git.
+Sources/ComputerUseCore/Support/PeerRequirement.generated.swift
+Sources/ComputerUseCore/Data/DataContracts.generated.swift
+
+build/

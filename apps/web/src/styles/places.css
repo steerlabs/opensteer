@@ -1,0 +1,330 @@
+/* ---- Places ----
+   One list of places, drawn the same in the sidebar's place menu and in the
+   full window that opens when no place is open: a mark, the name a person
+   calls it, where it is relative to them, and a status that only speaks up
+   when there is something to say. */
+
+.place-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.place-row-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.place-row-line > .place-row {
+  flex: 1;
+}
+
+.place-row__more {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.place-row-line:hover .place-row__more,
+.place-row__more:focus-visible,
+.place-row__more[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.place-row__more:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.place-row__more svg {
+  width: 14px;
+  height: 14px;
+}
+
+.place-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-6) var(--space-8);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  text-align: left;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.place-row:hover:not(:disabled),
+.place-row[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.place-row.is-current {
+  color: var(--text);
+}
+
+.place-row:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.place-row__check {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  flex: none;
+  color: var(--ember);
+}
+
+.place-row__check svg {
+  width: 13px;
+  height: 13px;
+}
+
+.place-row__mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+}
+
+.place-row__mark svg {
+  width: 14px;
+  height: 14px;
+}
+
+.place-row__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.place-row__name {
+  overflow: hidden;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.place-row__detail {
+  overflow: hidden;
+  color: var(--muted-dim);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.place-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.place-status--attention {
+  color: var(--amber-text);
+}
+
+.place-status__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: var(--radius-full);
+}
+
+.place-status__dot--ready {
+  background: var(--green);
+}
+
+.place-status__dot--offline {
+  box-shadow: inset 0 0 0 1.5px var(--muted);
+}
+
+.place-status__dot--attention {
+  background: var(--amber);
+}
+
+.place-status__spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+
+/* The explanation sits under the name it explains, past the check and mark. */
+.place-row__explain {
+  margin: var(--space-2) var(--space-8) var(--space-10)
+    calc(14px + 28px + 2 * var(--space-8) + var(--space-8));
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.place-row__explain p {
+  margin: 0 0 var(--space-8);
+}
+
+.place-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+/* What stands in for an Account's places while it is not signed in. */
+.place-card {
+  margin: var(--space-6) var(--space-4) var(--space-4);
+  padding: var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.place-card--attention {
+  border-color: var(--amber-line);
+  background: var(--amber-wash);
+}
+
+.place-card__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.place-card__body {
+  margin: 0 0 var(--space-10);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.place-menu__note {
+  margin: var(--space-6) var(--space-10) var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+/* The sidebar's place button marks an Account sign-in that ended on its own. */
+.sidebar__place-mark {
+  position: relative;
+}
+
+.sidebar__place-alert {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--amber);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+/* The same list, framed, on the full window shown when no place is open. */
+.place-panel {
+  width: 100%;
+  padding: var(--space-6);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  text-align: left;
+}
+
+.place-panel .pop-foot {
+  margin: var(--space-6) calc(-1 * var(--space-6)) calc(-1 * var(--space-6));
+}
+
+.place-panel > .pop-foot:only-child {
+  margin: calc(-1 * var(--space-6));
+  border-top: 0;
+}
+
+.place-panel__action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  padding: var(--space-8);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  text-align: left;
+}
+
+.place-panel__action:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.place-panel__action .place-row__mark {
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+}
+
+/* The welcome's way back in for someone who already uses Opensteer elsewhere. */
+.desktop-welcome__account {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  margin-top: var(--space-18);
+}
+
+.desktop-welcome__account .place-card {
+  width: 100%;
+  text-align: left;
+}
+
+.start-app-windows {
+  width: 260px;
+  max-width: calc(100vw - 24px);
+  font-size: 13px;
+}
+.start-app-windows__toggle {
+  width: 100%;
+  padding: 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.start-app-windows ul {
+  list-style: none;
+  padding: 4px 0;
+  margin: 0;
+}
+.start-app-windows li button {
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 6px 8px;
+  text-align: left;
+  border-radius: 6px;
+}
+.start-app-windows li button:hover {
+  background: var(--surface-hover);
+}
+.start-app-windows small {
+  opacity: 0.65;
+}

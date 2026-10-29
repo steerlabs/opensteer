@@ -1,0 +1,202 @@
+{
+  "engine": "Electron 44.9.2",
+  "native": true,
+  "inputSource": "com.apple.keylayout.US",
+  "events": [
+    {
+      "type": "keydown",
+      "time": 6119.4000000000015,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 69,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keypress",
+      "time": 6119.5,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 101,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "beforeinput",
+      "time": 6119.5,
+      "data": "e",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "input",
+      "time": 6119.9000000000015,
+      "data": "e",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 6120,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 69,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 6120.799999999996,
+      "key": "1",
+      "code": "Digit1",
+      "keyCode": 49,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keypress",
+      "time": 6120.799999999996,
+      "key": "1",
+      "code": "Digit1",
+      "keyCode": 49,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 6120.799999999996,
+      "data": "1",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 6121.199999999997,
+      "data": "1",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "e1",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 6121.299999999996,
+      "key": "1",
+      "code": "Digit1",
+      "keyCode": 49,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "e1",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    }
+  ],
+  "intent": "Failed picker capture: hold E, then press 1. Actual native input was literal e1; this does not qualify the accent picker.",
+  "expected": {
+    "value": "e1",
+    "producers": [
+      {
+        "kind": "key",
+        "text": "e"
+      },
+      {
+        "kind": "key",
+        "text": "1"
+      }
+    ],
+    "transactionCommits": [],
+    "keystrokes": [
+      {
+        "action": "down",
+        "key": "e",
+        "code": "KeyE",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "e"
+      },
+      {
+        "action": "up",
+        "key": "e",
+        "code": "KeyE",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      },
+      {
+        "action": "down",
+        "key": "1",
+        "code": "Digit1",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "1"
+      },
+      {
+        "action": "up",
+        "key": "1",
+        "code": "Digit1",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      }
+    ],
+    "compositions": [],
+    "proxy": {
+      "value": "e1",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    "caret": 2
+  },
+  "qualification": "failed-accent-picker"
+}

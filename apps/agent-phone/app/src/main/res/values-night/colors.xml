@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shared with apps/web/src/styles/tokens.css. -->
+    <color name="phone_background">#080808</color>
+    <color name="phone_surface">#101010</color>
+    <color name="phone_text">#F5F4F2</color>
+    <color name="phone_text_soft">#CECBC7</color>
+    <color name="phone_muted">#A19B96</color>
+    <color name="phone_line">#30302F</color>
+    <color name="phone_accent">#E6BEB0</color>
+    <color name="phone_success">#71C6A5</color>
+    <color name="phone_warning">#DFB36B</color>
+    <color name="phone_danger">#E77E76</color>
+    <color name="phone_ripple">#20E6BEB0</color>
+</resources>

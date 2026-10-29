@@ -1,0 +1,250 @@
+[
+  {
+    "host": "example.com",
+    "registrableDomain": "example.com"
+  },
+  {
+    "host": "www.example.com",
+    "registrableDomain": "example.com"
+  },
+  {
+    "host": "a.b.c.example.com",
+    "registrableDomain": "example.com"
+  },
+  {
+    "host": "EXAMPLE.com",
+    "registrableDomain": "example.com"
+  },
+  {
+    "host": "Www.Example.COM",
+    "registrableDomain": "example.com"
+  },
+  {
+    "host": "example.com.",
+    "registrableDomain": "example.com"
+  },
+  {
+    "host": "www.example.co.uk.",
+    "registrableDomain": "example.co.uk"
+  },
+  {
+    "host": "com",
+    "registrableDomain": null
+  },
+  {
+    "host": "co.uk",
+    "registrableDomain": null
+  },
+  {
+    "host": "uk",
+    "registrableDomain": null
+  },
+  {
+    "host": "example.co.uk",
+    "registrableDomain": "example.co.uk"
+  },
+  {
+    "host": "sub.example.co.uk",
+    "registrableDomain": "example.co.uk"
+  },
+  {
+    "host": "example.org.uk",
+    "registrableDomain": "example.org.uk"
+  },
+  {
+    "host": "a.b.example.org.uk",
+    "registrableDomain": "example.org.uk"
+  },
+  {
+    "host": "github.io",
+    "registrableDomain": null
+  },
+  {
+    "host": "user.github.io",
+    "registrableDomain": "user.github.io"
+  },
+  {
+    "host": "a.user.github.io",
+    "registrableDomain": "user.github.io"
+  },
+  {
+    "host": "amazonaws.com",
+    "registrableDomain": "amazonaws.com"
+  },
+  {
+    "host": "www.amazonaws.com",
+    "registrableDomain": "amazonaws.com"
+  },
+  {
+    "host": "s3.amazonaws.com",
+    "registrableDomain": null
+  },
+  {
+    "host": "bucket.s3.amazonaws.com",
+    "registrableDomain": "bucket.s3.amazonaws.com"
+  },
+  {
+    "host": "a.bucket.s3.amazonaws.com",
+    "registrableDomain": "bucket.s3.amazonaws.com"
+  },
+  {
+    "host": "blogspot.com",
+    "registrableDomain": null
+  },
+  {
+    "host": "x.blogspot.com",
+    "registrableDomain": "x.blogspot.com"
+  },
+  {
+    "host": "foo.ck",
+    "registrableDomain": null
+  },
+  {
+    "host": "x.foo.ck",
+    "registrableDomain": "x.foo.ck"
+  },
+  {
+    "host": "x.y.foo.ck",
+    "registrableDomain": "y.foo.ck"
+  },
+  {
+    "host": "www.ck",
+    "registrableDomain": "www.ck"
+  },
+  {
+    "host": "a.www.ck",
+    "registrableDomain": "www.ck"
+  },
+  {
+    "host": "kawasaki.jp",
+    "registrableDomain": "kawasaki.jp"
+  },
+  {
+    "host": "c.kawasaki.jp",
+    "registrableDomain": null
+  },
+  {
+    "host": "b.c.kawasaki.jp",
+    "registrableDomain": "b.c.kawasaki.jp"
+  },
+  {
+    "host": "a.b.c.kawasaki.jp",
+    "registrableDomain": "b.c.kawasaki.jp"
+  },
+  {
+    "host": "city.kawasaki.jp",
+    "registrableDomain": "city.kawasaki.jp"
+  },
+  {
+    "host": "www.city.kawasaki.jp",
+    "registrableDomain": "city.kawasaki.jp"
+  },
+  {
+    "host": "on-acorn.io",
+    "registrableDomain": "on-acorn.io"
+  },
+  {
+    "host": "x.on-acorn.io",
+    "registrableDomain": null
+  },
+  {
+    "host": "y.x.on-acorn.io",
+    "registrableDomain": "y.x.on-acorn.io"
+  },
+  {
+    "host": "z.y.x.on-acorn.io",
+    "registrableDomain": "y.x.on-acorn.io"
+  },
+  {
+    "host": "compute.amazonaws.com.cn",
+    "registrableDomain": "amazonaws.com.cn"
+  },
+  {
+    "host": "eu.compute.amazonaws.com.cn",
+    "registrableDomain": null
+  },
+  {
+    "host": "host.eu.compute.amazonaws.com.cn",
+    "registrableDomain": "host.eu.compute.amazonaws.com.cn"
+  },
+  {
+    "host": "xn--55qx5d.cn",
+    "registrableDomain": null
+  },
+  {
+    "host": "example.xn--55qx5d.cn",
+    "registrableDomain": "example.xn--55qx5d.cn"
+  },
+  {
+    "host": "a.example.xn--55qx5d.cn",
+    "registrableDomain": "example.xn--55qx5d.cn"
+  },
+  {
+    "host": "xn--ciqpn.hk",
+    "registrableDomain": null
+  },
+  {
+    "host": "shop.xn--ciqpn.hk",
+    "registrableDomain": "shop.xn--ciqpn.hk"
+  },
+  {
+    "host": "xn--aroport-bya.ci",
+    "registrableDomain": null
+  },
+  {
+    "host": "paris.xn--aroport-bya.ci",
+    "registrableDomain": "paris.xn--aroport-bya.ci"
+  },
+  {
+    "host": "xn--p1ai",
+    "registrableDomain": null
+  },
+  {
+    "host": "xn--e1afmkfd.xn--p1ai",
+    "registrableDomain": "xn--e1afmkfd.xn--p1ai"
+  },
+  {
+    "host": "www.xn--e1afmkfd.xn--p1ai",
+    "registrableDomain": "xn--e1afmkfd.xn--p1ai"
+  },
+  {
+    "host": "XN--E1AFMKFD.XN--P1AI",
+    "registrableDomain": "xn--e1afmkfd.xn--p1ai"
+  },
+  {
+    "host": "xn--bcher-kva.example",
+    "registrableDomain": "xn--bcher-kva.example"
+  },
+  {
+    "host": "shop.xn--bcher-kva.example",
+    "registrableDomain": "xn--bcher-kva.example"
+  },
+  {
+    "host": "foo.unknowntld",
+    "registrableDomain": "foo.unknowntld"
+  },
+  {
+    "host": "a.foo.unknowntld",
+    "registrableDomain": "foo.unknowntld"
+  },
+  {
+    "host": "unknowntld",
+    "registrableDomain": null
+  },
+  {
+    "host": "localhost",
+    "registrableDomain": null
+  },
+  {
+    "host": "example",
+    "registrableDomain": null
+  },
+  {
+    "host": "192.168.1.1",
+    "registrableDomain": null
+  },
+  {
+    "host": "1.2.3.4",
+    "registrableDomain": null
+  }
+]

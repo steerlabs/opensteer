@@ -1,0 +1,6 @@
+# Expo prebuild regenerates these from app.config.ts; they are never edited by
+# hand, so they are not tracked.
+/android
+/ios
+/.expo
+/dist

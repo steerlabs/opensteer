@@ -1,0 +1,197 @@
+{
+  "native": true,
+  "engine": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.2 Safari/605.1.15",
+  "scenario": "emoji-picker",
+  "inputSource": "com.apple.keylayout.US",
+  "intent": "Physical native safari-emoji-picker followup. Expectations describe the actual typed edits and marked selection; failed intent/trust qualifications are retained.",
+  "expected": {
+    "value": "",
+    "producers": [],
+    "transactionCommits": [],
+    "keystrokes": [],
+    "compositions": [],
+    "proxy": {
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    "caret": 0,
+    "untrustedEvents": []
+  },
+  "sourceSha": "e082eb7139132d47a6878168edddd8099386657b",
+  "sourceSelection": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "requested": "com.apple.keylayout.US",
+    "select": 0,
+    "statuses": [
+      {
+        "enable": 0,
+        "id": "com.apple.keylayout.US"
+      }
+    ]
+  },
+  "sourceAfterKeys": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "frontPid": 1361
+  },
+  "events": [
+    {
+      "type": "selection",
+      "time": 41551,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 41945,
+      "trusted": true,
+      "key": "Control",
+      "code": "ControlLeft",
+      "keyCode": 17,
+      "location": 1,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 41982,
+      "trusted": true,
+      "key": "Meta",
+      "code": "MetaLeft",
+      "keyCode": 91,
+      "location": 1,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": true,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 42025,
+      "trusted": true,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 32,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": true,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keypress",
+      "time": 42025,
+      "trusted": true,
+      "key": " ",
+      "code": "Space",
+      "keyCode": 0,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": true,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keyup",
+      "time": 42086,
+      "trusted": true,
+      "key": "Meta",
+      "code": "MetaLeft",
+      "keyCode": 91,
+      "location": 1,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": true,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keyup",
+      "time": 42129,
+      "trusted": true,
+      "key": "Control",
+      "code": "ControlLeft",
+      "keyCode": 17,
+      "location": 1,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    }
+  ],
+  "final": {
+    "value": "",
+    "selectionStart": 0,
+    "selectionEnd": 0,
+    "composing": false
+  },
+  "captureIntent": {
+    "keys": ["49:control:meta"],
+    "click": false,
+    "picker": true,
+    "phases": [
+      {
+        "phase": "initial",
+        "keys": ["49:control:meta"],
+        "value": "",
+        "composing": false,
+        "eventCount": 7
+      }
+    ]
+  },
+  "platform": "mac",
+  "qualification": "failed-emoji-picker"
+}

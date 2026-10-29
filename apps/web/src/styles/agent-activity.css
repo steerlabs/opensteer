@@ -1,0 +1,1223 @@
+/* Agent transcript presentation: messages, and each agent turn.
+
+   A turn is its work, the reply, and how the Run ended; once it has answered,
+   its work folds behind one "Worked for" line. A byline appears only when
+   someone other than the task speaks. The work has no frame. Structure comes from one aligned glyph column, a
+   whisper-thin guide running through it, and typographic weight — never from
+   nested boxes — so the reply stays the loudest thing in the turn. */
+
+/* The input register. Everything sent to this thread's agent sits on the
+   right, on one surface: the reader's own words as a bubble, and what anyone
+   or anything else sent as a card that says who sent it. The agent's own
+   output stays bare. */
+.msg--user,
+.input-card {
+  border: 1px solid var(--line);
+  border-radius: 15px 15px 5px 15px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: var(--text-2xl);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+/* The row owns alignment for both the bubble and its delivery feedback. Keep
+   it full-width so bubble limits remain relative to the transcript. */
+.msg--user-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.msg--user-row > .form-actions__error {
+  max-width: 84%;
+}
+
+.msg--user {
+  align-self: flex-end;
+  max-width: 84%;
+  margin: var(--space-8) 0;
+  padding: var(--space-10) var(--space-14);
+  white-space: pre-wrap;
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+/* What others sent: a card as wide as its column whatever it holds, so a long
+   address, a code line or a table never widens it and opening it never
+   changes its width. */
+.msg--input {
+  display: flex;
+  flex-direction: column;
+  align-self: flex-end;
+  gap: var(--space-6);
+  width: 84%;
+  margin: var(--space-8) 0;
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.input-card {
+  min-width: 0;
+  padding: var(--space-10) var(--space-14);
+}
+
+/* Who sent it and when, on one line that never wraps. */
+.input-card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.input-card__sender {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ember-dim);
+  font-weight: var(--weight-heavy);
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+}
+
+.input-card__meta time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.input-card__open {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin: -4px -8px -4px auto;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
+}
+
+.input-card__open:hover,
+.input-card__open:focus-visible {
+  background: var(--surface-raised);
+  color: var(--ember-bright);
+}
+
+.input-card__open .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.input-card__glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface-raised);
+  color: var(--text-soft);
+}
+
+.input-card__glyph .icon {
+  width: 11px;
+  height: 11px;
+}
+
+.input-card__glyph > span {
+  font-size: 6.5px;
+  font-weight: var(--weight-heavy);
+  letter-spacing: -0.04em;
+}
+
+/* What sent it, by name: two lines at most, the whole name on hover. */
+.input-card__title {
+  display: -webkit-box;
+  margin: var(--space-4) 0 0;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: var(--weight-bold);
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.input-card .message-fold {
+  margin-top: var(--space-6);
+  color: var(--text-soft);
+}
+
+/* Markdown keeps the card's own line, so the fold counts whole lines of it. */
+.input-card .md-prose {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.input-card__plain {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* In a conversation a collaborator's message reads on the left, apart from
+   the reader's own words. */
+.msg--input--conversation {
+  align-self: flex-start;
+}
+
+.msg--input--conversation .input-card {
+  border-radius: 15px 15px 15px 5px;
+}
+
+/* ---- A sent message folded to its first lines ---- */
+
+.message-fold:not([data-open]) {
+  max-height: calc(var(--fold-lines) * 1lh);
+  overflow: clip;
+}
+
+/* Only words that run past the fold fade into it. */
+.message-fold[data-overflowing] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2lh), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2lh), transparent);
+}
+
+.message-fold__toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-4);
+  min-height: 28px;
+  margin: var(--space-2) 0 calc(var(--space-6) * -1);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.message-fold__toggle:hover,
+.message-fold__toggle:focus-visible {
+  color: var(--text-soft);
+}
+
+.message-fold__toggle .icon {
+  width: 13px;
+  height: 13px;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.message-fold__toggle[aria-expanded="true"] .icon {
+  transform: rotate(180deg);
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin: var(--space-12) 0;
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.msg--assistant__body {
+  margin-top: var(--space-2);
+}
+
+.msg--assistant__author {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--ember-dim);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-heavy);
+  letter-spacing: 0.01em;
+}
+
+.stream-caret {
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  margin-left: var(--space-4);
+  border-radius: 2px;
+  background: var(--ember);
+  vertical-align: -2px;
+  animation: breathe 1s ease-in-out infinite;
+}
+
+/* ---- Work ---- */
+
+.work {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Status accompanies the transcript without owning its contents. */
+.work__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-10);
+  align-self: flex-start;
+  max-width: 100%;
+  min-height: 28px;
+  padding: var(--space-4) var(--space-6) var(--space-4) 0;
+  color: var(--muted-dim);
+  font-size: var(--text-md);
+  text-align: left;
+}
+
+.work__label {
+  flex: none;
+  color: var(--muted);
+  font-weight: var(--weight-strong);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.work__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* While the agent works, its current step reads as live: a slow light passes
+   across the words, and the clock beside them counts. */
+.work--live .work__label {
+  background: linear-gradient(90deg, var(--muted) 0%, var(--text) 45%, var(--muted) 90%) 0 0 / 220%
+    100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: work-shimmer 2.4s linear infinite;
+}
+
+.work__clock {
+  flex: none;
+  color: var(--muted-dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes work-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work--live .work__label {
+    background: none;
+    color: var(--text-soft);
+    animation: none;
+  }
+}
+
+.trace-errors {
+  flex: none;
+  color: var(--amber-text);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Prose and compact tool groups stay in arrival order as peers. */
+.turn__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.trace-step {
+  position: relative;
+  min-width: 0;
+  animation: trace-step-in var(--duration-med) var(--ease-out) backwards;
+}
+
+/* The row is the head plus, for a step that opened a surface, the way there.
+   The link lives outside the head so the head stays one button. */
+.trace-step__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.trace-step__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  flex: 1;
+  min-width: 0;
+  min-height: 27px;
+  padding: var(--space-2) var(--space-6) var(--space-2) 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  text-align: left;
+}
+
+.trace-step__surface {
+  flex: none;
+  padding: var(--space-2) var(--space-8);
+  border-radius: var(--radius-full);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.trace-step__surface:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.trace-step__icon {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  flex: none;
+  color: var(--muted-dim);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.trace-step__icon svg {
+  width: 13.5px;
+  height: 13.5px;
+}
+
+.trace-step__icon--running {
+  color: var(--ember);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.trace-step__icon--decided {
+  color: var(--green);
+}
+
+.trace-step__icon--error {
+  color: var(--amber);
+}
+
+.trace-step__label {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-weight: var(--weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+/* The target of the step. Plain text — its own typeface is the only thing
+   that sets it apart from the verb. */
+.trace-step__detail {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--muted-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.trace-step__detail--code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.trace-step__detail--prose {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-style: italic;
+}
+
+.trace-step__spacer {
+  flex: 1;
+}
+
+.trace-step__place {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-24);
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+}
+
+.trace-step__duration {
+  flex: none;
+  color: var(--muted-dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.trace-step__chevron {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  flex: none;
+  color: var(--muted-dim);
+  opacity: 0;
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.trace-step__chevron svg {
+  width: 11px;
+  height: 11px;
+}
+
+button.trace-step__head:hover .trace-step__label {
+  color: var(--text);
+}
+
+button.trace-step__head:hover .trace-step__detail {
+  color: var(--muted);
+}
+
+button.trace-step__head:hover .trace-step__icon {
+  color: var(--muted);
+}
+
+button.trace-step__head:hover .trace-step__chevron,
+button.trace-step__head:focus-visible .trace-step__chevron {
+  opacity: 1;
+}
+
+/* Only the step that is open turns its chevron; the steps listed under it keep theirs. */
+.trace-step--open > .trace-step__row .trace-step__chevron {
+  opacity: 1;
+  transform: rotate(90deg);
+}
+
+/* A label shares the row with its detail only up to a share of it; a label
+   with no detail beside it has the row to itself. */
+.trace-step__label--beside {
+  max-width: 44%;
+  flex: none;
+}
+
+/* An open step drops its detail, so its label can say all of itself. */
+.trace-step--open > .trace-step__row .trace-step__label {
+  white-space: normal;
+}
+
+/* A step with nothing to open, such as a Request's receipt, has nowhere else
+   to say all of itself, so it wraps rather than cutting off. */
+div.trace-step__head .trace-step__label,
+div.trace-step__head .trace-step__detail {
+  white-space: normal;
+}
+
+/* Expanded detail hangs off the same guide the row sits on. */
+.trace-step__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin: 1px 0 var(--space-10);
+  padding-left: var(--space-24);
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+.trace-step__thought {
+  margin: 0 0 var(--space-10);
+  padding-left: var(--space-24);
+  color: var(--muted);
+  font-size: var(--text-md);
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+.trace-step__thought .md-prose {
+  color: inherit;
+  font-size: inherit;
+}
+
+.trace-code {
+  max-height: 300px;
+  margin: 0;
+  padding: var(--space-8) var(--space-12);
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.trace-code--command {
+  color: var(--text);
+}
+
+.trace-code--command::before {
+  content: "$ ";
+  color: var(--ember);
+  user-select: none;
+}
+
+/* A row's own steps hang one step in, under the row's glyph. */
+.trace-step__lines {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 var(--space-6) var(--space-24);
+}
+
+.trace-step--compact .trace-step__head {
+  min-height: 25px;
+}
+
+.trace-step--compact .trace-step__label {
+  font-weight: var(--weight-medium);
+}
+
+/* One app's steps in order: each mark sits on a guide that runs down to the
+   next, and through a step's detail when it is open. */
+.trace-step__lines--timeline > .trace-step:not(:last-child)::before {
+  position: absolute;
+  top: 19px;
+  bottom: -6px;
+  left: 7.5px;
+  width: 1px;
+  background: var(--line-strong);
+  content: "";
+}
+
+.trace-step__icon--mark svg {
+  width: 11px;
+  height: 11px;
+}
+
+.trace-step__icon--mark.trace-step__icon--running {
+  animation: none;
+}
+
+.trace-step__icon--mark.trace-step__icon--running svg {
+  width: 9px;
+  height: 9px;
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+/* A running step's detail is the work in progress; each new value fades in. */
+.trace-step__detail--live {
+  animation: fade-in var(--duration-med) var(--ease-out);
+}
+
+/* What the step did, before anything verbatim. */
+.trace-step__summary {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.trace-disclosure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.trace-disclosure__toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-4);
+  min-height: 22px;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+/* Closed, a toggle keeps the eyebrow's ink; asked for or open, it lifts. */
+.trace-disclosure__toggle:hover,
+.trace-disclosure__toggle:focus-visible,
+.trace-disclosure--open .trace-disclosure__toggle {
+  color: var(--text-soft);
+}
+
+.trace-disclosure__chevron {
+  display: grid;
+  place-items: center;
+  width: 10px;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.trace-disclosure__chevron svg {
+  width: 10px;
+  height: 10px;
+}
+
+.trace-disclosure--open .trace-disclosure__chevron {
+  transform: rotate(90deg);
+}
+
+.trace-step__empty {
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+}
+
+.trace-step__task {
+  margin: 0;
+  color: var(--text-soft);
+  white-space: pre-wrap;
+}
+
+.delegation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-8) 0;
+  padding: var(--space-6) var(--space-10);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.delegation__open {
+  align-self: flex-start;
+  margin-left: var(--space-24);
+  color: var(--ember);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+/* A subagent is a step with work of its own, so it reads as one card; a
+   subagent it started nests inside, one step in. */
+.subagent {
+  padding: 0 var(--space-10);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.subagent > .trace-step__body {
+  margin-bottom: var(--space-8);
+}
+
+/* What it returned is a report inside the trace, at the trace's size. */
+.subagent > .trace-step__body .md-prose {
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+
+.subagent__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.subagent__prompt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.subagent__prompt-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.subagent__prompt-text--clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.subagent__more {
+  align-self: flex-start;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.subagent__more:hover,
+.subagent__more:focus-visible {
+  color: var(--text-soft);
+}
+
+.subagent__facts {
+  margin: 0;
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+}
+
+/* ---- Home's folded trace ---- */
+
+/* The status line is the disclosure; it keeps the plain line's measure and
+   only gains a chevron, so a folded reply reads exactly like a settled one. */
+.work__toggle {
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.work__toggle:hover .work__label,
+.work__toggle:focus-visible .work__label {
+  color: var(--text-soft);
+}
+
+.work__chevron {
+  display: grid;
+  place-items: center;
+  align-self: center;
+  width: 12px;
+  flex: none;
+  color: var(--muted-dim);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.work__chevron svg {
+  width: 11px;
+  height: 11px;
+}
+
+.work__toggle--open .work__chevron {
+  transform: rotate(90deg);
+}
+
+/* ---- On the reader's Mac ----
+   A live turn working on the reader's Mac says so where its status goes: the
+   Mac as a round mark in the agent's ember, what it is doing, then where. It
+   arrives once and holds still, so a step changing its words is the only
+   news. Its Stop is quiet and names what it ends, because the composer's Stop
+   ends the whole reply. */
+.computer-now {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  max-width: min(100%, 520px);
+  min-height: 44px;
+  padding: var(--space-2) 0;
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.computer-now__glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+.computer-now__glyph .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.computer-now__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.computer-now__action,
+.computer-now__place {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-now__action {
+  color: var(--text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: 1.35;
+}
+
+.computer-now__place {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.computer-now__failure {
+  color: var(--red-text);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.computer-now__stop {
+  flex: none;
+  min-height: 32px;
+  padding: 0 var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.computer-now__stop:hover:not(:disabled) {
+  border-color: var(--line-hover);
+  color: var(--text);
+}
+
+.computer-now__stop:disabled {
+  color: var(--muted);
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .computer-now__stop {
+    min-height: var(--touch-target);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .computer-now {
+    animation: none;
+  }
+}
+
+/* ---- Tasks ---- */
+
+/* A task in the conversation that handed it out is one bubble from that
+   conversation's side: its state as a round mark, its title, and one line
+   saying where it is. It changes in place and opens the task; what else it
+   offers waits behind the button beside it. */
+.task-bubble-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  align-self: flex-start;
+  max-width: min(100%, 440px);
+  margin: var(--space-6) 0 var(--space-2);
+}
+
+.turn > .task-bubble-row + .task-bubble-row {
+  margin-top: 0;
+}
+
+.task-bubble {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-width: 240px;
+  min-height: 52px;
+  max-width: 100%;
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  color: var(--text);
+  text-decoration: none;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.task-bubble:hover {
+  border-color: var(--line-hover);
+  background: var(--surface-raised);
+}
+
+.task-bubble:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 3px;
+}
+
+/* Waiting on the reader is the one state the bubble itself says. */
+.task-bubble--waiting {
+  border-color: var(--amber-line);
+}
+
+.task-bubble__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.task-bubble__title,
+.task-bubble__status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-bubble__title {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
+  line-height: 1.35;
+}
+
+.task-bubble__status {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.task-bubble--waiting .task-bubble__status {
+  color: var(--amber-text);
+}
+
+.task-bubble--failed .task-bubble__status {
+  color: var(--red-text);
+}
+
+/* Out of the way until the reader reaches for the task; a touch screen has no
+   hover to reach with, so there it always shows. */
+.task-bubble__more {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface-elevated);
+  color: var(--text-soft);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.task-bubble-row:hover .task-bubble__more,
+.task-bubble-row:focus-within .task-bubble__more,
+.task-bubble-row--menu .task-bubble__more {
+  opacity: 1;
+}
+
+.task-bubble__more:hover {
+  color: var(--text);
+}
+
+.task-bubble__more .icon {
+  width: 16px;
+  height: 16px;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .task-bubble__more {
+    width: var(--touch-target);
+    height: var(--touch-target);
+    border-color: transparent;
+    background: none;
+    opacity: 1;
+  }
+}
+
+.task-menu {
+  min-width: 220px;
+  padding: var(--space-6);
+}
+
+.task-stop {
+  width: min(330px, calc(100vw - 20px));
+  padding: var(--space-16);
+}
+
+.task-stop__question {
+  margin: 0 0 var(--space-6);
+  color: var(--text);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-medium);
+}
+
+.task-stop__detail {
+  margin: 0 0 var(--space-14);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.task-stop__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-bubble {
+    animation: none;
+  }
+}
+
+/* ---- A task, beside the conversation that handed it out ---- */
+
+@keyframes trace-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- Run outcome and liveness ---- */
+
+.run-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin: var(--space-6) 0;
+  padding: var(--space-6) var(--space-8);
+  color: var(--muted-dim);
+  font-size: var(--text-md);
+}
+
+.run-restart {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin: var(--space-6) 0;
+  padding: 0 var(--space-8);
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+}
+
+.run-restart svg.icon {
+  width: 13px;
+  height: 13px;
+}
+
+.run-failure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin: var(--space-8) 0;
+  padding: var(--space-12) var(--space-14);
+  border: 1px solid var(--red-line);
+  border-radius: var(--radius-md);
+  background: var(--red-wash);
+  font-size: var(--text-lg);
+}
+
+.run-failure__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--red);
+  font-weight: var(--weight-bold);
+}
+
+.run-failure__message {
+  color: var(--text-soft);
+  white-space: pre-wrap;
+}
+
+.working {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.working__orb {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: radial-gradient(circle at 34% 30%, var(--ember-bright), #7a5348);
+  animation: breathe 1.5s ease-in-out infinite;
+}
+
+.working__label::after {
+  content: "…";
+}
+
+/* Touch has no hover, so the expand affordance stays permanently legible. */
+@media (hover: none) {
+  .trace-step__chevron {
+    opacity: 0.5;
+  }
+}
+
+@media (max-width: 680px) {
+  .msg--user,
+  .msg--user-row > .form-actions__error {
+    max-width: 92%;
+  }
+
+  .msg--input {
+    width: 92%;
+  }
+
+  .trace-step__label--beside {
+    max-width: 52%;
+  }
+
+  .trace-step__lines--timeline .trace-step__label {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .trace-step__body,
+  .trace-step__thought {
+    padding-left: var(--space-18);
+  }
+
+  .trace-step__place {
+    padding-left: var(--space-18);
+  }
+
+  .trace-step__lines {
+    margin-left: var(--space-18);
+  }
+}
+
+/* A recorded change of the AI running this conversation. A platform event:
+   quiet, undated by anything it cannot know, and never a spoken message. */
+.selection-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
+  margin: var(--space-12) 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.selection-marker__text {
+  overflow-wrap: anywhere;
+}
+
+.task-bubble__attribution {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-sm);
+}
+.task-bubble__attribution > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-bubble__byline {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+}
+.task-bubble__text {
+  flex: 1;
+}

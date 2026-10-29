@@ -1,0 +1,291 @@
+{
+  "native": true,
+  "engine": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+  "scenario": "accent-hold",
+  "inputSource": "com.apple.keylayout.US",
+  "intent": "Native accent-hold attempt delivered Latin 'e2'. Preserve this failed intended input path, without inventing IME events.",
+  "expected": {
+    "value": "e2",
+    "producers": [
+      {
+        "kind": "key",
+        "text": "e"
+      },
+      {
+        "kind": "key",
+        "text": "2"
+      }
+    ],
+    "transactionCommits": [],
+    "keystrokes": [
+      {
+        "action": "down",
+        "key": "e",
+        "code": "KeyE",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "e"
+      },
+      {
+        "action": "up",
+        "key": "e",
+        "code": "KeyE",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      },
+      {
+        "action": "down",
+        "key": "2",
+        "code": "Digit2",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false,
+        "text": "2"
+      },
+      {
+        "action": "up",
+        "key": "2",
+        "code": "Digit2",
+        "modifiers": [],
+        "location": 0,
+        "repeat": false
+      }
+    ],
+    "compositions": [],
+    "proxy": {
+      "value": "e2",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    "caret": 2
+  },
+  "sourceSha": "444f12dce66f4fcb55e5a66015a8f2a62c2181ad",
+  "sourceSelection": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "requested": "com.apple.keylayout.US",
+    "select": 0,
+    "statuses": [
+      {
+        "enable": 0,
+        "id": "com.apple.keylayout.US"
+      }
+    ]
+  },
+  "sourceAfterKeys": {
+    "current": {
+      "bundleId": "com.apple.keyboardlayout.all",
+      "enabled": true,
+      "id": "com.apple.keylayout.US",
+      "selectable": true,
+      "selected": true,
+      "type": "TISTypeKeyboardLayout"
+    },
+    "frontPid": 1017
+  },
+  "events": [
+    {
+      "type": "selection",
+      "time": 10443.599999999977,
+      "trusted": true,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keydown",
+      "time": 10792.700000000012,
+      "trusted": true,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 69,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "keypress",
+      "time": 10792.799999999988,
+      "trusted": true,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 101,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "beforeinput",
+      "time": 10792.899999999965,
+      "trusted": true,
+      "data": "e",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "",
+      "selectionStart": 0,
+      "selectionEnd": 0
+    },
+    {
+      "type": "input",
+      "time": 10793.200000000012,
+      "trusted": true,
+      "data": "e",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "selection",
+      "time": 10793.599999999977,
+      "trusted": true,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keyup",
+      "time": 12084.299999999988,
+      "trusted": true,
+      "key": "e",
+      "code": "KeyE",
+      "keyCode": 69,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keydown",
+      "time": 12236.899999999965,
+      "trusted": true,
+      "key": "2",
+      "code": "Digit2",
+      "keyCode": 50,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "keypress",
+      "time": 12237,
+      "trusted": true,
+      "key": "2",
+      "code": "Digit2",
+      "keyCode": 50,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "beforeinput",
+      "time": 12237,
+      "trusted": true,
+      "data": "2",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "e",
+      "selectionStart": 1,
+      "selectionEnd": 1
+    },
+    {
+      "type": "input",
+      "time": 12237.399999999965,
+      "trusted": true,
+      "data": "2",
+      "inputType": "insertText",
+      "composing": false,
+      "value": "e2",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "selection",
+      "time": 12238,
+      "trusted": true,
+      "value": "e2",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    },
+    {
+      "type": "keyup",
+      "time": 12297.700000000012,
+      "trusted": true,
+      "key": "2",
+      "code": "Digit2",
+      "keyCode": 50,
+      "location": 0,
+      "composing": false,
+      "repeat": false,
+      "alt": false,
+      "altGraph": false,
+      "control": false,
+      "meta": false,
+      "shift": false,
+      "value": "e2",
+      "selectionStart": 2,
+      "selectionEnd": 2
+    }
+  ],
+  "final": {
+    "value": "e2",
+    "selectionStart": 2,
+    "selectionEnd": 2,
+    "composing": false
+  },
+  "captureIntent": {
+    "keys": ["14:hold", "19"],
+    "click": false,
+    "picker": false
+  },
+  "qualification": "failed-accent-picker",
+  "platform": "mac"
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@opensteer/integration-adapters",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./google-discovery": "./src/google-discovery/index.ts",
+    "./graphql": "./src/graphql/index.ts",
+    "./mcp": "./src/mcp/index.ts",
+    "./openapi": "./src/openapi/index.ts"
+  },
+  "scripts": {
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@opensteer/integration-core": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "yaml": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

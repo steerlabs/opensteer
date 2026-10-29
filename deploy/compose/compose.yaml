@@ -1,0 +1,22 @@
+name: opensteer-development
+
+services:
+  postgres:
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    environment:
+      POSTGRES_DB: opensteer
+      POSTGRES_PASSWORD: opensteer
+      POSTGRES_USER: opensteer
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opensteer -d opensteer"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      # PostgreSQL 18 stores versioned clusters below /var/lib/postgresql.
+      - postgres-data:/var/lib/postgresql
+
+volumes:
+  postgres-data: {}

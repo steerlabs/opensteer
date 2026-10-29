@@ -1,0 +1,12 @@
+{"context":{"contextId":"00000000-0000-4000-8000-000000000001","field":{"kind":"text","multiline":true,"sensitive":false,"autocapitalize":"none","enterKeyHint":"enter"},"caret":null}}
+{"id":1,"event":{"type":"beforeinput","inputType":"insertText","data":"h"},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":2,"event":{"type":"input","inputType":"insertText","composing":false,"proxy":{"value":"h","selectionStart":1,"selectionEnd":1}},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":3,"event":{"type":"beforeinput","inputType":"insertText","data":"e"},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":4,"event":{"type":"input","inputType":"insertText","composing":false,"proxy":{"value":"he","selectionStart":2,"selectionEnd":2}},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":5,"event":{"type":"beforeinput","inputType":"insertText","data":"l"},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"id":6,"event":{"type":"input","inputType":"insertText","composing":false,"proxy":{"value":"hel","selectionStart":3,"selectionEnd":3}},"contextId":"00000000-0000-4000-8000-000000000001"}
+{"context":{"contextId":"00000000-0000-4000-8000-000000000002","field":{"kind":"text","multiline":true,"sensitive":false,"autocapitalize":"none","enterKeyHint":"enter"},"caret":null}}
+{"id":7,"event":{"type":"beforeinput","inputType":"insertText","data":"b"},"contextId":"00000000-0000-4000-8000-000000000002"}
+{"id":8,"event":{"type":"input","inputType":"insertText","composing":false,"proxy":{"value":"b","selectionStart":1,"selectionEnd":1}},"contextId":"00000000-0000-4000-8000-000000000002"}
+{"id":9,"event":{"type":"beforeinput","inputType":"insertText","data":" "},"contextId":"00000000-0000-4000-8000-000000000002"}
+{"id":10,"event":{"type":"input","inputType":"insertText","composing":false,"proxy":{"value":"b ","selectionStart":2,"selectionEnd":2}},"contextId":"00000000-0000-4000-8000-000000000002"}

@@ -1,0 +1,316 @@
+/* The connect page: the web app's onboarding card, one step long. The mark is
+   the only moving part — a ring that works while Chrome checks and connects,
+   and closes around the orb when the connection lands. */
+
+body {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: clamp(20px, 6vh, 48px) 16px;
+  background-image: radial-gradient(
+    circle at 50% -10%,
+    color-mix(in srgb, var(--ember) 6%, transparent),
+    transparent 42%
+  );
+}
+
+.connect {
+  position: relative;
+  width: min(100%, 25rem);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 30px 28px 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(125% 88% at 50% -18%, var(--ember-wash), transparent 58%), var(--surface);
+  box-shadow: var(--shadow-raised);
+  text-align: center;
+  animation: rise-in var(--duration-slow) var(--ease-out);
+}
+
+.connect::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 14%;
+  right: 14%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--ember-line), transparent);
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* ---- Mark ---- */
+
+.mark {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 2px;
+}
+
+.mark__ring {
+  position: absolute;
+  inset: 0;
+  width: 72px;
+  height: 72px;
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+
+.mark__track,
+.mark__arc {
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.mark__track {
+  stroke: var(--line-strong);
+}
+
+.mark__arc {
+  stroke: var(--ember);
+  stroke-linecap: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  transform-origin: 36px 36px;
+  transition: stroke-dashoffset 560ms var(--ease-out);
+}
+
+.connect[data-state="verifying"] .mark__arc,
+.connect[data-state="connecting"] .mark__arc {
+  stroke-dashoffset: 76;
+  animation: orbit 1.1s linear infinite;
+}
+
+.connect[data-state="success"] .mark__arc {
+  stroke-dashoffset: 0;
+}
+
+@keyframes orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.mark__orb {
+  position: absolute;
+  inset: 14px;
+  width: 44px;
+  height: 44px;
+  transition:
+    filter var(--duration-med) var(--ease-out),
+    opacity var(--duration-med) var(--ease-out);
+}
+
+.mark__check {
+  position: absolute;
+  inset: 14px;
+  width: 44px;
+  height: 44px;
+  fill: none;
+  stroke: var(--ink-on-ember);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  opacity: 0;
+}
+
+.connect[data-state="success"] .mark__check {
+  opacity: 1;
+  stroke-dashoffset: 0;
+  transition:
+    opacity 1ms linear 260ms,
+    stroke-dashoffset 420ms var(--ease-out) 260ms;
+}
+
+.mark__badge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  border: 1.5px solid var(--surface);
+  box-shadow: inset 0 0 0 1.5px var(--red);
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity var(--duration-med) var(--ease-out),
+    transform var(--duration-med) var(--ease-out);
+}
+
+.mark__badge::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  width: 1.8px;
+  height: 5px;
+  margin-left: -0.9px;
+  border-radius: 1px;
+  background: var(--red);
+  box-shadow: 0 7px 0 var(--red);
+}
+
+.connect[data-state="error"] .mark__orb {
+  filter: grayscale(1);
+  opacity: 0.4;
+}
+
+.connect[data-state="error"] .mark__badge {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---- Text ---- */
+
+.connect__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.connect__title {
+  font-family: var(--font-display);
+  font-size: var(--display-lg);
+  font-weight: var(--weight-medium);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.connect__title:focus {
+  outline: none;
+}
+
+/* The address a look-alike page cannot fake leads; it keeps the title's size
+   and breaks anywhere rather than overflowing the card. */
+.connect__host {
+  display: block;
+  margin-top: 2px;
+  color: var(--ember-bright);
+  overflow-wrap: anywhere;
+}
+
+.connect__deployment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.connect__deployment > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connect__deployment-key {
+  color: var(--muted);
+}
+
+.connect__body {
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.connect__body:empty {
+  display: none;
+}
+
+.connect__body .mono {
+  font-size: 0.92em;
+  color: var(--text);
+}
+
+/* ---- Form ---- */
+
+.connect__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 2px;
+  text-align: left;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field__label {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.field__input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--text-xl);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.field__input:hover {
+  border-color: var(--line-hover);
+}
+
+.field__input:focus {
+  outline: none;
+  border-color: var(--ember-line);
+  box-shadow: var(--ring-ember);
+}
+
+.field__input[aria-invalid="true"] {
+  border-color: var(--red-line);
+}
+
+.connect__note {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.connect__submit {
+  width: 100%;
+  min-height: 40px;
+}
+
+.connect__actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.connect__actions .btn {
+  min-height: 36px;
+}

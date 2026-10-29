@@ -1,0 +1,47 @@
+{
+  "rpId": "example.com",
+  "origin": "https://example.com",
+  "challenge": "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio",
+  "user": {
+    "id": "KioqKioqKioqKioqKioqKg",
+    "name": "person@example.test",
+    "displayName": "Example Person"
+  },
+  "credentialId": "BwcHBwcHBwcHBwcHBwcHBw",
+  "privateKeyJwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "d": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE",
+    "x": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+    "y": "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU"
+  },
+  "privateKeyPkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGhRANCAARrF9Hy4SxCR_i85uVjpEDydwN9gS3rM6D0oTlF2JjClk_jQuL-Gn-bjufrSnwPnhYrzjNXazFezsu2QGg3v1H1",
+  "registration": {
+    "id": "BwcHBwcHBwcHBwcHBwcHBw",
+    "rawId": "BwcHBwcHBwcHBwcHBwcHBw",
+    "type": "public-key",
+    "authenticatorAttachment": "platform",
+    "clientExtensionResults": {
+      "credProps": {
+        "rk": true
+      }
+    },
+    "response": {
+      "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiS2lvcUtpb3FLaW9xS2lvcUtpb3FLaW9xS2lvcUtpb3FLaW9xS2lvcUtpbyIsIm9yaWdpbiI6Imh0dHBzOi8vZXhhbXBsZS5jb20iLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+      "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViUo3mm9u6vuaVeN4wRgDTidR5oL6ufLTCrE9ISVYbOGUdNAAAAAN2UQ9ZIdUTzpo1dFwdq-cUAEAcHBwcHBwcHBwcHBwcHBwelAQIDJiABIVggaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpYiWCBP40Li_hp_m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q",
+      "authenticatorData": "o3mm9u6vuaVeN4wRgDTidR5oL6ufLTCrE9ISVYbOGUdNAAAAAN2UQ9ZIdUTzpo1dFwdq-cUAEAcHBwcHBwcHBwcHBwcHBwelAQIDJiABIVggaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpYiWCBP40Li_hp_m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q",
+      "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li_hp_m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q",
+      "publicKeyAlgorithm": -7,
+      "transports": [
+        "internal"
+      ]
+    }
+  },
+  "assertion": {
+    "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiS2lvcUtpb3FLaW9xS2lvcUtpb3FLaW9xS2lvcUtpb3FLaW9xS2lvcUtpbyIsIm9yaWdpbiI6Imh0dHBzOi8vZXhhbXBsZS5jb20iLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+    "authenticatorData": "o3mm9u6vuaVeN4wRgDTidR5oL6ufLTCrE9ISVYbOGUcNAAAAAA",
+    "userHandle": "KioqKioqKioqKioqKioqKg",
+    "signatureBase": "o3mm9u6vuaVeN4wRgDTidR5oL6ufLTCrE9ISVYbOGUcNAAAAAKuGtNZSQEvV4d09dZGnOvJhHFBfbTXyaCsU1LZp0FSZ",
+    "signature": "MEQCIFSx1KxPhDkZ2aJfl4XYNxYRYtd-y7y3ezY_q7KZTplrAiBlbRKYkhQA5VbAgLIen3REiGk_gGRFnD4rPPZ_3VaXaw"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "@opensteer/integration-core",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./adapter": "./src/adapter.ts",
+    "./adapter-kind": "./src/adapter-kind.ts",
+    "./computer-app": "./src/computer-app.ts",
+    "./computer-app-tools": "./src/computer-app-tools.ts",
+    "./digest": "./src/digest.ts",
+    "./effect": "./src/effect.ts",
+    "./effective-grants": "./src/effective-grants.ts",
+    "./ids": "./src/ids.ts",
+    "./models": "./src/models.ts",
+    "./ports": "./src/ports.ts",
+    "./tool-schemas": "./src/tool-schemas.ts"
+  },
+  "scripts": {
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opensteer/core": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

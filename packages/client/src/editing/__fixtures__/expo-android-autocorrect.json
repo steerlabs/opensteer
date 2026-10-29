@@ -1,0 +1,74 @@
+{
+  "native": true,
+  "scope": "Actual Gboard autocorrect in the production native EditText with native default acknowledgements; separate from Expo mount and real remote target qualification.",
+  "source": {
+    "commit": "5248d68b94e3d103dde70cd1eb912d41f68da778",
+    "platform": "Android API 36",
+    "keyboard": "Gboard 15.1.08.726012951-preload-arm64-v8a",
+    "driver": "ADB touch on actual Gboard keys",
+    "actions": ["t", "e", "h", "Space"],
+    "evidence": "/tmp/opensteer-remote-input/expo-4/android-record",
+    "nativeSource": "596c8c72381038395043b12af1b3f1a747db2c78"
+  },
+  "provenance": {
+    "rawFile": "expo-android-autocorrect.jsonl",
+    "rawSha256": "eaaa7762417700c0b9e5a36f4b1ec18d09966926decaf98136626d19c3871519",
+    "screenshots": ["autocorrect-ready.png", "autocorrect-result.png"],
+    "actions": "actions.jsonl"
+  },
+  "expected": {
+    "packetCount": 10,
+    "compositionEvents": 0,
+    "operations": [
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "t",
+          "before": "",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "e",
+          "before": "",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "h",
+          "before": "",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "",
+          "before": "teh",
+          "after": ""
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "text": "the ",
+          "before": "",
+          "after": ""
+        }
+      }
+    ],
+    "contexts": {
+      "00000000-0000-4000-8000-000000000001": "the "
+    },
+    "lastProxy": "the "
+  }
+}

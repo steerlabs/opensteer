@@ -1,0 +1,36 @@
+{
+  "name": "@opensteer/browser-runtime",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test": "pnpm -w exec vitest run apps/browser-runtime",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opensteer/access": "workspace:*",
+    "@opensteer/browser-core": "workspace:*",
+    "@opensteer/browser-profile": "workspace:*",
+    "@opensteer/browser-runtime-core": "workspace:*",
+    "@opensteer/core": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
+    "@opensteer/runner-client": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "devtools-protocol": "0.0.1676105",
+    "playwright-core": "1.62.1",
+    "ws": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/ws": "catalog:",
+    "tsup": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "accountUrl": "https://accounts.beta.opensteer.com",
+  "application": {
+    "channel": "beta",
+    "id": "com.steerlabs.opensteer.beta",
+    "name": "Opensteer Beta"
+  },
+  "capabilities": {
+    "connect": true,
+    "personal": true,
+    "localAgents": true,
+    "portableFs": false
+  },
+  "oauth": {
+    "accountCallback": "com.steerlabs.opensteer.beta:/oauth/account-callback",
+    "clientId": "opensteer-desktop-beta",
+    "hostCallback": "com.steerlabs.opensteer.beta:/oauth/host-callback"
+  },
+  "portalUrl": "https://beta.opensteer.com",
+  "schemaVersion": 6
+}

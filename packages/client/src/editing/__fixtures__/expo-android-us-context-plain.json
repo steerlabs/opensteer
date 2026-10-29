@@ -1,0 +1,76 @@
+{
+  "format": "expo-native-packets-v1",
+  "native": true,
+  "platform": "android",
+  "engine": "RemoteInputEditText / InputConnection",
+  "intent": "Tap h, e, l in Gboard; tap Next remote field; tap b and Space.",
+  "source": {
+    "nativeCommit": "452355d2e841f300447512119a9de92e41bc1b78",
+    "androidAPI": 36,
+    "keyboard": "Gboard 15.1.08.726012951-preload-arm64-v8a",
+    "driver": "ADB touch events into the visible native keyboard; no text or InputConnection injection in this case"
+  },
+  "scope": "Standalone production native EditText with default acknowledgements. This US keyboard delivered plain commits, not marked composition. This fixture does not qualify composition, the Expo bridge or a remote target.",
+  "provenance": {
+    "evidenceDirectory": "/tmp/opensteer-remote-input/expo-3/android-record",
+    "rawFile": "expo-android-us-context-plain.jsonl",
+    "rawSha256": "93d7022bf7474afe3ea047a632e7ea8fd6a2ba0795b4771623b42650ef66aca7",
+    "screenshot": "context-us-ready.png",
+    "steps": "actions.jsonl / context-us-preedit-keys.log / context-us-change / context-us-next-field-keys.log"
+  },
+  "expected": {
+    "contexts": {
+      "00000000-0000-4000-8000-000000000001": "hel",
+      "00000000-0000-4000-8000-000000000002": "b "
+    },
+    "lastProxy": "b ",
+    "compositionEvents": 0,
+    "operations": [
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "before": "",
+          "after": "",
+          "text": "h"
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "before": "",
+          "after": "",
+          "text": "e"
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000001",
+          "before": "",
+          "after": "",
+          "text": "l"
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000002",
+          "before": "",
+          "after": "",
+          "text": "b"
+        }
+      },
+      {
+        "kind": "edit",
+        "edit": {
+          "contextId": "00000000-0000-4000-8000-000000000002",
+          "before": "",
+          "after": "",
+          "text": " "
+        }
+      }
+    ]
+  }
+}

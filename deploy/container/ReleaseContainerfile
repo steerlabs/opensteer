@@ -1,0 +1,9 @@
+FROM scratch
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ARG OPENSTEER_BUILD_SOURCE_URL
+LABEL org.opencontainers.image.revision="${OPENSTEER_SOURCE_REVISION}" \
+      org.opencontainers.image.source="${OPENSTEER_BUILD_SOURCE_URL}" \
+      org.opencontainers.image.version="${OPENSTEER_RELEASE_VERSION}"
+COPY --chmod=0444 opensteer-release.json /opensteer-release.json
+

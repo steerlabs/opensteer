@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AgentPhone" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">@color/phone_background</item>
+        <item name="android:colorBackground">@color/phone_background</item>
+        <item name="android:colorAccent">@color/phone_accent</item>
+        <item name="android:textColorPrimary">@color/phone_text</item>
+        <item name="android:textColorSecondary">@color/phone_text_soft</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:statusBarColor">@color/phone_background</item>
+        <item name="android:navigationBarColor">@color/phone_background</item>
+        <item name="android:windowLightStatusBar">@bool/phone_light_system_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/phone_light_system_bars</item>
+    </style>
+
+    <style name="PhoneText" parent="android:Widget.TextView">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">@color/phone_text_soft</item>
+        <item name="android:lineSpacingExtra">3dp</item>
+    </style>
+    <style name="PhoneText.Title" parent="PhoneText">
+        <item name="android:textSize">33sp</item>
+        <item name="android:textColor">@color/phone_text</item>
+        <item name="android:fontFamily">serif</item>
+    </style>
+    <style name="PhoneText.Section" parent="PhoneText">
+        <item name="android:textSize">18sp</item>
+        <item name="android:textColor">@color/phone_text</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:accessibilityHeading">true</item>
+    </style>
+    <style name="PhoneText.Detail" parent="PhoneText">
+        <item name="android:textSize">13sp</item>
+        <item name="android:textColor">@color/phone_muted</item>
+    </style>
+    <style name="PhoneCard">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">16dp</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:padding">20dp</item>
+        <item name="android:background">@drawable/phone_card</item>
+    </style>
+    <style name="PhoneButton" parent="android:Widget.Button">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:minWidth">48dp</item>
+        <item name="android:layout_marginTop">12dp</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingBottom">12dp</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textColor">@color/phone_text</item>
+        <item name="android:background">@drawable/phone_button_secondary</item>
+    </style>
+    <style name="PhoneButton.Danger" parent="PhoneButton">
+        <item name="android:textColor">@color/phone_danger</item>
+        <item name="android:background">@drawable/phone_button_danger</item>
+    </style>
+
+    <style name="Theme.AgentPhone.Invisible" parent="android:Theme.Translucent.NoTitleBar">
+        <item name="android:windowNoDisplay">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>

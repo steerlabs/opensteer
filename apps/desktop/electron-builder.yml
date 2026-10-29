@@ -1,0 +1,20 @@
+extends: ./electron-builder.base.yml
+appId: com.opensteer.opensteer
+productName: Opensteer
+protocols:
+  - name: Opensteer OAuth callback
+    schemes:
+      - com.opensteer.opensteer
+directories:
+  output: release
+win:
+  artifactName: opensteer-${version}-${arch}-setup.${ext}
+linux:
+  artifactName: opensteer-${version}-${arch}.${ext}
+  desktop:
+    entry:
+      Name: Opensteer
+      StartupWMClass: Opensteer
+  executableName: opensteer
+deb:
+  packageName: opensteer

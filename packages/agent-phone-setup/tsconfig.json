@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.package.json",
+  "compilerOptions": {
+    // Setup runs in a browser tab and in the desktop's renderer, so the
+    // engine and its WebUSB transport compile without Node's type surface.
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "tsBuildInfoFile": "./node_modules/.cache/tsconfig.tsbuildinfo",
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}

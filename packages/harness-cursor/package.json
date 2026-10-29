@@ -1,0 +1,26 @@
+{
+  "name": "@opensteer/harness-cursor",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@opensteer/agent-tools": "workspace:*",
+    "@opensteer/core": "workspace:*",
+    "@opensteer/harness": "workspace:*",
+    "@opensteer/integration-core": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}

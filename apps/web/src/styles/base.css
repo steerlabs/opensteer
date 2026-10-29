@@ -1,0 +1,981 @@
+/* Base element styles, resets, primitives shared across every view. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+  background-image: radial-gradient(
+    circle at 56% -12%,
+    color-mix(in srgb, var(--ember) 5%, transparent),
+    transparent 30%
+  );
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-root);
+  line-height: 1.55;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-wrap: break-word;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--ember-bright);
+  color: var(--ink-on-ember);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 14%) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 14%);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-full);
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+ul,
+ol,
+dl,
+dd {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+a {
+  color: var(--ember);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Shared primitives ---- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
+  min-height: 34px;
+  padding: var(--space-6) var(--space-14);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
+  line-height: 1.2;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+  user-select: none;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--line-hover);
+}
+
+/* A link wearing the button shape is still a button to the eye. */
+a.btn:hover {
+  text-decoration: none;
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn:disabled,
+/* Busy, not unavailable: the button keeps its focus and its tab stop while
+   the change it started is saving, and only stops answering. */
+.btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn--primary {
+  background: var(--ember);
+  border-color: var(--ember);
+  color: var(--ink-on-ember);
+  font-weight: var(--weight-bold);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--ember-bright);
+  border-color: var(--ember-bright);
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-soft);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.btn--danger {
+  color: var(--red);
+}
+
+.btn--danger:hover:not(:disabled) {
+  border-color: var(--red-line);
+  background: var(--red-wash);
+}
+
+.btn--small {
+  min-height: 28px;
+  padding: var(--space-4) var(--space-10);
+  font-size: var(--text-md);
+  border-radius: var(--radius-xs);
+}
+
+.btn--small svg.icon {
+  width: 13px;
+  height: 13px;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.icon-btn--small {
+  width: 24px;
+  height: 24px;
+}
+
+.icon-btn--small svg {
+  width: 14px;
+  height: 14px;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.icon-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+}
+
+.icon-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.icon-btn--active {
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.field__label {
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+  color: var(--text-soft);
+  letter-spacing: 0.01em;
+}
+
+.field__hint {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.text-input,
+.select-input,
+textarea.text-input {
+  width: 100%;
+  min-height: 36px;
+  padding: var(--space-8) var(--space-12);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-xl);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.text-input::placeholder {
+  color: var(--muted-dim);
+}
+
+.text-input:focus,
+.select-input:focus {
+  outline: none;
+  border-color: var(--ember-line);
+  box-shadow: var(--ring-ember);
+}
+
+.select-input {
+  appearance: none;
+  padding-right: var(--space-28);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238e8a86' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-2) var(--space-10);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--line-strong);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-strong);
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.chip--ok {
+  color: var(--green);
+  border-color: var(--green-line);
+}
+
+.chip--warn {
+  color: var(--amber);
+  border-color: var(--amber-line);
+}
+
+.chip--bad {
+  color: var(--red);
+  border-color: var(--red-line);
+}
+
+.chip--accent {
+  color: var(--ember);
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+}
+
+/* A fact that is true but switched off — the machinery is there, the access
+   is not. Quieter than a plain chip, never a fault. */
+.chip--muted {
+  color: var(--muted-dim);
+  border-color: var(--line);
+}
+
+/* ---- Usage meter ----
+   How much of an account's plan is spent. A 3px track the eye reads before
+   the percentage does; the fill turns amber when a limit is near and red
+   when it is reached. */
+.usage-meter {
+  display: block;
+  width: 100%;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--line-strong);
+  overflow: hidden;
+}
+
+.usage-meter__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ember-dim);
+}
+
+.usage-meter--low .usage-meter__fill {
+  background: var(--amber);
+}
+
+.usage-meter--out .usage-meter__fill {
+  background: var(--red);
+}
+
+/* ---- Switch ----
+   One on/off control for the whole product: a 34×20 track a person can hit,
+   with the knob carrying the state rather than a checkbox's tick. Applied to
+   <input type="checkbox" role="switch" class="switch">. */
+
+.switch {
+  appearance: none;
+  margin: 0;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.switch::after {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 1px;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  transition:
+    transform 140ms ease,
+    background-color 140ms ease;
+}
+
+.switch:checked {
+  border-color: var(--ember);
+  background: var(--ember);
+}
+
+.switch:checked::after {
+  background: var(--ink-on-ember);
+  transform: translateX(14px);
+}
+
+.switch:focus-visible {
+  outline: none;
+  border-color: var(--ember-line);
+  box-shadow: var(--ring-ember);
+}
+
+.switch:hover:not(:disabled, :checked) {
+  border-color: var(--line-hover);
+}
+
+.switch:disabled,
+/* A switch that is busy for the moment its change saves keeps the focus that
+   just used it, so it says so with `aria-disabled` rather than the attribute
+   that would take focus away. It has to look the same either way. */
+.switch[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* ---- Segmented control ----
+   Two or three named answers, all readable at once. The track is the same
+   raised surface the switch sits in, and the chosen option is lifted out of
+   it rather than tinted: the accent in a row belongs to the switch that says
+   whether the thing is on at all, not to which of its settings is picked.
+   The options are settings, not the heading of the thing they belong to, so
+   they stay a step below the name above them and the raised surface — not a
+   heavier weight — is the whole of what says which one is chosen. */
+
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+}
+
+.segmented__option {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 34px;
+  padding: var(--space-6) var(--space-14);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.segmented__option:hover:not([aria-disabled="true"], [aria-checked="true"]) {
+  color: var(--text-soft);
+}
+
+.segmented__option[aria-checked="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+  box-shadow:
+    inset 0 0 0 1px var(--line-strong),
+    0 1px 2px rgb(0 0 0 / 40%);
+}
+
+.segmented__option:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-ember);
+  color: var(--text);
+}
+
+.segmented__option[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* ---- Eyebrow ----
+   The small uppercase label that names the category above a title. One
+   definition; the modifiers only change its voice, never its metrics. */
+
+.eyebrow {
+  color: var(--muted-dim);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-heavy);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Above a page or first-run title, where the eyebrow carries the accent. */
+.eyebrow--accent {
+  color: var(--ember-dim);
+}
+
+.eyebrow--bright {
+  color: var(--ember);
+}
+
+/* Inside dense chrome — trace sections, list group labels. */
+.eyebrow--micro {
+  font-size: var(--text-3xs);
+  letter-spacing: 0.09em;
+}
+
+/* ---- Option row ----
+   One selectable choice in a list: a radio a reader picks, or a button that
+   goes somewhere. Every list of choices in the product is built from this —
+   settings placement, first-run connection kinds, the Deployment directory —
+   so the target size and rhythm are the same everywhere.
+
+   Flat by default, for rows inside a .card or a bordered list; --framed when
+   the row is its own card. */
+
+.option-row {
+  width: 100%;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  padding: var(--space-12) var(--space-16);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.option-row--framed {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.option-row:hover:not(:disabled, .is-unavailable),
+.option-row:focus-visible,
+.option-row:focus-within:not(.is-unavailable) {
+  background: var(--surface-hover);
+}
+
+.option-row--framed:hover:not(:disabled, .is-unavailable),
+.option-row--framed:focus-visible,
+.option-row--framed:focus-within:not(.is-unavailable) {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+}
+
+.option-row.is-selected,
+.option-row--framed.is-selected {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+}
+
+.option-row:disabled,
+.option-row.is-unavailable {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* A disabled group keeps the selected row legible — it is still the answer. */
+.option-row-group:disabled .option-row {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.option-row-group:disabled .option-row:hover {
+  background: transparent;
+}
+
+.option-row-group:disabled .option-row.is-selected {
+  background: var(--ember-wash);
+}
+
+.option-row__control {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--ember);
+}
+
+/* The leading slot: a glyph tile, or a place's letter mark. */
+.option-row__glyph {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--ember-line);
+  border-radius: var(--radius-sm);
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+.option-row__glyph--letter {
+  font-family: var(--font-display);
+  font-size: var(--display-xs);
+  font-weight: var(--weight-strong);
+  line-height: 1;
+}
+
+.option-row__glyph--outline {
+  border-style: dashed;
+}
+
+.option-row__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.option-row__title {
+  color: var(--text);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+}
+
+.option-row__detail {
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.option-row__note {
+  color: var(--muted-dim);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.option-row__trailing {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--muted-dim);
+}
+
+/* ---- Loading ----
+   A pending list is not an empty list. Rows shimmer in place so the reader
+   sees the shape of what is coming instead of an empty-state sentence. */
+
+.loading-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-16);
+}
+
+.skeleton {
+  height: 12px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(
+    90deg,
+    var(--surface-raised),
+    var(--surface-hover),
+    var(--surface-raised)
+  );
+  background-size: 220% 100%;
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-sweep {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    background: var(--surface-raised);
+  }
+}
+
+kbd.kbd {
+  display: inline-block;
+  min-width: 17px;
+  padding: 1px var(--space-6);
+  border-radius: 5px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: var(--text-3xs);
+  line-height: 1.5;
+  text-align: center;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  border: 2px solid rgb(255 255 255 / 16%);
+  border-top-color: var(--ember);
+  animation: spin 0.8s linear infinite;
+  flex: none;
+}
+
+/* Sized to sit where a live dot would: a surface still coming up. */
+.spinner--tiny {
+  width: 8px;
+  height: 8px;
+  border-width: 1.5px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* An agent is acting on a computer right now. The dot is the agent's ember,
+   breathing slowly enough to read as presence rather than as an alert; it
+   marks a live computer-use session wherever one is shown and nothing else. */
+.agent-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ember);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 16%, transparent);
+  animation: agent-dot-breathe 2.8s ease-in-out infinite;
+}
+
+@keyframes agent-dot-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ember) 20%, transparent);
+  }
+  50% {
+    opacity: 0.72;
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--ember) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-dot {
+    animation: none;
+  }
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  flex: none;
+}
+
+.status-dot--idle {
+  background: rgb(255 255 255 / 24%);
+}
+
+.status-dot--running {
+  background: var(--green);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.status-dot--pending {
+  background: var(--amber);
+}
+
+.notice {
+  display: flex;
+  gap: var(--space-10);
+  align-items: flex-start;
+  padding: var(--space-12) var(--space-14);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-elevated);
+  font-size: var(--text-lg);
+  color: var(--text-soft);
+}
+
+.notice > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 1px;
+}
+
+.notice > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.notice > .btn {
+  flex: none;
+  margin-left: auto;
+}
+
+/* Default icon footprint; denser contexts override via their own selectors. */
+svg.icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.notice--error {
+  border-color: var(--red-line);
+  background: var(--red-wash);
+  color: var(--red-text);
+}
+
+.notice--warn {
+  border-color: var(--amber-line);
+  background: var(--amber-wash);
+  color: var(--amber-text);
+}
+
+.notice--accent {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+  color: var(--ember-bright);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    /* Zero, not a token duration: every element's transition-property starts
+       as `all`, so any duration would make each style change everywhere a
+       transition, and layout measured right after a write (FoldToFit) would
+       read the old value. */
+    transition-delay: 0s !important;
+    transition-duration: 0s !important;
+  }
+}
+
+/* Touch chrome keeps a full finger-sized hit area. Inline prose links retain
+   their reading rhythm; every control-shaped link is included explicitly. */
+@media (hover: none) {
+  button,
+  summary,
+  .btn,
+  .brand-link,
+  .sidebar__nav-item,
+  .sidebar__place,
+  .task-row__link,
+  .page__back,
+  .computer-row,
+  .intg-card {
+    min-height: var(--touch-target);
+  }
+
+  .icon-btn,
+  .icon-btn--small {
+    min-width: var(--touch-target);
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  input:not(.switch),
+  textarea,
+  select {
+    min-height: var(--touch-target);
+    font-size: 16px;
+  }
+
+  .switch {
+    position: relative;
+    width: var(--touch-target);
+    height: var(--touch-target);
+    border: 0;
+    background: transparent;
+  }
+
+  .switch::before {
+    content: "";
+    position: absolute;
+    top: 12px;
+    left: 5px;
+    width: 34px;
+    height: 20px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-full);
+    background: var(--surface-raised);
+  }
+
+  .switch::after {
+    position: absolute;
+    top: 14px;
+    left: 7px;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+  }
+
+  .switch:checked {
+    background: transparent;
+  }
+
+  .switch:checked::before {
+    border-color: var(--ember);
+    background: var(--ember);
+  }
+
+  .switch:checked::after {
+    transform: translateX(14px);
+  }
+}

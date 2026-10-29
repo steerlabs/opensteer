@@ -1,0 +1,42 @@
+# iPhone apps
+
+Opensteer on an iPhone can serve Calendar, Contacts, Reminders, current Location and Photos metadata to agents while the app is open. It is a local Runner with only the integrations module. It does not expose the phone screen, files, other apps, Messages or a local MCP server. Calendar and Reminders support their shared Mac operation contracts; Contacts is read only. The Host decides each app's agent access, and iOS independently decides whether Opensteer may use the underlying store.
+
+The owner starts **Add this iPhone** in the mobile app. JS uses the owner session to mint a single iPhone enrollment and approve app access. The native module creates two independent Ed25519 keys and a durable prepared record before the first mint request. It holds the enrollment token only in the device Keychain. The JS bridge receives the Runner ID and a stable mint idempotency key, but never a private key, token after `enroll`, stream ticket or signature. Native connects directly to the Host target from the pairing result. Discovery must name the same Deployment and Host instance before it sends the token or a proof. Redirects are refused.
+
+The native executor is created by an Expo app delegate subscriber, before JS loads. Returning from the background replaces its transport generation; returning from a permission prompt preserves the connection. Both reread OS permission state. The primary connection carries the Runner proof, heartbeat and integrations ticket; the auxiliary stream carries status, invoke, result, cancel and signed approvals. Only a live stream with an unexpired continuous clock lease admits work. At most four requests run at once. A write crosses a second synchronous fence immediately before the EventKit save and needs at least 500 ms remaining on its deadline. Backgrounding closes admission and drains admitted work for at most 20 seconds. Heartbeats can renew an unexpired lease during that drain, but new invokes receive a background refusal and no new write can start. Expiry closes both sockets. A lost write answer is unknown to the Host and is never replayed on reconnect. `disconnect()` fences admission synchronously before network cleanup.
+
+The identity marker is `Application Support/iphone-apps/enrollment.json`, excluded from backup and protected until first user authentication. The Runner key, approval key and pending enrollment token use Keychain service `com.opensteer.mobile.iphone-apps`, `WhenUnlockedThisDeviceOnly`, with synchronization disabled. An absent or malformed marker wipes those items; a present marker with a missing key is wiped. A temporarily unavailable protected Keychain read defers this judgment until unlock. Removing the phone clears the marker first so an unavailable Keychain deletion cannot restore sharing on restart.
+
+Permission prompts happen only after a person taps the mobile UI action. Invocations never prompt. The answer is read back before anything is requested or signed, and a refusal stops new access there ([mobile lifecycle](mobile.md#this-iphones-apps)). Calendar requires full event access, Reminders full reminder access, and Contacts either full or limited access. Limited Contacts exposes only the OS-selected contacts; iOS 18's system picker can expand that selection. The generated Info.plist strings live in `apps/mobile/app.config.ts`.
+
+Location is a foreground-only, read-only coordinate fix, labelled precise or approximate. It requests only When In Use permission on a person’s tap; Allow Once has the same native state and may expire later. A tool call never requests authorization. A positive maximum age can use a cached fix; zero requires a new fix. Acquisition stops after the last pending read, cancellation, backgrounding or its deadline (at most 15 seconds).
+
+Photos offers read-only asset and regular-album metadata. It returns no image bytes, filenames, EXIF or coordinates and never requests an iCloud download. PhotoKit’s permission API uses the broader read/write label, but Opensteer’s provider has no write operations. Limited access returns only selected assets, including a successful empty selection. The limited-library picker is person-initiated; the automatic selection alert is disabled. Pages bind their cursor to the query and order; equal-date groups are capped at 1,000 assets and fail explicitly above that limit. Paging does not promise a library snapshot. Album enumeration uses bounded page memory and checks its work budget.
+
+The new providers use their own generated `IphoneContracts.generated.swift`; the shared Mac contracts stay unchanged. A new device approval requires an authenticated iPhone status that reports its definition. Offline, connecting and older app versions receive distinct refusals before any request is saved. Lowering and revocation keep working offline. Before starting new setup, the mobile controller also requires the installed build to report the app's permission and the Host's catalog to list its definition ([mobile lifecycle](mobile.md#this-iphones-apps)).
+
+`packages/apple-data` contains the single Swift implementation of the Calendar, Reminders and Contacts data providers used by both the Mac helper and iPhone pod. The data contract generator reads the catalog and writes `DataContracts.generated.swift` before either build. The Mac helper build and Expo config both invoke it. Expo's data-only Swift package needs the local Podfile config plugin because it has no JS Module class for autolinking. `apps/mobile/modules/iphone-apps` depends on that pod and keeps its platform adapters separate from the SwiftPM core.
+
+## Focused native verification
+
+Use the [cheapest relevant regression checks](testing.md#how-to-test). The Swift
+cores and the Swift↔TypeScript wire vectors are pure logic and run on the host;
+CI selects them when these packages change:
+
+```sh
+pnpm exec tsx scripts/generate-apple-data-contracts.ts
+swift test --package-path packages/apple-data
+swift test --package-path apps/mobile/modules/iphone-apps/ios
+swift build --package-path apps/mobile/modules/iphone-apps/ios --product IphoneAppsVectors
+OPENSTEER_IPHONE_APPS_NATIVE_TESTS=1 pnpm exec vitest run tests/iphone-apps-wire.test.ts tests/helper-data-contracts.test.ts
+```
+
+The wire test executes the production Swift core and checks its signatures and
+frames against the Host's TypeScript implementation. None of these prove real
+Calendar, Contacts or Reminders grants; those need the simulator journey or a
+manual acceptance check.
+
+The non-simulator journey starts a real Host and a disposable PostgreSQL cluster from the VM payload, then bridges Host WebSocket frames to `IphoneAppsNativeJourney`, which links production Swift proofs, wire and dispatch with explicitly fake Calendar, Location and Photos OS ports. Location and Photos run their production providers behind those ports. Run it from a clean revision with `pnpm test:vm -- --mobile --revision <SHA> bash -c 'set -e; cd ../..; export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer; bash apps/mobile/modules/iphone-apps/journey/run-in-vm.sh'`. Its `native-journey-result.json` records the Host frames, signed approvals, fake save count, Location acquisition counters and selected Photos metadata. It explicitly lists real CoreLocation, PhotoKit and consent dialogs as unverified. The wrapper stops PostgreSQL and removes its data directory on every exit. This checks the native core against the Host; the iOS URLSession adapter and real Apple stores need the simulator journey. A simulator pregrant can validate data operations but cannot prove a consent dialog. Retain logs, outcome rows and screenshots only for manual acceptance or release acceptance; label an unavailable simulator or OS dialog **unverified**, never passed. The physical signed Release install and consent journey belong to the reserved phone owner.
+
+In an owned mobile VM, `apps/mobile/modules/iphone-apps/fixture/run.sh <simulator-udid> seed iphone-apps-fixture-<unique-id>` creates one synthetic event, reminder and two contacts. Run it again with `snapshot` and the same marker to inspect the system stores independently of Opensteer. The script requires `OPENSTEER_IPHONE_APPS_EVIDENCE_DIR` outside the checkout for its build and result files; retain them only for manual acceptance or release checks. The script builds a separate Release fixture, writes its result there, and terminates the fixture app before returning. A missing writable calendar or reminder source is a prerequisite failure recorded in the result.

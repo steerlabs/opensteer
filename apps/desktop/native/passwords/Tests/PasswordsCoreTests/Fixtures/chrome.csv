@@ -1,0 +1,16 @@
+﻿name,url,username,password,note
+example.com,https://example.com/login,alice@example.com,test-password-123,"line one
+line ""two"""
+www.example.com,https://www.example.com/,alice@example.com,test-password-123,
+com.example.app,android://AAAAfakehashBBBB==@com.example.app/,alice@example.com,test-password-123,
+example.org,http://example.org/,bob@example.org,different-pass-456,
+example.net,https://example.net/signin,"carol, the admin",  pässwörd with spaces  ,
+example.net,https://example.net/signin,carol2@example.net,,
+shop.example.com,https://shop.example.com:8443/account?tab=login#top,dave@example.com,"quote""comma,newline
+second line",
+www.example.com,https://www.example.com/,alice@example.com,test-password-123,duplicate of row 3
+conflict.example.com,https://conflict.example.com/,erin@example.com,first-password,
+conflict.example.com,https://conflict.example.com/,erin@example.com,second-password,
+bad.example.com,https://bad.example.com/,frank,pass,word,shifted
+
+emoji.example.com,https://emoji.example.com/,grace,🔑 key	,

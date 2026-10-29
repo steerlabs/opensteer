@@ -1,0 +1,1347 @@
+.unread-dot,
+.thread-status-dot,
+.connection-dot,
+.live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--muted-dim);
+}
+
+.thread-status-dot.is-running,
+.connection-dot.is-connected,
+.live-dot {
+  background: var(--green);
+  box-shadow: var(--ring-green);
+}
+
+.browser-view {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ---- Browser chrome ----
+   The tabs, then one row — the address and the page's controls — above the
+   page, as in Chrome, and nothing drawn over the page. A phone has no strip:
+   its tabs are a count in the row. */
+
+.browser-view {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  container: browser-view / inline-size;
+}
+
+.browser-view > .browser-stage {
+  flex: 1;
+}
+
+/* Start, ended and scope notices: the message alone. */
+
+/* Start below the future browser chrome, before a page exists to measure. */
+
+/* A page's or app's own actions, behind one ⋯. */
+.surface-menu.icon-btn {
+  flex: none;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+}
+
+.surface-menu.icon-btn > svg {
+  width: 16px;
+  height: 16px;
+  color: inherit;
+}
+
+.surface-menu:hover,
+.surface-menu.is-open {
+  color: var(--text);
+  background: var(--surface-elevated);
+}
+
+/* Taller than the shared popover: the whole menu should be readable without
+   scrolling on a phone, where it also holds the page's navigation. */
+.popover--surface {
+  width: min(320px, calc(100vw - 20px));
+  max-height: min(
+    560px,
+    calc(100dvh - 20px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px))
+  );
+}
+
+.picker__check--icon {
+  color: var(--muted);
+}
+
+.picker__row--danger {
+  color: var(--red-text);
+}
+
+.picker__row--danger .picker__check--icon {
+  color: inherit;
+}
+
+.picker__row:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* Tab strip: the tab on screen takes the toolbar's ground, so the two read as
+   one piece. New tab follows the last tab, as in Chrome; All tabs keeps the
+   far end. */
+
+/* The tabs, and while they overflow an arrow at each end: one box that holds
+   still while the tabs scroll inside it. */
+
+/* How far each end fades, --tabs-fade, comes from the strip's width (TabStrip). */
+
+/* An end with tabs past it fades. */
+
+/* The agent's tab is past this edge, or out of the strip's view for All tabs. */
+
+/* Tabs shrink together from 200px, as Chrome's do, but only to a width whose
+   name still reads; past that the strip scrolls. The whole tab opens it,
+   except its close. */
+.browser-tab {
+  --tab-close: 24px;
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  width: 200px;
+  min-width: 128px;
+  height: 36px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  color: var(--muted);
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.browser-tab:hover:not(.is-active) {
+  color: var(--text-soft);
+  background: rgb(255 255 255 / 4%);
+}
+
+.browser-tab.is-active {
+  color: var(--text);
+  background: var(--surface);
+}
+
+/* A hairline between two quiet tabs, as Chrome draws one. */
+.browser-tab:not(.is-active, :hover) + .browser-tab:not(.is-active, :hover)::before {
+  content: "";
+  position: absolute;
+  top: 11px;
+  bottom: 11px;
+  left: -2px;
+  width: 1px;
+  background: var(--line-strong);
+}
+
+/* The agent's badge, in the green that marks an agent acting anywhere it works. */
+
+/* A name too long fades out, as in Chrome. */
+
+/* The close sits over the end of the name, which fades under it, so showing
+   it moves nothing. It overlaps the name by its width less the 2px between
+   the close's inset and the label's. */
+
+/* Centered on the tabs beside them. */
+
+/* On a phone the count is the tabs, in a square as Chrome draws it. */
+
+/* An agent at work here, said in the row beside the address, never inside it,
+   where a dot would read as the site's security. */
+
+/* Beside a conversation the page is often narrower than a browser window, so
+   the row gives its room to the address: All pages is its icon, and the agent
+   is "Agent", still read in full. */
+
+/* Nothing to point at: every tab shows its close, bigger, over its faded name. */
+@media (hover: none) {
+  .browser-tab {
+    --tab-close: 32px;
+    height: var(--touch-target);
+  }
+
+  .surface-menu {
+    min-height: var(--touch-target);
+  }
+}
+
+@media (max-width: 700px) {
+  .surface-menu,
+  .browser-controls button {
+    min-height: var(--touch-target);
+  }
+
+  .browser-controls button {
+    width: var(--touch-target);
+  }
+}
+
+/* The one row: a page's and an app's alike. The Thread header's height, so
+   the two rules meet across the split. */
+
+.surface-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  min-height: 56px;
+  padding: var(--space-8) var(--space-10);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.browser-toolbar .browser-address {
+  flex: 1;
+}
+
+/* Under the tabs the row is the toolbar alone; the tabs carry the header's height. */
+
+.browser-fit {
+  flex: none;
+}
+
+.browser-controls {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.browser-controls button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  background: transparent;
+}
+
+.browser-controls button:hover:not(:disabled) {
+  color: var(--text);
+  background: rgb(255 255 255 / 7%);
+}
+
+.browser-controls button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.browser-controls svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* The omnibox: a rounded field, the site's icon at its start. */
+.browser-address {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 32px;
+  padding: 0 var(--space-4) 0 var(--space-12);
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  color: var(--text-soft);
+  background: var(--surface-elevated);
+  gap: var(--space-8);
+  transition: border-color var(--duration-fast) linear;
+}
+
+.browser-address:focus-within {
+  border-color: var(--ember-line);
+}
+
+.browser-address {
+  position: relative;
+}
+
+/* At rest the address reads as Chrome's does: the site, then the rest dimmed.
+   The field stays underneath, so a click edits the whole address. */
+.browser-address input.is-dressed {
+  color: transparent;
+}
+
+.browser-address__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.browser-address__mark > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.browser-address__field {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  align-self: stretch;
+  min-width: 0;
+}
+
+.browser-address__display {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.browser-address__host {
+  flex: none;
+  color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
+.browser-address__rest {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-dim);
+  text-overflow: ellipsis;
+}
+
+.browser-address input {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text-soft);
+  background: transparent;
+  font-size: var(--text-sm);
+}
+
+.browser-address input::placeholder {
+  color: var(--muted-dim);
+}
+
+.browser-address__go {
+  display: grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--ember);
+  background: var(--ember-wash);
+  place-items: center;
+}
+
+.browser-address__go svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* A phone's row names the page, its title over its site; a tap gives the address. */
+.browser-page-name {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  min-height: var(--touch-target);
+  padding: 0 var(--space-8);
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.browser-page-name:active:not(:disabled) {
+  background: var(--surface-elevated);
+}
+
+.browser-page-name__text {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.browser-page-name__title,
+.browser-page-name__site {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-page-name__title {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
+  line-height: 1.25;
+}
+
+.browser-page-name__site {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+/* Page area */
+
+.browser-stage {
+  background: var(--surface-elevated);
+  position: relative;
+  display: grid;
+  min-height: 0;
+}
+
+.browser-canvas {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  overflow: hidden;
+  /* The page sits in the middle of a quiet ground, so the room around a page
+     of another shape reads as the stage, not as a page still loading. */
+  background: var(--surface-elevated);
+  outline: none;
+  touch-action: none;
+}
+
+.browser-canvas:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ember-line);
+}
+
+/* A page starts under its toolbar, centred across; input maps through the
+   same box: see browserFrameContentRect. */
+.browser-canvas > canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center top;
+  user-select: none;
+}
+
+.browser-status {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  max-width: 100%;
+  padding: var(--space-4) var(--space-8);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0 var(--radius-sm) 0 0;
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* The profile sheets ride the shared Dialog. A page's own dialog (alert,
+   confirm, prompt) wears the same card but holds only its page, as in a
+   browser: it sits over the page's picture, and the tabs and the rest of the
+   app stay usable. */
+
+.browser-page-dialog {
+  position: absolute;
+  inset: 0;
+  z-index: var(--layer-raised);
+  display: grid;
+  place-items: start center;
+  padding: 0 var(--space-14);
+  background: rgb(0 0 0 / 32%);
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+.browser-page-dialog > .dialog {
+  max-width: 28rem;
+  max-height: 100%;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  animation: browser-sheet-down var(--duration-med) var(--ease-out);
+}
+
+.browser-dialog__message {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Errors */
+
+.browser-action-error {
+  padding: var(--space-8) var(--space-10);
+  border: 1px solid var(--red-line);
+  border-radius: var(--radius-xs);
+  color: var(--red-text);
+  background: color-mix(in srgb, var(--red) 10%, var(--surface-elevated));
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.browser-stage > .browser-action-error {
+  position: absolute;
+  z-index: var(--layer-raised);
+  inset: auto var(--space-10) var(--space-10);
+}
+
+/* A choice that exists is shown, not hidden in a select: every option and
+   what it means is readable before anything is clicked. */
+.browser-choice {
+  display: grid;
+  min-width: 0;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  border: 0;
+  gap: var(--space-2);
+}
+
+.browser-choice legend {
+  margin-bottom: var(--space-6);
+  padding: 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-strong);
+}
+
+.browser-choice__option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-10);
+  padding: var(--space-8) var(--space-10);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.browser-choice__option:hover {
+  background: var(--surface-elevated);
+}
+
+.browser-choice__option:has(input:checked) {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+}
+
+.browser-choice__option.is-disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.browser-choice__option input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: var(--ember);
+}
+
+.browser-choice__text {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.browser-choice__label {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-choice__detail {
+  color: var(--muted-dim);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+/* ---- Profiles and agent access ---- */
+
+.browser-profiles__intro,
+.browser-profiles__empty,
+.browser-profiles__note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.browser-profiles__note {
+  color: var(--muted-dim);
+  font-size: var(--text-xs);
+}
+
+.browser-profiles {
+  display: grid;
+  gap: var(--space-10);
+}
+
+.browser-profiles__list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  list-style: none;
+}
+
+.browser-profiles__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1px var(--space-10);
+  padding: var(--space-10) var(--space-12);
+}
+
+.browser-profiles__row + .browser-profiles__row {
+  border-top: 1px solid var(--line);
+}
+
+.browser-profiles__name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-profiles__access {
+  grid-row: 2;
+  color: var(--muted-dim);
+  font-size: var(--text-xs);
+}
+
+.browser-profiles__access.is-allowed {
+  color: var(--amber-text);
+}
+
+.browser-profiles__row .btn {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+}
+
+.browser-name-form {
+  display: grid;
+  gap: var(--space-8);
+}
+
+.browser-name-form p {
+  margin: 0 0 var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.browser-name-form label {
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+}
+
+.browser-name-form > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+.browser-name-form input {
+  flex: 1 1 160px;
+  min-width: 0;
+  padding: var(--space-8) var(--space-10);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  background: var(--surface-raised);
+  font: inherit;
+  font-size: var(--text-lg);
+}
+
+.browser-name-form input:focus-visible {
+  border-color: var(--ember-line);
+  outline: none;
+  box-shadow: var(--ring-ember);
+}
+
+/* ---- The stage ----
+   No header of its own: a grid of tiles, or one page or app under its row.
+   Which one is the address's choice; the tiles keep the order things opened. */
+
+/* One column in a narrow stage, two beside a conversation, three when wide.
+   Rows come in pairs, a tile's picture then its caption; the space between
+   tiles is the caption's own, below it. */
+
+/* ---- Tiles ----
+   A tile spans two rows of its grid: its picture, then its caption. Pictures
+   keep their page's shape and sit on the caption, so the captions of a row
+   line up however the pictures above them differ. */
+
+/* The page's own shape, so nothing is letterboxed. */
+
+/* Nobody is acting here: still there, quieter. */
+
+@keyframes tile-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+
+  to {
+    background-position: -120% 0;
+  }
+}
+
+/* The whole tile is the button; its focus ring follows the picture's corners. */
+/* Closes a browser left open; above the tile's own open button, in its corner. */
+
+/* Beside pictures it takes their height; alone in its row, a slim bar. */
+
+/* A site's mark, standing in for its icon. */
+.site-mark {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: hsl(var(--site-hue, 30) 28% 86%);
+  background: hsl(var(--site-hue, 30) 22% 26%);
+  font-size: 10px;
+  font-weight: var(--weight-heavy);
+  line-height: 1;
+}
+
+.site-mark svg {
+  width: 11px;
+  height: 11px;
+}
+
+.site-mark--icon {
+  border-radius: 3px;
+  background: none;
+  object-fit: contain;
+}
+
+/* An app without its own icon reads like a site's mark beside it, not a framed tile. */
+
+/* ---- One page or app ---- */
+
+/* The app's row is a page's row: same height, same ground. */
+.computer-watch__bar.surface-row {
+  gap: var(--space-8);
+  min-height: 56px;
+  padding: var(--space-8) var(--space-10);
+  background: var(--surface);
+}
+
+/* A real text control owns IME composition; the remote frame remains the visible editor. */
+.browser-keyboard-input {
+  position: absolute;
+  z-index: -1;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  resize: none;
+  overflow: hidden;
+  font-size: 16px;
+  pointer-events: none;
+}
+
+/* The keyboard is in the page: say so plainly. */
+.browser-canvas:focus-within {
+  outline: 2px solid var(--ember);
+  outline-offset: -2px;
+}
+
+/* After a finger taps the page: the keyboard, when a field there wants it. */
+.browser-keyboard-offer {
+  position: absolute;
+  z-index: var(--layer-raised);
+  right: var(--space-12);
+  bottom: var(--space-12);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-height: var(--touch-target);
+  padding: 0 var(--space-14);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-elevated) 92%, transparent);
+  box-shadow: var(--shadow-raised);
+  font-size: var(--text-md);
+}
+
+.browser-keyboard-offer svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---- The thread header's chip, while the stage is closed ---- */
+
+/* A phone's bar has room for the marks alone, where its toggle would be; the
+   dot still says an agent acts. */
+
+/* ---- Pages and apps in the conversation ---- */
+
+.surface-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.surface-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  /* Three chips share a line in the conversation column beside an open stage. */
+  max-width: 10.5rem;
+  height: 26px;
+  padding: 0 var(--space-10) 0 var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  color: var(--text-soft);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+a.surface-chip:hover,
+button.surface-chip:hover {
+  border-color: var(--line-hover);
+  background: var(--surface-hover);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.surface-chip .site-mark,
+.surface-chip .computer-use__app-mark {
+  --intg-icon-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.surface-chip__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.surface-chip > .live-dot {
+  flex: none;
+}
+
+.surface-chip__site {
+  flex: none;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.surface-chip__site::before {
+  margin-right: var(--space-6);
+  content: "·";
+}
+
+/* Where the title and its site do not both fit, the site goes, whole, and
+   only the title is shortened. It stays measurable while gone: see SurfaceChip. */
+.surface-chip--with-site {
+  position: relative;
+  overflow: hidden;
+}
+
+.surface-chip__site--dropped {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.surface-chip--ended {
+  color: var(--muted);
+  background: transparent;
+  border-style: dashed;
+}
+
+.surface-chip--ended .site-mark,
+.surface-chip--ended .computer-use__app-mark {
+  filter: grayscale(1);
+  opacity: 0.6;
+}
+
+.surface-chip--more {
+  padding: 0 var(--space-10);
+  color: var(--muted);
+}
+
+/* The place the reply's live picture shows, highlighted where it stands. */
+.surface-chip--active {
+  border-color: var(--muted);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.surface-chips__list {
+  display: grid;
+  gap: var(--space-6);
+  padding: var(--space-8);
+}
+
+.surface-chips__list .surface-chip {
+  justify-self: start;
+  max-width: 100%;
+}
+
+.turn--conversation > .surface-chips,
+.turn > .surface-chips {
+  margin-top: var(--space-8);
+}
+
+.msg--user__pages {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-6);
+  width: 100%;
+  min-width: 0;
+  margin-bottom: var(--space-6);
+}
+
+.msg--user__pages .surface-chip {
+  max-width: min(30rem, 100%);
+}
+
+.delegation .surface-chips {
+  margin-top: var(--space-6);
+}
+
+/* ---- Watch (/live) ---- */
+
+/* Where the top bar already says "Watch", the heading is there for screen readers only. */
+
+/* The title, and beside it the one action across everything: closing the finished browsers. */
+
+/* Working, then Still open: what agents are doing, then what they left open. */
+
+/* ---- A phone: the page full screen, the conversation a sheet under it ---- */
+
+@media (max-width: 700px) {
+  .surface-row {
+    min-height: calc(52px + env(safe-area-inset-top, 0px));
+    padding-top: calc(var(--space-8) + env(safe-area-inset-top, 0px));
+  }
+
+  /* Put away, the sheet is its handle alone: the page stays usable. */
+  .thread--sheet {
+    flex: none;
+    height: auto;
+    border-top: 1px solid var(--line-strong);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    background: var(--surface);
+    box-shadow: 0 -12px 32px rgb(0 0 0 / 45%);
+  }
+
+  .thread--sheet > .topbar {
+    display: none;
+  }
+
+  .thread--sheet-closed > :not(.thread__sheet-row) {
+    display: none;
+  }
+
+  /* Opened, one body scrolls — the conversation, then what waits on the
+     reader — and the composer stays pinned under it, above the keyboard. */
+  .thread--sheet-open {
+    height: 100%;
+  }
+
+  .thread--sheet-open .thread__conversation {
+    flex: none;
+    min-height: 0;
+  }
+
+  .thread--sheet-open .transcript-scroll {
+    flex: none;
+    overflow: visible;
+  }
+
+  .thread--sheet-open .request-stack {
+    padding-bottom: var(--space-10);
+  }
+
+  .thread--sheet .composer-dock {
+    padding-top: var(--space-6);
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+  }
+}
+
+.thread__sheet-row {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-height: 56px;
+  padding-right: var(--space-6);
+}
+
+.thread__sheet-handle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-10);
+  min-width: 0;
+  min-height: 56px;
+  padding: var(--space-12) var(--space-6) var(--space-8) var(--space-16);
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  touch-action: none;
+}
+
+.thread__sheet-grip {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 36px;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--line-hover);
+  transform: translateX(-50%);
+}
+
+.thread__sheet-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+}
+
+.thread__sheet-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread__sheet-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.thread__sheet-chevron.is-up {
+  transform: rotate(180deg);
+}
+
+.thread__sheet-hide {
+  flex: none;
+  width: var(--touch-target);
+  height: var(--touch-target);
+}
+
+/* Fingers: chips grow to a size a thumb can land on; the chips stay one
+   height, the "+N" with them. */
+@media (hover: none) {
+  .surface-chip {
+    height: 36px;
+    min-height: 0;
+  }
+}
+
+/* Native pages show through the app view; only the area around the placed page is painted. */
+.browser-view--native > .browser-toolbar {
+  background: var(--surface-elevated);
+}
+.browser-stage:has(.browser-native-well) {
+  background: transparent;
+  overflow: hidden;
+  border-radius: 0 0 15px 15px;
+}
+.browser-native-well {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--surface-elevated);
+}
+.browser-native-well.is-placed {
+  background: transparent;
+}
+.browser-page-hole {
+  position: absolute;
+  /* Electron rounds all four page corners uniformly. */
+  border-radius: 15px;
+  box-shadow: 0 0 0 100vmax var(--surface-elevated);
+}
+.browser-page-hole.is-sized {
+  outline: 1px solid var(--line-strong);
+  box-shadow:
+    var(--shadow-raised),
+    0 0 0 100vmax var(--surface-elevated);
+}
+.browser-well__brackets {
+  position: absolute;
+  inset: 8px;
+  pointer-events: none;
+  color: color-mix(in srgb, var(--muted-dim) 50%, transparent);
+  transition: color 130ms;
+}
+.browser-well__brackets.is-previewing {
+  color: var(--ember);
+}
+.browser-well__brackets > i {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border: solid currentColor;
+  border-width: 1.5px 0 0 1.5px;
+  border-radius: 12px 0 0;
+}
+.browser-well__brackets > i:nth-child(1) {
+  top: 0;
+  left: 0;
+}
+.browser-well__brackets > i:nth-child(2) {
+  top: 0;
+  right: 0;
+  transform: rotate(90deg);
+}
+.browser-well__brackets > i:nth-child(3) {
+  bottom: 0;
+  right: 0;
+  transform: rotate(180deg);
+}
+.browser-well__brackets > i:nth-child(4) {
+  bottom: 0;
+  left: 0;
+  transform: rotate(270deg);
+}
+.browser-notice {
+  display: flex;
+  align-items: center;
+  flex: 0 1 40%;
+  max-width: 24rem;
+  min-width: 0;
+  height: 32px;
+  gap: 8px;
+  color: var(--red-text);
+  font-size: var(--text-xs);
+}
+.browser-notice > span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-notice button {
+  flex: none;
+}
+.browser-toolbar .browser-find {
+  flex: 0 1 320px;
+  min-width: 180px;
+  gap: 4px;
+  border-color: var(--ember-line);
+}
+.browser-find input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+}
+.browser-find button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  flex: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--muted);
+  background: transparent;
+}
+.browser-find button:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.browser-find__count {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.browser-find__down {
+  display: flex;
+  transform: rotate(180deg);
+}
+.browser-find.has-no-match {
+  border-color: var(--red-line);
+}
+.browser-find.has-no-match .browser-find__count {
+  color: var(--red-text);
+}
+
+@keyframes browser-sheet-down {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .browser-page-dialog > .dialog {
+    animation: none;
+  }
+}
+
+/* Canvas, aiming, crop cue and cursors share browserFrameContentRect. */
+.browser-frame > canvas,
+.browser-frame > .browser-crop-cue {
+  position: absolute;
+  left: var(--browser-frame-left, 0px);
+  top: var(--browser-frame-top, 0px);
+  width: var(--browser-frame-width, 100%);
+  height: var(--browser-frame-height, 100%);
+  border-radius: var(--browser-region-radius, 0px);
+}
+.browser-frame > canvas {
+  object-fit: fill;
+}
+
+.omnibox-results.omnibox-results--toolbar {
+  margin: 0;
+  z-index: 1000;
+  max-height: min(480px, 70dvh);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-elevated);
+  box-shadow: 0 8px 32px #0002;
+}
+
+.browser-downloads {
+  position: relative;
+}
+
+.browser-downloads__progress {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(var(--green) var(--download-progress), var(--line-strong) 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+  pointer-events: none;
+}
+
+.browser-downloads__progress.is-indeterminate {
+  background: conic-gradient(var(--green) 25%, transparent 0);
+  animation: download-spin 1s linear infinite;
+}
+
+@keyframes download-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .browser-downloads__progress.is-indeterminate {
+    animation: none;
+  }
+}
+
+.popover.popover--downloads {
+  width: min(380px, calc(100vw - 20px));
+  max-width: calc(100vw - 20px);
+  padding: var(--space-6);
+}
+
+.browser-downloads__heading {
+  margin: 0;
+  padding: var(--space-10);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+}
+
+.browser-downloads__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.browser-download {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  border-top: 1px solid var(--line);
+  padding: var(--space-6);
+}
+
+.browser-download__file {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+button.browser-download__file:hover {
+  background: var(--surface-hover);
+}
+
+.browser-download__filename,
+.browser-download__site {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.browser-download__filename {
+  font-size: var(--text-sm);
+}
+
+.browser-download__status,
+.browser-download__site {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}

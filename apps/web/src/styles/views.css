@@ -1,0 +1,3404 @@
+/* Routed pages: settings, integrations, channels, triggers + shared page chrome. */
+
+.page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Messaging setup keeps the provider ceremony linear, then separates shared
+   channel reach from private-message admission. */
+.channel-setup-steps {
+  display: grid;
+  gap: var(--space-10);
+  margin: 0;
+  padding-left: var(--space-20);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.55;
+}
+
+.channel-setup-steps li {
+  padding-left: var(--space-4);
+}
+
+.channel-setup-steps strong {
+  color: var(--text);
+}
+
+.channel-setup-steps code {
+  margin-left: 0.3em;
+}
+
+.channel-setup-details,
+.channel-access-history {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+}
+
+.channel-setup-details > summary,
+.channel-access-history > summary {
+  padding: var(--space-12) var(--space-14);
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+.channel-setup-details__body {
+  display: grid;
+  gap: var(--space-10);
+  padding: 0 var(--space-14) var(--space-14);
+}
+
+.card__form.channel-access-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.channel-access-editor__group {
+  display: grid;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+.channel-access-editor__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.channel-access-editor > .notice {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.channel-route-editor {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-elevated);
+}
+
+.channel-route-editor__actions {
+  padding: 0 var(--space-16) var(--space-16);
+}
+
+.channel-access-history {
+  margin: var(--space-10);
+  overflow: hidden;
+}
+
+.channel-access-history .card__row:first-of-type {
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 680px) {
+  .card__form.channel-access-editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wizard-steps {
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: var(--space-4);
+    scrollbar-width: none;
+  }
+
+  .wizard-steps > span,
+  .wizard-steps > svg {
+    flex: none;
+  }
+
+  .channel-route-editor__actions .btn {
+    flex: 1;
+    min-height: var(--touch-target);
+  }
+}
+
+.page__inner {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: var(--space-32) var(--space-22) var(--space-64);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-28);
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.page__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.page__title {
+  font-family: var(--font-display);
+  font-size: var(--display-xl);
+  font-weight: var(--weight-medium);
+  letter-spacing: -0.02em;
+}
+
+.page__description {
+  color: var(--muted);
+  font-size: var(--text-xl);
+  max-width: 38rem;
+}
+
+.page__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  font-size: var(--text-md);
+  color: var(--muted);
+  align-self: flex-start;
+  padding: var(--space-4) var(--space-8);
+  margin-left: calc(var(--space-8) * -1);
+  border-radius: var(--radius-xs);
+}
+
+.page__back:hover {
+  color: var(--text-soft);
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+
+.page__back svg {
+  width: 13px;
+  height: 13px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+}
+
+.section__title {
+  font-size: var(--display-xs);
+  font-weight: var(--weight-bold);
+}
+
+.section__hint {
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+/* A named group inside a section — Access holds three of them, and they need
+   to read as parts of one answer rather than as three more sections. */
+.section__head--sub {
+  padding-top: var(--space-2);
+}
+
+.section__subtitle {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  color: var(--text-soft);
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.card__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  padding: var(--space-14) var(--space-16);
+  min-height: 54px;
+}
+
+.card__row + .card__row {
+  border-top: 1px solid var(--line);
+}
+
+.card__row-glyph {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  color: var(--text-soft);
+  font-size: var(--display-xs);
+  flex: none;
+}
+
+.card__row-glyph svg {
+  width: 16px;
+  height: 16px;
+}
+
+.card__row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.card__row-title {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.card__row-detail {
+  font-size: var(--text-md);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card__row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex: none;
+}
+
+.card__empty {
+  padding: var(--space-22) var(--space-16);
+  text-align: center;
+  color: var(--muted-dim);
+  font-size: var(--text-lg);
+}
+
+.card__empty--loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* An empty list that is also the first step: what is missing, what to do,
+   and the one way there. */
+.computer-use-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.computer-use-empty > p {
+  max-width: 52ch;
+  margin: 0;
+}
+
+.computer-use-empty__title {
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  font-weight: var(--weight-strong);
+}
+
+.computer-use-empty__detail {
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.computer-use-empty > .btn {
+  margin-top: var(--space-4);
+}
+
+.card__form {
+  padding: var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+}
+
+.card__form + .card__row,
+.card__row + .card__form {
+  border-top: 1px solid var(--line);
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-8);
+}
+
+/* The product has exactly two shapes for an error. A banner above the thing
+   that failed is `.notice.notice--error`. An error belonging to one form sits
+   inline beside its own actions — this — and both speak in --red-text. */
+.form-actions__error {
+  flex: 1;
+  font-size: var(--text-md);
+  line-height: 1.4;
+  color: var(--red-text);
+}
+
+/* Settings layout, navigation and content measure live in settings.css. */
+
+.settings-section__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+.settings-section__title {
+  font-family: var(--font-display);
+  font-size: var(--display-lg);
+  font-weight: var(--weight-medium);
+  letter-spacing: -0.015em;
+}
+
+.settings-section__lead {
+  max-width: 52ch;
+  color: var(--muted);
+  font-size: var(--text-lg);
+}
+
+.settings-section__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* A titled card inside a section — "Devices with access" and friends. */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin-top: var(--space-10);
+}
+
+.settings-group__title {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  color: var(--text-soft);
+}
+
+/* The sentence that says what turning this off would take with it. */
+.settings-footnote {
+  max-width: 56ch;
+  margin: var(--space-2) var(--space-2) 0;
+  color: var(--muted-dim);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+/* One status word, one dot, everywhere. Four tones, no fifth. */
+.status-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.status-dot--ok {
+  background: var(--green);
+}
+
+.status-dot--busy,
+.status-dot--warn {
+  background: var(--amber);
+}
+
+.status-dot--muted {
+  background: var(--muted);
+}
+
+.status-dot--pulse {
+  animation: status-pulse 1.6s var(--ease-out) infinite;
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot--pulse {
+    animation: none;
+  }
+}
+
+.status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-md);
+  white-space: nowrap;
+}
+
+.status-line__qualifier {
+  color: var(--muted-dim);
+}
+
+/* A row's plain trailing value, and the monospace variant addresses wear. */
+.card__row-value {
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+}
+
+.card__row-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+.card__row--muted .card__row-title {
+  color: var(--muted);
+}
+
+.settings-machine__capabilities {
+  display: flex;
+  margin-top: var(--space-6);
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+
+/* Computers stays one quiet inventory: three short sections, with detail only
+   expanding when the person is connecting or renaming a computer. */
+.computers-page__content {
+  max-width: 58rem;
+  margin: 0 auto;
+  padding: var(--space-32) var(--space-22) var(--space-64);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-32);
+}
+
+.computers-section,
+.computers-add {
+  display: flex;
+  flex-direction: column;
+}
+
+.computers-section {
+  gap: var(--space-12);
+}
+
+.section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-16);
+}
+
+.section-heading h2 {
+  font-size: var(--display-sm);
+}
+
+.section-heading p,
+.computers-readiness__line span,
+.computers-expiry {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.computers-inline-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.computers-inline-field .text-input {
+  flex: 1;
+}
+
+.computers-readiness-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  min-width: 0;
+  padding: var(--space-14) var(--space-16);
+  border-top: 1px solid var(--line);
+}
+
+.computers-readiness {
+  display: grid;
+  gap: var(--space-8);
+  padding: var(--space-12);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.computers-readiness__line {
+  display: grid;
+  grid-template-columns: auto minmax(9rem, 1fr) auto;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+/* A detail sentence that is a sentence: the row's default clips to one line,
+   which is right for a path and wrong for a consequence. */
+.card__row-detail--wrap {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.45;
+}
+
+.computers-add {
+  gap: var(--space-16);
+}
+
+.computers-copy-block {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.computers-copy-block > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-8) var(--space-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.computers-copy-block > code {
+  display: block;
+  max-height: 10rem;
+  overflow: auto;
+  padding: var(--space-12);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Access from other computers — a section of its own inside a computer's row,
+   kept visually apart from the lending switch above it.
+
+   It reads top to bottom as one answer: who may reach this computer, then
+   what they could do, then the sentence that says what Save would make true,
+   and finally who is here now. The grants appear only once somebody may
+   reach the machine at all, so the choice that matters is never buried. */
+.machine-access {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+  min-width: 0;
+  margin-top: var(--space-16);
+  padding-top: var(--space-16);
+  border-top: 1px solid var(--line);
+}
+
+.machine-access__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  flex-wrap: wrap;
+}
+
+.machine-access h3 {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+}
+
+.machine-access__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* A chip that names the Deployment can be long; on a phone it wraps rather
+   than pushing the card wider than the screen. */
+.machine-access__status .chip {
+  white-space: normal;
+  text-align: center;
+}
+
+.machine-access__fields {
+  display: contents;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.machine-access__lead {
+  max-width: 68ch;
+  margin-top: calc(-1 * var(--space-8));
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.machine-access__form,
+.machine-access__activity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+.machine-access__group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* Who may reach it — the second question, asked only where there is more than
+   one answer to give. */
+.machine-access__who {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-width: 0;
+  padding: var(--space-12) var(--space-14);
+  border-top: 1px solid var(--line);
+}
+
+.machine-access__who-label {
+  flex: none;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+}
+
+.machine-access__who-select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The second line of the lead: what turning reach off does not take with it. */
+.machine-access__lead--note {
+  margin-top: calc(-1 * var(--space-6));
+}
+
+/* On its own page the block is a section among sections, not a postscript to a
+   row, so it wears none of the divider that nesting earned it. */
+.computers-page__content > .machine-access {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.machine-access__grants {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.machine-access__grants-label {
+  padding: var(--space-10) var(--space-14);
+  border-bottom: 1px solid var(--line);
+}
+
+.machine-access__grant {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.machine-access__grant + .machine-access__grant {
+  border-top: 1px solid var(--line);
+}
+
+.machine-access__grant-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-width: 0;
+  padding: var(--space-12) var(--space-14);
+}
+
+/* A head that carries a switch is the switch's label, so the whole row is a
+   target rather than a 34px one at its right edge. */
+label.machine-access__grant-head {
+  cursor: pointer;
+}
+
+/* Not `.card__row-actions`: its phone rule stretches to the full row so the
+   card's buttons can stack, which here would squeeze the words out entirely. */
+.machine-access__grant-control {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.machine-access__grant-detail {
+  white-space: normal;
+  overflow: visible;
+  line-height: 1.45;
+}
+
+.machine-access__grant-note {
+  color: var(--muted-dim);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.machine-access__grant-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: 0 var(--space-14) var(--space-14) calc(var(--space-14) + 34px + var(--space-12));
+}
+
+.machine-access__shares {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.machine-access__share {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.machine-access__share-path {
+  flex: 1 1 14rem;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+
+.machine-access__share-mode {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 9rem;
+}
+
+.machine-access__shares-empty {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-10);
+  color: var(--muted-dim);
+  font-size: var(--text-md);
+}
+
+.machine-access__shares-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+/* Quiet honesty: true, worth saying once, never the loudest thing on the row. */
+.machine-access__footnote {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  max-width: 72ch;
+  color: var(--muted-dim);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.machine-access__summary {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.machine-access__summary > svg {
+  margin-top: 1px;
+  color: var(--muted);
+}
+
+.machine-access__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}
+
+.machine-access__actions-note {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.machine-access__empty {
+  color: var(--muted-dim);
+  font-size: var(--text-md);
+}
+
+.machine-access__session {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-width: 0;
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.machine-access__session-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.machine-access__session-title {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.machine-access__session-detail,
+.machine-access__history-detail {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.machine-access__history {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.machine-access__history-toggle {
+  gap: var(--space-6);
+}
+
+.machine-access__chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.machine-access__chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.machine-access__history-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  min-width: 0;
+}
+
+.machine-access__history-session {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.machine-access__history-session + .machine-access__history-session {
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-4);
+}
+
+.machine-access__history-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  width: 100%;
+  padding: var(--space-8) var(--space-6);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.machine-access__history-summary:hover {
+  background: var(--surface-hover);
+}
+
+.machine-access__history-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.machine-access__history-title {
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+}
+
+.machine-access__history-more {
+  display: flex;
+  align-items: center;
+}
+
+.machine-access__audit {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--space-8) calc(14px + var(--space-8) + var(--space-6));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.settings-remote-access__choices {
+  display: flex;
+  padding: var(--space-14);
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+/* Why a control beside it is refused. Quiet, and only present while true. */
+.card__row-reason {
+  display: block;
+  margin-top: var(--space-4);
+  color: var(--amber-text);
+}
+
+/* What Connect actually does, stated where Connect is chosen rather than in a
+   support article: the trust boundary is a decision, not a footnote. */
+.settings-connect-disclosure {
+  padding: var(--space-12) var(--space-16);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.settings-connect-disclosure__title {
+  color: var(--text-soft);
+  font-weight: var(--weight-bold);
+}
+
+.settings-connect-disclosure ul {
+  margin: var(--space-6) 0 0;
+  padding-left: var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  list-style: disc;
+}
+
+/* A fieldset of .option-row choices. The fieldset itself is invisible; when
+   the rows are flush — inside a card — a hairline separates one answer from
+   the next. Framed rows carry their own edges and need no divider. */
+.option-row-group {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.option-row-group .option-row:not(.option-row--framed) + .option-row {
+  border-top: 1px solid var(--line);
+}
+
+.settings-private-origin {
+  border-top: 1px solid var(--line);
+}
+
+.settings-choice.is-selected {
+  background: var(--ember-wash);
+}
+
+.settings-choice input {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  flex: none;
+  accent-color: var(--ember);
+}
+
+.settings-choice-group:disabled .settings-choice {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.settings-choice-group:disabled .settings-choice:hover {
+  background: transparent;
+}
+
+.settings-choice-group:disabled .settings-choice.is-selected {
+  background: var(--ember-wash);
+}
+
+.settings-choice__copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-choice__title {
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.settings-choice__detail {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.settings-ai-engines__locations {
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.settings-ai-engine-form {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-ai-engine-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* One card per AI engine: the engine's mark and name up top, its accounts
+   as rows beneath. The card is the engine; the rows are who it signs in as. */
+.settings-engines__help {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.settings-engines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+}
+
+.settings-engine__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-12) var(--space-16);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-elevated);
+}
+
+.settings-engine__mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  color: var(--text-soft);
+  flex: none;
+}
+
+.settings-engine__mark svg {
+  width: 15px;
+  height: 15px;
+}
+
+.settings-engine__title {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+  color: var(--text);
+}
+
+.settings-engine__count {
+  color: var(--muted-dim);
+  font-size: var(--text-md);
+}
+
+.settings-engine__add {
+  margin-left: auto;
+}
+
+/* An account's detail is two facts stacked: who it signs in as and how much
+   plan is left, then how it came to be signed in. */
+.settings-account__facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.settings-account__line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account__origin {
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+}
+
+.settings-account .usage-meter {
+  max-width: 14rem;
+}
+
+/* "Add account": the source choice and its fields, one column. */
+.add-account {
+  display: grid;
+  gap: var(--space-14);
+}
+
+.add-account__sources {
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+/* A legend draws on the fieldset's border by default; floated, it becomes the
+   first row of the list it introduces. */
+.add-account__sources legend {
+  float: left;
+  width: 100%;
+  padding: var(--space-10) var(--space-12) var(--space-4);
+}
+
+.add-account__sources .settings-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-10);
+  padding: var(--space-10) var(--space-12);
+  cursor: pointer;
+}
+
+.add-account__sources .settings-choice + .settings-choice {
+  border-top: 1px solid var(--line);
+}
+/* A model server's models and the context size each runs with. The name
+   leads and the size sits at the row's end, so a column of sizes reads down
+   the right edge and a row still waiting on one stands out by its field. */
+.model-settings {
+  display: grid;
+  margin: var(--space-12) 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.model-settings__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-12);
+  row-gap: var(--space-4);
+  min-height: 52px;
+  padding: var(--space-8) var(--space-12);
+}
+
+.model-settings__row + .model-settings__row {
+  border-top: 1px solid var(--line);
+}
+
+.model-settings__name {
+  display: grid;
+  min-width: 0;
+}
+
+.model-settings__title {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-settings__id {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-settings__value {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.model-settings__reason {
+  color: var(--muted);
+  white-space: normal;
+  text-align: right;
+}
+
+.model-settings__form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.model-settings__input {
+  width: 8.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-settings__error {
+  grid-column: 1 / -1;
+  color: var(--amber);
+  font-size: var(--text-sm);
+  text-align: right;
+}
+
+@media (max-width: 560px) {
+  .model-settings__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .model-settings__value,
+  .model-settings__form,
+  .model-settings__error {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .model-settings__input {
+    flex: 1 1 auto;
+    width: auto;
+  }
+}
+
+/* Per-row overflow menu for AI engine accounts. */
+.settings-row-menu {
+  min-width: 200px;
+}
+
+.picker__row--danger,
+.picker__row--danger:hover:not(:disabled) {
+  color: var(--red);
+}
+
+.settings-private-origin {
+  gap: var(--space-14);
+  border-top: 1px solid var(--line);
+}
+
+/* The state that is applied, on the left, and the way to change it, on the
+   right: a status is a word beside the buttons, never a bar across the card. */
+.settings-remote-access__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  padding: var(--space-14) var(--space-16);
+  border-top: 1px solid var(--line);
+}
+
+.settings-remote-access__actions .form-actions {
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.settings-footnote a {
+  color: var(--text-soft);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 2px;
+}
+
+.settings-footnote a:hover {
+  color: var(--text);
+}
+
+/* One quiet line under a capability card. In error it takes the shared red
+   text tint rather than a colour of its own. */
+.settings-capability-note {
+  padding: var(--space-12) var(--space-16);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.settings-capability-note.is-error {
+  color: var(--red-text);
+}
+
+.settings-pairing-code {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-16);
+  border-top: 1px solid var(--ember-line);
+  background: var(--ember-wash);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.settings-pairing-code__label {
+  color: var(--text);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+}
+
+.settings-pairing-code__values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-8);
+}
+
+.settings-pairing-value {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.settings-pairing-value__label {
+  color: var(--text-soft);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+}
+
+.settings-pairing-value__content {
+  display: flex;
+  min-width: 0;
+  align-items: stretch;
+  gap: var(--space-6);
+}
+
+.settings-pairing-value code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  padding: var(--space-8) var(--space-10);
+  border: 1px solid var(--ember-line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.settings-pairing-value__copy {
+  min-height: 36px;
+  flex: none;
+  gap: var(--space-6);
+}
+
+.settings-pairing-value__copy svg {
+  width: 14px;
+  height: 14px;
+}
+
+.copy-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.copy-row code {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-8) var(--space-10);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  font-size: var(--text-sm);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.check-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-10);
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-lg);
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.check-item:hover {
+  border-color: var(--line-strong);
+}
+
+.check-item input {
+  margin-top: var(--space-2);
+  accent-color: var(--ember);
+}
+
+.check-item__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.check-item__label {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
+.check-item__detail {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.wizard-steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  font-size: var(--text-sm);
+  color: var(--muted-dim);
+}
+
+.wizard-steps__step--active {
+  color: var(--ember);
+  font-weight: var(--weight-bold);
+}
+
+.code-editor {
+  width: 100%;
+  min-height: 220px;
+  padding: var(--space-12) var(--space-14);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-code);
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: 1.6;
+  resize: vertical;
+  tab-size: 2;
+}
+
+.code-editor:focus {
+  outline: none;
+  border-color: var(--ember-line);
+}
+
+/* ---- Apps on a computer ----
+   One app, one row, built from the head-and-body pair a machine-access grant
+   already uses: the switch on the head answers "is this on at all", and what
+   it may do unfolds underneath, indented past the icon so the name stays the
+   anchor and nothing shifts sideways when a row opens. The switch is the row's
+   one accented thing; the access control is lifted, never tinted. */
+.computer-apps__app + .computer-apps__app {
+  border-top: 1px solid var(--line);
+}
+
+.computer-apps__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-width: 0;
+  padding: var(--space-14) var(--space-16);
+  min-height: 54px;
+}
+
+.computer-apps__app--expanded .computer-apps__head {
+  border-bottom: 1px solid var(--line);
+}
+
+/* Not `.card__row-actions`: its phone rule stretches to the full row, which
+   would drop a 34px switch onto a line of its own. */
+.computer-apps__control {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.computer-apps__body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-10);
+  min-width: 0;
+  padding: 0 var(--space-16) var(--space-14)
+    calc(var(--space-16) + var(--intg-icon-size) + var(--space-12));
+}
+
+.computer-apps__access-heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.computer-apps__access-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  max-width: 68ch;
+  margin: 0;
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.computer-apps__access-summary > svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--green);
+}
+
+.computer-apps__status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.computer-apps__status--line {
+  margin: 0;
+}
+
+.computer-apps__row-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  margin: calc(-1 * var(--space-6)) var(--space-16) var(--space-14)
+    calc(var(--space-16) + var(--intg-icon-size) + var(--space-12));
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.computer-apps__row-note .btn {
+  flex: none;
+}
+
+.computer-apps__panel,
+.computer-apps__setup-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  width: 100%;
+  max-width: 44rem;
+}
+
+.computer-apps__setup-step h3 {
+  margin: 0;
+}
+
+.computer-apps__step-label {
+  color: var(--muted-dim);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.computer-apps__setting-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-16);
+  padding-bottom: var(--space-4);
+}
+
+.computer-apps__setting-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.computer-apps__setting-row > div > span,
+.computer-apps__setting-row > span {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.computer-apps__manage-actions {
+  justify-content: flex-start;
+  margin-top: calc(-1 * var(--space-4));
+}
+
+.computer-apps__os-details {
+  width: 100%;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.computer-apps__os-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.computer-apps__os-details > summary:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-ember);
+  border-radius: var(--radius-sm);
+}
+
+.computer-apps__os-details > p {
+  margin: var(--space-8) 0 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.computer-apps__manage-footer {
+  justify-content: space-between;
+  width: 100%;
+  padding-top: var(--space-8);
+}
+
+.computer-apps__remedy {
+  color: var(--muted-dim);
+}
+
+.computer-apps__permission {
+  width: 100%;
+  align-items: flex-start;
+  margin: 0;
+}
+
+.computer-apps__permission-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.computer-apps__permission-copy > span {
+  color: var(--muted);
+}
+
+.computer-apps__permission .btn,
+.computer-apps__permission .computer-apps__remedy {
+  margin-left: auto;
+}
+
+/* What turning the app off actually takes with it, said only while that is
+   the question being asked. One alarm colour: the sentence and the action it
+   belongs to are the same warning, not two competing ones. */
+.computer-apps__consequence {
+  margin: 0;
+  max-width: 68ch;
+  color: var(--red-text);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+/* The question sits under the controls it is about, so answering it never
+   moves them. It is announced, so the element is always in the document and
+   is merely taken out of the layout while there is nothing to say. */
+.computer-apps__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  min-width: 0;
+  padding-top: var(--space-4);
+}
+
+.computer-apps__confirm:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+/* The answer sits under the question it answers, not across the card from it. */
+.computer-apps__confirm .form-actions,
+.computer-apps__picker .form-actions {
+  justify-content: flex-start;
+}
+
+.computer-apps__picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+/* The list of computers takes the column; the controls under it stay their
+   own size rather than stretching across it. */
+.computer-apps__picker .segmented,
+.computer-apps__picker .form-actions {
+  align-self: flex-start;
+}
+
+.computer-apps__summary {
+  margin: 0;
+  max-width: 68ch;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+@media (max-width: 680px) {
+  .page__inner {
+    padding: var(--space-20) calc(var(--space-14) + env(safe-area-inset-right, 0px))
+      calc(var(--space-48) + env(safe-area-inset-bottom, 0px))
+      calc(var(--space-14) + env(safe-area-inset-left, 0px));
+  }
+
+  .computers-page__content {
+    padding: var(--space-20) calc(var(--space-14) + env(safe-area-inset-right, 0px))
+      calc(var(--space-48) + env(safe-area-inset-bottom, 0px))
+      calc(var(--space-14) + env(safe-area-inset-left, 0px));
+  }
+
+  .section-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  /* Beside its heading a hint leaves each a sliver of a phone, so it goes under. */
+  .section__head {
+    flex-wrap: wrap;
+    row-gap: var(--space-4);
+  }
+
+  .section__head > .section__hint {
+    flex-basis: 100%;
+  }
+
+  /* On a phone the icon's indent is more gutter than alignment, so an app's
+     body starts at the card's own edge and its access control takes the width
+     rather than crowding into a third of it. */
+  .computer-apps__body {
+    align-items: stretch;
+    padding-left: var(--space-16);
+  }
+
+  .computer-apps__body .segmented,
+  .computer-apps__picker .segmented {
+    width: 100%;
+  }
+
+  .computer-apps__permission {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .computer-apps__permission .btn,
+  .computer-apps__permission .computer-apps__remedy {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .computer-apps__picker {
+    align-items: stretch;
+  }
+
+  .machine-access__grant-body {
+    padding-left: var(--space-14);
+  }
+
+  .machine-access__share .text-input,
+  .machine-access__share .select-input,
+  .machine-access__share .btn {
+    flex: 1 1 100%;
+    width: 100%;
+    min-height: var(--touch-target);
+  }
+
+  /* The offer's button drops under its sentence rather than squeezing it to
+     two words; the rows themselves keep their shape. */
+  .computers-offer {
+    flex-wrap: wrap;
+  }
+
+  .machine-access__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .machine-access__actions .btn {
+    width: 100%;
+    min-height: var(--touch-target);
+  }
+
+  .machine-access__audit {
+    padding-left: var(--space-8);
+  }
+
+  .card__row {
+    flex-wrap: wrap;
+  }
+
+  .card__row-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .option-row {
+    padding: var(--space-12) var(--space-14);
+  }
+
+  .settings-remote-access__actions .form-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .settings-remote-access__actions .btn {
+    min-height: var(--touch-target);
+    width: 100%;
+  }
+
+  /* An engine row's resting action is one icon button; keep it on the row
+     instead of wrapping to a mostly-empty second line. Confirm states carry
+     real buttons and stack like every other row. */
+  .settings-ai-engine-row:not(.is-confirming) {
+    flex-wrap: nowrap;
+  }
+
+  .settings-ai-engine-row:not(.is-confirming) .card__row-actions {
+    width: auto;
+  }
+
+  .settings-pairing-value__content {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-pairing-value__copy {
+    min-height: var(--touch-target);
+    width: 100%;
+  }
+
+  .settings-pairing-code__values {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- Computers, reshaped ----
+   A list row reads name, then what this computer is for, then whether it is
+   there. Those are three different answers, so they sit in three places and
+   none of them borrows the others' colour. */
+
+/* ---- Computers ----
+   Where this Opensteer runs sits on top, drawn as the object it is. Every
+   other computer is one row: its shape, its name, what it does for agents,
+   and whether it is there. A computer that is away fades instead of gaining
+   another label, and the one you are at carries the only pin. */
+
+.computers-page__content > .page__back {
+  margin-bottom: calc(var(--space-20) * -1);
+}
+
+.device-art {
+  display: grid;
+  place-items: center;
+  width: 104px;
+  height: 78px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+}
+
+.device-art svg {
+  width: 88px;
+  height: 66px;
+  overflow: visible;
+}
+
+.device-art__body,
+.device-art__base,
+.device-art__top,
+.device-art__side {
+  stroke: var(--line-hover);
+  stroke-width: 1;
+  stroke-linejoin: round;
+}
+
+.device-art__body {
+  fill: var(--surface-hover);
+}
+
+.device-art__body--shade,
+.device-art__side {
+  fill: var(--surface-raised);
+}
+
+.device-art__body--deep,
+.device-art__side--shade {
+  fill: var(--surface-elevated);
+}
+
+.device-art__screen,
+.device-art__notch {
+  fill: var(--surface-code);
+  stroke: var(--surface-code);
+  stroke-width: 2;
+}
+
+.device-art__base,
+.device-art__top {
+  fill: color-mix(in srgb, var(--surface-hover) 70%, var(--text) 6%);
+}
+
+.device-art__glint,
+.device-art__seam,
+.device-art__foot,
+.device-art__accent {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.device-art__glint {
+  stroke: var(--line-strong);
+  stroke-width: 2;
+}
+
+.device-art__seam {
+  stroke: var(--line-strong);
+}
+
+.device-art__foot {
+  stroke: var(--line-hover);
+  stroke-width: 2.5;
+}
+
+.device-art__accent {
+  stroke: var(--ember);
+  stroke-width: 2;
+}
+
+.device-art__light {
+  fill: var(--ember);
+}
+
+.device-art__led {
+  fill: var(--green);
+}
+
+.here-pin {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0;
+  color: var(--ember);
+  white-space: nowrap;
+}
+
+.here-pin .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.computer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-md);
+  white-space: nowrap;
+}
+
+.computer-status__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--muted-dim);
+}
+
+.computer-status__dot--online {
+  background: var(--green);
+  box-shadow: var(--ring-green);
+}
+
+.computer-status__dot--waiting {
+  background: var(--amber);
+  box-shadow: var(--ring-amber);
+}
+
+.computers-home {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.computers-home__main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-20);
+  padding: var(--space-20) var(--space-22);
+  color: inherit;
+  text-decoration: none;
+}
+
+a.computers-home__main {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+a.computers-home__main:hover {
+  background: var(--surface-elevated);
+  text-decoration: none;
+}
+
+a.computers-home__main:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ember-line);
+}
+
+.computers-home__body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.computers-home__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-12);
+  font-family: var(--font-display);
+  font-size: var(--display-lg);
+  font-weight: 450;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.computers-home__line {
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  line-height: 1.45;
+}
+
+.computers-home__chevron {
+  flex: none;
+  color: var(--muted-dim);
+}
+
+.computers-home__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-10) var(--space-28);
+  padding: var(--space-12) var(--space-22);
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.computers-home__fact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-14);
+  min-width: 0;
+}
+
+.computers-home__service {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--text-soft);
+}
+
+.computers-home__service .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.computers-offer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+  padding: var(--space-16) var(--space-18);
+  border: 1px solid var(--ember-line);
+  border-radius: var(--radius-lg);
+  background: var(--ember-wash);
+}
+
+.computers-offer__glyph {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ember) 14%, transparent);
+  color: var(--ember-bright);
+}
+
+.computers-offer__glyph .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.computers-offer__body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.computers-offer__title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+}
+
+.computers-offer__detail {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.computers-offer > .btn {
+  flex: none;
+}
+
+.computers-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+.computers-group__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  margin: 0 0 0 var(--space-2);
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+}
+
+.computers-group__count {
+  color: var(--muted-dim);
+  font-weight: var(--weight-normal);
+  font-variant-numeric: tabular-nums;
+}
+
+.computers-list {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.computers-list__empty {
+  margin: 0;
+  padding: var(--space-14) var(--space-16);
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.computer-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-14);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-12) var(--space-16);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+}
+
+a.computer-row,
+button.computer-row {
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+a.computer-row:hover,
+button.computer-row:hover {
+  background: var(--surface-elevated);
+  text-decoration: none;
+}
+
+a.computer-row:focus-visible,
+button.computer-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ember-line);
+}
+
+.computers-list > .computer-row + .computer-row,
+.computers-list > .computers-list__empty + .computer-row {
+  border-top: 1px solid var(--line);
+}
+
+.computer-row__glyph {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--text-soft);
+}
+
+.computer-row__glyph .icon {
+  width: 21px;
+  height: 21px;
+}
+
+.computer-row__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.computer-row__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-10);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+  overflow-wrap: anywhere;
+}
+
+.computer-row__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-10);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.computer-row__owner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--text-soft);
+}
+
+.computer-row__avatar {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--surface-hover);
+  color: var(--text-soft);
+  font-size: var(--text-3xs);
+  font-weight: var(--weight-bold);
+}
+
+.computer-row__chevron {
+  color: var(--muted-dim);
+}
+
+.computer-row__actions {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.computer-row--away .computer-row__glyph,
+.computer-row--away .computer-row__name,
+.computer-row--away .computer-uses {
+  opacity: 0.5;
+}
+
+.computer-row--add {
+  grid-template-columns: auto minmax(0, 1fr);
+  color: var(--ember);
+  font-weight: var(--weight-medium);
+}
+
+.computer-row--add .computer-row__glyph {
+  border-style: dashed;
+  border-color: var(--ember-line);
+  background: transparent;
+  color: var(--ember);
+}
+
+.computer-row--add .computer-row__glyph .icon {
+  width: 17px;
+  height: 17px;
+}
+
+.computer-uses {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  --intg-icon-size: 18px;
+}
+
+.computer-uses .intg-icon {
+  border-radius: 5px;
+}
+
+.computer-uses__glyph {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--surface-hover);
+  color: var(--text-soft);
+}
+
+.computer-uses__glyph .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.computer-uses__monogram {
+  font-size: var(--text-3xs);
+  font-weight: var(--weight-bold);
+}
+
+.computer-uses__more {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.computer-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-20);
+}
+
+.computer-header__body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.computer-header__name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--display-xl);
+  font-weight: 450;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.computer-header__rename .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.computer-header__facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-16);
+  margin: 0;
+}
+
+.computer-header__owner {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.computer-lead {
+  max-width: 44rem;
+  margin: calc(var(--space-12) * -1) 0 0;
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  line-height: 1.5;
+}
+
+.computer-remove {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-14);
+}
+
+.computer-remove__detail {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+@media (max-width: 640px) {
+  .computers-home__main {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "art body chevron"
+      "art status chevron";
+    gap: var(--space-4) var(--space-14);
+    padding: var(--space-16);
+  }
+
+  .computers-home__main > .device-art {
+    grid-area: art;
+  }
+
+  .computers-home__main > .computers-home__body {
+    grid-area: body;
+  }
+
+  .computers-home__main > .computer-status {
+    grid-area: status;
+  }
+
+  .computers-home__main > .computers-home__chevron {
+    grid-area: chevron;
+  }
+
+  .computers-home__name {
+    font-size: var(--display-md);
+  }
+
+  .computers-home__line {
+    font-size: var(--text-md);
+  }
+
+  .computers-home__foot {
+    padding: var(--space-12) var(--space-16);
+  }
+
+  .device-art {
+    width: 72px;
+    height: 56px;
+  }
+
+  .device-art svg {
+    width: 62px;
+    height: 46px;
+  }
+
+  .computer-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "glyph body chevron"
+      "glyph status chevron";
+    row-gap: var(--space-4);
+  }
+
+  a.computer-row > .computer-row__glyph {
+    grid-area: glyph;
+  }
+
+  a.computer-row > .computer-row__body {
+    grid-area: body;
+  }
+
+  a.computer-row > .computer-status {
+    grid-area: status;
+  }
+
+  a.computer-row > .computer-row__chevron {
+    grid-area: chevron;
+  }
+
+  .computer-row--add {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: none;
+  }
+
+  .computer-row--static {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: none;
+  }
+
+  .computer-row--static > .computer-status,
+  .computer-row--static > .computer-row__actions {
+    grid-column: 2;
+  }
+
+  .computers-services > summary {
+    flex-wrap: wrap;
+  }
+
+  .computers-offer {
+    flex-wrap: wrap;
+  }
+
+  .computers-offer > .btn {
+    width: 100%;
+  }
+
+  .computer-header {
+    gap: var(--space-14);
+  }
+
+  .computer-header__name {
+    font-size: var(--display-md);
+  }
+}
+
+/* Two lists nobody goes looking for: the Runners this deployment provisioned
+   for itself, and what one computer shares with agents running elsewhere.
+   Both keep every control they had; neither competes with the answer above. */
+.computers-services,
+.computers-files {
+  gap: 0;
+}
+
+.computers-services > summary,
+.computers-files > summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  padding: var(--space-8) 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.computers-services > summary::-webkit-details-marker,
+.computers-files > summary::-webkit-details-marker {
+  display: none;
+}
+
+.computers-services > summary::before,
+.computers-files > summary::before {
+  content: "›";
+  color: var(--muted-dim);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.computers-services[open] > summary::before,
+.computers-files[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.computers-services > summary h2,
+.computers-files > summary h2 {
+  font-size: var(--display-sm);
+}
+
+.computers-services > summary span,
+.computers-files > summary span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+.computers-services > summary:focus-visible,
+.computers-files > summary:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-ember);
+  border-radius: var(--radius-sm);
+}
+
+.computers-services > .computers-list,
+.computers-files > .machine-access {
+  margin-top: var(--space-12);
+}
+
+/* ---- One app on one computer ----
+   Off, or one of the levels the catalog declares. The control carries the
+   whole answer, so the row beneath it is free to say only what is unfinished. */
+
+.computer-apps__control .segmented {
+  flex: none;
+}
+
+/* The row a link from the Apps settings aimed at, marked while it is read. */
+.computer-apps__app--focused {
+  box-shadow: inset 3px 0 0 var(--ember);
+}
+
+.computer-apps__body:empty {
+  display: none;
+}
+
+.computer-apps__workspaces {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-8);
+  width: 100%;
+  min-width: 0;
+}
+
+.computer-apps__disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.computer-apps__workspace-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  width: 100%;
+  max-width: 44rem;
+  min-width: 0;
+}
+
+.computer-apps__workspace-lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+/* ---- Adding a computer ----
+   Numbered directions, because that is what a person is doing: step one on
+   this screen, the rest on the computer they are adding. */
+
+.add-computer__step + .add-computer__step,
+.add-computer__step + .add-computer__advanced {
+  margin-top: var(--space-20);
+  padding-top: var(--space-20);
+  border-top: 1px solid var(--line);
+}
+
+.add-computer__step h3 {
+  margin: 0 0 var(--space-6);
+  font-size: var(--text-lg);
+}
+
+.add-computer__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  margin: var(--space-10) 0 var(--space-12);
+  padding-left: var(--space-20);
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+.add-computer__steps li::marker {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The computer in front of the reader, offered first and by name. */
+.add-computer__here {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  margin-bottom: var(--space-20);
+  padding: var(--space-14) var(--space-16);
+  border: 1px solid var(--ember-line);
+  border-radius: var(--radius-md);
+  background: var(--ember-wash);
+}
+
+.add-computer__here-glyph {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  color: var(--ember-bright);
+  background: color-mix(in srgb, var(--ember) 14%, transparent);
+}
+
+.add-computer__here-glyph .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.add-computer__here-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.add-computer__here-body span {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.add-computer__advanced > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.add-computer__advanced[open] > summary {
+  margin-bottom: var(--space-12);
+}
+
+@media (max-width: 640px) {
+  .computer-apps__head {
+    flex-wrap: wrap;
+  }
+
+  .computer-apps__control {
+    width: 100%;
+    padding-left: calc(var(--intg-icon-size) + var(--space-12));
+  }
+
+  .computer-apps__app--expanded .computer-apps__control {
+    width: auto;
+    padding-left: 0;
+  }
+
+  .computer-apps__row-note {
+    align-items: flex-start;
+    flex-direction: column;
+    margin-left: var(--space-16);
+  }
+
+  .computer-apps__setting-row,
+  .computer-apps__manage-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+/* ---- Computer use ----
+   The one computer app with many approvals. The head is the block's state at
+   a glance and carries its single next action; everything under it is
+   indented past the icon like an app row's body, so the block reads as one
+   thing in the card rather than a card inside a card. A live session row is
+   the only tinted surface: something is happening on that Mac right now. */
+.computer-use + .computer-apps__app,
+.computer-apps__app + .computer-use {
+  border-top: 1px solid var(--line);
+}
+
+.computer-use__mark {
+  color: var(--text-soft);
+}
+
+.computer-use__mark > svg {
+  width: 17px;
+  height: 17px;
+}
+
+.computer-use__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  min-width: 0;
+  padding: 0 var(--space-16) var(--space-14)
+    calc(var(--space-16) + var(--intg-icon-size) + var(--space-12));
+}
+
+.computer-use__body:empty {
+  display: none;
+}
+
+.computer-use__approval-setup {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-6);
+  padding: var(--space-12) var(--space-16);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-md);
+  background: var(--amber-wash);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+
+.computer-use__lead,
+.computer-use__note {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+/* The two grants, as steps: a mark that fills when macOS reports the grant. */
+.computer-use__setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.computer-use__grants {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.computer-use__grant {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+}
+
+.computer-use__grant-mark {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  color: var(--ink-on-ember);
+  background: transparent;
+}
+
+.computer-use__grant--done .computer-use__grant-mark {
+  border-color: transparent;
+  background: var(--green);
+}
+
+.computer-use__grant-mark > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.computer-use__grant-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-4) var(--space-8);
+  font-size: var(--text-md);
+  color: var(--text);
+}
+
+.computer-use__grant--done .computer-use__grant-text {
+  color: var(--muted);
+}
+
+.computer-use__grant-why {
+  color: var(--muted);
+}
+
+.computer-use__setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-12);
+}
+
+.computer-use__setup-hint {
+  max-width: 56ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.computer-use__setup-hint > strong {
+  color: var(--text-soft);
+  font-weight: var(--weight-strong);
+}
+
+/* A task is using this Mac right now. */
+/* The same live session the Thread's strip shows, from the computer's side. */
+.computer-use__session {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-6) var(--space-6) var(--space-6) var(--space-14);
+  border: 1px solid var(--ember-line);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--ember-wash), transparent 70%), var(--surface);
+}
+
+.computer-use__session-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.computer-use__session-text > strong {
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}
+
+.computer-use__session-text > a {
+  color: var(--text-soft);
+}
+
+.computer-use__session-text > .form-actions__error {
+  display: block;
+}
+
+/* Approved apps: quiet rows, the icon the Mac drew, the access in words. */
+.computer-use__apps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.computer-use__app {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-width: 0;
+  padding: var(--space-10) var(--space-12);
+}
+
+.computer-use__app + .computer-use__app {
+  border-top: 1px solid var(--line);
+}
+
+.computer-use__app--pending {
+  color: var(--muted);
+}
+
+.computer-use__app--pending .card__row-title {
+  color: var(--text-soft);
+}
+
+/* Blocked: the app is still listed so it can be unblocked, but nothing about
+   it reads as available — a greyed icon, a muted name and a red chip. */
+.computer-use__app--blocked .computer-use__app-mark {
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+
+.computer-use__app--blocked .card__row-title {
+  color: var(--muted);
+}
+
+.computer-use__app-where {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.computer-use__app-mark {
+  --intg-icon-size: 28px;
+  object-fit: contain;
+  padding: 2px;
+  background: transparent;
+  border-color: transparent;
+}
+
+.computer-use__app-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.computer-use__app-meta a {
+  color: var(--text-soft);
+}
+
+.computer-use__in-use {
+  padding: 1px var(--space-6);
+  border: 1px solid var(--ember-line);
+  border-radius: var(--radius-full);
+  color: var(--ember-bright);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+/* The picker: search over the Mac's installed apps; each app offers the two
+   access levels as its own buttons, and either one asks the Mac at once. */
+.computer-use__picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+.computer-use__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: 0 var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.computer-use__search:focus-within {
+  border-color: var(--ember-line);
+  box-shadow: var(--ring-ember);
+}
+
+.computer-use__search > svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.computer-use__search > input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-10) 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.computer-use__list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(52vh, 420px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.computer-use__list > li + li {
+  border-top: 1px solid var(--line);
+}
+
+.computer-use__choices {
+  display: flex;
+  flex: none;
+  gap: var(--space-8);
+}
+
+/* A phone has no room for both beside the name, so they take their own line. */
+@media (max-width: 680px) {
+  .computer-use__list > .computer-use__app {
+    flex-wrap: wrap;
+  }
+
+  .computer-use__choices {
+    flex: 1 1 100%;
+  }
+
+  .computer-use__choices > .btn {
+    flex: 1 1 auto;
+  }
+}
+
+.computer-use__access {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.computer-use__access > legend {
+  margin-bottom: var(--space-4);
+  padding: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+/* Just after setup the choice is the next step, so it is asked, not labelled. */
+.computer-use__access--question > legend {
+  color: var(--text);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+}
+
+.computer-use__option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-10);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.computer-use__option--on {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+}
+
+.computer-use__option > input {
+  margin: 3px 0 0;
+  accent-color: var(--ember);
+}
+
+.computer-use__option-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.computer-use__option-title {
+  color: var(--text);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+}
+
+.computer-use__option-why {
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.computer-use__option:has(> input:disabled) {
+  cursor: default;
+}
+
+.computer-use__option:has(> input:disabled) .computer-use__option-title {
+  color: var(--muted);
+}
+
+.computer-use__option-note {
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+
+.computer-use__more {
+  align-self: center;
+}
+
+.computer-use__fine {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+/* "Runs with": the engines that can talk to a model server, across the dialog. */
+.settings-model-servers__choice {
+  display: flex;
+  width: 100%;
+}
+
+/* Nothing found, or nothing could be asked: what to do, then the one way to
+   try again. */
+.settings-model-servers__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+.settings-model-servers__empty p {
+  margin: 0;
+  max-width: 46ch;
+}
+
+/* A found server's line is what to do next, so it wraps rather than being cut. */
+.settings-model-server .settings-account__line {
+  white-space: normal;
+}
+
+/* ---- Specialists ----
+   One card per specialist: its mark, its name, what it is for, and one line
+   about its tasks. The last card makes a new one. */
+.specialist-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-14);
+  padding: 0;
+  list-style: none;
+}
+
+.specialist-card {
+  display: grid;
+  align-content: start;
+  gap: var(--space-10);
+  width: 100%;
+  height: 100%;
+  padding: var(--space-16);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.specialist-card:hover {
+  border-color: var(--line-strong);
+  text-decoration: none;
+}
+
+.specialist-card__name {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+}
+
+.specialist-card__about {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.specialist-card__state {
+  display: inline-flex;
+  gap: var(--space-6);
+  align-items: center;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.specialist-card__state--needs-you {
+  color: var(--amber-text);
+}
+
+.specialist-card--new {
+  place-items: center;
+  align-content: center;
+  min-height: 150px;
+  border-style: dashed;
+  color: var(--muted);
+  font-size: var(--text-lg);
+}
+
+.specialist-card--new:hover {
+  color: var(--text-soft);
+}
+
+.specialist-card--new svg {
+  width: 20px;
+  height: 20px;
+}
+
+.specialists-page__more {
+  align-self: flex-start;
+}
+
+@media (max-width: 680px) {
+  .specialist-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* A specialist's identity and tasks lead its page; the composer follows. */
+.hero--specialist {
+  justify-content: flex-start;
+}
+
+.hero--specialist > .hero__inner {
+  margin-block: 0;
+  align-items: stretch;
+}
+.hero--specialist .hero__workspace {
+  justify-content: flex-start;
+  align-items: center;
+  gap: var(--space-12);
+}
+.hero__workspace-copy {
+  min-width: 0;
+  text-align: left;
+}
+.hero__workspace-copy h1 {
+  margin: 0;
+  font: var(--weight-bold) var(--display-xs)/1.2 var(--font-sans);
+}
+.hero__workspace-copy p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.specialist-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  width: 100%;
+  margin-top: var(--space-12);
+}
+
+.specialist-tasks .task-rows {
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.specialist-tasks .task-group + .task-group {
+  margin-top: var(--space-6);
+}
+
+.specialist-tasks__empty {
+  padding: 0 var(--space-10);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.specialist-tasks__more {
+  align-self: flex-start;
+}

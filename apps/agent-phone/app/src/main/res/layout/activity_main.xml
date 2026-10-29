@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:fitsSystemWindows="true">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+        <TextView style="@style/PhoneText.Detail" android:text="@string/phone_brand" android:textColor="@color/phone_accent" />
+        <TextView
+            style="@style/PhoneText.Title"
+            android:layout_marginTop="8dp"
+            android:accessibilityHeading="true"
+            android:text="@string/phone_title" />
+        <TextView
+            android:id="@+id/status_deployment"
+            style="@style/PhoneText"
+            android:layout_marginTop="8dp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+            <View
+                android:id="@+id/status_dot"
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/phone_status_dot"
+                android:importantForAccessibility="no" />
+            <TextView
+                android:id="@+id/status_connection"
+                style="@style/PhoneText"
+                android:textColor="@color/phone_text" />
+        </LinearLayout>
+        <TextView
+            android:id="@+id/status_issue"
+            style="@style/PhoneText"
+            android:layout_marginTop="8dp" />
+        <TextView
+            android:id="@+id/status_address"
+            style="@style/PhoneText.Detail"
+            android:layout_marginTop="8dp"
+            android:textIsSelectable="true" />
+        <LinearLayout android:id="@+id/setup_message_section" style="@style/PhoneCard">
+            <TextView android:id="@+id/setup_message" style="@style/PhoneText" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/agents_section" style="@style/PhoneCard">
+            <TextView style="@style/PhoneText.Section" android:text="@string/agents_section" />
+            <TextView android:id="@+id/status_session" style="@style/PhoneText" android:layout_marginTop="12dp" />
+            <Button android:id="@+id/session_stop" style="@style/PhoneButton" android:text="@string/stop_task" />
+            <Switch
+                android:id="@+id/pause_switch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:minHeight="48dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:text="@string/pause"
+                android:textSize="15sp"
+                android:textColor="@color/phone_text"
+                android:fontFamily="sans-serif-medium" />
+            <TextView style="@style/PhoneText.Detail" android:text="@string/pause_explanation" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/health_section" style="@style/PhoneCard">
+            <TextView style="@style/PhoneText.Section" android:text="@string/health_section" />
+            <TextView android:id="@+id/status_accessibility" style="@style/PhoneText" android:layout_marginTop="12dp" />
+            <Button android:id="@+id/accessibility_settings" style="@style/PhoneButton" android:text="@string/accessibility_open" />
+            <TextView android:id="@+id/status_power" style="@style/PhoneText" android:layout_marginTop="12dp" />
+            <Button android:id="@+id/battery_settings" style="@style/PhoneButton" android:text="@string/battery_open" />
+            <TextView android:id="@+id/status_charging" style="@style/PhoneText" android:layout_marginTop="12dp" />
+        </LinearLayout>
+        <Button android:id="@+id/unpair_button" style="@style/PhoneButton.Danger" android:layout_marginTop="24dp" android:text="@string/unpair" />
+    </LinearLayout>
+</ScrollView>

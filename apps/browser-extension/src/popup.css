@@ -1,0 +1,277 @@
+/* The toolbar popup: a narrow column that reads top to bottom — who Chrome is
+   connected to, whether it is healthy, and which sites it has shared. No cards
+   inside cards; hairlines separate, type does the rest. */
+
+body {
+  width: 340px;
+  font-size: var(--text-lg);
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: radial-gradient(90% 140% at 0% 0%, var(--ember-wash), transparent 60%);
+}
+
+.bar__title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+}
+
+.popup {
+  display: flex;
+  flex-direction: column;
+}
+
+.popup[aria-busy="true"] {
+  min-height: 96px;
+}
+
+/* ---- Not connected ---- */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 16px 16px;
+}
+
+.empty__lead {
+  font-family: var(--font-display);
+  font-size: var(--display-sm);
+  font-weight: var(--weight-medium);
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.empty__text {
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.empty__step {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.empty__step strong {
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}
+
+/* ---- One Deployment ---- */
+
+.deployment {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 14px;
+}
+
+.deployment + .deployment {
+  border-top: 1px solid var(--line);
+}
+
+.deployment__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 12px;
+  row-gap: 4px;
+}
+
+.deployment__name {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deployment__origin {
+  max-width: 210px;
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deployment__head .status {
+  grid-column: 1 / -1;
+}
+
+/* ---- Shared sites ---- */
+
+.sites__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.sites__title {
+  font: inherit;
+}
+
+.popup__problem {
+  margin: 12px 16px 0;
+}
+
+.sites__empty {
+  padding: 10px 0 2px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+/* A long list scrolls on its own so the actions below stay in reach. */
+.sites__list {
+  max-height: 272px;
+  border-bottom: 1px solid var(--line);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 14%) transparent;
+}
+
+.site {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+.site__glyph {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+  line-height: 1;
+  text-transform: lowercase;
+}
+
+.site__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.site__host {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site__meta {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.site[data-stopped] .site__glyph {
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+}
+
+.site[data-stopped] .site__host {
+  color: var(--muted);
+}
+
+.site__action {
+  padding: 4px 8px;
+  margin-right: -8px;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.site__action:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.site__action--share {
+  color: var(--ember);
+}
+
+.site__action--share:hover {
+  color: var(--ember-bright);
+}
+
+/* ---- Actions ---- */
+
+.deployment__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--red-line);
+  border-radius: var(--radius-sm);
+  background: var(--red-wash);
+  font-size: var(--text-md);
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+
+.confirm strong {
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}
+
+.confirm__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.confirm .btn--danger {
+  background: var(--surface-elevated);
+}
+
+.popup .notice p strong {
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}

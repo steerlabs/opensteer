@@ -1,0 +1,394 @@
+/* Opensteer's own tokens (apps/web/src/styles/tokens.css), trimmed to what the
+   extension draws. Dark only: the extension is a small window onto the same
+   product, so it wears the same ground, ember and type. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("fonts/inter.woff2") format("woff2-variations");
+}
+
+@font-face {
+  font-family: "Fraunces Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("fonts/fraunces.woff2") format("woff2-variations");
+}
+
+:root {
+  color-scheme: dark;
+  --bg: #080808;
+  --surface: #101010;
+  --surface-elevated: #171717;
+  --surface-raised: #1d1d1d;
+  --surface-hover: #242424;
+  --text: #f5f4f2;
+  --text-soft: #cecbc7;
+  --muted: #8e8a86;
+  --muted-dim: #898581;
+  --ink-on-ember: #1b120e;
+  --line: rgb(255 255 255 / 7%);
+  --line-strong: rgb(255 255 255 / 12%);
+  --line-hover: rgb(255 255 255 / 18%);
+  --ember: #e6beb0;
+  --ember-bright: #f1cabe;
+  --green: #71c6a5;
+  --amber: #dfb36b;
+  --red: #e77e76;
+
+  --ember-wash: color-mix(in srgb, var(--ember) 11%, transparent);
+  --ember-line: color-mix(in srgb, var(--ember) 22%, transparent);
+  --green-wash: color-mix(in srgb, var(--green) 9%, transparent);
+  --green-line: color-mix(in srgb, var(--green) 30%, transparent);
+  --amber-wash: color-mix(in srgb, var(--amber) 7%, transparent);
+  --amber-line: color-mix(in srgb, var(--amber) 32%, transparent);
+  --amber-text: color-mix(in srgb, var(--amber) 55%, var(--text));
+  --red-wash: color-mix(in srgb, var(--red) 9%, transparent);
+  --red-line: color-mix(in srgb, var(--red) 34%, transparent);
+  --red-text: color-mix(in srgb, var(--red) 55%, var(--text));
+  --ring-ember: 0 0 0 3px color-mix(in srgb, var(--ember) 9%, transparent);
+
+  --text-2xs: 11px;
+  --text-xs: 11.5px;
+  --text-sm: 12px;
+  --text-md: 12.5px;
+  --text-lg: 13px;
+  --text-xl: 13.5px;
+  --text-2xl: 14px;
+  --display-sm: 18px;
+  --display-lg: 24px;
+  --display-xl: 27px;
+  --weight-normal: 400;
+  --weight-medium: 520;
+  --weight-strong: 550;
+  --weight-bold: 600;
+
+  --font-sans:
+    "Inter Variable", Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-display: "Fraunces Variable", Fraunces, Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Menlo, monospace;
+
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 28px rgb(0 0 0 / 34%);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 130ms;
+  --duration-med: 220ms;
+  --duration-slow: 380ms;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-xl);
+  line-height: 1.5;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+}
+
+h1,
+h2,
+h3,
+p,
+ul {
+  margin: 0;
+}
+
+ul {
+  padding: 0;
+  list-style: none;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+a {
+  color: var(--ember);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+::selection {
+  background: var(--ember-bright);
+  color: var(--ink-on-ember);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* ---- Buttons: the web app's .btn family ---- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
+  line-height: 1.2;
+  white-space: nowrap;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+  user-select: none;
+}
+
+a.btn:hover {
+  text-decoration: none;
+}
+
+.btn:hover:not([aria-disabled="true"]) {
+  background: var(--surface-hover);
+  border-color: var(--line-hover);
+}
+
+.btn:active:not([aria-disabled="true"]) {
+  transform: scale(0.98);
+}
+
+.btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn--primary {
+  background: var(--ember);
+  border-color: var(--ember);
+  color: var(--ink-on-ember);
+  font-weight: var(--weight-bold);
+}
+
+.btn--primary:hover:not([aria-disabled="true"]) {
+  background: var(--ember-bright);
+  border-color: var(--ember-bright);
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-soft);
+}
+
+.btn--ghost:hover:not([aria-disabled="true"]) {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.btn--danger {
+  color: var(--red);
+}
+
+.btn--danger:hover:not([aria-disabled="true"]) {
+  border-color: var(--red-line);
+  background: var(--red-wash);
+}
+
+.btn--small {
+  min-height: 28px;
+  padding: 4px 10px;
+  font-size: var(--text-md);
+  border-radius: var(--radius-xs);
+}
+
+.btn--small .icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---- Status dot and label ---- */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.status__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: rgb(255 255 255 / 24%);
+  flex: none;
+}
+
+.status[data-tone="ok"] .status__dot {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-wash);
+}
+
+.status[data-tone="ok"] {
+  color: var(--green);
+}
+
+.status[data-tone="wait"] .status__dot {
+  background: var(--amber);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.status[data-tone="warn"] .status__dot {
+  background: var(--amber);
+}
+
+.status[data-tone="warn"] {
+  color: var(--amber-text);
+}
+
+.status[data-tone="bad"] .status__dot {
+  background: var(--red);
+}
+
+.status[data-tone="bad"] {
+  color: var(--red-text);
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---- Notice ---- */
+
+.notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-elevated);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.notice > .icon {
+  margin-top: 1px;
+}
+
+.notice--warn {
+  border-color: var(--amber-line);
+  background: var(--amber-wash);
+}
+
+.notice--warn > .icon {
+  color: var(--amber);
+}
+
+.notice--bad {
+  border-color: var(--red-line);
+  background: var(--red-wash);
+}
+
+.notice--bad > .icon {
+  color: var(--red);
+}
+
+.notice__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.notice__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---- The mark ---- */
+
+.orb {
+  display: block;
+  border-radius: var(--radius-full);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

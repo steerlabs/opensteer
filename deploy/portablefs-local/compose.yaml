@@ -1,0 +1,114 @@
+name: opensteer-portablefs-local
+
+services:
+  manager:
+    image: opensteer-portablefs-manager:${PORTABLEFS_LOCAL_IMAGE_TAG:?set PORTABLEFS_LOCAL_IMAGE_TAG}
+    restart: unless-stopped
+    read_only: true
+    environment:
+      PORTABLEFS_MANAGER_LISTEN: 0.0.0.0:8443
+      PORTABLEFS_PRODUCT_ISSUER: ${PORTABLEFS_PRODUCT_ISSUER:?set PORTABLEFS_PRODUCT_ISSUER}
+    networks:
+      control:
+        aliases:
+          - manager.portablefs.internal
+      edge: null
+    ports:
+      - "${PORTABLEFS_LOCAL_BIND_ADDRESS:-127.0.0.1}:${PORTABLEFS_LOCAL_MANAGER_PORT:-28443}:8443"
+    stop_grace_period: 30s
+    tmpfs:
+      - /run:mode=0755
+      - /tmp:mode=1777
+    volumes:
+      - manager-state:/var/lib/portablefs-manager
+      - type: bind
+        source: ${PORTABLEFS_LOCAL_PKI_DIR:?set PORTABLEFS_LOCAL_PKI_DIR}/manager
+        target: /portablefs-pki/manager
+        read_only: true
+        bind:
+          create_host_path: false
+
+  bootstrap-cell:
+    image: opensteer-portablefs-manager:${PORTABLEFS_LOCAL_IMAGE_TAG:?set PORTABLEFS_LOCAL_IMAGE_TAG}
+    restart: "no"
+    read_only: true
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/portablefs-local-bootstrap-cell"]
+    environment:
+      PORTABLEFS_AUTHORITY_DNS_ZONE: ${PORTABLEFS_AUTHORITY_DNS_ZONE:?set PORTABLEFS_AUTHORITY_DNS_ZONE}
+      PORTABLEFS_AUTHORITY_HOST: ${PORTABLEFS_AUTHORITY_HOST:?set PORTABLEFS_AUTHORITY_HOST}
+      PORTABLEFS_CELL_CAPACITY_BYTES: ${PORTABLEFS_CELL_CAPACITY_BYTES:-6442450944}
+      PORTABLEFS_CELL_CAPACITY_INODES: ${PORTABLEFS_CELL_CAPACITY_INODES:-1000000}
+      PORTABLEFS_CELL_FIRST_PORT: ${PORTABLEFS_LOCAL_AUTHORITY_PORT_START:-23000}
+      PORTABLEFS_CELL_ID: ${PORTABLEFS_CELL_ID:?set PORTABLEFS_CELL_ID}
+    depends_on:
+      manager:
+        condition: service_started
+    networks:
+      - control
+    tmpfs:
+      - /tmp:mode=1777
+    volumes:
+      - type: bind
+        source: ${PORTABLEFS_LOCAL_PKI_DIR:?set PORTABLEFS_LOCAL_PKI_DIR}/operator
+        target: /portablefs-pki/operator
+        read_only: true
+        bind:
+          create_host_path: false
+
+  cell:
+    image: opensteer-portablefs-cell:${PORTABLEFS_LOCAL_IMAGE_TAG:?set PORTABLEFS_LOCAL_IMAGE_TAG}
+    restart: unless-stopped
+    privileged: true
+    cgroup: host
+    environment:
+      PORTABLEFS_CELL_ID: ${PORTABLEFS_CELL_ID:?set PORTABLEFS_CELL_ID}
+      PORTABLEFS_CELL_IMAGE_SIZE: ${PORTABLEFS_CELL_IMAGE_SIZE:-8G}
+    depends_on:
+      bootstrap-cell:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "systemctl is-active --quiet portablefs-local-cell-storage.service && systemctl is-active --quiet portablefs-cell-helper@$${PORTABLEFS_CELL_ID}.service && systemctl is-active --quiet portablefs-cell-agent@$${PORTABLEFS_CELL_ID}.service",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 15s
+    networks:
+      - control
+      - edge
+    ports:
+      - "${PORTABLEFS_LOCAL_BIND_ADDRESS:-127.0.0.1}:${PORTABLEFS_LOCAL_AUTHORITY_PORT_START:-23000}-${PORTABLEFS_LOCAL_AUTHORITY_PORT_END:-23255}:${PORTABLEFS_LOCAL_AUTHORITY_PORT_START:-23000}-${PORTABLEFS_LOCAL_AUTHORITY_PORT_END:-23255}"
+    stop_grace_period: 90s
+    tmpfs:
+      - /run:mode=0755
+      - /run/lock:mode=0755
+      - /tmp:mode=1777
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - cell-storage:/var/lib/portablefs-cell
+      - cell-helper-state:/var/lib/portablefs-cell-helper
+      - authority-state:/var/lib/portablefs
+      - authority-config:/etc/portablefs/volumes
+      - systemd-state:/etc/systemd/system
+      - type: bind
+        source: ${PORTABLEFS_LOCAL_PKI_DIR:?set PORTABLEFS_LOCAL_PKI_DIR}/cell
+        target: /portablefs-pki/cell
+        read_only: true
+        bind:
+          create_host_path: false
+
+networks:
+  control:
+    internal: true
+  edge: {}
+
+volumes:
+  authority-config: {}
+  authority-state: {}
+  cell-helper-state: {}
+  cell-storage: {}
+  manager-state: {}
+  systemd-state: {}

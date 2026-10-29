@@ -1,0 +1,1002 @@
+{
+  "auxiliary": {
+    "challenge": {
+      "challengeId": "rch_44444444-4444-4444-8444-444444444444",
+      "expiresAt": "2026-10-11T12:00:30.000Z",
+      "hostSessionId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "module": "integrations",
+      "nonce": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "type": "host.auxiliary.challenge"
+    },
+    "signature": "Y7qmWmH0AnHwAIOb9MNvVf4LYOzyk2nQmjz9qPZYzQjCcY_yMeitkZzGTRHNDHFnlOnHsm4OaIlJ7hnTu4Z9AA",
+    "ticket": "eyJhbGciOiJFZERTQSJ9.eyJ4IjoxfQ.c2ln",
+    "ticketDigest": "sha256:wTLNrjJ3yD975p11M-N_q2hd5lDzc6Abf65dWYfK-1E"
+  },
+  "hostFrames": [
+    {
+      "channel": "primary",
+      "frame": {
+        "challengeId": "rch_11111111-1111-4111-8111-111111111111",
+        "expiresAt": "2026-10-11T12:00:15.000Z",
+        "hostSessionId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "nonce": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "proofFormatVersion": 2,
+        "type": "host.challenge"
+      }
+    },
+    {
+      "channel": "primary",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "allowedModules": [
+          "integrations"
+        ],
+        "connectionLeaseExpiresAt": "2026-10-11T12:02:00.000Z",
+        "environmentIds": [],
+        "heartbeatIntervalMs": 15000,
+        "serverTime": "2026-10-11T12:00:00.000Z",
+        "type": "host.welcome"
+      }
+    },
+    {
+      "channel": "primary",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "connectionLeaseExpiresAt": "2026-10-11T12:04:00.000Z",
+        "type": "host.connection.lease-renewed"
+      }
+    },
+    {
+      "channel": "primary",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "expiresAt": "2026-10-11T12:01:00.000Z",
+        "module": "integrations",
+        "requestId": "aux:11111111-1111-4111-8111-111111111111",
+        "ticket": "eyJhbGciOiJFZERTQSJ9.eyJ4IjoxfQ.c2ln",
+        "type": "host.auxiliary.ticket"
+      }
+    },
+    {
+      "channel": "primary",
+      "frame": {
+        "type": "host.error",
+        "error": {
+          "code": "forbidden",
+          "message": "Runner enrollment expired",
+          "reason": "runner-enrollment-expired",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "channel": "auxiliary",
+      "frame": {
+        "challengeId": "rch_44444444-4444-4444-8444-444444444444",
+        "expiresAt": "2026-10-11T12:00:30.000Z",
+        "hostSessionId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+        "module": "integrations",
+        "nonce": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+        "type": "host.auxiliary.challenge"
+      }
+    },
+    {
+      "channel": "auxiliary",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "heartbeatIntervalMs": 15000,
+        "module": "integrations",
+        "serverTime": "2026-10-11T12:00:01.000Z",
+        "streamLeaseExpiresAt": "2026-10-11T12:02:01.000Z",
+        "type": "host.auxiliary.welcome"
+      }
+    },
+    {
+      "channel": "auxiliary",
+      "frame": {
+        "error": {
+          "code": "forbidden",
+          "message": "That ticket was already used.",
+          "retryable": false
+        },
+        "type": "host.auxiliary.rejected"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "streamLeaseExpiresAt": "2026-10-11T12:04:01.000Z",
+        "type": "host.auxiliary.lease-renewed"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "access": "read",
+        "app": null,
+        "definitionId": "android-phone",
+        "operation": "observe",
+        "params": {
+          "includeScreenshot": true
+        },
+        "requestId": "cu:observe",
+        "runId": "run_55555555-5555-4555-8555-555555555555",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "threadTitle": "Groceries ✓",
+        "timeoutMs": 60000,
+        "type": "host.integrations.computer-use"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "access": "read-write",
+        "app": null,
+        "definitionId": "android-phone",
+        "operation": "act",
+        "params": {
+          "actions": [
+            {
+              "count": 1,
+              "target": {
+                "index": 3
+              },
+              "type": "tap"
+            },
+            {
+              "submit": true,
+              "text": "milk, eggs ✓",
+              "type": "type"
+            },
+            {
+              "amount": 2,
+              "direction": "down",
+              "target": {
+                "x": 540,
+                "y": 1200
+              },
+              "type": "scroll"
+            },
+            {
+              "durationMs": 600,
+              "from": {
+                "index": 1
+              },
+              "holdMs": 600,
+              "to": {
+                "x": 10,
+                "y": 20
+              },
+              "type": "drag"
+            },
+            {
+              "packageName": "com.google.android.apps.maps",
+              "type": "launch"
+            },
+            {
+              "to": "home",
+              "type": "navigate"
+            },
+            {
+              "ms": 500,
+              "type": "wait"
+            }
+          ],
+          "observationId": "obs_0123456789abcdef0123456789abcdef",
+          "includeScreenshot": false
+        },
+        "requestId": "cu:act",
+        "runId": "run_55555555-5555-4555-8555-555555555555",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "threadTitle": "Groceries ✓",
+        "timeoutMs": 60000,
+        "type": "host.integrations.computer-use"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "access": null,
+        "app": null,
+        "definitionId": "android-phone",
+        "operation": "close",
+        "params": {},
+        "requestId": "cu:close",
+        "runId": "run_55555555-5555-4555-8555-555555555555",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "threadTitle": "Groceries ✓",
+        "timeoutMs": 60000,
+        "type": "host.integrations.computer-use"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "access": null,
+        "app": null,
+        "definitionId": "android-phone",
+        "operation": "installed_apps",
+        "params": {
+          "query": "maps",
+          "limit": 50,
+          "offset": 40
+        },
+        "requestId": "cu:installed_apps",
+        "runId": "run_55555555-5555-4555-8555-555555555555",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "threadTitle": "Groceries ✓",
+        "timeoutMs": 60000,
+        "type": "host.integrations.computer-use"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "requestId": "cu:act",
+        "type": "host.integrations.cancel"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "runId": "run_55555555-5555-4555-8555-555555555555",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "type": "host.integrations.computer-use-stop-recorded"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "launch": {
+          "args": [],
+          "command": "notes-mcp",
+          "cwd": "/tmp",
+          "env": {},
+          "type": "stdio"
+        },
+        "serverId": "isv_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "type": "host.integrations.mcp.open"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "message": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "method": "tools/list"
+        },
+        "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "type": "host.integrations.mcp.message"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "type": "host.integrations.mcp.close"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "access": "read",
+        "arguments": {
+          "query": "milk"
+        },
+        "contract": "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG",
+        "definitionId": "apple-notes",
+        "operation": "search_notes",
+        "requestId": "invoke:1",
+        "timeoutMs": 30000,
+        "type": "host.integrations.invoke"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.start",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "dataTicket": "eyJhbGciOiJFZERTQSJ9.eyJ4IjoxfQ.c2ln",
+        "revision": 0,
+        "sources": [
+          {
+            "kind": "task-session",
+            "sessionId": "cus_99999999-9999-4999-8999-999999999999"
+          }
+        ],
+        "maxLongSide": 1280,
+        "maxFps": 30
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.stop",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.refresh",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.control",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
+        "action": "acquire"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.control",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
+        "action": "release"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.input",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
+        "geometry": 1,
+        "sequence": 0,
+        "events": [
+          {
+            "kind": "pointer",
+            "phase": "down",
+            "x": 0.25,
+            "y": 0.75,
+            "t": 1000
+          },
+          {
+            "kind": "pointer",
+            "phase": "move",
+            "x": 0.5,
+            "y": 0.5,
+            "t": 1032.5
+          },
+          {
+            "kind": "pointer",
+            "phase": "up",
+            "x": 0.75,
+            "y": 0.25,
+            "t": 1064
+          },
+          {
+            "kind": "pointer",
+            "phase": "cancel",
+            "x": 0.75,
+            "y": 0.25,
+            "t": 1065
+          },
+          {
+            "kind": "scroll",
+            "x": 0.5,
+            "y": 0.5,
+            "dx": -0.25,
+            "dy": 1
+          },
+          {
+            "kind": "nav",
+            "to": "back"
+          },
+          {
+            "kind": "nav",
+            "to": "home"
+          },
+          {
+            "kind": "nav",
+            "to": "recents"
+          },
+          {
+            "kind": "nav",
+            "to": "notifications"
+          },
+          {
+            "kind": "text",
+            "insert": "milk, eggs ✓"
+          },
+          {
+            "kind": "text",
+            "deleteBackward": 2
+          },
+          {
+            "kind": "text",
+            "submit": true
+          }
+        ]
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.demand",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "revision": 1,
+        "sources": [
+          {
+            "kind": "owner-view",
+            "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+            "generation": 1
+          }
+        ]
+      }
+    },
+    {
+      "channel": "display-data",
+      "frame": {
+        "type": "display.ack",
+        "sequence": 1
+      }
+    }
+  ],
+  "phoneFrames": [
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.source-ended",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        },
+        "reason": "owner-expired"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.state",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "state": "starting",
+        "generation": 1,
+        "width": 720,
+        "height": 1280,
+        "rotation": 0
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.state",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "state": "live",
+        "generation": 1,
+        "width": 720,
+        "height": 1280,
+        "rotation": 0
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.state",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "state": "protected",
+        "reason": "locked-screen",
+        "generation": 1,
+        "width": 720,
+        "height": 1280,
+        "rotation": 0
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.state",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "state": "screen-off",
+        "generation": 1,
+        "width": 720,
+        "height": 1280,
+        "rotation": 0
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.state",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "state": "stopped",
+        "generation": 1,
+        "width": 720,
+        "height": 1280,
+        "rotation": 0
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.state",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "state": "failed",
+        "reason": "encoder-failed",
+        "generation": 1,
+        "width": 720,
+        "height": 1280,
+        "rotation": 0
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.control-state",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
+        "state": "held"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.control-state",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
+        "state": "released",
+        "reason": "viewer-gone"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "runner.integrations.display.control-state",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
+        "state": "refused",
+        "reason": "busy"
+      }
+    }
+  ],
+  "displayMediaFrames": [
+    {
+      "header": {
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "generation": 1,
+        "sequence": 0,
+        "ptsUs": 0,
+        "key": true,
+        "codec": "avc1.42C01F",
+        "width": 180,
+        "height": 320
+      },
+      "headerBase64": "eyJzdHJlYW1JZCI6ImRzcF8xMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJnZW5lcmF0aW9uIjoxLCJzZXF1ZW5jZSI6MCwicHRzVXMiOjAsImtleSI6dHJ1ZSwiY29kZWMiOiJhdmMxLjQyQzAxRiIsIndpZHRoIjoxODAsImhlaWdodCI6MzIwfQ==",
+      "payloadBase64": "AAAAAWdCwB/aDAp5/ARAAAADAEAAAA8jxgyoAAAAAWjOD8gAAAABZYiEBL///w9FAAEvvycnJycnJycnJycnXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXgA==",
+      "envelopeBase64": "AAAAl3sic3RyZWFtSWQiOiJkc3BfMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiZ2VuZXJhdGlvbiI6MSwic2VxdWVuY2UiOjAsInB0c1VzIjowLCJrZXkiOnRydWUsImNvZGVjIjoiYXZjMS40MkMwMUYiLCJ3aWR0aCI6MTgwLCJoZWlnaHQiOjMyMH0AAAABZ0LAH9oMCnn8BEAAAAMAQAAADyPGDKgAAAABaM4PyAAAAAFliIQEv///D0UAAS+/JycnJycnJycnJyddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddeA",
+      "viewerHeader": {
+        "generation": 1,
+        "sequence": 0,
+        "ptsUs": 0,
+        "key": true,
+        "codec": "avc1.42C01F",
+        "width": 180,
+        "height": 320
+      },
+      "viewerHeaderBase64": "eyJnZW5lcmF0aW9uIjoxLCJzZXF1ZW5jZSI6MCwicHRzVXMiOjAsImtleSI6dHJ1ZSwiY29kZWMiOiJhdmMxLjQyQzAxRiIsIndpZHRoIjoxODAsImhlaWdodCI6MzIwfQ==",
+      "viewerEnvelopeBase64": "AAAAYXsiZ2VuZXJhdGlvbiI6MSwic2VxdWVuY2UiOjAsInB0c1VzIjowLCJrZXkiOnRydWUsImNvZGVjIjoiYXZjMS40MkMwMUYiLCJ3aWR0aCI6MTgwLCJoZWlnaHQiOjMyMH0AAAABZ0LAH9oMCnn8BEAAAAMAQAAADyPGDKgAAAABaM4PyAAAAAFliIQEv///D0UAAS+/JycnJycnJycnJyddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddeA"
+    },
+    {
+      "header": {
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "generation": 1,
+        "sequence": 1,
+        "ptsUs": 33333,
+        "key": false,
+        "width": 180,
+        "height": 320
+      },
+      "headerBase64": "eyJzdHJlYW1JZCI6ImRzcF8xMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJnZW5lcmF0aW9uIjoxLCJzZXF1ZW5jZSI6MSwicHRzVXMiOjMzMzMzLCJrZXkiOmZhbHNlLCJ3aWR0aCI6MTgwLCJoZWlnaHQiOjMyMH0=",
+      "payloadBase64": "AAAAAUGaIBPwHjA=",
+      "envelopeBase64": "AAAAhnsic3RyZWFtSWQiOiJkc3BfMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiZ2VuZXJhdGlvbiI6MSwic2VxdWVuY2UiOjEsInB0c1VzIjozMzMzMywia2V5IjpmYWxzZSwid2lkdGgiOjE4MCwiaGVpZ2h0IjozMjB9AAAAAUGaIBPwHjA=",
+      "viewerHeader": {
+        "generation": 1,
+        "sequence": 1,
+        "ptsUs": 33333,
+        "key": false,
+        "width": 180,
+        "height": 320
+      },
+      "viewerHeaderBase64": "eyJnZW5lcmF0aW9uIjoxLCJzZXF1ZW5jZSI6MSwicHRzVXMiOjMzMzMzLCJrZXkiOmZhbHNlLCJ3aWR0aCI6MTgwLCJoZWlnaHQiOjMyMH0=",
+      "viewerEnvelopeBase64": "AAAAUHsiZ2VuZXJhdGlvbiI6MSwic2VxdWVuY2UiOjEsInB0c1VzIjozMzMzMywia2V5IjpmYWxzZSwid2lkdGgiOjE4MCwiaGVpZ2h0IjozMjB9AAAAAUGaIBPwHjA="
+    }
+  ],
+  "displayDataTicketClaims": {
+    "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+    "connectionGeneration": 3,
+    "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+    "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+    "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+    "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+    "module": "integrations",
+    "audience": "opensteer-display-data",
+    "expiresAt": "2026-10-11T12:01:00.000Z",
+    "issuedAt": "2026-10-11T12:00:00.000Z",
+    "nonce": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    "display": "main",
+    "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+    "type": "opensteer.display.data-ticket"
+  },
+  "canonicalJson": [
+    {
+      "inputJson": "{\"b\":1,\"a\":[0,-0,123456789012,9007199254740991,-9007199254740991],\"Z\":3,\"_\":4,\"é\":2,\"😀\":5,\"ｚ\":6}",
+      "output": "{\"Z\":3,\"_\":4,\"a\":[0,0,123456789012,9007199254740991,-9007199254740991],\"b\":1,\"é\":2,\"😀\":5,\"ｚ\":6}"
+    },
+    {
+      "inputJson": "[\"quote\\\"backslash\\\\slash/tab\\tnewline\\ncr\\rbell\\u0007unit\\u001f\",\"  \",\"é😀\"]",
+      "output": "[\"quote\\\"backslash\\\\slash/tab\\tnewline\\ncr\\rbell\\u0007unit\\u001f\",\"  \",\"é😀\"]"
+    },
+    {
+      "inputJson": "{\"nested\":{\"y\":null,\"x\":true,\"w\":false},\"empty\":{},\"list\":[]}",
+      "output": "{\"empty\":{},\"list\":[],\"nested\":{\"w\":false,\"x\":true,\"y\":null}}"
+    },
+    {
+      "inputJson": "\"plain\"",
+      "output": "\"plain\""
+    },
+    {
+      "inputJson": "-12",
+      "output": "-12"
+    },
+    {
+      "inputJson": "-0",
+      "output": "0"
+    },
+    {
+      "inputJson": "[1e3,2E2,100,-1,10.0,-0.0]",
+      "output": "[1000,200,100,-1,10,0]"
+    },
+    {
+      "inputJson": "[\"\\ud800\",\"\\udfff\",\"x\\ud83dy\",\"😀\",\"é\",\"\\u0000\"]",
+      "output": "[\"\\ud800\",\"\\udfff\",\"x\\ud83dy\",\"😀\",\"é\",\"\\u0000\"]"
+    }
+  ],
+  "contracts": {
+    "observe": "cy7MpWoMQLTepTfbVzuGzQLr-7UHjk-0DXyxIwAEEec",
+    "act": "SBLXw1czTyRa8hNgypoSOhcVAILI7pQICkqJSP4hfyI",
+    "release": "i1Xd8ytcWXxzV6rJozuObZxvYg2l0aZ3M3FJRGvaDUg"
+  },
+  "runner": {
+    "proofDescriptors": [
+      {
+        "descriptor": {
+          "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+          "capabilities": [],
+          "device": {
+            "form": "phone",
+            "platform": "android"
+          },
+          "modules": {
+            "integrations": {
+              "platform": "android",
+              "protocolVersion": 4
+            }
+          },
+          "name": "Pixel 9 — Alex's \"agent\" phone",
+          "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+          "runnerKind": "local",
+          "runtimeVersion": "0.1.117"
+        },
+        "authentication": "IfvSmo-nCGlTVog7uZecb7Zg5PwaSPzr6Cm3KPsW4USQ6J1ISDuKZugfCOF5jkb0vVL0GaOhh6yl2MJBTEanBg",
+        "enrollment": "1kPDZl5ObUqBMuop1MD-DhOSSvqaL5pBxpkQruUKIb3Cz6q5hfL5yCBDVoJFrjFA9TfY9uNjoSjs6kZ00Z1GDw"
+      },
+      {
+        "descriptor": {
+          "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+          "capabilities": [],
+          "device": {
+            "form": "phone",
+            "platform": "android"
+          },
+          "modules": {
+            "integrations": {
+              "platform": "android",
+              "protocolVersion": 4
+            },
+            "unknown": {
+              "kind": "future",
+              "version": 3
+            }
+          },
+          "name": "Pixel 9 — Alex's \"agent\" phone",
+          "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+          "runnerKind": "local",
+          "runtimeVersion": "0.1.117",
+          "future": {
+            "é": [
+              null,
+              true,
+              -7,
+              "😀"
+            ],
+            "a": "  raw  "
+          }
+        },
+        "authentication": "bYJOLbIdWNrk-yGU9jdQDUYKymjQVdd2CDxj2zL1GNCK384JSILBA3DkkkhbUR-6oMrCjvqZpJOYEUOAxDN_Bg",
+        "enrollment": "4bc6kK-riFTS8iJnceloGvKBQztnUaNAFL8vcO6CzKsINOq1Xf4Z4IWPqGHaK7fQJHPt1_lvUwdpL-mrNSETAQ"
+      }
+    ],
+    "authentication": "IfvSmo-nCGlTVog7uZecb7Zg5PwaSPzr6Cm3KPsW4USQ6J1ISDuKZugfCOF5jkb0vVL0GaOhh6yl2MJBTEanBg",
+    "challenge": {
+      "challengeId": "rch_11111111-1111-4111-8111-111111111111",
+      "expiresAt": "2026-10-11T12:00:15.000Z",
+      "hostSessionId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "nonce": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "proofFormatVersion": 2,
+      "type": "host.challenge"
+    },
+    "descriptor": {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "capabilities": [],
+      "device": {
+        "form": "phone",
+        "platform": "android"
+      },
+      "modules": {
+        "integrations": {
+          "platform": "android",
+          "protocolVersion": 4
+        }
+      },
+      "name": "Pixel 9 — Alex's \"agent\" phone",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "runnerKind": "local",
+      "runtimeVersion": "0.1.117"
+    },
+    "enrollment": {
+      "enrollmentToken": "enrollment-token-0123456789abcdefghijklmnopqrstuvwxyz",
+      "enrollmentTokenHash": "sha256:8HyF20J-tNHtkutrymcIDcm1xX62bgRqlu2cD0gt3yU",
+      "signature": "1kPDZl5ObUqBMuop1MD-DhOSSvqaL5pBxpkQruUKIb3Cz6q5hfL5yCBDVoJFrjFA9TfY9uNjoSjs6kZ00Z1GDw"
+    },
+    "key": {
+      "fingerprint": "sha256:oFCDfYUHBYLM9zlLCYiEfMMSy4glm4lImfbyOc8XkaU",
+      "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n",
+      "publicKeyRaw": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+      "seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    }
+  },
+  "tokenDigest": {
+    "input": "eyJhbGciOiJFZERTQSJ9.eyJ4IjoxfQ.c2ln",
+    "output": "sha256:wTLNrjJ3yD975p11M-N_q2hd5lDzc6Abf65dWYfK-1E"
+  },
+  "version": 1
+}

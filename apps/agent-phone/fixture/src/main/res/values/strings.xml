@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Agent Phone fixture</string>
+    <string name="text_hint">Type here</string>
+    <string name="button">Record a tap</string>
+    <string name="long_press">Long-press me</string>
+    <string name="drag">Drag me</string>
+    <string name="drop_target">Drop here</string>
+    <string name="row">Row %1$d</string>
+    <string name="rebind_field">Rebind this field</string>
+    <string name="change_field_text">Change only its text</string>
+    <string name="secure_title">Secure fixture</string>
+    <string name="secure_tap">Secure tap</string>
+    <string name="password_hint">Password</string>
+</resources>
