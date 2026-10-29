@@ -46,8 +46,8 @@ export class DesktopTrayService {
     await this.#refresh();
   }
 
-  setRestartToUpdate(restart: () => void): void {
-    this.#restartToUpdate = restart;
+  setRestartToUpdate(restart: (() => void) | undefined): void {
+    this.#restartToUpdate = restart ?? null;
     this.#scheduleRefresh();
   }
 

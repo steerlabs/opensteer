@@ -23,6 +23,7 @@ export class DesktopShutdown {
   readonly #startup = new AbortController();
   #stopping = false;
   #installing = false;
+  #quitInstaller: (() => void) | undefined;
 
   constructor(options: {
     readonly application: Pick<App, "on" | "exit">;
@@ -58,11 +59,15 @@ export class DesktopShutdown {
     this.#steps.push(step);
   }
 
+  setUpdateInstaller(install: (() => void) | undefined): void {
+    this.#quitInstaller = install;
+  }
+
   requestUpdate(install: () => void): void {
     this.request("restart-to-update", install);
   }
 
-  request(reason: string, install?: () => void): void {
+  request(reason: string, install = this.#quitInstaller): void {
     if (this.#stopping) {
       this.#log("desktop.shutdown.request-repeated", { reason });
       return;

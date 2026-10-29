@@ -149,3 +149,26 @@ it.each([false, true])(
     expect(vi.getTimerCount()).toBe(0);
   },
 );
+
+it("installs a ready update on ordinary quit only after cleanup", async () => {
+  const { shutdown, application } = fixture();
+  const calls: string[] = [];
+  shutdown.add({
+    component: "child",
+    step: "stop",
+    order: 1,
+    timeoutMs: 100,
+    stop: () => {
+      calls.push("stop");
+    },
+  });
+  shutdown.setUpdateInstaller(() => {
+    calls.push("install");
+  });
+  application.emit("before-quit", { preventDefault: vi.fn() });
+  await vi.advanceTimersByTimeAsync(1);
+  expect(calls).toEqual(["stop", "install"]);
+  expect(application.exit).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(desktopShutdownTimeoutMs);
+  expect(application.exit).toHaveBeenCalledWith(1);
+});

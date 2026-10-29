@@ -20,6 +20,10 @@ files:
   # carries no second one.
   - "!dist/web/agent-phone/**"
 extraResources:
+  - from: generated-resources/desktop
+    to: .
+    filter:
+      - app-update.yml
   - from: ../../THIRD_PARTY_NOTICES.md
     to: THIRD_PARTY_NOTICES.md
   # The Agent Phone app the Computers page installs over USB. A release build
@@ -92,6 +96,7 @@ mac:
   # Opensteer is asking. A folder shared from the Computers page is read by
   # this app's own Runner, and without them the prompt would be unattributed.
   extendInfo:
+    ElectronSquirrelPreventDowngrades: true
     NSDesktopFolderUsageDescription: Opensteer reads your Desktop only for folders you share with agents on your other computers.
     NSDocumentsFolderUsageDescription: Opensteer reads your Documents only for folders you share with agents on your other computers.
     NSDownloadsFolderUsageDescription: Opensteer reads your Downloads only for folders you share with agents on your other computers. Opensteer saves files you download there.

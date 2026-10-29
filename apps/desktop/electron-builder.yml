@@ -18,6 +18,3 @@ linux:
   executableName: opensteer
 deb:
   packageName: opensteer
-mac:
-  extendInfo:
-    ElectronSquirrelPreventDowngrades: true
