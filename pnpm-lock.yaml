@@ -102,7 +102,7 @@ catalogs:
 
 patchedDependencies:
   playwright-core@1.62.1:
-    hash: 9be16accb59368e3a444391cec7d2da42aa81f4b227b1138f399e369aa60aa8e
+    hash: 11e913a3b90dcc03be58d7e4ed3e11752dabb77b2e310ff7e4c60175c1b01b05
     path: patches/playwright-core@1.62.1.patch
 
 importers:
@@ -129,7 +129,7 @@ importers:
         version: 7.0.2001
       playwright-core:
         specifier: 1.62.1
-        version: 1.62.1(patch_hash=9be16accb59368e3a444391cec7d2da42aa81f4b227b1138f399e369aa60aa8e)
+        version: 1.62.1(patch_hash=11e913a3b90dcc03be58d7e4ed3e11752dabb77b2e310ff7e4c60175c1b01b05)
       prettier:
         specifier: 3.9.6
         version: 3.9.6
@@ -199,7 +199,7 @@ importers:
         version: 0.29.4
       playwright-core:
         specifier: 1.62.1
-        version: 1.62.1(patch_hash=9be16accb59368e3a444391cec7d2da42aa81f4b227b1138f399e369aa60aa8e)
+        version: 1.62.1(patch_hash=11e913a3b90dcc03be58d7e4ed3e11752dabb77b2e310ff7e4c60175c1b01b05)
       proper-lockfile:
         specifier: 4.1.2
         version: 4.1.2
@@ -247,7 +247,7 @@ importers:
         version: 0.0.1676105
       playwright-core:
         specifier: 1.62.1
-        version: 1.62.1(patch_hash=9be16accb59368e3a444391cec7d2da42aa81f4b227b1138f399e369aa60aa8e)
+        version: 1.62.1(patch_hash=11e913a3b90dcc03be58d7e4ed3e11752dabb77b2e310ff7e4c60175c1b01b05)
       ws:
         specifier: 'catalog:'
         version: 8.21.3
@@ -1074,7 +1074,7 @@ importers:
         version: 20.14.5
       playwright-core:
         specifier: 1.62.1
-        version: 1.62.1(patch_hash=9be16accb59368e3a444391cec7d2da42aa81f4b227b1138f399e369aa60aa8e)
+        version: 1.62.1(patch_hash=11e913a3b90dcc03be58d7e4ed3e11752dabb77b2e310ff7e4c60175c1b01b05)
       tsx:
         specifier: 'catalog:'
         version: 4.23.11
@@ -14196,7 +14196,7 @@ snapshots:
       pvutils: 1.2.0
       tslib: 2.8.1
 
-  playwright-core@1.62.1(patch_hash=9be16accb59368e3a444391cec7d2da42aa81f4b227b1138f399e369aa60aa8e): {}
+  playwright-core@1.62.1(patch_hash=11e913a3b90dcc03be58d7e4ed3e11752dabb77b2e310ff7e4c60175c1b01b05): {}
 
   plist@3.1.0:
     dependencies:

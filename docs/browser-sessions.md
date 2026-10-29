@@ -1469,6 +1469,10 @@ which origin was rejected, why, and whether its earlier state was retained, with
 logging storage keys or values. Direct exports without a diagnostic observer throw
 an incomplete-snapshot error carrying the usable snapshot.
 
+On the Playwright engine, the pinned patch keeps the temporary restore page open
+until Chromium has acknowledged each localStorage write through a storage event
+in a same-origin document. Closing the page sooner can lose pending writes.
+
 Periodic saves (every two minutes by default) and final saves use this same path.
 An incomplete save emits `browser.profile.checkpoint.failed` with reason
 `profile-checkpoint.origins-incomplete` after committing the usable state, and
