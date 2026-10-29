@@ -42,7 +42,8 @@ app-shell mount in `beforeAll`, before any individual case deadline. Ordinary `*
 `*.test.tsx` files include headless Chromium journeys. `*.integration.test.*`
 means PostgreSQL and runs only through `pnpm test:integration`;
 `*.gui.test.*` means a real macOS GUI session and runs only in the VM through
-`test:gui`. Default Vitest discovery excludes both suffixes. Missing Chromium
+`test:gui`. `*.vm.test.*` journeys run only inside `pnpm test:vm` with their own
+config. Default Vitest discovery excludes all three suffixes. Missing Chromium
 fails with its install command; it is never a passing skip.
 
 ## Agent context budget
@@ -155,10 +156,16 @@ Non-manifest generators and build consumers select conservative coverage.
 receipts. GitHub `Check` is the landing authority. CI runs two default-test and
 four integration shards. Every shard uploads discovery and execution inventories;
 Check requires their exact union and pairwise disjoint membership. Integration
-shards also upload enforcing lock graphs, merged through the global cycle check.
-Missing or corrupt evidence fails Check. Main runs every public lane and is never
-cancelled by a newer main push. GUI, device and account suites require their
-separate environments.
+shards also upload enforcing lock graphs, merged through the global cycle check;
+each shard's graph must trace every file that shard ran. Tests that need Darwin
+kernel locks (`darwinOnlyTests` in
+[ci-test-files.mjs](../.github/scripts/ci-test-files.mjs)) leave the Linux shards
+and run in the native-mac lane. Integration shards run `pnpm test:integration`
+with its own tmpfs PostgreSQL, as local runs do. Browser journeys that accept
+`OPENSTEER_CHROMIUM_EXECUTABLE` get the pinned Playwright Chromium there, never
+the runner image's browsers. Missing or corrupt evidence fails Check. Main runs every public
+lane and is never cancelled by a newer main push. GUI, device and account suites
+require their separate environments.
 
 Tabs profile filtering is covered by `pnpm --filter @opensteer/web
 test:tab-profile-filter` (headless Chromium and the mock Host). Its repeatable

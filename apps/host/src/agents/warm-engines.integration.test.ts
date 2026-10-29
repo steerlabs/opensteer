@@ -720,7 +720,7 @@ integration("Warm engines", () => {
   );
 
   it("ends the engine of a stopped Run", { timeout: 120_000 }, async () => {
-    const { active, captureFile, threadId } = await start("vertical-delayed");
+    const { active, captureFile, threadId } = await start("vertical", ["--hold-second-turn"]);
     await run(active, threadId, "First question");
     const kept = (await captured(captureFile)).find((line) => line.fakeTurn)?.fakeTurn?.pid;
     if (kept === undefined) throw new Error("The engine's process was not captured");

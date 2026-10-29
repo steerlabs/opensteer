@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import { mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,19 +12,32 @@ import type { HostClient } from "@opensteer/client/host";
 
 const execFile = promisify(execFileCallback);
 
-/** The shelves 0.1.181 and 0.1.207 draw a task list on; neither has Ready. */
+/**
+ * The client people already have installed: the public launch commit (0.1.219).
+ * Move it to each public release tag as releases ship. CI checkouts are shallow,
+ * so the workflow fetches this one commit before integration tests run.
+ */
+export const previousPublicRelease = "e4dd721c5f9b2bdac124c59d2c0c11bb676ccaac";
+
+/** The shelves a released client draws a task list on. */
 interface ReleasedTaskList {
   readonly working: readonly { threadId: string }[];
-  readonly finished: readonly { threadId: string }[];
+  readonly ready: readonly { threadId: string }[];
   readonly done: readonly { threadId: string }[];
 }
 
 /** Build actual released source, never current schemas disguised as a baseline. */
-export async function releasedEpoch48Reader(revision: string) {
+export async function releasedClientReader(revision: string) {
   const root = process.cwd();
   const directory = await mkdtemp(join(tmpdir(), `opensteer-reader-${revision}-`));
   try {
-    const sourceRevision = (await execFile("git", ["rev-parse", revision])).stdout.trim();
+    const sourceRevision = (
+      await execFile("git", ["rev-parse", "--verify", `${revision}^{commit}`]).catch(() => {
+        throw new Error(
+          `Released client ${revision} is not in this clone; run git fetch --depth=1 https://github.com/steerlabs/opensteer ${revision}`,
+        );
+      })
+    ).stdout.trim();
     const hostRevision = (await execFile("git", ["rev-parse", "HEAD"])).stdout.trim();
     const archive = join(directory, "source.tar");
     await execFile("git", [
@@ -41,6 +55,8 @@ export async function releasedEpoch48Reader(revision: string) {
     const packages = new Map<string, { directory: string; exports: Record<string, string> }>();
     for (const name of await readdir(join(directory, "packages"))) {
       const packageDirectory = join(directory, "packages", name);
+      // Swift packages such as macos-signing have no npm manifest to resolve.
+      if (!existsSync(join(packageDirectory, "package.json"))) continue;
       const manifest = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8"));
       packages.set(manifest.name, { directory: packageDirectory, exports: manifest.exports });
       await symlink(
@@ -55,7 +71,7 @@ export async function releasedEpoch48Reader(revision: string) {
           export { hostApi, HostToClientMessageSchema, AgentControlResponseSchema } from '@opensteer/protocol';
           export { ThreadViewSchema, ThreadReadStateSchema, RequestViewSchema } from '@opensteer/core';
           export { HostDescriptorSchema, hostApiCompatibility, knownHostCapabilities } from '@opensteer/deployment-authority';
-          export { taskList, workspaceTaskList } from '@opensteer/client/host';
+          export { heldThread, taskList, workspaceTaskList } from '@opensteer/client/host';
           export { mergeThreadReadState } from './packages/client/src/host/thread-read-state.ts';`,
         resolveDir: directory,
       },
@@ -96,8 +112,9 @@ export async function releasedEpoch48Reader(revision: string) {
         refreshIntervalMs: number;
       }) => HostClient;
       hostApi: Record<keyof HostApiClient, { success: { parse(value: unknown): unknown } }>;
-      taskList(snapshot: unknown, now: number): ReleasedTaskList;
-      workspaceTaskList(snapshot: unknown, workspaceId: string, now: number): ReleasedTaskList;
+      heldThread(snapshot: unknown, threadId: string): { doneAt: string | null } | null;
+      taskList(snapshot: unknown): ReleasedTaskList;
+      workspaceTaskList(snapshot: unknown, workspaceId: string): ReleasedTaskList;
       mergeThreadReadState(previous: unknown, incoming: unknown): unknown;
       hostApiCompatibility(descriptor: unknown): string;
       knownHostCapabilities(advertised: readonly string[]): readonly HostCapability[];

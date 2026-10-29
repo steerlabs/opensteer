@@ -344,6 +344,7 @@ export function startMachineAccessHost(
   databaseUrl: string,
   options: {
     readonly logger?: Record<string, unknown>;
+    readonly browserActivityClock?: import("@opensteer/shared/clock").Clock;
     /** The name its administrator gave the Deployment; unnamed otherwise. */
     readonly deploymentName?: string;
     /** Where integrations reach providers, for a journey with an upstream of its own. */
@@ -392,6 +393,9 @@ async function createMachineAccessHost(
   };
   try {
     runtime = await createHostRuntime(config, {
+      ...(options.browserActivityClock
+        ? { browserActivityClock: options.browserActivityClock }
+        : {}),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       ...(options.integrationFetch === undefined
         ? {}

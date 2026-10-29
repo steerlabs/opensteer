@@ -12,3 +12,8 @@ runs:
         key: chromium-${{ runner.os }}-${{ runner.arch }}-${{ steps.revision.outputs.key }}
     - shell: bash
       run: pnpm exec playwright-core install --with-deps chromium
+    # Otherwise tests fall back to the runner image's Chrome or Chromium. Nothing has
+    # read those binaries yet, and paging one in from disk can outlast the Browser
+    # Runtime's 30 s attach bound. This is the pinned Chromium its container ships.
+    - shell: bash
+      run: echo "OPENSTEER_CHROMIUM_EXECUTABLE=$(node -p 'require("playwright-core").chromium.executablePath()')" >> "$GITHUB_ENV"

@@ -153,18 +153,9 @@ jobs:
       CI_SHARD: ${{ matrix.shard }}
       CI_SHARDS: "4"
       OPENSTEER_LOCK_ORDER_MODE: enforce
-      OPENSTEER_TEST_DATABASE_URL: postgres://opensteer:opensteer@127.0.0.1:5432/opensteer
-      OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL: postgres://opensteer:opensteer@127.0.0.1:5432/opensteer_control_plane
-    services:
-      postgres:
-        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
-        env:
-          POSTGRES_DB: opensteer
-          POSTGRES_USER: opensteer
-          POSTGRES_PASSWORD: opensteer
-        ports:
-          - 5432:5432
-        options: --health-cmd "pg_isready -U opensteer -d opensteer" --health-interval 2s --health-timeout 3s --health-retries 20
+    # pnpm test:integration starts its own disposable PostgreSQL on tmpfs, as it
+    # does locally. A disk-backed server pays real fsyncs for every checkpoint
+    # that DROP DATABASE forces, which exceeded fixture cleanup bounds on hosted runners.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -179,9 +170,15 @@ jobs:
           } >> "$GITHUB_ENV"
         shell: bash
       - uses: ./.github/actions/ci-browser
-      - run: psql -h 127.0.0.1 -U opensteer -d opensteer -c 'CREATE DATABASE opensteer_control_plane;'
-        env:
-          PGPASSWORD: opensteer
+      - name: Fetch the previous public release for compatibility journeys
+        shell: bash
+        run: |
+          revision="$(sed -nE 's/^export const previousPublicRelease = "([0-9a-f]{40})";$/\1/p' apps/host/src/agents/previous-release-reader.test-support.ts)"
+          test -n "$revision"
+          git fetch --no-tags --depth=1 origin "$revision"
+      - name: Pull the integration PostgreSQL image
+        # Pulled here so a registry problem fails this step, not the launcher's 60 s bound.
+        run: docker pull "$(node -p 'require("yaml").parse(require("node:fs").readFileSync("deploy/compose/compose.yaml", "utf8")).services.postgres.image')"
       - run: pnpm exec vitest list --config vitest.integration.config.ts --filesOnly --json "$CI_DISCOVERY_PATH"
       - shell: bash
         run: |
@@ -217,7 +214,8 @@ jobs:
             swift test --package-path apps/mobile/modules/iphone-apps/ios
             swift test --package-path apps/desktop/native/computer-use
             swift test --package-path apps/desktop/native/passwords
-            pnpm exec vitest run tests/helper-data-contracts.test.ts tests/iphone-apps-wire.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords
+            darwin_only=$(node .github/scripts/ci-test-files.mjs darwin-only)
+            pnpm exec vitest run tests/helper-data-contracts.test.ts tests/iphone-apps-wire.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords $darwin_only
           } 2>&1 | tee "$RUNNER_TEMP/evidence/native-mac.log"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -240,7 +238,7 @@ jobs:
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
         with:
           distribution: temurin
-          java-version: 21.0.10+7
+          java-version: 21.0.10+7.0.LTS
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         with:
           cmdline-tools-version: "13114758"

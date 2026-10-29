@@ -3,12 +3,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, matchesGlob, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { configDefaults } from "vitest/config";
+import { darwinOnlyTests } from "../.github/scripts/ci-test-files.mjs";
 import config from "../vitest.config.js";
 import integrationConfig from "../vitest.integration.config.js";
 import guiConfig from "../vitest.gui.config.js";
 import enginesConfig from "../vitest.engines.config.js";
 import deviceConfig from "../vitest.device.config.js";
 import soakConfig from "../vitest.soak.config.js";
+import iphoneAppsVmConfig from "../apps/mobile/modules/iphone-apps/journey/vitest.config.js";
 
 const root = resolve(import.meta.dirname, "..");
 const files = execFileSync(
@@ -27,6 +29,7 @@ const suites = [
   { name: "engines", directory: root, config: enginesConfig },
   { name: "device", directory: root, config: deviceConfig },
   { name: "soak", directory: root, config: soakConfig },
+  { name: "iphone-apps-vm", directory: root, config: iphoneAppsVmConfig },
 ];
 const browserConfigPath = resolve(root, "apps/browser-runtime/vitest.config.ts");
 if (existsSync(browserConfigPath)) {
@@ -48,7 +51,10 @@ describe("test tiers", () => {
       const owners = suites.filter((suite) => {
         const path = relative(suite.directory, resolve(root, file));
         const include = suite.config.test?.include ?? configDefaults.include;
-        const exclude = suite.config.test?.exclude ?? configDefaults.exclude;
+        // The unit suite owns darwin-only files everywhere; off Darwin, native-mac runs them.
+        const exclude = (suite.config.test?.exclude ?? configDefaults.exclude).filter(
+          (pattern) => !darwinOnlyTests.includes(pattern),
+        );
         return (
           include.some((pattern) => matchesGlob(path, pattern)) &&
           !exclude.some((pattern) => matchesGlob(path, pattern))
@@ -89,5 +95,6 @@ describe("test tiers", () => {
   it("excludes PostgreSQL and GUI suffixes from the host tier", () => {
     expect(config.test?.exclude).toContain("**/*.integration.test.*");
     expect(config.test?.exclude).toContain("**/*.gui.test.*");
+    expect(config.test?.exclude).toContain("**/*.vm.test.*");
   });
 });

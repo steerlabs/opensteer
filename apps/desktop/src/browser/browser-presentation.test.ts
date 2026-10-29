@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { WebContents } from "electron";
 import type { NativePresentationSource, PresentedSurface } from "@opensteer/browser-runtime-core";
 import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/protocol";
@@ -35,6 +35,14 @@ const managers: DesktopBrowserPresentationManager[] = [];
 afterEach(() => {
   for (const manager of managers.splice(0)) manager.dispose();
 });
+/** Glass is the macOS and Windows overlay; Linux marks the page in the app instead. */
+function onPlatform(platform: NodeJS.Platform): void {
+  const actual = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...actual, value: platform });
+  onTestFinished(() => {
+    Object.defineProperty(process, "platform", actual);
+  });
+}
 function fixture() {
   let observe = (_event: DesktopBrowserSocketObservation) => {};
   const manager = new DesktopBrowserPresentationManager({
@@ -203,6 +211,7 @@ describe("native presentation authority (retired A01–A07)", () => {
 it.each(["socket", "did-start-navigation", "render-process-gone", "destroyed"])(
   "hides glass synchronously and refuses stale native actions after %s revocation",
   async (reason) => {
+    onPlatform("darwin");
     const f = fixture();
     f.native.waitForPaint = () => Promise.resolve();
     f.socket("admitted");
@@ -233,6 +242,25 @@ it.each(["socket", "did-start-navigation", "render-process-gone", "destroyed"])(
     expect(f.native.mount).toHaveBeenCalledOnce();
   },
 );
+
+it("never creates glass on Linux, where transparent children draw black", async () => {
+  onPlatform("linux");
+  glass.update.mockClear();
+  const f = fixture();
+  f.native.waitForPaint = () => Promise.resolve();
+  f.socket("admitted");
+  const target = await f.manager.present(f.sender, f.request);
+  await Promise.resolve();
+  const scene = {
+    croppedBottom: true,
+    croppedRight: false,
+    cursors: [],
+    geometryRevision: 0,
+    reducedMotion: true,
+  };
+  f.manager.setGlass(f.sender, { ...target, scene });
+  expect(glass.update).not.toHaveBeenCalled();
+});
 
 it("rejects a failed surface replacement update and releases the old native page (A07)", async () => {
   const f = fixture();

@@ -54,6 +54,10 @@ test("Android source gates Android; native Mac source gates Mac", () => {
   assert.equal(n.lanes["native-mac"], true);
   assert.equal(n.lanes.android, false);
 });
+test("any workspace edit runs the root darwin-only tests in the Mac lane", () => {
+  const web = [{ name: "web", dir: "apps/web", deps: [], coverage: ["tests"] }];
+  assert.equal(decide(["apps/web/src/page.ts"], web).lanes["native-mac"], true);
+});
 test("source-bearing markdown and fixtures never count as documentation", () => {
   for (const p of ["SKILL.md", "docs/fixtures/prompt.md"])
     assert.equal(decide([p], []).lanes.tests, true);

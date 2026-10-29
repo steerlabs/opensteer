@@ -13,13 +13,17 @@ import type { HostClient } from "@opensteer/client/host";
 import { sql } from "kysely";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import { releasedEpoch48Reader } from "./epoch-48-reader.test-support.js";
+import {
+  previousPublicRelease,
+  releasedClientReader,
+} from "./previous-release-reader.test-support.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const evidence =
-  process.env.OPENSTEER_EPOCH48_EVIDENCE_DIR ?? join(tmpdir(), "opensteer-epoch48", randomUUID());
+  process.env.OPENSTEER_PREVIOUS_RELEASE_EVIDENCE_DIR ??
+  join(tmpdir(), "opensteer-previous-release", randomUUID());
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
   options: { effort: "low" },
@@ -28,8 +32,8 @@ const modelSelection = ModelSelectionSchema.parse({
 
 // Failure modes: descriptor/header/subscription epoch mismatch; removed required read
 // fields; additive fields rejected by released readers; old command reinterpreted;
-// stale placement responses; missing cross-viewer notices; Done without a capability.
-integration.sequential("released epoch-48 client journeys", () => {
+// stale read-state responses; missing cross-viewer notices; Done without a capability.
+integration.sequential("previous public release client journeys", () => {
   let stack: VerticalStack | undefined;
   const clients: HostClient[] = [];
   const cleanups: (() => Promise<unknown>)[] = [];
@@ -40,9 +44,9 @@ integration.sequential("released epoch-48 client journeys", () => {
     for (const close of cleanups.splice(0)) await close();
   }, 60_000);
 
-  for (const revision of ["d3cd53032", "914f24ef5"]) {
+  for (const revision of [previousPublicRelease]) {
     it(`serves discovery, subscription, reads and ordinary mutations to ${revision}`, async () => {
-      const released = await releasedEpoch48Reader(revision);
+      const released = await releasedClientReader(revision);
       cleanups.push(released.close);
       const harnesses = new HarnessRegistry();
       harnesses.registerDriver(
@@ -90,14 +94,15 @@ integration.sequential("released epoch-48 client journeys", () => {
         expect(released.reader.HostDescriptorSchema.parse(descriptor).apiVersion).toBe(48);
         expect(released.reader.hostApiCompatibility(descriptor)).toBe("compatible");
         // As each release's deployment catalog does: the client keeps the
-        // advertised capabilities it knows, and the new one is noise to it.
+        // advertised capabilities it knows, and newer ones are noise to it.
         const releasedCapabilities = released.reader.knownHostCapabilities(
           released.reader.HostDescriptorSchema.parse(descriptor).capabilities,
         );
-        expect(releasedCapabilities).not.toContain("shared-task-done-v1");
+        // The launch client already sets shared Done itself.
+        expect(releasedCapabilities).toContain("shared-task-done-v1");
         const threadId = await active.createThread({
           modelSelection,
-          title: "Epoch-48 compatibility",
+          title: "Previous release compatibility",
           workspaceId: active.mainWorkspaceId,
         });
         const headers = { cookie: active.sessionCookie, origin: active.hostOrigin.origin };
@@ -144,8 +149,7 @@ integration.sequential("released epoch-48 client journeys", () => {
         old.activateWorkspace(active.mainWorkspaceId);
         old.activateThread(threadId);
         await old.loadLatestTranscript(threadId);
-        // 0.1.181 predates task renaming; 0.1.207 renames through thread-titles-v1.
-        if ("renameThread" in old) await old.renameThread(threadId, "Renamed by released client");
+        await old.renameThread(threadId, "Renamed by released client");
         await active.sendMessage({
           text: "Compatibility reply",
           threadId,
@@ -155,8 +159,15 @@ integration.sequential("released epoch-48 client journeys", () => {
         await vi.waitFor(() => expect(old.getSnapshot().threadReadStates[threadId]).toBeDefined());
         const beforeRead = old.getSnapshot().threadReadStates[threadId]!;
         transcript.push({ beforeRead });
+        // The Host still serves epoch-48 placement; 0.1.219 drops it while merging,
+        // so read it from what the Host answers this client.
+        const hostReadState = async (client: HostClient) => {
+          const result = await client.rpc["thread.readState.get"]({ threadId });
+          if (!result.ok) throw new Error(result.error.message);
+          return result.data;
+        };
         expect(beforeRead.readSequence).toBeNull();
-        expect(beforeRead.placement).toBeNull();
+        expect((await hostReadState(old)).placement).toBeNull();
         expect(beforeRead.unreadSequence).not.toBeNull();
         await old.markThreadRead(threadId, beforeRead.unreadSequence!);
         await vi.waitFor(() =>
@@ -195,7 +206,7 @@ integration.sequential("released epoch-48 client journeys", () => {
           { timeout: 15_000 },
         );
 
-        // A read task older than a day remains open, rather than the old reader's age fallback.
+        // A read task older than a day remains open in the released list.
         await active.host.store.database
           .updateTable("threads")
           .set({ updatedAt: new Date(Date.now() - 48 * 3_600_000) })
@@ -211,17 +222,16 @@ integration.sequential("released epoch-48 client journeys", () => {
         const agedList = released.reader.workspaceTaskList(
           old.getSnapshot(),
           active.mainWorkspaceId,
-          Date.now(),
         );
         expect(agedList.done.some((row) => row.threadId === threadId)).toBe(false);
-        // Released lists have no Ready shelf: an open task stays working or finished.
+        // An open task stays working or ready.
         expect(
-          [...agedList.working, ...agedList.finished].some((row) => row.threadId === threadId),
+          [...agedList.working, ...agedList.ready].some((row) => row.threadId === threadId),
         ).toBe(true);
 
         // A second member has independent actual read markers and a real signed-in subscription.
         const ownerId = current.getSnapshot().user!.id;
-        const memberId = await active.host.store.createUser("Epoch-48 collaborator");
+        const memberId = await active.host.store.createUser("Previous release collaborator");
         const tokenHash = `sha256:${randomUUID()}`;
         const invitation = await active.host.store.createWorkspaceInvitation({
           createdBy: ownerId,
@@ -238,7 +248,7 @@ integration.sequential("released epoch-48 client journeys", () => {
         await active.host.store.acceptWorkspaceInvitation({
           selector: invitation.selector,
           tokenHash,
-          userEmail: "epoch48@example.test",
+          userEmail: "previous-release@example.test",
           userEmailVerified: true,
           userId: memberId,
         });
@@ -395,32 +405,29 @@ integration.sequential("released epoch-48 client journeys", () => {
           (await active.host.store.getThreadForOwner(delegatedThreadId, ownerId))?.doneAt,
         ).not.toBeNull();
         transcript.push({ cancelled });
-        await vi.waitFor(() =>
-          expect(old.getSnapshot().threadReadStates[threadId]).toMatchObject({
-            placement: { done: true },
-          }),
-        );
-        await vi.waitFor(() =>
-          expect(member.getSnapshot().threadReadStates[threadId]).toMatchObject({
-            placement: { done: true },
-          }),
-        );
+        // The launch client shows Done from the Thread, not epoch-48 placement.
+        const releasedDoneAt = (client: HostClient) =>
+          released.reader.heldThread(client.getSnapshot(), threadId)?.doneAt;
+        await vi.waitFor(() => expect(releasedDoneAt(old)).toEqual(expect.any(String)));
+        await vi.waitFor(() => expect(releasedDoneAt(member)).toEqual(expect.any(String)));
+        for (const client of [old, member])
+          await vi.waitFor(async () =>
+            expect(await hostReadState(client)).toMatchObject({ placement: { done: true } }),
+          );
+        const afterDoneHost = await hostReadState(old);
+        expect(afterDoneHost.placementRevision).toBe(afterDoneHost.asOfSequence);
         const afterDone = old.getSnapshot().threadReadStates[threadId]!;
         expect(released.reader.mergeThreadReadState(afterDone, stale)).toMatchObject({
-          placement: { done: true },
+          readSequence: afterDone.readSequence,
+          asOfSequence: afterDone.asOfSequence,
         });
-        expect(afterDone.placementRevision).toBe(afterDone.asOfSequence);
         await current.setTaskDone(threadId, false);
-        await vi.waitFor(() =>
-          expect(old.getSnapshot().threadReadStates[threadId]).toMatchObject({
-            placement: { done: false },
-          }),
-        );
-        await vi.waitFor(() =>
-          expect(member.getSnapshot().threadReadStates[threadId]).toMatchObject({
-            placement: { done: false },
-          }),
-        );
+        await vi.waitFor(() => expect(releasedDoneAt(old)).toBeNull());
+        await vi.waitFor(() => expect(releasedDoneAt(member)).toBeNull());
+        for (const client of [old, member])
+          await vi.waitFor(async () =>
+            expect(await hostReadState(client)).toMatchObject({ placement: { done: false } }),
+          );
         // Only what a Done command could write: the shared fact and Done command
         // receipts. The waiting Run keeps touching the Thread row and event head,
         // and the active released client may advance its read marker meanwhile.
@@ -453,10 +460,6 @@ integration.sequential("released epoch-48 client journeys", () => {
             error: { code: "bad_request", reason: "shared-task-done-required", retryable: false },
           });
         }
-        await expect(old.setTaskDone(threadId, true)).rejects.toMatchObject({
-          code: "bad_request",
-          reason: "shared-task-done-required",
-        });
         expect(
           (await current.loadLatestTranscript(threadId),
           current.getSnapshot().threads.find(({ id }) => id === threadId)?.doneAt),
@@ -469,6 +472,11 @@ integration.sequential("released epoch-48 client journeys", () => {
             .where("idempotencyKey", "=", `legacy-${revision}`)
             .execute(),
         ).toEqual([]);
+        // The released client's own Done is shared Done, and so is its Reopen.
+        expect((await old.setTaskDone(threadId, true)).doneAt).toEqual(expect.any(String));
+        expect((await durable()).doneAt).toEqual(expect.any(Date));
+        expect((await old.setTaskDone(threadId, false)).doneAt).toBeNull();
+        expect((await durable()).doneAt).toBeNull();
         const noCapability = new CurrentClient({
           ...options,
           capabilities: [],
@@ -506,7 +514,7 @@ integration.sequential("released epoch-48 client journeys", () => {
           join(evidence, `${revision}.json`),
           JSON.stringify(transcript, null, 2) + "\n",
         );
-        console.info(`Epoch-48 transcript: ${join(evidence, `${revision}.json`)}`);
+        console.info(`Previous release transcript: ${join(evidence, `${revision}.json`)}`);
       }
     }, 120_000);
   }

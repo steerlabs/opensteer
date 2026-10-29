@@ -1,5 +1,9 @@
 import "./apps/desktop/vitest.config.js";
-import { defaultTestInclude, defaultTestExclude } from "./.github/scripts/ci-test-files.mjs";
+import {
+  darwinOnlyTests,
+  defaultTestInclude,
+  defaultTestExclude,
+} from "./.github/scripts/ci-test-files.mjs";
 import { availableParallelism, homedir } from "node:os";
 import path from "node:path";
 import { configDefaults, defineConfig } from "vitest/config";
@@ -19,7 +23,11 @@ export default defineConfig({
     environment: "node",
     // Engine qualification drives real engines on real accounts: `pnpm test:engines`.
     // Device tests drive a real Android phone or emulator: `pnpm test:agent-phone`.
-    exclude: [...configDefaults.exclude, ...defaultTestExclude],
+    exclude: [
+      ...configDefaults.exclude,
+      ...defaultTestExclude,
+      ...(process.platform === "darwin" ? [] : darwinOnlyTests),
+    ],
     include: defaultTestInclude,
     // Browser and engine journeys spawn children beyond the Vitest fork itself, and
     // other work and the agents themselves run beside them: a third of the cores keeps

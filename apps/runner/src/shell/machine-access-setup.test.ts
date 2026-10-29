@@ -52,10 +52,11 @@ const executeFile = promisify(execFile);
 const canonicalHostKey =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH";
 const nativeFsHelper = resolve("apps/runner/native-fs-helper/opensteer-native-fs-test");
-// Built by the root `pretest`, like the native-fs test helper above.
+// Built by the root `pretest`, like the native-fs test helper above, into a directory
+// named with Go's architecture names (amd64, not Node's x64).
 const processSupervisor = resolve(
   "apps/desktop/generated-native",
-  `${process.platform}-${process.arch}`,
+  `${process.platform}-${process.arch === "x64" ? "amd64" : process.arch}`,
   "opensteer-process-supervisor",
 );
 /** What a Runner-owned launch wrapper leaves behind on every command it wraps. */

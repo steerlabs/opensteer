@@ -16,12 +16,17 @@ interface DatabaseConnectionOptions {
   readonly applicationName?: string;
 }
 
-export function createDatabase(options: DatabaseConnectionOptions): Kysely<DatabaseSchema> {
-  const pool = new Pool({
-    application_name: options.applicationName ?? "opensteer-host",
-    connectionString: options.connectionString,
-    max: options.maxConnections ?? 10,
-  });
+export function createDatabase(
+  options: DatabaseConnectionOptions,
+  providedPool?: Pool,
+): Kysely<DatabaseSchema> {
+  const pool =
+    providedPool ??
+    new Pool({
+      application_name: options.applicationName ?? "opensteer-host",
+      connectionString: options.connectionString,
+      max: options.maxConnections ?? 10,
+    });
 
   return new Kysely<DatabaseSchema>({
     dialect: new PostgresDialect({ pool }),
