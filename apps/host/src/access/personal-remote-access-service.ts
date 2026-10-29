@@ -929,6 +929,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
    * this same signed document, so the next start is the next refresh.
    */
   async publishAccountAuthority(): Promise<"published" | "unlinked"> {
+    if (!this.#grantVerifier) return "unlinked";
     const linked = await this.#database
       .selectFrom("personalRemoteAccountLink")
       .selectAll()
@@ -971,6 +972,12 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   }
 
   #accountClient(link: { readonly issuer: string; readonly hostCredential: string }) {
+    if (!this.#grantVerifier || link.issuer !== this.#grantVerifier.issuer) {
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Opensteer Account isn’t available for this deployment.",
+      });
+    }
     return new AccountDirectoryClient({
       authorityEnvelope: signHostDiscovery(this.#keys, this.#authority),
       controlApiOrigin: new URL(link.issuer),

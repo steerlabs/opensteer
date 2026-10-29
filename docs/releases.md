@@ -51,3 +51,80 @@ Resume with the same SHA and configuration. Receipt or artifact drift fails
 closed. The command verifies code signatures and attempts a normal Launch
 Services launch; it does not submit to Apple or claim notarized distribution
 readiness. Diagnose any reported launch error before proceeding.
+
+## Public Mac download
+
+Public stable releases use `desktop-v<version>` tags and titles `Opensteer <version> (Alpha)`
+in `steerlabs/opensteer`, separate from its legacy `v*` tags. Each release has
+`Opensteer-mac-arm64.zip` (the pipeline archive unchanged), `opensteer-mac-arm64.json`
+(the Squirrel.Mac feed), `install.sh`, and `SHA256SUMS`.
+
+Promotion builds the stable Opensteer identity from a commit Beta already ran,
+then signs, notarizes and staples it. Run `pnpm desktop:public-release prepare
+--app-zip <absolute application.zip> --version <x.y.z> --source-sha <40hex>
+--out <new absolute directory>`, then `draft --dir <directory> --repo
+steerlabs/opensteer`. Preparation writes a local `release.json`; the draft stores
+that manifest in its notes body. Default notes describe the alpha and include the
+install command; `prepare --notes-file <absolute file>` appends more. The feed
+name also says `(Alpha)`; versions and app/asset names stay unchanged. Identical
+drafts are reusable; differing drafts are refused. Only after a maintainer approves publication, `publish --repo steerlabs/opensteer --tag
+desktop-v<version>` first checks the draft's stored assets against its manifest,
+then sets `prerelease=false` and `make_latest=true`, then verifies anonymous asset
+downloads. Installers and updaters follow Latest at once, so drifted bytes never
+become public.
+
+Install with:
+
+```sh
+curl -fsSL https://github.com/steerlabs/opensteer/releases/latest/download/install.sh | sh
+```
+
+The installer requires Apple silicon and macOS 13+, pins Latest once, verifies the
+archive checksum, stable bundle identity, version, arm64 executable, Developer ID
+team and signature, and Gatekeeper assessment. It serializes installs, refuses
+symlinks and conflicting identities, waits for graceful app/ShipIt shutdown, and
+replaces the app with rename/restore protection without touching app data.
+An installed copy counts only if it is an intact Opensteer-signed build; an equal
+or newer one is opened without replacement. The check repeats after the app quits,
+because ShipIt may have installed a newer update meanwhile.
+
+For VM mirrors, use `OPENSTEER_RELEASE_REPOSITORY_URL` (repository root),
+`OPENSTEER_INSTALL_DIRECTORY` (absolute physical target, without symlink ancestors), and `OPENSTEER_INSTALL_NO_OPEN=1`
+to suppress launch. `prepare --download-base <mirror>/releases/download
+--allow-private-feed` accepts a test build's embedded private feed. URLs require
+HTTPS, except loopback HTTP. Private-feed assets cannot be drafted or published
+to the public repository.
+
+## Automatic updates
+
+Packaged stable Opensteer for Mac arm64 uses Electron's Squirrel.Mac updater
+with the [public GitHub feed](https://github.com/steerlabs/opensteer/releases/latest/download/opensteer-mac-arm64.json).
+It offers to move to Applications before starting Personal; updates run only
+from Applications. It checks after 30 seconds and every four hours, downloading
+in the background. Once ready, **Restart to Update** appears in the app menu
+and tray; it stops Personal and other children before restarting. Ordinary quit
+also installs a downloaded update. Downgrades are refused. Beta has no feed or
+updater, and development builds drop the feed: only `prepare:release-resources`
+stages it, from the committed manifest or `OPENSTEER_DESKTOP_UPDATE_FEED_URL` for
+a private test build. The stable release manifest marks the About panel version
+as Alpha.
+See the [updater](../apps/desktop/src/app/desktop-updater.ts),
+[shutdown](../apps/desktop/src/app/desktop-shutdown.ts), and
+[build policy](../apps/desktop/src/releases/desktop-update-policy.ts).
+
+## Stable channel without an Account
+
+The public stable Mac download is Opensteer (`com.opensteer.opensteer`). Its signed
+release policy sets `capabilities.connect: false` and omits `accountUrl` and
+`portalUrl`: the public Account service is not available yet. It must not contact
+`accounts.opensteer.com` or `accounts.beta.opensteer.com`. Beta keeps Connect and
+its staging Account unchanged.
+
+The app runs a Personal Host, agents, files, browser sessions and Passwords on the
+Mac without an Account. Private network HTTPS access and one-use pairing codes
+remain available, as does adding a self-hosted server with its own sign-in.
+Account sign-in, directory discovery/adoption, Opensteer Cloud, Connect and phone
+push from this Mac are unavailable. Desktop notifications still work. Managed
+integration OAuth and hosted callback relays are unavailable; API keys and your
+own OAuth apps work where the provider accepts the deployment's callback URL.
+OAuth release identity remains required for Host-native sign-in.

@@ -401,6 +401,12 @@ Deliberately not in v1, each for a stated reason rather than for lack of time:
 
 ## 2. Model
 
+The public stable Mac app offers Private network access and pairing codes without
+an Opensteer Account. A phone can pair over that reachable HTTPS address. Connect,
+Account discovery and phone push from that Mac are unavailable until an Account
+service ships; local desktop notifications and live in-app updates still work.
+Beta continues to use its staging Account.
+
 A phone always resolves with a **null local runtime** — the owner arm belongs to the computer at
 the keyboard — so `describeConnectionAccess(connection, null)` decides every row
 (`apps/mobile/src/client/deployment-rows.ts`).

@@ -1,3 +1,4 @@
+import { stageDesktopUpdatePolicy } from "../src/releases/desktop-update-policy.js";
 import { requiredEnvironmentValue } from "@opensteer/shared/envParsing";
 import { assertRegularFile, setFileMode } from "@opensteer/shared/privateFiles";
 import { spawn } from "node:child_process";
@@ -177,13 +178,20 @@ async function main(): Promise<void> {
       ].map((name) => mkdir(path.join(temporary, name), { mode: 0o700, recursive: true })),
     );
     await writeJson(path.join(temporary, "desktop", "release.json"), {
-      ...releaseProfile,
+      ...stageDesktopUpdatePolicy(
+        releaseProfile,
+        targetOs,
+        targetArch,
+        process.env.OPENSTEER_DESKTOP_UPDATE_FEED_URL,
+      ),
       capabilities: {
         ...releaseProfile.capabilities,
         localAgents: true,
         portableFs: includePortableFs,
       },
     });
+
+    readEmbeddedDesktopRelease(path.join(temporary, "desktop", "release.json"));
 
     const cloudflaredName = targetOs === "win32" ? "cloudflared.exe" : "cloudflared";
     const cloudflaredTarget = path.join(temporary, "cloudflared", cloudflaredName);

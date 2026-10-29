@@ -21,11 +21,15 @@ const desktopReleases = [
 ].map((path) => {
   const release = JSON.parse(
     readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8"),
-  ) as { readonly oauth: NativeReleaseIdentity };
-  return release.oauth;
+  ) as {
+    readonly oauth: NativeReleaseIdentity;
+    readonly capabilities: { readonly connect: boolean };
+  };
+  return { ...release.oauth, connect: release.capabilities.connect };
 });
 
-const mobileRelease: NativeReleaseIdentity = {
+const mobileRelease: NativeReleaseIdentity & { readonly connect: boolean } = {
+  connect: true,
   accountCallback: opensteerMobileAccountOAuthCallback,
   clientId: opensteerMobileOAuthClientId,
   hostCallback: opensteerMobileHostOAuthCallback,
@@ -35,14 +39,15 @@ describe("native OAuth release registry", () => {
   it.each([...desktopReleases, mobileRelease])(
     "registers $clientId on every authorization server it can reach",
     (release) => {
-      expect(opensteerAccountNativeOAuthClients).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            clientId: release.clientId,
-            redirectUris: expect.arrayContaining([release.accountCallback]),
-          }),
-        ]),
-      );
+      if (release.connect)
+        expect(opensteerAccountNativeOAuthClients).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              clientId: release.clientId,
+              redirectUris: expect.arrayContaining([release.accountCallback]),
+            }),
+          ]),
+        );
       expect(opensteerHostNativeOAuthClients).toEqual(
         expect.arrayContaining([
           expect.objectContaining({

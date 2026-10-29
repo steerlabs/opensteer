@@ -182,27 +182,22 @@ function readPackagedDesktopPolicy(archivePath) {
   const desktopManifest = asarFile(archivePath, "dist/desktop-release.json");
   const desktop = exactObject(
     desktopManifest,
-    ["accountUrl", "application", "capabilities", "oauth", "schemaVersion"],
-    // Only a build that belongs to a managed portal carries one; a self-hosted
-    // build's manifest stays exactly as it was.
-    ["portalUrl"],
+    ["application", "capabilities", "oauth", "schemaVersion"],
+    // Service origins are present only when the build offers those services;
+    // only a stable Mac arm64 build carries an update feed.
+    ["accountUrl", "portalUrl", "updates"],
   );
-  if (typeof desktop.accountUrl !== "string") {
-    throw new Error("Packaged Desktop manifest is invalid.");
-  }
-  const account = new URL(desktop.accountUrl);
   if (
     desktop.schemaVersion !== 6 ||
-    account.protocol !== "https:" ||
-    account.username ||
-    account.password ||
-    account.pathname !== "/" ||
-    account.search ||
-    account.hash ||
+    !bareHttpsOriginOrAbsent(desktop.accountUrl) ||
+    (desktop.capabilities?.connect === true
+      ? typeof desktop.accountUrl !== "string"
+      : desktop.accountUrl !== undefined) ||
     !exactApplication(desktop.application) ||
     !exactCapabilities(desktop.capabilities) ||
     !exactOAuthIdentity(desktop.oauth) ||
-    !bareHttpsOriginOrAbsent(desktop.portalUrl)
+    !bareHttpsOriginOrAbsent(desktop.portalUrl) ||
+    !updateFeedOrAbsent(desktop.updates)
   ) {
     throw new Error("Packaged Desktop manifest is invalid.");
   }
@@ -228,12 +223,34 @@ function bareHttpsOriginOrAbsent(value) {
   );
 }
 
+function updateFeedOrAbsent(value) {
+  if (value === undefined) return true;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    JSON.stringify(Object.keys(value)) !== JSON.stringify(["feedUrl"]) ||
+    typeof value.feedUrl !== "string"
+  )
+    return false;
+  let url;
+  try {
+    url = new URL(value.feedUrl);
+  } catch {
+    return false;
+  }
+  return url.protocol === "https:" && !url.username && !url.password && !url.hash;
+}
+
 function exactApplication(value) {
+  const keys = ["channel", "id", "name"];
+  if (value?.stage !== undefined) keys.push("stage");
   return (
     value &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).sort()) === JSON.stringify(["channel", "id", "name"]) &&
+    JSON.stringify(Object.keys(value).sort()) === JSON.stringify(keys.sort()) &&
+    (value.stage === undefined || value.stage === "alpha") &&
     ["beta", "stable"].includes(value.channel) &&
     /^[a-z][a-z0-9]*(?:\.[a-z0-9][a-z0-9-]*)+$/u.test(value.id) &&
     typeof value.name === "string" &&
@@ -614,7 +631,7 @@ function exactCapabilities(value) {
     !Array.isArray(value) &&
     JSON.stringify(Object.keys(value).sort()) ===
       JSON.stringify(["connect", "localAgents", "personal", "portableFs"].sort()) &&
-    value.connect === true &&
+    typeof value.connect === "boolean" &&
     value.personal === true &&
     typeof value.localAgents === "boolean" &&
     typeof value.portableFs === "boolean"

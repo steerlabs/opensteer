@@ -1228,6 +1228,7 @@ export async function createHostRuntime(
     // through: an attached server Host, or a Personal Host whose owner has
     // linked one.
     const accountAttachment = config.account;
+    const personalAccountIssuer = config.personalAccountIssuer;
     const notificationTarget: (() => Promise<NotificationPublicationTarget | null>) | undefined =
       accountAttachment
         ? () =>
@@ -1235,13 +1236,14 @@ export async function createHostRuntime(
               controlApiOrigin: accountAttachment.controlApiOrigin,
               hostCredential: accountAttachment.hostCredential,
             })
-        : personalRemoteAccess
+        : personalRemoteAccess && personalAccountIssuer
           ? async () => {
               const link = await database
                 .selectFrom("personalRemoteAccountLink")
                 .select(["hostCredential", "issuer"])
                 .where("singletonKey", "=", "opensteer-account")
                 .where("state", "=", "active")
+                .where("issuer", "=", personalAccountIssuer.origin)
                 .executeTakeFirst();
               return link
                 ? {

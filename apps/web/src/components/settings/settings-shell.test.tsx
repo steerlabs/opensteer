@@ -91,6 +91,24 @@ describe("Device settings placement", () => {
 });
 
 describe("Settings identity honesty", () => {
+  it("keeps the private access choice and hides unavailable Account actions", () => {
+    const context = placementFixtures()["personal-this-computer"];
+    const deploymentAccess = {
+      ...context.deploymentAccess!,
+      account: { available: false, status: "signed-out" as const },
+    };
+    const account = renderSettings({ ...context, deploymentAccess }, "/settings/account");
+    expect(account).toContain("isn’t available yet");
+    expect(account).not.toContain(">Sign in<");
+    expect(renderSettings({ ...context, deploymentAccess }, "/settings/general")).not.toContain(
+      "Add to your Account",
+    );
+    const html = renderSettings({ ...context, deploymentAccess }, "/settings/devices");
+    expect(html).toContain("Opensteer Connect isn’t available yet");
+    expect(html).not.toContain('value="connect"');
+    expect(html).toContain('value="private"');
+  });
+
   it("never renders the seeded machine-owner address in any placement", () => {
     for (const [placement, context] of Object.entries(placementFixtures())) {
       for (const path of [

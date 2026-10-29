@@ -117,3 +117,35 @@ it("aggregate disposal errors retain every cause, continue cleanup, and repeated
   expect(application.exit).toHaveBeenCalledExactlyOnceWith(1);
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each([false, true])(
+  "update shutdown cleans up before handoff and bounds Squirrel termination (throws=%s)",
+  async (throws) => {
+    const { shutdown, application } = fixture();
+    const sequence: string[] = [];
+    shutdown.add({
+      component: "personal",
+      step: "stop",
+      order: 10,
+      timeoutMs: 1000,
+      stop: () => {
+        sequence.push("children-stopped");
+      },
+    });
+    const install = () => {
+      sequence.push("windows-destroyed-and-install");
+      application.emit("before-quit", { preventDefault: prevented });
+      if (throws) throw new Error("private URL must not be logged");
+    };
+    const prevented = vi.fn();
+    shutdown.requestUpdate(install);
+    shutdown.request("repeated");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sequence).toEqual(["children-stopped", "windows-destroyed-and-install"]);
+    expect(prevented).not.toHaveBeenCalled();
+    if (!throws) expect(application.exit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(desktopShutdownTimeoutMs);
+    expect(application.exit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);

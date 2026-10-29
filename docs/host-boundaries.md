@@ -4,6 +4,13 @@ Read this when changing Deployment configuration, client authentication or the
 Host API. Integration-provider OAuth has its own
 [contract](integration-oauth.md); client routing lives in [Connections](connections.md).
 
+The public stable Mac app omits `OPENSTEER_PERSONAL_ACCOUNT_ISSUER` from its Personal
+Host. No Account authority or hosted OAuth broker is constructed. Local ownership,
+private HTTPS access and pairing remain available; Host-native OAuth for added
+servers retains the desktop release identity. Stored Personal Account links cannot
+create Account clients without a matching configured issuer, and phone push uses
+that same issuer fence. Beta keeps its Account authority.
+
 ## Deployment configuration
 
 [Config validation](../packages/config/src/config.ts) owns the combinations of
