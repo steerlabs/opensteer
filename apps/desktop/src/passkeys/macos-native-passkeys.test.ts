@@ -89,10 +89,10 @@ test("eligibility respects OS, attachment, ES256 and security-key parameters", (
   for (const [attachment, alg, keys, expected] of [
     [undefined, -7, true, ["platform", "security-key"]],
     ["platform", -7, true, ["platform"]],
-    ["cross-platform", -7, true, ["platform", "security-key"]],
+    ["cross-platform", -7, true, ["security-key"]],
     [undefined, -257, true, ["security-key"]],
     [undefined, -7, false, ["platform"]],
-    ["cross-platform", -7, false, ["platform"]],
+    ["cross-platform", -7, false, []],
     ["platform", -257, true, []],
   ] as const) {
     r.options.authenticatorSelection.authenticatorAttachment = attachment;
@@ -104,30 +104,45 @@ test("eligibility respects OS, attachment, ES256 and security-key parameters", (
   expect(buildMacosPasskeyRequest(r, 7, true).providers).toEqual([]);
 });
 
-test("cross-platform registration keeps the phone path through the platform provider", () => {
+test("cross-platform registration offers nearby phones only when the RP hints hybrid", () => {
   const r = request();
   if (r.op !== "create") throw Error();
   r.options.authenticatorSelection.authenticatorAttachment = "cross-platform";
   r.options.pubKeyCredParams = [{ type: "public-key", alg: -7 }];
-  // AuthenticationServices offers nearby phones only through the platform request.
+  // The platform sheet can always save a local passkey, which this attachment forbids.
+  expect(buildMacosPasskeyRequest(r, 7, true).providers).toEqual(["security-key"]);
+  expect(buildMacosPasskeyRequest(r, 7, false).providers).toEqual([]);
+  // Nearby phones are offered only through the platform request.
+  r.options.hints = ["hybrid"];
   expect(buildMacosPasskeyRequest(r, 7, true)).toMatchObject({
     providers: ["platform", "security-key"],
     shouldShowHybridTransport: true,
   });
-  // Before the security-key APIs (macOS 13.5 to 14.3), a phone is the only roaming choice.
-  expect(buildMacosPasskeyRequest(r, 7, false)).toMatchObject({
-    providers: ["platform"],
-    shouldShowHybridTransport: true,
-  });
-  // Without the phone path the platform request could only save a local passkey.
-  r.options.hints = ["security-key"];
-  expect(buildMacosPasskeyRequest(r, 7, true)).toMatchObject({
-    providers: ["security-key"],
-    shouldShowHybridTransport: false,
-  });
-  r.options.hints = undefined;
+  expect(buildMacosPasskeyRequest(r, 7, false).providers).toEqual(["platform"]);
+  r.options.hints = ["security-key", "hybrid"];
+  expect(buildMacosPasskeyRequest(r, 7, true).providers).toEqual(["security-key"]);
+  r.options.hints = ["hybrid"];
   r.options.pubKeyCredParams = [{ type: "public-key", alg: -257 }];
   expect(buildMacosPasskeyRequest(r, 7, true).providers).toEqual(["security-key"]);
+});
+
+test("refuses a local passkey for a cross-platform registration", () => {
+  const r = request();
+  if (r.op !== "create") throw Error();
+  r.options.authenticatorSelection.authenticatorAttachment = "cross-platform";
+  r.options.hints = ["hybrid"];
+  const raw = result(r);
+  expect(
+    mapMacosPasskeyResult(r, { ...raw, provider: "platform", attachment: "cross-platform" }),
+  ).toMatchObject({ kind: "created", authenticatorAttachment: "cross-platform" });
+  // A local result, or one whose attachment the OS does not report, is not a roaming credential.
+  for (const attachment of ["platform", null] as const)
+    expect(() => mapMacosPasskeyResult(r, { ...raw, provider: "platform", attachment })).toThrow(
+      "attachment",
+    );
+  expect(
+    mapMacosPasskeyResult(r, { ...raw, provider: "security-key", attachment: null }),
+  ).toMatchObject({ kind: "created" });
 });
 
 test("maps challenge, identity, deadlines, UV, resident key, exclusions and none attestation", () => {

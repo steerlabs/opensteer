@@ -72,10 +72,14 @@ if (process.argv.includes("--unsigned")) {
   const { preparePasskeySigning } =
     require("./passkeys-signing.cjs") as typeof import("./passkeys-signing.cjs");
   const { desktopReleaseIdentity } = require("./macos-release-identity.cjs") as {
-    desktopReleaseIdentity(channel: "stable" | "beta"): import("./passkeys-signing.cjs").PasskeySigningIdentity;
+    desktopReleaseIdentity(
+      channel: "stable" | "beta",
+    ): import("./passkeys-signing.cjs").PasskeySigningIdentity;
   };
   const passkeySigningArguments = preparePasskeySigning(
-    desktopDirectory, releaseEnvironment, desktopReleaseIdentity(releaseChannel),
+    desktopDirectory,
+    releaseEnvironment,
+    desktopReleaseIdentity(releaseChannel),
   );
   if (!deferNotarization) requireNotarizationAuthority(releaseEnvironment);
 

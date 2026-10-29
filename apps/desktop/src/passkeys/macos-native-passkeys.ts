@@ -136,10 +136,11 @@ export function buildMacosPasskeyRequest(
           ));
   const providers: ("platform" | "security-key")[] = [];
   if (!get || !descriptors.length || credentials.length) {
-    // Nearby phones are offered only through the platform request, so a
-    // cross-platform registration keeps it whenever it shows that path.
+    // Nearby phones are offered only through the platform request, which can
+    // also save a local passkey; a cross-platform registration uses it only
+    // when the RP asks for a phone, and its result must still be roaming.
     if (
-      (attachment !== "cross-platform" || shouldShowHybridTransport) &&
+      (attachment !== "cross-platform" || hint === "hybrid") &&
       (!create || algorithms.includes(-7))
     )
       providers.push("platform");
@@ -217,6 +218,12 @@ export function mapMacosPasskeyResult(
       )
     )
       throw new TypeError("Unrequested native algorithm");
+    if (
+      request.options.authenticatorSelection.authenticatorAttachment === "cross-platform" &&
+      result.provider === "platform" &&
+      result.attachment !== "cross-platform"
+    )
+      throw new TypeError("Unrequested native attachment");
     return {
       kind: "created",
       ...common,
