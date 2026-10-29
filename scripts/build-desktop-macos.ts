@@ -1,10 +1,10 @@
 /** Build all package inputs from this checkout and pinned public upstream sources. */
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
 import { appendFile, copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { sha256File } from "@opensteer/shared/fileDigest";
 import { runBounded } from "./command-runner.js";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -18,6 +18,8 @@ const { values } = parseArgs({
 });
 const out = path.resolve(z.string().min(1).parse(values.out));
 const unsigned = values.unsigned === true;
+if (out === root || out.startsWith(root + path.sep))
+  throw Error("Build scratch must be outside the checkout");
 if (process.platform !== "darwin" || process.arch !== "arm64") throw Error("Requires an arm64 Mac");
 const mode = readSigningMode({ ...process.env, OPENSTEER_DESKTOP_RELEASE: unsigned ? "0" : "1" });
 if (unsigned && mode.mode !== "development") throw Error("Unsigned proof refuses signing inputs");
@@ -43,11 +45,6 @@ const pnpm = z.string().min(1).parse(process.env.npm_execpath);
 async function desktop(...args: string[]) {
   await run(process.execPath, [pnpm, "--dir", "apps/desktop", ...args]);
 }
-async function hash(file: string) {
-  return createHash("sha256")
-    .update(await readFile(file))
-    .digest("hex");
-}
 async function download(url: string, filename: string, digest: string) {
   await run("curl", [
     "--fail",
@@ -64,14 +61,15 @@ async function download(url: string, filename: string, digest: string) {
     filename,
     url,
   ]);
-  if ((await hash(filename)) !== digest)
+  if ((await sha256File(filename)) !== digest)
     throw Error(`Upstream digest mismatch: ${path.basename(filename)}`);
 }
 await mkdir(out, { recursive: true });
-const version = z
-  .string()
-  .regex(/^\d+\.\d+\.\d+$/u)
-  .parse(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version);
+const { version } = z
+  .object({ version: z.string().regex(/^\d+\.\d+\.\d+$/u) })
+  .parse(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")));
+if (process.env.OPENSTEER_RELEASE_VERSION && process.env.OPENSTEER_RELEASE_VERSION !== version)
+  throw Error("Requested version differs from checkout");
 const sha = (await run("git", ["rev-parse", "HEAD"], root, true)).trim();
 if ((await run("git", ["status", "--porcelain=v1", "--untracked-files=all"], root, true)).trim())
   throw Error("Build requires a clean checkout");
@@ -109,7 +107,7 @@ await run(
 await run("make", ["-j4"], source);
 await run("make", ["install"], source);
 // Relocate our own build before the runtime's external-dependency gate checks it.
-for (const directory of ["bin", "lib", "lib/postgresql"]) {
+for (const directory of ["bin", "lib"]) {
   const base = path.join(postgres, directory);
   for (const entry of await readdir(base, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
@@ -160,9 +158,9 @@ Object.assign(env, {
   OPENSTEER_PERSONAL_RUNTIME_SOURCE: path.join(out, "runtime"),
   OPENSTEER_PERSONAL_RUNTIME_OUTPUT: path.join(out, "runtime"),
   OPENSTEER_PROCESS_SUPERVISOR_BINARY_SOURCE: supervisor,
-  OPENSTEER_PROCESS_SUPERVISOR_BINARY_SHA256: await hash(supervisor),
+  OPENSTEER_PROCESS_SUPERVISOR_BINARY_SHA256: await sha256File(supervisor),
   OPENSTEER_CLOUDFLARED_BINARY_SOURCE: cloudflared,
-  OPENSTEER_CLOUDFLARED_BINARY_SHA256: await hash(cloudflared),
+  OPENSTEER_CLOUDFLARED_BINARY_SHA256: await sha256File(cloudflared),
   OPENSTEER_CLOUDFLARED_RELEASE_VERSION: "2026.10.0",
 });
 if (unsigned) {
@@ -174,7 +172,7 @@ if (unsigned) {
   // receipt must live outside that tree through after-pack verification.
   const receipt = path.join(out, agentPhoneReceiptName);
   await copyFile(path.join(phone, agentPhoneReceiptName), receipt);
-  const digest = await hash(receipt);
+  const digest = await sha256File(receipt);
   verifyAgentPhoneRelease(phone, receipt, { sourceRevision: sha, version, receiptSha256: digest });
   Object.assign(env, {
     OPENSTEER_AGENT_PHONE_RELEASE_RECEIPT: receipt,
@@ -191,8 +189,8 @@ await writeFile(
       sourceRevision: sha,
       version,
       unsigned,
-      supervisorSha256: await hash(supervisor),
-      cloudflaredSha256: await hash(cloudflared),
+      supervisorSha256: await sha256File(supervisor),
+      cloudflaredSha256: await sha256File(cloudflared),
     },
     null,
     2,
