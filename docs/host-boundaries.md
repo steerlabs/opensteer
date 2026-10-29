@@ -138,9 +138,15 @@ is not protection against a non-browser caller holding a stolen token.
 ## Compatibility
 
 Compatibility starts with the first public release: "the previous release" a wire
-change must stay readable by is a public release. Pre-launch builds, including the
-0.1.181 and 0.1.207 epoch-48 clients, are not a compatibility target, and no test
-builds them. Pre-launch versions named below record why a gate or field exists.
+change must stay readable by is a public release.
+[previous-release-compat.integration.test.ts](../apps/host/src/agents/previous-release-compat.integration.test.ts)
+builds that release's client from its commit, `previousPublicRelease` (the public
+launch commit, 0.1.219), and drives discovery, subscription, reads, shared Done and
+ordinary mutations against the current Host. Move the baseline to each public
+release as it ships. CI checkouts are shallow, so the integration job fetches that
+commit first. Pre-launch builds, including the 0.1.181 and 0.1.207 epoch-48
+clients, are not a compatibility target; pre-launch versions named below record
+why a gate or field exists.
 
 Browser editing adds no epoch or binary image header change. Its version and
 clipboard capability negotiation are specified in [Remote editing](browser-sessions.md#remote-editing).

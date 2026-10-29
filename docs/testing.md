@@ -159,9 +159,12 @@ shards also upload enforcing lock graphs, merged through the global cycle check;
 each shard's graph must trace every file that shard ran. Tests that need Darwin
 kernel locks (`darwinOnlyTests` in
 [ci-test-files.mjs](../.github/scripts/ci-test-files.mjs)) leave the Linux shards
-and run in the native-mac lane. Missing or corrupt evidence fails Check. Main runs every public lane and is never
-cancelled by a newer main push. GUI, device and account suites require their
-separate environments.
+and run in the native-mac lane. Integration shards run `pnpm test:integration`
+with its own tmpfs PostgreSQL, as local runs do. Browser tests get the pinned
+Playwright Chromium through `OPENSTEER_CHROMIUM_EXECUTABLE`, never the runner
+image's browsers. Missing or corrupt evidence fails Check. Main runs every public
+lane and is never cancelled by a newer main push. GUI, device and account suites
+require their separate environments.
 
 Tabs profile filtering is covered by `pnpm --filter @opensteer/web
 test:tab-profile-filter` (headless Chromium and the mock Host). Its repeatable

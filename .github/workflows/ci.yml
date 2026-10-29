@@ -153,18 +153,9 @@ jobs:
       CI_SHARD: ${{ matrix.shard }}
       CI_SHARDS: "4"
       OPENSTEER_LOCK_ORDER_MODE: enforce
-      OPENSTEER_TEST_DATABASE_URL: postgres://opensteer:opensteer@127.0.0.1:5432/opensteer
-      OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL: postgres://opensteer:opensteer@127.0.0.1:5432/opensteer_control_plane
-    services:
-      postgres:
-        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
-        env:
-          POSTGRES_DB: opensteer
-          POSTGRES_USER: opensteer
-          POSTGRES_PASSWORD: opensteer
-        ports:
-          - 5432:5432
-        options: --health-cmd "pg_isready -U opensteer -d opensteer" --health-interval 2s --health-timeout 3s --health-retries 20
+    # pnpm test:integration starts its own disposable PostgreSQL on tmpfs, as it
+    # does locally. A disk-backed server pays real fsyncs for every checkpoint
+    # that DROP DATABASE forces, which exceeded fixture cleanup bounds on hosted runners.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -179,9 +170,12 @@ jobs:
           } >> "$GITHUB_ENV"
         shell: bash
       - uses: ./.github/actions/ci-browser
-      - run: psql -h 127.0.0.1 -U opensteer -d opensteer -c 'CREATE DATABASE opensteer_control_plane;'
-        env:
-          PGPASSWORD: opensteer
+      - name: Fetch the previous public release for compatibility journeys
+        shell: bash
+        run: |
+          revision="$(sed -nE 's/^export const previousPublicRelease = "([0-9a-f]{40})";$/\1/p' apps/host/src/agents/previous-release-reader.test-support.ts)"
+          test -n "$revision"
+          git fetch --no-tags --depth=1 origin "$revision"
       - run: pnpm exec vitest list --config vitest.integration.config.ts --filesOnly --json "$CI_DISCOVERY_PATH"
       - shell: bash
         run: |
