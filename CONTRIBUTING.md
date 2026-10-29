@@ -1,8 +1,10 @@
 # Contributing
 
 Use the tool versions in [package.json](package.json) and follow
-[README.md](README.md) for setup. Open a focused pull request with the problem,
-resulting behavior and validation. Reproduce bugs before changing code.
+[README.md](README.md) for setup. Work on a branch and open a focused pull
+request on [steerlabs/opensteer](https://github.com/steerlabs/opensteer) with the
+problem, resulting behavior and validation. Reproduce bugs before changing code.
+The required `Check` must pass; pull requests are squash-merged.
 
 Run checks covering your change as described in [Testing](docs/testing.md).
 GUI journeys run in the supported macOS test environment. Keep documentation near

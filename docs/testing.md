@@ -21,17 +21,9 @@ maintainer reads.
 
 ## How changes land
 
-Work in your own worktree on a small branch. Open one PR per change with a
-conventional title (`fix:`, `feat:`, `docs:`, `refactor:`, `test:`, `chore:`).
-Before pushing, run `pnpm check:changed --base origin/main` and the focused
-journey that proves the behavior. Include what changed, why, evidence and any
-checks you could not run in the PR.
-
-After pushing, use `watch_pull_request`. Fix failing checks on the branch; never
-weaken a test to land. Squash merge when `Check` is green. No batching or
-up-to-date requirement. Main runs the full CI suite; fix forward or revert a red
-main immediately. Real desktop journeys run after merge and on maintainer
-request. Release builders consume the green main SHA.
+Changes land as pull requests on steerlabs/opensteer, squash-merged once the
+required `Check` passes; [Landing changes](../AGENTS.md#landing-changes) covers
+the steps and who may merge.
 
 ## Suites
 
