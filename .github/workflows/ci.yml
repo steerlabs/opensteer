@@ -247,7 +247,6 @@ jobs:
         run: |
           swift test --package-path packages/apple-data
           swift test --package-path apps/mobile/modules/iphone-apps/ios
-          OPENSTEER_IPHONE_APPS_NATIVE_TESTS=1 pnpm exec vitest run tests/iphone-apps-wire.test.ts
       - name: Test computer use
         if: matrix.task == 'computer-tests'
         run: swift test --package-path apps/desktop/native/computer-use
@@ -263,6 +262,8 @@ jobs:
           CI_SHARDS: 1
           CI_DISCOVERY_PATH: ${{ runner.temp }}/evidence/darwin-1.discovered.json
           CI_INVENTORY_PATH: ${{ runner.temp }}/evidence/darwin-1.inventory.json
+          # tests/iphone-apps-wire.test.ts, a Darwin-only file, runs the Swift wire core built above.
+          OPENSTEER_IPHONE_APPS_NATIVE_TESTS: "1"
         run: |
           pnpm exec vitest run tests/helper-data-contracts.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords
           darwin_only=$(node .github/scripts/ci-test-files.mjs darwin-only)
