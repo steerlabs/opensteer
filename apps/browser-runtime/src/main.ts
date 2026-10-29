@@ -102,6 +102,7 @@ async function main(): Promise<void> {
         enrollmentToken: config.relay.enrollmentToken,
         hostUrl: config.relay.hostUrl,
         headless: config.headless,
+        passkeys: launcher.passkeys,
         localPort: address.port,
         name: config.relay.name,
         mode: config.relay.mode,
@@ -140,6 +141,7 @@ async function startBrowserRelay(options: {
   readonly enrollmentToken: string | undefined;
   readonly hostUrl: URL;
   readonly headless: boolean;
+  readonly passkeys: 1 | undefined;
   readonly localPort: number;
   readonly name: string;
   readonly mode: import("@opensteer/core").RuntimeMode;
@@ -180,6 +182,7 @@ async function startBrowserRelay(options: {
           navigationVersion: 1,
           workspaceTabRestoreVersion: 1,
           captureRegion: 1,
+          ...(options.passkeys ? { passkeys: options.passkeys } : {}),
         },
       },
       name: options.name,

@@ -24,6 +24,7 @@
     "scripts/electron-display-renderer-smoke.ts",
     "scripts/electron-passwords-smoke.ts",
     "scripts/electron-cdp-boundary-smoke.ts",
+    "scripts/electron-browser-passkey-smoke.ts",
     "scripts/electron-profile-restore-smoke.ts",
     "scripts/fixtures/profile-restore-tls.ts",
     "scripts/electron-usb-smoke.ts",

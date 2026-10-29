@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { constants } from "node:fs";
@@ -23,7 +25,7 @@ import {
 } from "playwright-core";
 import {
   browserPageDisabledBlinkFeatures,
-  browserPagePolicyScript,
+  browserPagePolicyScriptFor,
 } from "@opensteer/browser-runtime-core/page-policy";
 import {
   siteCookieReplacementBatch,
@@ -35,7 +37,16 @@ import {
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
 
+import {
+  PasskeyBridge,
+  createPasskeyProviderConfig,
+} from "@opensteer/browser-runtime-core/passkey-bridge";
+import type { BrowserPagePolicyConfig } from "@opensteer/browser-runtime-core/page-policy";
+import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
+
 interface PlaywrightChromiumLauncherOptions {
+  authenticator?: PasskeyAuthenticator;
+  args?: readonly string[];
   chromiumSandbox: boolean;
   environment?: Readonly<NodeJS.ProcessEnv>;
   executablePath: string;
@@ -98,7 +109,46 @@ function environmentValue(
   return undefined;
 }
 
+/** Tests support for browser-owned current Security state, without navigating. */
+export async function probePasskeySecurityState(
+  session: Pick<CdpSession, "on" | "off" | "send">,
+): Promise<boolean> {
+  const state = z.object({
+    visibleSecurityState: z.object({
+      securityState: z.enum([
+        "unknown",
+        "neutral",
+        "insecure",
+        "secure",
+        "info",
+        "insecure-broken",
+      ]),
+    }),
+  });
+  const observed = Promise.withResolvers<boolean>();
+  const listener = (value: unknown) => {
+    if (state.safeParse(value).success) observed.resolve(true);
+  };
+  session.on("Security.visibleSecurityStateChanged", listener);
+  try {
+    return await withTimeout(
+      Promise.all([session.send("Security.enable"), observed.promise]).then(() => true),
+      500,
+      { timeoutError: () => new Error("Browser Security state unavailable.") },
+    ).catch(() => false);
+  } finally {
+    session.off("Security.visibleSecurityStateChanged", listener);
+  }
+}
+
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
+  private preparation: Promise<void> | undefined;
+  private securityStateAvailable = false;
+  get passkeys(): 1 | undefined {
+    return this.authenticator && this.securityStateAvailable ? 1 : undefined;
+  }
+  private readonly authenticator: PasskeyAuthenticator | undefined;
+  private readonly args: readonly string[];
   private readonly childEnvironment: Readonly<Record<string, string>>;
   private readonly chromiumSandbox: boolean;
   private readonly executablePath: string;
@@ -109,6 +159,8 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     if (!path.isAbsolute(options.executablePath)) {
       throw new Error("Chromium executablePath must be absolute.");
     }
+    this.authenticator = options.authenticator;
+    this.args = options.args ?? [];
     this.chromiumSandbox = options.chromiumSandbox;
     this.childEnvironment = createChromiumChildEnvironment(
       options.environment ?? process.env,
@@ -120,11 +172,11 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     this.proxyUrl = options.proxyUrl;
   }
 
-  async launch(request: BrowserLaunchRequest, signal?: AbortSignal): Promise<LaunchedBrowser> {
-    signal?.throwIfAborted();
-    await access(this.executablePath, constants.X_OK);
-    const browserServer = await chromium.launchServer({
+  private startServer(timeout?: number): Promise<PlaywrightBrowserServer> {
+    return chromium.launchServer({
+      ...(timeout === undefined ? {} : { timeout }),
       args: [
+        ...this.args,
         `--disable-blink-features=${browserPageDisabledBlinkFeatures}`,
         ...(this.proxyUrl
           ? [
@@ -145,6 +197,56 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       host: "127.0.0.1",
       ...(this.proxyUrl ? { proxy: { server: this.proxyUrl } } : {}),
     });
+  }
+
+  prepare(): Promise<void> {
+    this.preparation ??= (async () => {
+      if (!this.authenticator) return;
+      let server: PlaywrightBrowserServer | undefined;
+      try {
+        server = await this.startServer(2000);
+        const current = server;
+        this.securityStateAvailable = await withTimeout(
+          (async () => {
+            const browser = await chromium.connect(current.wsEndpoint());
+            const context = await browser.newContext();
+            const page = await context.newPage();
+            const session = await context.newCDPSession(page);
+            return probePasskeySecurityState(new PlaywrightCdpHandle(session));
+          })(),
+          2000,
+          { timeoutError: () => new Error("Browser Security probe timed out.") },
+        );
+      } catch {
+        this.securityStateAvailable = false;
+      } finally {
+        if (server) {
+          const owned = server;
+          await withTimeout(owned.kill(), 1500, {
+            timeoutError: () => new Error("Browser probe cleanup timed out."),
+          }).catch(() => {
+            this.securityStateAvailable = false;
+            try {
+              owned.process().kill("SIGKILL");
+            } catch {
+              /* An exited child needs no further cleanup. */
+            }
+          });
+        }
+      }
+      if (!this.securityStateAvailable)
+        process.stderr.write(
+          '{"event":"browser-runtime.passkeys-unavailable","reason":"Browser did not provide visible Security state; using absent policy."}\n',
+        );
+    })();
+    return this.preparation;
+  }
+
+  async launch(request: BrowserLaunchRequest, signal?: AbortSignal): Promise<LaunchedBrowser> {
+    signal?.throwIfAborted();
+    await access(this.executablePath, constants.X_OK);
+    await this.prepare();
+    const browserServer = await this.startServer();
     let stopped: Promise<void> | undefined;
     const owner = {
       kill: () => {
@@ -170,7 +272,13 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       });
       // Before the first page: Playwright installs it in every later page,
       // popup and frame ahead of the page's own scripts.
-      await context.addInitScript({ content: browserPagePolicyScript });
+      // Context init scripts precede popup page events. One random binding per
+      // isolated context lets those first scripts queue until their page attaches.
+      const authenticator = this.passkeys ? this.authenticator : undefined;
+      const providerConfig = authenticator ? createPasskeyProviderConfig() : undefined;
+      await context.addInitScript({
+        content: browserPagePolicyScriptFor(providerConfig),
+      });
       // Subscribe before creating pages: an inline popup dialog can precede
       // the client's per-page listener, especially over Playwright's transport.
       // Without this context subscription Playwright dismisses it at once.
@@ -206,6 +314,8 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         browserContextId,
         openDialogs,
         request.snapshot,
+        authenticator,
+        providerConfig,
       );
       if (this.headless) launched.clipboard = await ChromiumClipboard.create(browser);
       // Sessions' agents hear of the pages they own as Chromium announces
@@ -239,13 +349,33 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     browserContextId: string,
     openDialogs: Map<Page, Dialog>,
     lastSnapshot: BrowserProfileSnapshot,
+    authenticator?: PasskeyAuthenticator,
+    providerConfig?: BrowserPagePolicyConfig,
   ) {
     this.browserServer = browserServer;
     this.lastSnapshot = lastSnapshot;
     this.browserCdp = browserCdp;
     this.browserContextId = browserContextId;
     this.playwrightContext = context;
-    this.contextHandle = new PlaywrightContextHandle(context, openDialogs);
+    this.contextHandle = new PlaywrightContextHandle(
+      context,
+      openDialogs,
+      authenticator,
+      providerConfig,
+    );
+    if (authenticator) {
+      for (const page of context.pages())
+        void this.contextHandle
+          .wrap(page)
+          .cdp()
+          .catch(() => page.close());
+      context.on("page", (page) => {
+        void this.contextHandle
+          .wrap(page)
+          .cdp()
+          .catch(() => page.close());
+      });
+    }
     this.context = this.contextHandle;
     this.cdp = new PlaywrightBrowserCdpBackend(browserCdp, this.contextHandle, browserContextId);
   }
@@ -322,7 +452,17 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly pagesByPlaywrightPage = new Map<Page, PlaywrightPageHandle>();
   private readonly pageListeners = new Map<(page: BrowserPage) => void, (page: Page) => void>();
 
-  constructor(context: PlaywrightBrowserContext, openDialogs: Map<Page, Dialog>) {
+  readonly authenticator: PasskeyAuthenticator | undefined;
+  readonly providerConfig: BrowserPagePolicyConfig;
+
+  constructor(
+    context: PlaywrightBrowserContext,
+    openDialogs: Map<Page, Dialog>,
+    authenticator?: PasskeyAuthenticator,
+    providerConfig?: BrowserPagePolicyConfig,
+  ) {
+    this.authenticator = authenticator;
+    this.providerConfig = providerConfig;
     this.context = context;
     context.on("close", () => {
       this.closed = true;
@@ -410,9 +550,32 @@ class PlaywrightPageHandle implements BrowserPage {
   }
 
   cdp(): Promise<CdpSession> {
-    this.cdpPromise ??= this.context
-      .newCDPSession(this.page)
-      .then((session) => new PlaywrightPageCdpHandle(session, this.page, this.openDialogs));
+    this.cdpPromise ??= this.context.newCDPSession(this.page).then(async (session) => {
+      const channel = new PlaywrightPageCdpHandle(
+        session,
+        this.page,
+        this.openDialogs,
+        this.contextHandle.authenticator ? ["Network", "Security"] : [],
+      );
+      if (this.contextHandle.authenticator) {
+        const bridge = new PasskeyBridge(channel, this.contextHandle.authenticator, {
+          lateBootstrap: true,
+          ...(this.contextHandle.providerConfig
+            ? { config: this.contextHandle.providerConfig }
+            : {}),
+        });
+
+        this.page.once("close", () => bridge.close());
+        untypedCdp(session).on("close", () => bridge.close());
+        try {
+          await bridge.start();
+        } catch (error) {
+          bridge.close();
+          throw error;
+        }
+      }
+      return channel;
+    });
     return this.cdpPromise;
   }
 
@@ -511,6 +674,7 @@ class PlaywrightCdpHandle implements CdpSession {
   async detach(): Promise<void> {
     if (this.detached) return;
     this.detached = true;
+    for (const listener of this.subscriptions.get("close")?.keys() ?? []) listener({});
     this.eventRelay.close();
     for (const [event, listeners] of this.subscriptions) {
       for (const listener of listeners.values()) untypedCdp(this.session).off(event, listener);
@@ -564,6 +728,7 @@ class PlaywrightCdpHandle implements CdpSession {
  * its own Page handler, so the platform channel uses that original handle.
  */
 class PlaywrightPageCdpHandle extends PlaywrightCdpHandle {
+  private readonly persistentDomains: ReadonlySet<string>;
   private readonly page: Page;
   private readonly openDialogs: Map<Page, Dialog>;
   private readonly dialogListeners = new Map<
@@ -572,8 +737,14 @@ class PlaywrightPageCdpHandle extends PlaywrightCdpHandle {
   >();
   private readonly clearDialog = () => this.openDialogs.delete(this.page);
 
-  constructor(session: PlaywrightCdpSession, page: Page, openDialogs: Map<Page, Dialog>) {
+  constructor(
+    session: PlaywrightCdpSession,
+    page: Page,
+    openDialogs: Map<Page, Dialog>,
+    persistentDomains: readonly string[] = [],
+  ) {
     super(session);
+    this.persistentDomains = new Set(persistentDomains);
     this.page = page;
     this.openDialogs = openDialogs;
     super.on("Page.javascriptDialogClosed", this.clearDialog);
@@ -609,6 +780,13 @@ class PlaywrightPageCdpHandle extends PlaywrightCdpHandle {
     parameters?: Record<string, unknown>,
   ): Promise<Result> {
     if (this.detached) throw new Error("CDP session is closed.");
+    // Short platform leases cannot stop the provider's document observations.
+    // Detaching this same session releases the domains for the owning page.
+    if (
+      method.endsWith(".disable") &&
+      this.persistentDomains.has(method.slice(0, method.indexOf(".")))
+    )
+      return {} as Result;
     if (method !== "Page.handleJavaScriptDialog") return super.send<Result>(method, parameters);
     const dialog = this.openDialogs.get(this.page);
     if (!dialog) throw new Error("There is no active browser dialog.");
