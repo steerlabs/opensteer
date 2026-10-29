@@ -118,6 +118,9 @@ importers:
       '@types/ws':
         specifier: 'catalog:'
         version: 8.18.1
+      app-builder-lib:
+        specifier: 26.15.3
+        version: 26.15.3(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)
       esbuild:
         specifier: 0.28.2
         version: 0.28.2

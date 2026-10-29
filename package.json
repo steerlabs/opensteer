@@ -54,6 +54,7 @@
     "@opensteer/shared": "workspace:*",
     "@types/node": "26.2.0",
     "@types/ws": "catalog:",
+    "app-builder-lib": "26.15.3",
     "esbuild": "0.28.2",
     "oxlint": "1.77.0",
     "oxlint-tsgolint": "^7.0.2001",

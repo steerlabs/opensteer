@@ -54,24 +54,34 @@ readiness. Diagnose any reported launch error before proceeding.
 
 ## Public Mac download
 
-Public stable releases use `desktop-v<version>` tags and titles `Opensteer <version> (Alpha)`
-in `steerlabs/opensteer`, separate from its legacy `v*` tags. Each release has
-`Opensteer-mac-arm64.zip` (the pipeline archive unchanged), `opensteer-mac-arm64.json`
-(the Squirrel.Mac feed), `install.sh`, and `SHA256SUMS`.
+Both channels use numeric `X.Y.Z` app and bundle versions. Stable uses
+`desktop-vX.Y.Z`, title `Opensteer X.Y.Z (Alpha)`, and GitHub Latest
+(`prerelease=false`). Beta uses `vX.Y.Z-insider`, title `Opensteer Beta X.Y.Z`,
+and `prerelease=true, make_latest=false`; one beta per numeric version.
 
-Promotion builds the stable Opensteer identity from a commit Beta already ran,
-then signs, notarizes and staples it. Run `pnpm desktop:public-release prepare
---app-zip <absolute application.zip> --version <x.y.z> --source-sha <40hex>
---out <new absolute directory>`, then `draft --dir <directory> --repo
-steerlabs/opensteer`. Preparation writes a local `release.json`; the draft stores
-that manifest in its notes body. Default notes describe the alpha and include the
-install command; `prepare --notes-file <absolute file>` appends more. The feed
-name also says `(Alpha)`; versions and app/asset names stay unchanged. Identical
-drafts are reusable; differing drafts are refused. Only after a maintainer approves publication, `publish --repo steerlabs/opensteer --tag
-desktop-v<version>` first checks the draft's stored assets against its manifest,
-then sets `prerelease=false` and `make_latest=true`, then verifies anonymous asset
-downloads. Installers and updaters follow Latest at once, so drifted bytes never
-become public.
+Stable assets: `Opensteer-mac-arm64.zip`, `Opensteer-mac-arm64.zip.blockmap`,
+`latest-mac.yml`, `install.sh`, `SHA256SUMS`, `release.json`.
+Beta assets: `Opensteer-Beta-mac-arm64.zip`, `Opensteer-Beta-mac-arm64.zip.blockmap`,
+`insider-mac.yml`, `SHA256SUMS`, `release.json`. The channel YAML carries
+electron-updater SHA-512 and size metadata; SHA256SUMS covers all assets except
+itself and release.json. Blockmaps use app-builder-lib pinned to electron-builder's
+26.15.3 version so the producer matches the updater format.
+
+```sh
+pnpm desktop:public-release prepare --channel stable --app-zip <absolute.zip> --version X.Y.Z --source-sha <40hex> --out <new-absolute-dir>
+pnpm desktop:public-release draft --dir <absolute-dir> --repo steerlabs/opensteer --channel stable
+pnpm desktop:public-release publish --repo steerlabs/opensteer --tag desktop-vX.Y.Z --channel stable
+```
+
+Use `--channel beta` and `--tag vX.Y.Z-insider` for beta. Prepare checks the
+channel's bundle identity, numeric versions, source, arm64 executable, Developer ID
+signature/team, notarization, Gatekeeper, `OpensteerUpdateFeed` and the embedded
+`app-update.yml` GitHub provider/cache configuration. `--notes-file <absolute-file>`
+appends human release notes. Draft/publish infer the channel from the attached
+`release.json`; an explicit mismatch is refused. Identical draft bytes are reused,
+differing drafts refused. After maintainer approval, publish verifies every draft
+asset before changing visibility and Latest status, then checks anonymous downloads.
+A published-release rerun only verifies.
 
 Install with:
 
@@ -92,7 +102,8 @@ For VM mirrors, use `OPENSTEER_RELEASE_REPOSITORY_URL` (repository root),
 `OPENSTEER_INSTALL_DIRECTORY` (absolute physical target, without symlink ancestors), and `OPENSTEER_INSTALL_NO_OPEN=1`
 to suppress launch. `prepare --download-base <mirror>/releases/download
 --allow-private-feed` accepts a test build's embedded private feed. URLs require
-HTTPS, except loopback HTTP. Private-feed assets cannot be drafted or published
+HTTPS, except loopback HTTP. YAML asset URLs remain filenames because the
+GitHub provider derives download paths from its embedded host. Private-feed assets cannot be drafted or published
 to the public repository.
 
 ## Automatic updates
