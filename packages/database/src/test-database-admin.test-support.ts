@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { z } from "zod";
 import { createDatabase } from "./connection.js";
 import { migrateToLatest } from "./migrations.js";
@@ -53,6 +53,32 @@ export function databaseAdministrator(url: string): Pool {
     connectionTimeoutMillis: 2_000,
     query_timeout: 5_000,
   });
+}
+
+export function templateDatabasePool(url: string): {
+  pool: Pool;
+  close: (end: () => Promise<void>) => Promise<void>;
+} {
+  const pool = new Pool({ connectionString: url, application_name: "opensteer-test-template" });
+  const clients = new Set<PoolClient>();
+  let drained: (() => void) | undefined;
+  pool.on("connect", (client) => clients.add(client));
+  pool.on("remove", (client) => {
+    clients.delete(client);
+    if (clients.size === 0) drained?.();
+  });
+  return {
+    pool,
+    close: async (end) => {
+      // pg.Pool.end resolves after initiating removal, before clients close.
+      const closed = new Promise<void>((resolve) => {
+        drained = resolve;
+        if (clients.size === 0) resolve();
+      });
+      await end();
+      await closed;
+    },
+  };
 }
 
 export async function dropOwnedDatabase(pool: Pool, name: string): Promise<void> {
@@ -171,11 +197,12 @@ export async function createTestDatabaseRun(
       if (options.migrate) {
         await options.migrate(authority, templates[authority]);
       } else if (authority === "host") {
-        const database = createDatabase({ connectionString: templates.host });
+        const template = templateDatabasePool(templates.host);
+        const database = createDatabase({ connectionString: templates.host }, template.pool);
         try {
           await migrateToLatest(database);
         } finally {
-          await database.destroy();
+          await template.close(() => database.destroy());
         }
       } else {
         // The app owns its schema and migrator. Its production migration entry
@@ -198,11 +225,11 @@ export async function createTestDatabaseRun(
       }
       // Row-lock tests need this in every checker mode. Installing it once here
       // gives worker databases and per-test clones the same observation support.
-      const template = new Pool({ connectionString: templates[authority], max: 1 });
+      const template = templateDatabasePool(templates[authority]);
       try {
-        await template.query("create extension if not exists pgrowlocks with schema public");
+        await template.pool.query("create extension if not exists pgrowlocks with schema public");
       } finally {
-        await template.end();
+        await template.close(() => template.pool.end());
       }
       // No runtime has booted: templates contain schema, never an installation.
       await pools[authority].query(`alter database "${name}" allow_connections false`);

@@ -2,9 +2,11 @@ import { fork } from "node:child_process";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { connect, createServer, type Socket } from "node:net";
 import { Pool } from "pg";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
+import { templateDatabasePool } from "./test-database-admin.test-support.js";
 
 const heldBodySchema = z.object({
   url: z.url(),
@@ -19,6 +21,82 @@ const heldBodySchema = z.object({
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
 
 integration("run-owned database templates", () => {
+  it("waits for template pool connections to close before proceeding", async () => {
+    const source = new URL(process.env.OPENSTEER_TEST_DATABASE_URL!);
+    const sockets = new Set<Socket>();
+    let holdClose!: () => void;
+    const closeHeld = new Promise<void>((resolve) => (holdClose = resolve));
+    let releaseClose!: () => void;
+    let holdWrites = false;
+    const proxy = createServer({ allowHalfOpen: true }, (client) => {
+      const upstream = connect({
+        host: source.hostname,
+        port: Number(source.port || 5432),
+        allowHalfOpen: true,
+      });
+      sockets.add(client);
+      sockets.add(upstream);
+      const pending: Buffer[] = [];
+      client.on("data", (data) => {
+        if (holdWrites) pending.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
+        else upstream.write(data);
+      });
+      client.on("end", () => {
+        if (holdWrites) {
+          releaseClose = () => {
+            holdWrites = false;
+            upstream.end(Buffer.concat(pending));
+          };
+          holdClose();
+        } else upstream.end();
+      });
+      upstream.on("data", (data) => client.write(data));
+      upstream.on("end", () => client.end());
+      client.on("error", () => {});
+      upstream.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    const address = proxy.address();
+    if (!address || typeof address === "string") throw new Error("Proxy has no TCP address");
+    const proxyUrl = new URL(source);
+    proxyUrl.hostname = "127.0.0.1";
+    proxyUrl.port = String(address.port);
+    const template = templateDatabasePool(proxyUrl.toString());
+    const observer = new Pool({ connectionString: process.env.OPENSTEER_TEST_DATABASE_URL });
+    let closing: Promise<void> | undefined;
+    try {
+      const result = await template.pool.query<{ pid: number }>("select pg_backend_pid() as pid");
+      const pid = result.rows[0]!.pid;
+      let closed = false;
+      holdWrites = true;
+      closing = template
+        .close(() => template.pool.end())
+        .then(() => {
+          closed = true;
+        });
+      await closeHeld;
+      expect(
+        (await observer.query("select 1 from pg_stat_activity where pid = $1", [pid])).rowCount,
+      ).toBe(1);
+      expect(closed).toBe(false);
+      releaseClose();
+      releaseClose = () => {};
+      await closing;
+      expect(
+        (await observer.query("select 1 from pg_stat_activity where pid = $1", [pid])).rowCount,
+      ).toBe(0);
+    } finally {
+      closing ??= template.close(() => template.pool.end());
+      releaseClose?.();
+      for (const socket of sockets) socket.destroy();
+      await Promise.all([
+        new Promise<void>((resolve) => proxy.close(() => resolve())),
+        closing,
+        observer.end(),
+      ]);
+    }
+  });
+
   it.each(["host", "controlPlane"] as const)(
     "clones a migrated, identity-free %s template",
     async (authority) => {
