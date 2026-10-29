@@ -10,6 +10,7 @@ import guiConfig from "../vitest.gui.config.js";
 import enginesConfig from "../vitest.engines.config.js";
 import deviceConfig from "../vitest.device.config.js";
 import soakConfig from "../vitest.soak.config.js";
+import iphoneAppsVmConfig from "../apps/mobile/modules/iphone-apps/journey/vitest.config.js";
 
 const root = resolve(import.meta.dirname, "..");
 const files = execFileSync(
@@ -28,6 +29,7 @@ const suites = [
   { name: "engines", directory: root, config: enginesConfig },
   { name: "device", directory: root, config: deviceConfig },
   { name: "soak", directory: root, config: soakConfig },
+  { name: "iphone-apps-vm", directory: root, config: iphoneAppsVmConfig },
 ];
 const browserConfigPath = resolve(root, "apps/browser-runtime/vitest.config.ts");
 if (existsSync(browserConfigPath)) {
@@ -93,5 +95,6 @@ describe("test tiers", () => {
   it("excludes PostgreSQL and GUI suffixes from the host tier", () => {
     expect(config.test?.exclude).toContain("**/*.integration.test.*");
     expect(config.test?.exclude).toContain("**/*.gui.test.*");
+    expect(config.test?.exclude).toContain("**/*.vm.test.*");
   });
 });

@@ -34,7 +34,7 @@ export async function releasedClientReader(revision: string) {
     const sourceRevision = (
       await execFile("git", ["rev-parse", "--verify", `${revision}^{commit}`]).catch(() => {
         throw new Error(
-          `Released client ${revision} is not in this clone; run git fetch --depth=1 origin ${revision}`,
+          `Released client ${revision} is not in this clone; run git fetch --depth=1 https://github.com/steerlabs/opensteer ${revision}`,
         );
       })
     ).stdout.trim();

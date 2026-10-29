@@ -176,6 +176,9 @@ jobs:
           revision="$(sed -nE 's/^export const previousPublicRelease = "([0-9a-f]{40})";$/\1/p' apps/host/src/agents/previous-release-reader.test-support.ts)"
           test -n "$revision"
           git fetch --no-tags --depth=1 origin "$revision"
+      - name: Pull the integration PostgreSQL image
+        # Pulled here so a registry problem fails this step, not the launcher's 60 s bound.
+        run: docker pull "$(node -p 'require("yaml").parse(require("node:fs").readFileSync("deploy/compose/compose.yaml", "utf8")).services.postgres.image')"
       - run: pnpm exec vitest list --config vitest.integration.config.ts --filesOnly --json "$CI_DISCOVERY_PATH"
       - shell: bash
         run: |

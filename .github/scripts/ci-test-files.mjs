@@ -14,11 +14,18 @@ export const defaultTestInclude = [
   "evals/**/*.test.ts",
   "tests/**/*.test.ts",
 ];
-// Storage retention and the phone cache take Darwin kernel locks (holdStorageLock in
-// scripts/test-vm/retention.ts) and refuse to run elsewhere; the native-mac lane runs them.
+// These need Darwin: kernel locks (holdStorageLock in scripts/test-vm/retention.ts,
+// kernelLock.ts), BSD group inheritance, the Mac helpers, or the Swift wire core. Elsewhere
+// they skip every case, so Linux shards leave them out and the native-mac lane runs them.
 export const darwinOnlyTests = [
   "tests/storage-retention.test.ts",
   "tests/release-phone-cache.test.ts",
+  "tests/kernel-lock.test.ts",
+  "tests/vm-slot-queue.test.ts",
+  "tests/mac-app-delivery.test.ts",
+  "tests/iphone-apps-wire.test.ts",
+  "apps/desktop/src/computer-use/computer-use-service.test.ts",
+  "apps/desktop/src/passwords/broker-client.test.ts",
 ];
 export const defaultTestExclude = [
   "**/*.integration.test.*",
@@ -26,6 +33,8 @@ export const defaultTestExclude = [
   "**/*.engine.test.ts",
   "**/*.device.test.ts",
   "**/*.soak.test.ts",
+  // VM journeys select their own config inside pnpm test:vm.
+  "**/*.vm.test.*",
 ];
 // The native-mac lane runs `node .github/scripts/ci-test-files.mjs darwin-only`.
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

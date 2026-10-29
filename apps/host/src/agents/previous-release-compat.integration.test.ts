@@ -159,7 +159,15 @@ integration.sequential("previous public release client journeys", () => {
         await vi.waitFor(() => expect(old.getSnapshot().threadReadStates[threadId]).toBeDefined());
         const beforeRead = old.getSnapshot().threadReadStates[threadId]!;
         transcript.push({ beforeRead });
+        // The Host still serves epoch-48 placement; 0.1.219 drops it while merging,
+        // so read it from what the Host answers this client.
+        const hostReadState = async (client: HostClient) => {
+          const result = await client.rpc["thread.readState.get"]({ threadId });
+          if (!result.ok) throw new Error(result.error.message);
+          return result.data;
+        };
         expect(beforeRead.readSequence).toBeNull();
+        expect((await hostReadState(old)).placement).toBeNull();
         expect(beforeRead.unreadSequence).not.toBeNull();
         await old.markThreadRead(threadId, beforeRead.unreadSequence!);
         await vi.waitFor(() =>
@@ -198,7 +206,7 @@ integration.sequential("previous public release client journeys", () => {
           { timeout: 15_000 },
         );
 
-        // A read task older than a day remains open, rather than the old reader's age fallback.
+        // A read task older than a day remains open in the released list.
         await active.host.store.database
           .updateTable("threads")
           .set({ updatedAt: new Date(Date.now() - 48 * 3_600_000) })
@@ -400,8 +408,14 @@ integration.sequential("previous public release client journeys", () => {
         // The launch client shows Done from the Thread, not epoch-48 placement.
         const releasedDoneAt = (client: HostClient) =>
           released.reader.heldThread(client.getSnapshot(), threadId)?.doneAt;
-        await vi.waitFor(() => expect(releasedDoneAt(old)).not.toBeNull());
-        await vi.waitFor(() => expect(releasedDoneAt(member)).not.toBeNull());
+        await vi.waitFor(() => expect(releasedDoneAt(old)).toEqual(expect.any(String)));
+        await vi.waitFor(() => expect(releasedDoneAt(member)).toEqual(expect.any(String)));
+        for (const client of [old, member])
+          await vi.waitFor(async () =>
+            expect(await hostReadState(client)).toMatchObject({ placement: { done: true } }),
+          );
+        const afterDoneHost = await hostReadState(old);
+        expect(afterDoneHost.placementRevision).toBe(afterDoneHost.asOfSequence);
         const afterDone = old.getSnapshot().threadReadStates[threadId]!;
         expect(released.reader.mergeThreadReadState(afterDone, stale)).toMatchObject({
           readSequence: afterDone.readSequence,
@@ -410,6 +424,10 @@ integration.sequential("previous public release client journeys", () => {
         await current.setTaskDone(threadId, false);
         await vi.waitFor(() => expect(releasedDoneAt(old)).toBeNull());
         await vi.waitFor(() => expect(releasedDoneAt(member)).toBeNull());
+        for (const client of [old, member])
+          await vi.waitFor(async () =>
+            expect(await hostReadState(client)).toMatchObject({ placement: { done: false } }),
+          );
         // Only what a Done command could write: the shared fact and Done command
         // receipts. The waiting Run keeps touching the Thread row and event head,
         // and the active released client may advance its read marker meanwhile.
@@ -455,8 +473,8 @@ integration.sequential("previous public release client journeys", () => {
             .execute(),
         ).toEqual([]);
         // The released client's own Done is shared Done, and so is its Reopen.
-        expect((await old.setTaskDone(threadId, true)).doneAt).not.toBeNull();
-        expect((await durable()).doneAt).not.toBeNull();
+        expect((await old.setTaskDone(threadId, true)).doneAt).toEqual(expect.any(String));
+        expect((await durable()).doneAt).toEqual(expect.any(Date));
         expect((await old.setTaskDone(threadId, false)).doneAt).toBeNull();
         expect((await durable()).doneAt).toBeNull();
         const noCapability = new CurrentClient({
