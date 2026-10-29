@@ -6,7 +6,7 @@ packages:
 catalog:
   "@anthropic-ai/claude-agent-sdk": 0.3.295
   "@better-auth/core": 1.6.29
-  "@earendil-works/pi-coding-agent": 0.87.1
+  "@earendil-works/pi-coding-agent": 1.4.0
   "@better-auth/oauth-provider": 1.6.29
   "@better-auth/sso": 1.6.29
   "@better-auth/utils": 0.4.2
