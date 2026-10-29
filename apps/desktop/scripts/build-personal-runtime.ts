@@ -58,7 +58,10 @@ import {
 import { personalWebBuildId } from "@opensteer/protocol";
 import { build } from "tsup";
 import { writeWebDistributionManifest } from "../../../scripts/write-web-distribution-manifest.mjs";
-import { readPersonalRuntimeRelease } from "../src/releases/personal-runtime-release.js";
+import {
+  PersonalRuntimeReleaseManifestSchema,
+  readPersonalRuntimeRelease,
+} from "../src/releases/personal-runtime-release.js";
 import { personalRuntimeLayout } from "./personal-runtime-layout.js";
 import { postgresReleaseVersion } from "./postgres-release-version.js";
 
@@ -404,6 +407,11 @@ async function main(): Promise<void> {
         schemaVersion: 7,
       })}\n`,
       { encoding: "utf8", mode: 0o444 },
+    );
+
+    // Surface schema issues before the runtime reader wraps them for the UI.
+    PersonalRuntimeReleaseManifestSchema.parse(
+      JSON.parse(await readFile(path.join(staging, "release.json"), "utf8")),
     );
 
     // Fail here rather than during packaging: this is the exact verifier the

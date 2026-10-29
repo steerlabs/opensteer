@@ -16,8 +16,8 @@ With those variables exported, run:
 pnpm --filter @opensteer/desktop package:mac:contributor
 ```
 
-The app is written to `apps/desktop/release/mac-arm64/Opensteer.app` (Apple
-Silicon) or `apps/desktop/release/mac/Opensteer.app` (Intel). This non-release mode
+The app is written to `apps/desktop/release/contributor/mac-arm64/Opensteer.app` (Apple
+Silicon) or `apps/desktop/release/contributor/mac/Opensteer.app` (Intel). This non-release mode
 uses development trust and ad-hoc signing, builds the runtime and helpers from
 source, and verifies the packaged resources. It requires no signing credentials
 or release channel. Agent Phone is omitted unless `pnpm build:agent-phone` has
@@ -29,6 +29,10 @@ those features with `pnpm dev`, which trusts the helpers it builds. This command
 does not accept a signing input. Signed packages currently come only from
 `package:mac`, which also needs release inputs (see [SIGNING.md](SIGNING.md)).
 
-Inputs are not downloaded automatically. A pinned script to fetch or build them
-from public sources is planned. Distribution builds use `package:mac` with the
+For an arm64 Mac, `pnpm desktop:build-release --unsigned --out /absolute/build-inputs`
+fetches pinned public inputs, builds PostgreSQL and the Agent Phone debug APK,
+and invokes the same contributor packager through `package:mac --unsigned`.
+It needs the Android SDK and JDK as well as the prerequisites above. See
+[the local proof](../../docs/releases.md#build-inputs-and-local-proof).
+Distribution builds use `package:mac` with the
 signing and release inputs described in [SIGNING.md](SIGNING.md).
