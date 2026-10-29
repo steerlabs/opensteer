@@ -2,6 +2,7 @@ version: 2
 updates:
   - package-ecosystem: npm
     directory: /
+    open-pull-requests-limit: 0
     schedule:
       interval: weekly
     groups:
@@ -10,6 +11,7 @@ updates:
         update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
+    open-pull-requests-limit: 0
     schedule:
       interval: weekly
     groups:
@@ -21,6 +23,7 @@ updates:
       - /apps/desktop/personal-runtime-launcher
       - /apps/desktop/process-supervisor
       - /apps/runner/native-fs-helper
+    open-pull-requests-limit: 0
     schedule:
       interval: weekly
     groups:
@@ -29,6 +32,7 @@ updates:
         update-types: [minor, patch]
   - package-ecosystem: gradle
     directory: /apps/agent-phone
+    open-pull-requests-limit: 0
     schedule:
       interval: weekly
     groups:
