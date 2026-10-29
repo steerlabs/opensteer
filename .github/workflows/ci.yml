@@ -39,7 +39,7 @@ jobs:
           node-version: 24.13.0
       - id: changes
         uses: ./.github/actions/ci-changes
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: plan-${{ github.sha }}
@@ -66,7 +66,7 @@ jobs:
             node .github/scripts/fork-safety.mjs .github/workflows/ci.yml
           } 2>&1 | tee "$RUNNER_TEMP/evidence/lint.log"
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: lint-${{ github.sha }}
           path: |
@@ -91,7 +91,7 @@ jobs:
             pnpm build
           } 2>&1 | tee "$RUNNER_TEMP/evidence/build-types.log"
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: build-types-${{ github.sha }}
           path: |
@@ -130,7 +130,7 @@ jobs:
           pnpm pretest
           pnpm exec vitest run --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.log"
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: tests-${{ matrix.shard }}-${{ github.sha }}
           path: |
@@ -182,7 +182,7 @@ jobs:
           set -o pipefail
           pnpm test:integration -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.log"
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: integration-${{ matrix.shard }}-${{ github.sha }}
           path: |
@@ -270,7 +270,7 @@ jobs:
           pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH" $darwin_only
           pnpm exec vitest run $darwin_only --reporter=default --reporter=./scripts/ci-inventory-reporter.ts
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-mac-${{ matrix.task }}-${{ github.sha }}
           path: ${{ runner.temp }}/evidence
@@ -310,7 +310,7 @@ jobs:
             pnpm exec vitest run packages/runner-auth/src/agent-phone-vectors.test.ts packages/runner-auth/src/agent-phone-wire.test.ts
           } 2>&1 | tee "$RUNNER_TEMP/evidence/android.log"
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: android-${{ github.sha }}
           path: |
@@ -349,7 +349,7 @@ jobs:
             pnpm --filter @opensteer/web test:start-page-computers
           } 2>&1 | tee "$RUNNER_TEMP/evidence/browser-journeys.log"
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: browser-journeys-${{ github.sha }}
           path: |
@@ -383,7 +383,7 @@ jobs:
           CI_NEEDS: ${{ toJSON(needs) }}
           CI_EVENT: ${{ github.event_name }}
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: aggregate-${{ github.sha }}
           path: ${{ runner.temp }}/evidence
