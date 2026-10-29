@@ -346,7 +346,9 @@ it.skipIf(process.platform !== "darwin")("rejects a real ad-hoc-signed archive",
   await exec("ditto", ["-c", "-k", "--keepParent", bundle, zip]);
   await expect(
     prepare({ channel: "stable", appZip: zip, version, sourceSha, out: path.join(root, "assets") }),
-  ).rejects.toThrow(/signing team|assess|Gatekeeper/u);
+    // Every metadata check passes and the ad-hoc signature verifies, so only the
+    // Developer ID signing authority can refuse it.
+  ).rejects.toThrow("Wrong signing team");
 });
 
 async function fixtureBundle(root: string, id: string, bundleVersion: string) {
