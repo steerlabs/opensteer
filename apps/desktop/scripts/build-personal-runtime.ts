@@ -781,7 +781,7 @@ function nodePackageDirectory(from: string, name: string): string {
  * such a package is not staged: every package the tree needs is staged beside
  * it, and what is left there are shims naming directories on the build machine.
  */
-async function stageRuntimeTree(
+export async function stageRuntimeTree(
   source: string,
   staging: string,
   prefix: string,
@@ -805,6 +805,9 @@ async function stageRuntimeTree(
       }
       const sourcePath = path.join(current, entry.name);
       if (runtime.shape === "script") {
+        // Debugger maps are not runtime inputs. Excluding them keeps the signed
+        // manifest bounded as engine packages add generated debugging output.
+        if (entry.name.endsWith(".map")) continue;
         await stageFile(sourcePath, path.join(staging, ...relative.split("/")));
         artifacts.push({
           mode: relative === runtime.entryScript ? "code" : "data",
