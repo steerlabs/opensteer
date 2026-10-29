@@ -1366,13 +1366,32 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     ready.connection.holdStartAck = true;
     ready.connection.onStart = () => undefined;
     const site = "https://stuck-write.test";
+    // Release both calls into the site's admission together. Otherwise their
+    // own database reads can land the second after the first settled, 40 ms
+    // in, and it rightly starts its own attempt, as the last call checks.
+    const request = passwords.request.bind(passwords);
+    const arrived: (() => void)[] = [];
+    const together = vi.spyOn(passwords, "request").mockImplementation(async (input) => {
+      const turn = Promise.withResolvers<void>();
+      arrived.push(turn.resolve);
+      if (arrived.length === 2) for (const release of arrived) release();
+      await turn.promise;
+      return request(input);
+    });
     const results = await Promise.all(
       [0, 1].map(() => service.agentSignIn({ ...ready.agent, callId: randomUUID(), site })),
     );
+    together.mockRestore();
     expect(results).toEqual(
       [0, 1].map(() => ({ status: "unavailable", reason: "passwords-not-responding", site })),
     );
     expect(ready.connection.signInStarts()).toHaveLength(1);
+    expect(await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site })).toEqual({
+      status: "unavailable",
+      reason: "passwords-not-responding",
+      site,
+    });
+    expect(ready.connection.signInStarts()).toHaveLength(2);
     expect(await passwordRequestCount(ready.agent.runId)).toBe(0);
   });
 
