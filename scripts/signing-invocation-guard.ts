@@ -148,6 +148,14 @@ function reviewed(file: string, tool: string, span: string, source: string): boo
     !/["'](?:--sign|-s)["']/u.test(span)
   )
     return true;
+  // The same for a shell line. Its span runs to the end of the line, so a signer
+  // chained after the verification is still rejected.
+  if (
+    tool === "codesign" &&
+    /^\s*(?:\/usr\/bin\/)?codesign\s+(?:--verify|-dv|-d|--display)\s/u.test(span) &&
+    !/(?:^|\s)(?:--sign|-s)(?:[\s=]|$)/u.test(span)
+  )
+    return true;
   if (
     tool === "codesign" &&
     span.includes("...signingKeychainArguments(") &&

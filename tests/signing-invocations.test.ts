@@ -15,6 +15,19 @@ test("every tracked signing and notarization invocation has reviewed keychain ro
     .map((file) => ({ file, source: readFileSync(path.join(root, file), "utf8") }));
   expect(auditSigningInvocations(files)).toEqual([]);
 });
+test("shell verification needs no keychain routing, but a signer on the same line still fails", () => {
+  for (const source of [
+    '  codesign --verify --deep --strict "$1" 2>/dev/null || return 1',
+    "  codesign -dv --verbose=4 \"$1\" 2>&1 | grep -qx 'TeamIdentifier=B47U2LLKHW'",
+  ])
+    expect(auditSigningInvocations([{ file: "scripts/install.sh", source }])).toEqual([]);
+  for (const source of [
+    'codesign --verify "$app" && codesign --sign "$identity" "$app"',
+    'codesign -dv -s "$identity" "$app"',
+    'codesign --force --sign - "$app"',
+  ])
+    expect(auditSigningInvocations([{ file: "scripts/install.sh", source }])).toHaveLength(1);
+});
 test("a new bare signer fails regardless of its location or invocation API", () => {
   for (const source of [
     'spawn("/usr/bin/codesign", ["--sign", identity, artifact]);',
