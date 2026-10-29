@@ -478,6 +478,8 @@ export function installBrowserPagePolicy(config?: BrowserPagePolicyConfig): void
               return Promise.reject(
                 new Exception("Conditional mediation is not supported.", "NotSupportedError"),
               );
+            // Every ceremony here can show the OS passkey sheet, which silent forbids.
+            if (mediation === "silent") return Promise.reject(failure());
             // All getters, coercions and byte copies finish before yielding to CDP.
             const publicKey = convert(op, requestedPublicKey);
             const id = uuid();

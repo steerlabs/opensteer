@@ -134,6 +134,7 @@ window.providerReport = (async () => {
   check(JSON.stringify(Object.keys(capabilities)) === JSON.stringify(Object.keys(capabilities).sort()), "sorted capabilities");
   check(capabilities["extension:credProps"] && !capabilities.conditionalGet && !capabilities.hybridTransport, "capabilities");
   await bounded("conditional", () => navigator.credentials.get({ publicKey: request(), mediation: "conditional" }), "NotSupportedError", 1500);
+  await bounded("silent", () => navigator.credentials.get({ publicKey: request(), mediation: "silent" }), "NotAllowedError", 1500);
   await bounded("bad-rp-id", () => navigator.credentials.get({ publicKey: { ...request(), rpId: "foreign.test" } }), "SecurityError", 1500);
   await bounded("bad-buffer", () => navigator.credentials.get({ publicKey: { challenge: "not bytes" } }), "TypeError", 1500);
   await bounded("bad-user-id", () => navigator.credentials.create({ publicKey: { ...creation, user: { ...creation.user, id: new Uint8Array(65) } } }), "TypeError", 1500);

@@ -28,6 +28,10 @@ exposes it; it never grants eligibility. These domains use the platform session'
 also refuses opaque and insecure origins, foreign ancestors, and denied or
 unknown Permissions Policy.
 
+Conditional mediation rejects with `NotSupportedError`. Silent mediation rejects
+with `NotAllowedError` before reaching the bridge, because any ceremony may show
+the OS passkey sheet.
+
 Popup first HTTPS documents support immediate registration and sign-in. Initial
 blank-derived documents remain ineligible after writing or history rewriting;
 writing an already eligible document preserves its eligibility.

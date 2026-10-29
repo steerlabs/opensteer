@@ -210,7 +210,11 @@ export class PasskeyBridge {
         trusted: response.success && origin !== null,
       });
       // Keep only document responses, bounded independently of a tab's lifetime.
-      if (this.#tls.size > 64) this.#tls.delete(this.#tls.keys().next().value!);
+      // Committed documents keep their evidence however many other documents load.
+      const committed = new Set([...this.#commits.values()].map((frame) => frame.loaderId));
+      const evictable = [...this.#tls.keys()].filter((loaderId) => !committed.has(loaderId));
+      for (const loaderId of evictable.slice(0, Math.max(0, evictable.length - 64)))
+        this.#tls.delete(loaderId);
       this.#abortIneligible();
     });
     this.#listen("Security.visibleSecurityStateChanged", (value) => {

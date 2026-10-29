@@ -523,6 +523,18 @@ it("cancels and discards a late authenticator outcome after TLS becomes unaccept
   f.bridge.close();
 });
 
+it("keeps the committed top document's TLS evidence while a child frame keeps reloading", async () => {
+  const f = fixture();
+  await f.bridge.start();
+  for (let index = 0; index < 80; index++) {
+    f.tls("secure", "child", `loader-child-${index}`);
+    f.commit("child", `loader-child-${index}`, "https://example.test/frame");
+  }
+  f.call();
+  await f.flush();
+  expect(f.ceremony).toHaveBeenCalledOnce();
+  f.bridge.close();
+});
 it("accepts pinned document TLS in an engine without a visible Security event", async () => {
   const f = fixture({ tls: "unknown" });
   await f.bridge.start();

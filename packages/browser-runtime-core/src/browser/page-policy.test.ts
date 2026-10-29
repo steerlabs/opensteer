@@ -116,6 +116,29 @@ it("is idempotent and forwards other credential requests to the native method", 
   expect(await f.credentials.get({ password: true, publicKey: undefined })).toBe("native");
   expect(f.native).toHaveBeenCalledOnce();
 });
+it("refuses silent public-key requests without reaching the bridge", async () => {
+  const f = fixture();
+  f.bind();
+  const user = { id: new Uint8Array([1]), name: "person@example.test", displayName: "Person" };
+  const results = await Promise.all([
+    f.credentials
+      .get({ mediation: "silent", publicKey: { challenge: new Uint8Array([1]) } })
+      .catch((error: unknown) => error),
+    f.credentials
+      .create({
+        mediation: "silent",
+        publicKey: {
+          challenge: new Uint8Array([1]),
+          rp: { name: "Example" },
+          user,
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+        },
+      })
+      .catch((error: unknown) => error),
+  ]);
+  for (const result of results) expect(result).toMatchObject({ name: "NotAllowedError" });
+  expect(f.sent).toEqual([]);
+});
 it("copies a BufferSource view synchronously and ignores unknown dictionary members", async () => {
   const f = fixture();
   f.bind();
