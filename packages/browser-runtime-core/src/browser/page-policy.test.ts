@@ -39,7 +39,7 @@ function fixture(initialPopup = false) {
       context,
     );
   install();
-  const sent: { op: string; id: string; options?: { challenge: string } }[] = [];
+  const sent: { op: string; id: string; options?: { challenge: string; hints?: string[] } }[] = [];
   const bind = () => {
     root["secret-binding"] = (payload: string) =>
       sent.push(JSON.parse(payload) as (typeof sent)[number]);
@@ -304,3 +304,36 @@ it("pins the popup guard to the initial Document, not a reused Window realm", as
   f.success();
   await pending;
 });
+
+it.each(["get", "create"] as const)(
+  "copies ordered hints at the page boundary (%s)",
+  async (op) => {
+    const f = fixture();
+    f.bind();
+    const hints = ["hybrid", "security-key"];
+    const result = f.credentials[op]({
+      publicKey: {
+        challenge: new Uint8Array([1]),
+        hints,
+        ...(op === "create"
+          ? {
+              rp: { name: "Example" },
+              user: {
+                id: new Uint8Array([1]),
+                name: "person@example.test",
+                displayName: "Example Person",
+              },
+              pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            }
+          : {}),
+      },
+    }).catch((error: unknown) => error);
+    hints.reverse();
+    try {
+      expect(f.sent[0]?.options?.hints).toEqual(["hybrid", "security-key"]);
+    } finally {
+      f.reply();
+      await result;
+    }
+  },
+);

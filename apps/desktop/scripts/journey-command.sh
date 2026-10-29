@@ -18,6 +18,7 @@ journey() {
     remote-input) bash scripts/test-viewer-clipboard.sh && pnpm test:electron-display:run && bash ../web/scripts/run-display-editing-viewer-checks.sh ;;
     # Its bundle is rebuilt here: the smoke bundle step above clears .electron-smoke.
     native-browser) pnpm build:native-browser-journey && pnpm test:native-browser-journey ;;
+    passkeys) pnpm test:electron-passkeys:run && pnpm build:native-browser-journey && pnpm test:native-browser-journey --passkeys ;;
     electron)
       export OPENSTEER_CDP_BOUNDARY_E2E_ARTIFACT_DIR="$out/cdp-boundary"
       export OPENSTEER_PASSWORDS_E2E_ARTIFACT_DIR="$out/passwords"

@@ -19,6 +19,7 @@ export interface PreparationRow {
 }
 /** Folded quit also needs current-source runtime services when electron runs alone. */
 export function runtimeResourceJourney(selected: readonly string[]) {
+  if (selected.includes("passkeys")) return "passkeys";
   if (selected.includes("native-browser")) return "native-browser";
   if (selected.includes("electron")) return "electron";
   return undefined;

@@ -1,3 +1,4 @@
+import { PasskeysEnvironmentSchema } from "./passkeys.js";
 import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import {
   closeSync,
@@ -177,6 +178,7 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_LIFETIME_SECONDS: positiveInteger(24 * 60 * 60),
   OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: optionalLocalOwnerClaimToken,
   OPENSTEER_LOCAL_PASSWORD_ENABLED: booleanValue(true),
+  OPENSTEER_PASSKEYS: PasskeysEnvironmentSchema.shape.OPENSTEER_PASSKEYS,
   OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: EnvironmentIdSchema.optional(),
   OPENSTEER_NATIVE_OAUTH_ENABLED: optionalBooleanValue,
   OPENSTEER_DEPLOYMENT_KIND: DeploymentKindSchema.optional(),
@@ -259,6 +261,7 @@ export interface HostConfig {
    * belongs to an enrolled Runner, so there is no runtime URL to configure:
    * the machine comes to the Host, not the other way round.
    */
+  readonly passkeys?: boolean;
   readonly browserRuntime: { readonly attachKeyId: string };
   readonly browserProfileKeyPath: string | undefined;
   readonly databaseUrl: string;
@@ -646,6 +649,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     bindAddress: parsed.OPENSTEER_BIND_ADDRESS,
     canonicalOrigin,
     browserRuntime,
+    passkeys: parsed.OPENSTEER_PASSKEYS,
     browserProfileKeyPath: parsed.OPENSTEER_BROWSER_PROFILE_KEY_PATH,
     databaseUrl: parsed.OPENSTEER_DATABASE_URL,
     credentialKeyPath: parsed.OPENSTEER_CREDENTIAL_KEY_PATH,

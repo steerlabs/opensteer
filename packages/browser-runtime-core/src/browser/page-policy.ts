@@ -146,6 +146,8 @@ export function installBrowserPagePolicy(config?: BrowserPagePolicyConfig): void
     const result: Record<string, unknown> = {
       challenge: binary(required(input, "challenge"), 1024, fromJSON),
     };
+    const hints = input.hints;
+    if (hints !== undefined) result.hints = sequence(hints, 16).map(shortText);
     const timeout = input.timeout;
     if (timeout !== undefined) result.timeout = number(timeout) >>> 0;
     const descriptors = op === "create" ? "excludeCredentials" : "allowCredentials";

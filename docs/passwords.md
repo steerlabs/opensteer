@@ -11,6 +11,8 @@ owns cookie reuse, [browser sessions](browser-sessions.md) owns the CDP boundary
 and [computer use](computer-use.md) and [Agent Phone](agent-phone.md) own input
 and surface access.
 
+Passkeys don't use Opensteer Passwords; they use the [OS passkey manager](browser-sessions.md#passkeys).
+
 ## Promise and limits
 
 Authorization and input results carry metadata and statuses, never saved field

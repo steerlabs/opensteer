@@ -7,6 +7,7 @@ import { JOURNEY_PREPARATION, runtimeResourceJourney } from "./journey-preparati
 
 it.each([
   [["electron"], "electron"],
+  [["passkeys"], "passkeys"],
   [["native-browser"], "native-browser"],
   [["native-browser", "electron"], "native-browser"],
   [["launch"], undefined],
