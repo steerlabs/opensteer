@@ -107,7 +107,9 @@ also installs a downloaded update. Downgrades are refused. Beta has no feed or
 updater, and development builds drop the feed: only `prepare:release-resources`
 stages it, from the committed manifest or `OPENSTEER_DESKTOP_UPDATE_FEED_URL` for
 a private test build. The stable release manifest marks the About panel version
-as Alpha.
+as Alpha. Packaging leaves every bundle entry owner-writable, although release
+inputs are staged read-only: ShipIt clears quarantine from each file of an update
+and replaces the old bundle, and both fail on entries the owner cannot write.
 See the [updater](../apps/desktop/src/app/desktop-updater.ts),
 [shutdown](../apps/desktop/src/app/desktop-shutdown.ts), and
 [build policy](../apps/desktop/src/releases/desktop-update-policy.ts).
