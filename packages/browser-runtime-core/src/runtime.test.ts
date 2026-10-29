@@ -715,3 +715,28 @@ describe("BrowserRuntime", () => {
     await runtime.shutdown();
   });
 });
+
+it.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+] as const)(
+  "requires the Host welcome and signed passkey claim before provider launch (welcome=%s, claim=%s)",
+  async (enabled, signed) => {
+    const launcher = new FakeLauncher();
+    const runtime = new BrowserRuntime({
+      launcher,
+      profileStateClient: forbiddenProfileState,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(freshClaims(signed ? { passkeys: 1 } : {})),
+    });
+    try {
+      await runtime.attach("ticket", new FakeSink(), { passkeys: enabled });
+      expect(launcher.lastRequest?.authenticator !== undefined).toBe(enabled && signed);
+    } finally {
+      await runtime.shutdown();
+    }
+  },
+);

@@ -562,6 +562,37 @@ describe("agent CDP boundary", () => {
     return { backend, channel, events, router, send, sessionId };
   }
 
+  it("attributes agent input only after command admission and key inference", async () => {
+    const { router, sessionId } = await attachedPage();
+    const input = vi.fn();
+    try {
+      await expect(
+        router.send(
+          "session-a",
+          {
+            sessionId,
+            method: "Input.dispatchKeyEvent",
+            parameters: { key: "v", modifiers: 4, type: "keyDown" },
+          },
+          input,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(input).not.toHaveBeenCalled();
+      await router.send(
+        "session-a",
+        {
+          sessionId,
+          method: "Input.dispatchKeyEvent",
+          parameters: { key: "Enter", type: "keyDown" },
+        },
+        input,
+      );
+      expect(input).toHaveBeenCalledExactlyOnceWith("root-a");
+    } finally {
+      await router.close();
+    }
+  });
+
   it("refuses cookie, network, storage, script-planting and browser-internal page methods", async () => {
     const { channel, send } = await attachedPage();
     const refused: [string, CdpParameters?][] = [

@@ -302,7 +302,11 @@ export class SessionCdpRouter {
     return () => state.eventListeners.delete(listener);
   }
 
-  async send(sessionId: string, command: CdpCommand): Promise<unknown> {
+  async send(
+    sessionId: string,
+    command: CdpCommand,
+    beforeInput?: (targetId: string) => void,
+  ): Promise<unknown> {
     this.#assertOpen();
     const state = this.#requireSession(sessionId);
     validateCommand(command, this.#limits.maxCommandBytes);
@@ -316,7 +320,7 @@ export class SessionCdpRouter {
     const result = command.method.startsWith("Target.")
       ? await this.#sendTargetCommand(state, command)
       : command.sessionId
-        ? await this.#sendAttachedCommand(state, command)
+        ? await this.#sendAttachedCommand(state, command, beforeInput)
         : await this.#backend.send(command.method, command.parameters);
     if (serializedBytes(result) > this.#limits.maxResultBytes) {
       throw new SessionCdpRouterError(
@@ -493,7 +497,11 @@ export class SessionCdpRouter {
     return attached;
   }
 
-  async #sendAttachedCommand(state: SessionState, command: CdpCommand): Promise<unknown> {
+  async #sendAttachedCommand(
+    state: SessionState,
+    command: CdpCommand,
+    beforeInput?: (targetId: string) => void,
+  ): Promise<unknown> {
     const opened = state.channels.get(command.sessionId ?? "");
     // A dialog's answer is what lets a page under it report its contexts.
     if (opened && command.method !== "Page.handleJavaScriptDialog") {
@@ -555,6 +563,9 @@ export class SessionCdpRouter {
       this.#admitAttachedCommand(state, { ...command, parameters: pageKeys });
       parameters = pageKeys;
     }
+    // Admission includes inferred editing commands: refused input must not
+    // attribute a later passkey ceremony to this agent.
+    if (command.method.startsWith("Input.")) beforeInput?.(attached.physicalTargetId);
     const result = await Promise.race([
       attached.channel.send(
         command.method,

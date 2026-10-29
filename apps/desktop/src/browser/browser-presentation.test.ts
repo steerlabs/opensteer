@@ -45,8 +45,11 @@ function onPlatform(platform: NodeJS.Platform): void {
 }
 function fixture() {
   let observe = (_event: DesktopBrowserSocketObservation) => {};
+  let input = () => {};
+  const passkeyConsumerToken = vi.fn<() => string | null>(() => null);
   const manager = new DesktopBrowserPresentationManager({
     transport: {
+      passkeyConsumerToken,
       observeBrowserSockets: (fn) => {
         observe = fn;
         return () => {};
@@ -99,7 +102,17 @@ function fixture() {
   const surface = {
     sessionId,
     surfaceId,
-    page: { native, isClosed: () => false },
+    passkeyInput: vi.fn(),
+    page: {
+      native,
+      isClosed: () => false,
+      observePasskeyInput: (listener: () => void) => {
+        input = listener;
+        return () => {
+          input = () => {};
+        };
+      },
+    },
     onEvent: () => () => {},
     release: vi.fn(),
     follow: vi.fn(async () => undefined),
@@ -114,7 +127,19 @@ function fixture() {
   const request = { sessionId, surfaceId, rect };
   const socket = (type: "admitted" | "closed", connectionId = "control", ownerId = 1) =>
     observe({ type, connectionId, ownerId, sessionId, mode: "control" });
-  return { manager, sender, request, socket, source, surface, native, contents, unregister };
+  return {
+    manager,
+    sender,
+    request,
+    socket,
+    source,
+    surface,
+    native,
+    contents,
+    unregister,
+    passkeyConsumerToken,
+    input: () => input(),
+  };
 }
 
 describe("native presentation authority (retired A01–A07)", () => {
@@ -283,3 +308,73 @@ it("rejects a failed surface replacement update and releases the old native page
     reason: "page-closed",
   });
 });
+
+it("attributes native page input only to the window's admitted presentation consumer", async () => {
+  const f = fixture();
+  const token = "00000000-0000-4000-8000-000000000003";
+  f.native.waitForPaint = () => Promise.resolve();
+  f.socket("admitted");
+  await f.manager.present(f.sender, f.request);
+  await Promise.resolve();
+  f.passkeyConsumerToken.mockReturnValue(token);
+  f.input();
+  expect(f.surface.passkeyInput).toHaveBeenLastCalledWith(token);
+  expect(f.passkeyConsumerToken).toHaveBeenLastCalledWith(f.sender.id, "control", surfaceId);
+  f.passkeyConsumerToken.mockReturnValue(null);
+  f.input();
+  expect(f.surface.passkeyInput).toHaveBeenLastCalledWith(null);
+  f.socket("closed");
+  f.surface.passkeyInput.mockClear();
+  f.input();
+  expect(f.surface.passkeyInput).not.toHaveBeenCalled();
+});
+
+it.each(["release", "replacement", "failure", "zero-size"] as const)(
+  "invalidates the actual passkey presentation on %s with control still admitted",
+  async (ending) => {
+    const f = fixture();
+    f.native.waitForPaint = () => Promise.resolve();
+    f.socket("admitted");
+    const target = await f.manager.present(f.sender, f.request);
+    await Promise.resolve();
+    const binding = f.manager.passkeyBinding(f.sender.id, sessionId, surfaceId);
+    expect(binding).not.toBeNull();
+    expect(binding).not.toBe("streamed");
+    const changed = vi.fn();
+    const unsubscribe = f.manager.observePasskeyPresentation(changed);
+    try {
+      if (ending === "release") f.manager.release(f.sender, target);
+      if (ending === "replacement") {
+        f.source.presentSurface.mockReturnValueOnce({
+          ...f.surface,
+          surfaceId: BrowserSurfaceIdSchema.parse("other"),
+          page: { ...f.surface.page, native: { ...f.native, view: { ...f.native.view } } },
+        } as unknown as PresentedSurface);
+        await f.manager.update(f.sender, {
+          ...target,
+          surfaceId: BrowserSurfaceIdSchema.parse("other"),
+        });
+      }
+      if (ending === "failure") {
+        f.source.presentSurface.mockImplementationOnce(() => {
+          throw new Error("Presentation failed");
+        });
+        await expect(
+          f.manager.update(f.sender, {
+            ...target,
+            surfaceId: BrowserSurfaceIdSchema.parse("other"),
+          }),
+        ).rejects.toThrow("Presentation failed");
+      }
+      if (ending === "zero-size")
+        await f.manager.update(f.sender, { ...target, rect: { ...rect, width: 0 } });
+      expect(changed).toHaveBeenCalled();
+      expect(f.manager.passkeyBinding(f.sender.id, sessionId, surfaceId)).not.toBe(binding);
+      await expect(f.manager.present(f.sender, f.request)).resolves.toHaveProperty(
+        "presentationId",
+      );
+    } finally {
+      unsubscribe();
+    }
+  },
+);

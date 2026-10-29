@@ -1561,3 +1561,27 @@ live composition and rich paste are not projected onto that wire.
 Image-only copy results are visibly refused by both web and desktop viewers. **Follow-up: Copy Image
 from streamed pages** needs an explicit menu gesture and an image representation in the viewer
 clipboard writer. Text/HTML copy and image/file paste use the existing paths.
+
+### Native passkey routing
+
+`OPENSTEER_PASSKEYS=1` enables the optional `browser-passkeys-v1` Host capability.
+It is off by default. A runtime must advertise `modules.browser.passkeys: 1`,
+receive the browser auxiliary welcome's `passkeys: 1`, and hold a signed attach
+ticket with `passkeys: 1` before launching the page provider. The existing page
+policy remains in effect otherwise. No Host API epoch changes.
+
+Viewers opt in on their control socket with `passkeys=native` or `passkeys=notice`.
+The Host projects that mode and its consumer token only to opted-in viewers;
+runtime ceremony messages terminate at the Host before viewer fan-out. A request
+belongs to one runtime connection, session and document. A person-attributed
+request reaches only that person's presenting viewer. Agent and unattributed
+requests offer Continue to the eligible viewers; the first native claim binds
+the request. Losing that presentation, access or connection ends it without
+rerouting. The deadline applies even while an answer is being authorized.
+
+The desktop proxies streamed and native control sockets through main. Main holds
+the request before notifying the renderer, and the renderer can ask to present
+only its opaque request ID. The OS authenticator receives the actual origin and
+complete normalized options from main. Neither main nor the runtime repairs the
+OS's client data or other signed bytes. Desktop builds without native support,
+the web app and mobile opt in as notice viewers.

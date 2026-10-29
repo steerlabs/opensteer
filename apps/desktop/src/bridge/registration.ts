@@ -1,5 +1,6 @@
 import { personalWebLinksAvailable, WebLinkDeliveryOwner } from "./methods/web-links.js";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
+import { passkeyHandlers } from "./methods/passkeys.js";
 import { viewerClipboardHandlers } from "./methods/viewer-clipboard.js";
 import { downloadsHandlers } from "./methods/downloads.js";
 import { browserPresentationHandlers } from "./methods/browser-presentation.js";
@@ -219,6 +220,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     return z.boolean().parse(options.localVisibility.getSnapshot());
   });
 
+  for (const [channel, handler] of passkeyHandlers(context)) register(channel, handler);
   for (const [channel, handler] of viewerClipboardHandlers(context)) register(channel, handler);
   for (const [channel, handler] of downloadsHandlers(context)) register(channel, handler);
   for (const [channel, handler] of browserPresentationHandlers(context)) register(channel, handler);

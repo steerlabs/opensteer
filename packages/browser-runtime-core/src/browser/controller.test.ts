@@ -1,3 +1,8 @@
+import {
+  PublicKeyCredentialRequestOptionsJSONSchema,
+  serializeClientData,
+} from "../passkeys/index.js";
+import { HostRelayAuthenticator } from "../passkeys/host-relay.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   browserHostMethods,
@@ -58,6 +63,186 @@ describe("BrowserController", () => {
     );
     await ledger.start();
   });
+
+  it("attributes only viewer input that reaches the page", async () => {
+    const passkeys = new HostRelayAuthenticator(() => undefined);
+    const record = vi.spyOn(passkeys, "record");
+    const controller = new BrowserController({
+      passkeys,
+      cdpRouter,
+      claims: validClaims(),
+      exportSnapshot,
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+    });
+    await controller.start();
+    const surfaceId = activeSurfaceId();
+    const token = "00000000-0000-4000-8000-000000000006";
+    try {
+      await controller.handle({
+        type: "input.pointer",
+        surfaceId,
+        action: "down",
+        button: "none",
+        x: 0.5,
+        y: 0.5,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        producerId: token,
+      });
+      expect(record).not.toHaveBeenCalled();
+      await controller.handle({
+        type: "input.key",
+        surfaceId,
+        action: "down",
+        code: "Enter",
+        key: "Enter",
+        modifiers: [],
+        producerId: token,
+      });
+      expect(record).toHaveBeenCalledExactlyOnceWith(await page.targetId(), { person: token });
+    } finally {
+      await controller.close();
+      await ledger.close();
+      passkeys.close();
+    }
+  });
+
+  it.each(["text", "composition", "paste"] as const)(
+    "attributes %s before a ceremony inside its dispatch, including another viewer",
+    async (kind) => {
+      const cdp = page.cdpSession;
+      cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });
+      cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "observer" });
+      const causes: unknown[] = [];
+      const passkeys = new HostRelayAuthenticator(() => ({
+        sessionId: "session",
+        surfaceId: activeSurfaceId(),
+        send: (message) => {
+          if (message.type === "passkey.ceremony") {
+            causes.push(message.cause);
+            passkeys.result("session", {
+              type: "passkey.result",
+              ceremonyId: message.ceremonyId,
+              outcome: { kind: "refused", error: "NotAllowedError" },
+            });
+          }
+        },
+      }));
+      const controller = new BrowserController({
+        passkeys,
+        cdpRouter,
+        claims: validClaims({ editingVersion: 2, clipboard: false }),
+        exportSnapshot,
+        files,
+        ledger,
+        replaceSiteCookies,
+        signIns: noSignIns(),
+        sink,
+      });
+      await controller.start();
+      try {
+        await flushMicrotasks();
+        const world = cdp.sent.find(
+          (entry) =>
+            entry.method === "Runtime.addBinding" &&
+            String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
+        )!.parameters!;
+        cdp.emit("Runtime.executionContextCreated", {
+          context: {
+            id: 7,
+            uniqueId: crypto.randomUUID(),
+            name: world.executionContextName,
+            origin: "https://example.test",
+            auxData: { frameId: "main", isDefault: false },
+          },
+        });
+        cdp.emit("Runtime.bindingCalled", {
+          name: world.name,
+          executionContextId: 7,
+          payload: JSON.stringify({
+            fieldId: "field",
+            field: { kind: "text", multiline: false, sensitive: false },
+            caret: null,
+          }),
+        });
+        await flushMicrotasks();
+        const token = "00000000-0000-4000-8000-000000000006";
+        const other = "00000000-0000-4000-8000-000000000007";
+        const targetId = await page.targetId();
+        cdp.responses.set("Runtime.evaluate", { result: { value: { ok: true } } });
+        const ceremony = () => {
+          void passkeys.ceremony({
+            op: "get",
+            options: PublicKeyCredentialRequestOptionsJSONSchema.parse({ challenge: "AQID" }),
+            targetId,
+            documentId: "document",
+            deadline: Date.now() + 1000,
+            origin: "https://example.test",
+            rpId: "example.test",
+            clientDataJSON: serializeClientData({
+              type: "webauthn.get",
+              challenge: "AQID",
+              origin: "https://example.test",
+            }),
+            signal: new AbortController().signal,
+          });
+          return {};
+        };
+        cdp.responses.set("Input.insertText", ceremony);
+        cdp.responses.set("Input.imeSetComposition", ceremony);
+        const send = async () => {
+          const context = sink.messages
+            .filter((message) => message.type === "browser.editing")
+            .at(-1);
+          if (context?.type !== "browser.editing") throw new Error("Missing editing context");
+          const edit = { contextId: context.context.contextId, text: "x", before: "", after: "" };
+          await controller.handle(
+            kind === "paste"
+              ? {
+                  type: "clipboard.paste",
+                  surfaceId: activeSurfaceId(),
+                  text: "x",
+                  producerId: token,
+                }
+              : kind === "text"
+                ? { type: "input.text", surfaceId: activeSurfaceId(), edit, producerId: token }
+                : {
+                    type: "input.compose",
+                    surfaceId: activeSurfaceId(),
+                    composition: { ...edit, selectionStart: 1, selectionEnd: 1 },
+                    producerId: token,
+                  },
+          );
+        };
+        await send();
+        expect(causes).toEqual([{ person: token }]);
+        passkeys.forget(targetId);
+        passkeys.record(targetId, { person: other });
+        causes.length = 0;
+        await send();
+        expect(causes).toEqual(["unknown"]);
+        if (kind !== "paste") {
+          passkeys.forget(targetId);
+          passkeys.record(targetId, { person: other });
+          causes.length = 0;
+          cdp.responses.set("Runtime.evaluate", {
+            result: { value: { ok: false, reason: "selection-changed" } },
+          });
+          await send();
+          expect(causes).toEqual([]);
+          expect(passkeys.cause(targetId)).toEqual({ person: other });
+        }
+      } finally {
+        await controller.close();
+        await ledger.close();
+        passkeys.close();
+      }
+    },
+  );
 
   it.each(["c", "x"] as const)(
     "resolves v2 primary %s to Cocoa and publishes the selected text",

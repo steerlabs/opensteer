@@ -1,3 +1,4 @@
+import { HostRelayAuthenticator } from "./passkeys/host-relay.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { delay } from "@opensteer/shared/delay";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -132,6 +133,7 @@ type BrowserHostIdentity = FreshHostIdentity | ProfileHostIdentity;
 
 interface BrowserHost {
   acceptingSessions: boolean;
+  passkeys: HostRelayAuthenticator | undefined;
   browser: LaunchedBrowser;
   /** Serializes every profile commit, periodic or final, against one revision chain. */
   readonly checkpoints: AsyncMutex;
@@ -362,6 +364,13 @@ export class BrowserRuntime implements NativePresentationSource {
     binding.page.onClose(closed);
     session.presentations.add(closed);
     return {
+      passkeyInput: (consumerToken) => {
+        if (!released && session.claims.passkeys === 1)
+          session.host.passkeys?.record(
+            binding.targetId,
+            consumerToken ? { person: consumerToken } : "unknown",
+          );
+      },
       page: binding.page,
       sessionId,
       surfaceId,
@@ -383,12 +392,17 @@ export class BrowserRuntime implements NativePresentationSource {
     };
   }
 
-  attach(ticket: string, sink: BrowserControllerSink): Promise<BrowserAttachment> {
+  attach(
+    ticket: string,
+    sink: BrowserControllerSink,
+    options: { passkeys?: boolean } = {},
+  ): Promise<BrowserAttachment> {
     return this.mutex.run(async () => {
       if (this.shuttingDown || this.state === "closed") {
         throw new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down.");
       }
-      const claims = await this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId });
+      const verified = await this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId });
+      const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
       if (this.sessions.has(claims.sessionId)) {
         throw new BrowserRuntimeError("conflict", "The Browser Session is already attached.");
       }
@@ -423,7 +437,29 @@ export class BrowserRuntime implements NativePresentationSource {
             ? await this.profileStateClient.load(profileClaims)
             : null;
           stage = "context-launch";
+          const passkeys =
+            claims.passkeys === 1
+              ? new HostRelayAuthenticator((targetId) => {
+                  for (const session of this.sessions.values()) {
+                    if (session.host.identity.key !== hostKey || session.claims.passkeys !== 1)
+                      continue;
+                    const surfaceId = session.ledger.surfaceIdForTarget(targetId);
+                    if (surfaceId)
+                      return {
+                        sessionId: session.sessionId,
+                        surfaceId,
+                        send: (message) => {
+                          void session.controller
+                            .sendPasskey(message)
+                            .catch(() => passkeys?.disconnect(session.sessionId));
+                        },
+                      };
+                  }
+                  return undefined;
+                })
+              : undefined;
           const browser = await this.launcher.launch({
+            ...(passkeys ? { authenticator: passkeys } : {}),
             initialViewport: this.initialViewport,
             partitionKey: hostKey,
             sessionId: claims.sessionId,
@@ -450,6 +486,7 @@ export class BrowserRuntime implements NativePresentationSource {
             void this.closeHost(hostKey, generation, false).catch(() => undefined);
           };
           host = {
+            passkeys,
             acceptingSessions: true,
             browser,
             checkpoints: new AsyncMutex(),
@@ -540,6 +577,7 @@ export class BrowserRuntime implements NativePresentationSource {
         const stateImports = host.stateImports;
         const stateHost = host;
         controller = new BrowserController({
+          passkeys: claims.passkeys === 1 ? host.passkeys : undefined,
           cdpRouter: host.router,
           clipboard: hostBrowser.clipboard,
           claims,
@@ -860,6 +898,7 @@ export class BrowserRuntime implements NativePresentationSource {
     const started = performance.now();
     if (this.hosts.get(identity.key)?.generation !== host.generation) return;
     host.acceptingSessions = false;
+    host.passkeys?.close();
     host.signIns.close();
     if (host.checkpointTimer) clearTimeout(host.checkpointTimer);
     host.checkpointTimer = null;

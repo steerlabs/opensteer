@@ -1,3 +1,4 @@
+import type { HostRelayAuthenticator } from "../passkeys/host-relay.js";
 import { layoutMetricsSchema, screenshotDensity, visualViewportSchema } from "./layout-metrics.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -61,6 +62,7 @@ export interface BrowserControllerSink extends BrowserFrameSink {
 }
 
 interface BrowserControllerOptions {
+  passkeys?: HostRelayAuthenticator | undefined;
   cdpRouter: SessionCdpRouter;
   claims: BrowserAttachTicketClaims;
   clipboard?: EngineClipboard | undefined;
@@ -269,7 +271,12 @@ export class BrowserController {
     outcome: "started" | "completed";
   }[] = [];
 
+  readonly #passkeys: HostRelayAuthenticator | undefined;
+  sendPasskey(message: BrowserServerMessage): Promise<void> {
+    return this.send(message);
+  }
   constructor(options: BrowserControllerOptions) {
+    this.#passkeys = options.passkeys;
     this.disconnectPromise = new Promise<void>((resolve) => {
       this.releaseDisconnect = resolve;
     });
@@ -436,6 +443,10 @@ export class BrowserController {
         new BrowserRuntimeError("bad_message", "The browser command is invalid."),
       );
     }
+    if (parsed.data.type === "passkey.result") {
+      this.#passkeys?.result(this.claims.sessionId, parsed.data);
+      return Promise.resolve();
+    }
     return this.enqueue(parsed.data);
   }
 
@@ -447,10 +458,15 @@ export class BrowserController {
         new BrowserRuntimeError("bad_message", "The browser command is invalid."),
       );
     }
+    if (parsed.data.type === "passkey.result") {
+      this.#passkeys?.result(this.claims.sessionId, parsed.data);
+      return Promise.resolve();
+    }
     return this.enqueue(parsed.data);
   }
 
   browserDisconnected(): void {
+    this.#passkeys?.disconnect(this.claims.sessionId);
     if (this.disconnected) return;
     this.disconnected = true;
     this.screencast.abort();
@@ -460,6 +476,7 @@ export class BrowserController {
   }
 
   close(): Promise<void> {
+    this.#passkeys?.disconnect(this.claims.sessionId);
     this.closePromise ??= this.closeOnce();
     return this.closePromise;
   }
@@ -1295,6 +1312,7 @@ export class BrowserController {
           !(await observer.edit(
             message.type === "input.compose" ? message.composition : message.edit,
             message.type === "input.compose",
+            () => this.recordPasskeyInput(message, active.surface.id),
           ))
         )
           this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
@@ -1309,12 +1327,13 @@ export class BrowserController {
               (m) => this.send(m),
             ),
           );
-        await observer.input(() =>
-          cdp.send(
+        await observer.input(() => {
+          this.recordPasskeyInput(message, active.surface.id);
+          return cdp.send(
             "Input.dispatchKeyEvent",
             editingCommandParameters(message.command, this.platform),
-          ),
-        );
+          );
+        });
         return;
       }
       const outcome = (result: "refused" | "pasted" | "empty" | "too-large") =>
@@ -1340,9 +1359,13 @@ export class BrowserController {
             : "cut";
       try {
         const result = await this.clipboard!.run(active.page, input, () =>
-          observer.input(() =>
-            cdp.send("Input.dispatchKeyEvent", editingCommandParameters(command, this.platform)),
-          ),
+          observer.input(() => {
+            this.recordPasskeyInput(message, active.surface.id);
+            return cdp.send(
+              "Input.dispatchKeyEvent",
+              editingCommandParameters(command, this.platform),
+            );
+          }),
         );
         if (command === "paste") await outcome("pasted");
         else
@@ -1471,6 +1494,7 @@ export class BrowserController {
         gesture.x = point.x;
         gesture.y = point.y;
       }
+      this.recordPasskeyInput(message, message.surfaceId);
       await binding.cdp.send("Input.dispatchMouseEvent", {
         button: "none",
         buttons: pressedButtonMask(gesture?.buttons ?? noButtons),
@@ -1512,8 +1536,9 @@ export class BrowserController {
         keys.set(message.code, message);
         this.keyOwners.set(message.surfaceId, inputProducer(message));
       }
-      const dispatch = () =>
-        cdp.send("Input.dispatchKeyEvent", {
+      const dispatch = () => {
+        this.recordPasskeyInput(message, message.surfaceId);
+        return cdp.send("Input.dispatchKeyEvent", {
           code: message.code,
           key: message.key,
           modifiers,
@@ -1527,6 +1552,7 @@ export class BrowserController {
             : {}),
           ...resolved,
         });
+      };
       if (this.editing) await (await this.editingObserver(active.surface.id)).input(dispatch);
       else await dispatch();
       if (message.action === "up") {
@@ -1549,6 +1575,7 @@ export class BrowserController {
     if (message.type === "clipboard.paste") {
       if (message.surfaceId !== active.surface.id) return;
       this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
+      this.recordPasskeyInput(message, active.surface.id);
       await cdp.send("Input.insertText", { text: message.text });
       return;
     }
@@ -1661,6 +1688,15 @@ export class BrowserController {
     });
   }
 
+  private recordPasskeyInput(message: BrowserClientMessage, surfaceId: BrowserSurfaceId): void {
+    const targetId = this.ledger.binding(surfaceId)?.targetId;
+    if (targetId)
+      this.#passkeys?.record(
+        targetId,
+        message.producerId ? { person: message.producerId } : "unknown",
+      );
+  }
+
   private async dispatchPointer(
     message: Extract<BrowserClientMessage, { type: "input.pointer" }>,
   ): Promise<void> {
@@ -1741,6 +1777,7 @@ export class BrowserController {
         y: point.y,
       });
     try {
+      this.recordPasskeyInput(message, message.surfaceId);
       await binding.cdp.send("Input.dispatchMouseEvent", {
         button: effectiveButton,
         buttons: pressedButtonMask(held),
@@ -2252,6 +2289,7 @@ export class BrowserController {
                   tabUrl
                     ? { ...command, parameters: { ...command.parameters, url: "about:blank" } }
                     : command,
+                  (targetId) => this.#passkeys?.record(targetId, "agent"),
                 );
     } finally {
       script?.stop();

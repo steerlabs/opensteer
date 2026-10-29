@@ -1,3 +1,4 @@
+import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
 
 import { WorkspaceTabActivations } from "../host/workspace-tab-activations.js";
@@ -3343,6 +3344,7 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  readonly browserPasskeys = new BrowserPasskeys();
   readonly recentSites: RecentSitesStore;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: HostClient["retainComputerView"];

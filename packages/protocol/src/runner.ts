@@ -1327,6 +1327,12 @@ export const RunnerBrowserModuleSchema = z
         version === 1 || version === 2 ? version : undefined,
       )
       .optional(),
+    passkeys: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
     /** Required for editing v2; true means the engine isolates clipboard operations. */
     clipboard: z.boolean().optional(),
   })

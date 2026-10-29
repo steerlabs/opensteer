@@ -74,6 +74,8 @@ export interface BrowserPage {
   /** Invalidates and reconciles a native surface without changing ledger geometry. */
   invalidateSurface?(): Promise<void>;
   /** Input a person gave a natively shown page directly; agent and viewer input never appear here. */
+  /** Trusted input delivered to a native view, after application shortcut interception. */
+  observePasskeyInput?(listener: () => void): () => void;
   observeHumanInput?(listener: (observation: HumanInputObservation) => void): () => void;
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
@@ -107,6 +109,7 @@ export interface BrowserContext {
 export type BrowserPartitionKey = `profile:${string}` | `session:${string}`;
 
 export interface BrowserLaunchRequest {
+  authenticator?: import("../passkeys/authenticator.js").PasskeyAuthenticator;
   initialViewport: Viewport;
   partitionKey: BrowserPartitionKey;
   sessionId: BrowserSessionId;

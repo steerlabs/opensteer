@@ -49,3 +49,5 @@ export * from "./browser-preferences.js";
 
 export * from "./browser-editing.js";
 export * from "./saved-host-view.js";
+
+export * from "./browser-passkeys.js";
