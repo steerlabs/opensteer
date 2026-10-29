@@ -105,7 +105,8 @@ checkout. It downloads checksum-pinned official Node, PostgreSQL source and
 cloudflared; compiles and relocates PostgreSQL; builds and signs the supervisor;
 and invokes the product's Personal runtime, Computer Use, Passwords and desktop
 packagers. The Personal runtime's source provenance, native input proofs and
-resource digests remain enforced. No sibling checkout, private infrastructure,
+resource digests remain enforced. Script debugger maps are omitted so the
+existing 2,048-file runtime manifest limit remains intact. No sibling checkout, private infrastructure,
 login keychain item or local signing JSON is needed.
 
 The workflow first runs `pnpm build:agent-phone --release`. With its source and

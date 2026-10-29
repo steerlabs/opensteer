@@ -151,7 +151,7 @@ jobs:
           printf '%s' "$PASSWORDS_PROFILE_BASE64" | base64 --decode > "$OPENSTEER_PASSWORDS_PROVISIONING_PROFILE"
           # Decrypt via environment, never a password argument. Import the PEM
           # into an ephemeral keychain; its empty password is not a credential.
-          openssl pkcs12 -in "$RUNNER_TEMP/release-keys/certificate.p12" -nodes \
+          /usr/bin/openssl pkcs12 -in "$RUNNER_TEMP/release-keys/certificate.p12" -nodes \
             -passin env:CSC_KEY_PASSWORD -out "$RUNNER_TEMP/release-keys/signing.pem"
           keychain="$RUNNER_TEMP/release-keys/signing.keychain-db"
           security create-keychain -p '' "$keychain"

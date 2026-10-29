@@ -14,8 +14,8 @@ it("omits debugger maps while retaining runnable script code and runtime metadat
       ["cli.js", "console.log('fixture');"],
       ["cli.js.map", "{}"],
       ["package.json", '{"type":"module"}'],
-    ])
-      await writeFile(path.join(source, name), bytes!);
+    ] as const)
+      await writeFile(path.join(source, name), bytes);
     const artifacts = await stageRuntimeTree(source, staged, "pi", "darwin", {
       shape: "script",
       entryScript: "pi/cli.js",
