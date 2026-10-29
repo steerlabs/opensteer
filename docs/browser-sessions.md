@@ -47,6 +47,18 @@ page, using its default profile and computer choice. On the web, modified clicks
 middle clicks and the context menu keep the device browser’s own link behavior.
 Mobile hands links to the phone.
 
+## Opening web links in Opensteer
+
+On macOS, Stable and Beta can be chosen as the default browser in System Settings.
+HTTP and HTTPS links open directly in a new tab in the signed-in Personal
+deployment, using the person's last browser profile choice (Guest by default),
+with the tab selected and its address bar visible. Links received during startup
+wait for Personal; after 15 seconds the app explains how to open them. The queue
+holds the first 20 links, reports overflow, and collapses exact duplicates received
+within one second. Opening a web link does not start or message an agent.
+If you navigate elsewhere in the app after a link arrives, its tab opens in the
+background and the delivery completes without changing your view.
+
 ## Open workspace tabs
 
 The Host database owns the open browser-tab inventory. Each row keeps its Runtime

@@ -1,3 +1,4 @@
+import { BrowserOpenIdentitySchema } from "./browser.js";
 import { type DisplayClientDiagnostic } from "./display-stream.js";
 import type { DictationPort } from "./dictation.js";
 export { DisplayClientDiagnosticSchema } from "./display-stream.js";
@@ -9,6 +10,7 @@ import {
   BrowserSurfaceIdSchema,
   CanonicalOriginSchema,
   DeploymentIdSchema,
+  UserIdSchema,
   MessageIdSchema,
   DeploymentDisplayKindSchema,
   EnvironmentIdSchema,
@@ -1340,7 +1342,48 @@ export const DesktopChooseUsbDeviceInputSchema = z.strictObject({
 });
 export type DesktopChooseUsbDeviceInput = z.infer<typeof DesktopChooseUsbDeviceInputSchema>;
 
+export const desktopWebUrlMaxBytes = 8192;
+export const DesktopWebUrlSchema = z
+  .string()
+  .min(1)
+  .refine((raw) => {
+    if (new TextEncoder().encode(raw).byteLength > desktopWebUrlMaxBytes) return false;
+    try {
+      const url = new URL(raw);
+      return (
+        (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password
+      );
+    } catch {
+      return false;
+    }
+  }, "A web link must be a valid HTTP or HTTPS URL.");
+export const DesktopWebLinkRequestSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  userId: UserIdSchema,
+  identity: BrowserOpenIdentitySchema,
+});
+export type DesktopWebLinkRequest = z.infer<typeof DesktopWebLinkRequestSchema>;
+export const DesktopWebLinkSchema = z.strictObject({
+  type: z.literal("open-web-url"),
+  id: z.uuid(),
+  url: DesktopWebUrlSchema,
+  request: DesktopWebLinkRequestSchema.optional(),
+  generation: z.uuid().optional(),
+});
+export type DesktopWebLink = z.infer<typeof DesktopWebLinkSchema>;
+export const DesktopWebLinkDeliverySchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  acknowledgedId: z.uuid().optional(),
+  dismissedId: z.uuid().optional(),
+  bind: z.strictObject({ id: z.uuid(), identity: BrowserOpenIdentitySchema }).optional(),
+  generation: z.uuid(),
+  userId: UserIdSchema,
+  ready: z.boolean(),
+});
+export type DesktopWebLinkDelivery = z.infer<typeof DesktopWebLinkDeliverySchema>;
+
 export const DesktopWorkspaceTabCommandSchema = z.union([
+  DesktopWebLinkSchema,
   z.strictObject({
     type: z.enum(["new-tab", "close-tab", "reopen-closed-tab", "next-tab", "previous-tab"]),
   }),
@@ -1575,6 +1618,7 @@ export interface OpensteerDesktopBridge {
   downloads?: DesktopDownloadsBridge;
   /** On-device dictation on this Mac. Present only in the desktop app. */
   dictation?: DictationPort;
+  webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;
   onWorkspaceTabCommand(listener: (command: DesktopWorkspaceTabCommand) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
   getLocalVisibility(): Promise<boolean>;

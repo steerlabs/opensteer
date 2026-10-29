@@ -18,3 +18,11 @@ linux:
   executableName: opensteer-beta
 deb:
   packageName: opensteer-beta
+
+mac:
+  protocols:
+    - name: Web links
+      role: Viewer
+      schemes:
+        - http
+        - https
