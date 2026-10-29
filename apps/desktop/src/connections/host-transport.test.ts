@@ -1192,6 +1192,77 @@ function socket() {
   };
 }
 
+it("keeps a passkey request's origin, options and client data in main", async () => {
+  const selected = deployment("Example", "https://deployment.example.test");
+  let events: HostNetworkSocketEvents | undefined;
+  const transport = desktopHostTransport({
+    catalog: catalogStore([selected], selected.authority.document.deploymentId),
+    network: {
+      openWebSocket: (_input, value) => {
+        events = value;
+        return socket();
+      },
+      request: async () => new Response("{}"),
+    },
+  });
+  const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
+  const requestId = "00000000-0000-4000-8000-000000000003";
+  const main: unknown[] = [];
+  const renderer: unknown[] = [];
+  const unsubscribe = transport.observeBrowserControl((event) => {
+    if (event.type === "message") main.push(event.message);
+  });
+  try {
+    await transport.openWebSocket(
+      7,
+      { path: `/v1/browser-sessions/${sessionId}/connect?passkeys=native` },
+      (event) => {
+        if (event.type === "text") renderer.push(JSON.parse(event.data));
+      },
+    );
+    events!.message(
+      JSON.stringify({
+        type: "browser.snapshot",
+        access: "full-control",
+        dialog: null,
+        sessionId,
+        state: "ready",
+        surfaces: [
+          { id: "tab", active: true, title: "Example", url: "https://login.example.test" },
+        ],
+        passkeys: "native",
+        passkeyConsumerToken: requestId,
+      }),
+    );
+    const request = {
+      type: "browser.passkey.request",
+      requestId,
+      ceremonyId: requestId,
+      surfaceId: "tab",
+      documentId: "document",
+      op: "get",
+      origin: "https://login.example.test",
+      rpId: "example.test",
+      options: {
+        challenge: "AQID",
+        allowCredentials: [],
+        userVerification: "preferred",
+        extensions: {},
+      },
+      clientDataJSON: "AQID",
+      cause: { person: requestId },
+      deadline: Date.now() + 10_000,
+    };
+    events!.message(JSON.stringify(request));
+    expect(main.at(-1)).toMatchObject({ type: "browser.passkey.request", requestId });
+    // The renderer learns only that this request's offer ended; main presents it.
+    expect(renderer.at(-1)).toEqual({ type: "browser.passkey.withdrawn", requestId });
+  } finally {
+    unsubscribe();
+    transport.closeAllSockets();
+  }
+});
+
 it("holds passkey messages in main before renderer delivery and binds native input to the admitted surface", async () => {
   const selected = deployment("Example", "https://deployment.example.test");
   let events: HostNetworkSocketEvents | undefined;

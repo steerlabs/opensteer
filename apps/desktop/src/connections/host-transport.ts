@@ -620,20 +620,37 @@ export class DesktopHostTransport extends HostTransport {
               observe("admitted");
             }
           }
+          let rendererData = data;
           if (browser && admitted && typeof data === "string") {
+            let raw: unknown = null;
             try {
-              const message = BrowserServerMessageSchema.parse(JSON.parse(data));
+              raw = JSON.parse(data);
+              const message = BrowserServerMessageSchema.parse(raw);
               for (const listener of this.#browserControlListeners)
                 listener({ connectionId, ownerId, ...browser, type: "message", message });
+              // Main presents the request; the renderer learns only that its offer ended.
+              if (message.type === "browser.passkey.request")
+                rendererData = JSON.stringify({
+                  type: "browser.passkey.withdrawn",
+                  requestId: message.requestId,
+                });
             } catch {
               /* The renderer's existing protocol boundary reports invalid frames. */
             }
+            // A malformed request still never carries its ceremony details to the renderer.
+            if (
+              rendererData === data &&
+              typeof raw === "object" &&
+              raw !== null &&
+              (raw as { type?: unknown }).type === "browser.passkey.request"
+            )
+              return;
           }
           if (
             !deliver(
-              typeof data === "string"
-                ? { data, type: "text" }
-                : { data: new Uint8Array(data), type: "binary" },
+              typeof rendererData === "string"
+                ? { data: rendererData, type: "text" }
+                : { data: new Uint8Array(rendererData), type: "binary" },
             )
           )
             invalidate(

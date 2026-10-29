@@ -1581,7 +1581,8 @@ rerouting. The deadline applies even while an answer is being authorized.
 
 The desktop proxies streamed and native control sockets through main. Main holds
 the request before notifying the renderer, and the renderer can ask to present
-only its opaque request ID. The OS authenticator receives the actual origin and
+only its opaque request ID; it never receives the request's origin, options or client
+data, only that the offer ended. The OS authenticator receives the actual origin and
 complete normalized options from main. Neither main nor the runtime repairs the
 OS's client data or other signed bytes. Desktop builds without native support,
 the web app and mobile opt in as notice viewers.
