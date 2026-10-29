@@ -473,6 +473,19 @@ bash scripts/test-macos-journeys.sh --run-id "$id" --sha "$sha" --out "$HOME/ope
 bash scripts/test-macos-journeys.sh --postflight --run-id "$id" --out "$HOME/opensteer-runs/$id"
 ```
 
+The on-demand `mac-owner` selection runs `MacOwnerInputJourney/run-vm.sh` unchanged
+through the registered launcher, using its original environment, temporary app
+location and cleanup. It still requires the legacy `/Users/admin/opensteer-job`
+layout; the guest marker alone does not satisfy that script's guard. Its evidence
+is copied read-only from `~/opensteer-job/artifacts/mac-owner` into the selected
+run's `mac-owner/` directory. It is excluded from default journeys and sweeps.
+
+After each journey, both invocation modes copy `.ips` and `.crash` files from
+`~/Library/Logs/DiagnosticReports` modified since that journey started into its
+`crash-reports/` directory. Copies are read-only, originals stay untouched, and
+`crashReports` in each manifest row records the count. Reports are evidence only
+and never authorize process or file cleanup.
+
 IDs have format `yyyymmddThhmmssZ-xxxxxxxx` (eight lowercase hexadecimal digits).
 Preflight returns 0 for clean, 3 for unknown residue, or 2 for invalid arguments or
 setup failure. Run requires a matching clean preflight and exact full HEAD SHA;

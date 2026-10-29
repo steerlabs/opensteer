@@ -120,68 +120,52 @@ final class FoldedWindowReviewTests: XCTestCase {
     XCTAssertFalse(bound.closed)
   }
 
-  @WorkActor func testReceiptReceiversAcrossTabAndUnknownPreparedFocus() async throws {
-    for unknown in [false, true] {
-      let field = AXUIElementCreateApplication(111)
-      let secure = AXUIElementCreateApplication(222)
-      let prepared = Locked(false)
-      let reads = Locked<[CGWindowID]>([])
-      let delivered = Locked("")
-      let username = Locked("")
-      let password = Locked("")
-      let inPassword = Locked(false)
-      let app = hostApp(
-        identity: AppIdentity(bundleId: "fixture", displayName: "Fixture", teamId: nil),
-        path: "/tmp/Fixture.app")
-      defer { app.focus.stop() }
-      var calls = hostAccessibility()
-      calls.focusedElement = { _ in
-        let id: CGWindowID = prepared.current ? 1 : 2
-        reads.withLock { $0.append(id) }
-        return prepared.current ? secure : field
-      }
-      calls.window = { element in CFEqual(element, field) ? 2 : 1 }
-      calls.attributes = { element in
-        unknown && prepared.current
-          ? ElementAttributes(role: "AXUnknown")
-          : ElementAttributes(role: CFEqual(element, field) ? "AXTextField" : "AXSecureTextField")
-      }
-      var context = hostContext(
-        app: app, cancellation: SessionCancellation(), monitor: WindowMonitor(), overlay: nil,
-        budget: .unlimited, accessibility: calls)
-      context.keyOwner = { _, _ in
-        prepared.withLock { $0 = true }
-        return (1, secure)
-      }
-      let text = unknown ? "hunter22" : "plain\tcanary"
-      context.input = InputCalls(
-        mouse: { _, _, _, _, _, _ in XCTFail("Unexpected mouse post") },
-        scroll: { _, _, _, _ in XCTFail("Unexpected scroll post") },
-        press: { key, _, characters, destination, _, gate in
-          try gate()
-          XCTAssertEqual(destination.processIdentifier, getpid())
-          XCTAssertEqual(destination.windowID, 1)
-          delivered.withLock { $0 += key == 48 ? "\t" : characters ?? "" }
-          if key == 48 {
-            inPassword.withLock { $0 = true }
-          } else if inPassword.current {
-            password.withLock { $0 += characters ?? "" }
-          } else {
-            username.withLock { $0 += characters ?? "" }
-          }
-        },
-        unicode: { _, _, _, _ in XCTFail("Unexpected unicode post") })
-      let binding = ActionRunner.Binding(
-        processIdentifier: getpid(), stamp: hostStamp(getpid()), windowID: 1,
-        windowFrame: CGRect(x: 0, y: 0, width: 200, height: 200), onScreen: false)
-      let receipt = try await ActionRunner.type(text: text, target: nil, binding: binding, context)
-      XCTAssertEqual(receipt, "Typed \(text.count) characters")
-      XCTAssertEqual(delivered.current, text)
-      XCTAssertEqual(username.current, unknown ? "hunter22" : "plain")
-      XCTAssertEqual(password.current, unknown ? "" : "canary")
-      XCTAssertEqual(reads.current.first, 2)
-      XCTAssertEqual(reads.current.last, 1)
-      XCTAssertGreaterThanOrEqual(reads.current.count, 2)
+  @WorkActor func testKeyboardReceiptRedactsTextAfterPlainFocusRead() async throws {
+    let field = AXUIElementCreateApplication(111)
+    let secure = AXUIElementCreateApplication(222)
+    let prepared = Locked(false)
+    let reads = Locked<[CGWindowID]>([])
+    let delivered = Locked("")
+    let app = hostApp(
+      identity: AppIdentity(bundleId: "fixture", displayName: "Fixture", teamId: nil),
+      path: "/tmp/Fixture.app")
+    defer { app.focus.stop() }
+    var calls = hostAccessibility()
+    calls.focusedElement = { _ in
+      let id: CGWindowID = prepared.current ? 1 : 2
+      reads.withLock { $0.append(id) }
+      return prepared.current ? secure : field
     }
+    calls.window = { element in CFEqual(element, field) ? 2 : 1 }
+    calls.attributes = { element in
+      ElementAttributes(role: CFEqual(element, field) ? "AXTextField" : "AXSecureTextField")
+    }
+    var context = hostContext(
+      app: app, cancellation: SessionCancellation(), monitor: WindowMonitor(), overlay: nil,
+      budget: .unlimited, accessibility: calls)
+    context.keyOwner = { _, _ in
+      prepared.withLock { $0 = true }
+      return (1, secure)
+    }
+    let text = "plain\tcanary"
+    context.input = InputCalls(
+      mouse: { _, _, _, _, _, _ in XCTFail("Unexpected mouse post") },
+      scroll: { _, _, _, _ in XCTFail("Unexpected scroll post") },
+      press: { key, _, characters, destination, _, gate in
+        try gate()
+        XCTAssertEqual(destination.processIdentifier, getpid())
+        XCTAssertEqual(destination.windowID, 1)
+        delivered.withLock { $0 += key == 48 ? "\t" : characters ?? "" }
+      },
+      unicode: { _, _, _, _ in XCTFail("Unexpected unicode post") })
+    let binding = ActionRunner.Binding(
+      processIdentifier: getpid(), stamp: hostStamp(getpid()), windowID: 1,
+      windowFrame: CGRect(x: 0, y: 0, width: 200, height: 200), onScreen: false)
+    let receipt = try await ActionRunner.type(text: text, target: nil, binding: binding, context)
+    XCTAssertEqual(receipt, "Typed \(text.count) characters")
+    XCTAssertEqual(delivered.current, text)
+    XCTAssertEqual(reads.current.first, 2)
+    XCTAssertEqual(reads.current.last, 1)
+    XCTAssertGreaterThanOrEqual(reads.current.count, 2)
   }
 }

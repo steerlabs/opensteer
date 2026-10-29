@@ -1,3 +1,4 @@
+import { collectCrashReports, copyJourneyEvidence } from "./journey-artifacts.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { bindPath, validatePathBinding } from "./journey-paths.js";
 import { stopRegisteredGroups } from "./journey-processes.js";
@@ -65,7 +66,13 @@ let out = "";
 let runId = "";
 let sha = "";
 const prepare: { step: string; seconds: number; exitCode: number }[] = [];
-const results: { name: string; exitCode: number; seconds: number; outcome: string }[] = [];
+const results: {
+  name: string;
+  exitCode: number;
+  seconds: number;
+  outcome: string;
+  crashReports: number;
+}[] = [];
 const head = () => execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 async function record(value = registration, includeMarker = true) {
   if (!value) return;
@@ -182,7 +189,8 @@ async function main() {
       if (arg === "--run-id") runId = value;
       else if (arg === "--out") out = value;
       else sha = value;
-    } else if (names.includes(arg) && !selected.includes(arg)) selected.push(arg);
+    } else if ((names.includes(arg) || arg === "mac-owner") && !selected.includes(arg))
+      selected.push(arg);
     else throw Error(`Unknown argument: ${arg}`);
   }
   if (legacy) {
@@ -220,10 +228,12 @@ async function main() {
     output: bindPath(out),
     groups: [],
     keychain: [],
-    temporary: selected.flatMap((name) => [
-      bindPath(journeyTemporaryDirectory(runId, name)),
-      bindPath(journeyApplicationDirectory(home, runId, name)),
-    ]),
+    temporary: selected
+      .filter((name) => name !== "mac-owner")
+      .flatMap((name) => [
+        bindPath(journeyTemporaryDirectory(runId, name)),
+        bindPath(journeyApplicationDirectory(home, runId, name)),
+      ]),
     canonical: CANONICAL_PATHS.filter((p) => !pre.after.canonical.includes(p)).map((p) =>
       bindPath(path.join(home, p)),
     ),
@@ -277,39 +287,51 @@ async function main() {
       for (const name of selected) {
         if (interrupted) break;
         const directory = path.join(out, name);
-        const apps = journeyApplicationDirectory(home, runId, name);
-        const original = registration.temporary.find((binding) => binding.path === apps)!;
-        validatePathBinding(original);
-        mkdirSync(apps, { recursive: true });
-        validatePathBinding(original);
-        registration.temporary = registration.temporary.map((binding) =>
-          binding.path === apps ? bindPath(apps) : binding,
-        );
-        await record();
-        mkdirSync(journeyTemporaryDirectory(runId, name), { recursive: true, mode: 0o700 });
-        for (const sub of ["config", "cache", "data", "downloads"])
-          mkdirSync(path.join(directory, sub), { recursive: true });
-        const env = {
-          ...process.env,
-          OPENSTEER_JOURNEY_OUT: directory,
-          OPENSTEER_JOURNEY_APPS: apps,
-          OPENSTEER_JOURNEY_KEYCHAIN_PREFIX: `${KEYCHAIN_PREFIX}${runId}-${name}-`,
-          TMPDIR: journeyTemporaryDirectory(runId, name) + "/",
-          XDG_CONFIG_HOME: path.join(directory, "config"),
-          XDG_CACHE_HOME: path.join(directory, "cache"),
-          XDG_DATA_HOME: path.join(directory, "data"),
-          OPENSTEER_PERSONAL_E2E_ARTIFACT_DIR: directory,
-          OPENSTEER_DISPLAY_E2E_ARTIFACT_DIR: directory,
-          OPENSTEER_USB_E2E_ARTIFACT_DIR: directory,
-          OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR: path.join(directory, "state-import"),
-          OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR: path.join(directory, "passkey-policy"),
-        };
+        if (name !== "mac-owner") {
+          const apps = journeyApplicationDirectory(home, runId, name);
+          const original = registration.temporary.find((binding) => binding.path === apps)!;
+          validatePathBinding(original);
+          mkdirSync(apps, { recursive: true });
+          validatePathBinding(original);
+          registration.temporary = registration.temporary.map((binding) =>
+            binding.path === apps ? bindPath(apps) : binding,
+          );
+          await record();
+          mkdirSync(journeyTemporaryDirectory(runId, name), { recursive: true, mode: 0o700 });
+          for (const sub of ["config", "cache", "data", "downloads"])
+            mkdirSync(path.join(directory, sub), { recursive: true });
+        }
+        const env =
+          name === "mac-owner"
+            ? process.env
+            : {
+                ...process.env,
+                OPENSTEER_JOURNEY_OUT: directory,
+                OPENSTEER_JOURNEY_APPS: journeyApplicationDirectory(home, runId, name),
+                OPENSTEER_JOURNEY_KEYCHAIN_PREFIX: `${KEYCHAIN_PREFIX}${runId}-${name}-`,
+                TMPDIR: journeyTemporaryDirectory(runId, name) + "/",
+                XDG_CONFIG_HOME: path.join(directory, "config"),
+                XDG_CACHE_HOME: path.join(directory, "cache"),
+                XDG_DATA_HOME: path.join(directory, "data"),
+                OPENSTEER_PERSONAL_E2E_ARTIFACT_DIR: directory,
+                OPENSTEER_DISPLAY_E2E_ARTIFACT_DIR: directory,
+                OPENSTEER_USB_E2E_ARTIFACT_DIR: directory,
+                OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR: path.join(directory, "state-import"),
+                OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR: path.join(directory, "passkey-policy"),
+              };
+        const startedAt = Date.now();
         const start = performance.now();
         const code = await execute(
           `bash scripts/journey-command.sh ${name}`,
           path.join(out, `${name}.log`),
           env,
         );
+        if (name === "mac-owner")
+          await copyJourneyEvidence(
+            path.join(home, "opensteer-job/artifacts/mac-owner"),
+            directory,
+          );
+        const crashReports = await collectCrashReports(home, startedAt, directory);
         execFileSync(
           process.execPath,
           [
@@ -318,6 +340,7 @@ async function main() {
             name,
             String(code),
             String((performance.now() - start) / 1000),
+            String(crashReports),
           ],
           { stdio: "inherit" },
         );
@@ -329,6 +352,7 @@ async function main() {
               exitCode: z.number(),
               seconds: z.number(),
               outcome: z.string(),
+              crashReports: z.number().int().nonnegative(),
             })
             .parse(JSON.parse(lines.at(-1)!)),
         );

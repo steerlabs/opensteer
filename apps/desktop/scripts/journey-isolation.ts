@@ -404,6 +404,7 @@ export interface JourneyRow {
   exitCode: number;
   seconds: number;
   outcome: string;
+  crashReports?: number;
 }
 export function summarizeJourneys(selected: string[], results: JourneyRow[], prepared: boolean) {
   const journeys = selected.map(
@@ -413,6 +414,7 @@ export function summarizeJourneys(selected: string[], results: JourneyRow[], pre
         exitCode: 1,
         seconds: 0,
         outcome: "skipped",
+        crashReports: 0,
       },
   );
   const passed =

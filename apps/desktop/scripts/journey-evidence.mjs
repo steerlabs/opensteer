@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-const [out, name, exitCode, seconds] = process.argv.slice(2);
+const [out, name, exitCode, seconds, crashReports] = process.argv.slice(2);
 let code = Number(exitCode);
 let skipped = false;
 try {
@@ -91,6 +91,7 @@ fs.appendFileSync(
     name,
     exitCode: code,
     seconds: Number(seconds),
+    crashReports: Number(crashReports ?? 0),
     outcome: skipped ? "skipped" : code === 0 ? "passed" : "failed",
     ...(name === "live-swift"
       ? {

@@ -51,9 +51,10 @@ it("rejects live effects in support except the exact host-safe wrappers", () => 
   expect(violationsIn("ComputerUseCoreTests/Owner.swift", "let next = fence.start()")).toEqual([]);
 });
 
-const globalInputPost = /\bCGEventPost\b|\.post\s*\(\s*tap\s*:|CGEvent\.post\s*\(/;
+const globalInputPost =
+  /\bCGEventTapPostEvent\b|\btapPostEvent\b|\bCGEventPost\b|\.post\s*\(\s*tap\s*:|CGEvent\.post\s*\(/;
 it("addresses agent input only to the target process (Invariant 4)", () => {
-  const sources = path.resolve(root, "../Sources/ComputerUseCore");
+  const sources = path.resolve(root, "../Sources");
   const violations = readdirSync(sources, { recursive: true })
     .map(String)
     .filter((file) => file.endsWith(".swift"))
@@ -69,6 +70,9 @@ it("addresses agent input only to the target process (Invariant 4)", () => {
 });
 it.each([
   "CGEventPost(.cghidEventTap, event)",
+  "CGEventTapPostEvent(proxy, event)",
+  "CGEvent.tapPostEvent(proxy, event: event)",
+  "event.tapPostEvent(proxy)",
   "event.post(tap: .cghidEventTap)",
   "CGEvent.post(event)",
   "event.post(\n  tap: .cghidEventTap)",
