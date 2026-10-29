@@ -84,6 +84,8 @@ it("holds distinct claims across processes until their delayed TCP listens", asy
     await Promise.all(servers.map(close));
     await Promise.all(
       children.map(async (child) => {
+        // A child that failed before reporting has already exited.
+        if (child.exitCode !== null || child.signalCode !== null) return;
         const exited = once(child, "exit");
         child.kill();
         await exited;
