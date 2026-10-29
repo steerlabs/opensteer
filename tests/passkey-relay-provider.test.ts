@@ -90,7 +90,6 @@ it.each(["person", "unknown"] as const)(
     try {
       await runPasskeyProviderScenario({
         authenticator,
-        firstPopupDocument: "refused",
         launcher: new PlaywrightChromiumLauncher({
           chromiumSandbox: false,
           executablePath: chromium.executablePath(),
