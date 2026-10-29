@@ -271,6 +271,8 @@ integration("iMessage channel", () => {
         { externalUserId: ownerEmail, linkedUserId: host.ownerId },
       ]);
       await waitForCondition(async () => (await channelStatus()) === "connected");
+      // The next poll starts only after the Mac's connected report is acknowledged.
+      await messages.secondPoll;
       const connectedAccount = await host.store.database
         .selectFrom("channelAccounts")
         .select("metadata")
@@ -713,6 +715,7 @@ function fakeMessages() {
   const account = { handle: "bot@example.com", id: "5D1C7A0E-0000-4000-8000-00000000B0B0" };
   const rows: IMessageRow[] = [];
   const polls: { readonly after: IMessagePosition; readonly owner: string }[] = [];
+  const secondPoll = Promise.withResolvers<void>();
   const sends: {
     readonly accountId: string;
     readonly key: string;
@@ -783,6 +786,7 @@ function fakeMessages() {
             readonly owner: string;
           };
           polls.push({ after: params.after, owner: params.owner });
+          if (polls.length === 2) secondPoll.resolve();
           if (claim !== null && claim !== params.owner) {
             return { account: "current", claim: "busy", cursor: "valid", rows: [] };
           }
@@ -808,6 +812,7 @@ function fakeMessages() {
       }
     },
     polls,
+    secondPoll: secondPoll.promise,
     receive(handle: string, text: string) {
       nextRowId += 1;
       const row = {
