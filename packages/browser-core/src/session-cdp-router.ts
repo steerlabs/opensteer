@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
+  agentObservationMethods,
   agentPageCommandRefusal,
   browserInternalsRefusal,
   isAgentPageEvent,
@@ -305,7 +306,7 @@ export class SessionCdpRouter {
   async send(
     sessionId: string,
     command: CdpCommand,
-    beforeInput?: (targetId: string) => void,
+    beforeActivity?: (targetId: string) => void,
   ): Promise<unknown> {
     this.#assertOpen();
     const state = this.#requireSession(sessionId);
@@ -320,7 +321,7 @@ export class SessionCdpRouter {
     const result = command.method.startsWith("Target.")
       ? await this.#sendTargetCommand(state, command)
       : command.sessionId
-        ? await this.#sendAttachedCommand(state, command, beforeInput)
+        ? await this.#sendAttachedCommand(state, command, beforeActivity)
         : await this.#backend.send(command.method, command.parameters);
     if (serializedBytes(result) > this.#limits.maxResultBytes) {
       throw new SessionCdpRouterError(
@@ -500,7 +501,7 @@ export class SessionCdpRouter {
   async #sendAttachedCommand(
     state: SessionState,
     command: CdpCommand,
-    beforeInput?: (targetId: string) => void,
+    beforeActivity?: (targetId: string) => void,
   ): Promise<unknown> {
     const opened = state.channels.get(command.sessionId ?? "");
     // A dialog's answer is what lets a page under it report its contexts.
@@ -563,9 +564,10 @@ export class SessionCdpRouter {
       this.#admitAttachedCommand(state, { ...command, parameters: pageKeys });
       parameters = pageKeys;
     }
-    // Admission includes inferred editing commands: refused input must not
-    // attribute a later passkey ceremony to this agent.
-    if (command.method.startsWith("Input.")) beforeInput?.(attached.physicalTargetId);
+    // Admission includes inferred editing commands: a refused command must not
+    // attribute a later passkey ceremony to this agent. Script, navigation and
+    // DOM changes can start one as surely as input can.
+    if (!agentObservationMethods.has(command.method)) beforeActivity?.(attached.physicalTargetId);
     const result = await Promise.race([
       attached.channel.send(
         command.method,

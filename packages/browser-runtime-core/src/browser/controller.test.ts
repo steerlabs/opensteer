@@ -111,6 +111,55 @@ describe("BrowserController", () => {
     }
   });
 
+  it("attributes agent script and page changes to the agent, but not observation", async () => {
+    const passkeys = new HostRelayAuthenticator(() => undefined);
+    const record = vi.spyOn(passkeys, "record");
+    const controller = new BrowserController({
+      passkeys,
+      cdpRouter,
+      claims: validClaims(),
+      exportSnapshot,
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+    });
+    await controller.start();
+    const targetId = await page.targetId();
+    try {
+      const attached = await cdpRouter.send(validClaims().sessionId, {
+        method: "Target.attachToTarget",
+        parameters: { targetId, flatten: true },
+      });
+      const sessionId = (attached as { sessionId: string }).sessionId;
+      const agent = (method: string, parameters: Record<string, unknown> = {}) =>
+        controller.handle({
+          type: "cdp.command",
+          requestId: globalThis.crypto.randomUUID(),
+          command: { method, sessionId, parameters },
+        });
+      await agent("DOM.getDocument");
+      expect(record).not.toHaveBeenCalled();
+      // Either can let page script call navigator.credentials within a person's input window.
+      await agent("Runtime.evaluate", { expression: "1" });
+      await agent("Emulation.setDeviceMetricsOverride", {
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+      expect(record.mock.calls).toEqual([
+        [targetId, "agent"],
+        [targetId, "agent"],
+      ]);
+    } finally {
+      await controller.close();
+      await ledger.close();
+      passkeys.close();
+    }
+  });
+
   it.each(["text", "composition", "paste"] as const)(
     "attributes %s before a ceremony inside its dispatch, including another viewer",
     async (kind) => {

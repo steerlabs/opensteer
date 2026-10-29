@@ -2271,15 +2271,19 @@ export class BrowserController {
       pageSurfaceId && scriptMethods.has(command.method)
         ? this.watchScriptTargets(pageSurfaceId)
         : null;
+    // Anything but observation can let page script start a passkey ceremony.
+    const agentActivity = (targetId: string) => this.#passkeys?.record(targetId, "agent");
     let result: unknown;
     try {
       result =
         pageTargetId &&
         (command.method === "Emulation.setDeviceMetricsOverride" ||
           command.method === "Emulation.clearDeviceMetricsOverride")
-          ? await this.sendAgentMetrics(command, pageTargetId)
-          : pageSurfaceId && command.method === "Page.handleJavaScriptDialog"
-            ? await this.answerAgentDialog(command, pageSurfaceId)
+          ? await this.sendAgentMetrics(command, pageTargetId, agentActivity)
+          : pageTargetId && pageSurfaceId && command.method === "Page.handleJavaScriptDialog"
+            ? await this.answerAgentDialog(command, pageSurfaceId, () =>
+                agentActivity(pageTargetId),
+              )
             : pageSurfaceId &&
                 command.method === "Page.captureScreenshot" &&
                 command.parameters?.captureBeyondViewport !== true
@@ -2289,7 +2293,7 @@ export class BrowserController {
                   tabUrl
                     ? { ...command, parameters: { ...command.parameters, url: "about:blank" } }
                     : command,
-                  (targetId) => this.#passkeys?.record(targetId, "agent"),
+                  agentActivity,
                 );
     } finally {
       script?.stop();
@@ -2599,10 +2603,12 @@ export class BrowserController {
   private async answerAgentDialog(
     command: CdpCommand,
     surfaceId: BrowserSurfaceId,
+    admitted: () => void,
   ): Promise<unknown> {
     const { dialogId, ...parameters } = command.parameters ?? {};
     // dialogId is a Runtime extension; Chromium's standard command has no ID.
     this.cdpRouter.admitPageCommand(this.claims.sessionId, { ...command, parameters });
+    admitted();
     const open = this.ledger.dialogOf(surfaceId);
     if (!open) throw new BrowserRuntimeError("conflict", "No dialog is showing.");
     const { accept, promptText } = parameters;
@@ -2631,8 +2637,13 @@ export class BrowserController {
    * The ledger applies them, so they outlive the agent's own CDP session; a
    * clear returns the page to the person's size.
    */
-  private async sendAgentMetrics(command: CdpCommand, targetId: string): Promise<unknown> {
+  private async sendAgentMetrics(
+    command: CdpCommand,
+    targetId: string,
+    admitted: (targetId: string) => void,
+  ): Promise<unknown> {
     this.cdpRouter.admitPageCommand(this.claims.sessionId, command);
+    admitted(targetId);
     const surfaceId = this.ledger.surfaceIdForTarget(targetId);
     const write = await this.ledger.agentMetrics(
       targetId,
