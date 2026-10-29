@@ -240,7 +240,7 @@ jobs:
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
         with:
           distribution: temurin
-          java-version: 21.0.10+7
+          java-version: 21.0.10+7.0.LTS
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         with:
           cmdline-tools-version: "13114758"
