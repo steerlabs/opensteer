@@ -101,7 +101,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.tests != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 9
     strategy:
       fail-fast: false
       matrix:
@@ -140,7 +140,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.integration != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 9
+    timeout-minutes: 11
     strategy:
       fail-fast: false
       matrix:
@@ -189,6 +189,7 @@ jobs:
             ${{ runner.temp }}/evidence
           if-no-files-found: error
   native-mac:
+    name: native-mac (${{ matrix.task }})
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.native-mac != 'false' }}
     runs-on: macos-15
@@ -198,15 +199,15 @@ jobs:
       matrix:
         include:
           - task: computer-helper
-            timeout: 5
+            timeout: 6
           - task: passwords-helper
-            timeout: 7
+            timeout: 8
           - task: iphone
             timeout: 6
           - task: computer-tests
             timeout: 6
           - task: passwords-tests
-            timeout: 9
+            timeout: 11
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -279,7 +280,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 7
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -323,7 +324,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.browser-journeys != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

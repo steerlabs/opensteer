@@ -148,8 +148,14 @@ Non-manifest generators and build consumers select conservative coverage.
 receipts. GitHub `Check` is the landing authority. CI uses duration-balanced
 default-test and integration shards; counts live in
 [ci-shards.json](../.github/scripts/ci-shards.json), and recorded file durations
-come from a hosted CI run. New files receive a small default weight. Every shard
-uploads discovery and execution inventories; Check requires their exact union and pairwise disjoint membership. Integration
+come from a green hosted CI run: download its `tests-*` and `integration-*`
+artifacts and run `pnpm exec tsx scripts/ci-durations.ts <directory>`. New files
+receive a small default weight. Each job's `timeout-minutes` is 1.5 times its
+slowest measured run in the current layout, at least 3:
+`pnpm exec tsx scripts/ci-timeouts.ts <run id>...` prints them, counting failed
+runs and listing cancelled or timed-out ones. Re-measure after changing shards or
+job contents. Every shard uploads discovery and execution
+inventories; Check requires their exact union and pairwise disjoint membership. Integration
 shards also upload enforcing lock graphs, merged through the global cycle check;
 each shard's graph must trace every file that shard ran. Tests that need Darwin
 (`darwinOnlyTests` in
