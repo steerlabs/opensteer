@@ -37,8 +37,9 @@ for (const run of runs) {
   for (const line of lines) {
     const job = jobSchema.parse(JSON.parse(line));
     if (job.conclusion === "skipped") continue;
-    // "tests (3)" and "integration (5)" are shards of one job with one bound.
-    const name = job.name.replace(/ \(\d+\)$/u, "");
+    // "tests (3)" and "integration (5)" are shards of one job with one bound;
+    // older native-mac names also carried their timeout, "(iphone, 6)".
+    const name = job.name.replace(/ \(\d+\)$/u, "").replace(/, \d+\)$/u, ")");
     const entry = measured.get(name) ?? { minutes: [], cut: [] };
     measured.set(name, entry);
     if (
