@@ -2,17 +2,21 @@
 
 ## Landing changes
 
-Work in your own worktree on a small branch. Open one PR per change with a
+Work in your own worktree on a small branch and open one PR per change on
+[steerlabs/opensteer](https://github.com/steerlabs/opensteer) with a
 conventional title (`fix:`, `feat:`, `docs:`, `refactor:`, `test:`, `chore:`).
 Before pushing, run `pnpm check:changed --base origin/main` and the focused
 journey that proves the behavior. Include what changed, why, evidence and any
 checks you could not run in the PR.
 
 After pushing, use `watch_pull_request`. Fix failing checks on the branch; never
-weaken a test to land. Squash merge when `Check` is green. No batching or
-up-to-date requirement. Main runs the full CI suite; fix forward or revert a red
-main immediately. Real desktop journeys run after merge and on maintainer
-request. Release builders consume the green main SHA.
+weaken a test to land. No batching or up-to-date requirement. Main runs the full
+CI suite; fix forward or revert a red main immediately. Real desktop journeys run
+after merge and on maintainer request. Release builders consume the green main SHA.
+
+You may squash-merge your own PR once the required `Check` is green and Greptile,
+the automated reviewer, has no unresolved P0 or P1 finding. PRs that touch
+security, signing, release workflows or credentials wait for Tim Jang's approval.
 
 ## Testing
 
