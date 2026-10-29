@@ -1,6 +1,6 @@
 const { spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
-const { lstatSync, readFileSync } = require("node:fs");
+const { existsSync, lstatSync, readFileSync } = require("node:fs");
 const { join } = require("node:path");
 const {
   desktopReleaseIdentity,
@@ -20,6 +20,22 @@ async function verifySignedDesktopContents(context) {
   }
   if (context.electronPlatformName !== "darwin") return;
   const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
+  const passkeys = require("./passkeys-signing.cjs");
+  passkeys.verifyPasskeyAddon(
+    appPath,
+    true,
+    process.env.OPENSTEER_APPLE_TEAM_ID,
+    isDesktopRelease(),
+  );
+  passkeys.verifyNoInheritedPasskeyCapability(appPath);
+  if (!isDesktopRelease()) {
+    const entitlements = signedEntitlements(appPath);
+    if (
+      entitlements["com.apple.developer.web-browser.public-key-credential"] !== undefined ||
+      existsSync(join(appPath, "Contents/embedded.provisionprofile"))
+    )
+      throw new Error("Development apps must not carry the passkey entitlement or profile");
+  }
   run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
   const helperPath = join(appPath, "Contents", "Resources", "runner", "opensteer-native-fs");
   const computerUseAppPath = join(

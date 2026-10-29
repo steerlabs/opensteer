@@ -69,6 +69,14 @@ if (process.argv.includes("--unsigned")) {
     OPENSTEER_DESKTOP_TARGET_OS: "darwin",
   };
   requireSigningAuthority(releaseEnvironment);
+  const { preparePasskeySigning } =
+    require("./passkeys-signing.cjs") as typeof import("./passkeys-signing.cjs");
+  const { desktopReleaseIdentity } = require("./macos-release-identity.cjs") as {
+    desktopReleaseIdentity(channel: "stable" | "beta"): import("./passkeys-signing.cjs").PasskeySigningIdentity;
+  };
+  const passkeySigningArguments = preparePasskeySigning(
+    desktopDirectory, releaseEnvironment, desktopReleaseIdentity(releaseChannel),
+  );
   if (!deferNotarization) requireNotarizationAuthority(releaseEnvironment);
 
   // Every preparation, compilation, and packaging step receives the same release
@@ -113,6 +121,7 @@ if (process.argv.includes("--unsigned")) {
           builderConfig,
           "-c.forceCodeSigning=true",
           ...releaseMetadata.builderArguments,
+          ...passkeySigningArguments,
           `-c.mac.extendInfo.OpensteerSourceRevision=${releaseMetadata.identity.sourceRevision}`,
           ...(updateFeed ? [`-c.mac.extendInfo.OpensteerUpdateFeed=${updateFeed}`] : []),
           ...(deferNotarization ? ["--dir", "-c.mac.notarize=false"] : []),
