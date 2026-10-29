@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, parseDiff, readGraph, detect } from "./ci-changes.mjs";
+import { allNativeMacTasks, decide, parseDiff, readGraph, detect } from "./ci-changes.mjs";
 const graph = [
   { name: "leaf", dir: "packages/leaf", deps: [], coverage: [] },
   { name: "host", dir: "apps/host", deps: ["leaf"], coverage: ["integration"] },
@@ -173,3 +173,80 @@ for (const owner of realGraph.filter((p) =>
     }
   });
 }
+
+// Native Mac task selection. Each control names the task inputs it exercises; main's
+// full push run remains the backstop for anything a selection here misses.
+const nativeInputs = JSON.parse(
+  (await import("node:fs")).readFileSync(".github/scripts/ci-native-inputs.json", "utf8"),
+);
+const swiftOnly = (plan) => plan.nativeMac.filter((task) => task !== "iphone");
+test("a file a Swift task's node script imports selects that task, and only tasks importing it", () => {
+  const file = "packages/integration-catalog/src/definitions/computer-apps.ts";
+  assert.ok(nativeInputs["computer-tests"].includes(file));
+  assert.ok(!nativeInputs["passwords-helper"].includes(file));
+  const plan = decide([file], realGraph);
+  assert.deepEqual(swiftOnly(plan), ["computer-helper", "computer-tests"]);
+  const signing = "apps/desktop/src/signed-helpers/metadata.ts";
+  assert.ok(nativeInputs["passwords-helper"].includes(signing));
+  assert.ok(swiftOnly(decide([signing], realGraph)).includes("passwords-helper"));
+});
+test("an unrelated edit, even a global one, runs no Swift task", () => {
+  const web = decide(["apps/web/src/app-model.ts"], realGraph);
+  assert.deepEqual(web.nativeMac, ["iphone"]);
+  assert.equal(web.lanes["native-mac"], true);
+  const launcher = decide(["scripts/test-integration.ts"], realGraph);
+  assert.equal(launcher.full, true);
+  assert.deepEqual(launcher.nativeMac, ["iphone"]);
+  assert.deepEqual(decide(["docs/testing.md"], realGraph).nativeMac, []);
+});
+test("Swift sources, node manifests and the CI definition select their tasks", () => {
+  assert.deepEqual(swiftOnly(decide(["apps/desktop/native/passwords/Package.swift"], realGraph)), [
+    "passwords-helper",
+    "passwords-tests",
+  ]);
+  // passwords-tests runs only `swift test`: installed packages cannot change it.
+  assert.deepEqual(swiftOnly(decide(["pnpm-lock.yaml"], realGraph)), [
+    "computer-helper",
+    "passwords-helper",
+    "computer-tests",
+  ]);
+  assert.deepEqual(decide([".github/workflows/ci.yml"], realGraph).nativeMac, allNativeMacTasks);
+  assert.deepEqual(decide([], realGraph, realGraph, true).nativeMac, allNativeMacTasks);
+  assert.deepEqual(
+    detect({ root: "/missing", event: "pull_request" }).nativeMac,
+    allNativeMacTasks,
+  );
+});
+test("the native input list names only tracked files", () => {
+  for (const [task, files] of Object.entries(nativeInputs))
+    for (const file of files) assert.ok(realFiles.includes(file), `${task}: ${file}`);
+});
+test("a root test edit selects its own lane and the test typecheck, not everything", () => {
+  const lanesOf = (file) =>
+    Object.entries(decide([file], realGraph).lanes)
+      .filter(([, on]) => on)
+      .map(([lane]) => lane);
+  assert.deepEqual(lanesOf("tests/agent-context-budget-gate.test.ts"), [
+    "lint",
+    "build-types",
+    "tests",
+  ]);
+  assert.deepEqual(lanesOf("tests/browser-profiles.integration.test.ts"), [
+    "lint",
+    "build-types",
+    "integration",
+  ]);
+  assert.deepEqual(lanesOf("tests/browser-harness-actions.engine.test.ts"), [
+    "lint",
+    "build-types",
+  ]);
+  const darwin = decide(["tests/kernel-lock.test.ts"], realGraph);
+  assert.deepEqual(darwin.nativeMac, ["iphone"]);
+  assert.equal(darwin.lanes.tests, false);
+  // Support modules and fixtures under tests/ can feed any suite.
+  assert.ok(
+    Object.values(decide(["tests/browser-deployment.test-support.ts"], realGraph).lanes).every(
+      Boolean,
+    ),
+  );
+});

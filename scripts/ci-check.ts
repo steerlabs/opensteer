@@ -22,7 +22,8 @@ for (const [lane, count] of [
     lane,
   );
 }
-if (plan.lanes["native-mac"]) {
+// The iphone task runs the Darwin-only files; Swift-only tasks upload no inventory.
+if (plan.nativeMac?.includes("iphone")) {
   const inventory = read("darwin-1.inventory.json");
   checkInventories([inventory], 1, "darwin");
   if (
