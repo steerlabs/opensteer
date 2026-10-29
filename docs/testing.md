@@ -128,7 +128,7 @@ register's format; an entry never exempts a test by itself.
 - `integration-schemas.integration.test.ts` (large API) and `watch-supervisor.test.ts` (stale artifacts): closed 2026-10-28 by the shared HTTP fixture path filter in this change; red reproduction `8fcd16dd0`.
 
 - `computer-repl.test.ts`: image budgets and producer-message limits; closed 2026-10-28; fixes `074a72c17`, `89388e4f4`, `c92fdee76`, `04fa64da3`.
-- `harness-actions.test.ts` A13-dialog-closes-during-exit: closed 2026-10-28; fix `9ec07ab02`; cross-channel timestamps replaced by acknowledged causal phases, with all grace and cleanup bounds retained.
+- `harness-actions-input-lifecycle.test.ts` A13-dialog-closes-during-exit: closed 2026-10-28; fix `9ec07ab02`; cross-channel timestamps replaced by acknowledged causal phases, with all grace and cleanup bounds retained.
 - `apps/runner/src/runtime/runtime.test.ts`: interrupts the active harness turn without detaching the workspace; closed 2026-10-28; fix `ff00efbc2`, landed `0d295e69f`.
 - `packages/runner-client/src/auxiliary-stream.test.ts`: exposes only the Passwords capabilities opted into by this welcome; closed 2026-10-28; fix `94e2e5c33`, landed `18c5103ad`.
 - `packages/harness-codex/src/process.test.ts`: attaches a bounded redacted stderr diagnostic to a timed-out request; closed 2026-10-28; fix `2eb6ed588`, landed `18c5103ad`.
@@ -211,7 +211,7 @@ PNG evidence and `journey.json` under `OPENSTEER_FAVICON_EVIDENCE_DIR`, defaulti
 `opensteer-favicons` in the system temporary directory.
 
 Browser Harness element actions (hosted Chromium) run with
-`pnpm exec vitest run apps/browser-runtime/src/browser/harness-actions.test.ts`.
+`pnpm exec vitest run apps/browser-runtime/src/browser/harness-actions*.test.ts`.
 Use the Chromium selection above. Each acceptance case writes `result.json` and
 `page.png` under `OPENSTEER_HARNESS_ACTIONS_EVIDENCE_DIR` (default:
 `opensteer-harness-actions` in the system temporary directory), including harness
