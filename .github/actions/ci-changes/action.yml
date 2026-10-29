@@ -1,6 +1,10 @@
 name: CI changes
 description: Fail-open workspace change plan
 outputs:
+  tests-shards:
+    value: ${{ steps.detect.outputs.tests-shards }}
+  integration-shards:
+    value: ${{ steps.detect.outputs.integration-shards }}
   lint:
     value: ${{ steps.detect.outputs.lint }}
   build-types:

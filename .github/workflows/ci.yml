@@ -18,7 +18,10 @@ concurrency:
 jobs:
   changes:
     runs-on: ubuntu-24.04
+    timeout-minutes: 3
     outputs:
+      tests-shards: ${{ steps.changes.outputs.tests-shards }}
+      integration-shards: ${{ steps.changes.outputs.integration-shards }}
       lint: ${{ steps.changes.outputs.lint }}
       build-types: ${{ steps.changes.outputs.build-types }}
       tests: ${{ steps.changes.outputs.tests }}
@@ -46,7 +49,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.lint != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -73,7 +76,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.build-types != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -98,17 +101,15 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.tests != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
-        shard:
-          - 1
-          - 2
+        shard: ${{ fromJSON(needs.changes.outputs.tests-shards) }}
     env:
       CI_LANE: tests
       CI_SHARD: ${{ matrix.shard }}
-      CI_SHARDS: "2"
+      CI_SHARDS: ${{ strategy.job-total }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -127,7 +128,7 @@ jobs:
         run: |
           set -o pipefail
           pnpm pretest
-          pnpm exec vitest run --shard=${{ matrix.shard }}/2 --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.log"
+          pnpm exec vitest run --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.log"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -139,19 +140,15 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.integration != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 9
     strategy:
       fail-fast: false
       matrix:
-        shard:
-          - 1
-          - 2
-          - 3
-          - 4
+        shard: ${{ fromJSON(needs.changes.outputs.integration-shards) }}
     env:
       CI_LANE: integration
       CI_SHARD: ${{ matrix.shard }}
-      CI_SHARDS: "4"
+      CI_SHARDS: ${{ strategy.job-total }}
       OPENSTEER_LOCK_ORDER_MODE: enforce
     # pnpm test:integration starts its own disposable PostgreSQL on tmpfs, as it
     # does locally. A disk-backed server pays real fsyncs for every checkpoint
@@ -183,7 +180,7 @@ jobs:
       - shell: bash
         run: |
           set -o pipefail
-          pnpm test:integration -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.log"
+          pnpm test:integration -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.log"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -195,40 +192,94 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.native-mac != 'false' }}
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - task: computer-helper
+            timeout: 5
+          - task: passwords-helper
+            timeout: 7
+          - task: iphone
+            timeout: 6
+          - task: computer-tests
+            timeout: 6
+          - task: passwords-tests
+            timeout: 9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: ./.github/actions/ci-setup
-      - run: mkdir -p "$RUNNER_TEMP/evidence"
-      - run: echo "OPENSTEER_IPHONE_APPS_NATIVE_TESTS=1" >> "$GITHUB_ENV"
-      - shell: bash
+      - id: swift
+        shell: bash
         run: |
-          set -o pipefail
-          {
-            pnpm --filter @opensteer/desktop build:computer-use-helper
-            pnpm --filter @opensteer/desktop build:passwords-broker
-            pnpm exec tsx scripts/generate-apple-data-contracts.ts
-            swift test --package-path packages/apple-data
-            swift test --package-path apps/mobile/modules/iphone-apps/ios
-            swift test --package-path apps/desktop/native/computer-use
-            swift test --package-path apps/desktop/native/passwords
-            darwin_only=$(node .github/scripts/ci-test-files.mjs darwin-only)
-            pnpm exec vitest run tests/helper-data-contracts.test.ts tests/iphone-apps-wire.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords $darwin_only
-          } 2>&1 | tee "$RUNNER_TEMP/evidence/native-mac.log"
+          swift --version > "$RUNNER_TEMP/swift-toolchain"
+          xcodebuild -version >> "$RUNNER_TEMP/swift-toolchain"
+          xcrun --show-sdk-version >> "$RUNNER_TEMP/swift-toolchain"
+          echo "$ImageVersion" >> "$RUNNER_TEMP/swift-toolchain"
+          toolchain=$(shasum -a 256 "$RUNNER_TEMP/swift-toolchain" | cut -d' ' -f1)
+          inputs=$(git ls-tree -r HEAD -- packages apps/desktop apps/mobile/modules/iphone-apps/ios scripts patches .github/actions/ci-setup package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .pnpmfile.cjs tsconfig.json tsconfig.base.json tsconfig.package.json tsconfig.tests.json | shasum -a 256 | cut -d' ' -f1)
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          echo "inputs=$inputs" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            packages/apple-data/.build
+            apps/mobile/modules/iphone-apps/ios/.build
+            apps/desktop/native/computer-use/.build
+            apps/desktop/native/passwords/.build
+          key: swift-${{ runner.os }}-${{ runner.arch }}-${{ matrix.task }}-${{ steps.swift.outputs.toolchain }}-${{ steps.swift.outputs.inputs }}
+      - run: mkdir -p "$RUNNER_TEMP/evidence"
+      - name: Build computer use helper
+        if: matrix.task == 'computer-helper'
+        run: pnpm --filter @opensteer/desktop build:computer-use-helper
+      - name: Build passwords broker
+        if: matrix.task == 'passwords-helper'
+        run: pnpm --filter @opensteer/desktop build:passwords-broker
+      - name: Generate Apple data contracts
+        if: matrix.task == 'iphone' || matrix.task == 'computer-tests'
+        run: pnpm exec tsx scripts/generate-apple-data-contracts.ts
+      - name: Test iPhone apps and native wire
+        if: matrix.task == 'iphone'
+        shell: bash
+        run: |
+          swift test --package-path packages/apple-data
+          swift test --package-path apps/mobile/modules/iphone-apps/ios
+      - name: Test computer use
+        if: matrix.task == 'computer-tests'
+        run: swift test --package-path apps/desktop/native/computer-use
+      - name: Test passwords
+        if: matrix.task == 'passwords-tests'
+        run: swift test --package-path apps/desktop/native/passwords
+      - name: Test native contracts and Darwin-only files
+        if: matrix.task == 'iphone'
+        shell: bash
+        env:
+          CI_LANE: darwin
+          CI_SHARD: 1
+          CI_SHARDS: 1
+          CI_DISCOVERY_PATH: ${{ runner.temp }}/evidence/darwin-1.discovered.json
+          CI_INVENTORY_PATH: ${{ runner.temp }}/evidence/darwin-1.inventory.json
+          # tests/iphone-apps-wire.test.ts, a Darwin-only file, runs the Swift wire core built above.
+          OPENSTEER_IPHONE_APPS_NATIVE_TESTS: "1"
+        run: |
+          pnpm exec vitest run tests/helper-data-contracts.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords
+          darwin_only=$(node .github/scripts/ci-test-files.mjs darwin-only)
+          pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH" $darwin_only
+          pnpm exec vitest run $darwin_only --reporter=default --reporter=./scripts/ci-inventory-reporter.ts
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: native-mac-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/evidence
-          if-no-files-found: error
+          name: native-mac-${{ matrix.task }}-${{ github.sha }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: ${{ matrix.task == 'iphone' && 'error' || 'ignore' }}
   android:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -239,6 +290,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 21.0.10+7.0.LTS
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ runner.arch }}-temurin-21.0.10+7.0.LTS-${{ hashFiles('apps/agent-phone/**/*.gradle*', 'apps/agent-phone/**/gradle-wrapper.properties', 'apps/agent-phone/**/gradle.properties', 'apps/agent-phone/**/*.versions.toml', 'apps/agent-phone/**/gradle.lockfile', 'apps/agent-phone/**/verification-metadata.xml') }}
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         with:
           cmdline-tools-version: "13114758"
@@ -266,7 +323,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.browser-journeys != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -300,6 +357,7 @@ jobs:
             /tmp/opensteer-*-e2e
           if-no-files-found: error
   Check:
+    timeout-minutes: 3
     if: always()
     needs:
       - changes

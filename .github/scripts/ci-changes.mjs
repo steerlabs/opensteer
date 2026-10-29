@@ -213,6 +213,13 @@ export function detect({
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const plan = detect();
   writeFileSync(process.env.CI_PLAN_PATH ?? "ci-plan.json", JSON.stringify(plan, null, 2) + "\n");
+  const shards = JSON.parse(readFileSync(new URL("./ci-shards.json", import.meta.url), "utf8"));
+  for (const [lane, count] of Object.entries(shards)) {
+    if (!Number.isInteger(count) || count < 1) throw new Error(`Invalid shard count: ${lane}`);
+    const line = `${lane}-shards=${JSON.stringify(Array.from({ length: count }, (_, i) => i + 1))}\n`;
+    process.stdout.write(line);
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, line);
+  }
   for (const [key, value] of Object.entries(plan.lanes)) {
     const line = `${key}=${value}\n`;
     process.stdout.write(line);

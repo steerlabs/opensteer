@@ -1,3 +1,4 @@
+import CiSequencer from "./scripts/ci-sequencer.js";
 import { integrationTestInclude } from "./.github/scripts/ci-test-files.mjs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -19,7 +20,7 @@ export default defineConfig({
     ],
     maxWorkers: 4,
     maxConcurrency: 1,
-    sequence: { concurrent: false, setupFiles: "list" },
+    sequence: { concurrent: false, setupFiles: "list", sequencer: CiSequencer },
     include: integrationTestInclude,
     pool: "forks",
     isolate: true,
