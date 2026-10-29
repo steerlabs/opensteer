@@ -1,3 +1,4 @@
+import { readEmbeddedDesktopRelease } from "../src/config.js";
 import { requiredEnvironmentValue } from "@opensteer/shared/envParsing";
 import { cp } from "node:fs/promises";
 import { readProvenPersonalRuntime } from "./personal-runtime-provenance.js";
@@ -90,6 +91,9 @@ await cp(personal.assets.webDistribution.directory, path.join(desktopDirectory, 
   recursive: true,
 });
 await run(["exec", "node", "scripts/verify-runtime-imports.mjs"], releaseEnvironment);
+const updateFeed = readEmbeddedDesktopRelease(
+  path.join(desktopDirectory, "dist", "desktop-release.json"),
+).updates?.feedUrl;
 await timePhase("package.electron-builder", () =>
   withMacSigningTimings(releaseEnvironment, desktopDirectory, (signingEnvironment) =>
     run(
@@ -102,6 +106,7 @@ await timePhase("package.electron-builder", () =>
         "-c.forceCodeSigning=true",
         ...releaseMetadata.builderArguments,
         `-c.mac.extendInfo.OpensteerSourceRevision=${releaseMetadata.identity.sourceRevision}`,
+        ...(updateFeed ? [`-c.mac.extendInfo.OpensteerUpdateFeedURL=${updateFeed}`] : []),
         ...(deferNotarization ? ["--dir", "-c.mac.notarize=false"] : []),
         targetArchitecture.builderFlag,
       ],

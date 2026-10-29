@@ -92,6 +92,7 @@ function PersonalRemoteAccessSettings({
   /** The Mac this Opensteer runs on, as the page names it. */
   readonly name: string;
 }) {
+  const { deploymentAccess } = useShell();
   const [editor, setEditor] = useState<PersonalRemoteAccessEditorState>(
     initialPersonalRemoteAccessEditorState,
   );
@@ -239,6 +240,7 @@ function PersonalRemoteAccessSettings({
       canCancel={canCancel}
       canPair={canPair}
       cancelling={pending === "cancel"}
+      connectAvailable={deploymentAccess?.account.available ?? false}
       creatingPairing={pending === "pairing"}
       dirty={changed}
       name={name}
@@ -267,6 +269,7 @@ function PersonalRemoteAccessForm({
   canCancel = false,
   canPair,
   cancelling = false,
+  connectAvailable,
   creatingPairing,
   dirty,
   name,
@@ -292,6 +295,7 @@ function PersonalRemoteAccessForm({
   readonly canCancel?: boolean;
   readonly canPair: boolean;
   readonly cancelling?: boolean;
+  readonly connectAvailable: boolean;
   readonly creatingPairing: boolean;
   /** Whether the choices on screen differ from what is applied. */
   readonly dirty: boolean;
@@ -336,14 +340,18 @@ function PersonalRemoteAccessForm({
             onChange={onChangeMode}
             title="Off"
           />
-          <RemoteAccessChoice
-            checked={selectedMode === "connect"}
-            detail="Open it from anywhere through a private tunnel. Uses your Opensteer Account."
-            disabled={choicesDisabled}
-            mode="connect"
-            onChange={onChangeMode}
-            title="Opensteer Connect"
-          />
+          {connectAvailable ? (
+            <RemoteAccessChoice
+              checked={selectedMode === "connect"}
+              detail="Open it from anywhere through a private tunnel. Uses your Opensteer Account."
+              disabled={choicesDisabled}
+              mode="connect"
+              onChange={onChangeMode}
+              title="Opensteer Connect"
+            />
+          ) : (
+            <p className="settings-capability-note">Opensteer Connect isn’t available yet.</p>
+          )}
           <RemoteAccessChoice
             checked={selectedMode === "private"}
             detail="You provide an HTTPS address on your own network, such as Tailscale."

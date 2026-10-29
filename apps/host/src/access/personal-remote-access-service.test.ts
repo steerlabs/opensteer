@@ -21,6 +21,25 @@ const authority = {
 const machineLocalMarker = { authSessionId: "marked" } as const;
 
 describe("PersonalRemoteAccessService", () => {
+  it("never contacts a stored Account link without a configured issuer", async () => {
+    const link = accountLink("https://accounts.opensteer.test");
+    link.state = "active";
+    const fixture = accountMutationDatabase(link);
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({}));
+    const service = new PersonalRemoteAccessService({
+      authority,
+      database: fixture.database as never,
+      fetch,
+      identity: fakeIdentity(),
+      keys: generateKeyPairSync("ed25519"),
+    });
+    await expect(service.publishAccountAuthority()).resolves.toBe("unlinked");
+    await expect(
+      service.resumeAccountLink(ownerSession(), { schemaVersion: 1 }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("rejects a remote administrator before route mutation", async () => {
     const keys = generateKeyPairSync("ed25519");
     const session = ownerSession();
@@ -215,6 +234,7 @@ describe("PersonalRemoteAccessService", () => {
       authority: pinnedAuthority,
       database: fixture.database as never,
       fetch,
+      grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity,
       keys,
     });
@@ -372,6 +392,7 @@ describe("PersonalRemoteAccessService", () => {
       authority: pinnedAuthority,
       database: fixture.database as never,
       fetch,
+      grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
       keys,
     });
@@ -393,6 +414,7 @@ describe("PersonalRemoteAccessService", () => {
       authority: pinnedAuthority,
       database: fixture.database as never,
       fetch,
+      grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
       keys,
     });
@@ -423,6 +445,7 @@ describe("PersonalRemoteAccessService", () => {
       authority: pinnedAuthority,
       database: fixture.database as never,
       fetch,
+      grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
       keys,
     });
@@ -468,6 +491,7 @@ describe("PersonalRemoteAccessService", () => {
         privateState,
       ) as never,
       fetch,
+      grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
       keys,
     });
@@ -507,6 +531,7 @@ describe("PersonalRemoteAccessService", () => {
       authority: pinnedAuthority,
       database: fixture.database as never,
       fetch,
+      grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
       keys,
     });

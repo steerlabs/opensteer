@@ -1,9 +1,8 @@
 import { defineConfig } from "tsup";
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { nodeApp } from "../../scripts/tsup-node-app.js";
 import { runnerExternals } from "../../scripts/runner-build-options.js";
-
 import { signingBuildPlugin } from "./scripts/signing-build-plugin.js";
 
 export default defineConfig([
@@ -18,11 +17,20 @@ export default defineConfig([
     ],
     onSuccess: async () => {
       await mkdir("dist", { recursive: true });
-      const releaseSource =
-        process.env.OPENSTEER_DESKTOP_RELEASE === "1"
-          ? path.join("generated-resources", "desktop", "release.json")
-          : path.join("src", "releases", "desktop-release.source.json");
-      await copyFile(releaseSource, path.join("dist", "desktop-release.json"));
+      const releaseTarget = path.join("dist", "desktop-release.json");
+      // Release builds copy the manifest prepare-release-resources staged and
+      // validated. This config loads without the workspace's TypeScript sources,
+      // so it never imports them; development builds simply drop the feed and
+      // never update themselves.
+      if (process.env.OPENSTEER_DESKTOP_RELEASE === "1") {
+        await copyFile(path.join("generated-resources", "desktop", "release.json"), releaseTarget);
+      } else {
+        const release = JSON.parse(
+          await readFile(path.join("src", "releases", "desktop-release.source.json"), "utf8"),
+        ) as Record<string, unknown>;
+        delete release.updates;
+        await writeFile(releaseTarget, JSON.stringify(release, null, 2) + "\n");
+      }
       await copyFile("resources/trayTemplate.png", path.join("dist", "trayTemplate.png"));
       await copyFile("resources/trayTemplate@2x.png", path.join("dist", "trayTemplate@2x.png"));
     },

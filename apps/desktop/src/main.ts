@@ -1,3 +1,5 @@
+import { startDesktopUpdater } from "./app/desktop-updater.js";
+import { offerMoveToApplications } from "./app/move-to-applications.js";
 import { DesktopDownloads } from "./downloads/desktop-downloads.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { DesktopBrowserPresentationManager } from "./browser/browser-presentation.js";
@@ -10,6 +12,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   app,
+  autoUpdater,
+  BaseWindow,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -191,6 +195,18 @@ async function startDesktop(): Promise<void> {
     path.join(loaded.config.dataDirectory, "logs", "desktop.log"),
   );
   app.once("will-quit", () => desktopLog?.close());
+  await app.whenReady();
+  shutdown.signal.throwIfAborted();
+  if (app.isPackaged && embeddedRelease.application.stage === "alpha") {
+    app.setAboutPanelOptions({
+      applicationName: embeddedRelease.application.name,
+      applicationVersion: `${app.getVersion()} (Alpha)`,
+      version: "",
+    });
+  }
+  // Only a build that updates itself needs to live in Applications.
+  if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
+  shutdown.signal.throwIfAborted();
   oauthDeepLinks.acceptArguments(process.argv);
   await runDesktop(loaded, privateFiles);
 }
@@ -602,7 +618,7 @@ async function runDesktop(
     },
     connectUnavailableDetail: loaded.config.accountUrl
       ? null
-      : "Opensteer Connect is disabled in this source build.",
+      : "Opensteer Connect isn't available yet.",
     host: personalHostRemote,
     link: personalAccountLink,
     mutations: personalAccountMutations,
@@ -945,10 +961,16 @@ async function runDesktop(
     preloadPath,
     quit: () => app.quit(),
   });
+  const restartToUpdate = () =>
+    shutdown.requestUpdate(() => {
+      for (const window of BaseWindow.getAllWindows()) window.destroy();
+      autoUpdater.quitAndInstall();
+    });
   Menu.setApplicationMenu(
     createDesktopApplicationMenu({
       workspaceContents: (window) => (mainWindows.owns(window) ? window.webContents : null),
       browserKey: (key) => browserPresentation.menuKey(key),
+      ...(loaded.config.release.channel === "stable" ? { restartToUpdate } : {}),
     }),
   );
   const updateReopenMenu = (snapshot: ReturnType<typeof access.snapshot>) => {
@@ -988,6 +1010,17 @@ async function runDesktop(
     runner: localRunner,
   });
   await tray.start();
+  if (loaded.config.release.channel === "stable")
+    startDesktopUpdater({
+      feedUrl: loaded.config.updates?.feedUrl,
+      signal: shutdown.signal,
+      log: reportEvent,
+      downloaded: () => {
+        const item = Menu.getApplicationMenu()?.getMenuItemById("restart-to-update");
+        if (item) item.visible = true;
+        tray.setRestartToUpdate(restartToUpdate);
+      },
+    });
   shutdown.signal.throwIfAborted();
   const detachOAuthDeepLinks = oauthDeepLinks.attach(async (url) => {
     const handled = await nativeAuth.handleCallback(url);

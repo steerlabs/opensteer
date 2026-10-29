@@ -266,7 +266,7 @@ export class AccountDeploymentDirectoryService {
   async #sync(): Promise<AccountDeploymentDirectorySync> {
     const accountOrigin = this.#accountOrigin;
     if (accountOrigin === null) {
-      throw new Error("Opensteer Account deployment discovery is disabled in this source build.");
+      throw new Error("Opensteer Account deployment discovery isn't available yet.");
     }
     const credential = await this.#authorization.accountAuthorizationLease();
     if (!credential)
@@ -392,7 +392,7 @@ export class AccountDeploymentDirectoryService {
   ): Promise<{ readonly body: unknown; readonly signal: AbortSignal }> {
     const accountOrigin = this.#accountOrigin;
     if (accountOrigin === null) {
-      throw new Error("Opensteer Account requests are disabled in this source build.");
+      throw new Error("Opensteer Account isn't available yet.");
     }
     const lease = await this.#authorization.accountAuthorizationLease();
     if (!lease || !/^Bearer [^\p{Control}\s]+$/u.test(lease.authorization)) {

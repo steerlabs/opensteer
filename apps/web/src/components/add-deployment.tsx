@@ -81,7 +81,11 @@ export function AddDeployment({
   return (
     <OnboardingCard
       bare
-      description="Your agents can also work on your other computers, a server, or Opensteer Cloud."
+      description={
+        onCreateCloud
+          ? "Your agents can also work on your other computers, a server, or Opensteer Cloud."
+          : "Your agents can also work on your other computers or a server."
+      }
       live
       title="Add a computer or server"
     >
@@ -95,7 +99,7 @@ export function AddDeployment({
           canCreateLocal: onCreatePersonal !== null,
         })}
         renderExpanded={(choice) =>
-          choice === "computer" && !pairing ? (
+          choice === "computer" && !pairing && (accountEmail !== null || onSignIn !== null) ? (
             <div className="add-deployment__form">
               <p className="field__hint">
                 On that computer, open Opensteer, go to Settings › Remote access and turn it on
@@ -159,7 +163,10 @@ export function AddDeployment({
                   type="text"
                   value={pairingCode}
                 />
-                <span className="field__hint">One use, and it expires shortly.</span>
+                <span className="field__hint">
+                  Create a pairing code in Settings › Remote access on that computer after enabling
+                  Private network. One use, and it expires shortly.
+                </span>
               </label>
               <button className="btn btn--primary" disabled={busy} type="submit">
                 {busy ? "Verifying…" : "Connect"}

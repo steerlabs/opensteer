@@ -1,3 +1,5 @@
+import { readEmbeddedDesktopRelease } from "../config.js";
+import { stageDesktopUpdatePolicy } from "./desktop-update-policy.js";
 import { createRequire } from "node:module";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -131,6 +133,57 @@ describe("Desktop release policy", () => {
     ).toThrow(/OAuth scheme/u);
   });
 
+  it("packages a stable policy without Account access", async () => {
+    const fixture = await archivedPolicy({
+      accountUrl: undefined,
+      capabilities: { connect: false, localAgents: true, personal: true, portableFs: false },
+    });
+    expect(readPackagedDesktopPolicy(fixture.archive)).toMatchObject({
+      capabilities: { connect: false },
+    });
+    for (const overrides of [
+      { capabilities: { connect: false, localAgents: true, personal: true, portableFs: false } },
+      { accountUrl: undefined },
+    ]) {
+      const invalid = await archivedPolicy(overrides);
+      expect(() => readPackagedDesktopPolicy(invalid.archive)).toThrow(/manifest is invalid/u);
+    }
+  });
+
+  // The committed manifests, staged exactly as packaging stages them, must pass
+  // the packaging gate; synthetic fixtures alone missed new optional fields.
+  it.each([
+    ["desktop-release.source.json", "darwin", "arm64"],
+    ["desktop-release.source.json", "darwin", "x64"],
+    ["desktop-release.beta.json", "darwin", "arm64"],
+  ] as const)("packages the committed %s staged for %s/%s", async (file, os, arch) => {
+    const staged = stageDesktopUpdatePolicy(
+      readEmbeddedDesktopRelease(path.join(import.meta.dirname, file)),
+      os,
+      arch,
+      undefined,
+    );
+    const fixture = await archivedManifest(staged);
+    expect(readPackagedDesktopPolicy(fixture.archive)).toEqual(staged);
+  });
+
+  it.each([
+    { updates: { feedUrl: "http://updates.opensteer.test/feed.json" } },
+    { updates: { feedUrl: "https://updates.opensteer.test/feed.json", extra: true } },
+    { updates: "https://updates.opensteer.test/feed.json" },
+    {
+      application: {
+        channel: "stable",
+        id: "com.opensteer.opensteer",
+        name: "Opensteer",
+        stage: "beta",
+      },
+    },
+  ])("rejects an invalid update feed or release stage", async (overrides) => {
+    const fixture = await archivedPolicy(overrides);
+    expect(() => readPackagedDesktopPolicy(fixture.archive)).toThrow(/manifest is invalid/u);
+  });
+
   it.each([false, true])(
     "reads portableFs=%s only from the application archive",
     async (portableFs) => {
@@ -241,10 +294,6 @@ describe("Desktop release policy", () => {
 });
 
 async function archivedPolicy(overrides: Record<string, unknown>) {
-  const root = await mkdtemp(path.join(tmpdir(), "opensteer-desktop-policy-"));
-  temporaryDirectories.push(root);
-  const source = path.join(root, "source");
-  await mkdir(path.join(source, "dist"), { recursive: true });
   const base = {
     accountUrl: "https://accounts.opensteer.test",
     application: { channel: "stable", id: "com.opensteer.opensteer", name: "Opensteer" },
@@ -261,7 +310,14 @@ async function archivedPolicy(overrides: Record<string, unknown>) {
     },
     schemaVersion: 6,
   };
-  const policy = { ...base, ...overrides };
+  return archivedManifest({ ...base, ...overrides });
+}
+
+async function archivedManifest(policy: unknown) {
+  const root = await mkdtemp(path.join(tmpdir(), "opensteer-desktop-policy-"));
+  temporaryDirectories.push(root);
+  const source = path.join(root, "source");
+  await mkdir(path.join(source, "dist"), { recursive: true });
   await writeFile(path.join(source, "dist", "desktop-release.json"), JSON.stringify(policy));
   const archive = path.join(root, "app.asar");
   await createFixtureArchive(source, archive);
@@ -274,3 +330,26 @@ async function createFixtureArchive(source: string, archive: string): Promise<vo
   // payload bytes even though its header is already complete.
   await finished(await createPackage(source, archive));
 }
+
+// A feed for the wrong architecture would download an unusable replacement app.
+it("stages a feed only for stable Mac arm64 and keeps private overrides in that target", () => {
+  const stable = readEmbeddedDesktopRelease(
+    path.join(import.meta.dirname, "desktop-release.source.json"),
+  );
+  const beta = readEmbeddedDesktopRelease(
+    path.join(import.meta.dirname, "desktop-release.beta.json"),
+  );
+  const mirror = "https://updates.localhost/private.json";
+  expect(stageDesktopUpdatePolicy(stable, "darwin", "arm64", undefined).updates).toEqual(
+    stable.updates,
+  );
+  expect(stageDesktopUpdatePolicy(stable, "darwin", "arm64", mirror).updates?.feedUrl).toBe(mirror);
+  for (const [release, os, arch] of [
+    [beta, "darwin", "arm64"],
+    [stable, "darwin", "amd64"],
+    [stable, "darwin", "x64"],
+    [stable, "linux", "arm64"],
+    [stable, "win32", "arm64"],
+  ] as const)
+    expect(stageDesktopUpdatePolicy(release, os, arch, mirror).updates).toBeUndefined();
+});

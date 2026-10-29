@@ -2322,8 +2322,9 @@ export class IntegrationService {
               : requiresRelay && callbackUrl === null
                 ? {
                     code: "ACCOUNT_LINK_REQUIRED" as const,
-                    detail:
-                      "Link Opensteer Account to give this provider the stable HTTPS callback it requires",
+                    detail: this.#hostedOAuth
+                      ? "Link Opensteer Account to give this provider the stable HTTPS callback it requires"
+                      : "This provider requires an HTTPS callback. Opensteer managed sign-in isn’t available yet; use a deployment with a public HTTPS address and your own OAuth app.",
                   }
                 : providerAuthorizationFailure(input.posture, selectedSourceKind);
         return [

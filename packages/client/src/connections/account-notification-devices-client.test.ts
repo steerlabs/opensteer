@@ -199,7 +199,7 @@ describe("AccountNotificationDevicesClient", () => {
       fetch,
     });
 
-    await expect(client.list()).rejects.toThrow(/source build/u);
+    await expect(client.list()).rejects.toThrow(/isn.t available yet/u);
     expect(fetch).not.toHaveBeenCalled();
   });
 

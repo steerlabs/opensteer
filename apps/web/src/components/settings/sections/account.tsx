@@ -37,7 +37,11 @@ export function AccountSection() {
       ) : (
         <BrowserAccountCard portalHref={portalHref} />
       )}
-      <p className="settings-footnote">{accountCaption}</p>
+      <p className="settings-footnote">
+        {desktopBridge && deploymentAccess?.account.available === false
+          ? "Opensteer Account sign-in isn’t available yet. You can use this computer and connect to other computers over a private network with a pairing code."
+          : accountCaption}
+      </p>
     </>
   );
 }
@@ -76,7 +80,10 @@ function AccountSessionCard({
   }
 
   const state = account?.status ?? "unknown";
-  const copy = accountStateCopy[state];
+  const copy =
+    account?.available === false && account.status === "signed-out"
+      ? { chip: "", detail: "Opensteer Account sign-in isn’t available yet.", label: "Unavailable" }
+      : accountStateCopy[state];
   return (
     <>
       <div className="card">

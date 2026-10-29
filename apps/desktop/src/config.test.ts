@@ -45,6 +45,44 @@ describe("desktop configuration", () => {
     }
   });
 
+  it("ships stable without an Account and rejects mismatched Connect policy", () => {
+    const stablePath = fileURLToPath(
+      new URL("./releases/desktop-release.source.json", import.meta.url),
+    );
+    const stable = readEmbeddedDesktopRelease(stablePath);
+    expect(stable.capabilities.connect).toBe(false);
+    expect(stable.accountUrl).toBeUndefined();
+    expect(stable.portalUrl).toBeUndefined();
+    const loaded = readDesktopConfiguration({
+      appDataDirectory,
+      defaultMode: "production",
+      environment: baseEnvironment(),
+      packaged: true,
+      releaseManifestPath: stablePath,
+      resourcesDirectory,
+    });
+    expect(loaded.config.accountUrl).toBeNull();
+    expect(loaded.config.portalUrl).toBeNull();
+    const directory = mkdtempSync(join(tmpdir(), "opensteer-connect-policy-"));
+    try {
+      const manifestPath = join(directory, "release.json");
+      for (const invalid of [
+        { ...stable, accountUrl: "https://accounts.example.test" },
+        { ...stable, capabilities: { ...stable.capabilities, connect: true } },
+      ]) {
+        writeFileSync(manifestPath, JSON.stringify(invalid));
+        expect(() => readEmbeddedDesktopRelease(manifestPath)).toThrow();
+      }
+      const beta = readEmbeddedDesktopRelease(
+        fileURLToPath(new URL("./releases/desktop-release.beta.json", import.meta.url)),
+      );
+      expect(beta.capabilities.connect).toBe(true);
+      expect(beta.accountUrl).toBe("https://accounts.beta.opensteer.com");
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it("binds every signed OAuth callback scheme to the build's own application id", () => {
     for (const manifest of [
       "./releases/desktop-release.source.json",
