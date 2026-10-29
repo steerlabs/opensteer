@@ -1,8 +1,43 @@
 diff --git a/lib/coreBundle.js b/lib/coreBundle.js
-index d9041dd0f009072511a7d808dec83121ff29e127..a6ddb016fe77fdfcc4261939f32539e30f27e89e 100644
+index d9041dd0f009072511a7d808dec83121ff29e127..aa5ad65e1a13d1e0b2bba26aa5ce72c1d0da0017 100644
 --- a/lib/coreBundle.js
 +++ b/lib/coreBundle.js
-@@ -56857,22 +56857,27 @@ var init_browserServerImpl = __esm({
+@@ -51725,11 +51725,32 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
+             for (const origin of allOrigins) {
+               const frame = page.mainFrame();
+               await frame.gotoImpl(progress2, origin, {});
+-              const restoreScript = `(() => {
++              // Chromium acknowledges localStorage writes asynchronously. Keep the
++              // temporary page alive until another document observes each write.
++              const awaitLocalStorageWrites = mode === "initial" && this._browser.options.name === "chromium";
++              const restoreScript = `(async () => {
+             const module = {};
+             ${source10}
+             const script = new (module.exports.StorageScript())(${this._browser.options.name === "firefox"});
+-            return script.restore(${JSON.stringify(newOrigins.get(origin))});
++            const state = ${JSON.stringify(newOrigins.get(origin))};
++            if (!${awaitLocalStorageWrites} || !state?.localStorage?.length)
++              return script.restore(state);
++            const observer = document.createElement("iframe");
++            const loaded = new Promise(resolve => observer.addEventListener("load", resolve, { once: true }));
++            document.documentElement.appendChild(observer);
++            await loaded;
++            void observer.contentWindow.localStorage;
++            const pending = new Map(state.localStorage.map(({ name, value }) => [name, value]));
++            const acknowledged = new Promise(resolve => observer.contentWindow.addEventListener("storage", event => {
++              if (pending.has(event.key) && pending.get(event.key) === event.newValue)
++                pending.delete(event.key);
++              if (!pending.size)
++                resolve();
++            }));
++            return script.restore(state).then(async () => {
++              await acknowledged;
++              observer.remove();
++            });
+           })()`;
+               await frame.evaluateExpression(progress2, restoreScript, { world: "utility" });
+             }
+@@ -56857,22 +56878,27 @@ var init_browserServerImpl = __esm({
            rewriteErrorMessage(e, `${e.message} Failed to launch browser.${log2}`);
            throw e;
          }

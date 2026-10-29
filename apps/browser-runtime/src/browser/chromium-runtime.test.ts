@@ -1669,6 +1669,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       expression: `new Promise((resolve, reject) => {
           document.cookie = "session=portable-cookie; SameSite=Lax";
           localStorage.setItem("account", "client-a");
+          localStorage.setItem("empty", "");
           localStorage.setItem("large", "界".repeat(3 * 1024 * 1024));
           const request = indexedDB.open("opensteer-auth", 1);
           request.onupgradeneeded = () => request.result.createObjectStore("tokens");
@@ -1681,6 +1682,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
           };
         })`,
     });
+    await firstPage.close();
     const normalOrigin = `http://localhost:${address.port}`;
     const normalPage = await first.context.createPage();
     const normalCdp = await normalPage.cdp();
@@ -1691,6 +1693,20 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     });
     expect(written.exceptionDetails).toBeUndefined();
     const collected = await first.exportSnapshot();
+    const collectedStorage = collected.origins.find(
+      (entry) => entry.origin === origin,
+    )?.localStorage;
+    expect(collectedStorage?.find((entry) => entry.name === "account")?.value).toBe("client-a");
+    expect(collectedStorage?.find((entry) => entry.name === "empty")?.value).toBe("");
+    expect(
+      createHash("sha256")
+        .update(collectedStorage?.find((entry) => entry.name === "large")?.value ?? "")
+        .digest("hex"),
+    ).toBe(
+      createHash("sha256")
+        .update("界".repeat(3 * 1024 * 1024))
+        .digest("hex"),
+    );
     const failures: BrowserOriginCaptureFailure[] = [];
     const snapshot = decodeBrowserProfileSnapshot(
       encodeBrowserProfileSnapshot(
@@ -1745,6 +1761,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
             read.onsuccess = async () => resolve({
               largeSha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(localStorage.getItem('large'))))).map(byte => byte.toString(16).padStart(2, '0')).join(''),
               cookie: document.cookie,
+              empty: localStorage.getItem("empty"),
               indexedDB: read.result,
               localStorage: localStorage.getItem("account"),
             });
@@ -1754,6 +1771,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     });
     expect(state.result?.value).toEqual({
       cookie: "session=portable-cookie",
+      empty: "",
       indexedDB: "portable-token",
       localStorage: "client-a",
       largeSha256: createHash("sha256")
