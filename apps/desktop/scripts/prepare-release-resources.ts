@@ -1,4 +1,7 @@
-import { stageDesktopUpdatePolicy } from "../src/releases/desktop-update-policy.js";
+import {
+  desktopAppUpdateYaml,
+  stageDesktopUpdatePolicy,
+} from "../src/releases/desktop-update-policy.js";
 import { requiredEnvironmentValue } from "@opensteer/shared/envParsing";
 import { assertRegularFile, setFileMode } from "@opensteer/shared/privateFiles";
 import { spawn } from "node:child_process";
@@ -177,13 +180,24 @@ async function main(): Promise<void> {
         "runner",
       ].map((name) => mkdir(path.join(temporary, name), { mode: 0o700, recursive: true })),
     );
+    const stagedRelease = stageDesktopUpdatePolicy(
+      releaseProfile,
+      process.env.OPENSTEER_DESKTOP_RELEASE === "1" ? targetOs : "development",
+      targetArch,
+      process.env.OPENSTEER_DESKTOP_UPDATE_GITHUB_HOST,
+    );
+    if (
+      process.env.OPENSTEER_DESKTOP_UPDATE_GITHUB_HOST &&
+      (process.env.OPENSTEER_DESKTOP_RELEASE !== "1" || process.env.CI)
+    )
+      throw new Error("The update GitHub host override requires a release build outside CI.");
+    if (stagedRelease.updates)
+      await writeFile(
+        path.join(temporary, "desktop", "app-update.yml"),
+        desktopAppUpdateYaml(stagedRelease.updates),
+      );
     await writeJson(path.join(temporary, "desktop", "release.json"), {
-      ...stageDesktopUpdatePolicy(
-        releaseProfile,
-        targetOs,
-        targetArch,
-        process.env.OPENSTEER_DESKTOP_UPDATE_FEED_URL,
-      ),
+      ...stagedRelease,
       capabilities: {
         ...releaseProfile.capabilities,
         localAgents: true,

@@ -1,3 +1,4 @@
+import { autoUpdater } from "electron-updater";
 import { startDesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
 import { DesktopDownloads } from "./downloads/desktop-downloads.js";
@@ -12,7 +13,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   app,
-  autoUpdater,
   BaseWindow,
   BrowserWindow,
   dialog,
@@ -961,16 +961,20 @@ async function runDesktop(
     preloadPath,
     quit: () => app.quit(),
   });
-  const restartToUpdate = () =>
-    shutdown.requestUpdate(() => {
-      for (const window of BaseWindow.getAllWindows()) window.destroy();
-      autoUpdater.quitAndInstall();
-    });
+  let updateReady = false;
+  const installUpdate = () => {
+    if (!updateReady) throw new Error("The desktop update is no longer ready.");
+    for (const window of BaseWindow.getAllWindows()) window.destroy();
+    autoUpdater.quitAndInstall();
+  };
+  const restartToUpdate = () => {
+    if (updateReady) shutdown.requestUpdate(installUpdate);
+  };
   Menu.setApplicationMenu(
     createDesktopApplicationMenu({
       workspaceContents: (window) => (mainWindows.owns(window) ? window.webContents : null),
       browserKey: (key) => browserPresentation.menuKey(key),
-      ...(loaded.config.release.channel === "stable" ? { restartToUpdate } : {}),
+      ...(loaded.config.updates ? { restartToUpdate } : {}),
     }),
   );
   const updateReopenMenu = (snapshot: ReturnType<typeof access.snapshot>) => {
@@ -1010,17 +1014,18 @@ async function runDesktop(
     runner: localRunner,
   });
   await tray.start();
-  if (loaded.config.release.channel === "stable")
-    startDesktopUpdater({
-      feedUrl: loaded.config.updates?.feedUrl,
-      signal: shutdown.signal,
-      log: reportEvent,
-      downloaded: () => {
-        const item = Menu.getApplicationMenu()?.getMenuItemById("restart-to-update");
-        if (item) item.visible = true;
-        tray.setRestartToUpdate(restartToUpdate);
-      },
-    });
+  startDesktopUpdater({
+    updates: loaded.config.updates,
+    signal: shutdown.signal,
+    log: reportEvent,
+    readinessChanged: (ready) => {
+      updateReady = ready;
+      shutdown.setUpdateInstaller(ready ? installUpdate : undefined);
+      const item = Menu.getApplicationMenu()?.getMenuItemById("restart-to-update");
+      if (item) item.visible = ready;
+      tray.setRestartToUpdate(ready ? restartToUpdate : undefined);
+    },
+  });
   shutdown.signal.throwIfAborted();
   const detachOAuthDeepLinks = oauthDeepLinks.attach(async (url) => {
     const handled = await nativeAuth.handleCallback(url);

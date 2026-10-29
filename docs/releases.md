@@ -97,19 +97,33 @@ to the public repository.
 
 ## Automatic updates
 
-Packaged stable Opensteer for Mac arm64 uses Electron's Squirrel.Mac updater
-with the [public GitHub feed](https://github.com/steerlabs/opensteer/releases/latest/download/opensteer-mac-arm64.json).
-It offers to move to Applications before starting Personal; updates run only
-from Applications. It checks after 30 seconds and every four hours, downloading
-in the background. Once ready, **Restart to Update** appears in the app menu
-and tray; it stops Personal and other children before restarting. Ordinary quit
-also installs a downloaded update. Downgrades are refused. Beta has no feed or
-updater, and development builds drop the feed: only `prepare:release-resources`
-stages it, from the committed manifest or `OPENSTEER_DESKTOP_UPDATE_FEED_URL` for
-a private test build. The stable release manifest marks the About panel version
-as Alpha. Packaging leaves every bundle entry owner-writable, although release
-inputs are staged read-only: ShipIt clears quarantine from each file of an update
-and replaces the old bundle, and both fail on entries the owner cannot write.
+Packaged Mac arm64 releases use electron-updater 6.8.11 with the GitHub
+provider. Stable uses channel `latest`, tag `desktop-vX.Y.Z`, and GitHub Latest;
+Beta uses custom channel `insider`, tag `vX.Y.Z-insider`, and a prerelease
+that is never Latest. Beta cannot use channel `beta`: that channel also accepts
+legacy semver stable releases. Beta cannot use `desktop-v` tags either, because
+prerelease discovery skips non-semver tags. Both app versions remain numeric
+`X.Y.Z`, with one Beta per version, to satisfy Squirrel's downgrade guard.
+
+For Beta, the provider selects the first eligible Atom entry, rather than the
+highest version. Publish in version order, with all channel assets ready and the tag
+visible in Atom. A missing channel file falls back to `latest-mac.yml` on the
+same tag; publish `latest-mac.yml` for stable and `insider-mac.yml` for Beta.
+
+Updates run only from Applications; the move prompt precedes supervised children.
+Checks run after 30 seconds and every four hours, downloading automatically.
+**Restart to Update** appears in the app menu and tray only after Electron's
+native `update-downloaded` confirms Squirrel validated and staged the bundle.
+Errors clear readiness. Restart and ordinary quit stop children and destroy
+windows before handing installation to electron-updater, with a bounded exit.
+Both channels refuse downgrades. Packaging keeps bundle entries owner-writable
+for ShipIt, and the stable About panel retains its Alpha marker.
+
+Release staging derives `app-update.yml` and channel-specific cache names from
+the embedded policy. Development builds omit updates. The build-time
+`OPENSTEER_DESKTOP_UPDATE_GITHUB_HOST` mirror override is allowed only for
+release builds outside CI; `OpensteerUpdateFeed` records
+`https://<host>/<owner>/<repo>#<channel>` for release verification.
 See the [updater](../apps/desktop/src/app/desktop-updater.ts),
 [shutdown](../apps/desktop/src/app/desktop-shutdown.ts), and
 [build policy](../apps/desktop/src/releases/desktop-update-policy.ts).

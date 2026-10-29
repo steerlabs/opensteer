@@ -39,6 +39,7 @@ async function verifyPackagedDesktopContents(context) {
     verifyPackagedDesktopRelease(packagedManifest, context.packager.appInfo, identity);
   }
   const desktop = readPackagedDesktopPolicy(archivePath);
+  verifyAppUpdateConfig(resources, desktop);
   await timePhase("package.after-pack.extract-import-check", async () =>
     verifyPackagedRuntimeImports(archivePath),
   );
@@ -142,6 +143,7 @@ function verifyDesktopApplicationIdentity(desktop, appInfo, protocols) {
 }
 
 module.exports = verifyPackagedDesktop;
+module.exports.verifyAppUpdateConfig = verifyAppUpdateConfig;
 module.exports.allowOwnerWrites = allowOwnerWrites;
 module.exports.readPackagedDesktopPolicy = readPackagedDesktopPolicy;
 module.exports.verifyDesktopApplicationIdentity = verifyDesktopApplicationIdentity;
@@ -194,7 +196,7 @@ function readPackagedDesktopPolicy(archivePath) {
     desktopManifest,
     ["application", "capabilities", "oauth", "schemaVersion"],
     // Service origins are present only when the build offers those services;
-    // only a stable Mac arm64 build carries an update feed.
+    // only Mac arm64 release builds carry updates.
     ["accountUrl", "portalUrl", "updates"],
   );
   if (
@@ -207,7 +209,9 @@ function readPackagedDesktopPolicy(archivePath) {
     !exactCapabilities(desktop.capabilities) ||
     !exactOAuthIdentity(desktop.oauth) ||
     !bareHttpsOriginOrAbsent(desktop.portalUrl) ||
-    !updateFeedOrAbsent(desktop.updates)
+    !updateFeedOrAbsent(desktop.updates) ||
+    (desktop.updates &&
+      desktop.updates.channel !== (desktop.application.channel === "stable" ? "latest" : "insider"))
   ) {
     throw new Error("Packaged Desktop manifest is invalid.");
   }
@@ -235,21 +239,43 @@ function bareHttpsOriginOrAbsent(value) {
 
 function updateFeedOrAbsent(value) {
   if (value === undefined) return true;
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    JSON.stringify(Object.keys(value)) !== JSON.stringify(["feedUrl"]) ||
-    typeof value.feedUrl !== "string"
-  )
-    return false;
-  let url;
-  try {
-    url = new URL(value.feedUrl);
-  } catch {
-    return false;
+  return (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).every((key) => ["owner", "repo", "channel", "host"].includes(key)) &&
+    value.owner === "steerlabs" &&
+    value.repo === "opensteer" &&
+    ["latest", "insider"].includes(value.channel) &&
+    (value.host === undefined ||
+      (typeof value.host === "string" && /^[a-zA-Z0-9.-]+(?::[0-9]+)?$/u.test(value.host)))
+  );
+}
+
+function verifyAppUpdateConfig(resources, desktop) {
+  const file = join(resources, "app-update.yml");
+  if (!desktop.updates) {
+    if (existsSync(file)) throw new Error("Unexpected Desktop update configuration.");
+    return;
   }
-  return url.protocol === "https:" && !url.username && !url.password && !url.hash;
+  const updates = desktop.updates;
+  if (updates.channel !== (desktop.application.channel === "stable" ? "latest" : "insider"))
+    throw new Error("Desktop update configuration channel mismatch.");
+  const expected = {
+    provider: "github",
+    owner: updates.owner,
+    repo: updates.repo,
+    ...(updates.host ? { host: updates.host } : {}),
+    updaterCacheDirName:
+      updates.channel === "latest" ? "opensteer-updater" : "opensteer-beta-updater",
+  };
+  const actual = require("yaml").parse(readFileSync(file, "utf8"));
+  if (
+    !actual ||
+    Object.keys(actual).length !== Object.keys(expected).length ||
+    Object.entries(expected).some(([key, value]) => actual[key] !== value)
+  )
+    throw new Error("Packaged Desktop update configuration does not match the policy.");
 }
 
 function exactApplication(value) {

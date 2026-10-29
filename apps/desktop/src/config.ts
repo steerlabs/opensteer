@@ -17,6 +17,17 @@ import {
 
 export type DesktopMode = "development" | "production" | "test";
 
+const DesktopUpdatesSchema = z.strictObject({
+  owner: z.literal("steerlabs"),
+  repo: z.literal("opensteer"),
+  channel: z.enum(["latest", "insider"]),
+  host: z
+    .string()
+    .regex(/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/u)
+    .optional(),
+});
+export type DesktopUpdates = z.infer<typeof DesktopUpdatesSchema>;
+
 export interface DesktopBrowserRuntimeConfig {
   readonly profileRoot: string;
   readonly runtimeId: string;
@@ -34,7 +45,7 @@ export interface DesktopConfiguration {
   /** Apex portal this build opens in the system browser. Null means the build
    * belongs to no portal and the app offers no such destination. */
   readonly portalUrl: URL | null;
-  readonly updates?: { readonly feedUrl: string };
+  readonly updates?: DesktopUpdates;
   readonly release: DesktopReleaseIdentity;
 }
 
@@ -329,7 +340,7 @@ const PackagedDesktopReleaseBaseSchema = z.strictObject({
   oauth: DesktopOAuthIdentitySchema,
   /** Present only for a build that belongs to a managed portal. */
   portalUrl: z.url().optional(),
-  updates: z.strictObject({ feedUrl: z.url({ protocol: /^https$/ }) }).optional(),
+  updates: DesktopUpdatesSchema.optional(),
   schemaVersion: z.literal(6),
 });
 
@@ -406,7 +417,7 @@ function readPackagedPortableFsRelease(
 }
 
 function readPackagedDesktopRelease(manifestPath: string): {
-  readonly updates?: { readonly feedUrl: string };
+  readonly updates?: DesktopUpdates;
   readonly accountUrl: string | null;
   readonly localAgents: boolean;
   readonly portableFs: boolean;

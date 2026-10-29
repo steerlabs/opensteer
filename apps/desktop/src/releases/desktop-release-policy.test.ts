@@ -1,5 +1,9 @@
 import { readEmbeddedDesktopRelease } from "../config.js";
-import { stageDesktopUpdatePolicy } from "./desktop-update-policy.js";
+import {
+  desktopAppUpdateYaml,
+  desktopUpdateFeed,
+  stageDesktopUpdatePolicy,
+} from "./desktop-update-policy.js";
 import { createRequire } from "node:module";
 import { chmod, mkdtemp, mkdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,11 +14,13 @@ import { createPackage } from "@electron/asar";
 
 const require = createRequire(import.meta.url);
 const {
+  verifyAppUpdateConfig,
   allowOwnerWrites,
   readPackagedDesktopPolicy,
   verifyDesktopApplicationIdentity,
   verifyPackagedRuntimeImports,
 } = require("../../scripts/after-pack.cjs") as {
+  readonly verifyAppUpdateConfig: (resources: string, desktop: unknown) => void;
   readonly allowOwnerWrites: (bundlePath: string) => void;
   readonly readPackagedDesktopPolicy: (archivePath: string) => unknown;
   readonly verifyDesktopApplicationIdentity: (
@@ -360,25 +366,61 @@ async function createFixtureArchive(source: string, archive: string): Promise<vo
   await finished(await createPackage(source, archive));
 }
 
-// A feed for the wrong architecture would download an unusable replacement app.
-it("stages a feed only for stable Mac arm64 and keeps private overrides in that target", () => {
-  const stable = readEmbeddedDesktopRelease(
-    path.join(import.meta.dirname, "desktop-release.source.json"),
+it.each(["source", "beta"])("stages %s updates only for Mac arm64", (profile) => {
+  const release = readEmbeddedDesktopRelease(
+    path.join(import.meta.dirname, `desktop-release.${profile}.json`),
   );
-  const beta = readEmbeddedDesktopRelease(
-    path.join(import.meta.dirname, "desktop-release.beta.json"),
-  );
-  const mirror = "https://updates.localhost/private.json";
-  expect(stageDesktopUpdatePolicy(stable, "darwin", "arm64", undefined).updates).toEqual(
-    stable.updates,
-  );
-  expect(stageDesktopUpdatePolicy(stable, "darwin", "arm64", mirror).updates?.feedUrl).toBe(mirror);
-  for (const [release, os, arch] of [
-    [beta, "darwin", "arm64"],
-    [stable, "darwin", "amd64"],
-    [stable, "darwin", "x64"],
-    [stable, "linux", "arm64"],
-    [stable, "win32", "arm64"],
-  ] as const)
-    expect(stageDesktopUpdatePolicy(release, os, arch, mirror).updates).toBeUndefined();
+  const staged = stageDesktopUpdatePolicy(release, "darwin", "arm64", "updates.localhost:8443");
+  expect(staged.updates).toMatchObject({
+    owner: "steerlabs",
+    repo: "opensteer",
+    channel: profile === "beta" ? "insider" : "latest",
+    host: "updates.localhost:8443",
+  });
+  for (const [os, arch] of [
+    ["darwin", "amd64"],
+    ["linux", "arm64"],
+    ["win32", "arm64"],
+  ])
+    expect(stageDesktopUpdatePolicy(release, os!, arch!, undefined).updates).toBeUndefined();
 });
+it.each(["source", "beta"])(
+  "validates the %s app-update.yml against the staged policy",
+  async (profile) => {
+    const release = readEmbeddedDesktopRelease(
+      path.join(import.meta.dirname, `desktop-release.${profile}.json`),
+    );
+    const updates = stageDesktopUpdatePolicy(
+      release,
+      "darwin",
+      "arm64",
+      "mirror.localhost:8443",
+    ).updates!;
+    const root = await mkdtemp(path.join(tmpdir(), "opensteer-update-yaml-"));
+    temporaryDirectories.push(root);
+    expect(desktopUpdateFeed(updates)).toBe(
+      `https://mirror.localhost:8443/steerlabs/opensteer#${profile === "beta" ? "insider" : "latest"}`,
+    );
+    expect(desktopUpdateFeed({ ...updates, host: undefined })).toBe(
+      `https://github.com/steerlabs/opensteer#${updates.channel}`,
+    );
+    const yaml = desktopAppUpdateYaml(updates);
+    const { parse } = await import("yaml");
+    expect(parse(yaml)).toEqual({
+      provider: "github",
+      owner: "steerlabs",
+      repo: "opensteer",
+      host: "mirror.localhost:8443",
+      updaterCacheDirName: profile === "beta" ? "opensteer-beta-updater" : "opensteer-updater",
+    });
+    await writeFile(path.join(root, "app-update.yml"), yaml);
+    expect(() => verifyAppUpdateConfig(root, { ...release, updates })).not.toThrow();
+    await writeFile(
+      path.join(root, "app-update.yml"),
+      yaml.replace("mirror.localhost", "wrong.localhost"),
+    );
+    expect(() => verifyAppUpdateConfig(root, { ...release, updates })).toThrow(
+      /update configuration/u,
+    );
+  },
+);

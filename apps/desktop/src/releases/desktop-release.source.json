@@ -18,6 +18,8 @@
   },
   "schemaVersion": 6,
   "updates": {
-    "feedUrl": "https://github.com/steerlabs/opensteer/releases/latest/download/opensteer-mac-arm64.json"
+    "owner": "steerlabs",
+    "repo": "opensteer",
+    "channel": "latest"
   }
 }
