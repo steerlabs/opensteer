@@ -987,6 +987,11 @@ function handleTurnStart(message) {
     return;
   }
   if (scenario === "vertical" || scenario === "vertical-delayed") {
+    if (
+      process.argv.includes("--hold-second-turn") &&
+      JSON.stringify(message.params.input).includes("Second question")
+    )
+      return;
     const complete = () => {
       if (singleResponse) {
         const reading = usageReadings.has(threadId)

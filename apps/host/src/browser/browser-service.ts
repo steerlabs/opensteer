@@ -602,7 +602,7 @@ interface BrowserServiceOptions {
   readonly onUsageChanged?: (credits: readonly BrowserUsageCredit[]) => void;
   /** A best-effort write that failed after the agent was already answered. */
   readonly onError?: (error: unknown) => void;
-  /** Drives activity expiry only; browser commands and connection deadlines use real time. */
+  /** Drives activity expiry and native coalescing; browser commands and connection deadlines use real time. */
   readonly activityClock?: Clock;
   readonly actingWindowMs?: number;
   readonly actorMetadataTimeoutMs?: number;
@@ -636,7 +636,7 @@ interface BrowserActor {
 export class BrowserService {
   readonly #nativeActivity = new Map<
     string,
-    { activity: PlaceActivity; ownerId: UserId; title: string; timer: NodeJS.Timeout | null }
+    { activity: PlaceActivity; ownerId: UserId; title: string; timer: (() => void) | null }
   >();
   readonly #actors = new Map<string, BrowserActor>();
   readonly #actorKeys = new Map<string, string | null>();
@@ -1605,7 +1605,7 @@ export class BrowserService {
     const previous = this.#nativeActivity.get(key);
     const seq = ++this.#placeSequence;
     if (input.ended) {
-      if (previous?.timer) clearTimeout(previous.timer);
+      previous?.timer?.();
       this.#nativeActivity.delete(key);
       this.#onPlaceNotice(input.ownerId, {
         type: "host.place-activity-cleared",
@@ -1654,14 +1654,13 @@ export class BrowserService {
     this.#onPlaceNotice(entry.ownerId, { type: "host.thread-place-changed", reference });
     this.#nativeActivity.set(key, entry);
     if (entry.timer) return;
-    entry.timer = setTimeout(() => {
+    entry.timer = this.#activityClock.schedule(() => {
       const current = this.#nativeActivity.get(key);
       if (!current) return;
       current.timer = null;
       const activity = current.activity;
       this.#onPlaceNotice(current.ownerId, { type: "host.place-activity", activity });
     }, 100);
-    entry.timer.unref();
   }
 
   async latestPlaces(ownerId: UserId): Promise<readonly ThreadPlaceReference[]> {
@@ -3161,7 +3160,7 @@ export class BrowserService {
     for (const timer of this.#activityTimers.values()) clearTimeout(timer);
     this.#activityTimers.clear();
     this.#activityPending.clear();
-    for (const entry of this.#nativeActivity.values()) if (entry.timer) clearTimeout(entry.timer);
+    for (const entry of this.#nativeActivity.values()) entry.timer?.();
     this.#nativeActivity.clear();
     for (const peers of this.#authConsumers.values()) {
       for (const peer of peers) peer.close(1001, "Host browser service closing");

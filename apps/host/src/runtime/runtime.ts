@@ -396,7 +396,7 @@ export async function createHostRuntime(
       import("../notifications/notification-dispatcher.js").NotificationDispatcherOptions,
       "now" | "wait"
     >;
-    /** Domain activity expiry; transport and browser deadlines stay on real time. */
+    /** Domain activity expiry and native coalescing; transport and browser deadlines stay on real time. */
     readonly browserActivityClock?: import("@opensteer/shared/clock").Clock;
     /** When periodic workspace reconciliation passes run; each pass's own work stays real. */
     readonly workspaceReconcileClock?: import("@opensteer/shared/clock").Clock;
