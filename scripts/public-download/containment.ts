@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 export function containmentRules(peer: string, peerPort: number, local: string) {
   assert(isIP(peer) && isIP(local), "Invalid SSH control address");
@@ -23,6 +23,25 @@ type Run = (
   args: string[],
   allowFailure?: boolean,
 ) => { code: number | null; output: string };
+/**
+ * Runs as root, detached from the session: restores PF once the control session ($1) or
+ * this run ($2) is gone. A cancelled or timed-out run never reaches its own release, and
+ * PF would otherwise block the VM runner's new SSH connection that exports evidence.
+ */
+export const pfWatchdog = `while kill -0 "$1" 2>/dev/null && kill -0 "$2" 2>/dev/null; do sleep 1; done
+"$3" -d; "$3" -F all; "$3" -f /etc/pf.conf`;
+/** The nearest sshd ancestor serves this run's control connection and exits with it. */
+function controlSession(run: Run): number {
+  for (let pid = process.pid; pid > 1;) {
+    const row = /^\s*(\d+)\s+(.+?)\s*$/u.exec(
+      run("ps", ["-o", "ppid=,comm=", "-p", String(pid)]).output,
+    );
+    assert(row, "SSH control session not found");
+    if (path.basename(row[2]!).startsWith("sshd")) return pid;
+    pid = Number(row[1]);
+  }
+  throw new Error("SSH control session not found");
+}
 export function containGuest(out: string, run: Run) {
   assert(existsSync("/Volumes/My Shared Files/inputs"), "Guest only");
   const connection = process.env.SSH_CONNECTION?.split(" ");
@@ -61,7 +80,26 @@ export function containGuest(out: string, run: Run) {
     run("sudo", ["-n", "pfctl", "-F", "all"]);
     run("sudo", ["-n", "pfctl", "-f", "/etc/pf.conf"]);
   };
+  const session = controlSession(run);
   try {
+    const watchdog = spawn(
+      "sudo",
+      [
+        "-n",
+        "/bin/sh",
+        "-c",
+        pfWatchdog,
+        "opensteer-pf-watchdog",
+        String(session),
+        String(process.pid),
+        "/sbin/pfctl",
+      ],
+      { detached: true, stdio: "ignore" },
+    );
+    // A spawn failure leaves no pid; report that below instead of as an unhandled event.
+    watchdog.once("error", () => undefined);
+    assert(watchdog.pid, "PF watchdog did not start");
+    watchdog.unref();
     run("sudo", ["-n", "pfctl", "-f", file]);
     run("sudo", ["-n", "pfctl", "-F", "states"]);
     run("sudo", ["-n", "pfctl", "-e"]);

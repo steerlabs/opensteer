@@ -11,6 +11,8 @@ import {
   draftCertificationPassed,
   draftExpectation,
   intakeDraft,
+  intakeOlder,
+  olderInput,
   publicationLines,
 } from "./draft.js";
 import { prepareFixtures } from "./eu-prepare.js";
@@ -21,6 +23,7 @@ const { values } = parseArgs({
     draft: { type: "string" },
     "expect-version": { type: "string" },
     "expect-sha": { type: "string" },
+    older: { type: "string" },
   },
 });
 const expected = draftExpectation.parse({
@@ -28,6 +31,11 @@ const expected = draftExpectation.parse({
   version: values["expect-version"],
   sourceSha: values["expect-sha"],
 });
+if (!values.older)
+  throw new Error(
+    "--older is required: a release tag of the draft's channel below N, or an absolute local build directory",
+  );
+const older = olderInput.parse(values.older);
 const stop = new AbortController(),
   interrupt = () => stop.abort();
 process.once("SIGINT", interrupt);
@@ -43,7 +51,10 @@ try {
     (exe, args, options) => runBounded(exe, args, { ...options, signal: stop.signal }),
   );
   writeFileSync(path.join(out, "draft.json"), JSON.stringify(draft, null, 2));
-  const { input, metadata } = await prepareFixtures(inputs, draft, stop.signal);
+  const olderFixture = await intakeOlder(work, older, draft, (exe, args, options) =>
+    runBounded(exe, args, { ...options, signal: stop.signal }),
+  );
+  const { input, metadata } = await prepareFixtures(inputs, draft, olderFixture, stop.signal);
   const axDriver = prepareAXDriver(inputs),
     selected = [...certificationCases[draft.channel]];
   const workers = Number(

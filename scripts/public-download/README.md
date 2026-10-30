@@ -11,7 +11,8 @@ local signing prerequisites:
 ```sh
 export OPENSTEER_UPDATE_JOURNEY_DIR=/absolute/physical/journey-work
 pnpm exec tsx scripts/public-download/eu-run.ts \
-  --draft v1.2.3-insider --expect-version 1.2.3 --expect-sha FULL_40_HEX_SOURCE_SHA
+  --draft v1.2.3-insider --expect-version 1.2.3 --expect-sha FULL_40_HEX_SOURCE_SHA \
+  --older v1.2.2-insider
 ```
 
 The authenticated `gh` CLI must be able to read the draft. Intake checks draft
@@ -41,9 +42,12 @@ hash verified against the draft manifest. The final stdout lines print
 for the operator, including `publish=true` and that hash. Failure prints neither.
 The harness never executes publication.
 
-The existing signed 0.1.219 build of the draft channel is the downgrade payload.
-Its archive checksum must still match its recorded build. It is never launched;
-its former feed configuration has no role in the journey. The wrong-signer
+`--older` names the downgrade payload, a signed bundle of the draft's channel
+below N. It is a release tag (published or draft), downloaded and verified like
+the draft, or an absolute local build directory that `build-next.ts` wrote, whose
+archive must still match its recorded checksum. Until the channel has an older
+release, only a local build exists, so a fresh machine can certify only once one
+does. The run verifies it before building N+1. It is never launched. The wrong-signer
 payload is an ad-hoc copy. Both native refusals must follow completed ZIP delivery
 and carry the matching classified reason (`signature` or `downgrade`). N remains
 healthy with its marker intact, followed by one genuine N→N+1 recovery.
@@ -64,6 +68,8 @@ existing SSH connection’s exact address/port four-tuple. Proxy settings
 and proxy environment must be absent. An external-address negative control must
 increment the PF deny counter; PF must remain enabled with identical rules until
 measurement finishes. The guest restores its disabled PF configuration afterward.
+If the control connection or the run ends first (a cancellation or the suite
+timeout), a detached root watchdog restores it, so evidence export still connects.
 No host firewall or trust settings are touched.
 
 DNS/HTTP Host/TLS SNI capture and the Account sinkhole have positive controls;

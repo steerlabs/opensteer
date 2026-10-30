@@ -1,12 +1,25 @@
 import { test, expect } from "vitest";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { sha256File } from "@opensteer/shared/fileDigest";
 import { assetsFor } from "../scripts/desktop-public-release.js";
+import type { runBounded } from "../scripts/command-runner.js";
 import {
   validateDraft,
   draftCertificationPassed,
+  intakeOlder,
   publicationLines,
 } from "../scripts/public-download/draft.js";
 
@@ -149,4 +162,129 @@ test("PASS publication output binds the downloaded draft ZIP, never the local N+
   );
   // Stable rebuilds the published insider of the same version; insiders take no tag.
   expect(stable[1]).toContain("-f channel=stable -f insider_tag=v1.2.3-insider -f publish=true");
+});
+
+test("the older fixture is an explicit input, verified before the N+1 build", async () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opensteer-older-")));
+  const hash = (bytes: string) => createHash("sha256").update(bytes).digest("hex");
+  try {
+    // A fresh machine without --older stops before any download, build or output.
+    const bin = path.join(root, "bin"),
+      calls = path.join(root, "gh-calls"),
+      work = path.join(root, "work");
+    mkdirSync(bin);
+    mkdirSync(work);
+    writeFileSync(path.join(bin, "gh"), `#!/bin/sh\necho "$*" >> "${calls}"\nexit 1\n`, {
+      mode: 0o755,
+    });
+    const cli = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "scripts/public-download/eu-run.ts",
+        "--draft",
+        "v1.2.3-insider",
+        "--expect-version",
+        "1.2.3",
+        "--expect-sha",
+        "a".repeat(40),
+      ],
+      {
+        cwd: path.resolve(import.meta.dirname, ".."),
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          OPENSTEER_UPDATE_JOURNEY_DIR: work,
+        },
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+    expect(cli.status).not.toBe(0);
+    expect(cli.stderr).toMatch(/--older is required/u);
+    expect(existsSync(calls)).toBe(false);
+    expect(readdirSync(work)).toEqual([]);
+
+    const n = { channel: "beta" as const, version: "1.2.3" };
+    // A local signed build directory, as build-next writes it.
+    const local = path.join(work, "builds", "b".repeat(40), "beta");
+    await expect(intakeOlder(work, local, n)).rejects.toThrow(/no build\.json/u);
+    mkdirSync(local, { recursive: true });
+    const zip = path.join(local, "Opensteer-Beta-mac-arm64.zip");
+    writeFileSync(zip, "older signed build");
+    writeFileSync(
+      path.join(local, "build.json"),
+      JSON.stringify({ revision: "b".repeat(40), channel: "beta", version: "1.2.2", zip }),
+    );
+    writeFileSync(
+      path.join(local, "archive-check.json"),
+      JSON.stringify({ sha256: hash("older signed build") }),
+    );
+    expect(await intakeOlder(work, local, n)).toMatchObject({
+      version: "1.2.2",
+      revision: "b".repeat(40),
+      zip,
+      sha256: hash("older signed build"),
+    });
+    await expect(intakeOlder(work, local, { ...n, version: "1.2.2" })).rejects.toThrow(/below N/u);
+    await expect(intakeOlder(work, local, { ...n, channel: "stable" })).rejects.toThrow(/channel/u);
+    writeFileSync(zip, "changed");
+    await expect(intakeOlder(work, local, n)).rejects.toThrow(/changed/u);
+
+    // A release tag (published or draft) is downloaded and verified like the draft.
+    const published = path.join(root, "published");
+    mkdirSync(published);
+    const assets: Record<string, string> = {};
+    for (const name of assetsFor("beta").filter((x) => x !== "SHA256SUMS")) {
+      writeFileSync(path.join(published, name), `older ${name}`);
+      assets[name] = hash(`older ${name}`);
+    }
+    const sums = Object.entries(assets)
+      .map(([name, h]) => `${h}  ${name}\n`)
+      .join("");
+    writeFileSync(path.join(published, "SHA256SUMS"), sums);
+    assets.SHA256SUMS = hash(sums);
+    const manifest = {
+      channel: "beta",
+      prerelease: true,
+      tag: "v1.2.2-insider",
+      title: "Opensteer Beta 1.2.2",
+      notes: "notes",
+      version: "1.2.2",
+      sourceSha: "c".repeat(40),
+      assets,
+      feedURL: "https://github.com/steerlabs/opensteer#insider",
+      privateFeed: false,
+    };
+    writeFileSync(path.join(published, "release.json"), JSON.stringify(manifest));
+    const release = {
+      id: 2,
+      draft: false,
+      prerelease: true,
+      tag_name: manifest.tag,
+      target_commitish: manifest.sourceSha,
+      name: manifest.title,
+      body: manifest.notes,
+      assets: [...Object.keys(assets), "release.json"].map((name) => ({ name })),
+    };
+    const fake: typeof runBounded = async (exe, args) => {
+      if (exe === "gh" && args[1] === "download") {
+        const dir = args[args.indexOf("--dir") + 1]!;
+        for (const name of readdirSync(published))
+          copyFileSync(path.join(published, name), path.join(dir, name));
+        return "";
+      }
+      return JSON.stringify([[release]]);
+    };
+    const fromTag = await intakeOlder(work, "v1.2.2-insider", n, fake);
+    expect(fromTag).toMatchObject({ version: "1.2.2", revision: "c".repeat(40) });
+    expect(await sha256File(fromTag.zip)).toBe(fromTag.sha256);
+    await expect(intakeOlder(work, "v1.2.3-insider", n, fake)).rejects.toThrow(/below N/u);
+    await expect(intakeOlder(work, "desktop-v1.2.2", n, fake)).rejects.toThrow(/channel/u);
+    writeFileSync(path.join(published, "Opensteer-Beta-mac-arm64.zip"), "tamper");
+    await expect(intakeOlder(work, "v1.2.2-insider", n, fake)).rejects.toThrow();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

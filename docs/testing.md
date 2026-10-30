@@ -119,7 +119,7 @@ flow. VM runs are post-merge or on demand, never a pre-merge gate.
 See [VM constraints and operation](../scripts/test-vm/README.md).
 
 A draft's actual desktop ZIP is certified with
-`pnpm exec tsx scripts/public-download/eu-run.ts --draft <tag> --expect-version X.Y.Z --expect-sha <40hex>`.
+`pnpm exec tsx scripts/public-download/eu-run.ts --draft <tag> --expect-version X.Y.Z --expect-sha <40hex> --older <older tag or build directory>`.
 The draft channel selects its full journey set; each case must install the exact
 draft ZIP. See [draft certification](../scripts/public-download/README.md) for
 signing prerequisites, guest containment and evidence. No local rebuild of N or
