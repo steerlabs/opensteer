@@ -1,90 +1,27 @@
 import Foundation
 
-/// Shared by every connection and session using one approved app. Acquisition
-/// revokes effect tickets immediately; held is published only after their drain.
-final class OwnerInputFence: @unchecked Sendable {
-  struct Agent: Sendable { let id: UUID; let epoch: Int }
-  private struct State {
-    var epoch = 0
-    var controller: String?
-    var held = false
-    var releasing = false
-    var agents = Set<UUID>()
-    var waiters: [CheckedContinuation<Void, Never>] = []
-  }
-  private let state = Locked(State())
-  static let refusal = HelperError(.ownerInControl, "The person has taken over this app.")
-  var epoch: Int { state.current.epoch }
+/// One lane for AX mutations and synthetic events in an app. Idle attachments
+/// reserve nothing; only a batch's execution or an actual held contact excludes.
+final class AppMutationCoordinator: @unchecked Sendable {
+  private let gate = OwnerFocusGate()
+  private let contacts = Locked<Set<String>>([])
+  private let edits = Locked(0)
+  static let refusal = HelperError(.failed, "A person is pressing in this app; try again.")
+  var revision: Int { edits.current }
 
-  func beginAgent() throws -> Agent {
-    try state.withLock {
-      guard $0.controller == nil else { throw Self.refusal }
-      let ticket = Agent(id: UUID(), epoch: $0.epoch)
-      $0.agents.insert(ticket.id)
-      return ticket
-    }
+  func beginAgent() async throws {
+    guard contacts.current.isEmpty else { throw Self.refusal }
+    await gate.acquire()
+    guard contacts.current.isEmpty else { gate.release(); throw Self.refusal }
   }
-  func checkAgent(_ ticket: Agent) throws {
-    try state.withLock {
-      guard $0.controller == nil, $0.epoch == ticket.epoch, $0.agents.contains(ticket.id)
-      else { throw Self.refusal }
-    }
+  func endAgent() { edits.withLock { $0 += 1 }; gate.release() }
+  func beginPerson() async { await gate.acquire() }
+  func endPerson() { gate.release() }
+  /// Called while the lane is held, after delivery or physical cleanup.
+  func setHeld(_ held: Bool, attachment: String) {
+    contacts.withLock { if held { $0.insert(attachment) } else { $0.remove(attachment) } }
   }
-  func endAgent(_ ticket: Agent) {
-    let waiters = state.withLock { value -> [CheckedContinuation<Void, Never>] in
-      value.agents.remove(ticket.id)
-      guard value.agents.isEmpty else { return [] }
-      defer { value.waiters.removeAll() }
-      return value.waiters
-    }
-    for waiter in waiters { waiter.resume() }
-  }
-  func drain() async {
-    await withCheckedContinuation { continuation in
-      let ready = state.withLock {
-        if $0.agents.isEmpty { return true }
-        $0.waiters.append(continuation)
-        return false
-      }
-      if ready { continuation.resume() }
-    }
-  }
-  func acquire(_ controller: String) throws -> Int {
-    try state.withLock {
-      guard $0.controller == nil else { throw HelperError(.busy, "This app already has a controller.") }
-      $0.epoch += 1
-      $0.controller = controller
-      $0.held = false
-      $0.releasing = false
-      return $0.epoch
-    }
-  }
-  func hold(_ controller: String, epoch: Int) throws {
-    try state.withLock {
-      guard $0.controller == controller, $0.epoch == epoch, !$0.releasing, $0.agents.isEmpty
-      else { throw Self.refusal }
-      $0.held = true
-    }
-  }
-  func isHeld(_ controller: String, epoch: Int) -> Bool {
-    state.withLock { $0.controller == controller && $0.epoch == epoch && $0.held && !$0.releasing }
-  }
-  @discardableResult func release(_ controller: String) -> Bool {
-    state.withLock {
-      guard $0.controller == controller, !$0.releasing else { return false }
-      $0.epoch += 1
-      $0.held = false
-      $0.releasing = true
-      return true
-    }
-  }
-  func finishRelease(_ controller: String) {
-    state.withLock {
-      guard $0.controller == controller, $0.releasing, $0.agents.isEmpty else { return }
-      $0.controller = nil
-      $0.releasing = false
-    }
-  }
+  func notePersonEdit() { edits.withLock { $0 += 1 } }
 }
 
 /// Reserves a complete batch before queueing it. Replays, overflow and expired

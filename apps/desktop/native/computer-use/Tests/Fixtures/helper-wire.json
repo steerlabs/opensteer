@@ -335,7 +335,6 @@
   },
   "events" : {
     "display.owner-input" : {
-      "controlId" : "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       "message" : {
         "outcome" : "dispatched",
         "sequence" : 0,
@@ -409,21 +408,6 @@
         "token" : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
       }
     },
-    "display.control" : {
-      "id" : 20,
-      "method" : "display.control",
-      "params" : {
-        "access" : "read-write",
-        "action" : "acquire",
-        "controlId" : "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        "source" : {
-          "generation" : 1,
-          "kind" : "owner-view",
-          "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-        },
-        "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-      }
-    },
     "display.demand" : {
       "id" : 20,
       "method" : "display.demand",
@@ -443,7 +427,6 @@
       "id" : 20,
       "method" : "display.input",
       "params" : {
-        "controlId" : "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "events" : [
           {
             "kind" : "copy"
@@ -451,6 +434,18 @@
         ],
         "geometry" : 1,
         "sequence" : 0,
+        "source" : {
+          "generation" : 1,
+          "kind" : "owner-view",
+          "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        },
+        "streamId" : "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "display.input-reset" : {
+      "id" : 20,
+      "method" : "display.input-reset",
+      "params" : {
         "source" : {
           "generation" : 1,
           "kind" : "owner-view",
@@ -754,16 +749,15 @@
     "display.attach" : {
 
     },
-    "display.control" : {
-      "controlId" : "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      "state" : "held"
-    },
     "display.demand" : {
 
     },
     "display.input" : {
       "outcome" : "dispatched",
       "sequence" : 0
+    },
+    "display.input-reset" : {
+
     },
     "display.refresh" : {
 

@@ -12,7 +12,7 @@ import ApplicationServices
       actions: [.key(keys: "x")], app: state, window: a.ref, snapshot: nil,
       cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
     try require(
-      otherKey.performed.isEmpty && otherKey.error?.code == .ownerInControl,
+      otherKey.performed.isEmpty && otherKey.error?.code == .failed,
       "N6 moved person's key window")
         await cover.moveAside()
     try await personClick(a.id, pid: pid, out: out)
