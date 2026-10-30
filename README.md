@@ -9,9 +9,10 @@ your phone.
 - **Bring your own agents.** Claude Code, Codex, Cursor, OpenCode and Pi, signed
   in with the subscriptions you already have, or models running on your own
   machine. No API bills required.
-- **Skip the setup.** Agents use the sites you're already signed into in Chrome
-  and your saved logins, so you don't spend your time signing in and connecting
-  things by hand.
+- **Skip the setup.** Connect [Chrome](docs/browser-sources.md) once and agents
+  use the sites you're already signed into, plus your
+  [saved logins](docs/passwords.md), so you don't spend your time signing in and
+  connecting things by hand.
 - **Runs on your computer.** Your files, accounts and data stay with you.
 - **Work from anywhere.** Your phone and your other computers connect to it.
 - **Agents work alongside you,** in your browser, your apps and your computer.
