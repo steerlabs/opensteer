@@ -40,7 +40,18 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
     if (closing) return;
     closing = true;
     runtime.app.log.info({ signal }, "Opensteer Host shutting down");
-    await runtime.close();
+    // A shutdown that hangs names the step it is waiting on.
+    const slow = setInterval(
+      () =>
+        runtime.app.log.warn({ step: runtime.closingStep() }, "Opensteer Host still shutting down"),
+      10_000,
+    );
+    slow.unref();
+    try {
+      await runtime.close();
+    } finally {
+      clearInterval(slow);
+    }
   };
   process.once("SIGINT", () => void close("SIGINT"));
   process.once("SIGBREAK", () => void close("SIGBREAK"));
