@@ -4507,7 +4507,7 @@ function queueItem(message: Message, canSteer: boolean) {
 }
 
 describe("HttpHostClient catalog startup", () => {
-  function startup() {
+  function startup(options: { readonly failSession?: number } = {}) {
     const workspace = makeWorkspace();
     const seed = new MockHostClient();
     const saved = seed.getSnapshot().workspaceTabs!.find((group) => group.tabs?.length)!;
@@ -4562,7 +4562,13 @@ describe("HttpHostClient catalog startup", () => {
         }
         const isGroup = url.pathname.endsWith("/workspace.tabs.get");
         if (isGroup || url.pathname.endsWith("/browser.tabs.get")) {
-          if (!isGroup) readSessions.push(requiredString(rpcPayload(url, init), "sessionId"));
+          const sessionId = isGroup ? null : requiredString(rpcPayload(url, init), "sessionId");
+          if (sessionId) readSessions.push(sessionId);
+          if (options.failSession !== undefined && sessionId === sessions[options.failSession]!.id)
+            return json(
+              { error: { code: "internal", message: "Catalog unavailable", retryable: true } },
+              500,
+            );
           if (!hold)
             return json(
               isGroup ? { ...group, revision: 2 } : { generation: 1, revision: 1, tabs: [] },
@@ -4639,6 +4645,29 @@ describe("HttpHostClient catalog startup", () => {
           .browserSessions.slice(1)
           .every((session) => session.tabCatalog?.revision === 1),
       ).toBe(true);
+    } finally {
+      run.release();
+      await run.loaded.catch(() => undefined);
+      run.client.dispose();
+    }
+  });
+
+  it("recovers every other catalog when one read fails, then reports that failure", async () => {
+    const run = startup({ failSession: 0 });
+    try {
+      run.release();
+      const outcome = await run.loaded.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      // Five reads in batches of three: the failure is in the first batch.
+      expect(new Set(run.readSessions)).toEqual(new Set(run.sessions.map(({ id }) => id)));
+      expect(run.client.getSnapshot().workspaceTabs?.[0]?.revision).toBe(2);
+      const catalogs = run.client.getSnapshot().browserSessions.map(({ tabCatalog }) => tabCatalog);
+      expect(catalogs[0]).toBeUndefined();
+      expect(catalogs.slice(1).every((catalog) => catalog?.revision === 1)).toBe(true);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain("Catalog unavailable");
     } finally {
       run.release();
       await run.loaded.catch(() => undefined);
