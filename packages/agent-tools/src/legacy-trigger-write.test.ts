@@ -18,7 +18,7 @@ describe("previous-release Trigger authoring inventory", () => {
         ({ name }) => name === "trigger_write",
       )!;
       expect(tool.description).toBe(previous.description);
-      expect(z.toJSONSchema(tool.inputSchema, { io: "input" })).toEqual(previous.inputSchema);
+      expect(JSON.stringify(tool.advertisedInputSchema)).toBe(JSON.stringify(previous.inputSchema));
     },
   );
   it("keeps the current skill-based v3 contract", () => {

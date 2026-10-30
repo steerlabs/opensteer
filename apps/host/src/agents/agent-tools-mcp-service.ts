@@ -385,7 +385,10 @@ export class AgentToolsMcpService {
         ...registration,
         name: definition.name,
         inputSchema: advertisedJsonSchema(
-          toJsonSchemaCompat(inputSchema, { strictUnions: true, pipeStrategy: "input" }),
+          (input.toolContractVersion !== 1 && "advertisedInputSchema" in definition
+            ? definition.advertisedInputSchema
+            : undefined) ??
+            toJsonSchemaCompat(inputSchema, { strictUnions: true, pipeStrategy: "input" }),
         ) as Tool["inputSchema"],
         execution: { taskSupport: "forbidden" },
       });
