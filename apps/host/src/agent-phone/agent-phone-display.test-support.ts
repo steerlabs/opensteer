@@ -211,6 +211,7 @@ export class ComputerDisplayViewer {
         : `/v1/computer-use/views/${source.viewId}/${source.generation}/display`;
     const url = new URL(route, host.origin);
     url.protocol = "ws:";
+    url.searchParams.set("sharedInput", "1");
     if (options.editing) {
       url.searchParams.set("editing", "1");
       if (source.kind === "task-session") url.searchParams.set("displayCut", "1");
