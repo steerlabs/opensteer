@@ -26,7 +26,7 @@ import {
   type DisplayDataTicketClaims,
   type DisplayViewerClientMessage,
   type DisplayViewerState,
-  type DisplayInputEvent,
+  trackHeldDisplayInput,
   type DisplayInputResult,
   type DisplayClipboard,
   type DisplayEditing,
@@ -76,7 +76,6 @@ interface Viewer {
   readonly sharedInput: boolean;
   authorized: boolean;
   inputSequence: number;
-  sentInput: boolean;
   checkedAt: number;
   checking: boolean;
   readonly editing: boolean;
@@ -114,6 +113,8 @@ interface PendingInput {
 interface Stream {
   readonly sharedInput?: 1;
   holder: Viewer | null;
+  /** The person-lane sequence of the holder's latest batch. */
+  holderSequence: number;
   readonly held: Set<string>;
   inputSequence: number;
   readonly pending: Map<number, PendingInput>;
@@ -380,6 +381,7 @@ export class DisplayStreamHub {
         refreshPending: false,
         stopAt: null,
         holder: null,
+        holderSequence: -1,
         held: new Set(),
         inputSequence: 0,
         pending: new Map(),
@@ -434,7 +436,6 @@ export class DisplayStreamHub {
       sharedInput: options.sharedInput === true,
       authorized,
       inputSequence: -1,
-      sentInput: false,
       checkedAt: this.#now(),
       checking: false,
       editing: options.editing === true,
@@ -951,13 +952,13 @@ export class DisplayStreamHub {
         copy: message.events.some((event) => event.kind === "copy" || event.kind === "cut"),
         cut: message.events.some((event) => event.kind === "cut"),
       });
-    viewer.sentInput = true;
     for (const event of message.events) {
       viewer.inputCounters.operations[event.kind] =
         (viewer.inputCounters.operations[event.kind] ?? 0) + 1;
-      this.#trackHeld(stream, event);
+      trackHeldDisplayInput(stream.held, event);
     }
     stream.holder = stream.held.size ? viewer : null;
+    stream.holderSequence = sequence;
     if (stream.target && viewer.source.kind === "owner-view") {
       this.#send(stream, {
         ...stream.fence,
@@ -1002,22 +1003,6 @@ export class DisplayStreamHub {
         ? stream.target.editingVersion === 1 && viewer.source.kind === "owner-view"
         : stream.sharedInput === 1 && viewer.source.kind === "task-session")
     );
-  }
-
-  #trackHeld(stream: Stream, event: DisplayInputEvent): void {
-    if (event.kind === "pointer" || event.kind === "mouse") {
-      const key = event.kind === "pointer" ? "pointer" : `mouse:${event.button}`;
-      if (event.phase === "down") stream.held.add(key);
-      else if (event.phase === "up") stream.held.delete(key);
-      else if (event.phase === "cancel") {
-        for (const held of stream.held)
-          if (event.kind === "pointer" ? held === "pointer" : held.startsWith("mouse:"))
-            stream.held.delete(held);
-      }
-    } else if (event.kind === "key") {
-      if (event.action === "down") stream.held.add(`key:${event.code}`);
-      else stream.held.delete(`key:${event.code}`);
-    }
   }
 
   #resetInput(stream: Stream): void {
@@ -1089,6 +1074,15 @@ export class DisplayStreamHub {
     }
     this.#json(pending.viewer.socket, { ...message, sequence: pending.sequence });
     if (!pending.result && !pending.copy) stream.pending.delete(message.sequence);
+    // The producer refused the press the lane is held by. With no later batch
+    // from the holder to cut short, the lane ends so other viewers can type.
+    if (
+      message.type === "display.input.result" &&
+      message.outcome !== "dispatched" &&
+      stream.holder === pending.viewer &&
+      stream.holderSequence === message.sequence
+    )
+      this.#resetInput(stream);
   }
 
   #clearCache(stream: Stream): void {
@@ -1228,11 +1222,12 @@ export class DisplayStreamHub {
       }
       for (const viewer of stream.viewers) this.#viewerLive(stream, viewer);
       for (const viewer of stream.viewers) {
+        // Every owner viewer that can type is rechecked, idle or not, so a
+        // granted or removed approval reaches it without a reconnect.
         if (
-          !stream.target ||
+          stream.target?.editingVersion !== 1 ||
           viewer.source.kind !== "owner-view" ||
           !viewer.sharedInput ||
-          !viewer.sentInput ||
           viewer.checking ||
           this.#now() - viewer.checkedAt < 5_000
         )

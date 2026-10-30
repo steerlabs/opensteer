@@ -420,6 +420,51 @@ async function fixture(
 }
 
 describe("phone display Host sockets", () => {
+  it("frees the lane when the phone refuses the press holding it, never a later one", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    const b = await f.viewer(true);
+    await f.state();
+    const send = (viewer: typeof a, sequence: number, phase: string) =>
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "pointer", phase, x: 0.5, y: 0.5, t: sequence }],
+      });
+    const refuse = (sequence: number) =>
+      f.apps.handleMessage(f.peer, f.stream, {
+        ...f.fence,
+        type: "runner.integrations.display.input-result",
+        streamId: f.start().streamId,
+        sessionId: f.sessionId,
+        geometry: 1,
+        sequence,
+        outcome: "refused",
+        reason: "unavailable",
+      });
+    const resets = () =>
+      f.sent.filter((m) => m.type === "host.integrations.display.input-reset").length;
+    send(a, 1, "down");
+    await a.roundTrip();
+    send(a, 2, "move");
+    await a.roundTrip();
+    // A refusal of an earlier batch must not end the press a later batch continues.
+    await refuse(0);
+    await a.roundTrip();
+    expect(resets()).toBe(0);
+    await refuse(1);
+    await a.roundTrip();
+    expect(resets()).toBe(1);
+    // The phone has no finger down, so another viewer is not told the lane is taken.
+    send(b, 1, "down");
+    await b.roundTrip();
+    expect(b.json().some((m) => m.reason === "contended")).toBe(false);
+    expect(
+      f.sent.filter((m) => m.type === "host.integrations.display.input").map((m) => m.sequence),
+    ).toEqual([0, 1, 2]);
+  });
+
   it("arbitrates held gestures, honors only holder resets and cleans up departed holders", async () => {
     const f = await fixture(true, { editing: true });
     const a = await f.viewer(true);
@@ -2268,6 +2313,30 @@ describe("Mac owner input over authenticated display sockets", () => {
           .filter((m) => m.type === "display.state")
           .at(-1).sharedInput === 1,
     );
+  });
+
+  it("tells an idle Mac viewer when its approval is granted or removed", async () => {
+    const f = await fixture(true, { mac: true });
+    f.inputAuthorization(false);
+    const idle = await f.macViewer(true);
+    await f.state();
+    await idle.roundTrip();
+    const projected = () =>
+      idle
+        .json()
+        .filter((m) => m.type === "display.state")
+        .at(-1)?.sharedInput;
+    expect(projected()).toBeUndefined();
+    // The viewer never sent input: approval alone must make it usable.
+    f.inputAuthorization(true);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(() => projected() === 1);
+    f.inputAuthorization(false);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(() => projected() === undefined);
+    expect(idle.socket.readyState).toBe(WebSocket.OPEN);
   });
 
   it.each([

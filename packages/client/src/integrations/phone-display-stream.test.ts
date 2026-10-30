@@ -803,7 +803,7 @@ describe("shared input", () => {
     expect(socket.messages("display.input")).toEqual([]);
   });
 
-  it("accepts both pooled views, renumbers batches, and resets only for the last sender", () => {
+  it("accepts both pooled views and renumbers their batches into one viewer's sequence", () => {
     const first = streams.retain(target);
     const second = streams.retain(target);
     const socket = opened();
@@ -813,10 +813,64 @@ describe("shared input", () => {
     expect(second.input(1, [{ kind: "text", insert: "two" }])).toBe(true);
     expect(socket.messages("display.input").map((m) => m.sequence)).toEqual([0, 1]);
     expect(socket.messages("display.input").every((m) => !("controlId" in m))).toBe(true);
+    // Nothing is held, so neither view has anything to release.
     first.release();
-    expect(socket.messages("display.input-reset")).toHaveLength(0);
     second.release();
+    expect(socket.messages("display.input-reset")).toHaveLength(0);
+  });
+
+  it("lets only the view holding a press add to it or release it", () => {
+    const first = streams.retain(target);
+    const second = streams.retain(target);
+    const socket = opened();
+    hold(socket);
+    const press = (phase: "down" | "up", x: number): DisplayInputEvent => ({
+      kind: "pointer",
+      phase,
+      x,
+      y: 0.5,
+      t: 1,
+    });
+    const down = press("down", 0.2);
+    const up = press("up", 0.4);
+    expect(first.input(1, [down])).toBe(true);
+    // The other view shares this viewer at the Host: it must not move, end or
+    // reset the first view's finger. Its blur is a no-op, not a reset.
+    expect(second.input(1, [{ kind: "scroll", x: 0.5, y: 0.5, dx: 0, dy: 0.1 }])).toBe(false);
+    second.resetInput();
+    second.release();
+    expect(socket.messages("display.input-reset")).toHaveLength(0);
+    const third = streams.retain(target);
+    expect(first.input(1, [pointer(0.3), up])).toBe(true);
+    expect(third.input(1, [down])).toBe(true);
+    // The holder leaving mid-press releases it for the Host and the phone.
+    third.release();
     expect(socket.messages("display.input-reset")).toHaveLength(1);
+    expect(first.input(1, [down])).toBe(true);
+    first.resetInput();
+    expect(socket.messages("display.input-reset")).toHaveLength(2);
+    expect(socket.messages("display.input").map((m) => m.sequence)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("forgets a press the Host already ended with a new picture", () => {
+    const first = streams.retain(target);
+    const second = streams.retain(target);
+    const socket = opened();
+    hold(socket);
+    const down: DisplayInputEvent = { kind: "pointer", phase: "down", x: 0.2, y: 0.5, t: 1 };
+    expect(first.input(1, [down])).toBe(true);
+    socket.json({
+      type: "display.state",
+      state: "live",
+      sharedInput: 1,
+      editingVersion: 1,
+      generation: 2,
+      width: 780,
+      height: 360,
+    });
+    expect(second.input(2, [down])).toBe(true);
+    first.resetInput();
+    expect(socket.messages("display.input-reset")).toHaveLength(0);
   });
 });
 

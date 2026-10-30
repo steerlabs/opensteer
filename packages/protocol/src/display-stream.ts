@@ -255,6 +255,25 @@ export type DisplayInputEvent = z.infer<typeof DisplayInputEventSchema>;
 export const DisplayInputEventsSchema = z.array(DisplayInputEventSchema).min(1).max(64);
 export type DisplayInputEvents = z.infer<typeof DisplayInputEventsSchema>;
 /**
+ * Updates what a viewer still holds on a display (a touch, mouse buttons,
+ * keys) after one of its events. The Host's person lane and a client sharing
+ * one socket among several views keep the same account of it.
+ */
+export function trackHeldDisplayInput(held: Set<string>, event: DisplayInputEvent): void {
+  if (event.kind === "pointer" || event.kind === "mouse") {
+    const key = event.kind === "pointer" ? "pointer" : `mouse:${event.button}`;
+    if (event.phase === "down") held.add(key);
+    else if (event.phase === "up") held.delete(key);
+    else if (event.phase === "cancel")
+      for (const item of held)
+        if (event.kind === "pointer" ? item === "pointer" : item.startsWith("mouse:"))
+          held.delete(item);
+  } else if (event.kind === "key") {
+    if (event.action === "down") held.add(`key:${event.code}`);
+    else held.delete(`key:${event.code}`);
+  }
+}
+/**
  * One batch of a person's input. A viewer numbers its own batches; the Host
  * renumbers them into the display's single person lane for the producer.
  */

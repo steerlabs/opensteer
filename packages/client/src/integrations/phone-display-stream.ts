@@ -2,6 +2,7 @@ import { computerAppIdentityKey } from "@opensteer/integration-core";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import {
   DisplayInputEventSchema,
+  trackHeldDisplayInput,
   DisplayClientDiagnosticSchema,
   type DisplayClientDiagnostic,
   DisplayViewerClientMessageSchema,
@@ -170,7 +171,12 @@ interface Entry {
   timer: ReturnType<typeof setTimeout> | null;
   attempt: number;
   snapshot: DisplaySnapshot;
-  /** The last view that sent input; its departure resets held input. */
+  /**
+   * What this client's viewer still holds on the display, and the view whose
+   * press it is. Views share one viewer at the Host, so another view's input
+   * waits for that press to lift and only its holder may reset it.
+   */
+  readonly held: Set<string>;
   holder: LeaseState | null;
   /** Increases for every batch this client sends the session, across sockets. */
   inputSequence: number;
@@ -253,6 +259,7 @@ export class DisplayStreams {
         timer: null,
         attempt: 0,
         snapshot: this.#terminal.get(key) ?? emptySnapshot,
+        held: new Set(),
         holder: null,
         inputSequence: 0,
         disposed: false,
@@ -285,13 +292,18 @@ export class DisplayStreams {
         return () => lease.editingMessages.delete(listener);
       },
       resetInput: () => {
-        if (!released) this.#resetInput(current);
+        // Never another view's press; with none held a reset only releases
+        // what this viewer may still hold at the Host.
+        if (!released && (current.holder === null || current.holder === lease))
+          this.#resetInput(current);
       },
       input: (geometry, events, onSequence) => {
-        if (released) return false;
+        if (released || (current.holder !== null && current.holder !== lease)) return false;
         const sent = this.#input(current, geometry, events, onSequence);
-        if (sent) current.holder = lease;
-        return sent;
+        if (!sent) return false;
+        for (const event of events) trackHeldDisplayInput(current.held, event);
+        current.holder = current.held.size > 0 ? lease : null;
+        return true;
       },
       viewport: (maxLongSide) => {
         if (released || !Number.isFinite(maxLongSide)) return;
@@ -403,7 +415,7 @@ export class DisplayStreams {
   #pause(entry: Entry, reason: DisplayClientDiagnostic["reason"]): void {
     this.#log(entry, { transition: "release", reason });
     this.#close(entry, reason);
-    entry.holder = null;
+    this.#forgetHeld(entry);
     entry.attempt = 0;
     this.#set(entry, { connection: "connecting", input: "unavailable" });
   }
@@ -472,6 +484,14 @@ export class DisplayStreams {
           connection.replayThrough = received.message.replayThrough;
           connection.replayRestarts = true;
         }
+        // The Host ends the person lane on a new picture or when the stream
+        // stops being live, releasing whatever this viewer held.
+        const previous = entry.snapshot.display;
+        if (
+          received.message.state !== "live" ||
+          (previous !== null && previous.generation !== received.message.generation)
+        )
+          this.#forgetHeld(entry);
         this.#set(entry, { display: received.message });
       } else if (
         entry.target.editing === 1 &&
@@ -500,7 +520,7 @@ export class DisplayStreams {
   #drop(entry: Entry, connection: Connection, code: number): void {
     if (entry.connection === connection) entry.connection = null;
     stopKeyframeRequests(connection);
-    entry.holder = null;
+    this.#forgetHeld(entry);
     if (isRetryableDisplayViewerClose(code)) {
       this.#set(entry, { closeCode: code, input: "unavailable" });
       this.#retry(entry);
@@ -601,8 +621,13 @@ export class DisplayStreams {
     }
   }
 
-  #resetInput(entry: Entry): void {
+  #forgetHeld(entry: Entry): void {
+    entry.held.clear();
     entry.holder = null;
+  }
+
+  #resetInput(entry: Entry): void {
+    this.#forgetHeld(entry);
     if (entry.connection?.socket.readyState === 1 && entry.snapshot.display?.sharedInput === 1)
       send(entry.connection, { type: "display.input-reset" });
   }
