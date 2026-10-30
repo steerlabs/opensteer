@@ -178,7 +178,13 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
   let androidSource = false;
   if (full) reasons.push("main/manual full run");
   for (const file of files) {
-    if (docs(file) || guidance(file)) continue;
+    if (
+      docs(file) ||
+      guidance(file) ||
+      file === "scripts/README.md" ||
+      file === "scripts/test-vm/README.md"
+    )
+      continue;
     if (rootTest(file)) {
       rootTests.any = true;
       if (/\.integration\.test\./.test(file)) rootTests.integration = true;

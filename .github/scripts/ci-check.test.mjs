@@ -215,3 +215,97 @@ test("every native-mac task names inputs that exist", async () => {
       assert.ok(existsSync(path), `${task}: ${path} does not exist`);
   }
 });
+
+async function ciConfig() {
+  const { readFileSync } = await import("node:fs");
+  const { parse } = await import("yaml");
+  return {
+    workflow: parse(readFileSync(".github/workflows/ci.yml", "utf8")),
+    setup: parse(readFileSync(".github/actions/ci-setup/action.yml", "utf8")),
+    runner: JSON.parse(readFileSync("apps/runner/package.json", "utf8")),
+  };
+}
+
+test("Go caches restore explicitly and only successful compiling shards publish", async () => {
+  const { workflow, setup } = await ciConfig();
+  const go = setup.runs.steps.find((s) => s.uses?.startsWith("actions/setup-go@"));
+  assert.equal(go.with.cache, false);
+  assert.equal(setup.inputs.go.default, "true");
+  assert.equal(go.if, "inputs.go == 'true'");
+  assert.equal(setup.runs.steps.find((s) => s.id === "go-paths").if, go.if);
+  assert.equal(setup.runs.steps.find((s) => s.id === "go-cache").if, go.if);
+  for (const name of ["lint", "Check"])
+    assert.equal(
+      workflow.jobs[name].steps.find((s) => s.uses === "./.github/actions/ci-setup").with.go,
+      "false",
+    );
+  for (const name of ["tests", "integration"])
+    assert.notEqual(
+      workflow.jobs[name].steps.find((s) => s.uses === "./.github/actions/ci-setup").with?.go,
+      "false",
+    );
+
+  const restore = setup.runs.steps.find((s) => s.uses?.startsWith("actions/cache/restore@"));
+  assert.ok(restore);
+  assert.match(restore.with.key, /go-compiler-v2/);
+  assert.match(restore.with.key, /runner.os/);
+  assert.match(restore.with.key, /runner.arch/);
+  assert.match(restore.with.key, /version/);
+  assert.match(restore.with.key, /go\.mod.*go\.sum/);
+  assert.match(restore.with.key, /github.sha/);
+  assert.ok(restore.with["restore-keys"]);
+  const writers = [];
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    for (const step of job.steps) {
+      if (!step.uses?.startsWith("actions/cache/save@")) continue;
+      writers.push(name);
+      assert.match(step.if, /success\(\)/);
+      assert.match(step.if, /matrix.shard == 1/);
+      assert.match(step.if, /cache-hit != 'true'/);
+      assert.equal(step.with.key, "${{ steps.setup.outputs.go-cache-key }}");
+      assert.equal(step.with.path, "${{ steps.setup.outputs.go-cache-paths }}");
+      const earlier = job.steps.slice(0, job.steps.indexOf(step));
+      assert.ok(earlier.some((s) => /pnpm exec vitest run|pnpm test:integration/.test(s.run)));
+      assert.ok(earlier.some((s) => /ziphash/.test(s.run) && /-d'/.test(s.run)));
+      if (name === "integration") assert.match(step.if, /needs.changes.outputs.tests == 'false'/);
+    }
+  }
+  assert.deepEqual(writers.sort(), ["integration", "tests"]);
+});
+
+test("public Go proxy fallback is a quoted environment value and tests bypass result caching", async () => {
+  const { setup, runner } = await ciConfig();
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(".github/actions/ci-setup/action.yml", "utf8");
+  assert.match(source, /GOPROXY: ["']https:\/\/proxy.golang.org\|direct["']/);
+  assert.ok(
+    setup.runs.steps.some(
+      (s) =>
+        s.run?.includes("GOPROXY=$GOPROXY") && s.env.GOPROXY === "https://proxy.golang.org|direct",
+    ),
+  );
+  assert.doesNotMatch(source, /GOSUMDB|GOPRIVATE|GONOSUMDB|GONOPROXY/);
+  assert.match(runner.scripts["test:native-fs"], /test -count=1 -timeout=2m \.\/\.\.\.$/);
+});
+
+test("native-fs executes once on shard one, fails the lane and Check, and uploads its log", async () => {
+  const { workflow } = await ciConfig();
+  const job = workflow.jobs.tests;
+  const steps = job.steps.filter((s) => s.run?.includes("test:native-fs"));
+  assert.equal(steps.length, 1);
+  const step = steps[0];
+  assert.equal(step.if, "matrix.shard == 1");
+  assert.equal(step["continue-on-error"], undefined);
+  assert.equal(job["continue-on-error"], undefined);
+  assert.match(step.run, /set -o pipefail/);
+  assert.match(step.run, /test:native-fs 2>&1 \| tee "\$RUNNER_TEMP\/evidence\/native-fs.log"/);
+  assert.doesNotMatch(step.run, /\|\| true/);
+  assert.ok(workflow.jobs.Check.needs.includes("tests"));
+  assert.ok(job.steps.some((s) => s.if === "always()" && s.with?.path.includes("evidence")));
+  const builds = job.steps.find((s) => s.run?.includes("build:native-fs"));
+  assert.equal(builds.if, undefined);
+  for (const command of ["build:native-fs", "build:native-fs:test", "build:process-supervisor"])
+    assert.ok(builds.run.includes(command));
+  assert.ok(job.steps.every((s) => !/pnpm pretest/.test(s.run)));
+  // validateResults' failing matrix-lane regression above proves the Check side.
+});

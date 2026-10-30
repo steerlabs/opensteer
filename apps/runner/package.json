@@ -19,7 +19,7 @@
     "clean": "rm -rf dist dist-integration native-fs-helper/opensteer-native-fs native-fs-helper/opensteer-native-fs-test *.tsbuildinfo",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
-    "test:native-fs": "go -C native-fs-helper test -timeout=2m ./...",
+    "test:native-fs": "go -C native-fs-helper test -count=1 -timeout=2m ./...",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
