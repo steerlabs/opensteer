@@ -146,7 +146,12 @@ const verify = async (version: string, target = app) => {
     `-R=anchor apple generic and identifier "${bundleId}" and certificate leaf[subject.OU] = "${metadata.expectedTeamId}"`,
     target,
   ]);
-  run("xcrun", ["stapler", "validate", target]);
+  // `stapler validate` looks the ticket up on CloudKit, which containment blocks. Offline,
+  // Gatekeeper accepts a notarized app only through its stapled ticket.
+  assert.match(
+    run("spctl", ["--assess", "--type", "execute", "--verbose=4", target]).output,
+    /accepted[\s\S]*source=Notarized Developer ID/u,
+  );
   await wait("Personal healthy", health);
   run("curl", [
     "-fsS",

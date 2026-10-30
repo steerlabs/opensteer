@@ -139,3 +139,11 @@ test("the PF watchdog restores PF once the control session ends", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("guest checks under containment never need Apple's network", () => {
+  // stapler validate queries CloudKit; under PF it timed out and failed every case.
+  for (const file of ["eu-guest.ts", "eu-journey.ts"])
+    expect(
+      readFileSync(path.join(import.meta.dirname, "../scripts/public-download", file), "utf8"),
+    ).not.toMatch(/"stapler"/u);
+});
