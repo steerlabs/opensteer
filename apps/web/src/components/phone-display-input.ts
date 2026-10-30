@@ -1,3 +1,4 @@
+import { mergeDisplayInput, maxInsertCharacters } from "@opensteer/client/integrations";
 import type { DisplayInputEvent } from "@opensteer/protocol";
 
 export interface Rect {
@@ -12,9 +13,6 @@ interface Point {
   readonly y: number;
 }
 
-/** The contract's bounds on one text event (`DisplayInputEventSchema`). */
-const maxInsertCharacters = 1_000;
-const maxDeleteBackward = 100;
 /** A wheel "line" in CSS pixels, as browsers scroll a page by it. */
 const wheelLinePixels = 16;
 
@@ -253,7 +251,7 @@ export class PhoneDisplayInput {
     if (this.#batch && this.#batch.geometry !== geometry) this.#flush();
     const batch = (this.#batch ??= { geometry, events: [] });
     const last = batch.events.at(-1);
-    const merged = last ? merge(last, event) : null;
+    const merged = last ? mergeDisplayInput(last, event) : null;
     if (merged) batch.events[batch.events.length - 1] = merged;
     else batch.events.push(event);
     if (now) this.#flush();
@@ -271,24 +269,6 @@ export class PhoneDisplayInput {
     this.#batch = null;
     if (batch && !this.#disposed) this.#send(batch.geometry, batch.events);
   }
-}
-
-/** One event standing for two in a row, or null when both must be sent. */
-function merge(last: DisplayInputEvent, next: DisplayInputEvent): DisplayInputEvent | null {
-  if (last.kind === "pointer" && next.kind === "pointer")
-    return last.phase === "move" && next.phase === "move" ? next : null;
-  if (last.kind === "scroll" && next.kind === "scroll")
-    return { ...next, dx: signed(last.dx + next.dx), dy: signed(last.dy + next.dy) };
-  if (last.kind !== "text" || next.kind !== "text") return null;
-  if ("insert" in last && "insert" in next)
-    return last.insert.length + next.insert.length <= maxInsertCharacters
-      ? { kind: "text", insert: last.insert + next.insert }
-      : null;
-  if ("deleteBackward" in last && "deleteBackward" in next)
-    return last.deleteBackward + next.deleteBackward <= maxDeleteBackward
-      ? { kind: "text", deleteBackward: last.deleteBackward + next.deleteBackward }
-      : null;
-  return null;
 }
 
 /** Text in pieces one text event can carry, never split inside a character. */
