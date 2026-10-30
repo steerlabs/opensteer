@@ -26,6 +26,7 @@ import {
   type WorkspaceView,
 } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -1537,7 +1538,10 @@ describe("HttpHostClient durable realtime", () => {
     try {
       await client.load();
       const olderRead = client.load();
-      await reading;
+      await withTimeout(reading, 1_000, {
+        timeoutError: () =>
+          new Error("The overlapping bootstrap did not reach its stale catalog read"),
+      });
       // The CLI inspection has now committed. Its caller needs a new read,
       // even though the earlier bootstrap has not delivered its answer yet.
       const refreshed = client.refresh();
