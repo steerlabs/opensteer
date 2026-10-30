@@ -2,13 +2,12 @@ import { useRef, useState } from "react";
 import type { HostClient, PlaceItem } from "@opensteer/client/host";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
-import { ProfileAvatar, browserWords, chipWords, type BrowserPresentation } from "./identity.js";
+import { ProfileAvatar, browserWords, type BrowserPresentation } from "./identity.js";
 import { OpenInRow } from "./open-in.js";
 
 /**
- * The omnibox's first word: who this page browses as. The profile alone, with
- * the computer only when it tells this one apart. Its menu says it whole and
- * offers the page to another identity.
+ * The omnibox's first word: who this page browses as. Its menu names the
+ * computer and offers the page to another identity.
  */
 export function ProfileChip({
   disabled,
@@ -25,7 +24,6 @@ export function ProfileChip({
 }) {
   const [open, setOpen] = useState(false);
   const chipRef = useRef<HTMLButtonElement | null>(null);
-  const words = chipWords(presentation);
   const whole = browserWords(presentation);
   const guest = presentation.identity.kind === "guest";
   return (
@@ -33,18 +31,16 @@ export function ProfileChip({
       <button
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label={`Using ${whole}. Profile options`}
+        aria-label={`Using ${presentation.identity.name}. Profile options`}
         className={open ? "profile-chip is-open" : "profile-chip"}
         onClick={() => setOpen((value) => !value)}
         ref={chipRef}
-        title={whole}
         type="button"
       >
         <ProfileAvatar identity={presentation.identity} size={16} />
-        <span className="profile-chip__name" title={words.name}>
-          {words.name}
+        <span className="profile-chip__name" title={presentation.identity.name}>
+          {presentation.identity.name}
         </span>
-        {words.suffix ? <span className="profile-chip__suffix">· {words.suffix}</span> : null}
       </button>
       {open && chipRef.current ? (
         <Popover

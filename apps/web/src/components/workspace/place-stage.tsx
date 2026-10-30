@@ -43,11 +43,11 @@ export const PlaceStage = memo(function PlaceStage({
   readonly hostConnected: boolean;
   readonly onReportError: (error: unknown) => void;
 }) {
-  const { dock, drawer, localMachine, nav, phone, selection } = useWorkspace();
+  const { dock, drawer, nav, phone, selection } = useWorkspace();
   const toolbarRef = useToastToolbar();
   const places = usePlaceList(hostClient);
   const directory = useTaskDirectory(hostClient);
-  const presentations = useBrowserPresentations(places, localMachine?.machineId ?? null);
+  const presentations = useBrowserPresentations(places);
   const pageVisible = usePageVisible();
   const known = useRef(new Map<string, PlaceItem>());
   const placeKey = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;

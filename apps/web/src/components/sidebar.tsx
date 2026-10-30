@@ -163,7 +163,7 @@ export function Sidebar({
     [strip.ordered],
   );
   const [editingGroup, editGroup] = useState<string | null>(null);
-  const presentations = useBrowserPresentations(places, workspace.localMachine?.machineId ?? null);
+  const presentations = useBrowserPresentations(places);
   const deployment = selectedDeploymentFrom(deploymentAccess, desktopDeployment);
   const connection = describeHostConnection(snapshot);
   const placeName = deploymentNameFrom(deployment, snapshot) ?? "Opensteer";
