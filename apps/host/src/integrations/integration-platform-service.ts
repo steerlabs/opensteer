@@ -138,7 +138,11 @@ import {
   computerUseToolRequiredSentence,
   computerUseUpdateMacSentence,
 } from "@opensteer/protocol";
-import type { McpOAuthService, RedactingOAuthClientProvider } from "./mcp-oauth-service.js";
+import {
+  McpOAuthReauthorizationError,
+  type McpOAuthService,
+  type RedactingOAuthClientProvider,
+} from "./mcp-oauth-service.js";
 import { ComputerMcpSessionError, type ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 import {
@@ -218,6 +222,7 @@ interface UpstreamClient {
   /** Lets this client go, and not whichever client later holds its place. */
   readonly letGo: () => void;
   readonly responseRedactor: (() => CredentialResponseRedactor) | null;
+  readonly credentialRevision?: () => number | null;
 }
 
 export class IntegrationAuthorizationRequiredError extends Error {
@@ -2105,11 +2110,23 @@ export class IntegrationPlatformService {
       // gave up on still serves every other call sharing it.
       if (!signal?.aborted) upstream?.letGo();
       if (error instanceof UnauthorizedError && callable.grant.connectionId) {
-        await this.#store.markMcpOAuthConnectionNeedsAttention({
+        const revision =
+          error instanceof McpOAuthReauthorizationError
+            ? error.credentialRevision
+            : upstream?.credentialRevision?.();
+        if (revision === undefined || revision === null) throw error;
+        const marked = await this.#store.markMcpOAuthConnectionNeedsAttention({
           connectionId: callable.grant.connectionId,
+          expectedRevision: revision,
           ownerUserId: callable.grant.ownerUserId as UserId,
           statusDetail: "The MCP server requires renewed authorization",
         });
+        if (!marked)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "MCP credentials changed; retry the request",
+            retryable: true,
+          });
         throw new IntegrationAuthorizationRequiredError(callable);
       }
       const unconfirmedWrite =
@@ -3083,14 +3100,6 @@ export class IntegrationPlatformService {
     const connectionId = callable.grant.connectionId;
     const key = `${server.id}:${connectionId ?? "deployment"}`;
     const fingerprint = integrationSchemaDigest({ connectionId, transport: server.transport });
-    const current = this.#clients.get(key);
-    if (current) {
-      return current.client.then((value) => {
-        if (value.fingerprint === fingerprint) return value;
-        this.#letGo(key, current);
-        return this.#client(callable);
-      });
-    }
     const authProvider = connectionId
       ? await this.#mcpOauth.providerFor({
           connectionId,
@@ -3098,15 +3107,50 @@ export class IntegrationPlatformService {
           serverId: server.id,
         })
       : undefined;
+    const current = this.#clients.get(key);
+    if (current) {
+      return current.client.then(async (value) => {
+        if (value.fingerprint === fingerprint) {
+          const clientRevision = value.credentialRevision?.();
+          const storedRevision = authProvider?.credentialRevision();
+          if (clientRevision === storedRevision) return value;
+          if (clientRevision == null || storedRevision == null || !connectionId)
+            throw new Error("MCP credential revision is unavailable");
+          if (storedRevision <= clientRevision) return value;
+          const latest = await this.#mcpOauth.providerFor({
+            connectionId,
+            ownerUserId: callable.grant.ownerUserId as UserId,
+            serverId: server.id,
+          });
+          if (this.#clients.get(key) !== current) return this.#client(callable);
+          const latestRevision = latest.credentialRevision();
+          const currentRevision = value.credentialRevision?.();
+          if (latestRevision == null || currentRevision == null)
+            throw new Error("MCP credential revision is unavailable");
+          if (latestRevision <= currentRevision) return value;
+        }
+        this.#letGo(key, current);
+        return this.#client(callable);
+      });
+    }
     // Another call may have started this client meanwhile; it is shared.
     if (this.#clients.has(key)) return this.#client(callable);
     return this.#open(key, callable.installation.id, async (signal) => {
-      const client = await this.#connect(server, authProvider, signal);
+      let client: Client;
+      try {
+        client = await this.#connect(server, authProvider, signal);
+      } catch (error) {
+        const revision = authProvider?.credentialRevision();
+        if (error instanceof UnauthorizedError && revision !== null && revision !== undefined)
+          throw new McpOAuthReauthorizationError(revision);
+        throw error;
+      }
       return {
         client,
         // Kept here because the SDK lets go of a transport once it closes.
         computer: client.transport instanceof ComputerMcpTransport ? client.transport : null,
         fingerprint,
+        ...(authProvider ? { credentialRevision: () => authProvider.credentialRevision() } : {}),
         responseRedactor: authProvider ? () => authProvider.responseRedactor() : null,
       };
     }).client;

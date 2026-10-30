@@ -278,6 +278,10 @@ export interface GrantedIntegrationSkill {
 export interface McpOAuthServerContext {
   readonly installation: IntegrationInstallation;
   readonly server: IntegrationServer;
+  readonly reconnect?: {
+    readonly connectionId: IntegrationConnectionId;
+    readonly revision: number;
+  };
 }
 
 interface McpOAuthConnectionRecord extends McpOAuthServerContext {
@@ -2727,6 +2731,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
       .innerJoin("requests", "requests.id", "integrationRequestDetails.requestId")
       .selectAll("integrationServers")
       .select([
+        "integrationRequestDetails.requestedConnectionId as requestedConnectionId",
         "integrationInstallations.createdAt as joinedCreatedAt",
         "integrationInstallations.description as joinedDescription",
         "integrationInstallations.id as joinedInstallationId",
@@ -2759,7 +2764,27 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     if (server.transport.type !== "streamable-http") {
       throw new OpensteerError({ code: "conflict", message: "MCP OAuth requires Streamable HTTP" });
     }
-    return { installation: installationFromJoinedRow(row), server };
+    if (!row.requestedConnectionId) return { installation: installationFromJoinedRow(row), server };
+    const reconnect = await this.database
+      .selectFrom("integrationConnections")
+      .innerJoin(
+        "mcpOAuthCredentials",
+        "mcpOAuthCredentials.connectionId",
+        "integrationConnections.id",
+      )
+      .select(["integrationConnections.id as connectionId", "mcpOAuthCredentials.revision"])
+      .where("integrationConnections.id", "=", row.requestedConnectionId)
+      .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
+      .where("integrationConnections.integrationServerId", "=", input.serverId)
+      .where("integrationConnections.connectionKind", "=", "mcp-oauth")
+      .where("integrationConnections.status", "=", "needs-attention")
+      .executeTakeFirst();
+    if (!reconnect)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "MCP account is no longer available to reconnect",
+      });
+    return { installation: installationFromJoinedRow(row), server, reconnect };
   }
 
   async completeMcpOAuthAttempt(input: {
@@ -2769,10 +2794,17 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly encryptedState: Buffer;
     readonly encryptionKeyVersion: number;
     readonly ownerUserId: UserId;
+    readonly reconnect?: { readonly expectedRevision: number; readonly requestId: RequestId };
     readonly serverId: IntegrationServerId;
     readonly tools: readonly IntegrationToolMaterial[];
   }): Promise<void> {
     await withDatabaseTransaction(this.database, async (transaction) => {
+      await transaction
+        .selectFrom("integrationServers")
+        .select("id")
+        .where("id", "=", input.serverId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
       const attempt = await transaction
         .selectFrom("integrationAuthAttempts")
         .select("id")
@@ -2783,51 +2815,100 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!attempt) throw forbidden("MCP OAuth attempt is no longer active");
-      await transaction
-        .selectFrom("integrationServers")
-        .select("id")
-        .where("id", "=", input.serverId)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
       const now = new Date();
-      await transaction
-        .insertInto("integrationConnections")
-        .values({
-          accountIdentifier: null,
-          applicationSource: null,
-          authMethodId: null,
-          capabilities: jsonValue([]),
-          computerAccess: null,
-          runnerId: null,
-          connectionKind: "mcp-oauth",
-          connectionMethod: "managed-oauth",
-          credentialId: null,
-          displayName: input.displayName,
-          externalIdentityId: null,
-          externalTenantId: null,
-          grantedScopes: jsonValue([]),
-          id: input.connectionId,
-          integrationDefinitionId: null,
-          integrationServerId: input.serverId,
-          ownerUserId: input.ownerUserId,
-          provider: `mcp:${input.serverId}`,
-          providerApplicationId: null,
-          status: "connected",
-          statusDetail: null,
-          transportKind: null,
-          updatedAt: now,
-        })
-        .executeTakeFirstOrThrow();
-      await transaction
-        .insertInto("mcpOAuthCredentials")
-        .values({
-          connectionId: input.connectionId,
-          encryptedState: input.encryptedState,
-          encryptionKeyVersion: input.encryptionKeyVersion,
-          revision: 1,
-          updatedAt: now,
-        })
-        .executeTakeFirstOrThrow();
+      if (input.reconnect) {
+        const connection = await transaction
+          .selectFrom("integrationConnections")
+          .select("id")
+          .where("id", "=", input.connectionId)
+          .where("ownerUserId", "=", input.ownerUserId)
+          .where("integrationServerId", "=", input.serverId)
+          .where("connectionKind", "=", "mcp-oauth")
+          .where("status", "=", "needs-attention")
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        const request = await transaction
+          .selectFrom("requests")
+          .innerJoin(
+            "integrationRequestDetails",
+            "integrationRequestDetails.requestId",
+            "requests.id",
+          )
+          .select("requests.id")
+          .where("requests.id", "=", input.reconnect.requestId)
+          .where("requests.requestedBy", "=", input.ownerUserId)
+          .where("requests.status", "=", "pending")
+          .where("integrationRequestDetails.requestedConnectionId", "=", input.connectionId)
+          .where("integrationRequestDetails.requestedServerId", "=", input.serverId)
+          .forNoKeyUpdate("requests")
+          .executeTakeFirst();
+        const credential = await transaction
+          .selectFrom("mcpOAuthCredentials")
+          .select("revision")
+          .where("connectionId", "=", input.connectionId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        if (!connection || !request || credential?.revision !== input.reconnect.expectedRevision) {
+          throw new OpensteerError({
+            code: "conflict",
+            message: "MCP account changed while reconnecting",
+          });
+        }
+        await transaction
+          .updateTable("mcpOAuthCredentials")
+          .set({
+            encryptedState: input.encryptedState,
+            encryptionKeyVersion: input.encryptionKeyVersion,
+            revision: credential.revision + 1,
+            updatedAt: now,
+          })
+          .where("connectionId", "=", input.connectionId)
+          .executeTakeFirstOrThrow();
+        await transaction
+          .updateTable("integrationConnections")
+          .set({ status: "connected", statusDetail: null, updatedAt: now })
+          .where("id", "=", input.connectionId)
+          .executeTakeFirstOrThrow();
+      } else {
+        await transaction
+          .insertInto("integrationConnections")
+          .values({
+            accountIdentifier: null,
+            applicationSource: null,
+            authMethodId: null,
+            capabilities: jsonValue([]),
+            computerAccess: null,
+            runnerId: null,
+            connectionKind: "mcp-oauth",
+            connectionMethod: "managed-oauth",
+            credentialId: null,
+            displayName: input.displayName,
+            externalIdentityId: null,
+            externalTenantId: null,
+            grantedScopes: jsonValue([]),
+            id: input.connectionId,
+            integrationDefinitionId: null,
+            integrationServerId: input.serverId,
+            ownerUserId: input.ownerUserId,
+            provider: `mcp:${input.serverId}`,
+            providerApplicationId: null,
+            status: "connected",
+            statusDetail: null,
+            transportKind: null,
+            updatedAt: now,
+          })
+          .executeTakeFirstOrThrow();
+        await transaction
+          .insertInto("mcpOAuthCredentials")
+          .values({
+            connectionId: input.connectionId,
+            encryptedState: input.encryptedState,
+            encryptionKeyVersion: input.encryptionKeyVersion,
+            revision: 1,
+            updatedAt: now,
+          })
+          .executeTakeFirstOrThrow();
+      }
       await upsertConnectionTools(
         transaction,
         input.serverId,
@@ -3029,10 +3110,28 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
 
   async markMcpOAuthConnectionNeedsAttention(input: {
     readonly connectionId: IntegrationConnectionId;
+    readonly expectedRevision: number;
     readonly ownerUserId: UserId;
     readonly statusDetail: string;
-  }): Promise<void> {
-    await withDatabaseTransaction(this.database, async (transaction) => {
+  }): Promise<boolean> {
+    return withDatabaseTransaction(this.database, async (transaction) => {
+      const current = await transaction
+        .selectFrom("integrationConnections")
+        .select("id")
+        .where("id", "=", input.connectionId)
+        .where("ownerUserId", "=", input.ownerUserId)
+        .where("connectionKind", "=", "mcp-oauth")
+        .where("status", "=", "connected")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!current) return false;
+      const credential = await transaction
+        .selectFrom("mcpOAuthCredentials")
+        .select("revision")
+        .where("connectionId", "=", input.connectionId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (credential?.revision !== input.expectedRevision) return false;
       const now = new Date();
       const connection = await transaction
         .updateTable("integrationConnections")
@@ -3043,7 +3142,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         .where("status", "!=", "revoked")
         .returning("id")
         .executeTakeFirst();
-      if (!connection) return;
+      return !!connection;
     });
   }
 }

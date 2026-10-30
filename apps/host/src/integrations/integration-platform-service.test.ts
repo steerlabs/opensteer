@@ -3151,6 +3151,143 @@ describe("IntegrationPlatformService connection reaction", () => {
   });
 });
 
+describe("IntegrationPlatformService MCP credential refresh", () => {
+  it("rechecks a newer snapshot before closing a client that has since refreshed", async () => {
+    let clientRevision = 7;
+    const providerFor = vi.fn(async () => {
+      const call = providerFor.mock.calls.length;
+      if (call === 3) clientRevision = 8;
+      return {
+        credentialRevision: () => (call === 1 ? clientRevision : 8),
+        responseRedactor: () => ({ redactText: (text: string) => text }),
+      } as unknown as Awaited<
+        ReturnType<
+          ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"]["providerFor"]
+        >
+      >;
+    });
+    const connect = vi.spyOn(Client.prototype, "connect").mockResolvedValue(undefined);
+    const close = vi.spyOn(Client.prototype, "close").mockResolvedValue(undefined);
+    vi.spyOn(Client.prototype, "callTool").mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+    });
+    const base = callable();
+    const remote: CallableIntegrationTool = {
+      ...base,
+      server: {
+        ...base.server,
+        transport: { type: "streamable-http", url: "https://mcp.example.test", headers: {} },
+      },
+    };
+    const service = platform({ adapters: [], mcpOauth: { providerFor } });
+    try {
+      await service.callTool(remote, {}, caller);
+      await service.callTool(remote, {}, caller);
+      expect(providerFor).toHaveBeenCalledTimes(3);
+      expect(connect).toHaveBeenCalledOnce();
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      await service.close();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("replaces a cached client when the stored credential is newer", async () => {
+    let revision = 7;
+    const providerFor = vi.fn(async () => {
+      const snapshot = revision;
+      return {
+        credentialRevision: () => snapshot,
+        responseRedactor: () => ({ redactText: (text: string) => text }),
+      } as unknown as Awaited<
+        ReturnType<
+          ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"]["providerFor"]
+        >
+      >;
+    });
+    const connect = vi.spyOn(Client.prototype, "connect").mockResolvedValue(undefined);
+    const close = vi.spyOn(Client.prototype, "close").mockResolvedValue(undefined);
+    vi.spyOn(Client.prototype, "callTool").mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+    });
+    const base = callable();
+    const remote: CallableIntegrationTool = {
+      ...base,
+      server: {
+        ...base.server,
+        transport: { type: "streamable-http", url: "https://mcp.example.test", headers: {} },
+      },
+    };
+    const service = platform({ adapters: [], mcpOauth: { providerFor } });
+    try {
+      await service.callTool(remote, {}, caller);
+      revision = 8;
+      await service.callTool(remote, {}, caller);
+      expect(providerFor).toHaveBeenCalledTimes(4);
+      expect(connect).toHaveBeenCalledTimes(2);
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      await service.close();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("keeps concurrent calls on a client that refreshed while opening", async () => {
+    const opened = Promise.withResolvers<void>();
+    let storedRevision = 7;
+    let firstRevision = 7;
+    let closed = false;
+    const providerFor = vi.fn(async () => {
+      const snapshot = storedRevision;
+      const first = providerFor.mock.calls.length === 1;
+      return {
+        credentialRevision: () => (first ? firstRevision : snapshot),
+        responseRedactor: () => ({ redactText: (text: string) => text }),
+      } as unknown as Awaited<
+        ReturnType<
+          ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"]["providerFor"]
+        >
+      >;
+    });
+    const connect = vi.spyOn(Client.prototype, "connect").mockImplementation(async () => {
+      await opened.promise;
+    });
+    const close = vi.spyOn(Client.prototype, "close").mockImplementation(async () => {
+      closed = true;
+    });
+    vi.spyOn(Client.prototype, "callTool").mockImplementation(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (closed) throw new Error("shared client was closed");
+      return { content: [{ type: "text", text: "ok" }] };
+    });
+    const base = callable();
+    const remote: CallableIntegrationTool = {
+      ...base,
+      server: {
+        ...base.server,
+        transport: { type: "streamable-http", url: "https://mcp.example.test", headers: {} },
+      },
+    };
+    const service = platform({ adapters: [], mcpOauth: { providerFor } });
+    try {
+      const first = service.callTool(remote, {}, caller);
+      await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+      const second = service.callTool(remote, {}, caller);
+      await vi.waitFor(() => expect(providerFor).toHaveBeenCalledTimes(2));
+      storedRevision = 8;
+      firstRevision = 8;
+      opened.resolve();
+      await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+      expect(connect).toHaveBeenCalledOnce();
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      opened.resolve();
+      await service.close();
+      vi.restoreAllMocks();
+    }
+  });
+});
+
 describe("IntegrationPlatformService computer app setup expiry", () => {
   it("publishes replacement and opened events with one continuation wake", async () => {
     const guiDefinitionCandidate = computerAppIntegrations.find(({ id }) => id === "macos-app");
@@ -4356,6 +4493,7 @@ function platform(input: {
   readonly definitions?: readonly ReturnType<typeof IntegrationDefinitionSchema.parse>[];
   readonly isRunnerConnected?: (runnerId: ReturnType<typeof createId<"runner">>) => boolean;
   readonly mcpImageContent?: () => Promise<boolean>;
+  readonly mcpOauth?: ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"];
   readonly markAdapterAuthorizationRequired?: () => Promise<void>;
   readonly materializeForAdapter?: IntegrationAdapterCredentialMaterializer["materializeForAdapter"];
   readonly onWorkspaceEvent?: (event: AgentEvent) => void;
@@ -4405,7 +4543,9 @@ function platform(input: {
     dataDirectory: "/tmp/opensteer-integration-test",
     ...(input.definitions ? { definitions: input.definitions } : { definitions: [] }),
     isRunnerConnected: input.isRunnerConnected ?? vi.fn(() => true),
-    mcpOauth: { providerFor: vi.fn(async () => Promise.reject(new Error("unused"))) },
+    mcpOauth: input.mcpOauth ?? {
+      providerFor: vi.fn(async () => Promise.reject(new Error("unused"))),
+    },
     onWorkspaceEvent: input.onWorkspaceEvent ?? vi.fn(),
     onConnectionsChanged: input.onConnectionsChanged ?? vi.fn(),
     onRequestsChanged: input.onRequestsChanged ?? vi.fn(),
