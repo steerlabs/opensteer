@@ -55,7 +55,7 @@ import {
   pageViewport,
   type HumanInputObservation,
 } from "@opensteer/browser-runtime-core";
-import { applyBrowserSessionPolicy } from "./browser-session-policy.js";
+import { applyBrowserSessionPolicy, updateBrowserPasskeyPolicy } from "./browser-session-policy.js";
 import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 
 import {
@@ -145,17 +145,18 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   }
 
   async launch(request: BrowserLaunchRequest): Promise<LaunchedBrowser> {
+    const authenticator = request.authenticator ?? this.#authenticator;
     const partition = electronBrowserPartition(request.partitionKey);
     const profileSession = electronSession.fromPartition(partition, {
       cache: true,
     });
-    this.#configureSession(profileSession);
+    this.#configureSession(profileSession, authenticator !== undefined);
     await Promise.all([profileSession.clearCache(), profileSession.clearStorageData()]);
     const context = new ElectronBrowserContext({
       createView: (options, opener) => this.#views.create(options, opener, request.initialViewport),
       createHelper: (options) => this.#views.createHelper(options),
       profileSession,
-      ...(this.#authenticator ? { authenticator: this.#authenticator } : {}),
+      ...(authenticator ? { authenticator } : {}),
     });
     try {
       // The first page holds a blank document until launch returns, so it
@@ -169,11 +170,14 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     }
   }
 
-  #configureSession(profileSession: Session): void {
-    if (this.#configuredSessions.has(profileSession)) return;
+  #configureSession(profileSession: Session, provider: boolean): void {
+    if (this.#configuredSessions.has(profileSession)) {
+      updateBrowserPasskeyPolicy(profileSession, provider);
+      return;
+    }
     this.#configuredSessions.add(profileSession);
     applyBrowserSessionPolicy(profileSession, {
-      provider: this.#authenticator !== undefined,
+      provider,
       downloads: this.#downloads,
       pagePolicyPreloadPath: this.#pagePolicyPreloadPath,
     });
@@ -787,6 +791,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   readonly #cdpPromise: Promise<CdpSession>;
   #dialog: unknown = null;
   #targetIdPromise: Promise<string> | null = null;
+  readonly #passkeyInput = new Set<() => void>();
   readonly #humanInput = new Set<(observation: HumanInputObservation) => void>();
   readonly #restingHost: BaseWindow;
   #requestedRestingSize: { width: number; height: number };
@@ -887,6 +892,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     const installBridge = (channel: ElectronCdpChannel) => {
       if (!authenticator || !providerConfig) return;
       this.#passkeyBridge = new PasskeyBridge(channel, authenticator, {
+        targetId: () => this.targetId(),
         config: providerConfig,
         contexts: this.#hub.executionContexts,
       });
@@ -959,6 +965,9 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     });
     view.webContents.on("input-event", (_event, input) => {
       if (!["keyDown", "rawKeyDown", "mouseDown", "touchStart"].includes(input.type)) return;
+      // input-event follows shortcut interception. The hub marks injected CDP
+      // input, so only input from the person at the native view is attributed.
+      if (!this.inputOutstanding()) for (const listener of this.#passkeyInput) listener();
       this.#contextMenuTrigger = this.#contextMenuCandidate;
       this.#contextMenuCandidate = null;
     });
@@ -983,6 +992,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     });
     view.webContents.once("destroyed", () => {
       this.#cancelPaint();
+      this.#passkeyInput.clear();
       this.#humanInput.clear();
       this.#contextMenuTrigger = null;
       this.#contextMenuCandidate = null;
@@ -1234,6 +1244,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       waiter.reject(new Error("Electron browser page is closed."));
   }
 
+  observePasskeyInput(listener: () => void): () => void {
+    this.#passkeyInput.add(listener);
+    return () => {
+      this.#passkeyInput.delete(listener);
+    };
+  }
   observeHumanInput(listener: (observation: HumanInputObservation) => void): () => void {
     this.#humanInput.add(listener);
     return () => this.#humanInput.delete(listener);

@@ -1,6 +1,7 @@
 import { useActionReview } from "@opensteer/client/react";
 import { ActionReviewSheet } from "../ui/action-review.js";
 import {
+  passkeyNotice,
   browserActingTabId,
   browserSiteForUrl,
   browserTabTitle,
@@ -112,6 +113,17 @@ export function BrowserPage(props: {
     if (size.width > 0 && size.height > 0) setAspect(size.width / size.height);
   }, []);
   const feed = useBrowserFeedState(hostClient, session.id, tabId);
+  const subscribePasskeys = useCallback(
+    (listener: () => void) =>
+      hostClient.browserPasskeys?.subscribe(session.id, tabId, listener) ?? (() => {}),
+    [hostClient, session.id, tabId],
+  );
+  const readPasskeys = useCallback(
+    () => hostClient.browserPasskeys?.get(session.id, tabId) ?? null,
+    [hostClient, session.id, tabId],
+  );
+  const passkey = useSyncExternalStore(subscribePasskeys, readPasskeys, readPasskeys);
+
   const latestSend = useRef<(command: BrowserCommand) => boolean>(() => false);
   const clipboard = useMemo(() => {
     let port: Promise<
@@ -385,8 +397,13 @@ export function BrowserPage(props: {
           }}
           session={session}
         />
-        {problem === null && !refused && !feed.inputError && dialog === null ? null : (
+        {problem === null && !refused && !feed.inputError && dialog === null && !passkey ? null : (
           <View pointerEvents="box-none" style={styles.top}>
+            {passkey ? (
+              <View style={styles.card}>
+                <AppText role="secondary">{passkeyNotice}</AppText>
+              </View>
+            ) : null}
             {problem !== null || refused ? (
               <Notice detail={problem ?? refusedNotice} title="Page unavailable" tone="neutral" />
             ) : feed.inputError ? (

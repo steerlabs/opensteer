@@ -20,6 +20,10 @@ export type PasskeyAuthenticatorError =
  * In particular, never replace a system API's rawClientDataJSON with our copy.
  */
 export type PasskeyAuthenticatorInput = {
+  /** Browser-owned context; relays refuse a ceremony without this binding. */
+  targetId?: string | undefined;
+  documentId?: string | null;
+  deadline?: number;
   origin: string;
   rpId: string;
   signal: AbortSignal;

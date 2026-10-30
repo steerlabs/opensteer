@@ -2,6 +2,8 @@ import { autoUpdater } from "electron-updater";
 import { startDesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
 import { DesktopWebLinks, routeDesktopUrl } from "./app/web-links.js";
+import { DesktopPasskeyRequests } from "./passkeys/passkey-requests.js";
+import type { NativePasskeys } from "./passkeys/native-passkeys.js";
 import { DesktopDownloads } from "./downloads/desktop-downloads.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { DesktopBrowserPresentationManager } from "./browser/browser-presentation.js";
@@ -65,6 +67,7 @@ import { ElectronServiceNetwork } from "./app/electron-service-network.js";
 import {
   configureDesktopSession,
   desktopWebPreferences,
+  desktopWindowForContents,
   ElectronWindowFactory,
 } from "./app/electron-window.js";
 import { createDesktopApplicationMenu } from "./app/application-menu.js";
@@ -526,11 +529,23 @@ async function runDesktop(
     projection: accessProjection,
     sessions: hostSessions,
   });
+  const nativePasskeys: NativePasskeys = {
+    available: () => false,
+    perform: async () => ({ kind: "refused", error: "NotAllowedError" }),
+  };
   const browserPresentation = new DesktopBrowserPresentationManager({
     transport: hostTransport,
     glassPreload: path.join(import.meta.dirname, "glass-preload.cjs"),
     onError: (error) => reportNonFatal("desktop.browser.presentation-failed", error),
     quit: () => app.quit(),
+  });
+  const passkeys = new DesktopPasskeyRequests({
+    presentations: browserPresentation,
+    native: nativePasskeys,
+    ownOrigins: ownOrigins.current,
+    refreshOwnOrigins: () => ownOrigins.refresh(),
+    transport: hostTransport,
+    windowForContents: desktopWindowForContents,
   });
   const closeClearedAccountSockets = accountBrokeredHostSessions.subscribe(() =>
     hostTransport.closeAllSockets(),
@@ -915,6 +930,7 @@ async function runDesktop(
   const unregisterBridge = registerDesktopBridge({
     webLinks,
     isWorkspaceContents: (sender) => sender === workspaceContents,
+    passkeys,
     localVisibility,
     access,
     agentPhone: {
@@ -1001,6 +1017,7 @@ async function runDesktop(
     onCreated: (window) => {
       workspaceContents = window.webContents;
       browserPresentation.attachWindow(window);
+      passkeys.attachWindow(window);
       window.on("focus", () => {
         if (shutdown.requested) return;
         access.networkChanged();
@@ -1112,7 +1129,10 @@ async function runDesktop(
     step: "stop-browser-presentation",
     order: 75,
     timeoutMs: 1_000,
-    stop: () => browserPresentation.dispose(),
+    stop: () => {
+      passkeys.dispose();
+      browserPresentation.dispose();
+    },
   });
   shutdown.add({
     component: "desktop",

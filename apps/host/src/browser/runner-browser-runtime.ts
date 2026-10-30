@@ -183,6 +183,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       signIn: browser.signIn?.version === 3,
       cdpBoundary: browser.cdpBoundary === 1,
       sharedControl: browser.sharedControl === 1,
+      passkeys: browser.passkeys === 1,
       editing: browser.editing,
       clipboard: browser.editing === 1 || browser.clipboard === true,
       targetControl: browser.targetControl === 1,

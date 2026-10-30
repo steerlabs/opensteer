@@ -311,6 +311,15 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ipcRenderer.on(desktopBridgeChannels.workspaceTabCommand, receive);
     return () => ipcRenderer.removeListener(desktopBridgeChannels.workspaceTabCommand, receive);
   },
+  passkeys: Object.freeze({
+    available: async () => z.boolean().parse(await invoke(desktopBridgeChannels.passkeyAvailable)),
+    present: async (input: { readonly requestId: string }) => {
+      await invoke(
+        desktopBridgeChannels.passkeyPresent,
+        z.strictObject({ requestId: z.uuid() }).parse(input),
+      );
+    },
+  }),
   browserPresentation,
   reportDisplayDiagnostic: async (record: z.input<typeof DisplayClientDiagnosticSchema>) => {
     await invoke(

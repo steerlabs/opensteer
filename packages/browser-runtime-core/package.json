@@ -16,7 +16,8 @@
     "./passkeys": "./src/passkeys/index.ts",
     "./test-support/passkey-test-authenticator": "./src/test-support/passkey-test-authenticator.ts",
     "./test-support/passkey-provider": "./src/test-support/passkey-provider-scenario.ts",
-    "./passkey-bridge": "./src/browser/passkey-bridge.ts"
+    "./passkey-bridge": "./src/browser/passkey-bridge.ts",
+    "./passkey-relay": "./src/passkeys/host-relay.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

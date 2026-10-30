@@ -1341,3 +1341,20 @@ button.browser-download__file:hover {
   color: var(--muted);
   font-size: var(--text-xs);
 }
+
+.browser-passkey-bar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface-elevated);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.browser-passkey-bar small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-soft);
+}

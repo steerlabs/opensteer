@@ -37,6 +37,8 @@ export const desktopBridgeChannels = {
   localVisibilityChanged: "opensteer.desktop.visibility.changed",
   useComputerViewOnThisMac: "opensteer.desktop.computer-use.use-owner-view",
   acknowledgePortableFsApproval: "opensteer.desktop.portablefs.acknowledge",
+  passkeyAvailable: "opensteer.desktop.passkey.available",
+  passkeyPresent: "opensteer.desktop.passkey.present",
   addDirect: "opensteer.desktop.access.add-direct",
   cancel: "opensteer.desktop.access.cancel",
   computerUseApprovalKey: "opensteer.desktop.computer-use.approval-key",

@@ -7,6 +7,7 @@ import {
 import { browserClientLifecycle } from "./browser-lifecycle.js";
 
 export interface BrowserHostClientOptions {
+  readonly passkeys?: HttpHostClientOptions["passkeys"];
   readonly capabilities: Exclude<HttpHostClientOptions["capabilities"], undefined>;
   /** The Desktop renderer attaches to a selected Deployment rather than to the
    * origin that served this bundle. */
@@ -26,6 +27,7 @@ export interface BrowserHostClientOptions {
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
   return new HttpHostClient({
+    ...(options.passkeys ? { passkeys: options.passkeys } : {}),
     capabilities: options.capabilities ?? null,
     baseUrl: options.baseUrl ?? window.location.origin,
     ...(options.fetch ? { fetch: options.fetch } : {}),

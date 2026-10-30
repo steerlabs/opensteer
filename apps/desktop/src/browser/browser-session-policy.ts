@@ -11,7 +11,7 @@ export interface BrowserSessionPolicyOptions {
 
 /**
  * The rules every Browser Session page shares: no device permissions except
- * HTML fullscreen, downloads owned by the desktop, no WebAuthn, only web schemes, and a Chrome
+ * HTML fullscreen, downloads owned by the desktop, negotiated WebAuthn policy, only web schemes, and a Chrome
  * user agent.
  */
 export function applyBrowserSessionPolicy(
@@ -25,18 +25,25 @@ export function applyBrowserSessionPolicy(
   for (const preload of session.getPreloadScripts()) {
     session.unregisterPreloadScript(preload.id);
   }
-  // Pages see a browser without WebAuthn (see page-policy). The response
-  // header disables it in every frame beneath a document. Documents without
-  // one, such as a popup its opener writes into or a page a service worker
-  // serves, get the policy script: this preload in a page's main frame, which
-  // covers its first document, and the page's debugger script everywhere
-  // else (ElectronBrowserPage).
+  // The preload covers the first main-frame document, including documents
+  // without response headers. Each page's debugger installs the negotiated
+  // provider or absent policy in later documents and frames.
   session.registerPreloadScript({ filePath: options.pagePolicyPreloadPath, type: "frame" });
+  updateBrowserPasskeyPolicy(session, options.provider === true);
+  session.webRequest.onBeforeRequest((details, callback) => {
+    callback({ cancel: !isAllowedBrowserRequest(details.url) });
+  });
+  options.downloads.accept(session);
+  session.setUserAgent(chromeUserAgent(session.getUserAgent()));
+}
+
+/** Updates only the policy that depends on the negotiated provider mode. */
+export function updateBrowserPasskeyPolicy(session: Session, provider: boolean): void {
   session.webRequest.onHeadersReceived(
     { types: ["mainFrame", "subFrame"], urls: ["<all_urls>"] },
     (details, callback) => {
-      let deny = !options.provider;
-      if (options.provider && details.resourceType === "subFrame") {
+      let deny = !provider;
+      if (provider && details.resourceType === "subFrame") {
         // Keep the site's computed policy visible for the frames we serve. A
         // missing frame identity, like a foreign ancestor, is refused closed.
         const frame = details.frame;
@@ -59,11 +66,6 @@ export function applyBrowserSessionPolicy(
       });
     },
   );
-  session.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: !isAllowedBrowserRequest(details.url) });
-  });
-  options.downloads.accept(session);
-  session.setUserAgent(chromeUserAgent(session.getUserAgent()));
 }
 
 /**
