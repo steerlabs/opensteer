@@ -36,6 +36,14 @@ Per-channel concurrency coalesces pending runs but never cancels a running build
 mid-notarization. A coalesced stable dispatch may need redispatch. Never publish
 an older insider after a newer one: the updater selects the first eligible feed entry.
 
+A dispatch of either channel stops at the draft unless `publish=true`, which needs
+the zip sha256 the [update journey](testing.md#gui-test-vms) certified for that
+draft. Publish downloads the draft again and refuses any other zip, even one whose
+release.json and SHA256SUMS were rewritten to match. Automatic insiders on push
+carry no certificate. Publish jobs run the workflow commit's publisher, not the
+source's, so a source older than a publisher flag can still be promoted; the
+publisher must keep reading release.json from any source still eligible for it.
+
 ### Derived versions
 
 Both channels use numeric X.Y.Z derived from the base manifest version plus
@@ -52,9 +60,8 @@ Stable rebuilds an already published insider's exact source with the same numeri
 version and its distinct stable bundle identity. Tag, target and release.json
 must agree; exact-source push CI and the latest completed full main CI must be
 green and include the source on first-parent main. Tim approves only publication
-of the verified draft via `publish`. The manual `publish` boolean applies to
-insiders, not stable approval. Matching drafts are reused; mismatches and already
-published stable versions fail closed.
+of the certified draft via the `publish` environment. Matching drafts are reused;
+mismatches and already published stable versions fail closed.
 
 ### Hosted build and keyless proof
 
