@@ -7,6 +7,7 @@ import {
   verifyPreparedArchives,
 } from "../scripts/public-download/evidence.js";
 import { createHash } from "node:crypto";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { test, expect } from "vitest";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -41,7 +42,7 @@ test("Enterprise Atom/Latest, cross-origin ranges and wildcard Account sinkhole"
       "-config",
       path.join(dir, "openssl.cnf"),
     ],
-    { stdio: "ignore" },
+    { stdio: "ignore", timeout: 1_000 },
   );
   for (const v of ["0.1.1", "0.1.2"]) {
     mkdirSync(path.join(dir, `desktop-v${v}`));
@@ -61,38 +62,52 @@ test("Enterprise Atom/Latest, cross-origin ranges and wildcard Account sinkhole"
     ],
     { env: { ...process.env, OPENSTEER_MIRROR_TEST_PORT: "0" }, stdio: ["ignore", "pipe", "pipe"] },
   );
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
   try {
-    const ports = await new Promise<{ https: { port: number }; dns: { port: number } }>(
-      (resolve, reject) => {
+    const ports = await withTimeout(
+      new Promise<{ https: { port: number }; dns: { port: number } }>((resolve, reject) => {
         child.once("error", reject);
         child.once("exit", () => reject(new Error("mirror exited")));
         child.stdout.once("data", (b) => resolve(JSON.parse(String(b))));
-      },
+      }),
+      1_000,
+      { timeoutError: () => new Error("Mirror did not report its HTTPS and DNS ports") },
     );
-    const get = (host: string, url: string, range?: string) =>
-      new Promise<{ status: number | undefined; location: string | undefined; body: string }>(
-        (resolve, reject) => {
-          const req = request(
-            {
-              hostname: "127.0.0.1",
-              servername: host,
-              port: ports.https.port,
-              path: url,
-              headers: { host, ...(range ? { range } : {}) },
-              ca: readFileSync(cert),
-            },
-            (res) => {
-              let body = "";
-              res.on("data", (b) => (body += String(b)));
-              res.on("end", () =>
-                resolve({ status: res.statusCode, location: res.headers.location, body }),
+    const get = async (host: string, url: string, range?: string) => {
+      const controller = new AbortController();
+      try {
+        return await withTimeout(
+          new Promise<{ status: number | undefined; location: string | undefined; body: string }>(
+            (resolve, reject) => {
+              const req = request(
+                {
+                  signal: controller.signal,
+                  hostname: "127.0.0.1",
+                  servername: host,
+                  port: ports.https.port,
+                  path: url,
+                  headers: { host, ...(range ? { range } : {}) },
+                  ca: readFileSync(cert),
+                },
+                (res) => {
+                  let body = "";
+                  res.on("data", (b) => (body += String(b)));
+                  res.on("end", () =>
+                    resolve({ status: res.statusCode, location: res.headers.location, body }),
+                  );
+                },
               );
+              req.once("error", reject);
+              req.end();
             },
-          );
-          req.once("error", reject);
-          req.end();
-        },
-      );
+          ),
+          1_000,
+          { timeoutError: () => new Error(`Mirror HTTPS response did not finish: ${host}${url}`) },
+        );
+      } finally {
+        controller.abort();
+      }
+    };
     const prefix = "/steerlabs/opensteer/releases";
     writeFileSync(
       path.join(dir, "atom.json"),
@@ -151,7 +166,9 @@ test("Enterprise Atom/Latest, cross-origin ranges and wildcard Account sinkhole"
       ]);
       const reply = new Promise<Buffer>((resolve) => dns.once("message", resolve));
       dns.send(packet, ports.dns.port, "127.0.0.1");
-      const response = await reply;
+      const response = await withTimeout(reply, 1_000, {
+        timeoutError: () => new Error("Mirror did not answer the wildcard Account DNS query"),
+      });
       expect(response.readUInt16BE(2) & 15).toBe(3);
       expect(response.readUInt16BE(10)).toBe(0);
       expect(readFileSync(log, "utf8")).toContain(
@@ -161,12 +178,22 @@ test("Enterprise Atom/Latest, cross-origin ranges and wildcard Account sinkhole"
       dns.close();
     }
   } finally {
-    const done = new Promise<void>((resolve) => child.once("close", () => resolve()));
-    child.kill("SIGTERM");
-    await done;
-    rmSync(dir, { recursive: true, force: true });
+    try {
+      child.kill("SIGTERM");
+      await withTimeout(closed, 1_000, {
+        timeoutError: () => new Error("Mirror did not close after SIGTERM"),
+      }).catch(async (error: unknown) => {
+        child.kill("SIGKILL");
+        await withTimeout(closed, 1_000, {
+          timeoutError: () => new Error("Mirror did not close after SIGKILL"),
+        });
+        throw error;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
-}, 15000);
+});
 
 test("Personal health follows the persisted dynamic Host port", () => {
   const root = mkdtempSync(path.join(tmpdir(), "opensteer-health-port-"));

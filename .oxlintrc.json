@@ -23,7 +23,13 @@
       }
     ],
     "typescript/no-floating-promises": "warn",
-    "typescript/no-misused-promises": "error"
+    "typescript/no-misused-promises": "error",
+    "opensteer/no-real-time-wait-in-tests": "error",
+    "opensteer/no-polling-loop-in-tests": "error",
+    "opensteer/no-unreasoned-skip-or-retry": "error",
+    "opensteer/require-suppression-reason": "error",
+    "opensteer/no-unit-test-timeout": "error",
+    "opensteer/no-unbounded-created-promise": "error"
   },
   "overrides": [
     {
@@ -55,5 +61,11 @@
       }
     }
   ],
-  "ignorePatterns": ["apps/mobile/android/**", "apps/mobile/ios/**", "output/**", "**/.build/**"]
+  "ignorePatterns": ["apps/mobile/android/**", "apps/mobile/ios/**", "output/**", "**/.build/**"],
+  "jsPlugins": [
+    {
+      "name": "opensteer",
+      "specifier": "./tooling/oxlint-plugin-opensteer/index.mjs"
+    }
+  ]
 }
