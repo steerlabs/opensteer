@@ -139,11 +139,12 @@ export function nativeMacTasks(files, { full = false } = {}) {
 export function nativeMacMatrix(tasks) {
   return nativeMac.tasks
     .filter(({ task }) => tasks.includes(task))
-    .map(({ task, timeout, swift, lane }) => ({
+    .map(({ task, timeout, swift, lane, xcode }) => ({
       task,
       timeout,
       swift: swift.join(" "),
       darwin: lane === true,
+      xcode: xcode ?? "/Applications/Xcode.app/Contents/Developer",
     }));
 }
 export const allNativeMacTasks = nativeMac.tasks.map(({ task }) => task);

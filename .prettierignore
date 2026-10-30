@@ -32,3 +32,6 @@ apps/mobile/modules/*/android/build/
 # Signer-specific generated constants.
 apps/desktop/build/generated/
 apps/desktop/native/*/build/
+
+# Written and checked byte for byte by the dictation engine's Swift fixture test.
+packages/apple-dictation/Tests/Fixtures/dictation-wire.json

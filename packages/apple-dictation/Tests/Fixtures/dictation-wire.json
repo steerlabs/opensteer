@@ -1,0 +1,66 @@
+{
+  "availability" : [
+    {
+      "available" : false,
+      "reason" : "os"
+    },
+    {
+      "available" : true,
+      "languageName" : "English",
+      "locale" : "en-US",
+      "microphone" : "granted",
+      "model" : "installed"
+    }
+  ],
+  "events" : [
+    {
+      "progress" : null,
+      "seq" : 1,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "downloading"
+    },
+    {
+      "progress" : 0.5,
+      "seq" : 2,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "downloading"
+    },
+    {
+      "seq" : 3,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "listening"
+    },
+    {
+      "finalized" : [
+        "Hello",
+        "😀"
+      ],
+      "seq" : 4,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "text",
+      "volatile" : [
+        " world"
+      ]
+    },
+    {
+      "level" : 0.7,
+      "seq" : 5,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "level"
+    },
+    {
+      "error" : null,
+      "reason" : "completed",
+      "seq" : 6,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : "recognition-failed",
+      "reason" : "failed",
+      "seq" : 7,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    }
+  ]
+}

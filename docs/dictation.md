@@ -109,3 +109,24 @@ controller or lifecycle listeners. A polite live region announces states and not
 reading partial words, levels or timer ticks. Reduced motion keeps the meter static.
 `dictation-visual.html?state=listening` is the fake-port visual fixture; its `state`
 parameter also accepts idle, downloading, starting, finishing and every notice kind.
+
+## Engine
+
+`packages/apple-dictation` shares capture and recognition between the Mac helper and
+iOS. Only its Apple Speech adapter needs OS 26; lifecycle and wire tests also run on
+older systems, where availability reports `os`. Admission checks permission, resolves
+the first supported preferred language and requires an installed model before capture.
+Availability reconciles reservations; download keeps one for that language and releases
+new reservations on unsuccessful installation.
+
+Results replace overlapping audio ranges and promote at Apple's finalization watermark,
+including unchanged tentative results. Text coalesces every 100 ms, retaining every newly
+finalized segment. Stop removes capture, drains the bounded ten-second queue and converter,
+finishes input, finalizes and consumes results, then flushes text before ending. Cancellation
+supersedes admission and finalization; the latter has a five-second deadline. Overflow and
+wire limits (1,000 segments per array, 50,000 UTF-16 units per segment) fail explicitly.
+
+iOS uses `.record` / `.measurement` with Bluetooth HFP for minimally processed speech
+and headset microphones, deactivating with notification so other audio resumes. Audio
+stays in memory within the native process. Microphone tests require a disposable device;
+the opt-in live engine test uses a generated speech file instead.
