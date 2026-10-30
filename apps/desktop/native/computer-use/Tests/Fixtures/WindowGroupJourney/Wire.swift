@@ -460,8 +460,8 @@ extension WireJourney {
     // Reset releases the input lease. Focus the editor after the contact
     // test, then admit a new action before expecting its editing context.
     try await Contracts.command(out, "owner-resume")
-    let resumed = try await input([["kind": "copy"]])
-    try require(resumed["outcome"] as? String == "dispatched", "New input did not reacquire the reset viewer")
+    let resumedInput = try await input([["kind": "copy"]])
+    try require(resumedInput["outcome"] as? String == "dispatched", "New input did not reacquire the reset viewer")
     _ = try await context()
     start("native-text-key")
     let key = try await input([["kind": "key", "action": "down", "code": "KeyQ", "key": "q", "modifiers": [], "text": "q"],
