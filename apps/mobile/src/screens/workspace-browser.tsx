@@ -865,7 +865,7 @@ function PagePairSurface(props: {
   readonly body: ReactNode;
   /**
    * The conversation, open or folded as this arrangement draws it; null for a
-   * tab opened before there is a conversation to talk to.
+   * tab opened directly from Tabs or the sidebar.
    */
   readonly conversation: ((open: boolean) => ReactNode) | null;
   /** The conversation's name, so the sheet says whom it talks to. */

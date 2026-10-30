@@ -8,7 +8,7 @@ import type { ReservedRegion } from "react-native-reserved-regions";
 /*
  * The shell around the one native stack, as the window changes shape. What
  * can go wrong:
- * - unfolding, folding or hiding the sidebar remounts the stack, so a draft,
+ * - unfolding or folding the sidebar remounts the stack, so a draft,
  *   a scroll position, a composition in progress or a stream is lost;
  * - a geometry change navigates, so the reader is moved without asking;
  * - a sidebar docked beside the conversation counts as covering it, so read
@@ -435,6 +435,30 @@ describe("the sidebar as the window changes shape", () => {
     const same = await mount([home, open]);
     press(same.container, "Tab B");
     expect(harness.dispatch).not.toHaveBeenCalled();
+
+    // A task's Watch of the same tab is a different destination: choosing the
+    // tab itself must leave that conversation behind.
+    const watched = await mount([
+      home,
+      threadA,
+      {
+        ...open,
+        params: {
+          deploymentId: "deployment-a",
+          sessionId: tabB.sessionId,
+          tabId: tabB.tabId,
+          threadId: "thread-a",
+        },
+      },
+    ]);
+    press(watched.container, "Tab B");
+    expect(harness.dispatch).toHaveBeenCalledExactlyOnceWith({
+      type: "RESET",
+      payload: {
+        index: 1,
+        routes: [home, { name: "WorkspaceBrowser", params: tabBRoute }],
+      },
+    });
   });
 
   it("opens Tabs over a task as the Deployment's tabs, carrying no conversation", async () => {

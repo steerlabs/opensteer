@@ -340,6 +340,9 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         if (typeof targetDeploymentId !== "string") return;
         if (
           current?.name === "WorkspaceBrowser" &&
+          isRecord(current.params) &&
+          current.params["scope"] === "workspace" &&
+          current.params["deploymentId"] === targetDeploymentId &&
           sameDestination(paramsDestination(current.params), destination)
         )
           return;

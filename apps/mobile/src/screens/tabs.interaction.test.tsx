@@ -39,8 +39,8 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  * J1 Global Tabs
  *   - the sidebar has no Tabs, or Tabs is not a destination (it piles up behind
  *     Back, keeps Back, or loses the Menu);
- *   - opening it from Chat, a task or Specialists loses which conversation it
- *     was opened from, or silently swaps task A for Chat;
+ *   - opening it from Chat, a task or Specialists carries a conversation into
+ *     a standalone tab, or silently swaps the selected tab;
  *   - the list misses the person's own desktop tab, a task's tab, a delegated
  *     worker's, a saved tab, a task-held app, or the person's own Mac view;
  *   - it shows another person's tabs after the account changes;
