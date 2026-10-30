@@ -28,7 +28,7 @@ import {
 } from "@opensteer/harness-claude";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   codexThreadOf,
   codexUsageFrames,
@@ -474,23 +474,83 @@ integration("Background work", () => {
   );
 
   it("keeps background work through a Host restart", { timeout: 180_000 }, async () => {
+    let restartStage = "not requested";
     const within = <T>(operation: Promise<T>, label: string, timeoutMs = 10_000) =>
       withTimeout(operation, timeoutMs, {
         timeoutError: () =>
           new Error(
-            `Timed out waiting for ${label} (Host closing step: ${stack?.host.closingStep() ?? "none"})`,
+            `Timed out waiting for ${label} (restart stage: ${restartStage}; Host closing step: ${stack?.host.closingStep() ?? "none"})`,
           ),
       });
     const { active, release, runId } = await within(start(), "background stack startup", 30_000);
     try {
       const deadline = (await within(runRow(active, runId), "background deadline read"))
         .backgroundDeadlineAt;
-      await within(active.restartHost(), "Host restart");
+      const oldHost = active.host;
+      const close = oldHost.close.bind(oldHost);
+      const stopped = vi.spyOn(oldHost, "close").mockImplementation(async () => {
+        restartStage = "stop requested; joining old Host";
+        await close();
+        restartStage = "old Host joined";
+      });
+      try {
+        restartStage = "stop requested";
+        await within(
+          active.restartHost({
+            whileDown: async () => {
+              expect(oldHost.closingStep()).toBeUndefined();
+              restartStage = "binding replacement listener";
+            },
+          }),
+          "Host restart",
+        );
+        restartStage = "replacement listener bound";
+      } finally {
+        stopped.mockRestore();
+      }
+      const environment = async () => {
+        const result = await active.api["bootstrap.get"]({});
+        if (!result.ok) throw new Error(result.error.message);
+        return result.data.environments.find((entry) => entry.id === active.environmentId);
+      };
+      await within(
+        waitFor(
+          async () => (await environment())?.connected === true,
+          "Runner reauthentication",
+          10_000,
+        ),
+        "Runner reauthentication",
+      );
+      restartStage = "Runner reauthenticated";
+      await within(
+        waitFor(
+          async () =>
+            (await environment())?.harnessCatalogs.some(
+              (catalog) =>
+                catalog.harnessInstanceId === active.harnessInstanceId &&
+                catalog.status === "ready",
+            ) === true,
+          "ready catalog visible",
+          10_000,
+        ),
+        "ready catalog visible",
+      );
+      restartStage = "ready catalog visible";
+      await within(
+        waitFor(
+          async () => (await runRow(active, runId)).phase === "background",
+          "background projection restored",
+          10_000,
+        ),
+        "background projection restored",
+      );
+      restartStage = "background projection restored";
       expect(
         (await within(runRow(active, runId), "restarted Run read")).backgroundDeadlineAt,
       ).toEqual(deadline);
       await within(release(), "background child release");
-      await settled(active, runId);
+      await within(settled(active, runId), "released completion persisted");
+      restartStage = "released completion persisted";
       const journey = await within(
         record("host restart", active, runId),
         "restart journey recording",
