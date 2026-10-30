@@ -5,6 +5,7 @@ import {
   type DictationSelection,
 } from "@opensteer/client/dictation";
 import { DictationStatus, DictationLive, useDictation } from "./dictation.js";
+import { useVoice } from "./voice.js";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   useCallback,
@@ -244,6 +245,7 @@ export function Composer({
 }: ComposerProps) {
   const [draft, setDraft] = useState("");
   const { controller: dictation, snapshot: speech } = useDictation();
+  const { snapshot: voiceState } = useVoice();
   const instance = useId();
   const owner = `${dictationScope}/${instance}`;
   const view = dictationView(speech, owner);
@@ -804,36 +806,38 @@ export function Composer({
       </>
     ) : null;
 
-  const microphone = view.visible ? (
-    <button
-      ref={microphoneRef}
-      className={`composer__attach ${view.phase === "listening" ? "dictation-stop" : ""}`}
-      type="button"
-      aria-label={
-        view.phase === "listening" || view.phase === "finishing"
-          ? dictationLabels.stop
-          : dictationStartLabel(view.languageName ?? "")
-      }
-      title={dictationLabels.dictate}
-      disabled={
-        disabled ||
-        readOnly ||
-        view.blocked ||
-        (view.phase !== "idle" && view.phase !== "listening")
-      }
-      onClick={() => {
-        textareaRef.current?.focus();
-        if (view.phase === "listening") void dictation?.stop(owner);
-        else startDictation();
-      }}
-    >
-      {["starting", "finishing", "downloading"].includes(view.phase) ? (
-        <span className="spinner" aria-hidden="true" />
-      ) : (
-        <Icon name={view.phase === "listening" ? "stop" : "microphone"} />
-      )}
-    </button>
-  ) : null;
+  // While voice holds the microphone, dictation steps aside.
+  const microphone =
+    view.visible && voiceState.phase === "idle" ? (
+      <button
+        ref={microphoneRef}
+        className={`composer__attach ${view.phase === "listening" ? "dictation-stop" : ""}`}
+        type="button"
+        aria-label={
+          view.phase === "listening" || view.phase === "finishing"
+            ? dictationLabels.stop
+            : dictationStartLabel(view.languageName ?? "")
+        }
+        title={dictationLabels.dictate}
+        disabled={
+          disabled ||
+          readOnly ||
+          view.blocked ||
+          (view.phase !== "idle" && view.phase !== "listening")
+        }
+        onClick={() => {
+          textareaRef.current?.focus();
+          if (view.phase === "listening") void dictation?.stop(owner);
+          else startDictation();
+        }}
+      >
+        {["starting", "finishing", "downloading"].includes(view.phase) ? (
+          <span className="spinner" aria-hidden="true" />
+        ) : (
+          <Icon name={view.phase === "listening" ? "stop" : "microphone"} />
+        )}
+      </button>
+    ) : null;
   const mentionList =
     mention && placeContext ? (
       <MentionList

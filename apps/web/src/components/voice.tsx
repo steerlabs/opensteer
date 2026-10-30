@@ -5,10 +5,20 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
+  useState,
   useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
-import type { VoiceLevels, VoicePhase, VoiceSnapshot } from "@opensteer/client/voice";
+import type { DictationController } from "@opensteer/client/dictation";
+import type { HostClient } from "@opensteer/client/host";
+import {
+  VoiceController,
+  type VoiceLevels,
+  type VoicePhase,
+  type VoiceSnapshot,
+  type VoiceTarget,
+} from "@opensteer/client/voice";
+import { createBrowserVoiceMediaPort } from "../voice/media-port.js";
 import { Icon } from "./icon.js";
 
 /** What the voice UI drives: the runtime's one `VoiceController`. */
@@ -24,6 +34,40 @@ export interface VoiceControls {
 }
 
 export const VoiceContext = createContext<VoiceControls | null>(null);
+
+/**
+ * The runtime's one voice controller for this Host. Navigation goes through a
+ * ref so the controller outlives re-renders; starting voice ends dictation,
+ * keeping its words, so only one thing holds the microphone.
+ */
+export function useVoiceRuntime(
+  hostClient: HostClient,
+  navigate: (target: VoiceTarget) => void,
+  dictation: DictationController | null,
+): VoiceController | null {
+  const latest = useRef({ navigate, dictation });
+  latest.current = { navigate, dictation };
+  const [controller, setController] = useState<VoiceController | null>(null);
+  useEffect(() => {
+    const created = new VoiceController({
+      hostClient,
+      media: createBrowserVoiceMediaPort(),
+      navigate: (target) => latest.current.navigate(target),
+      createId: () => crypto.randomUUID(),
+      onStart: async () => {
+        const dictating = latest.current.dictation;
+        const owner = dictating?.getSnapshot().owner;
+        if (dictating && owner) await dictating.stop(owner);
+      },
+    });
+    setController(created);
+    return () => {
+      created.dispose();
+      setController(null);
+    };
+  }, [hostClient]);
+  return controller;
+}
 
 const idle: VoiceSnapshot = {
   available: false,

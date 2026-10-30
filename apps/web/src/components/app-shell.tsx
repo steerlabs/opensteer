@@ -1,5 +1,6 @@
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
-import { VoiceIsland } from "./voice.js";
+import { VoiceContext, VoiceIsland, useVoiceRuntime } from "./voice.js";
+import { useDictation } from "./dictation.js";
 import {
   desktopWebLinksReady,
   openDesktopWebLink,
@@ -296,6 +297,17 @@ export function AppShell({
   const nav = useWorkspaceNavigation(
     { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
     snapshot.homeThreadId,
+  );
+  const routerNavigate = useNavigate();
+  const { controller: dictation } = useDictation();
+  const voice = useVoiceRuntime(
+    hostClient,
+    (target) => {
+      if (target.kind === "back") void routerNavigate(-1);
+      else if (target.kind === "place") nav.showPlace(target.destination);
+      else nav.openConversation(target.kind === "chat" ? "/" : nav.threadPath(target.threadId));
+    },
+    dictation,
   );
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;
@@ -962,191 +974,193 @@ export function AppShell({
   const routes = <ShellRouteOutlet context={context} hostClient={hostClient} />;
 
   return (
-    <WorkspaceProvider
-      attention={attention}
-      localMachine={localMachine}
-      nav={nav}
-      openDrawer={openMobileNavigation}
-    >
-      {webLinkFailure ? (
-        <DesktopWebLinkFailureNotice
-          {...webLinkFailure}
-          onResolve={() => setWebLinkFailure(null)}
-        />
-      ) : null}
-      {doneReview.review ? (
-        <Dialog
-          labelledBy="task-done-confirmation-title"
-          title="Stop and mark Done?"
-          onClose={doneReview.dismiss}
-          footer={
-            <>
-              <button className="btn btn--ghost" onClick={doneReview.dismiss} type="button">
-                Keep working
-              </button>
-              <button
-                className="btn btn--danger"
-                type="button"
-                onClick={() => {
-                  const result = doneReview.review?.confirm();
-                  doneReview.dismiss();
-                  void result?.catch(reportActionError);
-                }}
-              >
-                Mark Done
-              </button>
-            </>
-          }
-        >
-          This stops its work and the tasks it handed out, and pauses its schedules.
-        </Dialog>
-      ) : null}
-      <DownloadFeedback />
-      <AppIconProvider hostClient={hostClient}>
-        <TabCloserProvider hostClient={hostClient}>
-          <div
-            className={shellClassName}
-            style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+    <VoiceContext value={voice}>
+      <WorkspaceProvider
+        attention={attention}
+        localMachine={localMachine}
+        nav={nav}
+        openDrawer={openMobileNavigation}
+      >
+        {webLinkFailure ? (
+          <DesktopWebLinkFailureNotice
+            {...webLinkFailure}
+            onResolve={() => setWebLinkFailure(null)}
+          />
+        ) : null}
+        {doneReview.review ? (
+          <Dialog
+            labelledBy="task-done-confirmation-title"
+            title="Stop and mark Done?"
+            onClose={doneReview.dismiss}
+            footer={
+              <>
+                <button className="btn btn--ghost" onClick={doneReview.dismiss} type="button">
+                  Keep working
+                </button>
+                <button
+                  className="btn btn--danger"
+                  type="button"
+                  onClick={() => {
+                    const result = doneReview.review?.confirm();
+                    doneReview.dismiss();
+                    void result?.catch(reportActionError);
+                  }}
+                >
+                  Mark Done
+                </button>
+              </>
+            }
           >
-            {!settingsMode && mobileNavigation && mobileNavigationOpen && drawerReady ? (
-              <button
-                type="button"
-                className="sidebar-scrim"
-                aria-label="Close navigation"
-                onClick={closeMobileNavigation}
-              />
-            ) : null}
-            {!settingsMode ? (
-              <ShellSidebar
-                collapsed={!mobileNavigation && sidebarCollapsed}
-                deploymentAccess={deploymentAccess}
-                desktopDeployment={desktopDeployment}
-                desktopWindowChrome={desktopWindowChrome}
-                hostClient={hostClient}
-                mobile={mobileNavigation}
-                mobileOpen={mobileNavigation && mobileNavigationOpen && drawerReady}
-                onCloseMobile={closeMobileNavigation}
-                onLoadEarlierTasks={async () => {
-                  try {
-                    await hostClient.loadEarlierTasks();
-                  } catch (error) {
-                    reportActionError(error);
-                    throw error;
-                  }
-                }}
-                onOpenShortcuts={openShortcuts}
-                onSetTaskDone={setTaskDone}
-                onToggleCollapsed={toggleSidebar}
-              />
-            ) : null}
-            {!settingsMode && !mobileNavigation && !sidebarCollapsed ? (
-              <PaneResizeHandle
-                ariaControls="app-sidebar"
-                ariaLabel="Resize navigation sidebar"
-                max={sidebarWidthRange.max}
-                min={sidebarWidthRange.min}
-                onCommit={commitSidebarWidth}
-                onResize={setSidebarWidth}
-                range={sidebarWidthRange}
-                side="left"
-                value={sidebarWidth}
-              />
-            ) : null}
-            <main className="app-shell__main" aria-hidden={overlayOpen} inert={overlayOpen}>
-              {loadError || actionError ? (
-                <div className="notice notice--error shell-error" role="alert">
-                  <span className="shell-error__message">{loadError ?? actionError}</span>
-                  {!loadError ? (
-                    <button
-                      aria-label="Dismiss error"
-                      className="icon-btn"
-                      onClick={() => setActionError(null)}
-                      type="button"
-                    >
-                      <Icon name="close" />
-                    </button>
-                  ) : null}
-                </div>
+            This stops its work and the tasks it handed out, and pauses its schedules.
+          </Dialog>
+        ) : null}
+        <DownloadFeedback />
+        <AppIconProvider hostClient={hostClient}>
+          <TabCloserProvider hostClient={hostClient}>
+            <div
+              className={shellClassName}
+              style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+            >
+              {!settingsMode && mobileNavigation && mobileNavigationOpen && drawerReady ? (
+                <button
+                  type="button"
+                  className="sidebar-scrim"
+                  aria-label="Close navigation"
+                  onClick={closeMobileNavigation}
+                />
               ) : null}
-              {/* The one foreground operation, above whichever page is routed below
+              {!settingsMode ? (
+                <ShellSidebar
+                  collapsed={!mobileNavigation && sidebarCollapsed}
+                  deploymentAccess={deploymentAccess}
+                  desktopDeployment={desktopDeployment}
+                  desktopWindowChrome={desktopWindowChrome}
+                  hostClient={hostClient}
+                  mobile={mobileNavigation}
+                  mobileOpen={mobileNavigation && mobileNavigationOpen && drawerReady}
+                  onCloseMobile={closeMobileNavigation}
+                  onLoadEarlierTasks={async () => {
+                    try {
+                      await hostClient.loadEarlierTasks();
+                    } catch (error) {
+                      reportActionError(error);
+                      throw error;
+                    }
+                  }}
+                  onOpenShortcuts={openShortcuts}
+                  onSetTaskDone={setTaskDone}
+                  onToggleCollapsed={toggleSidebar}
+                />
+              ) : null}
+              {!settingsMode && !mobileNavigation && !sidebarCollapsed ? (
+                <PaneResizeHandle
+                  ariaControls="app-sidebar"
+                  ariaLabel="Resize navigation sidebar"
+                  max={sidebarWidthRange.max}
+                  min={sidebarWidthRange.min}
+                  onCommit={commitSidebarWidth}
+                  onResize={setSidebarWidth}
+                  range={sidebarWidthRange}
+                  side="left"
+                  value={sidebarWidth}
+                />
+              ) : null}
+              <main className="app-shell__main" aria-hidden={overlayOpen} inert={overlayOpen}>
+                {loadError || actionError ? (
+                  <div className="notice notice--error shell-error" role="alert">
+                    <span className="shell-error__message">{loadError ?? actionError}</span>
+                    {!loadError ? (
+                      <button
+                        aria-label="Dismiss error"
+                        className="icon-btn"
+                        onClick={() => setActionError(null)}
+                        type="button"
+                      >
+                        <Icon name="close" />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {/* The one foreground operation, above whichever page is routed below
               it, because it outlives navigation and every mutating control on
               those pages is disabled while it runs. */}
-              <DeploymentOperationBanner bridge={localBridge} snapshot={deploymentAccess} />
-              <VoiceIsland />
-              <SidebarChromeProvider
-                onRestore={toggleSidebar}
-                restoreVisible={!settingsMode && !mobileNavigation && sidebarCollapsed}
-              >
-                {settingsMode ? (
-                  routes
-                ) : (
-                  <WorkspaceLayout
-                    middle={
-                      <PlaceStage
-                        chromeSignIn={chromeSignIn}
-                        hostClient={hostClient}
-                        hostConnected={snapshot.connection === "connected"}
-                        onReportError={reportActionError}
-                      />
-                    }
-                  >
-                    {routes}
-                  </WorkspaceLayout>
-                )}
-              </SidebarChromeProvider>
-            </main>
+                <DeploymentOperationBanner bridge={localBridge} snapshot={deploymentAccess} />
+                <VoiceIsland />
+                <SidebarChromeProvider
+                  onRestore={toggleSidebar}
+                  restoreVisible={!settingsMode && !mobileNavigation && sidebarCollapsed}
+                >
+                  {settingsMode ? (
+                    routes
+                  ) : (
+                    <WorkspaceLayout
+                      middle={
+                        <PlaceStage
+                          chromeSignIn={chromeSignIn}
+                          hostClient={hostClient}
+                          hostConnected={snapshot.connection === "connected"}
+                          onReportError={reportActionError}
+                        />
+                      }
+                    >
+                      {routes}
+                    </WorkspaceLayout>
+                  )}
+                </SidebarChromeProvider>
+              </main>
 
-            {sharingWorkspace && snapshot.user ? (
-              <WorkspaceSharingDialog
-                client={hostClient}
-                currentUserId={snapshot.user.id}
-                onClose={() => setSharingWorkspaceId(null)}
-                workspace={sharingWorkspace}
-              />
-            ) : null}
-            {newWorkspaceOpen ? (
-              <NewWorkspaceDialog
-                creating={creatingWorkspace}
-                defaultBacking={
-                  snapshot.deploymentShape?.defaultWorkspaceBacking ?? "local-directory"
-                }
-                environments={snapshot.environments}
-                error={newWorkspaceError}
-                onClose={() => {
-                  if (!creatingWorkspace) setNewWorkspaceOpen(false);
-                }}
-                onCreate={(input) => void createWorkspace(input)}
-                sharedStorageAvailable={
-                  snapshot.deploymentShape?.defaultWorkspaceBacking === "portablefs"
-                }
-              />
-            ) : null}
-            {harnessAuthentication ? (
-              <HarnessAuthenticationDialog
-                client={hostClient}
-                placement={harnessAuthentication}
-                onClose={closeHarnessAuthentication}
-                onReady={closeHarnessAuthentication}
-              />
-            ) : null}
-            {shortcutsOpen ? (
-              <ShortcutsHelp
+              {sharingWorkspace && snapshot.user ? (
+                <WorkspaceSharingDialog
+                  client={hostClient}
+                  currentUserId={snapshot.user.id}
+                  onClose={() => setSharingWorkspaceId(null)}
+                  workspace={sharingWorkspace}
+                />
+              ) : null}
+              {newWorkspaceOpen ? (
+                <NewWorkspaceDialog
+                  creating={creatingWorkspace}
+                  defaultBacking={
+                    snapshot.deploymentShape?.defaultWorkspaceBacking ?? "local-directory"
+                  }
+                  environments={snapshot.environments}
+                  error={newWorkspaceError}
+                  onClose={() => {
+                    if (!creatingWorkspace) setNewWorkspaceOpen(false);
+                  }}
+                  onCreate={(input) => void createWorkspace(input)}
+                  sharedStorageAvailable={
+                    snapshot.deploymentShape?.defaultWorkspaceBacking === "portablefs"
+                  }
+                />
+              ) : null}
+              {harnessAuthentication ? (
+                <HarnessAuthenticationDialog
+                  client={hostClient}
+                  placement={harnessAuthentication}
+                  onClose={closeHarnessAuthentication}
+                  onReady={closeHarnessAuthentication}
+                />
+              ) : null}
+              {shortcutsOpen ? (
+                <ShortcutsHelp
+                  desktop={desktopWindowChrome}
+                  onClose={() => setShortcutsOpen(false)}
+                />
+              ) : null}
+            </div>
+            {settingsMode ? null : (
+              <WorkspaceKeys
                 desktop={desktopWindowChrome}
-                onClose={() => setShortcutsOpen(false)}
+                hostClient={hostClient}
+                onShowShortcuts={openShortcuts}
+                restored={placeRestored}
               />
-            ) : null}
-          </div>
-          {settingsMode ? null : (
-            <WorkspaceKeys
-              desktop={desktopWindowChrome}
-              hostClient={hostClient}
-              onShowShortcuts={openShortcuts}
-              restored={placeRestored}
-            />
-          )}
-        </TabCloserProvider>
-      </AppIconProvider>
-    </WorkspaceProvider>
+            )}
+          </TabCloserProvider>
+        </AppIconProvider>
+      </WorkspaceProvider>
+    </VoiceContext>
   );
 }
 
