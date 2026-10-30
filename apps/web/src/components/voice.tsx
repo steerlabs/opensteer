@@ -13,6 +13,7 @@ import type { DictationController } from "@opensteer/client/dictation";
 import type { HostClient } from "@opensteer/client/host";
 import {
   VoiceController,
+  type VoiceControllerInput,
   type VoiceLevels,
   type VoicePhase,
   type VoiceSnapshot,
@@ -44,9 +45,10 @@ export function useVoiceRuntime(
   hostClient: HostClient,
   navigate: (target: VoiceTarget) => void,
   dictation: DictationController | null,
+  places?: VoiceControllerInput["places"],
 ): VoiceController | null {
-  const latest = useRef({ navigate, dictation });
-  latest.current = { navigate, dictation };
+  const latest = useRef({ navigate, dictation, places });
+  latest.current = { navigate, dictation, places };
   const [controller, setController] = useState<VoiceController | null>(null);
   useEffect(() => {
     const created = new VoiceController({
@@ -54,6 +56,7 @@ export function useVoiceRuntime(
       media: createBrowserVoiceMediaPort(),
       navigate: (target) => latest.current.navigate(target),
       createId: () => crypto.randomUUID(),
+      places: () => latest.current.places?.() ?? Promise.resolve([]),
       onStart: async () => {
         const dictating = latest.current.dictation;
         const owner = dictating?.getSnapshot().owner;

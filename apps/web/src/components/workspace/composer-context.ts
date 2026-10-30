@@ -191,26 +191,13 @@ export function useComposerContext({
     const stillAsked = () => current && draft === generationRef.current;
     // A new document is a new candidate; an answer for another one is dropped.
     if (followedRef.current?.key !== candidateKey) setFollowed(null);
-    void hostClient
-      .readBrowserContextCandidate(sessionId, tabId)
-      .then(async (candidate) => {
+    void autoPlacePart(hostClient, place)
+      .then(async (part) => {
         if (!stillAsked() || frozenRef.current !== null) return;
-        // A blank tab has nothing to ask about; only a web page follows the draft.
-        if (
-          !/^https?:\/\//iu.test(candidate.url) ||
-          `${place.key}:${candidate.documentId}` !== candidateKey
-        ) {
+        if (part?.type !== "browser-page" || `${place.key}:${part.documentId}` !== candidateKey) {
           setFollowed(null);
           return;
         }
-        const part = browserPagePart({
-          auto: true,
-          documentId: candidate.documentId,
-          sessionId,
-          tabId,
-          title: candidate.title,
-          url: candidate.url,
-        });
         // Read again for its title, the page keeps its picture until a newer one is taken.
         const held = followedRef.current;
         const picture = held?.key === candidateKey ? held.chip.thumbnail : null;
@@ -388,6 +375,20 @@ export function useComposerContext({
     }),
     [add, chips, error, freeze, frozen, parts, pending, places, remove, reset, restore, prepend],
   );
+}
+
+/** The shown place's automatic composer reference, read at the time it is asked for. */
+export async function autoPlacePart(
+  hostClient: HostClient,
+  place: PlaceItem | null,
+): Promise<PlacePart | null> {
+  if (place?.availability !== "ready") return null;
+  if (place.destination.kind !== "browser") return nativePart(place);
+  const { sessionId, tabId } = place.destination;
+  if (!tabId) return null;
+  const candidate = await hostClient.readBrowserContextCandidate(sessionId, tabId);
+  if (!/^https?:\/\//iu.test(candidate.url)) return null;
+  return browserPagePart({ auto: true, ...candidate });
 }
 
 /** A part built here is still parsed by the one place schema the Host reads. */

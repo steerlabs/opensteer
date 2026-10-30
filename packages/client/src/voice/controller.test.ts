@@ -1,5 +1,7 @@
+import { EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HarnessInstanceIdSchema } from "@opensteer/core";
+import { browserPagePart } from "../host/pending-send.js";
+import { threadPlacementOptions } from "../host/thread-placement.js";
 import type { RunEntry } from "../host/client.js";
 import { VoiceStartError, type VoiceCall, type VoiceSnapshot as Snapshot } from "./contract.js";
 import { VoiceController, voiceAccount, type VoiceControllerInput } from "./controller.js";
@@ -191,6 +193,12 @@ describe("VoiceController", () => {
 
   it("routes navigation, leaves ambiguity for Chat, and never creates Chat just to navigate", async () => {
     const f = setup({ home: "absent" });
+    const snapshot = f.host.getSnapshot();
+    const account = voiceAccount(snapshot)!;
+    f.publish({
+      harnesses: snapshot.harnesses.filter((h) => h.id === account.harnessInstanceId),
+      executionPreferences: { ...snapshot.executionPreferences, history: [] },
+    });
     const createHome = vi.spyOn(f.host, "createHome");
     const dispatch = vi.spyOn(f.host, "dispatch");
     await f.controller.start();
@@ -227,53 +235,39 @@ describe("VoiceController", () => {
     f.dispose();
   });
 
-  it("creates first Chat with an account on the computer owning Main's files", async () => {
+  it("uses the remembered AI independently of the voice account", async () => {
     const f = setup({ home: "absent" });
     const snapshot = f.host.getSnapshot();
-    const account = voiceAccount(snapshot)!;
-    const environment = snapshot.environments.find((entry) => entry.id === account.environmentId)!;
+    const placement = threadPlacementOptions(snapshot.environments, snapshot.harnesses).find(
+      (p) => p.available && p.harnessInstanceId !== voiceAccount(snapshot)!.harnessInstanceId,
+    )!;
+    expect(placement).toBeDefined();
     f.publish({
-      environments: [
-        ...snapshot.environments,
-        {
-          ...environment,
-          id: "owner",
-          harnessCatalogs: environment.harnessCatalogs
-            .filter((catalog) => catalog.harnessInstanceId === account.harnessInstanceId)
-            .map((catalog) => ({
-              ...catalog,
-              harnessInstanceId: HarnessInstanceIdSchema.parse(
-                "hin_12345678-1234-4123-8123-123456789abc",
-              ),
-            })),
-        },
-      ],
-      harnesses: [
-        ...snapshot.harnesses,
-        ...snapshot.harnesses
-          .filter((harness) => harness.id === account.harnessInstanceId)
-          .map((harness) => ({
-            ...harness,
-            id: "hin_12345678-1234-4123-8123-123456789abc",
-            environmentId: "owner",
-          })),
-      ],
-      workspaces: snapshot.workspaces.map((workspace) => ({
-        ...workspace,
-        environmentId: "owner",
-      })),
+      executionPreferences: {
+        ...snapshot.executionPreferences,
+        accessMode: "approval-required",
+        history: [
+          {
+            environmentId: EnvironmentIdSchema.parse(placement.environmentId),
+            harnessInstanceId: HarnessInstanceIdSchema.parse(placement.harnessInstanceId),
+            modelSelection: placement.modelSelection,
+          },
+        ],
+      },
     });
     const createHome = vi
       .spyOn(f.host, "createHome")
-      .mockRejectedValue(new Error("fixture stops before send"));
+      .mockRejectedValue(new Error("stop before send"));
     await f.controller.start();
-    f.emit({ type: "heard", turnId: "ask", text: "What is two plus two?" });
+    f.emit({ type: "heard", turnId: "ask", text: "Help me" });
     await vi.waitFor(
       () =>
         expect(createHome).toHaveBeenCalledWith(
           expect.objectContaining({
-            environmentId: "owner",
-            harnessInstanceId: "hin_12345678-1234-4123-8123-123456789abc",
+            environmentId: placement.environmentId,
+            harnessInstanceId: placement.harnessInstanceId,
+            modelSelection: placement.modelSelection,
+            accessMode: "approval-required",
           }),
         ),
       { timeout: 100 },
@@ -281,24 +275,106 @@ describe("VoiceController", () => {
     f.dispose();
   });
 
-  it("does not create Chat on a voice computer when Main has no runnable account", async () => {
+  it.each([false, true])(
+    "refuses before opening a call when Chat needs an AI (stale=%s)",
+    async (stale) => {
+      const f = setup({ home: "absent" });
+      const snapshot = f.host.getSnapshot();
+      f.publish({
+        executionPreferences: {
+          ...snapshot.executionPreferences,
+          history: stale
+            ? [
+                {
+                  environmentId: EnvironmentIdSchema.parse(
+                    "env_12345678-1234-4123-8123-123456789abc",
+                  ),
+                  harnessInstanceId: HarnessInstanceIdSchema.parse(
+                    "hin_12345678-1234-4123-8123-123456789abc",
+                  ),
+                  modelSelection: threadPlacementOptions(
+                    snapshot.environments,
+                    snapshot.harnesses,
+                  )[0]!.modelSelection,
+                },
+              ]
+            : [],
+        },
+      });
+      const createHome = vi.spyOn(f.host, "createHome");
+      await f.controller.start();
+      expect(f.controller.getSnapshot().notice).toEqual({
+        kind: "choose-ai",
+        message: "Choose an AI for Chat, then talk to Opensteer.",
+        action: null,
+      });
+      expect(f.provider.open).not.toHaveBeenCalled();
+      expect(createHome).not.toHaveBeenCalled();
+      f.dispose();
+    },
+  );
+
+  it("rechecks the AI choice before creating Chat during a call", async () => {
     const f = setup({ home: "absent" });
     const snapshot = f.host.getSnapshot();
+    const account = voiceAccount(snapshot)!;
     f.publish({
-      workspaces: snapshot.workspaces.map((workspace) => ({
-        ...workspace,
-        environmentId: "offline-owner",
-      })),
+      harnesses: snapshot.harnesses.filter((h) => h.id === account.harnessInstanceId),
+      executionPreferences: { ...snapshot.executionPreferences, history: [] },
     });
-    const createHome = vi.spyOn(f.host, "createHome");
     await f.controller.start();
-    f.emit({ type: "heard", turnId: "ask", text: "What is two plus two?" });
-    await vi.waitFor(() => expect(f.controller.getSnapshot().notice).not.toBeNull(), {
+    expect(f.provider.open).toHaveBeenCalledTimes(1);
+    f.publish({ harnesses: snapshot.harnesses });
+    const createHome = vi.spyOn(f.host, "createHome");
+    f.emit({ type: "heard", turnId: "ask", text: "Help me" });
+    await vi.waitFor(() => expect(f.controller.getSnapshot().notice?.kind).toBe("choose-ai"), {
       timeout: 100,
     });
     expect(createHome).not.toHaveBeenCalled();
+    expect(f.call.close).toHaveBeenCalledTimes(1);
     f.dispose();
   });
+
+  it.each(["ready", "reject", "timeout"])(
+    "sends text with best-effort places (%s)",
+    async (mode) => {
+      const page = browserPagePart({
+        auto: true,
+        sessionId: "bsn_12345678-1234-4123-8123-123456789abc",
+        tabId: "tab:test",
+        title: "Page",
+        url: "https://example.com",
+      });
+      const places = vi.fn(() =>
+        mode === "ready"
+          ? Promise.resolve([page])
+          : mode === "reject"
+            ? Promise.reject(new Error("unavailable"))
+            : new Promise<readonly (typeof page)[]>(() => {}),
+      );
+      const f = setup({ input: { places } });
+      const dispatch = vi.spyOn(f.host, "dispatch");
+      await f.controller.start();
+      f.emit({ type: "heard", turnId: "ask", text: "Explain this" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(places).toHaveBeenCalledTimes(1);
+      if (mode === "timeout") expect(dispatch).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(mode === "timeout" ? 1500 : 0);
+      await vi.waitFor(
+        () =>
+          expect(dispatch).toHaveBeenCalledWith(
+            expect.objectContaining({
+              content: [
+                { type: "text", text: "Explain this" },
+                ...(mode === "ready" ? [page] : []),
+              ],
+            }),
+          ),
+        { timeout: 100 },
+      );
+      f.dispose();
+    },
+  );
 
   it("returns to listening when Chat's Run ends without a spoken reply", async () => {
     const f = setup();

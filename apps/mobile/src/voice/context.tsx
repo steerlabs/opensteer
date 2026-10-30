@@ -1,3 +1,4 @@
+import { voicePlaces } from "./places.js";
 import { VoiceController, type VoiceTarget } from "@opensteer/client/voice";
 import { StackActions } from "@react-navigation/native";
 import { randomUUID } from "expo-crypto";
@@ -27,6 +28,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
       media: voiceMediaPort,
       navigate: (target) => show(client.getSnapshot().selection.deploymentId, target),
       createId: randomUUID,
+      places: () => voicePlaces(hostClient, navigationRef.getCurrentRoute()),
       onStart: async () => {
         const owner = dictation.getSnapshot().owner;
         if (owner) await dictation.stop(owner);
