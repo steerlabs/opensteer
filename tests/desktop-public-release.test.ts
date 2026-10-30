@@ -205,6 +205,14 @@ async function releaseFixture(channel: "stable" | "beta" = "stable") {
   return { dir, manifest, release };
 }
 
+// GitHub's by-tag endpoint returns only published releases; a draft is found by listing.
+function releaseApi(release: { draft: boolean }, args: readonly string[]): string {
+  if (args.includes("--paginate")) return JSON.stringify([[release]]);
+  if (release.draft && args.some((arg) => arg.includes("/releases/tags/")))
+    throw new Error("gh: Not Found (HTTP 404)");
+  return JSON.stringify(release);
+}
+
 it("creates alpha drafts beside legacy releases, reuses exact assets, refuses drift and private public feeds", async () => {
   const { dir, manifest, release } = await releaseFixture();
   let exists = false;
@@ -276,7 +284,7 @@ it("publishes only the certified zip and never publishes stable without certific
         const output = args[args.indexOf("--dir") + 1]!;
         for (const name of [...Object.keys(fixture.manifest.assets), "release.json"])
           await writeFile(path.join(output, name), await readFile(path.join(fixture.dir, name)));
-      } else if (exe === "gh") return JSON.stringify(fixture.release);
+      } else if (exe === "gh") return releaseApi(fixture.release, args);
       else if (exe === "curl") {
         const dest = args[args.indexOf("-o") + 1]!;
         await writeFile(dest, await readFile(path.join(fixture.dir, path.basename(dest))));
@@ -331,7 +339,7 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
             ? "tampered"
             : await readFile(path.join(dir, name)),
         );
-    } else if (exe === "gh") return JSON.stringify(release);
+    } else if (exe === "gh") return releaseApi(release, args);
     else if (exe === "curl") {
       expect(args).not.toContain("Authorization");
       const dest = args[args.indexOf("-o") + 1]!;
@@ -397,11 +405,13 @@ it("refuses an explicit draft channel mismatch before contacting GitHub", async 
 
 it("beta drafts and publication never mark Latest", async () => {
   const { dir, manifest, release } = await releaseFixture("beta");
+  let created = false;
   const run: typeof runBounded = async (exe, args) => {
     if (args.includes("PATCH")) {
       expect(args).toContain("prerelease=true");
       expect(args).toContain("make_latest=false");
     } else if (args[1] === "create") {
+      created = true;
       expect(args).toContain("--prerelease");
       expect(args).toContain("--latest=false");
       expect(args).toContain(path.join(dir, "release.json"));
@@ -413,8 +423,8 @@ it("beta drafts and publication never mark Latest", async () => {
     } else if (exe === "curl") {
       const dest = args[args.indexOf("-o") + 1]!;
       await writeFile(dest, await readFile(path.join(dir, path.basename(dest))));
-    } else if (args.includes("--paginate")) return "[[]]";
-    else return JSON.stringify(release);
+    } else if (args.includes("--paginate") && !created) return "[[]]";
+    else return releaseApi(release, args);
     return "";
   };
   await draft(dir, "steerlabs/opensteer", run, "beta");

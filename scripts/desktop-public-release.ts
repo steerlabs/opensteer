@@ -350,6 +350,21 @@ async function verifyDraftAssets(repo: string, tag: string, run: Run, expectedBy
   }
 }
 
+// GitHub's by-tag endpoint returns only published releases, so drafts are found by
+// listing. A listing also distinguishes absence from authentication or network
+// failures; never create on an ambiguous error.
+async function findRelease(repo: string, tag: string, run: Run) {
+  const releases = z
+    .array(z.array(releaseSchema))
+    .parse(
+      JSON.parse(
+        await run("gh", ["api", "--paginate", "--slurp", `repos/${repo}/releases?per_page=100`]),
+      ),
+    )
+    .flat();
+  return releases.find((release) => release.tag_name === tag);
+}
+
 export async function draft(
   dirInput: string,
   repoInput: string,
@@ -363,18 +378,7 @@ export async function draft(
   checkChannel(manifest, channel);
   publicGuard(repo, manifest);
   await verifyAssets(dir, manifest);
-  // A listing distinguishes absence from authentication/network failures; never create on an ambiguous error.
-  const releases = z.array(releaseSchema).parse(
-    z
-      .array(z.array(releaseSchema))
-      .parse(
-        JSON.parse(
-          await run("gh", ["api", "--paginate", "--slurp", `repos/${repo}/releases?per_page=100`]),
-        ),
-      )
-      .flat(),
-  );
-  const existing = releases.find((release) => release.tag_name === manifest.tag);
+  const existing = await findRelease(repo, manifest.tag, run);
   if (existing) {
     releaseManifest(existing, manifest);
     if (!existing.draft) throw new Error("Existing release differs or is already published");
@@ -426,9 +430,8 @@ export async function publish(
 ) {
   const repo = repoSchema.parse(repoInput);
   const tag = tagSchema.parse(tagInput);
-  const release = releaseSchema.parse(
-    JSON.parse(await run("gh", ["api", `repos/${repo}/releases/tags/${tag}`])),
-  );
+  const release = await findRelease(repo, tag, run);
+  if (!release) throw new Error(`No release is tagged ${tag}`);
   const { manifest, bytes } = await verifyDraftAssets(repo, tag, run);
   releaseManifest(release, manifest);
   checkChannel(manifest, channel);
