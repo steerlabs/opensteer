@@ -261,3 +261,14 @@ it("keeps downloading when the person edits their message", async () => {
   expect(t.field.value).toBe("Keep writing during download");
   expect(t.field.selectionStart).toBe(10);
 });
+
+it("consumes the committed caret even when final text matches the preview", async () => {
+  const t = await setup();
+  await t.start();
+  await t.text();
+  await t.emit({ type: "text", finalized: ["good"], volatile: [] });
+  await t.end();
+  await t.edit("a good day!");
+  expect(t.field.selectionStart).toBe(11);
+  expect(t.field.selectionEnd).toBe(11);
+});

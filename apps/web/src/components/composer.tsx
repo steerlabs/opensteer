@@ -321,6 +321,7 @@ export function Composer({
         if (currentOwner.current !== owner) return;
         latestDraft.current = text;
         pendingSelection.current = selection;
+        setSelectionVersion((version) => version + 1);
         setDraft(text);
       },
     });
