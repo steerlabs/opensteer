@@ -427,6 +427,7 @@
 .side-section--tasks,
 .side-section--tabs {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   max-height: max-content;
   min-height: calc(var(--side-head) + var(--side-floor-rows) * var(--side-pitch) + 1px);
