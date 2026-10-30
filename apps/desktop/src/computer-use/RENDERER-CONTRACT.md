@@ -301,11 +301,11 @@ views, while retaining independent owner-generation and task-session/app authori
 never captures a Mac window itself or polls JPEG RPCs; the helper owns one SCStream and
 hardware H.264 encoder per exact binding.
 
-Mac owner views offer Take over / Give back when the helper, Desktop, Runner,
-Host and viewer negotiate owner input. The renderer must receive
-`display.state.editingVersion: 1` before offering editing; the person must explicitly
-take control of a read-write app. “Use on this Mac” remains the separate explicit
-activation operation above.
+Mac owner pictures accept input whenever the Host projects `display.state.sharedInput: 1`
+and current picture geometry is shown. Task Watch stays view-only. Editing additionally
+requires `editingVersion: 1`; typing focuses on a press, never on opening the view. Blur,
+hide, F6 and leaving reset input and cancel composition. “Use on this Mac” remains the
+separate activation operation above.
 
 The Mac editing transport and its native qualification requirements are owned by
 the [owner-input contract](../../../../docs/computer-use.md#negotiated-mac-owner-input).
