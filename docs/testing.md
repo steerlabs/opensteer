@@ -27,7 +27,8 @@ See [.github/scripts](../.github/scripts) and [.github/workflows/ci.yml](../.git
 Shard weights come from green hosted runs. Re-measure job timeouts after changing
 shards or job contents; failed runs count and cancellations/timeouts are lower
 bounds. See `scripts/ci-durations.ts` and `scripts/ci-timeouts.ts`. Main's full
-public lanes are never cancelled by a newer push. Scheduled/manual runs require
+public lanes keep one running and one pending run per branch: a newer push
+replaces the pending run, and a running run is never cancelled. Scheduled/manual runs require
 all native tasks; a skipped task cannot qualify them.
 
 ## Suites

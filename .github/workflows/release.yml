@@ -58,6 +58,7 @@ jobs:
       channel: ${{ steps.resolve.outputs.channel }}
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
+      superseded: ${{ steps.resolve.outputs.superseded }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -75,6 +76,7 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: node .github/scripts/release-plan.mjs preflight
   discover:
+    if: needs.preflight.outputs.superseded != 'true'
     needs: preflight
     runs-on: ubuntu-latest
     permissions:

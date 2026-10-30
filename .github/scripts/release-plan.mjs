@@ -76,8 +76,7 @@ export function preflight(
   if (git("tag", "--list", tag) && git("rev-parse", `${tag}^{commit}`) !== sha)
     throw Error("Existing tag points to another source");
   const source = { sha, version, channel, tag };
-  requireSourceChecks(source, pages, git);
-  return source;
+  return requireSourceChecks(source, pages, git) ?? source;
 }
 
 class SourceChecksPending extends Error {
@@ -97,6 +96,28 @@ function requireSourceChecks(source, pages, git) {
     .sort((a, b) => b.run_number - a.run_number);
   const latest = runs[0];
   if (!latest || latest.status !== "completed") throw new SourceChecksPending(source);
+  if (latest.conclusion === "cancelled" && Number.isSafeInteger(latest.id)) {
+    // Pending main runs coalesce. Only a later main push can retire this source;
+    // cancellation alone must never qualify or silently discard a release.
+    git("fetch", "origin", "main", "--no-tags");
+    const main = git("rev-list", "refs/remotes/origin/main").split("\n");
+    if (main[0] !== sha && main.includes(sha)) {
+      const newer = pages(
+        "actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100",
+        "workflow_runs",
+      )
+        .filter(
+          (item) =>
+            item.head_branch === "main" &&
+            item.event === "push" &&
+            item.run_number > latest.run_number &&
+            item.head_sha !== sha &&
+            exactSha.test(item.head_sha),
+        )
+        .sort((a, b) => b.run_number - a.run_number)[0];
+      if (newer) return { ...source, superseded: true, supersededBy: newer.head_sha };
+    }
+  }
   if (latest.conclusion !== "success" || !Number.isSafeInteger(latest.id))
     throw Error("The newest main CI run for this source must succeed");
   if (
@@ -158,8 +179,7 @@ export async function qualifiedPreflight(
   while (now() < deadline) {
     await sleep(Math.min(15_000, deadline - now()));
     try {
-      requireSourceChecks(source, pages, git);
-      return source;
+      return requireSourceChecks(source, pages, git) ?? source;
     } catch (error) {
       if (!(error instanceof SourceChecksPending)) throw error;
     }
@@ -216,6 +236,8 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
           : (() => {
               throw Error("Expected preflight or discover");
             })();
+    if (result.superseded)
+      console.log(`::notice::Release source ${result.sha} superseded by ${result.supersededBy}`);
     appendFileSync(
       process.env.GITHUB_OUTPUT,
       Object.entries(result)

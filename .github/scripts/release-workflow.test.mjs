@@ -433,6 +433,7 @@ test("preflight refuses missing, failed, pending or non-main qualification of th
     const job = f.state.jobs[0];
     for (const mutation of [
       { conclusion: "failure" },
+      { conclusion: "cancelled" },
       { status: "in_progress" },
       { head_sha: "b".repeat(40) },
       { head_branch: "other" },
@@ -640,6 +641,97 @@ test("CI wait is bounded and failed main runs or API errors fail closed", async 
       qualifiedPreflight({ root: f.root, event: "push" }, f.run, { sleep: neverSleep }),
       /API unavailable/,
     );
+  } finally {
+    f.close();
+  }
+});
+
+test("a cancelled source skips cleanly only after main advances and a newer push CI exists", async () => {
+  const f = fixture();
+  try {
+    f.state.runs[0].status = "in_progress";
+    let clock = 0;
+    let newerSha;
+    const result = await qualifiedPreflight({ root: f.root, event: "push" }, f.run, {
+      now: () => clock,
+      timeoutMs: 30,
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+        writeFileSync(path.join(f.root, "change"), "newer main");
+        f.git("commit", "-am", "newer main");
+        newerSha = f.git("rev-parse", "HEAD");
+        f.git("update-ref", "refs/remotes/origin/main", newerSha);
+        f.state.runs[0].status = "completed";
+        f.state.runs[0].conclusion = "cancelled";
+        f.state.runs.push({
+          ...f.state.runs[0],
+          id: 44,
+          run_number: 9,
+          head_sha: newerSha,
+          status: "queued",
+          conclusion: null,
+        });
+      },
+    });
+    assert.deepEqual(result, { ...f.source, superseded: true, supersededBy: newerSha });
+    assert.equal(
+      workflow.jobs.preflight.outputs.superseded,
+      "${{ steps.resolve.outputs.superseded }}",
+    );
+    const evaluate = (job, needs) =>
+      runInNewContext(workflow.jobs[job].if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
+        needs,
+        cancelled: () => false,
+        github: { event_name: "push" },
+        inputs: { publish: true },
+      });
+    const needs = {
+      preflight: { result: "success", outputs: { ...result, superseded: "true" } },
+      discover: { result: "skipped", outputs: {} },
+      build: { result: "skipped", outputs: {} },
+      draft: { result: "skipped", outputs: {} },
+    };
+    for (const job of ["discover", "build", "draft", "publish-insider", "publish-stable"])
+      assert.equal(Boolean(evaluate(job, needs)), false, job);
+
+    const cancelled = { ...f.state.runs[0] };
+    const newer = { ...f.state.runs[1] };
+    for (const { main = newerSha, replacement = newer, conclusion = "cancelled" } of [
+      { main: f.source.sha },
+      { replacement: null },
+      { replacement: { ...newer, run_number: cancelled.run_number - 1 } },
+      { replacement: { ...newer, event: "pull_request" } },
+      { replacement: { ...newer, head_branch: "other" } },
+      {
+        replacement: {
+          ...newer,
+          head_sha: f.source.sha,
+          status: "completed",
+          conclusion: "cancelled",
+        },
+      },
+      { main: f.git("rev-parse", `${f.source.sha}^`) },
+      { conclusion: "failure" },
+      { conclusion: "success" },
+    ]) {
+      // Select the old source first, then change main/CI while qualification waits.
+      f.git("update-ref", "refs/remotes/origin/main", f.source.sha);
+      f.state.runs = [{ ...cancelled, status: "in_progress", conclusion: null }];
+      f.state.jobs = [];
+      clock = 0;
+      await assert.rejects(
+        qualifiedPreflight({ root: f.root, event: "push" }, f.run, {
+          now: () => clock,
+          timeoutMs: 30,
+          sleep: async (milliseconds) => {
+            clock += milliseconds;
+            f.git("update-ref", "refs/remotes/origin/main", main);
+            f.state.runs = [{ ...cancelled, conclusion }, ...(replacement ? [replacement] : [])];
+          },
+        }),
+        conclusion === "success" ? /Check must succeed/ : /must succeed/,
+      );
+    }
   } finally {
     f.close();
   }

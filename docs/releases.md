@@ -24,10 +24,13 @@ Downgrading the app does not undo migrations. Receipt drift fails closed.
 ## Public desktop releases
 
 Eligible main pushes resolve main HEAD and wait for that exact SHA's newest main
-CI and Check. Insiders are signed, notarized Beta prereleases, never Latest.
-See the workflow's exact path exclusions: shipped notices and agent skills are
-build inputs, so a blanket Markdown exclusion is wrong. There are no schedule,
-tag-push or PR triggers. GITHUB_TOKEN-created tags do not retrigger releases.
+CI and Check. Main CI runs coalesce, so if that run was cancelled, main has moved
+past the SHA and a newer main push run exists, the release skips as superseded;
+any other CI failure still blocks it. Insiders are signed, notarized Beta
+prereleases, never Latest. See the workflow's exact path exclusions: shipped
+notices and agent skills are build inputs, so a blanket Markdown exclusion is
+wrong. There are no schedule, tag-push or PR triggers. GITHUB_TOKEN-created tags
+do not retrigger releases.
 
 Per-channel concurrency coalesces pending runs but never cancels a running build
 mid-notarization. A coalesced stable dispatch may need redispatch. Never publish

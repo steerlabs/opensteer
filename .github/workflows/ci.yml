@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name }}
+  group: ci-${{ github.event_name == 'push' && github.ref || github.event.pull_request.number || github.sha }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
@@ -66,6 +66,8 @@ jobs:
           # The test-lint baseline must be compared with its merge base on main.
           fetch-depth: 0
       - uses: ./.github/actions/ci-setup
+        with:
+          go: "false"
       - run: mkdir -p "$RUNNER_TEMP/evidence"
       - shell: bash
         run: |
@@ -73,6 +75,8 @@ jobs:
           {
             pnpm format:check
             pnpm lint
+            # Prose guards: docs-only changes run no test lane, so lint carries them.
+            pnpm exec vitest run tests/product-name-spelling.test.ts
             node --test .github/scripts/*.test.mjs
             node .github/scripts/fork-safety.mjs .github/workflows/ci.yml
           } 2>&1 | tee "$RUNNER_TEMP/evidence/lint.log"
@@ -125,7 +129,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/ci-setup
+      - id: setup
+        uses: ./.github/actions/ci-setup
       - run: |-
           mkdir -p "$RUNNER_TEMP/evidence"
           {
@@ -135,11 +140,31 @@ jobs:
         shell: bash
       - uses: ./.github/actions/ci-browser
       - run: pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH"
+      - name: Test native-fs once per selected unit lane
+        if: matrix.shard == 1
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm --filter @opensteer/runner test:native-fs 2>&1 | tee "$RUNNER_TEMP/evidence/native-fs.log"
       - shell: bash
         run: |
           set -o pipefail
-          pnpm pretest
+          pnpm --filter @opensteer/runner build:native-fs
+          pnpm --filter @opensteer/runner build:native-fs:test
+          pnpm --filter @opensteer/desktop build:process-supervisor
           pnpm exec vitest run --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.log"
+      - name: Verify populated Go caches before publishing
+        if: ${{ success() && matrix.shard == 1 && steps.setup.outputs.go-cache-hit != 'true' }}
+        shell: bash
+        run: |
+          test -n "$(find "$(go env GOMODCACHE)/cache/download" -name '*.ziphash' -print -quit)"
+          test -n "$(find "$(go env GOCACHE)" -name '*-d' -print -quit)"
+      - name: Publish compiler-owned Go caches
+        if: ${{ success() && matrix.shard == 1 && steps.setup.outputs.go-cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.setup.outputs.go-cache-paths }}
+          key: ${{ steps.setup.outputs.go-cache-key }}
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -168,7 +193,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/ci-setup
+      - id: setup
+        uses: ./.github/actions/ci-setup
       - run: |-
           mkdir -p "$RUNNER_TEMP/evidence"
           {
@@ -192,6 +218,18 @@ jobs:
         run: |
           set -o pipefail
           pnpm test:integration -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.log"
+      - name: Verify populated Go caches before publishing
+        if: ${{ success() && matrix.shard == 1 && steps.setup.outputs.go-cache-hit != 'true' && needs.changes.outputs.tests == 'false' }}
+        shell: bash
+        run: |
+          test -n "$(find "$(go env GOMODCACHE)/cache/download" -name '*.ziphash' -print -quit)"
+          test -n "$(find "$(go env GOCACHE)" -name '*-d' -print -quit)"
+      - name: Publish compiler-owned Go caches
+        if: ${{ success() && matrix.shard == 1 && steps.setup.outputs.go-cache-hit != 'true' && needs.changes.outputs.tests == 'false' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.setup.outputs.go-cache-paths }}
+          key: ${{ steps.setup.outputs.go-cache-key }}
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -352,7 +390,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.browser-journeys != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -403,6 +441,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/ci-setup
+        with:
+          go: "false"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: ${{ runner.temp }}/evidence
