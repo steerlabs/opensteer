@@ -61,10 +61,7 @@
         "scripts/mac-app-tree.py",
         "scripts/install.sh",
         "apps/desktop/native/computer-use/Tests/Fixtures/helper-wire.json",
-        "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
-        "tsconfig.json",
-        "tsconfig.base.json",
-        "apps/desktop/tsconfig.json"
+        "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json"
       ],
       "lane": true
     },

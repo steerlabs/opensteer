@@ -110,14 +110,24 @@ export async function nativeInputs(): Promise<Record<string, string[]>> {
             !defaultTestExclude.some((glob) => path.matchesGlob(file, glob)),
         )
       : [entry];
-  // Vite transforms each module with the tsconfig files above it.
+  // Vite and tsx compile each module with the tsconfig files above it, and what
+  // those extend.
+  const extended = (tsconfig: string): string[] => {
+    const target = /"extends"\s*:\s*"([^"]+)"/u.exec(
+      readFileSync(path.join(root, tsconfig), "utf8"),
+    )?.[1];
+    if (!target?.startsWith(".")) return [tsconfig];
+    const file = path.join(path.dirname(tsconfig), target);
+    return [tsconfig, ...(tracked.includes(file) ? extended(file) : [])];
+  };
   const tsconfigs = (file: string) =>
     path
       .dirname(file)
       .split("/")
       .map((_, index, parts) => path.join(...parts.slice(0, index + 1), "tsconfig.json"))
       .concat("tsconfig.json")
-      .filter((candidate) => tracked.includes(candidate));
+      .filter((candidate) => tracked.includes(candidate))
+      .flatMap(extended);
   const inputs: Record<string, string[]> = {};
   for (const { task, scripts = [], vitest = [], lane } of config.tasks) {
     const entries = [
@@ -132,8 +142,7 @@ export async function nativeInputs(): Promise<Record<string, string[]>> {
       /^packages\/[^/]+\//u.test(file) ? file.split("/").slice(0, 2).join("/") : file;
     for (const file of await imports(entries)) {
       files.add(collapse(file));
-      if (vitest.length || lane)
-        for (const tsconfig of tsconfigs(file)) files.add(collapse(tsconfig));
+      for (const tsconfig of tsconfigs(file)) files.add(collapse(tsconfig));
     }
     inputs[task] = [...files].sort((left, right) => left.localeCompare(right, "en"));
   }
