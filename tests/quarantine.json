@@ -491,7 +491,72 @@
     "deadline": "2026-11-06T06:00:00Z",
     "sha": "7870453ee544688227da991d4044f1f9cd72b066",
     "evidence": [
-      "tests (1) on 7870453 (PR #245, which changed only tests/quarantine.json): after 788 ms the restored storage digest was e3b0c442…b855, the SHA-256 of empty input, instead of 800410d6…b0b8, so the checkpoint restored nothing; the run also logged 'Browser Runtime sent an event before its snapshot' and 'Page.navigate failed'. The same job passed on rerun at the same SHA (run 41010720550, attempt 2) in 3.96 s. Fix why a checkpoint can be read before its storage is written, keeping the cookie, local storage and IndexedDB round-trip assertions unchanged."
+      "tests (1) on 7870453 (PR #245, which changed only tests/quarantine.json): after 788 ms the restored storage digest was e3b0c442…b855, the SHA-256 of empty input, instead of 800410d6…b0b8, so the checkpoint restored nothing; the run also logged 'Browser Runtime sent an event before its snapshot' and 'Page.navigate failed'. The same job passed on rerun at the same SHA (run 41010720550, attempt 2) in 3.96 s. Fix why a checkpoint can be read before its storage is written, keeping the cookie, local storage and IndexedDB round-trip assertions unchanged.",
+      "W5 log reinspection: the historical failure is line 1724, the collected snapshot digest BEFORE restore, after account and empty-value assertions passed. It does not establish that restore returned nothing. The event-before-snapshot messages belong to browser-service negative tests in the same job. Current fixture already awaits exportSnapshot at the launcher owner; new assertions check Runtime.evaluate exceptionDetails and its IndexedDB completion result. Partial browser-side localStorage publication after closing the writer remains a hypothesis, not a demonstrated fix; retain quarantine and all round-trip assertions."
+    ]
+  },
+  {
+    "file": "apps/host/src/agents/background-work.integration.test.ts",
+    "name": ["Background work", "keeps background work through a Host restart"],
+    "area": "Agent orchestration",
+    "owner": "Host/Runner maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-10-30T14:55:12Z",
+    "deadline": "2026-11-06T14:55:12Z",
+    "sha": "1f07627fcd1d735a2457a0af14ef567a7cb73c47",
+    "evidence": [
+      "https://github.com/steerlabs/opensteer/actions/runs/41073881100/job/124126629137: restart case exhausted 180 s; cleanup exhausted another 30 s. The containment AggregateError names stack startup/operations. Startup already returned and restartHost is this case's only tracked operation, so cleanup was waiting on the unfinished restart, not a second independent failure.",
+      "The log does not identify which restart stage stalled. Shutdown draining a live Run/event is a hypothesis; no evidence establishes a missed background wakeup, wall-clock deadline expiry or execution-lease race. Fixture containment then forcibly removes run databases (57P01 administrator termination), explaining the later connection errors.",
+      "Keep every completion/deadline/node assertion. Bound restart and individual database conditions and release the fake child in finally. The new unit regression proves the old polling deadline did not bound an in-flight database read. This register preserves ownership; it does not skip the test or authorize a passing gate.",
+      "W5 investigation (2026-10-30): the focused restart passed with named stop/join/listener, connected Runner, ready-catalog visibility, background projection and released completion observations. No shutdown stall reproduced; cause remains unresolved. Bootstrap readiness is not proof of the new boot catalog commit. Need restart-stage gates and onRunnerCatalogsCommitted observation from the vertical-stack fixture owner (W4/W2); W5 deliberately does not edit that shared fixture. No quarantine removal, retries or deadline increase."
+    ]
+  },
+  {
+    "file": "apps/host/src/agents/execution-nodes.integration.test.ts",
+    "name": [
+      "Execution nodes",
+      "attributes an OpenCode subagent's steps and question to it, and a resumed session is a new node (subagents)"
+    ],
+    "area": "Agent orchestration",
+    "owner": "Host/Runner maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-30T00:00:00Z",
+    "deadline": "2026-11-06T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "W5 investigation: hold the actual request.opened commit, observe its exact Request ID, prove the row is absent while held, then release and await that same pending Request before answering. The current fixture resumes only after POST /permission/per_child1/reply; a timer does not independently resume it. The held-commit interleaving passes for all three OpenCode variants. This rules out losing that specific held publication in current source, but does not reproduce the historical missing Request or establish its cause. Keep running; no retries or larger deadlines."
+    ]
+  },
+  {
+    "file": "apps/host/src/agents/execution-nodes.integration.test.ts",
+    "name": [
+      "Execution nodes",
+      "attributes an OpenCode subagent's steps and question to it, and a resumed session is a new node (subagents-resume-early)"
+    ],
+    "area": "Agent orchestration",
+    "owner": "Host/Runner maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-30T00:00:00Z",
+    "deadline": "2026-11-06T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "W5 investigation: hold the actual request.opened commit, observe its exact Request ID, prove the row is absent while held, then release and await that same pending Request before answering. The current fixture resumes only after POST /permission/per_child1/reply; a timer does not independently resume it. The held-commit interleaving passes for all three OpenCode variants. This rules out losing that specific held publication in current source, but does not reproduce the historical missing Request or establish its cause. Keep running; no retries or larger deadlines."
+    ]
+  },
+  {
+    "file": "apps/host/src/browser/browser-presence.integration.test.ts",
+    "name": [
+      "Browser presence and conversation usage",
+      "cold-loads revisioned tabs, attributes admitted activity, fences stop, and replays accepted auto sends"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-10-30T00:00:00Z",
+    "deadline": "2026-11-06T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "W5 investigation: hold an older real Host catalogsForViewers projection; let a newer projection publish and await the client-applied generation/revision, then release and acknowledge receipt of the older projection on the real realtime socket. The client retains the newer catalog, and the original attribution/stop/replay assertions pass. The held producer is released and joined in finally. This rules out stale-revision acceptance for this controlled reversed completion, not every Host coalescing path. Historical realtime timeout remains unresolved; no fix is claimed from repeat passes. Keep running without retries or larger deadlines."
     ]
   },
   {
