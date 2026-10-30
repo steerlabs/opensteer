@@ -86,6 +86,14 @@ describe("dictation contract", () => {
         finalized: ["a".repeat(dictationTextMaxLength + 1)],
       }).success,
     ).toBe(false);
+    // An emoji is one code point but two UTF-16 units; the bound counts units, as Swift does.
+    const halfLimitOfEmoji = "😀".repeat(dictationTextMaxLength / 2);
+    expect(DictationEventSchema.safeParse({ ...text, finalized: [halfLimitOfEmoji] }).success).toBe(
+      true,
+    );
+    expect(
+      DictationEventSchema.safeParse({ ...text, volatile: [`${halfLimitOfEmoji}a`] }).success,
+    ).toBe(false);
     expect(
       DictationEventSchema.safeParse({
         ...text,
