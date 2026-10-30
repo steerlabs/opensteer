@@ -29,7 +29,7 @@ const configSchema = z.object({
 export const nativeInputsPath = path.join(root, ".github/scripts/ci-native-inputs.json");
 
 /** Everything `entries` statically import, from one build. */
-async function imports(entries: readonly string[]): Promise<string[]> {
+async function bundled(entries: readonly string[]): Promise<string[]> {
   const result = await build({
     entryPoints: entries.map((entry) => path.join(root, entry)),
     // Several entries need an output directory; nothing is written.
@@ -55,7 +55,42 @@ async function imports(entries: readonly string[]): Promise<string[]> {
       },
     ],
   });
-  return Object.keys(result.metafile.inputs).filter((file) => !file.includes("node_modules/"));
+  // A key can carry its import attributes: `data.json with { type: 'json' }`.
+  return Object.keys(result.metafile.inputs)
+    .map((file) => file.replace(/ with \{.*\}$/u, ""))
+    .filter((file) => !file.includes("node_modules/"));
+}
+
+// Code that loads a file through createRequire names it only in a string, through a
+// saved `require` or inline: `createRequire(import.meta.url)("./x.cjs")`.
+const required =
+  /(?:\brequire|\bcreateRequire\([^()]*\))\(\s*(["'])(\.{1,2}\/[^"']+)\1\s*,?\s*\)/gu;
+
+/** Repository files `source`, at `file`, loads by a relative path through createRequire. */
+export function requiredFiles(file: string, source: string): string[] {
+  if (!source.includes("createRequire")) return [];
+  return [...source.matchAll(required)].map(([, , specifier]) =>
+    path.relative(root, path.resolve(root, path.dirname(file), specifier!)),
+  );
+}
+
+/**
+ * Everything `entries` import, statically or by a relative require through
+ * createRequire, which a bundler cannot see; the required files' own requires follow.
+ */
+async function imports(entries: readonly string[]): Promise<string[]> {
+  const pending = new Set(entries);
+  let files: string[] = [];
+  for (;;) {
+    files = await bundled([...pending]);
+    const more = files.flatMap((file) => {
+      if (!/\.[cm]?[jt]sx?$/u.test(file)) return [];
+      return requiredFiles(file, readFileSync(path.join(root, file), "utf8"));
+    });
+    const before = pending.size;
+    for (const file of more) pending.add(file);
+    if (pending.size === before) return files;
+  }
 }
 
 export async function nativeInputs(): Promise<Record<string, string[]>> {

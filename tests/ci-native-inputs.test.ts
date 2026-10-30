@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { z } from "zod";
 import { nativeMacInputs } from "../.github/scripts/ci-changes.mjs";
-import { nativeInputs, nativeInputsPath } from "../scripts/ci-native-inputs.js";
+import { nativeInputs, nativeInputsPath, requiredFiles } from "../scripts/ci-native-inputs.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const config = z
@@ -51,4 +51,25 @@ it("selects each Swift test task for every repository file its tests read", () =
       }
   }
   expect(uncovered, "add the files to the task's extra in ci-native-mac.json").toEqual([]);
+});
+
+// A bundler cannot see what code loads through createRequire, so the generator reads
+// the string itself, in both forms the build scripts use.
+it("follows createRequire loads, assigned or called inline", () => {
+  const source = `
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { signingMode } = require("./macos-release-identity.cjs");
+const { signingKeychainArguments } = createRequire(import.meta.url)(
+  "./signing-input.cjs",
+);
+const { timePhase } = createRequire(import.meta.url)("../../../scripts/release-identity.cjs");
+const ws = createRequire(import.meta.url)("ws");
+`;
+  expect(requiredFiles("apps/desktop/scripts/build.ts", source).sort()).toEqual([
+    "apps/desktop/scripts/macos-release-identity.cjs",
+    "apps/desktop/scripts/signing-input.cjs",
+    "scripts/release-identity.cjs",
+  ]);
+  expect(requiredFiles("apps/desktop/scripts/plain.ts", 'require("./a.cjs")')).toEqual([]);
 });

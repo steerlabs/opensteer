@@ -363,11 +363,14 @@ test("the native input list names only tracked files and packages", () => {
       );
 });
 test("required-but-dynamic and directory-boundary inputs select exactly", () => {
-  // createRequire loads these at run time; only the `extra` directory covers them.
-  assert.deepEqual(swiftOnly(decide(["apps/desktop/scripts/signing-input.cjs"], realGraph)), [
-    "computer-helper",
-    "passwords-helper",
-  ]);
+  // The build scripts load these through createRequire; the generated list follows them.
+  for (const file of [
+    "apps/desktop/scripts/signing-input.cjs",
+    "apps/desktop/scripts/macos-release-identity.cjs",
+  ])
+    assert.deepEqual(swiftOnly(decide([file], realGraph)), ["computer-helper", "passwords-helper"]);
+  // A script beside them that no build loads runs neither helper.
+  assert.deepEqual(swiftOnly(decide(["apps/desktop/scripts/after-pack.cjs"], realGraph)), []);
   assert.deepEqual(
     swiftOnly(decide(["apps/desktop/native/computer-use-x/a.swift"], realGraph)),
     [],

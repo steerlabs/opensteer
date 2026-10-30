@@ -1,7 +1,9 @@
 {
   "computer-helper": [
     "apps/desktop/scripts/build-computer-use-helper.ts",
+    "apps/desktop/scripts/macos-release-identity.cjs",
     "apps/desktop/scripts/native-build-cache.ts",
+    "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/signed-helpers/metadata.ts",
     "packages/browser-core",
     "packages/browser-profile",
@@ -21,7 +23,9 @@
   ],
   "passwords-helper": [
     "apps/desktop/scripts/build-passwords-broker.ts",
+    "apps/desktop/scripts/macos-release-identity.cjs",
     "apps/desktop/scripts/native-build-cache.ts",
+    "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/signed-helpers/metadata.ts",
     "packages/core",
     "packages/protocol",
