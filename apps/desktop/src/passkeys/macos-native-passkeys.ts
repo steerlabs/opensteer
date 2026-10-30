@@ -261,15 +261,13 @@ export function createMacosNativePasskeys(
   dependencies: {
     platform?: NodeJS.Platform;
     load?: () => unknown;
-    addonExists?: () => boolean;
     log?: (domain: string, code: number) => void;
   } = {},
 ): NativePasskeys {
   let addon: Addon | undefined;
   if ((dependencies.platform ?? process.platform) === "darwin") {
     try {
-      if (dependencies.addonExists?.() !== false)
-        addon = addonSchema.parse((dependencies.load ?? loadAddon)());
+      addon = addonSchema.parse((dependencies.load ?? loadAddon)());
     } catch {
       /* Missing or incompatible native code is unavailable. */
     }

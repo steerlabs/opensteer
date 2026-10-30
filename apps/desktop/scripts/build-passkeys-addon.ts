@@ -109,11 +109,13 @@ export async function buildPasskeysAddon(
   await copyFile(universal, path.join(stageDirectory, "opensteer-passkeys.node"));
 }
 /** Development bundling can run without Xcode; an explicit build supplies its optional addon. */
-export async function stagePasskeysAddon(): Promise<void> {
+export async function stagePasskeysAddon(
+  stageDirectory = path.join(desktop, "dist/passkeys"),
+): Promise<void> {
   if ((process.env.OPENSTEER_DESKTOP_TARGET_OS ?? process.platform) !== "darwin") return;
   if (process.env.OPENSTEER_DESKTOP_RELEASE === "1") {
-    if (releasePasskeyInputs(process.env)) await buildPasskeysAddon();
-    else await rm(path.join(desktop, "dist/passkeys/opensteer-passkeys.node"), { force: true });
+    if (releasePasskeyInputs(process.env)) await buildPasskeysAddon(stageDirectory);
+    else await rm(path.join(stageDirectory, "opensteer-passkeys.node"), { force: true });
     return;
   }
   const source = path.join(desktop, "generated-native/passkeys/opensteer-passkeys.node");
@@ -125,9 +127,8 @@ export async function stagePasskeysAddon(): Promise<void> {
   }
   if (run("/usr/bin/lipo", ["-archs", source]).split(/\s+/u).sort().join(" ") !== "arm64 x86_64")
     throw new Error("Passkey addon must include both architectures");
-  const directory = path.join(desktop, "dist/passkeys");
-  await mkdir(directory, { recursive: true });
-  await copyFile(source, path.join(directory, "opensteer-passkeys.node"));
+  await mkdir(stageDirectory, { recursive: true });
+  await copyFile(source, path.join(stageDirectory, "opensteer-passkeys.node"));
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
   await buildPasskeysAddon();
