@@ -2045,6 +2045,43 @@ integration.sequential("Trigger authority through real Host services and Postgre
     },
   );
 
+  it("accepts minute-precision dates through legacy MCP Trigger writes", async () => {
+    const f = await fixture([], { chatAccessMode: "full-access" });
+    const client = await connectMcp(await mcpEndpoint(), f.chatToken);
+    const oneShot = await client.callTool({
+      name: "trigger_write",
+      arguments: {
+        action: "create",
+        anchorThreadId: f.chat.id,
+        name: "Minute precision",
+        program,
+        source: { kind: "schedule", at: "2040-01-02T10:00+00:00" },
+      },
+    });
+    expect(oneShot.isError, JSON.stringify(oneShot)).not.toBe(true);
+    const recurring = await client.callTool({
+      name: "trigger_write",
+      arguments: {
+        action: "create",
+        anchorThreadId: f.chat.id,
+        name: "Recurring",
+        program,
+        source: { kind: "schedule", cron: "0 * * * *", timezone: "UTC" },
+      },
+    });
+    expect(recurring.isError, JSON.stringify(recurring)).not.toBe(true);
+    const saved = createdSchema.parse(recurring.structuredContent);
+    const moved = await client.callTool({
+      name: "trigger_write",
+      arguments: {
+        action: "set_next_fire",
+        nextFireAt: "2040-01-02T09:30Z",
+        triggerId: saved.trigger.id,
+      },
+    });
+    expect(moved.isError, JSON.stringify(moved)).not.toBe(true);
+  });
+
   it.each(["workspace", "delegated"] as const)(
     "serves the frozen legacy Trigger contract to %s MCP sessions",
     async (profile) => {

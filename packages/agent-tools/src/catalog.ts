@@ -1,3 +1,4 @@
+import legacyTriggerWriteContract from "./fixtures/trigger-write-e45e4ecdc.json" with { type: "json" };
 import {
   BrowserTabReadInputSchema,
   BrowserTabWriteInputSchema,
@@ -94,6 +95,7 @@ export interface AgentToolAnnotations {
 
 export interface AgentToolDefinition<Input extends z.ZodType = z.ZodType> {
   readonly annotations: AgentToolAnnotations;
+  readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;
   readonly description: string;
   readonly id: AgentToolId;
   readonly inputSchema: Input;
@@ -872,32 +874,7 @@ if (
   throw new Error("Opensteer capability profile catalog is incomplete or contains duplicates");
 }
 
-// Frozen from e45e4ecdc: old Workspace/delegated Runners do not deliver the Trigger skill.
-const legacyTriggerProgramContract = [
-  "Trigger programs execute as Node.js ESM modules (Node 24 or newer) on the anchor Thread's Runner,",
-  "with the anchor Workspace mounted as the working directory, so relative paths and relative imports",
-  "resolve from the Workspace root. The source must export one default function (async or not):",
-  "The program object must declare toolContractVersion: use 2 for report/queue/steer delivery; version 1 remains available only to preserve existing queue/trigger semantics.",
-  "`export default async function ({ event, capabilities, opensteer }) { ... }`.",
-  "`event` is frozen ({ id, payload, receivedAt, source, trigger });",
-  '`event.source.kind` is "schedule" (with scheduledFor), "webhook" (with method, headers, and optional deliveryId),',
-  '"manual" (a manual run carries only the payload), or "watch" (the single startup event for a continuous watch).',
-  "A watch program runs continuously on the anchor Thread's machine and must not resolve; Opensteer restarts unexpected exits with exponential backoff and pauses the Trigger after three consecutive unexpected exits.",
-  "`capabilities.mcp` and `capabilities.integrationMcp` are short-lived Opensteer MCP endpoints ({ url, token });",
-  "`capabilities.browserCdp` is a short-lived CDP WebSocket endpoint ({ url, token }) or null when the Workspace has no browser grant.",
-  "For a watch, every non-null capability also has expiresAt.",
-  "Watch capabilities rotate while the process runs: call `opensteer.capabilities()` for the current values, and reconnect an expired CDP session with its current browserCdp value.",
-  "`opensteer.callTool(name, input)` calls Opensteer product tools (Workspaces, Threads, Triggers);",
-  "`opensteer.integrations.callTool(name, input)` calls integration tools already granted to the Workspace.",
-  "Supply a stable observationId with each watch call to thread_message or thread_delegate; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
-  "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in the Workspace's own node_modules are available;",
-  "Deno, Bun, and DOM globals such as window and document do not exist, and nothing installs packages automatically.",
-  "TypeScript runs through Node's built-in type transform: type annotations, enums, and namespaces work; tsconfig paths, decorators, and JSX do not.",
-  "For schedule, webhook, and manual runs, the awaited return value serialized as JSON (at most 512 KiB) becomes the occurrence result, and a thrown error fails the occurrence with its message and stack.",
-  "Their console output is captured as stdout and stderr (512 KiB each); watch stdout and stderr retain only their latest 16 KiB tails.",
-  "A program acts as its anchor Thread: its Opensteer tool calls reach only what that Thread can reach, and only a full-access agent can write one.",
-].join(" ");
-
+// Old Runners do not deliver the Trigger skill; keep their contract as data.
 export const legacyTriggerWriteTool = {
   annotations: {
     destructiveHint: false,
@@ -906,12 +883,11 @@ export const legacyTriggerWriteTool = {
     readOnlyHint: false,
     title: "Write Triggers",
   },
-  description: `Create and control durable schedule, webhook, and watch Triggers within your reach: pause, resume, cancel pending runs, or move the next run only when the anchor’s access mode is no higher than yours. Creating, changing what runs, manually running, or archiving requires full access and, outside Main, the same capability profile and Workspace as the anchor; tell the person when you create a Trigger or change what it runs. ${legacyTriggerProgramContract} action "create" requires name, anchorThreadId ("home" names the person’s Chat), program, and source. action "update" requires triggerId and expectedRevisionId, and applies the provided name, program, or source. action "set_status" requires triggerId and status. action "set_next_fire" requires triggerId and a future ISO nextFireAt for an active cron Trigger and moves the next unclaimed schedule run; runs already queued or running are untouched (use "cancel" for pending runs); normal cadence resumes after it. action "run" requires a schedule or webhook triggerId and queues one manual occurrence with the optional payload. action "cancel" requires triggerId and cancels the pending occurrence named by occurrenceId, or every pending occurrence of that Trigger when occurrenceId is omitted; occurrences that already started keep running.`,
+  advertisedInputSchema: legacyTriggerWriteContract.inputSchema,
+  description: legacyTriggerWriteContract.description,
   id: "trigger.write",
   inputSchema: TriggerWriteInputSchema.extend({
-    program: TriggerProgramSchema.extend({ toolContractVersion: z.literal([1, 2]) })
-      .describe(legacyTriggerProgramContract)
-      .optional(),
+    program: TriggerProgramSchema.extend({ toolContractVersion: z.literal([1, 2]) }).optional(),
   }),
   name: "trigger_write",
 } satisfies AgentToolDefinition;
