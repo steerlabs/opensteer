@@ -1,5 +1,13 @@
-import type { BrowserFrameStore, BrowserFrameView } from "@opensteer/client/host";
-import { browserFrameContentRect, browserCropCue } from "@opensteer/shared/browserPresentation";
+import type {
+  BrowserFrameStore,
+  BrowserFrameView,
+  BrowserRasterDemand,
+} from "@opensteer/client/host";
+import {
+  browserFrameContentRect,
+  browserCropCue,
+  browserRasterDensity,
+} from "@opensteer/shared/browserPresentation";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 
 interface CanvasTarget {
@@ -8,6 +16,7 @@ interface CanvasTarget {
   readonly context: CanvasRenderingContext2D;
   readonly source: BrowserFrameStore;
   readonly presented: (frame: BrowserFrameView) => void;
+  readonly demand: BrowserRasterDemand | null;
   active: boolean;
 }
 interface Picture {
@@ -123,6 +132,7 @@ class BrowserPicturePresenter {
         reported = frame;
         presented(frame);
       },
+      demand: targeted ? (source.rasterDemand?.(sessionId, this.#surfaceId) ?? null) : null,
       active: true,
     };
     this.#targets.add(target);
@@ -156,14 +166,18 @@ class BrowserPicturePresenter {
       }
     };
     const unsubscribe = source.subscribe(sessionId, read, targeted ? this.#surfaceId : undefined);
-    const stopResize = observeResize([canvas.parentElement ?? canvas], () => {
+    const relayout = () => {
       const frame = drawn.get(canvas);
-      if (frame) layoutBrowserCanvas(canvas, frame, target.allowUpscale);
-    });
+      if (frame) layoutBrowserCanvas(canvas, frame, target.allowUpscale, target.demand);
+    };
+    const stopResize = observeResize([canvas.parentElement ?? canvas], relayout);
+    const stopDensity = target.demand ? observeDevicePixelRatio(relayout) : () => undefined;
     read();
     return () => {
       unsubscribe();
       stopResize();
+      stopDensity();
+      target.demand?.release();
       this.#targets.delete(target);
       drawn.delete(canvas);
       layoutBrowserCanvas(canvas, null);
@@ -291,7 +305,7 @@ class BrowserPicturePresenter {
       if (canvas.width !== current.bitmap.width) canvas.width = current.bitmap.width;
       if (canvas.height !== current.bitmap.height) canvas.height = current.bitmap.height;
       context.drawImage(current.bitmap, 0, 0);
-      layoutBrowserCanvas(canvas, frame, target.allowUpscale);
+      layoutBrowserCanvas(canvas, frame, target.allowUpscale, target.demand);
       drawn.set(canvas, frame);
       target.presented(frame);
       canvas.dispatchEvent(new Event(browserPicturePresentedEvent, { bubbles: true }));
@@ -351,10 +365,27 @@ class BrowserPicturePresenter {
   }
 }
 
+/** Calls back whenever this display's device pixel ratio changes, such as moving to another screen. */
+function observeDevicePixelRatio(changed: () => void): () => void {
+  let query: MediaQueryList | null = null;
+  const listen = () => {
+    query?.removeEventListener("change", onChange);
+    query = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+    query.addEventListener("change", onChange);
+  };
+  const onChange = () => {
+    listen();
+    changed();
+  };
+  listen();
+  return () => query?.removeEventListener("change", onChange);
+}
+
 function layoutBrowserCanvas(
   canvas: HTMLCanvasElement,
   frame: BrowserFrameView | null,
   allowUpscale = false,
+  demand: BrowserRasterDemand | null = null,
 ): void {
   const stage = canvas.parentElement;
   if (!stage) return;
@@ -386,6 +417,14 @@ function layoutBrowserCanvas(
   if (!rect) return;
   for (const [key, value] of Object.entries(rect))
     stage.style.setProperty(`--browser-frame-${key}`, `${value}px`);
+  // The page is laid out in CSS pixels; ask for enough raster to fill what is shown.
+  demand?.update(
+    browserRasterDensity(
+      rect.width,
+      header.capture?.width ?? header.viewportWidth,
+      devicePixelRatio,
+    ),
+  );
 }
 
 function pictureKey(frame: BrowserFrameView): string {

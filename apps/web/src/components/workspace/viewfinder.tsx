@@ -178,6 +178,7 @@ function BrowserFinder({
         ? hostClient.retainBrowserWatch(sessionId, tabId, {
             captureRegion: true,
             frameWindow: true,
+            rasterDemand: true,
           })
         : undefined,
     [hostClient, sessionId, tabId, surfaceId, enabled],

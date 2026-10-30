@@ -224,6 +224,7 @@ export function PlaceBrowserView({
         picture: !native,
         captureRegion: true,
         frameWindow: true,
+        rasterDemand: true,
       });
       const previous = retained.current;
       if (previous) {
