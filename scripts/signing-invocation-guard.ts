@@ -162,6 +162,12 @@ function reviewed(file: string, tool: string, span: string, source: string): boo
     source.includes("signing-input.cjs")
   )
     return true;
+  if (
+    file === "scripts/public-download/eu-journey.ts" &&
+    tool === "codesign" &&
+    span.replace(/\s+/gu, "") === '["--force","--deep","--sign","-",badApp]'
+  )
+    return true;
   // Short reviewed routing list; each exception is invocation-specific, so a
   // second bare call in the same file is still rejected.
   if (file === "scripts/release-beta-mac.ts") {
