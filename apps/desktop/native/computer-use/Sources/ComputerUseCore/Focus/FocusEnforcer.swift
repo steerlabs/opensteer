@@ -207,6 +207,7 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     window: AXUIElement?, prepare: Bool, keys: Bool,
     finalCheck: @escaping @Sendable () throws -> Void = {},
     check: () throws -> Void,
+    hasPendingInput: () -> Bool = { false },
     deliver: (_ proceed: @escaping @Sendable () throws -> Void) async throws -> Result
   ) async throws -> (result: Result, unseen: Bool) {
     await OwnerFocusGate.shared.acquire()
@@ -219,9 +220,11 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
       target != nil && state.current.active ? keyWindowID(timeout: axMessagingTimeout) : nil
     let switching = target != nil && state.current.active && keyWindow != target
     let preparing = prepare && (!state.current.focus || switching)
+    defer { personDeliveryWindow.withLock { $0 = nil } }
     func deliverGuarded(_ round: Round?) async throws -> Result {
-      if let target { personDeliveryWindow.withLock { $0 = (target, false) } }
-      defer { personDeliveryWindow.withLock { $0 = nil } }
+      if let target {
+        personDeliveryWindow.withLock { if $0 == nil { $0 = (target, false) } }
+      }
       return try await deliver {
         try self.proceed()
         if round?.relinquished == true || self.personDeliveryWindow.current?.lost == true {
@@ -291,7 +294,7 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     release()
     release = {}
     round.begin()
-    let result: Result
+    var result: Result
     do {
       result = try await deliverGuarded(round)
     } catch {
@@ -301,7 +304,12 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     // Input is out: nothing stops the person's app being put back, and an app
     // left in front is reported, never passed off as delivered quietly.
     do {
-      if try await round.settle(check: {}, enforcement: nil, afterInput: true) {
+      if try await round.settle(check: {}, enforcement: nil, afterInput: true, additionalInput: {
+        guard self.personDeliveryWindow.current?.lost != true,
+          !OwnerFocusGate.shared.hasWaiters, hasPendingInput() else { return false }
+        result = try await deliverGuarded(round)
+        return true
+      }) {
         unseen = false
       }
     } catch let error as HelperError where error == Self.personSwitched {
@@ -711,11 +719,12 @@ private final class Round: @unchecked Sendable {
   /// ends once both apps heard of it and 100 ms passed without a notice.
   /// Returns whether the person's app had to be put back. A person who chose
   /// the target is never sent back; before the input that ends the round.
-  func settle(isolation: isolated (any Actor)? = #isolation, check: () throws -> Void, enforcement: (any Error)?, afterInput: Bool = false)
+  func settle(isolation: isolated (any Actor)? = #isolation, check: () throws -> Void, enforcement: (any Error)?, afterInput: Bool = false,
+              additionalInput: () async throws -> Bool = { false })
     async throws -> Bool
   {
     seen.withLock { $0.lastEventTime = Round.now() }
-    let started = Round.now()
+    var started = Round.now()
     var lastRestore = 0.0
     var restored = false
     let targetApp = AXUIElementCreateApplication(target)
@@ -774,16 +783,19 @@ private final class Round: @unchecked Sendable {
         }
         // The reads above wait on apps; the front app is read again before
         // the round can end.
-        if !raised, ready || elapsed >= 1,
-          PrivateAPI.focusPID(front: true) == original.processIdentifier
-        {
+        if !raised, PrivateAPI.focusPID(front: true) == original.processIdentifier {
           let state = seen.current
-          if restored, !(state.originalActivated && state.targetDeactivated) {
-            // Both apps have yet to hear of the round trip.
-          } else if enforcement != nil || restored || state.realActivationObserved {
-            if Round.now() - state.lastEventTime >= 0.1 { break }
-          } else {
-            break
+          let acknowledged = !restored || state.originalActivated && state.targetDeactivated
+          let quiet = !(enforcement != nil || restored || state.realActivationObserved)
+            || Round.now() - state.lastEventTime >= 0.1
+          if acknowledged && quiet {
+            // The same guarded round can deliver another queued batch while
+            // watching for activation. The final input still gets a full watch.
+            if afterInput, !relinquished, try await additionalInput() {
+              started = Round.now()
+              continue
+            }
+            if ready || elapsed >= 1 { break }
           }
         }
       }

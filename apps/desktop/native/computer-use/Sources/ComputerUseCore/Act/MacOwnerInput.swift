@@ -280,6 +280,7 @@ final class MacOwnerInputWorker {
       }
       let current = Locked<MacOwnerInput.Batch?>(batch)
       await lease.mutations.beginPerson()
+      let burst = Locked(OwnerInputBurst(started: ProcessInfo.processInfo.systemUptime))
       lease.burstActive.withLock { $0 = true }
       var enteredFocus = false
       do {
@@ -295,9 +296,16 @@ final class MacOwnerInputWorker {
         try lease.check(map)
         enteredFocus = true
         _ = try await enforcer.guardedPerson(window: lease.binding.window.element, prepare: true, keys: true,
-          finalCheck: { try lease.check(map) }, check: { try lease.check(map) }
+          finalCheck: { try lease.check(map) }, check: { try lease.check(map) },
+          hasPendingInput: {
+            lease.active.current && !lease.guardFailed.current
+              && !lease.mutations.hasWaitingInput
+              && burst.current.acceptsInput(at: ProcessInfo.processInfo.systemUptime)
+              && lease.mailbox.hasPending
+          }
         ) { proceed in
-          await self.consumeBurst(lease, current: current, proceed: proceed)
+          if current.current == nil { current.withLock { $0 = lease.mailbox.pop() } }
+          await self.consumeBurst(lease, current: current, burst: burst, proceed: proceed)
         }
         // The quiet wait and focus watch can include an external caret change.
         if let map = lease.producer.inputMap { await publishContext(lease, map: map) }
@@ -322,8 +330,8 @@ final class MacOwnerInputWorker {
   }
 
   private func consumeBurst(_ lease: MacOwnerAttachment, current: Locked<MacOwnerInput.Batch?>,
+                            burst: Locked<OwnerInputBurst>,
                             proceed: @escaping @Sendable () throws -> Void) async {
-    let burstEnd = ProcessInfo.processInfo.systemUptime + 5
     while let batch = current.withLock({ value in defer { value = nil }; return value }) {
       let gate: @Sendable () throws -> Void = {
         guard ProcessInfo.processInfo.systemUptime < batch.deadline else { throw MacOwnerInput.Refusal("unsupported") }
@@ -331,9 +339,10 @@ final class MacOwnerInputWorker {
       }
       let result = await run(batch.params, lease: lease, reservation: batch.reservation, proceed: gate)
       batch.reply.resume(returning: result)
-      if result.outcome == "stale" { return }
+      if result.outcome != "dispatched" { burst.withLock { $0.end() }; return }
       guard lease.active.current, !lease.guardFailed.current,
-        ProcessInfo.processInfo.systemUptime < burstEnd else {
+        burst.current.acceptsInput(at: ProcessInfo.processInfo.systemUptime) else {
+        burst.withLock { $0.end() }
         if !lease.active.current { await cleanup(lease) }
         return
       }

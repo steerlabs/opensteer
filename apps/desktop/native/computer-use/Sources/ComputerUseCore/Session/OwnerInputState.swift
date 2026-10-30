@@ -17,6 +17,7 @@ final class AppMutationCoordinator: @unchecked Sendable {
   func endAgent() { edits.withLock { $0 += 1 }; gate.release() }
   func beginPerson() async { await gate.acquire() }
   func endPerson() { gate.release() }
+  var hasWaitingInput: Bool { gate.hasWaiters }
   /// Called while the lane is held, after delivery or physical cleanup.
   func setHeld(_ held: Bool, attachment: String) {
     contacts.withLock { if held { $0.insert(attachment) } else { $0.remove(attachment) } }
@@ -112,6 +113,7 @@ final class OwnerInputMailbox<Value: Sendable>: @unchecked Sendable {
   func pop() -> Value? {
     state.withLock { $0.values.isEmpty ? nil : $0.values.removeFirst() }
   }
+  var hasPending: Bool { state.withLock { !$0.values.isEmpty } }
   func finishIfEmpty() -> Bool {
     state.withLock {
       guard $0.values.isEmpty else { return false }
@@ -121,12 +123,23 @@ final class OwnerInputMailbox<Value: Sendable>: @unchecked Sendable {
   }
 }
 
+/// One focus round may accept more owner input while its final watch runs,
+/// but continuous arrivals cannot renew its share of the app's input lane.
+struct OwnerInputBurst {
+  let deadline: TimeInterval
+  private var ended = false
+  init(started: TimeInterval) { deadline = started + 5 }
+  mutating func end() { ended = true }
+  func acceptsInput(at time: TimeInterval) -> Bool { !ended && time < deadline }
+}
+
 /// AX discovery stays on separate executors; only the bounded native focus
 /// rounds share this gate, so restoration cannot compete over the local app.
 final class OwnerFocusGate: @unchecked Sendable {
   static let shared = OwnerFocusGate()
   private struct State { var held = false; var waiting: [CheckedContinuation<Void, Never>] = [] }
   private let state = Locked(State())
+  var hasWaiters: Bool { state.withLock { !$0.waiting.isEmpty } }
   func acquire() async {
     await withCheckedContinuation { continuation in
       let ready = state.withLock {
