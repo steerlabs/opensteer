@@ -16,7 +16,7 @@ catalog:
   "@types/node": 26.2.0
   "@types/pg": 8.21.0
   "@types/ws": 8.18.1
-  fastify: 5.12.2
+  fastify: 5.12.6
   kysely: 0.29.4
   pg: 8.23.0
   react: 19.3.0
