@@ -66,3 +66,21 @@ describe("mobile NodeNext resolution", () => {
     }
   });
 });
+
+describe("mobile mock Host entry", () => {
+  const app = new URL("../apps/mobile/src/app.tsx", import.meta.url).pathname;
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    [undefined, "./client/mock-host-port-disabled"],
+    ["0", "./client/mock-host-port-disabled"],
+    ["1", "./client/mock-host-port"],
+  ])("with EXPO_PUBLIC_OPENSTEER_MOCK=%s resolves %s", (mock, expected) => {
+    vi.stubEnv("EXPO_PUBLIC_OPENSTEER_MOCK", mock);
+    const resolveRequest = vi.fn(() => ({ type: "sourceFile", filePath: "resolved-by-metro" }));
+    const context = { originModulePath: app, resolveRequest };
+    config.resolver.resolveRequest(context, "./client/mock-host-port.js", "ios");
+    expect(resolveRequest).toHaveBeenCalledWith(context, expected, "ios");
+  });
+});
