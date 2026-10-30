@@ -48,3 +48,4 @@ export * from "./browser-tab-strip.js";
 export * from "./browser-preferences.js";
 
 export * from "./browser-editing.js";
+export * from "./saved-host-view.js";
