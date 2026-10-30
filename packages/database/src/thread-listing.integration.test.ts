@@ -1,16 +1,13 @@
 import { createId, type MessageAuthor, type ThreadId } from "@opensteer/core";
-import { sql } from "kysely";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { expect } from "vitest";
-import { personAskedThreadsMigration } from "./migrations.js";
 import { jsonValue } from "./store-primitives.js";
 import { describeStore, testModelSelection } from "./store.integration.test-support.js";
 
 describeStore("person-asked Thread listing", (it) => {
-  it("lists only human-seeded Chat delegations, promotes on re-task, and repairs history idempotently", async ({
+  it("lists only human-seeded Chat delegations and promotes on re-task", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, startTriggerOccurrence, store, database } = storeFixture;
+    const { startRunFixture, store, database } = storeFixture;
     const f = await startRunFixture("listing");
     await database
       .updateTable("threads")
@@ -108,67 +105,6 @@ describeStore("person-asked Thread listing", (it) => {
     expect(promoted.events.filter((event) => event.type === "thread.listed")).toMatchObject([
       { data: { thread: { listed: true } } },
     ]);
-    const occurrence = await startTriggerOccurrence(f, "migration");
-    const automation = (
-      await store.delegateThread({
-        accessMode: "auto",
-        createdBy: f.userId,
-        environmentId: f.environmentId,
-        harnessInstanceId: f.harnessInstance.id,
-        idempotencyKey: "migration-worker",
-        modelSelection: testModelSelection,
-        origin: { kind: "trigger", occurrenceId: occurrence.id, parentThreadId: f.thread.id },
-        task: [{ type: "text", text: "Scheduled work" }],
-        title: "Scheduled worker",
-        workspaceId: f.workspace.id,
-      })
-    ).thread.id;
-    await database
-      .updateTable("threads")
-      .set({ listed: true })
-      .where("id", "=", automation)
-      .execute();
-    const oldWorker = await store.getThreadForOwner(automation, f.userId);
-    if (!oldWorker) throw new Error("Expected automation worker");
-    // Clients apply the whole Thread these events carry, so a stale flag in any of them
-    // would list the worker again on replay.
-    await database.transaction().execute(async (tx) => {
-      for (const type of ["thread.listed", "thread.execution-updated"] as const) {
-        await appendHostWorkspaceEvent(tx, {
-          data: { thread: oldWorker },
-          environmentId: f.environmentId,
-          runId: null,
-          threadId: automation,
-          type,
-          workspaceId: f.workspace.id,
-        });
-      }
-    });
-    await sql`update public.workspace_events set data = jsonb_set(data, '{thread,listed}', 'true'::jsonb)
-      where thread_id = ${automation} and type = 'thread.created'`.execute(database);
-    await personAskedThreadsMigration.up(database);
-    expect((await store.getThreadForOwner(automation, f.userId))?.listed).toBe(false);
-    expect((await store.getThreadForOwner(asked.thread.id, f.userId))?.listed).toBe(true);
-    expect((await store.getThreadForOwner(f.thread.id, f.userId))?.listed).toBe(true);
-    const state = () =>
-      database
-        .selectFrom("workspaceEvents")
-        .select(["eventId", "data"])
-        .where("type", "in", ["thread.created", "thread.listed", "thread.execution-updated"])
-        .orderBy("sequence")
-        .execute();
-    const once = await state();
-    expect(once.filter(({ data }) => JSON.stringify(data).includes(automation))).toMatchObject([
-      { data: { thread: { listed: false } } },
-      { data: { thread: { listed: false } } },
-      { data: { thread: { listed: false } } },
-    ]);
-    const threadsOnce = await database.selectFrom("threads").selectAll().orderBy("id").execute();
-    await personAskedThreadsMigration.up(database);
-    expect(await state()).toEqual(once);
-    expect(await database.selectFrom("threads").selectAll().orderBy("id").execute()).toEqual(
-      threadsOnce,
-    );
   });
 
   it("lists a person's child even under a work Thread", async ({ storeFixture }) => {

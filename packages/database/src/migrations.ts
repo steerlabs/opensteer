@@ -6111,24 +6111,24 @@ export const personAskedThreadsMigration: Migration = {
     await sql`
       with asked as (
         select distinct delegation.child_thread_id as id
-        from public.delegations as delegation
-        join public.threads as parent on parent.id = delegation.parent_thread_id
-        join public.runs as run on run.id = delegation.parent_run_id
-        join public.messages as seed on seed.id = run.seed_input_id
+        from delegations as delegation
+        join threads as parent on parent.id = delegation.parent_thread_id
+        join runs as run on run.id = delegation.parent_run_id
+        join messages as seed on seed.id = run.seed_input_id
         where parent.role = 'conversation' and delegation.origin = 'run'
           and seed.author ->> 'kind' = 'human'
       ), listing as (
         select thread.id, (thread.parent_thread_id is null or asked.id is not null) as listed
-        from public.threads as thread left join asked on asked.id = thread.id
+        from threads as thread left join asked on asked.id = thread.id
       )
-      update public.threads as thread set listed = listing.listed
+      update threads as thread set listed = listing.listed
       from listing where thread.id = listing.id and thread.listed is distinct from listing.listed;
 
       -- Clients apply the whole Thread any event carries (created, listed or
       -- execution-updated), so every stored snapshot must agree on replay.
-      update public.workspace_events as event
+      update workspace_events as event
       set data = jsonb_set(event.data, '{thread,listed}', to_jsonb(thread.listed), true)
-      from public.threads as thread
+      from threads as thread
       where event.thread_id = thread.id
         and jsonb_typeof(event.data -> 'thread') = 'object'
         and event.data #>> '{thread,id}' = thread.id
