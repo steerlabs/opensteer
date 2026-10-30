@@ -41,10 +41,11 @@ in the ephemeral release VM, from a disposable copy in Applications. The normal
 HOME is retained only on these disposable runners, so macOS can
 use its existing Keychain. The checker refuses other machines unless they have
 `CI=true` and `RUNNER_TEMP` or the repository test-VM guest marker. A fresh data
-directory and temporary Workspace contain only Personal setup intent; the app
-creates its own database and credentials. The external check observes the
-supervisor's published Personal
-selection, loopback health and visible loaded window, then sends the app's normal
+directory contains only Personal setup intent; the app creates its own database
+and credentials. Packaged builds reject Workspace overrides, so the checker links
+the default Workspace path to temporary storage and refuses to replace an existing
+Workspace. The external check observes the
+supervisor's published Personal selection, loopback health and visible loaded window, then sends the app's normal
 SIGTERM quit and waits for its captured children to exit. The three-minute check
 retains logs and an optional VM screenshot on failure. It changes no shipped-app
 behavior, launch policy, debugger fuses, Keychain use or environment resolution.

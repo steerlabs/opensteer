@@ -1,6 +1,6 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, closeSync, openSync, watch } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir, homedir } from "node:os";
 import { guestAllowed } from "../apps/desktop/scripts/journey-isolation.js";
@@ -41,6 +41,7 @@ let app: ChildProcess | undefined;
 let quitting = false;
 let passed = false;
 let installed: string | undefined;
+let workspaceLink: string | undefined;
 let step = "preparing the isolated packaged app";
 const failure = new AbortController();
 function capture() {
@@ -203,7 +204,15 @@ try {
     path.join(copy, "Contents/Resources/personal-runtime/release.json"),
     "utf8",
   );
-  const intent = personalSetupIntent(releaseBytes, scratch, hostPort, postgresPort);
+  // Packaged builds reject Workspace overrides. Redirect their existing default only
+  // on this disposable machine, refusing to replace any pre-existing Workspace.
+  const workspaceParent = path.join(runnerHome, "OpenSteer");
+  await mkdir(workspaceParent, { recursive: true });
+  await mkdir(path.join(scratch, "Workspaces"));
+  const workspace = path.join(workspaceParent, "Workspaces");
+  await symlink(path.join(scratch, "Workspaces"), workspace);
+  workspaceLink = workspace;
+  const intent = personalSetupIntent(releaseBytes, workspaceParent, hostPort, postgresPort);
   await writeFile(path.join(data, "personal-deployment.v1.json"), JSON.stringify(intent), {
     mode: 0o600,
   });
@@ -294,6 +303,7 @@ try {
   killCaptured();
   if (installed) await command("sudo", ["-n", "rm", "-rf", installed], 10_000);
   // Preserve evidence when the caller did not provide an external artifacts directory.
+  if (workspaceLink) await rm(workspaceLink);
   if (values["artifacts-dir"]) await rm(scratch, { recursive: true, force: true });
   clearTimeout(hardDeadline);
 }
