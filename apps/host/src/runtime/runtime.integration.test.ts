@@ -2593,7 +2593,11 @@ integration("Host vertical slice", () => {
       completedPasses: preExpiryPasses,
       disconnectRecoveryCalls: disconnectRecovery.mock.calls.length,
     };
-    await advanceExecutionClock(clock, runtime, expiry.getTime() - clock.now() + 4_000);
+    // Settle at expiry before spending the post-expiry interval: a sweep samples
+    // time before its async query, and reschedules from the end of the clock step.
+    // Straddling expiry could otherwise put its next jittered pass past our stop.
+    await advanceExecutionClock(clock, runtime, expiry.getTime() - clock.now());
+    await advanceExecutionClock(clock, runtime, 4_000);
     await waitForCondition(async () => (await runStatus()) === "failed", 30_000);
     const evidence = await mkdtemp(join(tmpdir(), "opensteer-disconnect-clock-"));
     await writeFile(
