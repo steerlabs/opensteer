@@ -2,8 +2,9 @@
 // TypeScript tests read or launch must be one of them. Ways this guard could fail,
 // each pinned below:
 // - the tracer misses a read: sync, callback or promise API, a URL or Buffer path,
-//   an ESM named import bound before the tracer loaded, a directory listing, or a
-//   read in a process the test started;
+//   an ESM named import bound before the tracer loaded, a directory listing, a copy,
+//   or a read in a process the test started;
+// - the tracer misses a launch made through util.promisify or a shell;
 // - the tracer records Vitest's own main process, whose discovery lists the whole
 //   checkout, or records anything when no trace was asked for;
 // - the tracer breaks the code it observes, or traces its own trace writes;
@@ -74,6 +75,21 @@ test("launched repository files count, including words of a shell command", () =
       { root, tracked, inputs },
     ),
     ["exec apps/web/package.json", "shell apps/web/package.json"],
+  );
+});
+
+test("a copied tracked file, or a copied directory holding one, counts like a read or listing", () => {
+  const files = new Set([...tracked, "apps/web/src/a.ts"]);
+  assert.deepEqual(
+    uncoveredAccesses(
+      [
+        read("apps/web/package.json", "copy"),
+        read("apps/web/src", "copy"),
+        read("packages/apple-data", "copy"),
+      ],
+      { root, tracked: files, inputs },
+    ),
+    ["copy apps/web/package.json", "copy apps/web/src"],
   );
 });
 
@@ -164,6 +180,15 @@ await new Promise((done) => readFile("README.md", done));
 await new Promise((done) => createReadStream("LICENSE").on("close", done).resume());
 execFileSync(process.execPath, ["--eval", "require('node:fs').readFileSync('.npmrc')"]);
 spawnSync("sh", ["-c", "true"], { cwd: "docs" });
+const { promisify } = await import("node:util");
+const { execFile, exec } = await import("node:child_process");
+await promisify(execFile)("true", ["README.md"]);
+await promisify(exec)("true SECURITY.md");
+spawnSync("true NOTICE", { shell: true });
+const { copyFileSync, cpSync, mkdtempSync } = await import("node:fs");
+const scratch = mkdtempSync((await import("node:os")).tmpdir() + "/trace-");
+copyFileSync("CONTRIBUTING.md", scratch + "/c");
+cpSync("patches", scratch + "/p", { recursive: true });
 `,
     { VITEST: "true" },
   );
@@ -178,6 +203,11 @@ spawnSync("sh", ["-c", "true"], { cwd: "docs" });
     "read LICENSE",
     "read .npmrc",
     "exec docs/sh",
+    "exec README.md",
+    "shell true SECURITY.md",
+    "shell true NOTICE",
+    "copy CONTRIBUTING.md",
+    "copy patches",
   ])
     assert.ok(recorded.includes(access), `${access} missing from ${JSON.stringify(recorded)}`);
   assert.ok(!recorded.some((line) => line.includes("trace.jsonl")), "traced its own writes");

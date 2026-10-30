@@ -135,14 +135,22 @@ test("only a scheduled run with nothing new on main may skip everything", () => 
     },
     ...Object.fromEntries(lanes.map((k) => [k, { result: "skipped" }])),
   };
-  assert.doesNotThrow(() => validateResults(unchanged, needs, "schedule"));
+  const sha = "a".repeat(40);
+  assert.doesNotThrow(() => validateResults(unchanged, needs, "schedule", sha));
+  // The commit it vouches for must be the one this run is on.
+  assert.throws(
+    () => validateResults(unchanged, needs, "schedule", "b".repeat(40)),
+    /Only a scheduled run/,
+  );
   for (const event of ["push", "workflow_dispatch", "pull_request"])
-    assert.throws(() => validateResults(unchanged, needs, event), /Only a scheduled run/);
+    assert.throws(() => validateResults(unchanged, needs, event, sha), /Only a scheduled run/);
+  assert.throws(() => validateResults(plan, results, undefined), /Unknown CI event/);
   const partly = structuredClone(needs);
   partly.changes.outputs.lint = "true";
   partly.lint = { result: "success" };
   assert.throws(
-    () => validateResults({ ...unchanged, lanes: { ...none, lint: true } }, partly, "schedule"),
+    () =>
+      validateResults({ ...unchanged, lanes: { ...none, lint: true } }, partly, "schedule", sha),
     /Only a scheduled run/,
   );
 });

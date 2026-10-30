@@ -62,14 +62,24 @@ export async function nativeInputs(): Promise<Record<string, string[]>> {
   const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" })
     .split("\0")
     .filter(Boolean);
-  // A directory names the Vitest files `vitest run <directory>` runs there.
+  // An entry ending in "/" names the Vitest files `vitest run <directory>/` runs there.
   const testsIn = (entry: string) =>
-    tracked.filter(
-      (file) =>
-        (file === entry || file.startsWith(`${entry}/`)) &&
-        /\.test\.tsx?$/u.test(file) &&
-        !defaultTestExclude.some((glob) => path.matchesGlob(file, glob)),
-    );
+    entry.endsWith("/")
+      ? tracked.filter(
+          (file) =>
+            file.startsWith(entry) &&
+            /\.test\.tsx?$/u.test(file) &&
+            !defaultTestExclude.some((glob) => path.matchesGlob(file, glob)),
+        )
+      : [entry];
+  // Vite transforms each module with the tsconfig files above it.
+  const tsconfigs = (file: string) =>
+    path
+      .dirname(file)
+      .split("/")
+      .map((_, index, parts) => path.join(...parts.slice(0, index + 1), "tsconfig.json"))
+      .concat("tsconfig.json")
+      .filter((candidate) => tracked.includes(candidate));
   const inputs: Record<string, string[]> = {};
   for (const { task, scripts = [], vitest = [], lane } of config.tasks) {
     const entries = [
@@ -80,9 +90,14 @@ export async function nativeInputs(): Promise<Record<string, string[]>> {
     ];
     if (!entries.length) continue;
     const files = new Set<string>();
+    const collapse = (file: string) =>
+      /^packages\/[^/]+\//u.test(file) ? file.split("/").slice(0, 2).join("/") : file;
     for (const script of entries)
-      for (const file of await imports(script))
-        files.add(/^packages\/[^/]+\//u.test(file) ? file.split("/").slice(0, 2).join("/") : file);
+      for (const file of await imports(script)) {
+        files.add(collapse(file));
+        if (vitest.length || lane)
+          for (const tsconfig of tsconfigs(file)) files.add(collapse(tsconfig));
+      }
     inputs[task] = [...files].sort((left, right) => left.localeCompare(right, "en"));
   }
   return inputs;

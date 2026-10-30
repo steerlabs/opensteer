@@ -1,5 +1,7 @@
 import { allNativeMacTasks, lanes } from "./ci-changes.mjs";
-export function validateResults(plan, needs, event) {
+const events = new Set(["pull_request", "push", "schedule", "workflow_dispatch"]);
+export function validateResults(plan, needs, event, sha) {
+  if (!events.has(event)) throw new Error(`Unknown CI event: ${event}`);
   if (needs.changes?.result !== "success" || plan?.version !== 1 || plan.detectionError === true)
     throw new Error("Change detection failed");
   const tasks = plan.nativeMac;
@@ -20,9 +22,12 @@ export function validateResults(plan, needs, event) {
   const unchanged = plan.unchangedSince !== undefined;
   if (
     unchanged &&
-    (event !== "schedule" || tasks.length || Object.values(plan.lanes).some(Boolean))
+    (event !== "schedule" ||
+      plan.unchangedSince !== sha ||
+      tasks.length ||
+      Object.values(plan.lanes).some(Boolean))
   )
-    throw new Error("Only a scheduled run may skip everything, and only everything");
+    throw new Error("Only a scheduled run on an unchanged main may skip everything");
   // The scheduled and manual runs back up main's per-push macOS selection.
   const full = !unchanged && (event === "schedule" || event === "workflow_dispatch");
   if (full && tasks.length !== allNativeMacTasks.length)

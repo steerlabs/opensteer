@@ -78,6 +78,7 @@
     "apps/desktop/src/signed-helpers/metadata.ts",
     "apps/desktop/src/signed-helpers/signed-helper.ts",
     "apps/desktop/src/signed-helpers/signing-build.ts",
+    "apps/desktop/tsconfig.json",
     "apps/desktop/vitest.config.ts",
     "apps/runner/src/computer-apps/computer-use-bridge-client.ts",
     "apps/runner/src/computer-apps/computer-use-handler.ts",
@@ -86,6 +87,7 @@
     "apps/runner/src/computer-apps/macos-app-provider.ts",
     "apps/runner/src/computer-apps/module-handler.ts",
     "apps/runner/src/computer-apps/provider.ts",
+    "apps/runner/tsconfig.json",
     "packages/browser-core",
     "packages/browser-profile",
     "packages/browser-runtime-core",
@@ -118,6 +120,7 @@
     "tests/release-phone-cache.test.ts",
     "tests/storage-retention.test.ts",
     "tests/vm-slot-queue.test.ts",
+    "tsconfig.json",
     "vitest.config.ts"
   ],
   "computer-tests": [

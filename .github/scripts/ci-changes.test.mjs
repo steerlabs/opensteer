@@ -148,17 +148,23 @@ test("scheduled and manual runs take every task unless main has not changed", ()
     allNativeMacTasks,
   );
 });
-test("the last full run is the newest uncancelled scheduled or manual main run but this one", async () => {
+test("the last full run is the newest earlier scheduled or manual main run that passed", async () => {
+  const run = (run_number, head_sha, conclusion = "success", head_branch = "main") => ({
+    run_number,
+    head_sha,
+    head_branch,
+    status: conclusion ? "completed" : "in_progress",
+    conclusion,
+  });
   const pages = {
     schedule: [
-      { id: 9, run_number: 9, head_branch: "main", conclusion: null, head_sha: "this-run" },
-      { id: 8, run_number: 8, head_branch: "main", conclusion: "cancelled", head_sha: "cancelled" },
-      { id: 5, run_number: 5, head_branch: "main", conclusion: "failure", head_sha: "older" },
+      run(12, "later"),
+      run(9, "unfinished", null),
+      run(8, "cancelled", "cancelled"),
+      run(7, "failed", "failure"),
+      run(4, "older"),
     ],
-    workflow_dispatch: [
-      { id: 7, run_number: 7, head_branch: "feature", conclusion: "success", head_sha: "branch" },
-      { id: 6, run_number: 6, head_branch: "main", conclusion: "success", head_sha: "manual" },
-    ],
+    workflow_dispatch: [run(6, "branch", "success", "feature"), run(5, "manual")],
   };
   const urls = [];
   const request = async (url) => {
@@ -166,8 +172,14 @@ test("the last full run is the newest uncancelled scheduled or manual main run b
     const event = new URL(url).searchParams.get("event");
     return { ok: true, json: async () => ({ workflow_runs: pages[event] }) };
   };
+  // Run 10 sees neither the later run nor a failed, cancelled or unfinished one.
   assert.equal(
-    await lastFullRunSha({ repository: "o/r", runId: "9", token: "t", request }),
+    await lastFullRunSha({ repository: "o/r", runNumber: "10", token: "t", request }),
+    "manual",
+  );
+  // A re-run of a failed run keeps its number, so a later skip cannot vouch for it.
+  assert.equal(
+    await lastFullRunSha({ repository: "o/r", runNumber: "7", token: "t", request }),
     "manual",
   );
   assert.ok(
@@ -176,7 +188,7 @@ test("the last full run is the newest uncancelled scheduled or manual main run b
   await assert.rejects(
     lastFullRunSha({
       repository: "o/r",
-      runId: "9",
+      runNumber: "10",
       token: "t",
       request: async () => ({ ok: false, status: 403 }),
     }),

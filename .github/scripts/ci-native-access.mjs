@@ -13,7 +13,7 @@ import { pathToFileURL } from "node:url";
 import { nativeMacInputs } from "./ci-changes.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
-const kinds = new Set(["read", "list", "exec", "shell"]);
+const kinds = new Set(["read", "list", "copy", "exec", "shell"]);
 const under = (file, input) => file === input || file.startsWith(`${input}/`);
 
 export function parseAccessTrace(file) {
@@ -53,13 +53,17 @@ function named(record, checkout) {
 
 export function uncoveredAccesses(records, { root: checkout = root, tracked, inputs }) {
   const covered = (file) => inputs.some((input) => under(file, input));
+  const holdsTracked = (directory) => [...tracked].some((file) => file.startsWith(`${directory}/`));
   const uncovered = new Set();
   for (const record of records)
     for (const file of named(record, checkout)) {
       // A listing changes when any file under it does, so only a listed directory
-      // inside an input is covered.
-      if (record.kind === "list" ? !covered(file) : tracked.has(file) && !covered(file))
-        uncovered.add(`${record.kind} ${file}`);
+      // inside an input is covered; a copied directory reads every file under it.
+      const counts =
+        record.kind === "list" ||
+        tracked.has(file) ||
+        (record.kind === "copy" && holdsTracked(file));
+      if (counts && !covered(file)) uncovered.add(`${record.kind} ${file}`);
     }
   return [...uncovered].sort();
 }

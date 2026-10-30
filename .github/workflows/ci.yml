@@ -274,7 +274,7 @@ jobs:
           CI_ACCESS_TRACE: ${{ runner.temp }}/evidence/darwin-1.access.jsonl
         run: |
           export NODE_OPTIONS="--import $GITHUB_WORKSPACE/.github/scripts/ci-access-trace.mjs"
-          pnpm exec vitest run tests/helper-data-contracts.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords
+          pnpm exec vitest run tests/helper-data-contracts.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use/ apps/desktop/src/passwords/
           darwin_only=$(node .github/scripts/ci-test-files.mjs darwin-only)
           pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH" $darwin_only
           pnpm exec vitest run $darwin_only --reporter=default --reporter=./scripts/ci-inventory-reporter.ts

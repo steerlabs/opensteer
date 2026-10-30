@@ -58,8 +58,8 @@
         "tests/helper-data-contracts.test.ts",
         "packages/protocol/src/computer-use-helper-wire.test.ts",
         "packages/protocol/src/passwords-broker-wire.test.ts",
-        "apps/desktop/src/computer-use",
-        "apps/desktop/src/passwords"
+        "apps/desktop/src/computer-use/",
+        "apps/desktop/src/passwords/"
       ],
       "extra": [
         ".github/scripts/ci-access-trace.mjs",

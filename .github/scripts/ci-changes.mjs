@@ -298,19 +298,20 @@ export function detect({
   }
 }
 /**
- * The commit of the newest scheduled or manual main run other than this one; a
- * cancelled run qualified nothing. A run still going counts: it covers its commit.
+ * The commit of the newest earlier scheduled or manual main run that passed. A
+ * failed, cancelled or unfinished run qualified nothing, so the next scheduled run
+ * takes everything again; a later run cannot vouch for a re-run of an earlier one.
  */
 export async function lastFullRunSha({
   repository = process.env.GITHUB_REPOSITORY,
-  runId = process.env.GITHUB_RUN_ID,
+  runNumber = process.env.GITHUB_RUN_NUMBER,
   token = process.env.GITHUB_TOKEN,
   request = fetch,
 } = {}) {
   const runs = [];
   for (const event of ["schedule", "workflow_dispatch"]) {
     const response = await request(
-      `https://api.github.com/repos/${repository}/actions/workflows/ci.yml/runs?branch=main&event=${event}&per_page=20`,
+      `https://api.github.com/repos/${repository}/actions/workflows/ci.yml/runs?branch=main&event=${event}&status=success&per_page=20`,
       { headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}` } },
     );
     if (!response.ok) throw new Error(`Listing ${event} runs failed: HTTP ${response.status}`);
@@ -319,9 +320,10 @@ export async function lastFullRunSha({
   return runs
     .filter(
       (run) =>
-        String(run.id) !== String(runId) &&
         run.head_branch === "main" &&
-        run.conclusion !== "cancelled",
+        run.status === "completed" &&
+        run.conclusion === "success" &&
+        run.run_number < Number(runNumber),
     )
     .sort((left, right) => right.run_number - left.run_number)[0]?.head_sha;
 }
