@@ -28,9 +28,12 @@ const configSchema = z.object({
 });
 export const nativeInputsPath = path.join(root, ".github/scripts/ci-native-inputs.json");
 
-async function imports(entry: string): Promise<string[]> {
+/** Everything `entries` statically import, from one build. */
+async function imports(entries: readonly string[]): Promise<string[]> {
   const result = await build({
-    entryPoints: [path.join(root, entry)],
+    entryPoints: entries.map((entry) => path.join(root, entry)),
+    // Several entries need an output directory; nothing is written.
+    outdir: path.join(root, ".ci-native-inputs"),
     absWorkingDir: root,
     bundle: true,
     format: "esm",
@@ -92,12 +95,11 @@ export async function nativeInputs(): Promise<Record<string, string[]>> {
     const files = new Set<string>();
     const collapse = (file: string) =>
       /^packages\/[^/]+\//u.test(file) ? file.split("/").slice(0, 2).join("/") : file;
-    for (const script of entries)
-      for (const file of await imports(script)) {
-        files.add(collapse(file));
-        if (vitest.length || lane)
-          for (const tsconfig of tsconfigs(file)) files.add(collapse(tsconfig));
-      }
+    for (const file of await imports(entries)) {
+      files.add(collapse(file));
+      if (vitest.length || lane)
+        for (const tsconfig of tsconfigs(file)) files.add(collapse(tsconfig));
+    }
     inputs[task] = [...files].sort((left, right) => left.localeCompare(right, "en"));
   }
   return inputs;

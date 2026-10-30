@@ -67,6 +67,7 @@
         ".github/scripts/ci-test-files.mjs",
         "scripts/ci-inventory-reporter.ts",
         "scripts/mac-app-tree.py",
+        "scripts/install.sh",
         "apps/desktop/native/computer-use/Tests/Fixtures/helper-wire.json",
         "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
         "tsconfig.json",
