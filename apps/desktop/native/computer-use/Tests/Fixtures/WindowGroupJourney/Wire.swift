@@ -294,7 +294,7 @@ extension WireJourney {
     }
     let (firstGeometry, initial) = try await mediaA.keyframe(streamA)
     var geometry = firstGeometry
-    _ = try await mediaB.keyframe(streamB)
+    let (secondGeometry, _) = try await mediaB.keyframe(streamB)
     let image = try await VideoEvidence.decode(initial)
     try NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
       .unwrap("owner baseline PNG").write(to: out.appendingPathComponent("owner-baseline.png"))
@@ -366,8 +366,11 @@ extension WireJourney {
     try await Contracts.command(out, "owner-clear")
     passed()
     start("two-idle-attachments-share-app")
+    // Window B has no text field to copy from. A pointer move exercises its
+    // input admission without depending on Window A's focused editor.
     let second = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
-      "geometry": firstGeometry, "sequence": 0, "events": [["kind": "copy"]]])
+      "geometry": secondGeometry, "sequence": 0,
+      "events": [["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]]])
     try require(second["outcome"] as? String == "dispatched", "Idle attachment excluded another viewer")
     passed()
     start("agent-refused-held-button")
