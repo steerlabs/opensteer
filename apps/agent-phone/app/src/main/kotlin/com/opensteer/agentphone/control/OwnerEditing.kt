@@ -29,6 +29,17 @@ class OwnerEditing(private val service: AccessibilityService, private val device
     private var contextId = UUID.randomUUID().toString()
     private var editor: AccessibilityNodeInfo? = null
     private var selection: Pair<Int, Int>? = null
+    private val heldKeys = java.util.concurrent.ConcurrentHashMap<Int, () -> Unit>()
+
+    fun reset() {
+        if (heldKeys.isEmpty()) { invalidate(); return }
+        onMain { valid ->
+            check(valid())
+            heldKeys.values.forEach { it() }
+            heldKeys.clear()
+        }
+        invalidate()
+    }
 
     @Synchronized fun invalidate() { contextId = UUID.randomUUID().toString() }
     @Synchronized private fun identity(node: AccessibilityNodeInfo?): String {
@@ -221,6 +232,11 @@ class OwnerEditing(private val service: AccessibilityService, private val device
                     if (sensitive(node) && code in setOf(KeyEvent.KEYCODE_C, KeyEvent.KEYCODE_X) && event.modifiers.any { it == "control" || it == "primary" }) return refused("sensitive")
                     effect(backspace = event.action != "up" && code == KeyEvent.KEYCODE_DEL) {
                         sendKey(connection, key(event.action, code, meta(event.modifiers), event.repeat == true))
+                        if (event.action == "up") heldKeys.remove(code)
+                        else heldKeys[code] = {
+                            if (bound.ime.epoch == bound.epoch && bound.ime.editor == node)
+                                sendKey(connection, key("up", code))
+                        }
                     }
                 }
             }

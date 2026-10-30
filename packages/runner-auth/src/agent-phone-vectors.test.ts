@@ -141,7 +141,6 @@ const streamFence = {
 };
 const displaySessionId = "cus_99999999-9999-4999-8999-999999999999";
 const displayStreamId = "dsp_11111111-1111-4111-8111-111111111111";
-const displayControlId = "dcl_22222222-2222-4222-8222-222222222222";
 const displayEvents = [
   { kind: "pointer", phase: "down", x: 0.25, y: 0.75, t: 1000 },
   { kind: "pointer", phase: "move", x: 0.5, y: 0.5, t: 1032.5 },
@@ -310,6 +309,8 @@ function hostFrames() {
       sources: [{ kind: "task-session", sessionId }],
       maxLongSide: displayDefaultMaxLongSide,
       maxFps: displayDefaultMaxFps,
+      editingVersion: 1,
+      sharedInput: 1,
       type: "host.integrations.display.start",
     }),
     stream({
@@ -324,25 +325,20 @@ function hostFrames() {
       streamId: displayStreamId,
       type: "host.integrations.display.refresh",
     }),
-    ...["acquire", "release"].map((action) =>
-      stream({
-        ...streamFence,
-        sessionId,
-        streamId: displayStreamId,
-        controlId: displayControlId,
-        action,
-        type: "host.integrations.display.control",
-      }),
-    ),
     stream({
       ...streamFence,
       sessionId,
       streamId: displayStreamId,
-      controlId: displayControlId,
       geometry: 1,
       sequence: 0,
       events: displayEvents,
       type: "host.integrations.display.input",
+    }),
+    stream({
+      ...streamFence,
+      sessionId,
+      streamId: displayStreamId,
+      type: "host.integrations.display.input-reset",
     }),
     stream({
       ...streamFence,
@@ -399,19 +395,32 @@ function phoneFrames() {
         rotation: 0,
       }),
     ),
-    ...["held", "released", "refused"].map((state) =>
-      stream({
-        type: "runner.integrations.display.control-state",
-        sessionId: displaySessionId,
-        controlId: displayControlId,
-        state,
-        ...(state === "released"
-          ? { reason: "viewer-gone" }
-          : state === "refused"
-            ? { reason: "busy" }
-            : {}),
-      }),
-    ),
+    stream({
+      type: "runner.integrations.display.input-result",
+      sessionId: displaySessionId,
+      geometry: 1,
+      sequence: 0,
+      outcome: "refused",
+      reason: "unavailable",
+    }),
+    stream({
+      type: "runner.integrations.display.clipboard",
+      sessionId: displaySessionId,
+      geometry: 1,
+      sequence: 1,
+      outcome: "copied",
+      text: "milk, eggs ✓",
+    }),
+    stream({
+      type: "runner.integrations.display.editing",
+      sessionId: displaySessionId,
+      geometry: 1,
+      context: {
+        contextId: "11111111-1111-4111-8111-111111111111",
+        field: { kind: "text", multiline: false, sensitive: false, inputMode: "text" },
+        caret: { x: 0.25, y: 0.5, height: 0.025 },
+      },
+    }),
   ];
 }
 

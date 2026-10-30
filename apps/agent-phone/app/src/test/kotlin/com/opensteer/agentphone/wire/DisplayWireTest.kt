@@ -18,28 +18,48 @@ class DisplayWireTest {
         }
         for (entry in (vectors.fields.getValue("phoneFrames") as JsonArray).items) {
             val expected = (entry as JsonObject).fields.getValue("frame") as JsonObject
-            val fields = Fields.of(expected, "phone")
-            val type = fields.string("type")
-            val fence = RunnerWire.auxiliaryFence(fields)
-            val stream = fields.string("streamId")
-            val actual = when {
-                type.endsWith("control-state") -> DisplayWire.controlState(fence, fields.string("sessionId"), stream, fields.string("controlId"), fields.string("state"), fields.optionalString("reason"))
-                type.endsWith("source-ended") -> {
-                    fields.literal("display", "main")
-                    val source = fields.obj("source")
-                    source.literal("kind", "owner-view")
-                    DisplayWire.sourceEnded(fence, stream, DisplaySource.Owner(source.string("viewId"), source.int("generation")), fields.string("reason"))
-                }
-                else -> {
-                    fields.literal("display", "main")
-                    DisplayWire.state(fence, stream, fields.string("state"), fields.optionalString("reason"),
-                        fields.int("generation"), fields.int("width").toInt(), fields.int("height").toInt(), fields.int("rotation").toInt())
-                }
-            }
-            fields.end()
+            val actual = WireFixture.displayFrame(expected)
             assertEquals(expected, actual)
         }
     }
+    @Test fun parsesSharedInputWithoutAControlId() {
+        val frame = ((vectors.fields.getValue("hostFrames") as JsonArray).items.map { (it as JsonObject).fields.getValue("frame") as JsonObject }
+            .first { it.fields["type"] == jsonOf("host.integrations.display.input") })
+        val fields = LinkedHashMap(frame.fields)
+        fields["type"] = jsonOf("host.integrations.display.input")
+        fields["sessionId"] = jsonOf("cus_cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+        fields["geometry"] = jsonOf(1)
+        fields["sequence"] = jsonOf(0)
+        fields["events"] = JsonArray(listOf(jsonObject("kind" to jsonOf("nav"), "to" to jsonOf("back"))))
+        val input = IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) as DisplayMessage.Input
+        assertEquals(0L, input.sequence)
+    }
+    @Test fun previousReleaseHostFramesRemainStrictlyReadable() {
+        val input = ((vectors.fields.getValue("hostFrames") as JsonArray).items.map { (it as JsonObject).fields.getValue("frame") as JsonObject }
+            .first { it.fields["type"] == jsonOf("host.integrations.display.input") })
+        val fields = LinkedHashMap(input.fields)
+        fields["events"] = JsonArray(listOf(jsonObject("kind" to jsonOf("nav"), "to" to jsonOf("back"))))
+        val controlId = "dcl_22222222-2222-4222-8222-222222222222"
+        fields["controlId"] = jsonOf(controlId)
+        assertEquals(controlId, (IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) as DisplayMessage.Input).controlId)
+        listOf("geometry", "sequence", "events").forEach { fields.remove(it) }
+        fields["type"] = jsonOf("host.integrations.display.control")
+        fields["action"] = jsonOf("acquire")
+        val control = IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) as DisplayMessage.Control
+        val refusal = DisplayWire.controlState(control.fence, control.sessionId, control.streamId, control.controlId, "refused", "stream-lost")
+        assertEquals(jsonOf("refused"), refusal.fields["state"])
+        fields["unknown"] = jsonOf(true)
+        assertThrows(WireException::class.java) { IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) }
+    }
+
+    @Test fun advertisesSharedInputIndependentlyOfEditing() {
+        val descriptor = RunnerDescriptor("boot", "phone", "runner", "version", sharedInput = true).toJson()
+        val modules = descriptor.fields.getValue("modules") as JsonObject
+        val integrations = modules.fields.getValue("integrations") as JsonObject
+        assertEquals(jsonOf(1), integrations.fields["sharedInput"])
+        assertFalse(integrations.fields.containsKey("editing"))
+    }
+
     @Test fun editingVariantsBeforeRuntime() {
         listOf(
             """{"kind":"key","action":"down","code":"KeyE","key":"é","modifiers":[],"text":"é"}""",

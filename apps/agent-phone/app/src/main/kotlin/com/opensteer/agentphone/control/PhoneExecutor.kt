@@ -75,7 +75,6 @@ class PhoneExecutor(
     private val alarms: AlarmClock,
     private val post: (() -> Unit) -> Unit,
     private val log: (String) -> Unit,
-    private val cleanupGestures: (() -> Unit) -> Unit = { it() },
 ) {
     private val work = PhoneTurns()
     private val ownerInputs = Executors.newSingleThreadExecutor { Thread(it, "opensteer-owner-input") }
@@ -182,10 +181,6 @@ class PhoneExecutor(
             post { done(ComputerUseOutcome.Ok(JsonObject(emptyMap()))) }
             return PhoneWork {}
         }
-        if (request is PhoneRequest.Act && desk.ownerInControl) {
-            post { done(notStarted(Cancellation.Reason.OWNER_CONTROL)) }
-            return PhoneWork {}
-        }
         synchronized(pending) {
             // The app list belongs to no session, so nothing done to one stops it.
             if (request !is PhoneRequest.InstalledApps) pending.getOrPut(call.sessionId) { HashMap() }[cancel] = Pending(owner, request)
@@ -217,7 +212,6 @@ class PhoneExecutor(
         Cancellation.Reason.CANCELLED -> ComputerUseOutcome.Failure(ComputerUseErrorCode.FAILED, NOT_STARTED)
         Cancellation.Reason.STOPPED -> ComputerUseOutcome.Failure(ComputerUseErrorCode.STOPPED_BY_USER, PhoneDesk.STOPPED)
         Cancellation.Reason.PAUSED -> ComputerUseOutcome.Failure(ComputerUseErrorCode.STOPPED_BY_USER, PhoneDesk.PAUSED)
-        Cancellation.Reason.OWNER_CONTROL -> ComputerUseOutcome.Failure(ComputerUseErrorCode.OWNER_IN_CONTROL, PhoneDesk.OWNER_CONTROL)
     }
 
     /** Withdraws every request of `sessionId`, or of every session, already running or still queued. */
@@ -284,22 +278,12 @@ class PhoneExecutor(
         }
     }
 
-    /** Withdraw only acts; queued observations remain useful while the owner has control. */
-    fun takeOver(sessionId: String, done: () -> Unit) {
-        synchronized(pending) {
-            for ((cancel, entry) in pending[sessionId].orEmpty()) {
-                if (entry.request is PhoneRequest.Act) cancel.withdraw(Cancellation.Reason.OWNER_CONTROL)
-            }
+    fun ownerInput(action: () -> Unit) {
+        // Android may acknowledge gesture cleanup after the runtime's executor has stopped.
+        try { ownerInputs.execute(action) } catch (_: java.util.concurrent.RejectedExecutionException) {
+            check(ownerInputs.isShutdown)
         }
-        controlBarrier(done)
     }
-
-    fun controlBarrier(done: () -> Unit) = work.execute {
-        desk.invalidateObservations()
-        done()
-    }
-
-    fun ownerInput(action: () -> Unit) { ownerInputs.execute(action) }
 
     /** Projection consent and foreground restoration occupy one serial turn, with a bounded wait. */
     fun acquisition(action: () -> Unit) = work.android(action)

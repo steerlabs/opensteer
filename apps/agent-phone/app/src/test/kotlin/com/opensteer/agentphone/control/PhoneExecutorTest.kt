@@ -589,71 +589,41 @@ class PhoneExecutorTest {
         observe(a)
         assertEquals(a, desk.activeSession?.id)
     }
-    /** Failures: takeover cancels reads/stops Run, held precedes cleanup, release precedes queued observation. */
-    @Test fun takeoverWithdrawsOnlyActsAndKeepsSession() {
-        val observation = observe(a)
-        val acting = act(a, observation, PhoneAction.Wait(5_000), tap)
-        assertTrue(device.waiting.await(2, TimeUnit.SECONDS))
-        val read = submit(a, PhoneRequest.Observe(false))
-        desk.ownerInControl = true
-        val held = CompletableFuture<Unit>()
-        executor.takeOver(a) { held.complete(Unit) }
-        acting.done()
-        assertTrue(read.done() is ComputerUseOutcome.Ok)
-        held.get(2, TimeUnit.SECONDS)
-        assertTrue(stopped.isEmpty())
-        assertEquals(a, desk.activeSession?.id)
-        assertEquals("owner-in-control", act(a, observation, tap).done().failure().code.wire)
-        val released = CompletableFuture<Unit>()
-        executor.controlBarrier { desk.ownerInControl = false; released.complete(Unit) }
-        released.get(2, TimeUnit.SECONDS)
-        assertEquals("stale-observation", act(a, observation, tap).done().failure().code.wire)
-    }
-
-    @Test fun acquireRacesDispatchedAgentChangeAndWaitsForItsCleanup() {
+    @Test fun personInputDoesNotWithdrawAgentActsOrEndTheSession() {
         device.blockGesture = true
         val observation = observe(a)
         val acting = act(a, observation, tap, tap)
         assertTrue(device.gestureStarted.await(2, TimeUnit.SECONDS))
-        val queued = act(a, observation, tap)
-        desk.ownerInControl = true
-        val held = CompletableFuture<Unit>()
-        executor.takeOver(a) { held.complete(Unit) }
-        assertFalse(held.isDone)
+        val person = CompletableFuture<Unit>()
+        executor.ownerInput { person.complete(Unit) }
+        person.get(2, TimeUnit.SECONDS)
         device.finishGesture.countDown()
-        assertCancelled(acting.done(), completed = 1, code = "owner-in-control")
-        assertEquals("owner-in-control", queued.done().failure().code.wire)
-        held.get(2, TimeUnit.SECONDS)
-        assertEquals(listOf("tap"), device.did.toList())
+        val result = acting.done().value()
+        assertEquals(JsonNull, result.fields.getValue("error"))
+        assertEquals(listOf("tap", "tap"), device.did.toList())
         assertTrue(stopped.isEmpty())
+        assertEquals(a, desk.activeSession?.id)
     }
 
-    @Test fun releaseRacesObservationAndInvalidatesItsResultBeforeAdmission() {
+    @Test fun personInputLeavesTheAgentsObservationValid() {
+        val observation = observe(a)
+        val done = CompletableFuture<Unit>()
+        executor.ownerInput { done.complete(Unit) }
+        done.get(2, TimeUnit.SECONDS)
+        assertEquals(JsonNull, act(a, observation, tap).done().value().fields.getValue("error"))
+    }
+
+    @Test fun personResetDoesNotInvalidateAnObservationCollectedMeanwhile() {
         observe(a)
-        desk.ownerInControl = true
         device.screenshotGate = CountDownLatch(1)
         val observing = submit(a, PhoneRequest.Observe(true))
         assertTrue(device.screenshotEntered.await(2, TimeUnit.SECONDS))
-        val released = CompletableFuture<Unit>()
-        executor.controlBarrier { desk.ownerInControl = false; released.complete(Unit) }
-        assertFalse(released.isDone)
+        val work = CompletableFuture<Unit>()
+        val lane = PersonInputLane(executor::ownerInput, {}, { work.complete(Unit); it() })
+        lane.reset(); work.get(2, TimeUnit.SECONDS)
         device.screenshotGate?.countDown()
-        val old = (observing.done().value().fields.getValue("observation") as JsonObject).string("observationId")
-        released.get(2, TimeUnit.SECONDS)
-        assertEquals("stale-observation", act(a, old, tap).done().failure().code.wire)
-        assertTrue(device.did.isEmpty())
-    }
-
-    @Test fun heldLeaseRefusesNewActsBeforeWaitingForAnExecutorTurn() {
-        val observation = observe(a)
-        desk.ownerInControl = true
-        val gate = CountDownLatch(1)
-        val entered = CountDownLatch(1)
-        executor.acquisition { entered.countDown(); gate.await(2, TimeUnit.SECONDS) }
-        assertTrue(entered.await(2, TimeUnit.SECONDS))
-        try {
-            assertEquals("owner-in-control", act(a, observation, tap).done().failure().code.wire)
-        } finally { gate.countDown() }
+        val id = (observing.done().value().fields.getValue("observation") as JsonObject).string("observationId")
+        assertEquals(JsonNull, act(a, id, tap).done().value().fields.getValue("error"))
     }
 
     @Test fun acquisitionRunsAfterTheCurrentChangeAndBeforeTheNextObservation() {
@@ -686,60 +656,5 @@ class PhoneExecutorTest {
             assertTrue(done.await(1, TimeUnit.SECONDS))
             assertEquals((0..9).toList(), seen.toList())
         } finally { device.screenshotGate?.countDown(); observing.done() }
-    }
-    /** Failure: rejected queued owner input cancels an agent gesture after release reopens admission. */
-    @Test fun releaseDrainsRejectedOwnerInputBeforeAgentAdmission() {
-        observe(a)
-        val held = CompletableFuture<Unit>(); val released = CompletableFuture<Unit>()
-        val events = CopyOnWriteArrayList<String>()
-        val lease = OwnerLease({ desk.ownerInControl = it },
-            { session, done -> executor.takeOver(session, done) },
-            { done -> executor.ownerInput { executor.controlBarrier(done) } }, { it() },
-            { _, _, state, _ ->
-                if (state == "held") held.complete(Unit)
-                if (state == "released") { events += "released"; released.complete(Unit) }
-            })
-        lease.acquire(a, "owner"); held.get(2, TimeUnit.SECONDS)
-        val stamp = lease.stamp
-        val entered = CountDownLatch(1); val drain = CountDownLatch(1)
-        executor.ownerInput { entered.countDown(); assertTrue(drain.await(2, TimeUnit.SECONDS)) }
-        assertTrue(entered.await(2, TimeUnit.SECONDS))
-        executor.ownerInput {
-            if (!lease.current(stamp)) {
-                assertTrue(desk.ownerInControl)
-                events += "cancel"
-            }
-        }
-        try {
-            lease.release("released-by-owner")
-            val barrier = CompletableFuture<Unit>()
-            executor.controlBarrier { barrier.complete(Unit) }
-            barrier.get(2, TimeUnit.SECONDS)
-            assertFalse(released.isDone)
-            assertTrue(desk.ownerInControl)
-        } finally { drain.countDown() }
-        released.get(2, TimeUnit.SECONDS)
-        assertEquals(listOf("cancel", "released"), events.toList())
-        assertFalse(desk.ownerInControl)
-        val observation = observe(a)
-        assertTrue(act(a, observation, tap).done() is ComputerUseOutcome.Ok)
-        assertEquals(listOf("tap"), device.did.toList())
-    }
-    @Test fun realLeaseWiringCancelsAgentGestureBeforeHeld() {
-        device.blockGesture = true
-        val id = observe(a); val acting = act(a, id, tap, tap)
-        assertTrue(device.gestureStarted.await(2, TimeUnit.SECONDS))
-        val cleanup = CompletableFuture<() -> Unit>(); val held = CompletableFuture<Unit>()
-        val lease = OwnerLease({ desk.ownerInControl = it },
-            { session, done -> executor.takeOver(session) { cleanup.complete { executor.controlBarrier(done) } } },
-            { executor.controlBarrier(it) }, { it() }, { _, _, state, _ -> if (state == "held") held.complete(Unit) })
-        lease.acquire(a, "owner")
-        assertFalse(held.isDone)
-        device.finishGesture.countDown()
-        assertCancelled(acting.done(), completed = 1, code = "owner-in-control")
-        val finishCleanup = cleanup.get(2, TimeUnit.SECONDS)
-        assertFalse(held.isDone)
-        finishCleanup(); held.get(2, TimeUnit.SECONDS)
-        assertEquals(listOf("tap"), device.did.toList())
     }
 }

@@ -13,13 +13,14 @@ sealed interface DisplaySource {
 sealed interface DisplayMessage : IntegrationsMessage {
     val streamId: String
     data class Start(override val fence: AuxiliaryFence, override val streamId: String,
-        val dataTicket: String, val maxLongSide: Int, val maxFps: Int, val revision: Long, val sources: List<DisplaySource>, val editingVersion: Int? = null, val displayCut: Int? = null) : DisplayMessage
+        val dataTicket: String, val maxLongSide: Int, val maxFps: Int, val revision: Long, val sources: List<DisplaySource>, val editingVersion: Int? = null, val displayCut: Int? = null, val sharedInput: Int? = null) : DisplayMessage
     data class Stop(override val fence: AuxiliaryFence, override val streamId: String) : DisplayMessage
     data class Refresh(override val fence: AuxiliaryFence, override val streamId: String) : DisplayMessage
     data class Demand(override val fence: AuxiliaryFence, override val streamId: String, val revision: Long, val sources: List<DisplaySource>) : DisplayMessage
     data class Control(override val fence: AuxiliaryFence, val sessionId: String, override val streamId: String, val controlId: String, val action: String) : DisplayMessage
-    data class Input(override val fence: AuxiliaryFence, val sessionId: String, override val streamId: String, val controlId: String,
-        val geometry: Long, val sequence: Long, val events: List<DisplayInput>) : DisplayMessage
+    data class Input(override val fence: AuxiliaryFence, val sessionId: String, override val streamId: String,
+        val geometry: Long, val sequence: Long, val events: List<DisplayInput>, val controlId: String? = null) : DisplayMessage
+    data class InputReset(override val fence: AuxiliaryFence, val sessionId: String, override val streamId: String) : DisplayMessage
 }
 sealed interface DisplayInput {
     data class Pointer(val phase: String, val x: Double, val y: Double, val t: Double) : DisplayInput
@@ -67,17 +68,18 @@ object DisplayWire {
 
     fun decode(type: String, f: Fields, fence: AuxiliaryFence): DisplayMessage {
         val stream = f.string("streamId", pattern = Ids.displayStream)
-        if (type != "host.integrations.display.control" && type != "host.integrations.display.input") f.literal("display", "main")
+        if (type !in setOf("host.integrations.display.control", "host.integrations.display.input", "host.integrations.display.input-reset")) f.literal("display", "main")
         return when (type) {
             "host.integrations.display.start" -> DisplayMessage.Start(fence, stream,
-                f.string("dataTicket", pattern = Ids.ticket), f.int("maxLongSide", 320, 1920).toInt(), f.int("maxFps", 1, 60).toInt(), f.int("revision", 0), sources(f), f.optionalInt("editingVersion", 1, 1)?.toInt(), f.optionalInt("displayCut", 1, 1)?.toInt())
+                f.string("dataTicket", pattern = Ids.ticket), f.int("maxLongSide", 320, 1920).toInt(), f.int("maxFps", 1, 60).toInt(), f.int("revision", 0), sources(f), f.optionalInt("editingVersion", 1, 1)?.toInt(), f.optionalInt("displayCut", 1, 1)?.toInt(), f.optionalInt("sharedInput", 1, 1)?.toInt())
             "host.integrations.display.stop" -> DisplayMessage.Stop(fence, stream)
             "host.integrations.display.refresh" -> DisplayMessage.Refresh(fence, stream)
             "host.integrations.display.demand" -> DisplayMessage.Demand(fence, stream, f.int("revision", 0), sources(f))
             "host.integrations.display.control" -> DisplayMessage.Control(fence, f.string("sessionId", pattern = Ids.computerUseSession), stream, f.string("controlId", pattern = Ids.displayControl),
                 f.enum("action", setOf("acquire", "release")))
-            "host.integrations.display.input" -> DisplayMessage.Input(fence, f.string("sessionId", pattern = Ids.computerUseSession), stream, f.string("controlId", pattern = Ids.displayControl),
-                f.int("geometry", 1), f.int("sequence", 0), f.array("events", 1, 64).map(::event))
+            "host.integrations.display.input" -> DisplayMessage.Input(fence, f.string("sessionId", pattern = Ids.computerUseSession), stream,
+                f.int("geometry", 1), f.int("sequence", 0), f.array("events", 1, 64).map(::event), f.optionalString("controlId", pattern = Ids.displayControl))
+            "host.integrations.display.input-reset" -> DisplayMessage.InputReset(fence, f.string("sessionId", pattern = Ids.computerUseSession), stream)
             else -> f.fail("type", "is not a display message")
         }
     }
@@ -149,11 +151,11 @@ object DisplayWire {
         "deleteBackward", "deleteForward", "deleteWordBackward", "deleteWordForward", "deleteToBeginningOfLine", "deleteToEndOfLine", "deleteToEndOfParagraph", "transpose", "yank")
     fun editingReply(message: DisplayMessage.Input, kind: String, vararg fields: Pair<String, Json>): JsonObject =
         JsonObject(linkedMapOf(*message.fence.fields(), "type" to jsonOf("runner.integrations.display.$kind"),
-            "streamId" to jsonOf(message.streamId), "sessionId" to jsonOf(message.sessionId), "controlId" to jsonOf(message.controlId),
+            "streamId" to jsonOf(message.streamId), "sessionId" to jsonOf(message.sessionId),
             "geometry" to jsonOf(message.geometry), *fields))
-    fun editingContext(fence: AuxiliaryFence, streamId: String, sessionId: String, controlId: String, geometry: Long, context: JsonObject): JsonObject =
+    fun editingContext(fence: AuxiliaryFence, streamId: String, sessionId: String, geometry: Long, context: JsonObject): JsonObject =
         JsonObject(linkedMapOf(*fence.fields(), "type" to jsonOf("runner.integrations.display.editing"), "streamId" to jsonOf(streamId),
-            "sessionId" to jsonOf(sessionId), "controlId" to jsonOf(controlId), "geometry" to jsonOf(geometry), "context" to context))
+            "sessionId" to jsonOf(sessionId), "geometry" to jsonOf(geometry), "context" to context))
     fun media(header: DisplayMediaHeader, payload: ByteArray): ByteArray {
         require(payload.size in 1..MAX_PAYLOAD)
         val bytes = JsonText.stringify(header.json()).toByteArray(Charsets.UTF_8)

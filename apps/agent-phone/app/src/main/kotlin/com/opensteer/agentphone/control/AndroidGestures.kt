@@ -24,8 +24,8 @@ class AndroidGestures(private val service: AccessibilityService) {
             moveTo(segment.points.first().x.toFloat(), segment.points.first().y.toFloat())
             segment.points.drop(1).forEach { lineTo(it.x.toFloat(), it.y.toFloat()) }
         }
-        val next = if (segment.first || segment.cancel) GestureDescription.StrokeDescription(path, 0, segment.durationMs, segment.continuing)
-            else requireNotNull(stroke).continueStroke(path, 0, segment.durationMs, segment.continuing)
+        val next = if (segment.first || segment.cancel) GestureDescription.StrokeDescription(path, segment.delayMs, segment.durationMs, segment.continuing)
+            else requireNotNull(stroke).continueStroke(path, segment.delayMs, segment.durationMs, segment.continuing)
         stroke = next
         val gesture = GestureDescription.Builder().addStroke(next).build()
         var answered = false
@@ -35,8 +35,8 @@ class AndroidGestures(private val service: AccessibilityService) {
             override fun onCancelled(gestureDescription: GestureDescription) = answer(false)
         }, handler)
         if (!accepted) answer(false)
-        // A missing platform callback must not strand a lease's cleanup forever.
-        handler.postDelayed({ answer(false) }, segment.durationMs + 1000)
+        // A missing platform callback must not strand contact cleanup forever.
+        handler.postDelayed({ answer(false) }, segment.delayMs + segment.durationMs + 1000)
     }
     fun after(ms: Long, action: () -> Unit) { handler.postDelayed(action, ms) }
 
