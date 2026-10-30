@@ -65,7 +65,12 @@ const stop = new AbortController();
 const interrupt = () => stop.abort();
 process.once("SIGINT", interrupt);
 process.once("SIGTERM", interrupt);
-const results: { name: string; passed: boolean; error?: string; runDir?: string }[] = [];
+const results: {
+  name: string;
+  passed: boolean;
+  error?: string | undefined;
+  runDir?: string | undefined;
+}[] = [];
 const save = () =>
   writeFileSync(
     path.join(out, "journey.json"),
