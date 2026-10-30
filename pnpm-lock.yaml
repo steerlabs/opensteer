@@ -100,8 +100,8 @@ catalogs:
       specifier: 2.9.0
       version: 2.9.0
     zod:
-      specifier: 4.6.6
-      version: 4.6.6
+      specifier: 4.6.7
+      version: 4.6.7
 
 overrides:
   '@earendil-works/pi-coding-agent>undici': 8.12.2
@@ -167,7 +167,7 @@ importers:
         version: 2.9.0
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
 
   apps/browser-extension:
     dependencies:
@@ -188,7 +188,7 @@ importers:
         version: link:../../packages/shared
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@fontsource-variable/fraunces':
         specifier: ^5.3.0
@@ -264,7 +264,7 @@ importers:
         version: 8.21.3
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -319,7 +319,7 @@ importers:
         version: 8.21.3
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -344,10 +344,10 @@ importers:
     dependencies:
       '@better-auth/core':
         specifier: 'catalog:'
-        version: 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+        version: 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/oauth-provider':
         specifier: 'catalog:'
-        version: 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.6))
+        version: 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.7))
       '@better-auth/utils':
         specifier: 'catalog:'
         version: 0.4.2
@@ -389,7 +389,7 @@ importers:
         version: 1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0))
       better-call:
         specifier: 'catalog:'
-        version: 1.4.0(zod@4.6.6)
+        version: 1.4.0(zod@4.6.7)
       fastify:
         specifier: 'catalog:'
         version: 5.12.6
@@ -407,7 +407,7 @@ importers:
         version: 8.23.0
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@opensteer/database':
         specifier: workspace:*
@@ -435,13 +435,13 @@ importers:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 'catalog:'
-        version: 0.3.295(@anthropic-ai/sdk@0.116.0(zod@4.6.6))(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(zod@4.6.6)
+        version: 0.3.295(@anthropic-ai/sdk@0.116.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(zod@4.6.7)
       '@anthropic-ai/sdk':
         specifier: 0.116.0
-        version: 0.116.0(zod@4.6.6)
+        version: 0.116.0(zod@4.6.7)
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
-        version: 1.32.0(zod@4.6.6)
+        version: 1.32.0(zod@4.6.7)
       '@opensteer/browser-core':
         specifier: workspace:*
         version: link:../../packages/browser-core
@@ -507,10 +507,10 @@ importers:
         version: 8.21.3
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
       zod-to-json-schema:
         specifier: 3.25.2
-        version: 3.25.2(zod@4.6.6)
+        version: 3.25.2(zod@4.6.7)
     devDependencies:
       '@electron/asar':
         specifier: 3.4.1
@@ -574,7 +574,7 @@ importers:
         version: 0.32.0
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
-        version: 1.32.0(zod@4.6.6)
+        version: 1.32.0(zod@4.6.7)
       '@opensteer/access':
         specifier: workspace:*
         version: link:../../packages/access
@@ -670,7 +670,7 @@ importers:
         version: 8.21.3
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@opensteer/agent-phone-setup':
         specifier: workspace:*
@@ -863,7 +863,7 @@ importers:
         version: 0.13.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0))(react@19.3.0)
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@babel/core':
         specifier: 7.29.7
@@ -900,16 +900,16 @@ importers:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 'catalog:'
-        version: 0.3.295(@anthropic-ai/sdk@0.116.0(zod@4.6.6))(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(zod@4.6.6)
+        version: 0.3.295(@anthropic-ai/sdk@0.116.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(zod@4.6.7)
       '@anthropic-ai/sdk':
         specifier: 0.116.0
-        version: 0.116.0(zod@4.6.6)
+        version: 0.116.0(zod@4.6.7)
       '@earendil-works/pi-coding-agent':
         specifier: 'catalog:'
-        version: 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(ws@8.21.3)(zod@4.6.6)
+        version: 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(ws@8.21.3)(zod@4.6.7)
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
-        version: 1.32.0(zod@4.6.6)
+        version: 1.32.0(zod@4.6.7)
       '@openai/codex':
         specifier: 'catalog:'
         version: 0.162.0
@@ -999,7 +999,7 @@ importers:
         version: 8.21.3
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1075,7 +1075,7 @@ importers:
         version: 4.0.1
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@opensteer/browser-extension':
         specifier: workspace:*
@@ -1109,7 +1109,7 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
-        version: 1.32.0(zod@4.6.6)
+        version: 1.32.0(zod@4.6.7)
       '@opensteer/agent-tools':
         specifier: workspace:*
         version: link:../../packages/agent-tools
@@ -1133,7 +1133,7 @@ importers:
         version: link:../../packages/shared
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1155,7 +1155,7 @@ importers:
         version: link:../protocol
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1217,7 +1217,7 @@ importers:
         version: 2.9.0
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -1236,7 +1236,7 @@ importers:
         version: link:../triggers
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1266,7 +1266,7 @@ importers:
         version: 6.1.86
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1297,7 +1297,7 @@ importers:
         version: 8.21.3
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@simplewebauthn/server':
         specifier: 14.0.3
@@ -1334,7 +1334,7 @@ importers:
         version: link:../integration-core
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -1378,7 +1378,7 @@ importers:
         version: link:../shared
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1403,7 +1403,7 @@ importers:
         version: 8.21.3
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1458,7 +1458,7 @@ importers:
         version: 0.17.3
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@noble/curves':
         specifier: 2.4.0
@@ -1489,7 +1489,7 @@ importers:
         version: link:../shared
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1511,7 +1511,7 @@ importers:
         version: link:../integration-core
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1527,7 +1527,7 @@ importers:
     dependencies:
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1570,7 +1570,7 @@ importers:
         version: 8.23.0
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1598,7 +1598,7 @@ importers:
         version: link:../shared
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1629,7 +1629,7 @@ importers:
         version: 2.9.0
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1642,13 +1642,13 @@ importers:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 'catalog:'
-        version: 0.3.295(@anthropic-ai/sdk@0.116.0(zod@4.6.6))(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(zod@4.6.6)
+        version: 0.3.295(@anthropic-ai/sdk@0.116.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(zod@4.6.7)
       '@anthropic-ai/sdk':
         specifier: 0.116.0
-        version: 0.116.0(zod@4.6.6)
+        version: 0.116.0(zod@4.6.7)
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
-        version: 1.32.0(zod@4.6.6)
+        version: 1.32.0(zod@4.6.7)
       '@opensteer/agent-tools':
         specifier: workspace:*
         version: link:../agent-tools
@@ -1666,7 +1666,7 @@ importers:
         version: link:../shared
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1700,7 +1700,7 @@ importers:
         version: link:../shared
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1728,7 +1728,7 @@ importers:
         version: link:../shared
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1762,7 +1762,7 @@ importers:
         version: 1.18.32
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1775,10 +1775,10 @@ importers:
     dependencies:
       '@earendil-works/pi-coding-agent':
         specifier: 'catalog:'
-        version: 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(ws@8.21.3)(zod@4.6.6)
+        version: 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(ws@8.21.3)(zod@4.6.7)
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
-        version: 1.32.0(zod@4.6.6)
+        version: 1.32.0(zod@4.6.7)
       '@opensteer/agent-tools':
         specifier: workspace:*
         version: link:../agent-tools
@@ -1802,7 +1802,7 @@ importers:
         version: 1.3.7
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1815,13 +1815,13 @@ importers:
     dependencies:
       '@better-auth/core':
         specifier: 'catalog:'
-        version: 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+        version: 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/oauth-provider':
         specifier: 'catalog:'
-        version: 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.6))
+        version: 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.7))
       '@better-auth/sso':
         specifier: 'catalog:'
-        version: 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.6))
+        version: 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.7))
       '@better-auth/utils':
         specifier: 'catalog:'
         version: 0.4.2
@@ -1842,7 +1842,7 @@ importers:
         version: 1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0))
       better-call:
         specifier: 'catalog:'
-        version: 1.4.0(zod@4.6.6)
+        version: 1.4.0(zod@4.6.7)
       jose:
         specifier: 'catalog:'
         version: 6.2.8
@@ -1854,7 +1854,7 @@ importers:
         version: 1.4.2
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1870,7 +1870,7 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
-        version: 1.32.0(zod@4.6.6)
+        version: 1.32.0(zod@4.6.7)
       '@opensteer/integration-core':
         specifier: workspace:*
         version: link:../integration-core
@@ -1882,7 +1882,7 @@ importers:
         version: 2.9.0
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -1904,7 +1904,7 @@ importers:
         version: 3.8.5
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -1923,7 +1923,7 @@ importers:
         version: link:../integration-core
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -1942,7 +1942,7 @@ importers:
         version: link:../shared
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -2032,7 +2032,7 @@ importers:
         version: link:../workspace
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -2091,7 +2091,7 @@ importers:
         version: 8.21.3
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -2128,7 +2128,7 @@ importers:
         version: 5.8.1
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -2144,7 +2144,7 @@ importers:
         version: link:../core
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -2166,7 +2166,7 @@ importers:
         version: link:../workspace
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -2191,7 +2191,7 @@ importers:
         version: link:../workspace
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -8533,8 +8533,8 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
-  zod@4.6.6:
-    resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
@@ -8569,11 +8569,11 @@ snapshots:
   '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.295':
     optional: true
 
-  '@anthropic-ai/claude-agent-sdk@0.3.295(@anthropic-ai/sdk@0.116.0(zod@4.6.6))(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(zod@4.6.6)':
+  '@anthropic-ai/claude-agent-sdk@0.3.295(@anthropic-ai/sdk@0.116.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@anthropic-ai/sdk': 0.116.0(zod@4.6.6)
-      '@modelcontextprotocol/sdk': 1.32.0(zod@4.6.6)
-      zod: 4.6.6
+      '@anthropic-ai/sdk': 0.116.0(zod@4.6.7)
+      '@modelcontextprotocol/sdk': 1.32.0(zod@4.6.7)
+      zod: 4.6.7
     optionalDependencies:
       '@anthropic-ai/claude-agent-sdk-darwin-arm64': 0.3.295
       '@anthropic-ai/claude-agent-sdk-darwin-x64': 0.3.295
@@ -8584,19 +8584,19 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.295
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.295
 
-  '@anthropic-ai/sdk@0.116.0(zod@4.6.6)':
+  '@anthropic-ai/sdk@0.116.0(zod@4.6.7)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
     optionalDependencies:
-      zod: 4.6.6
+      zod: 4.6.7
 
-  '@anthropic-ai/sdk@0.124.0(zod@4.6.6)':
+  '@anthropic-ai/sdk@0.124.0(zod@4.6.7)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
     optionalDependencies:
-      zod: 4.6.6
+      zod: 4.6.7
 
   '@authenio/xml-encryption@2.0.2':
     dependencies:
@@ -9270,71 +9270,71 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)':
+  '@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)':
     dependencies:
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.1
       '@opentelemetry/semantic-conventions': 1.43.0
       '@standard-schema/spec': 1.1.0
-      better-call: 1.4.0(zod@4.6.6)
+      better-call: 1.4.0(zod@4.6.7)
       jose: 6.2.8
       kysely: 0.29.4
       nanostores: 1.4.2
-      zod: 4.6.6
+      zod: 4.6.7
 
-  '@better-auth/drizzle-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)':
+  '@better-auth/drizzle-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)':
     dependencies:
-      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/kysely-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(kysely@0.29.4)':
+  '@better-auth/kysely-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(kysely@0.29.4)':
     dependencies:
-      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/utils': 0.4.2
     optionalDependencies:
       kysely: 0.29.4
 
-  '@better-auth/memory-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)':
+  '@better-auth/memory-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)':
     dependencies:
-      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/mongo-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)':
+  '@better-auth/mongo-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)':
     dependencies:
-      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/oauth-provider@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.6))':
+  '@better-auth/oauth-provider@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.7))':
     dependencies:
-      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.1
       better-auth: 1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0))
-      better-call: 1.4.0(zod@4.6.6)
+      better-call: 1.4.0(zod@4.6.7)
       jose: 6.2.8
-      zod: 4.6.6
+      zod: 4.6.7
 
-  '@better-auth/prisma-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)':
+  '@better-auth/prisma-adapter@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)':
     dependencies:
-      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/sso@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.6))':
+  '@better-auth/sso@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)))(better-call@1.4.0(zod@4.6.7))':
     dependencies:
-      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.1
       better-auth: 1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0))
-      better-call: 1.4.0(zod@4.6.6)
+      better-call: 1.4.0(zod@4.6.7)
       fast-xml-parser: 5.11.0
       jose: 6.2.8
       samlify: 2.13.1
       tldts: 6.1.86
-      zod: 4.6.6
+      zod: 4.6.7
 
-  '@better-auth/telemetry@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)':
+  '@better-auth/telemetry@1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)':
     dependencies:
-      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.1
 
@@ -9352,10 +9352,10 @@ snapshots:
     dependencies:
       esbuild: 0.28.2
 
-  '@earendil-works/pi-agent-core@0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(ws@8.21.3)(zod@4.6.6)':
+  '@earendil-works/pi-agent-core@0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(ws@8.21.3)(zod@4.6.7)':
     dependencies:
       '@earendil-works/chord': 0.87.1
-      '@earendil-works/pi-ai': 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(ws@8.21.3)(zod@4.6.6)
+      '@earendil-works/pi-ai': 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(ws@8.21.3)(zod@4.6.7)
       '@earendil-works/pi-telemetry': 0.87.1
       diff: 8.0.4
       ignore: 7.0.8
@@ -9370,16 +9370,16 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(ws@8.21.3)(zod@4.6.6)':
+  '@earendil-works/pi-ai@0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(ws@8.21.3)(zod@4.6.7)':
     dependencies:
-      '@anthropic-ai/sdk': 0.124.0(zod@4.6.6)
+      '@anthropic-ai/sdk': 0.124.0(zod@4.6.7)
       '@aws-sdk/client-bedrock-runtime': 3.1127.0
       '@earendil-works/pi-telemetry': 0.87.1
-      '@google/genai': 2.21.0(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))
+      '@google/genai': 2.21.0(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))
       '@smithy/node-http-handler': 4.12.1
       http-proxy-agent: 9.1.0
       https-proxy-agent: 9.1.0
-      openai: 6.40.0(ws@8.21.3)(zod@4.6.6)
+      openai: 6.40.0(ws@8.21.3)(zod@4.6.7)
       partial-json: 0.1.7
       typebox: 1.3.27
     transitivePeerDependencies:
@@ -9391,11 +9391,11 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(ws@8.21.3)(zod@4.6.6)':
+  '@earendil-works/pi-coding-agent@0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(ws@8.21.3)(zod@4.6.7)':
     dependencies:
       '@earendil-works/chord': 0.87.1
-      '@earendil-works/pi-agent-core': 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(ws@8.21.3)(zod@4.6.6)
-      '@earendil-works/pi-ai': 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))(ws@8.21.3)(zod@4.6.6)
+      '@earendil-works/pi-agent-core': 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(ws@8.21.3)(zod@4.6.7)
+      '@earendil-works/pi-ai': 0.87.1(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))(ws@8.21.3)(zod@4.6.7)
       '@earendil-works/pi-tui': 0.87.1
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 6.0.0
@@ -10116,14 +10116,14 @@ snapshots:
 
   '@fontsource-variable/inter@5.3.0': {}
 
-  '@google/genai@2.21.0(@modelcontextprotocol/sdk@1.32.0(zod@4.6.6))':
+  '@google/genai@2.21.0(@modelcontextprotocol/sdk@1.32.0(zod@4.6.7))':
     dependencies:
       google-auth-library: 10.9.1
       p-retry: 4.6.2
       protobufjs: 7.6.6
       ws: 8.21.3
     optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.32.0(zod@4.6.6)
+      '@modelcontextprotocol/sdk': 1.32.0(zod@4.6.7)
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -10305,7 +10305,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.32.0(zod@4.6.6)':
+  '@modelcontextprotocol/sdk@1.32.0(zod@4.6.7)':
     dependencies:
       '@hono/node-server': 2.1.0(hono@4.13.1)
       ajv: 8.20.0
@@ -10322,8 +10322,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.6.6
-      zod-to-json-schema: 3.25.2(zod@4.6.6)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -11530,23 +11530,23 @@ snapshots:
 
   better-auth@1.6.29(pg@8.23.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)):
     dependencies:
-      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
-      '@better-auth/drizzle-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)
-      '@better-auth/kysely-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(kysely@0.29.4)
-      '@better-auth/memory-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)
-      '@better-auth/mongo-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)
-      '@better-auth/prisma-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)
-      '@better-auth/telemetry': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.6))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)
+      '@better-auth/core': 1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2)
+      '@better-auth/drizzle-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)
+      '@better-auth/kysely-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(kysely@0.29.4)
+      '@better-auth/memory-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)
+      '@better-auth/mongo-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)
+      '@better-auth/prisma-adapter': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)
+      '@better-auth/telemetry': 1.6.29(@better-auth/core@1.6.29(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-call@1.4.0(zod@4.6.7))(jose@6.2.8)(kysely@0.29.4)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.1
       '@noble/ciphers': 2.3.0
       '@noble/hashes': 2.3.0
-      better-call: 1.4.0(zod@4.6.6)
+      better-call: 1.4.0(zod@4.6.7)
       defu: 6.1.7
       jose: 6.2.8
       kysely: 0.29.4
       nanostores: 1.4.2
-      zod: 4.6.6
+      zod: 4.6.7
     optionalDependencies:
       pg: 8.23.0
       react: 19.3.0
@@ -11556,14 +11556,14 @@ snapshots:
       - '@cloudflare/workers-types'
       - '@opentelemetry/api'
 
-  better-call@1.4.0(zod@4.6.6):
+  better-call@1.4.0(zod@4.6.7):
     dependencies:
       '@better-auth/utils': 0.5.0
       '@better-fetch/fetch': 1.3.1
       rou3: 0.9.2
       set-cookie-parser: 3.1.2
     optionalDependencies:
-      zod: 4.6.6
+      zod: 4.6.7
 
   big-integer@1.6.52: {}
 
@@ -14043,10 +14043,10 @@ snapshots:
       is-docker: 2.2.1
       is-wsl: 2.2.0
 
-  openai@6.40.0(ws@8.21.3)(zod@4.6.6):
+  openai@6.40.0(ws@8.21.3)(zod@4.6.7):
     optionalDependencies:
       ws: 8.21.3
-      zod: 4.6.6
+      zod: 4.6.7
 
   opencode-ai@1.18.32:
     optionalDependencies:
@@ -15644,12 +15644,12 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zod-to-json-schema@3.25.2(zod@4.6.6):
+  zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
-      zod: 4.6.6
+      zod: 4.6.7
 
   zod@3.25.76: {}
 
-  zod@4.6.6: {}
+  zod@4.6.7: {}
 
   zwitch@2.0.4: {}
