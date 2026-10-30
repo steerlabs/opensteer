@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import {
+  darwinOnlyTests,
   defaultTestInclude,
   defaultTestExclude,
   integrationTestInclude,
@@ -97,6 +98,53 @@ const global = (p) =>
     p,
   ) ||
   /(^|\/)(go\.(mod|sum)|gradle[^/]*|.*\.gradle(\.kts)?|.*lock[^/]*)$/.test(p);
+const nativeMac = JSON.parse(
+  readFileSync(new URL("./ci-native-mac.json", import.meta.url), "utf8"),
+);
+const nativeInputs = JSON.parse(
+  readFileSync(new URL("./ci-native-inputs.json", import.meta.url), "utf8"),
+);
+const under = (file, prefix) => file === prefix || file.startsWith(`${prefix}/`);
+/**
+ * Swift tasks depend only on their Swift packages, what their node scripts import
+ * (ci-native-inputs.json) and the CI definition, so a global edit elsewhere does not
+ * rebuild them. The `lane` task carries the Darwin-only TypeScript tests, which keep
+ * the Mac lane's broad rule. Main and manual runs select every task.
+ */
+export function nativeMacTasks(files, { full = false, darwin = false } = {}) {
+  return nativeMac.tasks
+    .filter((task) => {
+      if (full) return true;
+      if (task.lane) return darwin;
+      const inputs = [
+        ...nativeMac.ciInputs,
+        ...task.swift,
+        ...(task.extra ?? []),
+        ...(task.scripts?.length
+          ? [...nativeMac.nodeInputs, ...(nativeInputs[task.task] ?? [])]
+          : []),
+      ];
+      return files.some((file) => inputs.some((input) => under(file, input)));
+    })
+    .map(({ task }) => task);
+}
+export function nativeMacMatrix(tasks) {
+  return nativeMac.tasks
+    .filter(({ task }) => tasks.includes(task))
+    .map(({ task, timeout, swift, lane }) => ({
+      task,
+      timeout,
+      swift: swift.join(" "),
+      darwin: lane === true,
+    }));
+}
+export const allNativeMacTasks = nativeMac.tasks.map(({ task }) => task);
+/** The task that runs the Darwin-only files and uploads their inventory. */
+export const darwinTask = nativeMac.tasks.find((task) => task.lane).task;
+// A root test edit needs its own lane, the repo-wide test guards in `tests` and the
+// test typecheck in build-types, not every lane. Other files under tests/ (support
+// modules, fixtures, quarantine) stay global.
+const rootTest = (p) => /^tests\/.*\.test\.tsx?$/.test(p);
 export function decide(files, graph, baseGraph = graph, full = false) {
   const reasons = [];
   const affected = new Set();
@@ -110,10 +158,17 @@ export function decide(files, graph, baseGraph = graph, full = false) {
     });
   }
   let all = full;
+  const rootTests = { any: false, integration: false, darwin: false };
   let androidSource = false;
   if (full) reasons.push("main/manual full run");
   for (const file of files) {
     if (docs(file)) continue;
+    if (rootTest(file)) {
+      rootTests.any = true;
+      if (darwinOnlyTests.includes(file)) rootTests.darwin = true;
+      else if (/\.integration\.test\./.test(file)) rootTests.integration = true;
+      continue;
+    }
     if (global(file)) {
       all = true;
       reasons.push(`global input: ${file}`);
@@ -166,21 +221,24 @@ export function decide(files, graph, baseGraph = graph, full = false) {
     }
     return false;
   };
+  // It also runs the root darwin-only tests, which can read any workspace like
+  // the root tests below.
+  const darwin = all || reaches("native-mac") || affected.size > 0 || rootTests.darwin;
+  const macTasks = nativeMacTasks(files, { full, darwin });
   return {
     version: 1,
     full: all,
     reasons,
     affected: [...affected].sort(),
+    nativeMac: macTasks,
     lanes: {
       lint: true,
-      "build-types": all || dirs.some((d) => d !== "apps/agent-phone"),
+      "build-types": all || dirs.some((d) => d !== "apps/agent-phone") || rootTests.any,
       // Root tests have no workspace manifest and can read any workspace;
       // keep their default-test coverage conservative for every workspace edit.
-      tests: all || reaches("tests") || affected.size > 0,
-      integration: all || reaches("integration"),
-      // It also runs the root darwin-only tests, which can read any workspace like
-      // the root tests above.
-      "native-mac": all || reaches("native-mac") || affected.size > 0,
+      tests: all || reaches("tests") || affected.size > 0 || rootTests.any,
+      integration: all || reaches("integration") || rootTests.integration,
+      "native-mac": macTasks.length > 0,
       android: all || androidSource || reaches("android"),
       "browser-journeys": all || reaches("browser-journeys"),
     },
@@ -206,6 +264,7 @@ export function detect({
       detectionError: true,
       affected: [],
       reasons: [`detector fail-open: ${error.message}`],
+      nativeMac: allNativeMacTasks,
       lanes: Object.fromEntries(lanes.map((k) => [k, true])),
     };
   }
@@ -220,6 +279,9 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     process.stdout.write(line);
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, line);
   }
+  const matrix = `native-mac-tasks=${JSON.stringify(nativeMacMatrix(plan.nativeMac))}\n`;
+  process.stdout.write(matrix);
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, matrix);
   for (const [key, value] of Object.entries(plan.lanes)) {
     const line = `${key}=${value}\n`;
     process.stdout.write(line);

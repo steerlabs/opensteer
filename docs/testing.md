@@ -161,7 +161,18 @@ each shard's graph must trace every file that shard ran. Tests that need Darwin
 (`darwinOnlyTests` in
 [ci-test-files.mjs](../.github/scripts/ci-test-files.mjs)) leave the Linux shards
 and run in the native-mac matrix with their own discovery and execution inventory.
-The native lane separates helper builds, Swift packages, and native wire checks.
+The native lane separates helper builds, Swift packages, and native wire checks:
+one job per task in [ci-native-mac.json](../.github/scripts/ci-native-mac.json).
+The `iphone` task carries the Darwin-only files and runs for any workspace edit.
+Each Swift task runs only when its Swift packages, the CI definition, what its node
+scripts import, or a file its Swift tests read changes. `ci-native-inputs.json`
+lists those imports (whole workspace packages), `pnpm exec tsx
+scripts/ci-native-inputs.ts` regenerates it, and `tests/ci-native-inputs.test.ts`
+fails when it is stale or when a Swift test names a repository file its task does
+not list. A root `tests/*.test.ts` edit selects its own lane, the repo-wide test
+guards in `tests` and `build-types`; other files under `tests/` stay global
+inputs. Main and manual runs select every task, and Check refuses a skipped one
+there.
 Integration shards run `pnpm test:integration` with its own tmpfs PostgreSQL, as
 local runs do. Browser journeys that accept `OPENSTEER_CHROMIUM_EXECUTABLE` get
 the pinned Playwright Chromium there, never the runner image's browsers. Missing or

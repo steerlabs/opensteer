@@ -1,0 +1,42 @@
+{
+  "computer-helper": [
+    "apps/desktop/scripts/build-computer-use-helper.ts",
+    "apps/desktop/scripts/native-build-cache.ts",
+    "apps/desktop/src/signed-helpers/metadata.ts",
+    "packages/browser-core",
+    "packages/browser-profile",
+    "packages/channel-core",
+    "packages/control-plane-protocol",
+    "packages/core",
+    "packages/deployment-authority",
+    "packages/integration-adapters",
+    "packages/integration-catalog",
+    "packages/integration-core",
+    "packages/protocol",
+    "packages/shared",
+    "packages/triggers",
+    "packages/workspace",
+    "scripts/command-runner.ts",
+    "scripts/generate-apple-data-contracts.ts"
+  ],
+  "passwords-helper": [
+    "apps/desktop/scripts/build-passwords-broker.ts",
+    "apps/desktop/scripts/native-build-cache.ts",
+    "apps/desktop/src/signed-helpers/metadata.ts",
+    "packages/core",
+    "packages/protocol",
+    "packages/shared",
+    "scripts/command-runner.ts"
+  ],
+  "computer-tests": [
+    "packages/browser-core",
+    "packages/browser-profile",
+    "packages/core",
+    "packages/integration-adapters",
+    "packages/integration-catalog",
+    "packages/integration-core",
+    "packages/protocol",
+    "packages/shared",
+    "scripts/generate-apple-data-contracts.ts"
+  ]
+}

@@ -1,7 +1,23 @@
-import { lanes } from "./ci-changes.mjs";
+import { allNativeMacTasks, lanes } from "./ci-changes.mjs";
 export function validateResults(plan, needs, event) {
   if (needs.changes?.result !== "success" || plan?.version !== 1 || plan.detectionError === true)
     throw new Error("Change detection failed");
+  const tasks = plan.nativeMac;
+  let matrix;
+  try {
+    matrix = JSON.parse(needs.changes.outputs?.["native-mac-tasks"] ?? "");
+  } catch {
+    throw new Error("Missing/invalid plan output: native-mac-tasks");
+  }
+  if (
+    !Array.isArray(tasks) ||
+    !Array.isArray(matrix) ||
+    JSON.stringify(matrix.map((entry) => entry?.task)) !== JSON.stringify(tasks) ||
+    plan.lanes?.["native-mac"] !== tasks.length > 0
+  )
+    throw new Error("Missing/invalid plan output: native-mac-tasks");
+  if (event !== "pull_request" && tasks.length !== allNativeMacTasks.length)
+    throw new Error("Main/manual forbids skipping native-mac tasks");
   for (const lane of lanes) {
     const flag = plan.lanes?.[lane];
     const output = needs.changes.outputs?.[lane];
