@@ -9,6 +9,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -27,7 +28,6 @@ import {
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
-  type RecentSite,
   type StartPageGroup,
   type StartPageProfileChoice,
   type StartPageResult,
@@ -213,7 +213,6 @@ export const StartPage = memo(function StartPage({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [profilesOpen, setProfilesOpen] = useState(false);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-  const [recentsRevision, setRecentsRevision] = useState(0);
   const [recentMenu, setRecentMenu] = useState<{
     readonly anchor: HTMLElement;
     readonly x: number;
@@ -267,13 +266,14 @@ export const StartPage = memo(function StartPage({
     () => startPageIndex({ snapshot, places, approvedApps, localMachineId, choice }),
     [approvedApps, choice, localMachineId, places, snapshot],
   );
-  // Read when the profile, the account or a clear changes it; never per keystroke.
-  const [recents, setRecents] = useState<readonly RecentSite[]>(() =>
-    hostClient.recentSites.list(choice),
+  const historyRevision = useSyncExternalStore(
+    hostClient.recentSites.subscribe,
+    hostClient.recentSites.getRevision,
   );
-  useEffect(() => {
-    setRecents(hostClient.recentSites.list(choice));
-  }, [choice, hostClient, recentsRevision, scope]);
+  const recents = useMemo(
+    () => hostClient.recentSites.list(choice),
+    [choice, hostClient, historyRevision, scope],
+  );
   const omnibox = useOmnibox({
     hostClient,
     index,
@@ -395,6 +395,7 @@ export const StartPage = memo(function StartPage({
             .browserSessions.find((session) => session.id === opened.sessionId)
             ?.tabs.find((tab) => tab.id === opened.tabId)?.title ?? "",
         typed: result.kind === "address",
+        tab: opened,
       });
       rememberBrowsingChoice(scope, choice);
       show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
@@ -645,7 +646,7 @@ export const StartPage = memo(function StartPage({
                             type="button"
                           >
                             <span className="start-tile__site">
-                              <SiteMark favicon={null} site={host} />
+                              <SiteMark favicon={recent.favicon} site={host} />
                             </span>
                             <span className="start-tile__label">{host}</span>
                           </button>
@@ -753,7 +754,6 @@ export const StartPage = memo(function StartPage({
                 hostClient.recentSites.clear(choice);
                 omnibox.refreshHistory();
                 setRecentMenu(null);
-                setRecentsRevision((revision) => revision + 1);
                 inputRef.current?.focus();
               }}
               role="menuitem"

@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
+import { readFileSync } from "node:fs";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { HostClient, HostConnectionState } from "@opensteer/client/host";
 import { PlaceMark } from "./place-mark.js";
+import { ProfileAvatar } from "./identity.js";
 
 vi.mock("../computer-apps/computer-use-section.js", () => ({ AppMark: () => null }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -170,4 +172,23 @@ it("cancels pending retries and subscriptions on unmount", async () => {
     await vi.advanceTimersByTimeAsync(30_000);
   });
   expect(read).toHaveBeenCalledTimes(1);
+});
+
+it("fits profile badges to their icon without a dark circular outline", async () => {
+  const style = document.createElement("style");
+  style.textContent = readFileSync("apps/web/src/styles/workspace.css", "utf8");
+  document.body.append(style);
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root?.render(
+      <span className="pbadge">
+        <ProfileAvatar identity={{ kind: "guest", name: "Guest" }} size={14} />
+      </span>,
+    ),
+  );
+  const badge = container.querySelector(".pbadge")!;
+  expect(getComputedStyle(badge).display).toBe("grid");
+  expect(getComputedStyle(badge).boxShadow).toBe("none");
 });

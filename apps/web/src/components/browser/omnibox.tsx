@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type InputHTMLAttributes,
   type RefObject,
 } from "react";
@@ -61,6 +62,10 @@ export function useOmnibox(options: {
   const [focused, setFocused] = useState(false);
   const [dirty, setDirty] = useState(!!options.initialValue);
   const [revision, setRevision] = useState(0);
+  const historyRevision = useSyncExternalStore(
+    hostClient.recentSites.subscribe,
+    hostClient.recentSites.getRevision,
+  );
   const [provider, setProvider] = useState<{ query: string; rows: readonly string[] }>({
     query: "",
     rows: [],
@@ -86,7 +91,7 @@ export function useOmnibox(options: {
       hostClient.recentSites.history(
         profileId === null ? { kind: "guest" } : { kind: "profile", profileId },
       ),
-    [hostClient, profileId, revision, scope],
+    [hostClient, profileId, revision, historyRevision, scope],
   );
   const rows =
     frozen ??
@@ -457,7 +462,7 @@ export function OmniboxResults({
             ) : row.place ? (
               <PlaceMark hostClient={hostClient} icon={row.place.icon} site={row.place.site} />
             ) : (
-              <SiteMark favicon={null} site={row.title} />
+              <SiteMark favicon={row.favicon} site={row.title} />
             )}
           </span>
           <span className="start-result__text">

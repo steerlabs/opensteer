@@ -3378,6 +3378,7 @@ export class MockHostClient implements HostClient {
     this.recentSites = new RecentSitesStore({
       ...(options.recentSitesStorage ? { storage: options.recentSitesStorage } : {}),
       now: () => (options.now?.() ?? new Date()).getTime(),
+      readIcon: (sessionId, iconRef) => this.readBrowserTabIcon(sessionId, iconRef),
     });
     if (
       options.places !== "absent" &&
@@ -3446,6 +3447,7 @@ export class MockHostClient implements HostClient {
       }
       this.#computerViews.setConnected(scope !== null && snapshot.connection !== "offline");
       this.recentSites.setScope(scope);
+      this.recentSites.observeTabs(snapshot.browserSessions, snapshot.connection === "connected");
       this.browserPreferences.setScope(scope);
     };
     syncRecents();
@@ -4223,6 +4225,7 @@ export class MockHostClient implements HostClient {
 
   dispose(): void {
     this.#workspaceTabActivations.dispose();
+    this.recentSites.dispose();
     this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingWorkspaceTabs: [] });
     this.#computerViews.clear();
     this.#worldSubscription();
