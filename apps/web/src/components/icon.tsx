@@ -8,6 +8,13 @@ const paths = {
       <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
     </>
   ),
+  "microphone-off": (
+    <>
+      <path d="M15 9.4V5a3 3 0 0 0-5.7-1.3M9 9v3a3 3 0 0 0 5.1 2.1" />
+      <path d="M19 10v2a7 7 0 0 1-.9 3.4M5 10v2a7 7 0 0 0 11.5 5.4M12 19v3m-4 0h8M3 3l18 18" />
+    </>
+  ),
+  waveform: <path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" />,
   activity: <path d="M22 12h-4l-3 8L9 4l-3 8H2" />,
   "alert-circle": (
     <>

@@ -145,6 +145,8 @@ interface ComposerProps {
   disabled?: boolean;
   readOnly?: boolean;
   footerExtras?: ReactNode;
+  /** Chat's voice button, beside Send. */
+  voice?: ReactNode;
   /**
    * Published so a surface that took the keyboard away — the AI picker's
    * review, a Find panel — can give it back to the words being written.
@@ -223,6 +225,7 @@ export function Composer({
   disabled = false,
   readOnly = false,
   footerExtras,
+  voice,
   inputRef,
   onDraftChange,
   onHoldingChange,
@@ -903,6 +906,7 @@ export function Composer({
       ) : (
         <FoldRow className="composer__settings">{footerExtras}</FoldRow>
       )}
+      {voice}
       {showStop ? (
         <StopButton
           disabled={stopping || disabled || readOnly}
