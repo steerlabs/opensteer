@@ -18,6 +18,12 @@ import { attachmentMaxBytes } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { formatIssues } from "@opensteer/shared/validationIssues";
 import { z } from "zod";
+import {
+  HostResponseDeadline,
+  bufferedHostResponseTimeoutMs,
+  hostResponseHeadersTimeoutMs,
+  hostResponseStallTimeoutMs,
+} from "../connections/host-response-deadline.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
 
 type Fetch = typeof globalThis.fetch;
@@ -39,6 +45,8 @@ const responseEnvelopes = new Map(
 export interface HttpHostApiClientOptions {
   readonly baseUrl: URL;
   readonly fetch: Fetch;
+  /** IPC adapters return buffered bodies together with their headers. */
+  readonly bufferedResponses?: boolean;
   readonly onAuthenticationRequired: () => void;
 }
 
@@ -153,43 +161,69 @@ async function request<Name extends keyof typeof hostApi>(
   if (declaration.method === "GET" || "binaryRequest" in declaration) {
     url.searchParams.set("input", serialized);
   }
+  const deadline = new HostResponseDeadline(call?.signal);
+  const maximumBytes = declaration.stream
+    ? name === "attachment.content"
+      ? attachmentMaxBytes
+      : workspaceFilePreviewMaxBytes
+    : 16 * 1_024 * 1_024;
+  const headersTimeoutMs =
+    call?.responseHeadersTimeoutMs ??
+    (options.bufferedResponses
+      ? bufferedHostResponseTimeoutMs(maximumBytes)
+      : "binaryRequest" in declaration
+        ? bufferedHostResponseTimeoutMs(
+            call?.body instanceof Uint8Array
+              ? call.body.byteLength
+              : (call?.body?.size ?? attachmentMaxBytes),
+          )
+        : hostResponseHeadersTimeoutMs);
+  const stallTimeoutMs = call?.bodyStallTimeoutMs ?? hostResponseStallTimeoutMs;
   try {
     call?.signal?.throwIfAborted();
-    const response = await options.fetch(url, {
-      ...(declaration.method === "POST"
-        ? {
-            body:
-              "binaryRequest" in declaration
-                ? call?.body instanceof Uint8Array
-                  ? new Blob([Uint8Array.from(call.body)])
-                  : (call?.body ?? null)
-                : serialized,
-          }
-        : {}),
-      credentials: "include",
-      headers: {
-        accept: declaration.stream ? "*/*" : "application/json",
-        // Every rpc request states the epoch this app speaks. It is sent from
-        // here alone so no caller can reach a Host without having negotiated.
-        [hostApiVersionHeader]: String(hostApiVersion),
+    deadline.reset(headersTimeoutMs);
+    const response = await deadline.wait(
+      options.fetch(url, {
         ...(declaration.method === "POST"
           ? {
-              "content-type":
-                "binaryRequest" in declaration ? "application/octet-stream" : "application/json",
+              body:
+                "binaryRequest" in declaration
+                  ? call?.body instanceof Uint8Array
+                    ? new Blob([Uint8Array.from(call.body)])
+                    : (call?.body ?? null)
+                  : serialized,
             }
           : {}),
-      },
-      method: declaration.method,
-      ...(call?.signal ? { signal: call.signal } : {}),
-    });
+        credentials: "include",
+        headers: {
+          accept: declaration.stream ? "*/*" : "application/json",
+          // Every rpc request states the epoch this app speaks. It is sent from
+          // here alone so no caller can reach a Host without having negotiated.
+          [hostApiVersionHeader]: String(hostApiVersion),
+          ...(declaration.method === "POST"
+            ? {
+                "content-type":
+                  "binaryRequest" in declaration ? "application/octet-stream" : "application/json",
+              }
+            : {}),
+        },
+        method: declaration.method,
+        signal: deadline.controller.signal,
+      }),
+    );
+    deadline.controller.signal.throwIfAborted();
+    deadline.reset(response.body ? stallTimeoutMs : bufferedHostResponseTimeoutMs(maximumBytes));
+    const bytes = await deadline.wait(
+      readBoundedResponse(response, {
+        maximumBytes,
+        signal: deadline.controller.signal,
+        onProgress: () => deadline.reset(stallTimeoutMs),
+        sizeError: () => new HostTransportError("response-too-large"),
+      }),
+    );
+    call?.signal?.throwIfAborted();
     if (response.status === 401) options.onAuthenticationRequired();
     if (declaration.stream && response.ok) {
-      const bytes = await readBoundedResponse(response, {
-        ...(call?.signal ? { signal: call.signal } : {}),
-        maximumBytes:
-          name === "attachment.content" ? attachmentMaxBytes : workspaceFilePreviewMaxBytes,
-        sizeError: () => new HostTransportError("response-too-large"),
-      });
       const modified = response.headers.get("last-modified");
       const metadata =
         name === "attachment.content"
@@ -215,10 +249,12 @@ async function request<Name extends keyof typeof hostApi>(
         ok: true,
       } as RpcOutput<(typeof hostApi)[Name]>;
     }
-    const body: unknown = await response.json().catch((error: unknown) => {
-      if (error instanceof SyntaxError) return null;
-      throw error;
-    });
+    const body: unknown = await Promise.resolve()
+      .then(() => JSON.parse(new TextDecoder().decode(bytes)) as unknown)
+      .catch((error: unknown) => {
+        if (error instanceof SyntaxError) return null;
+        throw error;
+      });
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
     if (parsed.success) return parsed.data as RpcOutput<(typeof hostApi)[Name]>;
     return {
@@ -229,7 +265,8 @@ async function request<Name extends keyof typeof hostApi>(
       }),
       ok: false,
     } as RpcOutput<(typeof hostApi)[Name]>;
-  } catch (error) {
+  } catch (caught) {
+    const error = deadline.controller.signal.aborted ? deadline.controller.signal.reason : caught;
     // An abort is the caller's own decision, not a Host failure. The rejection
     // is a DOMException in a browser and a plain Error elsewhere, so the name
     // is the only portable evidence.
@@ -246,6 +283,8 @@ async function request<Name extends keyof typeof hostApi>(
             { cause: error },
           );
     return rpcError(`transport-${failure.code}`, failure.message, failure.retryable);
+  } finally {
+    deadline.dispose();
   }
 }
 

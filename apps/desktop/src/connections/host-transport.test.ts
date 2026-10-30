@@ -23,6 +23,57 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it.each([false, true])(
+    "bounds silence while buffering a slow desktop response; stall: %s",
+    async (stall) => {
+      vi.useFakeTimers();
+      try {
+        const selected = deployment("Home", "https://home.connect.opensteer.test");
+        let body!: ReadableStreamDefaultController<Uint8Array>;
+        let signal: AbortSignal | undefined;
+        const transport = desktopHostTransport({
+          catalog: catalogStore([selected], selected.authority.document.deploymentId),
+          network: {
+            openWebSocket: () => socket(),
+            request: async (input) => {
+              signal = input.signal;
+              return new Response(
+                new ReadableStream({
+                  start(controller) {
+                    body = controller;
+                  },
+                }),
+              );
+            },
+          },
+        });
+        const pending = transport.request({
+          headers: {},
+          method: "GET",
+          path: "/v1/rpc/auth.config",
+        });
+        const outcome = pending.catch((error: unknown) => error);
+        await vi.advanceTimersByTimeAsync(0);
+        for (let index = 0; index < 3; index++) {
+          await vi.advanceTimersByTimeAsync(19_000);
+          body.enqueue(new TextEncoder().encode(" "));
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        if (stall) {
+          await vi.advanceTimersByTimeAsync(20_000);
+          expect(await outcome).toMatchObject({ code: "timed-out", retryable: true });
+          expect(signal?.aborted).toBe(true);
+        } else {
+          body.close();
+          await expect(pending).resolves.toMatchObject({ body: "   ", status: 200 });
+        }
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("F5 correlates surfaces privately across sockets without persisting raw identifiers", async () => {
     const selected = deployment("Home", "https://home.connect.opensteer.test");
     const log = vi.fn();

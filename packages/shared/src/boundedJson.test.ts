@@ -36,3 +36,30 @@ describe("bounded HTTP response decoding", () => {
     ).resolves.toEqual({ ok: true });
   });
 });
+
+it("enforces the decoded byte bound even when compressed Content-Length fits", async () => {
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(9));
+        controller.enqueue(new Uint8Array(9));
+        controller.close();
+      },
+    }),
+    { headers: { "content-length": "2", "content-encoding": "gzip" } },
+  );
+  await expect(readBoundedResponse(response, { maximumBytes: 16 })).rejects.toThrow(
+    "Response exceeded its size limit",
+  );
+});
+
+it("bounds buffered fetch bodies without a JS stream", async () => {
+  const response = {
+    body: null,
+    headers: new Headers(),
+    arrayBuffer: async () => new Uint8Array(17).buffer,
+  } as Response;
+  await expect(readBoundedResponse(response, { maximumBytes: 16 })).rejects.toThrow(
+    "Response exceeded its size limit",
+  );
+});
