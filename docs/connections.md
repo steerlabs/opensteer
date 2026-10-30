@@ -145,8 +145,9 @@ Other clients read Home when it opens, so an unopened Home never enters a
 Workspace's Thread page by timing. Already hydrated transcripts keep receiving
 updates so returning readers retain their older messages and position. Reconnect
 snapshots preserve a shown transcript and its matching
-history cursor until a history read succeeds. A snapshot that overtakes an ongoing
-read invalidates its coverage and requires another read. History failures remain
+history cursor until a history read succeeds. A snapshot requires another history
+read only when its sequence exceeds the page's `readState.asOfSequence`, including
+for a read still in flight; a page covering that snapshot is retained. History failures remain
 visible and retryable without clearing the last readable conversation.
 
 Hosts advertising `snapshot-messages-omit-v1` accept `client.subscribe` with
