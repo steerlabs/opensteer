@@ -9,7 +9,9 @@ export interface VoiceTimers {
 export function voiceTimers(input: VoiceTimers) {
   return {
     now: input.now ?? Date.now,
-    set: input.setTimer ?? globalThis.setTimeout,
+    set:
+      input.setTimer ??
+      ((callback: () => void, delayMs: number) => globalThis.setTimeout(callback, delayMs)),
     clear: (timer: VoiceTimer | null) => {
       if (timer !== null) (input.clearTimer ?? globalThis.clearTimeout)(timer);
     },
