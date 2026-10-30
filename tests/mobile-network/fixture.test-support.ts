@@ -82,17 +82,18 @@ export async function seedWorkspace(
     runId: typeof historyRun.runId,
   ) {
     await database.transaction().execute(async (transaction) => {
-      const thread = await transaction
-        .selectFrom("threads")
-        .select("nextMessageSequence")
-        .where("id", "=", threadId)
-        .forUpdate()
-        .executeTakeFirstOrThrow();
+      // The repository's lock order takes the Workspace before its Thread.
       const head = await transaction
         .updateTable("workspaces")
         .set({ updatedAt: new Date() })
         .where("id", "=", workspace.id)
         .returning("eventSequence")
+        .executeTakeFirstOrThrow();
+      const thread = await transaction
+        .selectFrom("threads")
+        .select("nextMessageSequence")
+        .where("id", "=", threadId)
+        .forUpdate()
         .executeTakeFirstOrThrow();
       let sequence = BigInt(head.eventSequence);
       const events: (Omit<AgentEvent, "createdAt" | "data"> & {
