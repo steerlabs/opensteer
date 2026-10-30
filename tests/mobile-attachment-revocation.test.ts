@@ -138,7 +138,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         if (typeof read! !== "function") throw new Error("No capability reader");
         const initialRead = read!;
         agreement = "unreachable";
-        await expect(initialRead()).rejects.toThrow("unreachable");
+        await expect(initialRead({ revalidate: true })).rejects.toThrow("unreachable");
         expect(disposed).toBe(0);
         expect(client.getSnapshot().selection.hostClient).toBe(retained);
         expect(client.getSnapshot().selection.row?.verification).toBeNull();
@@ -150,7 +150,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         const inFlight = network!.fetch(`${origin}/v1/rpc/bootstrap.get`);
         const inFlightResult = expect(inFlight).rejects.toThrow();
         agreement = verdict;
-        await expect(initialRead()).rejects.toThrow();
+        await expect(initialRead({ revalidate: true })).rejects.toThrow();
         finishCredential("Bearer retained-test");
         credentialRead = null;
         await inFlightResult;
@@ -181,7 +181,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         pending = new Promise((resolve) => {
           finish = resolve;
         });
-        const late = newerRead();
+        const late = newerRead({ revalidate: true });
         await client.deselect();
         pending = null;
         await client.select(id);
