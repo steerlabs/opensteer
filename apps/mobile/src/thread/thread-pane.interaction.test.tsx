@@ -2365,7 +2365,7 @@ describe("a task", () => {
   });
 });
 
-// Ways a finished task's title can fail: the bar drops "Done" while the
+// Ways a finished task's title can fail: the bar drops "Finished" while the
 // drawn transcript is a window from before the ending, and the title has no
 // menu either — nothing on screen, nor its accessible name, says the task
 // ended; or the bar keeps a second status line beside a menu that already
@@ -2376,7 +2376,7 @@ describe("a finished task's title", () => {
     ["a menu to rename it", true, false],
     ["a menu to open who asked", false, true],
   ] as const)(
-    "says Done when opened before its ending with %s",
+    "says Finished when opened before its ending with %s",
     async (_, capable, readableRequester) => {
       const earlierRun = createId("run");
       const endingRun = createId("run");
@@ -2427,13 +2427,8 @@ describe("a finished task's title", () => {
       expect(text(container)).not.toContain("Returned to");
       const bar = container.querySelector("header")!;
       const trigger = bar.querySelector('[aria-label$="Task actions"]');
-      expect(trigger?.getAttribute("aria-label")).toMatch(/, Done\. Task actions$/);
-      // No line of the bar is the word; "Mark Done" in the menu is not that line.
-      expect(
-        [...bar.querySelectorAll("*")].some(
-          (node) => node.childElementCount === 0 && node.textContent === "Done",
-        ),
-      ).toBe(false);
+      expect(trigger?.getAttribute("aria-label")).toMatch(/, Finished\. Task actions$/);
+      expect(bar.textContent).not.toContain("Finished");
       expect(hasButton(container, "Mark Done")).toBe(true);
       expect(hasButton(container, "Rename…")).toBe(capable);
     },

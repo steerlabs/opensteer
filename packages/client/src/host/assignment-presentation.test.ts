@@ -53,7 +53,7 @@ const presented = (
 // different words for the same ending, or a finished task reads as a Run.
 describe("a settled task's word", () => {
   it.each([
-    ["completed", "Done", "completed"],
+    ["completed", "Finished", "completed"],
     ["failed", "Couldn’t finish", "failed"],
     ["cancelled", "Stopped", "stopped"],
   ] as const)("reads a %s task as %s", (status, word, tone) => {
@@ -106,13 +106,13 @@ describe("taskRowNote", () => {
 describe("taskGroupSummary", () => {
   it("counts each word, what asks for the reader first", () => {
     const summary = taskGroupSummary([
-      presented("Done", "completed"),
+      presented("Finished", "completed"),
       presented("Working", "working", true),
-      presented("Done", "completed"),
+      presented("Finished", "completed"),
     ]);
     expect(summary.label).toBe("3 tasks");
     expect(summary.parts).toEqual([
-      { moving: false, text: "2 done", tone: "completed" },
+      { moving: false, text: "2 finished", tone: "completed" },
       { moving: true, text: "1 working", tone: "working" },
     ]);
   });

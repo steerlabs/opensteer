@@ -251,7 +251,7 @@ function openState(
 function settledState(status: Exclude<AssignmentStatus, "open">): [string, AssignmentTone] {
   switch (status) {
     case "completed":
-      return ["Done", "completed"];
+      return ["Finished", "completed"];
     case "failed":
       return ["Couldn’t finish", "failed"];
     case "cancelled":

@@ -187,7 +187,7 @@ const line = (node: HTMLElement) => node.querySelector<HTMLButtonElement>("butto
 describe("a task's line on a phone", () => {
   it.each([
     ["working", { currentRunStatus: "running" as const }, "Working", "ember", true],
-    ["done", settled("completed"), "Done", "muted", false],
+    ["done", settled("completed"), "Finished", "muted", false],
     ["failed", settled("failed"), "Couldn’t finish", "red", false],
     ["stopped", settled("cancelled"), "Stopped", "muted", false],
   ] as const)("reads a %s task as its word and dot alone", async (_, change, word, dot, live) => {
@@ -241,13 +241,13 @@ describe("tasks one turn handed out together, on a phone", () => {
       variant(seeded, 2, settled("completed")),
     ]);
     const group = node.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
-    expect(group.getAttribute("aria-label")).toBe("3 tasks: 2 done, 1 working");
+    expect(group.getAttribute("aria-label")).toBe("3 tasks: 2 finished, 1 working");
     expect(group.getAttribute("aria-expanded")).toBe("false");
     expect(group.querySelectorAll("[data-task-icon]")).toHaveLength(3);
     expect(
       [...group.querySelectorAll<HTMLElement>("[data-dot]")].map(({ dataset }) => dataset.dot),
     ).toEqual(["ember"]);
-    expect(node.querySelectorAll('[aria-label$=", Done"], [data-menu-action]')).toHaveLength(0);
+    expect(node.querySelectorAll('[aria-label$=", Finished"], [data-menu-action]')).toHaveLength(0);
 
     await act(async () => group.click());
     expect(group.getAttribute("aria-expanded")).toBe("true");
@@ -265,7 +265,7 @@ describe("tasks one turn handed out together, on a phone", () => {
       (client, [, task]) => [asking(client, task!, "Which quarter should I use?")],
     );
     expect(node.querySelector("button[aria-expanded]")?.getAttribute("aria-label")).toBe(
-      "2 tasks: 1 needs you, 1 done",
+      "2 tasks: 1 needs you, 1 finished",
     );
   });
 });

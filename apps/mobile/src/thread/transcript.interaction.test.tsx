@@ -537,8 +537,8 @@ describe("a delegation's line", () => {
     };
     render([delegation], [{ id: "workspace-child", name: "Research Lab" } as WorkspaceSummary]);
     const line = () => container.querySelector('[aria-label^="Research, "]')!;
-    expect(line().getAttribute("aria-label")).toBe("Research, Done");
-    expect(container.textContent).toBe("ResearchDone");
+    expect(line().getAttribute("aria-label")).toBe("Research, Finished");
+    expect(container.textContent).toBe("ResearchFinished");
     act(() => (line() as HTMLElement).click());
     expect(onOpenThread).toHaveBeenCalledExactlyOnceWith("thread-child");
 

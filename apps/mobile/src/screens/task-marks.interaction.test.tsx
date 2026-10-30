@@ -497,15 +497,15 @@ describe("mobile task mark review journeys", () => {
   // reader (working, waiting, failed, stopped) or a lost connection disappears
   // with it; the specialist's name or the task menu goes too.
   it.each([
-    ["completed", "Done", null, false],
-    ["completed", "Done", "Travel", false],
-    ["completed", "Done", null, true],
+    ["completed", "Finished", null, false],
+    ["completed", "Finished", "Travel", false],
+    ["completed", "Finished", null, true],
     ["failed", "Couldn’t finish", null, false],
     ["stopped", "Stopped", null, false],
     ["waiting", "Needs you", null, false],
     ["working", "Working", null, false],
   ] as const)(
-    "keeps a %s task's menu state accessible while compacting only Done (%s, specialist %s, offline %s)",
+    "keeps a %s task's menu state accessible while compacting only Finished (%s, specialist %s, offline %s)",
     async (tone, word, workspaceName, offline) => {
       const host = await client();
       const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;

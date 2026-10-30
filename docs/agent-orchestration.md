@@ -804,11 +804,11 @@ Wherever another Thread's work appears in a conversation, it is one quiet line: 
 its title, and a dot and a word for where it stands, from `assignmentPresentation` in
 `@opensteer/client`, which web and mobile share. The line changes in place and opens the task's own
 Thread; its menu opens or stops it. Only the dot and the word change: Working (ember, breathing
-only while a Run works now), Done, Needs you (amber), Couldn't finish (red), Stopped, and the
+only while a Run works now), Finished, Needs you (amber), Couldn't finish (red), Stopped, and the
 existing words for a task that waits. A task waiting on its reader keeps the same line and says
 its question under the title; the question is answered where Chat docks its tasks' questions, or in
 the task. Tasks one turn handed out together read as one line of stacked marks and counts, such as
-"3 tasks", then "2 done · 1 working", that opens in place to a line for each. Delegations recorded
+"3 tasks", then "2 finished · 1 working", that opens in place to a line for each. Delegations recorded
 before Assignments read in the same words; their task, result and pages are in the Thread the line
 opens. A task's result draws nothing more: the line shows how the task ended, and the reply it
 starts says what came back. There is no separate task panel: every client opens the Thread itself.

@@ -157,7 +157,7 @@ const lines = (node: HTMLElement) => [...node.querySelectorAll<HTMLElement>(".ta
 describe("a task's line in the conversation that handed it out", () => {
   it.each([
     ["working", { currentRunStatus: "running" as const }, "Working", "working", true],
-    ["done", settled("completed"), "Done", "completed", false],
+    ["done", settled("completed"), "Finished", "completed", false],
     ["failed", settled("failed"), "Couldn’t finish", "failed", false],
     ["stopped", settled("cancelled"), "Stopped", "stopped", false],
   ] as const)(
@@ -219,8 +219,8 @@ describe("tasks one turn handed out together", () => {
     expect(group.getAttribute("aria-expanded")).toBe("false");
     expect(node.querySelectorAll(".task-stack__mark")).toHaveLength(3);
     expect(node.querySelector(".task-line__title")?.textContent).toBe("3 tasks");
-    expect(node.querySelector(".task-line__state")?.textContent).toBe("2 done·1 working");
-    expect(group.getAttribute("aria-label")).toBe("3 tasks: 2 done, 1 working. Show tasks");
+    expect(node.querySelector(".task-line__state")?.textContent).toBe("2 finished·1 working");
+    expect(group.getAttribute("aria-label")).toBe("3 tasks: 2 finished, 1 working. Show tasks");
     // Only the count that says something wears a dot.
     expect(
       [...node.querySelectorAll<HTMLElement>(".task-line__part")].map(
@@ -233,7 +233,7 @@ describe("tasks one turn handed out together", () => {
     const opened = node.querySelector('[role="group"][aria-label="3 tasks"]')!;
     expect(
       [...opened.querySelectorAll(".task-line__state")].map((state) => state.textContent),
-    ).toEqual(["Done", "Working", "Done"]);
+    ).toEqual(["Finished", "Working", "Finished"]);
     expect(opened.querySelectorAll("a.task-line__open")).toHaveLength(3);
 
     await act(async () => group.click());
@@ -250,7 +250,7 @@ describe("tasks one turn handed out together", () => {
       ([, asking]) => [askingAbout(clients[0]!, asking!, "Which quarter should I use?")],
     );
     const parts = [...node.querySelectorAll<HTMLElement>(".task-line__part")];
-    expect(parts.map((part) => part.textContent)).toEqual(["1 needs you", "·1 done"]);
+    expect(parts.map((part) => part.textContent)).toEqual(["1 needs you", "·1 finished"]);
     expect(parts[0]!.querySelector<HTMLElement>(".task-dot")?.dataset.tone).toBe("waiting");
   });
 
