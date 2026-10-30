@@ -103,10 +103,11 @@ jobs:
   build:
     needs: [preflight, discover]
     if: needs.discover.outputs.skip == 'false' && needs.discover.outputs.reuse == 'false'
-    runs-on: macos-15
+    runs-on: macos-26
     environment: release
     timeout-minutes: 90
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       OPENSTEER_DESKTOP_RELEASE_CHANNEL: ${{ needs.preflight.outputs.channel }}
       OPENSTEER_DESKTOP_TARGET_ARCH: arm64
       OPENSTEER_RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
@@ -140,6 +141,39 @@ jobs:
           test "$(uname -m)" = arm64
           pnpm install --frozen-lockfile
           node -e 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.env.OPENSTEER_SOURCE_REVISION, process.env.OPENSTEER_RELEASE_VERSION)'
+      - name: Fingerprint release cache inputs
+        id: release-cache
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-version
+          xcrun clang++ --version
+          { xcodebuild -version; xcrun --show-sdk-version; xcrun clang++ --version; swift --version; uname -m; sw_vers; } > "$RUNNER_TEMP/release-toolchain"
+          echo "toolchain=$(shasum -a 256 "$RUNNER_TEMP/release-toolchain" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "swift=$(git ls-tree -r HEAD -- apps/desktop/native packages/apple-data packages/apple-dictation packages/macos-signing apps/desktop/scripts scripts/generate-apple-data-contracts.ts | shasum -a 256 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          java -version 2> "$RUNNER_TEMP/release-java"
+          echo "java=$(shasum -a 256 "$RUNNER_TEMP/release-java" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      # No restore prefixes: PR caches and other toolchains cannot supply release products.
+      - name: Cache unsigned PostgreSQL distribution
+        id: postgres-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/macos-build/postgres
+          key: release-only-postgres-v1-${{ runner.arch }}-${{ steps.release-cache.outputs.toolchain }}-${{ hashFiles('scripts/build-desktop-macos.ts', '.github/workflows/release.yml') }}
+      - name: Cache release SwiftPM objects
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            apps/desktop/native/computer-use/.build
+            apps/desktop/native/passwords/.build
+            apps/desktop/native/dictation/.build
+          key: release-only-swift-v1-${{ runner.arch }}-${{ steps.release-cache.outputs.toolchain }}-${{ steps.release-cache.outputs.swift }}
+      - name: Cache Gradle dependencies for releases
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: release-only-gradle-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.release-cache.outputs.java }}-${{ hashFiles('apps/agent-phone/**', 'scripts/build-agent-phone.ts', '.github/workflows/release.yml') }}
       - name: Build signed Agent Phone
         env:
           KEYSTORE_BASE64: ${{ secrets.OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64 }}
@@ -153,10 +187,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release-keys"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$OPENSTEER_AGENT_PHONE_KEYSTORE"
           pnpm build:agent-phone --release
-      - name: Select Xcode 26 SDK
-        run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
       - name: Sign, notarize and staple desktop
         env:
+          OPENSTEER_RELEASE_POSTGRES_CACHE_HIT: ${{ steps.postgres-cache.outputs.cache-hit }}
           CERTIFICATE_BASE64: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}

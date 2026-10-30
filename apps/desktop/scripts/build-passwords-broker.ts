@@ -1,3 +1,4 @@
+import { buildSwiftProducts } from "./build-swift-products.js";
 import { plist } from "@opensteer/shared/plist";
 /**
  * Build `Opensteer Passwords.app`: the broker that holds the vault and every
@@ -311,23 +312,13 @@ async function verifyWorkerAnswers(worker: string): Promise<void> {
 
 /** Release output is universal; development targets this Mac. */
 async function buildSwift(architectures: readonly string[]): Promise<string> {
-  const flags = [
-    "-c",
+  return buildSwiftProducts(
+    packageDirectory,
+    ["PasswordsBroker", "PasswordsImportWorker"],
+    architectures,
     signingMode.mode === "development" ? "debug" : "release",
-    ...(signingMode.mode === "development" ? ["-Xswiftc", "-DOPENSTEER_DEV_TRUST"] : []),
-    ...architectures.flatMap((architecture) => ["--arch", architecture]),
-  ];
-  for (const product of ["PasswordsBroker", "PasswordsImportWorker"]) {
-    await run("/usr/bin/swift", ["build", ...flags, "--product", product], packageDirectory);
-  }
-  return (
-    await capture(
-      "/usr/bin/swift",
-      ["build", ...flags, "--show-bin-path"],
-      undefined,
-      packageDirectory,
-    )
-  ).trim();
+    signingMode.mode === "development" ? ["-Xswiftc", "-DOPENSTEER_DEV_TRUST"] : [],
+  );
 }
 
 function signingIdentity(arguments_: readonly string[]): string | undefined {

@@ -335,3 +335,35 @@ test("main push concurrency coalesces by branch without changing other event gro
     "true",
   );
 });
+
+test("release native proof and release builds share a toolchain; release caches exclude signing inputs", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { parse } = await import("yaml");
+  const { workflow } = await ciConfig();
+  const release = parse(readFileSync(".github/workflows/release.yml", "utf8"));
+  const [native] = nativeMacMatrix(["release-native"]);
+  assert.equal(release.jobs.build["runs-on"], native.runner);
+  assert.equal(release.jobs.build.env.DEVELOPER_DIR, native.xcode);
+  assert.equal(workflow.jobs["native-mac"]["runs-on"], "${{ matrix.runner }}");
+  assert.equal(workflow.jobs["native-mac"].strategy["max-parallel"], 2);
+  const caches = release.jobs.build.steps.filter((step) => step.uses?.startsWith("actions/cache@"));
+  assert.equal(caches.length, 3);
+  for (const cache of caches) {
+    assert.match(cache.with.key, /^release-only-/u);
+    assert.match(cache.with.key, /toolchain|java/u);
+    assert.match(cache.with.key, /hashFiles|outputs.swift/u);
+    assert.equal(cache.with["restore-keys"], undefined);
+  }
+  assert.deepEqual(
+    caches.map((cache) => cache.with.path.trim().split("\n")),
+    [
+      ["${{ runner.temp }}/macos-build/postgres"],
+      [
+        "apps/desktop/native/computer-use/.build",
+        "apps/desktop/native/passwords/.build",
+        "apps/desktop/native/dictation/.build",
+      ],
+      ["~/.gradle/caches/modules-2", "~/.gradle/wrapper/dists"],
+    ],
+  );
+});

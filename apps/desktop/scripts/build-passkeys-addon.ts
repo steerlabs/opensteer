@@ -35,12 +35,19 @@ export async function buildPasskeysAddon(
   const pin = toolchainSchema.parse(
     JSON.parse(await readFile(path.join(source, "toolchain.json"), "utf8")),
   );
+  const actual = {
+    xcode: run("/usr/bin/xcodebuild", ["-version"]),
+    sdk: run("/usr/bin/xcrun", ["--show-sdk-version"]),
+    clang: run("/usr/bin/xcrun", ["clang++", "--version"]),
+  };
   if (
-    run("/usr/bin/xcodebuild", ["-version"]) !== pin.xcode ||
-    run("/usr/bin/xcrun", ["--show-sdk-version"]) !== pin.sdk ||
-    !run("/usr/bin/xcrun", ["clang++", "--version"]).includes(`(${pin.clang})`)
+    actual.xcode !== pin.xcode ||
+    actual.sdk !== pin.sdk ||
+    !actual.clang.includes(`(${pin.clang})`)
   )
-    throw new Error("Passkey addon requires its pinned Xcode, SDK and clang toolchain");
+    throw new Error(
+      `Passkey addon requires its pinned toolchain. Expected: ${JSON.stringify({ xcode: pin.xcode, sdk: pin.sdk, clang: pin.clang })}; actual: ${JSON.stringify(actual)}`,
+    );
   await mkdir(headers, { recursive: true });
   for (const [name, digest] of Object.entries(pin.headers)) {
     const filename = path.join(headers, name);

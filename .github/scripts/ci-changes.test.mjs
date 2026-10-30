@@ -127,7 +127,7 @@ test("git fixture: a main push picks macOS tasks from its one commit", async () 
     const second = commit();
     const push = detect({ root, event: "push", before: first });
     assert.ok(Object.entries(push.lanes).every(([lane, on]) => on || lane === "native-mac"));
-    assert.deepEqual(push.nativeMac, ["passwords-helper", "passwords-tests"]);
+    assert.deepEqual(push.nativeMac, ["passwords-helper", "passwords-tests", "release-native"]);
     // Several commits in one push, or a new branch, run every task.
     write("docs/a.md", "x");
     commit();
@@ -334,7 +334,7 @@ test("a file a Swift task's node script imports selects that task, and only task
   assert.ok(nativeInputs["computer-tests"].includes("packages/integration-catalog"));
   assert.ok(!nativeInputs["passwords-helper"].includes("packages/integration-catalog"));
   const plan = decide([file], realGraph);
-  assert.deepEqual(swiftOnly(plan), ["computer-helper", "computer-tests"]);
+  assert.deepEqual(swiftOnly(plan), ["computer-helper", "computer-tests", "release-native"]);
   const signing = "apps/desktop/src/signed-helpers/metadata.ts";
   assert.ok(nativeInputs["passwords-helper"].includes(signing));
   assert.ok(swiftOnly(decide([signing], realGraph)).includes("passwords-helper"));
@@ -352,6 +352,7 @@ test("Swift sources, node manifests and the CI definition select their tasks", (
   assert.deepEqual(swiftOnly(decide(["apps/desktop/native/passwords/Package.swift"], realGraph)), [
     "passwords-helper",
     "passwords-tests",
+    "release-native",
   ]);
   // Swift-only tests do not depend on installed Node packages.
   assert.deepEqual(swiftOnly(decide(["pnpm-lock.yaml"], realGraph)), [
@@ -359,6 +360,7 @@ test("Swift sources, node manifests and the CI definition select their tasks", (
     "passwords-helper",
     "computer-tests",
     "dictation-helper",
+    "release-native",
   ]);
   assert.deepEqual(decide([".github/workflows/ci.yml"], realGraph).nativeMac, allNativeMacTasks);
   assert.deepEqual(decide([], realGraph, realGraph, true).nativeMac, allNativeMacTasks);
@@ -385,6 +387,7 @@ test("required-but-dynamic and directory-boundary inputs select exactly", () => 
       "computer-helper",
       "passwords-helper",
       "dictation-helper",
+      "release-native",
     ]);
   // A script beside them that no build loads runs neither helper.
   assert.deepEqual(swiftOnly(decide(["apps/desktop/scripts/after-pack.cjs"], realGraph)), []);
@@ -394,12 +397,14 @@ test("required-but-dynamic and directory-boundary inputs select exactly", () => 
     "computer-helper",
     "passwords-helper",
     "dictation-helper",
+    "release-native",
   ]);
   assert.deepEqual(swiftOnly(decide(["tsconfig.base.json"], realGraph)), [
     "computer-helper",
     "passwords-helper",
     "computer-tests",
     "dictation-helper",
+    "release-native",
   ]);
   assert.deepEqual(
     swiftOnly(decide(["apps/desktop/native/computer-use-x/a.swift"], realGraph)),
@@ -530,4 +535,25 @@ test("only audited script READMEs skip heavy lanes; mixed, consumed and prettier
   assert.ok(defaultTestInclude.some((glob) => matchesGlob(guard, glob)));
   assert.ok(!defaultTestExclude.some((glob) => matchesGlob(guard, glob)));
   assert.match(readFileSync(guard, "utf8"), /\.prettierignore/);
+});
+
+test("release native proof uses release inputs and the hosted release toolchain", () => {
+  for (const file of [
+    ".github/workflows/release.yml",
+    "apps/desktop/native/passkeys/toolchain.json",
+    "apps/desktop/native/passkeys/addon.mm",
+    "apps/desktop/native/dictation/Sources/DictationHelper/main.swift",
+    "apps/desktop/scripts/build-swift-products.ts",
+    "packages/apple-data/Sources/OpensteerAppleData/DataContracts.swift",
+  ])
+    assert.ok(decide([file], realGraph).nativeMac.includes("release-native"), file);
+  for (const file of [
+    "apps/web/src/app-model.ts",
+    "docs/releases.md",
+    "scripts/public-download/build.ts",
+  ])
+    assert.ok(!decide([file], realGraph).nativeMac.includes("release-native"), file);
+  const [task] = nativeMacMatrix(["release-native"]);
+  assert.equal(task.runner, "macos-26");
+  assert.equal(task.xcode, "/Applications/Xcode_26.6.app/Contents/Developer");
 });
