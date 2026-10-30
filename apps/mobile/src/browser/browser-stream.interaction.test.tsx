@@ -668,6 +668,23 @@ describe("native browser picture presenter", () => {
     ).toBe(false);
   });
 
+  it("does not restore a cleared picture when its presented promise arrives late", async () => {
+    const { container, decode, emit, hostClient, render } = setup();
+    render("synchronized");
+    emit();
+    act(() => native.cleared?.({ nativeEvent: { generation: native.generation } }));
+    await decode();
+    expect(container.querySelector("img")).toBeNull();
+    expect(hostClient.acceptBrowserWatchFrame).toHaveBeenCalledExactlyOnceWith(
+      sessionId,
+      tokenA,
+      surfaceId,
+    );
+    emit(surfaceId, { frameId: 2, watchToken: tokenB });
+    await decode();
+    expect(container.querySelector("img")).not.toBeNull();
+  });
+
   it("returns a failed or abandoned picture's receipt once and never draws it late", async () => {
     const { container, decode, emit, hostClient, render } = setup();
     render("synchronized");

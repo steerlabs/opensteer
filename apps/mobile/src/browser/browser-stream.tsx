@@ -488,7 +488,11 @@ export function BrowserStream({
       style={[styles.stage, style]}
     >
       {Picture === null ? null : (
-        <View pointerEvents="none" style={styles.image}>
+        <View
+          key={`${session.id}:${tabId}`}
+          pointerEvents="none"
+          style={[styles.image, { opacity: active && ready && picture.present ? 1 : 0 }]}
+        >
           <Picture
             accessibilityElementsHidden={displayed === null}
             accessibilityIgnoresInvertColors

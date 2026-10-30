@@ -65,6 +65,8 @@ export function useNativeBrowserPicture(input: {
   const { enabled, visible, frames, sessionId, tabId, settle } = input;
   const view = useRef<NativePicture | null>(null);
   const generation = useRef(0);
+  // Native clear events and presentation promises can reach JS in either order.
+  const clearVersion = useRef(0);
   // The newest delivery whose receipt this view has taken, so none is returned twice.
   const handled = useRef<BrowserFrameView | null>(null);
   const [drawn, setDrawn] = useState<BrowserFrameView | null>(null);
@@ -108,11 +110,17 @@ export function useNativeBrowserPicture(input: {
         return;
       }
       const bytes = latest.data instanceof Uint8Array ? latest.data : new Uint8Array(latest.data);
+      const beforeClear = clearVersion.current;
       native
         .present(bytes, browserPictureMetadata(latest, current))
         .then(
           (outcome) => {
-            if (outcome === "presented" && owned.has(latest) && generation.current === current)
+            if (
+              outcome === "presented" &&
+              owned.has(latest) &&
+              generation.current === current &&
+              clearVersion.current === beforeClear
+            )
               setDrawn(latest);
           },
           () => undefined,
@@ -153,7 +161,15 @@ export function useNativeBrowserPicture(input: {
   }, [enabled, frames, sessionId, settle, shown, tabId, visible]);
 
   const cleared = useCallback((event: { nativeEvent: { generation: number } }) => {
-    if (event.nativeEvent.generation === generation.current) setDrawn(null);
+    if (event.nativeEvent.generation === generation.current) {
+      clearVersion.current++;
+      setDrawn(null);
+    }
   }, []);
-  return { view, present, drawn: shown ? drawn : null, cleared };
+  return {
+    view,
+    present,
+    drawn: shown && drawn?.header.surfaceId === tabId ? drawn : null,
+    cleared,
+  };
 }
