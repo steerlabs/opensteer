@@ -7,6 +7,7 @@ import {
 } from "@opensteer/core";
 import type { SessionExchangeResponse } from "@opensteer/protocol";
 import { z } from "zod";
+import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import type { SecureRecordStore } from "../platform/secure-record-store.js";
 
 /**
@@ -20,6 +21,7 @@ import type { SecureRecordStore } from "../platform/secure-record-store.js";
  * catalog, which is a rebuildable routing cache written in the clear.
  */
 export const PersonalRemoteSessionSchema = z.strictObject({
+  viewLoginId: z.uuid().optional(),
   absoluteExpiresAt: IsoDateTimeSchema,
   deploymentId: DeploymentIdSchema,
   expiresAt: IsoDateTimeSchema,
@@ -38,9 +40,17 @@ export interface PersonalSessionStore {
   clear(deploymentId: DeploymentId): Promise<void>;
   load(deploymentId: DeploymentId): Promise<PersonalRemoteSession | null>;
   save(session: PersonalRemoteSession): Promise<void>;
+  initializeViewLoginId?(deploymentId: DeploymentId, isCurrent: () => boolean): Promise<void>;
 }
 
-export function createPersonalSessionStore(records: SecureRecordStore): PersonalSessionStore {
+export function createPersonalSessionStore(
+  records: SecureRecordStore,
+  options: {
+    readonly beforeChange?: (deploymentId: DeploymentId) => Promise<void>;
+    readonly changed?: (session: PersonalRemoteSession) => void;
+  } = {},
+): PersonalSessionStore {
+  const mutations = new MutationQueue();
   const recordName = (deploymentId: DeploymentId): string => `personal.${deploymentId}`;
 
   const load = async (deploymentId: DeploymentId): Promise<PersonalRemoteSession | null> => {
@@ -67,13 +77,33 @@ export function createPersonalSessionStore(records: SecureRecordStore): Personal
       return `${personalRemoteAuthorizationScheme} ${session.token}`;
     },
 
-    clear: (deploymentId) => records.remove(recordName(deploymentId)),
+    clear: async (deploymentId) => {
+      await options.beforeChange?.(deploymentId);
+      await mutations.run(() => records.remove(recordName(deploymentId)));
+    },
 
-    load,
+    load: (deploymentId) => mutations.run(() => load(deploymentId)),
+
+    initializeViewLoginId: (deploymentId, isCurrent) =>
+      mutations.run(async () => {
+        const current = await load(deploymentId);
+        if (!isCurrent() || current === null || current.viewLoginId) return;
+        await records.write(
+          recordName(deploymentId),
+          JSON.stringify({ ...current, viewLoginId: globalThis.crypto.randomUUID() }),
+        );
+      }),
 
     async save(session): Promise<void> {
-      const parsed = PersonalRemoteSessionSchema.parse(session);
-      await records.write(recordName(parsed.deploymentId), JSON.stringify(parsed));
+      const parsed = PersonalRemoteSessionSchema.parse({
+        ...session,
+        viewLoginId: session.viewLoginId ?? globalThis.crypto.randomUUID(),
+      });
+      await options.beforeChange?.(parsed.deploymentId);
+      await mutations.run(() =>
+        records.write(recordName(parsed.deploymentId), JSON.stringify(parsed)),
+      );
+      options.changed?.(parsed);
     },
   };
 }
@@ -91,6 +121,7 @@ export function personalSessionFrom(
     throw new Error("This deployment returned a session this app cannot hold.");
   }
   return PersonalRemoteSessionSchema.parse({
+    viewLoginId: globalThis.crypto.randomUUID(),
     absoluteExpiresAt: response.credential.absoluteExpiresAt,
     deploymentId,
     expiresAt: response.credential.expiresAt,

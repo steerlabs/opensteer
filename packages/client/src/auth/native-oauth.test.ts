@@ -22,6 +22,85 @@ import { NativeOAuthManager } from "./native-oauth.js";
 import type { ProtectedAuthStore } from "./protected-auth-store.js";
 
 describe("NativeOAuthManager", () => {
+  it("rotates saved-view login IDs on code exchange and preserves them on refresh", async () => {
+    const fixture = await managerFixture({ tokenLifetimeSeconds: 61 });
+    await fixture.manager.initialize();
+    const login = async () => {
+      await fixture.manager.beginHostSignIn(fixture.connection);
+      await fixture.manager.handleCallback(
+        callbackUrl(
+          "host",
+          new URL(fixture.opened.at(-1)!).searchParams.get("state")!,
+          "host-code",
+        ),
+      );
+    };
+    await login();
+    const first = (await fixture.store.load()).hosts[0]?.viewLoginId;
+    expect(first).toEqual(expect.any(String));
+    fixture.clock.now = new Date("2026-08-11T19:00:02.000Z");
+    await fixture.manager.authorizationHeader(fixture.connection);
+    expect((await fixture.store.load()).hosts[0]?.viewLoginId).toBe(first);
+    await login();
+    expect((await fixture.store.load()).hosts[0]?.viewLoginId).not.toBe(first);
+    await fixture.signInAccount();
+    const account = (await fixture.store.load()).account?.viewLoginId;
+    expect(account).toEqual(expect.any(String));
+    await fixture.signInAccount();
+    expect((await fixture.store.load()).account?.viewLoginId).not.toBe(account);
+    fixture.manager.dispose();
+  });
+
+  it("initializes legacy login IDs only while the confirmed bootstrap still owns the credential", async () => {
+    const fixture = await managerFixture();
+    await fixture.manager.initialize();
+    await fixture.manager.beginHostSignIn(fixture.connection);
+    await fixture.manager.handleCallback(
+      callbackUrl("host", new URL(fixture.opened.at(-1)!).searchParams.get("state")!, "host-code"),
+    );
+    const credential = (await fixture.store.load()).hosts[0]!;
+    const { viewLoginId: _id, ...legacy } = credential;
+    await fixture.store.setHost(legacy);
+    fixture.manager.dispose();
+    // Reopen the owner over the persisted legacy record.
+    const owner = new NativeOAuthManager({
+      accountOrigin: null,
+      accountSessions: fixture.accountSessions,
+      catalog: fixture.catalog,
+      oauth: {
+        application: "desktop",
+        clientId: "opensteer-desktop",
+        accountCallback: "com.opensteer.opensteer:/oauth/account-callback",
+        hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
+      },
+      openExternal: async () => undefined,
+      store: fixture.store,
+    });
+    await owner.initialize();
+    expect(owner.hostViewLoginId(fixture.connection)).toBeUndefined();
+    const started = deferred<void>(),
+      release = deferred<void>();
+    const setHost = fixture.store.setHost.bind(fixture.store);
+    vi.spyOn(fixture.store, "setHost").mockImplementationOnce(async (value) => {
+      started.resolve();
+      await release.promise;
+      return setHost(value);
+    });
+    let current = true;
+    const initializing = owner.initializeViewLoginIds(fixture.connection, () => current);
+    await started.promise;
+    current = false;
+    release.resolve();
+    await initializing;
+    expect(owner.hostViewLoginId(fixture.connection)).toBeUndefined();
+    await owner.initializeViewLoginIds(fixture.connection, () => true);
+    expect(owner.hostViewLoginId(fixture.connection)).toEqual(expect.any(String));
+    const write = vi.spyOn(fixture.store, "setHost").mockClear();
+    await owner.initializeViewLoginIds(fixture.connection, () => true);
+    expect(write).not.toHaveBeenCalled();
+    owner.dispose();
+  });
+
   it("opens Account and Host consent in the system browser with S256 PKCE", async () => {
     const fixture = await managerFixture();
     await fixture.manager.initialize();
@@ -466,6 +545,8 @@ describe("NativeOAuthManager", () => {
     await fixture.manager.handleCallback(
       callbackUrl("host", authorize.searchParams.get("state")!, "host-code"),
     );
+    const loginId = (await fixture.store.load()).hosts[0]?.viewLoginId;
+    expect(loginId).toEqual(expect.any(String));
     const listener = vi.fn();
     fixture.manager.subscribeHostCredentials(listener);
     const write = vi
@@ -489,6 +570,7 @@ describe("NativeOAuthManager", () => {
     await expect(fixture.store.load()).resolves.toMatchObject({
       hosts: [{ refreshToken: `host-refresh-2-${"r".repeat(20)}` }],
     });
+    expect((await fixture.store.load()).hosts[0]?.viewLoginId).toBe(loginId);
     expect(write).toHaveBeenCalledTimes(3);
     expect(fixture.refreshes).toHaveLength(1);
     expect(listener).toHaveBeenCalledTimes(1);
