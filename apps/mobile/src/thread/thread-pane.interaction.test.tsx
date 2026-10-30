@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { DictationController } from "@opensteer/client/dictation";
 import type { DictationEvent, DictationPort } from "@opensteer/protocol/dictation";
 import {
@@ -30,6 +31,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-drafts.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
+import { VoiceContext, VoiceOverlay, type VoiceControls } from "../voice/controls.js";
 
 /*
  * One conversation on the phone, drawn by the real pane, transcript, composer
@@ -61,6 +63,7 @@ import type { ThreadHeaderState } from "./thread-pane.js";
 
 const harness = vi.hoisted(() => ({
   paneRenders: 0,
+  focused: true,
   drafts: null as ThreadDraftStore | null,
   focusCleanups: new Set<() => void>(),
   select: null as
@@ -151,6 +154,7 @@ vi.mock("react-native", async () => {
       }, [props.visible, props.onDismiss]);
       return <div data-modal-visible={props.visible !== false}>{props.children}</div>;
     },
+    ScrollView: ({ children }: Children) => <div>{children}</div>,
     KeyboardAvoidingView: ({ children }: Children) => <div>{children}</div>,
     PanResponder: { create: () => ({ panHandlers: {} }) },
     Platform: { OS: "ios", select: (choices: { default?: unknown; ios?: unknown }) => choices.ios },
@@ -254,6 +258,9 @@ vi.mock("react-native-reanimated", () => {
   const transition = { duration: () => undefined };
   return {
     default: { View },
+    Easing: { inOut: () => undefined, sin: () => undefined, linear: () => undefined },
+    cancelAnimation: () => undefined,
+    withRepeat: (value: number) => value,
     LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
     FadeOutDown: transition,
     FadeOutUp: transition,
@@ -299,7 +306,7 @@ vi.mock("@react-navigation/native", async () => {
           }
         };
       }, [effect]),
-    useIsFocused: () => true,
+    useIsFocused: () => harness.focused,
     // One object for the screen's life, as the real hook returns.
     useNavigation: () => navigation,
   };
@@ -458,7 +465,6 @@ vi.mock("./task-line.js", async () => {
   };
 });
 vi.mock("./waiting-questions.js", () => ({ WaitingQuestions: () => null }));
-vi.mock("../screens/home-intro.js", () => ({ homeIntroDraftKey: "home-intro" }));
 vi.mock("./composer-bar.js", () => ({
   ComposerBar: (props: {
     readonly accessory?: ReactNode;
@@ -570,6 +576,7 @@ afterEach(() => {
   dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
   document.body.replaceChildren();
   harness.drafts = null;
+  harness.focused = true;
   harness.dismissModal = null;
   harness.handles.clear();
   harness.navigate.mockReset();
@@ -1037,7 +1044,7 @@ async function mount(
     ),
   );
   await settle();
-  return { container, drafts, headers };
+  return { container, drafts, headers, root, pane };
 }
 
 function text(container: HTMLElement): string {
@@ -3001,4 +3008,160 @@ it("does not send an empty message when Send finishes a microphone with no speec
   await speech.emit({ type: "ended", reason: "completed", error: null });
   expect(sent(host.dispatch)).toHaveLength(0);
   expect(text(container)).toContain("No speech detected");
+});
+
+function voiceController(phase: VoiceSnapshot["phase"]) {
+  let snapshot: VoiceSnapshot = {
+    available: true,
+    phase,
+    muted: false,
+    heard: null,
+    spoken: null,
+    since: null,
+    notice: null,
+  };
+  const listeners = new Set<() => void>();
+  const controller: VoiceControls = {
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getSnapshot: () => snapshot,
+    subscribeLevel: () => () => undefined,
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(),
+    setMuted: vi.fn(),
+    dismissNotice: vi.fn(),
+  };
+  return {
+    controller,
+    move: (phase: VoiceSnapshot["phase"]) => {
+      snapshot = { ...snapshot, phase };
+      for (const listener of listeners) listener();
+    },
+  };
+}
+
+it("steps dictation aside while voice is active and restores it when idle", async () => {
+  const speech = await enableDictation();
+  const voice = voiceController("idle");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const { container, root, pane } = await mount(host, workId);
+  await act(async () =>
+    root.render(<VoiceContext value={voice.controller}>{pane(() => undefined)}</VoiceContext>),
+  );
+  expect(hasButton(container, "Start dictation (English)")).toBe(true);
+  for (const phase of ["connecting", "listening", "hearing", "thinking", "speaking"] as const) {
+    await act(async () => voice.move(phase));
+    expect(hasButton(container, "Start dictation (English)"), phase).toBe(false);
+    expect(speech.port.start).not.toHaveBeenCalled();
+  }
+  await act(async () => voice.move("idle"));
+  await press(container, "Start dictation (English)");
+  expect(speech.port.start).toHaveBeenCalledOnce();
+});
+
+it("docks voice above a task composer, floats without one and ignores unfocused docks", async () => {
+  const voice = voiceController("listening");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const { container, root, pane } = await mount(host, workId);
+  const draw = async (composer: boolean) =>
+    act(async () =>
+      root.render(
+        <VoiceContext value={voice.controller}>
+          <section aria-label="Overlay">
+            <VoiceOverlay />
+          </section>
+          <section aria-label="Task">{composer ? pane(() => undefined) : null}</section>
+        </VoiceContext>,
+      ),
+    );
+  const bar = '[aria-label="Voice: Listening"]';
+  await draw(true);
+  expect(container.querySelector('[aria-label="Task"]')?.querySelector(bar)).not.toBeNull();
+  expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).toBeNull();
+  const composer = container.querySelector('[aria-label="Composer"]')!;
+  expect(
+    container.querySelector(bar)!.compareDocumentPosition(composer) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  await draw(false);
+  expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).not.toBeNull();
+  await draw(true);
+  expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).toBeNull();
+  harness.focused = false;
+  await draw(true);
+  expect(container.querySelector('[aria-label="Task"]')?.querySelector(bar)).toBeNull();
+  expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).not.toBeNull();
+  harness.focused = true;
+  await draw(true);
+  expect(container.querySelector('[aria-label="Task"]')?.querySelector(bar)).not.toBeNull();
+  expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).toBeNull();
+});
+
+it("offers voice on Chat's first message but not on a new task composer", async () => {
+  const { HomeIntro } = await import("../screens/home-intro.js");
+  const { FirstMessageComposer, firstMessageExecution } = await import("./first-message.js");
+  const host = fakeHost({
+    ...snapshotFor({ entries: [], run: null, threadId: workId }),
+    homeThreadId: null,
+  });
+  const { container, root } = await mount(host, workId);
+  const voice = voiceController("idle");
+  await act(async () =>
+    root.render(
+      <VoiceContext value={voice.controller}>
+        <HomeIntro
+          deploymentId={deploymentId}
+          hostClient={host.client}
+          onHomeReady={vi.fn()}
+          onQuoteTaken={vi.fn()}
+          quote={null}
+          userId={host.client.getSnapshot().user!.id}
+          workspaceId={host.client.getSnapshot().workspaces[0]!.id}
+        />
+      </VoiceContext>,
+    ),
+  );
+  expect(hasButton(container, "Talk to Opensteer")).toBe(true);
+  await press(container, "Talk to Opensteer");
+  expect(voice.controller.start).toHaveBeenCalledOnce();
+  const staged = {
+    items: [],
+    notice: null,
+    pick: vi.fn(),
+    remove: vi.fn(),
+    retry: vi.fn(),
+  } as unknown as Parameters<typeof FirstMessageComposer>[0]["staged"];
+  await act(async () =>
+    root.render(
+      <VoiceContext value={voice.controller}>
+        <FirstMessageComposer
+          blocker={null}
+          held={false}
+          execution={firstMessageExecution("task", host.client.getSnapshot())}
+          inputRef={{ current: null }}
+          onChangeText={vi.fn()}
+          onChooseAI={vi.fn()}
+          onSend={vi.fn()}
+          placeholder="Task"
+          quote={null}
+          onRemoveQuote={vi.fn()}
+          savedAttachmentKeys={[]}
+          selectionLabel="Choose AI"
+          sending={false}
+          staged={staged}
+          text=""
+          underHeader={false}
+        >
+          {null}
+        </FirstMessageComposer>
+      </VoiceContext>,
+    ),
+  );
+  expect(hasButton(container, "Talk to Opensteer")).toBe(false);
+  await act(async () => voice.move("listening"));
+  expect(container.querySelector('[aria-label="Voice: Listening"]')).not.toBeNull();
 });

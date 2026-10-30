@@ -135,7 +135,7 @@ export function VoiceDock(): ReactNode {
   );
 }
 
-/** The bar for screens without Chat's composer. Mount once, above the navigator. */
+/** The bar for screens without any composer. Mount once, above the navigator. */
 export function VoiceOverlay(): ReactNode {
   const { controller, snapshot } = useVoice();
   const docked = useSyncExternalStore(dockStore.subscribe, dockStore.docked);
