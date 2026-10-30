@@ -39,12 +39,7 @@ export type VoiceCallEvent =
   | { readonly type: "closed"; readonly reason: VoiceEndReason };
 
 export type VoiceEndReason =
-  | "stopped"
-  | "connection-lost"
-  | "replaced"
-  | "expired"
-  | "refused"
-  | "failed";
+  "stopped" | "connection-lost" | "replaced" | "expired" | "refused" | "failed";
 
 export interface VoiceCall {
   /** Has the voice tell the person this. Resolves when accepted, not when spoken. */
