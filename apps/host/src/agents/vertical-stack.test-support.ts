@@ -1,5 +1,6 @@
+import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { runnerCatalogReadiness } from "./runner-readiness.test-support.js";
+import { runnerReady, type RunnerReadinessSnapshot } from "./runner-readiness.test-support.js";
 import { EventEmitter } from "node:events";
 import { forkRunnerChild } from "./runner-child.test-support.js";
 import { RunnerWire, type RunnerWireOptions } from "./runner-wire.test-support.js";
@@ -768,7 +769,10 @@ async function startWithin(
       runnerId: executionRunnerId,
     });
     const identity = await identityStore.loadOrCreate();
+    const readinessAbort = new AbortController();
     const runnerConnection = new ReconnectingHostConnection({
+      onDisconnected: () =>
+        readinessAbort.abort(new Error(`Runner boot ${bootId} disconnected before readiness`)),
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       bootId,
       config: runnerConfig,
@@ -844,30 +848,56 @@ async function startWithin(
     const expectedAccounts = companion
       ? [companion.harnessInstanceId]
       : [harnessInstance.id, ...additionalHarnessInstances.map((account) => account.id)];
-    const committed = Promise.withResolvers<void>();
-    const observe = runnerCatalogReadiness({
+    let snapshot: RunnerReadinessSnapshot | undefined;
+    const readiness = runnerReady({
       bootId,
       environmentId: executionEnvironmentId,
       harnessInstanceIds: expectedAccounts,
       requireReady,
-      onReady: committed.resolve,
+      deadlineMs: options.catalogTimeoutMs,
+      signal: AbortSignal.any([shutdown, readinessAbort.signal]),
+      read: () => snapshot,
+      subscribe: (notify) => {
+        const committed = (
+          reportedBoot: string,
+          connectionId: string,
+          environmentId: EnvironmentId,
+          catalogs: readonly HarnessInstanceCatalog[],
+        ) => {
+          if (reportedBoot !== bootId || environmentId !== executionEnvironmentId) return;
+          const previous = snapshot?.connectionId === connectionId ? snapshot.catalogs : [];
+          const merged = new Map(previous.map((catalog) => [catalog.harnessInstanceId, catalog]));
+          for (const catalog of catalogs) merged.set(catalog.harnessInstanceId, catalog);
+          snapshot = {
+            bootId,
+            connectionId,
+            currentConnectionId: connectionId,
+            environmentId,
+            connected: true,
+            catalogs: [...merged.values()],
+          };
+          notify();
+        };
+        catalogCommits.on("committed", committed);
+        return () => catalogCommits.off("committed", committed);
+      },
     });
-    catalogCommits.on("committed", observe);
+    const committed = readiness;
     const expired = Promise.withResolvers<never>();
+    // Child startup includes its ready acknowledgement after the catalog commit.
     const timeout = setTimeout(
       () =>
         expired.reject(
           new Error(
-            `Runner boot ${bootId} did not commit its account catalog within ${options.catalogTimeoutMs} ms`,
+            `Runner boot ${bootId} did not finish startup within ${options.catalogTimeoutMs} ms`,
           ),
         ),
       options.catalogTimeoutMs,
     );
-    // Attach a rejection handler before any child startup awaits.
     void expired.promise.catch(() => undefined);
     const stopObserving = () => {
       clearTimeout(timeout);
-      catalogCommits.off("committed", observe);
+      readiness.dispose();
     };
     const startupDone = Promise.withResolvers<void>();
     const ownBoot = <T extends { readonly close: () => Promise<void> }>(process: T): T => {
@@ -1008,6 +1038,10 @@ async function startWithin(
     }
     const runnerShutdown = new AbortController();
     const runnerConnectionTask = runnerConnection.run(runnerShutdown.signal);
+    void runnerConnectionTask.then(
+      () => expired.reject(new Error(`Runner boot ${bootId} disconnected before readiness`)),
+      (error: unknown) => expired.reject(error),
+    );
     const bootProcess = ownBoot({
       settledRunEvent: (runId: RunId) => runner.settledRunEvent(runId),
       crash: async () => {

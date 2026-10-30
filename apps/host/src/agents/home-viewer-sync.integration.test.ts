@@ -1,3 +1,4 @@
+import { gate } from "@opensteer/shared/test-support/observation";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -92,11 +93,11 @@ interface ViewerClient {
 }
 
 interface BridgeFailures {
+  readonly prefetchHome?: boolean;
   failNextBootstrap: boolean;
   holdResponse?: {
     readonly operation: string;
-    readonly captured: () => void;
-    readonly release: Promise<void>;
+    readonly enter: () => Promise<void>;
   };
   readonly httpOperations: Set<string>;
   readonly transportOperations: Set<string>;
@@ -108,9 +109,16 @@ integration(
     let stack: VerticalStack | undefined;
     const clients: ViewerClient[] = [];
     const sockets: WebSocket[] = [];
+    const gates: ReturnType<typeof gate>[] = [];
+    const hold = (label: string) => {
+      const held = gate({ label, deadlineMs: 15_000 });
+      gates.push(held);
+      return held;
+    };
     const requests: Array<{ method: string; path: string; status: number }> = [];
 
     afterEach(async () => {
+      for (const held of gates.splice(0)) held.abort();
       for (const client of clients.splice(0)) client.dispose();
       for (const socket of sockets.splice(0)) socket.terminate();
       requests.splice(0);
@@ -166,7 +174,14 @@ integration(
           });
           created += 1;
         }
-        const client = await desktopBoundClient(stack, requests, sockets);
+        // Measure the first catalog page with a cold transcript cache. Home warming
+        // can merge its off-page thread; the delayed-history case exercises that prefetch.
+        const client = await desktopBoundClient(stack, requests, sockets, {
+          prefetchHome: false,
+          failNextBootstrap: false,
+          httpOperations: new Set(),
+          transportOperations: new Set(),
+        });
         clients.push(client);
         await client.load();
         await vi.waitFor(
@@ -188,6 +203,14 @@ integration(
             .length,
         });
         expect(initial.tasks?.window.hasMore).toBe(target > 100);
+        if (target === 251) {
+          // Force the formerly racing Home read after measuring the first page.
+          // If it completed before that measurement, the count would already be 101.
+          await client.loadLatestTranscript(oldestThreadId);
+          expect(
+            client.getSnapshot().threads.filter((thread) => thread.workspaceId === workspaceId),
+          ).toHaveLength(101);
+        }
         if (target !== 251) {
           client.dispose();
           clients.pop();
@@ -345,10 +368,13 @@ integration(
       });
       await stack.sendMessage({ text: "First published answer.", threadId, workspaceId });
       const failures: BridgeFailures = {
+        prefetchHome: true,
         failNextBootstrap: false,
         httpOperations: new Set(),
         transportOperations: new Set(),
       };
+      const history = hold("initial Home history prefetch");
+      failures.holdResponse = { operation: "/v1/rpc/thread.events.list", enter: history.enter };
       const client = await desktopBoundClient(stack, requests, sockets, failures);
       clients.push(client);
       await client.load();
@@ -357,21 +383,9 @@ integration(
       });
       const firstUnread = client.getSnapshot().threadReadStates[threadId]?.unreadSequence;
       if (!firstUnread) throw new Error("First answer was not unread");
-      let capture!: () => void;
-      const captured = new Promise<void>((resolve) => {
-        capture = resolve;
-      });
-      let release!: () => void;
-      const released = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      failures.holdResponse = {
-        operation: "/v1/rpc/thread.events.list",
-        captured: capture,
-        release: released,
-      };
+      // Loading Home starts the prefetch before any explicit activation.
+      await history.entered;
       client.activateThread(threadId);
-      await captured;
       const mark = await stack.api["commands.dispatch"]({
         idempotencyKey: `racing-mark-${randomUUID()}`,
         threadId,
@@ -397,7 +411,7 @@ integration(
       );
       const newerUnread = client.getSnapshot().threadReadStates[threadId]?.unreadSequence;
       const revisionBeforePage = client.getSnapshot().revision;
-      release();
+      history.release();
       await vi.waitFor(
         () => {
           expect(client.getSnapshot().revision).toBeGreaterThan(revisionBeforePage);
@@ -1042,26 +1056,16 @@ integration(
       }
       const doneOnOtherDevice = entryOf(otherDevice)?.thread.doneAt ?? null;
 
-      let captured!: () => void;
-      let release!: () => void;
-      const historyCaptured = new Promise<void>((resolve) => {
-        captured = resolve;
-      });
-      failures.holdResponse = {
-        operation: "/v1/rpc/thread.events.list",
-        captured,
-        release: new Promise<void>((resolve) => {
-          release = resolve;
-        }),
-      };
+      const history = hold("Done task history");
+      failures.holdResponse = { operation: "/v1/rpc/thread.events.list", enter: history.enter };
       // History read while the task is Done lands only after the other device reopens it.
       const staleHistory = reader.loadLatestTranscript(taskId);
-      await historyCaptured;
+      await history.entered;
       await otherDevice.setTaskDone(taskId, false);
       await vi.waitFor(() => expect(entryOf(reader)?.thread.doneAt).toBeNull(), {
         timeout: 15_000,
       });
-      release();
+      history.release();
       await staleHistory;
       expect(entryOf(reader)?.thread.doneAt).toBeNull();
       expect(reader.getSnapshot().threads.find(({ id }) => id === taskId)?.doneAt ?? null).toBe(
@@ -1162,6 +1166,7 @@ async function desktopBoundClient(
   const clientModulePath = "@opensteer/client/host";
   const { HttpHostClient } = (await import(clientModulePath)) as {
     HttpHostClient: new (options: {
+      readonly prefetchHome?: boolean;
       readonly capabilities?: readonly string[];
       readonly baseUrl: URL;
       readonly fetch: typeof globalThis.fetch;
@@ -1216,8 +1221,7 @@ async function desktopBoundClient(
       const gate = failures?.holdResponse;
       if (gate?.operation === operation && failures) {
         delete failures.holdResponse;
-        gate.captured();
-        await gate.release;
+        await gate.enter();
       }
       return {
         data: DesktopHostHttpResponseSchema.parse({
@@ -1230,6 +1234,7 @@ async function desktopBoundClient(
     },
   } as unknown as OpensteerDesktopBridge;
   return new HttpHostClient({
+    prefetchHome: failures?.prefetchHome === true,
     baseUrl: stack.hostOrigin,
     capabilities: ["shared-task-done-v1"],
     fetch: createDesktopHostFetch(bridge, stack.hostOrigin.origin),

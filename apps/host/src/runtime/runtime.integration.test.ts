@@ -1,3 +1,9 @@
+import { EventEmitter } from "node:events";
+import {
+  runnerReady,
+  type RunnerReadinessSnapshot,
+} from "../agents/runner-readiness.test-support.js";
+import { gate } from "@opensteer/shared/test-support/observation";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
@@ -2258,7 +2264,22 @@ integration("Host vertical slice", () => {
     portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-rejection-integration-"));
     const hostPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, portableFs.url));
+    const bootId = `rbt_${randomUUID()}`;
+    const committed = new EventEmitter();
+    let snapshot: RunnerReadinessSnapshot | undefined;
+    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, portableFs.url), {
+      onRunnerCatalogsCommitted: (identity, environmentId, catalogs) => {
+        snapshot = {
+          bootId: identity.bootId,
+          connectionId: identity.connectionId,
+          currentConnectionId: identity.connectionId,
+          environmentId,
+          connected: true,
+          catalogs,
+        };
+        committed.emit("update");
+      },
+    });
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${hostPort}`);
 
@@ -2271,7 +2292,7 @@ integration("Host vertical slice", () => {
     await enrollRunnerSocket(
       runnerSocket,
       agentsRunnerDescriptor({
-        bootId: `rbt_${randomUUID()}`,
+        bootId,
         capabilities: ["filesystem"],
         environmentIds: [environmentId],
         harnessDrivers: [
@@ -2295,125 +2316,176 @@ integration("Host vertical slice", () => {
       runnerToken,
       runnerConnection.challenge,
     );
-    const stopCatalogResponder = respondToHarnessInspections(runnerSocket, readyCodexCatalog);
-
-    const ownerId = await administratorId(runtime.store);
-    const portableFsVolumeId = randomUUID();
-    portableFs.seedReadyVolume({ id: portableFsVolumeId, owner: ownerId });
-    const workspace = await runtime.store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: portableFsVolumeId,
-      },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
-      createdBy: ownerId,
-      idempotencyKey: "rejection-runtime-workspace",
-      name: "Rejected dispatch workspace",
-      status: "ready",
-    });
-    const harness = await seededHarness(runtime.store, environmentId);
-    const { thread } = await runtime.store.createThread({
-      createdBy: ownerId,
-      environmentId,
-      harnessInstanceId: harness.id,
-      idempotencyKey: "rejection-runtime-thread",
-      modelSelection: testModelSelection,
-      title: "Reject this dispatch",
-      workspaceId: workspace.id,
-    });
-
-    realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
-    realtimeSocket.send(
-      JSON.stringify({
-        afterSequence: zeroSequence,
-        apiVersion: hostApiVersion,
-        threadId: thread.id,
-        type: "client.subscribe",
-        workspaceId: workspace.id,
-      }),
+    // Enrollment has completed, but publication is deliberately held until the wait is installed.
+    const publication = gate({ label: "rejection catalog publication", deadlineMs: 5_000 });
+    const stopCatalogResponder = respondToHarnessInspections(
+      runnerSocket,
+      readyCodexCatalog,
+      publication.enter,
     );
-    await waitForMessage(realtimeSocket, (message) => message.type === "host.synchronized");
-    const terminalEvent = waitForWorkspaceEvent(realtimeSocket, "run.failed");
-    const commandPromise = waitForRunnerExecution(runnerSocket);
-    const turn = await runtime.store.enqueueThreadInput({
-      content: [{ text: "This must fail durably", type: "text" }],
-      idempotencyKey: "rejection-runtime-turn",
-      policy: "queue",
-      requestedBy: ownerId,
-      source: { kind: "human" },
-      threadId: thread.id,
-    });
-    if (!turn.command || !turn.run) throw new Error("Queued input did not schedule a Run");
-    const admittedCommand = turn.command;
-    const admittedRun = turn.run;
-    const dispatched = await commandPromise;
-    const command = dispatched.command;
-    const privateProviderError = "provider-token-must-not-be-persisted";
-    runnerSocket.send(
-      JSON.stringify({
-        ...runnerFence(dispatched),
-        commandId: command.commandId,
-        correlationId: command.correlationId,
-        error: {
-          code: "internal",
-          message: privateProviderError,
-          retryable: false,
+
+    try {
+      const ownerId = await administratorId(runtime.store);
+      const portableFsVolumeId = randomUUID();
+      portableFs.seedReadyVolume({ id: portableFsVolumeId, owner: ownerId });
+      const workspace = await runtime.store.createWorkspace({
+        backing: {
+          generation: 1,
+          kind: "portablefs",
+          serviceId: "test-portablefs",
+          volumeId: portableFsVolumeId,
         },
-        type: "runner.command-rejected",
-      }),
-    );
+        capacityPolicy: {
+          blockHardLimitBytes: 10_000_000,
+          inodeHardLimit: 10_000,
+          kind: "hard-quota",
+        },
+        createdBy: ownerId,
+        idempotencyKey: "rejection-runtime-workspace",
+        name: "Rejected dispatch workspace",
+        status: "ready",
+      });
+      await publication.entered;
+      const harnesses = await runtime.store.listHarnessInstances({
+        environmentIds: [environmentId],
+      });
+      expect(harnesses.length).toBeGreaterThan(0);
+      const ready = runnerReady({
+        bootId,
+        environmentId,
+        harnessInstanceIds: harnesses.map((harness) => harness.id),
+        deadlineMs: 5_000,
+        read: () => {
+          if (runnerConnection.socket.readyState !== WebSocket.OPEN)
+            throw new Error(`Runner boot ${bootId} disconnected before readiness`);
+          return snapshot;
+        },
+        subscribe: (notify) => {
+          const socket = runnerConnection.socket;
+          const disconnected = () => {
+            if (snapshot)
+              snapshot = { ...snapshot, connected: false, currentConnectionId: undefined };
+            notify();
+          };
+          socket.on("close", disconnected);
+          committed.on("update", notify);
+          return () => {
+            socket.off("close", disconnected);
+            committed.off("update", notify);
+          };
+        },
+      });
+      try {
+        await publication.entered;
+        expect(snapshot?.catalogs.some((catalog) => catalog.status === "ready") ?? false).toBe(
+          false,
+        );
+        publication.release();
+        await ready.promise;
+      } finally {
+        publication.abort();
+        ready.dispose();
+      }
+      const harness = await seededHarness(runtime.store, environmentId);
+      const { thread } = await runtime.store.createThread({
+        createdBy: ownerId,
+        environmentId,
+        harnessInstanceId: harness.id,
+        idempotencyKey: "rejection-runtime-thread",
+        modelSelection: testModelSelection,
+        title: "Reject this dispatch",
+        workspaceId: workspace.id,
+      });
 
-    await expect(terminalEvent).resolves.toMatchObject({
-      data: {
-        code: "dispatch_failed",
-        message: "The AI engine could not be started.",
-        retryable: false,
+      realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
+      realtimeSocket.send(
+        JSON.stringify({
+          afterSequence: zeroSequence,
+          apiVersion: hostApiVersion,
+          threadId: thread.id,
+          type: "client.subscribe",
+          workspaceId: workspace.id,
+        }),
+      );
+      await waitForMessage(realtimeSocket, (message) => message.type === "host.synchronized");
+      const terminalEvent = waitForWorkspaceEvent(realtimeSocket, "run.failed");
+      const commandPromise = waitForRunnerExecution(runnerSocket);
+      const turn = await runtime.store.enqueueThreadInput({
+        content: [{ text: "This must fail durably", type: "text" }],
+        idempotencyKey: "rejection-runtime-turn",
+        policy: "queue",
+        requestedBy: ownerId,
+        source: { kind: "human" },
+        threadId: thread.id,
+      });
+      if (!turn.command || !turn.run) throw new Error("Queued input did not schedule a Run");
+      const admittedCommand = turn.command;
+      const admittedRun = turn.run;
+      const dispatched = await commandPromise;
+      const command = dispatched.command;
+      const privateProviderError = "provider-token-must-not-be-persisted";
+      runnerSocket.send(
+        JSON.stringify({
+          ...runnerFence(dispatched),
+          commandId: command.commandId,
+          correlationId: command.correlationId,
+          error: {
+            code: "internal",
+            message: privateProviderError,
+            retryable: false,
+          },
+          type: "runner.command-rejected",
+        }),
+      );
+
+      await expect(terminalEvent).resolves.toMatchObject({
+        data: {
+          code: "dispatch_failed",
+          message: "The AI engine could not be started.",
+          retryable: false,
+          status: "failed",
+        },
+        runId: admittedRun.id,
+        type: "run.failed",
+      });
+      await waitForCondition(async () => {
+        const row = await runtime?.store.database
+          .selectFrom("runs")
+          .select("status")
+          .where("id", "=", admittedRun.id)
+          .executeTakeFirst();
+        return row?.status === "failed";
+      });
+      await expect(
+        runtime.store.database
+          .selectFrom("commands")
+          .select(["lastError", "status"])
+          .where("id", "=", admittedCommand.id)
+          .executeTakeFirstOrThrow(),
+      ).resolves.toMatchObject({
+        lastError: { code: "dispatch_failed", status: "failed" },
         status: "failed",
-      },
-      runId: admittedRun.id,
-      type: "run.failed",
-    });
-    await waitForCondition(async () => {
-      const row = await runtime?.store.database
-        .selectFrom("runs")
-        .select("status")
-        .where("id", "=", admittedRun.id)
-        .executeTakeFirst();
-      return row?.status === "failed";
-    });
-    await expect(
-      runtime.store.database
-        .selectFrom("commands")
-        .select(["lastError", "status"])
-        .where("id", "=", admittedCommand.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toMatchObject({
-      lastError: { code: "dispatch_failed", status: "failed" },
-      status: "failed",
-    });
-    await expect(
-      runtime.store.database
-        .selectFrom("threads")
-        .select("status")
-        .where("id", "=", thread.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "failed" });
-    const persistedEvents = await runtime.store.database
-      .selectFrom("workspaceEvents")
-      .select(["data", "runnerOrdinal", "type"])
-      .where("runId", "=", admittedRun.id)
-      .where("type", "=", "run.failed")
-      .execute();
-    expect(persistedEvents).toHaveLength(1);
-    expect(persistedEvents[0]).toMatchObject({ runnerOrdinal: null, type: "run.failed" });
-    expect(JSON.stringify(persistedEvents)).not.toContain(privateProviderError);
-    stopCatalogResponder();
+      });
+      await expect(
+        runtime.store.database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", thread.id)
+          .executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ status: "failed" });
+      const persistedEvents = await runtime.store.database
+        .selectFrom("workspaceEvents")
+        .select(["data", "runnerOrdinal", "type"])
+        .where("runId", "=", admittedRun.id)
+        .where("type", "=", "run.failed")
+        .execute();
+      expect(persistedEvents).toHaveLength(1);
+      expect(persistedEvents[0]).toMatchObject({ runnerOrdinal: null, type: "run.failed" });
+      expect(JSON.stringify(persistedEvents)).not.toContain(privateProviderError);
+    } finally {
+      publication.abort();
+      stopCatalogResponder();
+    }
   });
 
   it("keeps an active Run through its Runner's disconnect until its lease runs out", async () => {
@@ -5358,20 +5430,24 @@ function respondToHarnessInspections(
     import("@opensteer/protocol").RunnerOperationalMessage,
     { type: "runner.harness-catalog" }
   >["catalogs"][number],
+  beforePublish?: () => Promise<void>,
 ): () => void {
   const receive = (frame: WebSocket.RawData) => {
     const message = JSON.parse(frame.toString()) as HostToRunnerMessage;
     if (message.type !== "host.inspect-harnesses" && message.type !== "host.reconcile-harnesses") {
       return;
     }
-    socket.send(
-      JSON.stringify({
-        ...runnerFence(message),
-        catalogs: message.harnesses.map(catalogFor),
-        requestId: message.requestId,
-        type: "runner.harness-catalog",
-      }),
-    );
+    const publish = () =>
+      socket.send(
+        JSON.stringify({
+          ...runnerFence(message),
+          catalogs: message.harnesses.map(catalogFor),
+          requestId: message.requestId,
+          type: "runner.harness-catalog",
+        }),
+      );
+    if (beforePublish) void beforePublish().then(publish);
+    else publish();
   };
   socket.on("message", receive);
   return () => socket.off("message", receive);
