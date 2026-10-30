@@ -21,7 +21,6 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
@@ -277,11 +276,6 @@ async function reclaimUnlocked(options: VmRetention): Promise<number> {
   const identifiedVersions = versions.filter((version) =>
     releases.some((row) => row.version === version && identitiesByDirectory.get(row.target)),
   );
-  const lastFour = new Set([
-    ...versions.slice(0, 4),
-    ...identifiedVersions.slice(0, 4),
-    ...completed.slice(0, 4),
-  ]);
   const lastTwo = new Set([...identifiedVersions.slice(0, 2), ...completed.slice(0, 2)]);
   const pinned = new Set<string>();
   for (const release of releases) {
@@ -391,78 +385,75 @@ async function reclaimUnlocked(options: VmRetention): Promise<number> {
       }
   } else options.log("kept candidate caches: main identity unknown");
 
+  // Release folders come from the retired local release pipeline; releases now build on
+  // GitHub Actions and the installed Beta updates itself. Only the installed version's
+  // folder stays, and records that pipeline wrote no longer keep anything.
   if (policy?.installedVersion === undefined)
     options.log("kept release artifacts: installed Beta version unknown");
   else {
-    const references = releaseReferences(options.state);
-    if (references.unreadable)
-      options.log(`kept release artifacts: reference records unknown (${references.unreadable})`);
-    else
-      for (const release of releases) {
-        if (lastFour.has(release.version) || release.version === policy.installedVersion) continue;
-        await attempt("release", release.target, async () => {
-          canonical(options.state, release.target);
-          const files = assertTree(options.state, release.target);
-          const isReferenced = releaseReferenceCheck(references.texts, release.target, files);
-          const identities = releaseIdentities(release.target, release.version);
-          if (!identities) throw new Error("release identity unknown");
-          const coordinators: number[] = [];
-          try {
-            for (const identity of identities) {
-              const descriptor = tryKernelLock(
-                path.join(release.target, identity, "coordinator.lock"),
-              );
-              if (descriptor === undefined) throw new Error("a release is in progress");
-              coordinators.push(descriptor);
-            }
-            for (const filename of files) {
-              const relative = path.relative(release.target, filename);
-              // Crash diagnostics cannot be recreated from a later build.
-              // Keep whole dSYMs, R8 records (including partition maps), and
-              // source/native symbol sidecars independently of size or age.
-              if (
-                /(?:^|\/)[^/]+\.dSYM(?:\.(?:zip|tar(?:\.gz)?))?(?:\/|$)/iu.test(relative) ||
-                /(?:^|\/)(?:mapping\.(?:txt|prt)|seeds\.txt|usage\.txt)$/iu.test(relative) ||
-                /(?:^|\/)outputs\/mapping\/.*\.(?:txt|prt)$/iu.test(relative) ||
-                /\.(?:map|bcsymbolmap|pdb|debug|dwo|dwp|sym)$/iu.test(relative) ||
-                /(?:^|\/)native-debug-symbols\.zip$/iu.test(relative)
-              )
-                continue;
-              const stats = lstatSync(filename);
-              // Large build outputs only. Logs, unknown files and all small records stay.
-              if (stats.size < 1024 ** 2 || /\.(?:log|jsonl)$/iu.test(filename)) continue;
-              // A release checkout is not wholly a build product. Keep source
-              // files; only generated subtrees are disposable there.
-              if (
-                /(?:^|\/)source\//u.test(relative) &&
-                !/(?:^|\/)(?:node_modules|dist|build|\.next|\.electron-smoke|\.release|coverage)\//u.test(
-                  relative,
-                )
-              )
-                continue;
-              if (
-                !/\.(?:tar|tgz|gz|xz|zst|zip|dmg|pkg|apk|aab|asar|dylib|so|node|wasm|bin)$/iu.test(
-                  filename,
-                ) &&
-                !/(?:^|\/)(?:source|mac|mac-state|phone|agent-phone|infra)\//u.test(relative)
-              )
-                continue;
-              if (isReferenced(filename)) continue;
-              canonical(options.state, filename);
-              const count = stats.nlink === 1 ? stats.blocks * 512 : 0;
-              if (!options.dryRun) rmSync(filename);
-              reclaimed += count;
-              options.onCandidate?.("release artifact", filename, count);
-              options.log(
-                `${options.dryRun ? "would delete" : "deleted"} release artifact ${filename} (${size(count)})`,
-              );
-            }
-          } finally {
-            for (const descriptor of coordinators) closeSync(descriptor);
+    for (const release of releases) {
+      if (release.version === policy.installedVersion) continue;
+      await attempt("release", release.target, async () => {
+        canonical(options.state, release.target);
+        const files = assertTree(options.state, release.target);
+        const identities = releaseIdentities(release.target, release.version);
+        if (!identities) throw new Error("release identity unknown");
+        const coordinators: number[] = [];
+        try {
+          for (const identity of identities) {
+            const descriptor = tryKernelLock(
+              path.join(release.target, identity, "coordinator.lock"),
+            );
+            if (descriptor === undefined) throw new Error("a release is in progress");
+            coordinators.push(descriptor);
           }
-          // Individual files are the receipt entries; don't double-count the directory.
-        });
-      }
+          for (const filename of files) {
+            const relative = path.relative(release.target, filename);
+            // Crash diagnostics cannot be recreated from a later build.
+            // Keep whole dSYMs, R8 records (including partition maps), and
+            // source/native symbol sidecars independently of size or age.
+            if (
+              /(?:^|\/)[^/]+\.dSYM(?:\.(?:zip|tar(?:\.gz)?))?(?:\/|$)/iu.test(relative) ||
+              /(?:^|\/)(?:mapping\.(?:txt|prt)|seeds\.txt|usage\.txt)$/iu.test(relative) ||
+              /(?:^|\/)outputs\/mapping\/.*\.(?:txt|prt)$/iu.test(relative) ||
+              /\.(?:map|bcsymbolmap|pdb|debug|dwo|dwp|sym)$/iu.test(relative) ||
+              /(?:^|\/)native-debug-symbols\.zip$/iu.test(relative)
+            )
+              continue;
+            const stats = lstatSync(filename);
+            // Large build outputs only. Logs, unknown files and all small records stay.
+            if (stats.size < 1024 ** 2 || /\.(?:log|jsonl)$/iu.test(filename)) continue;
+            // A release checkout is not wholly a build product. Keep source
+            // files; only generated subtrees are disposable there.
+            if (
+              /(?:^|\/)source\//u.test(relative) &&
+              !/(?:^|\/)(?:node_modules|dist|build|\.next|\.electron-smoke|\.release|coverage)\//u.test(
+                relative,
+              )
+            )
+              continue;
+            if (
+              !/\.(?:tar|tgz|gz|xz|zst|zip|dmg|pkg|apk|aab|asar|dylib|so|node|wasm|bin)$/iu.test(
+                filename,
+              ) &&
+              !/(?:^|\/)(?:source|mac|mac-state|phone|agent-phone|infra)\//u.test(relative)
+            )
+              continue;
+            canonical(options.state, filename);
+            const count = stats.nlink === 1 ? stats.blocks * 512 : 0;
+            if (!options.dryRun) rmSync(filename);
+            reclaimed += count;
+            options.onCandidate?.("release artifact", filename, count);
+            options.log(
+              `${options.dryRun ? "would delete" : "deleted"} release artifact ${filename} (${size(count)})`,
+            );
+          }
+        } finally {
+          for (const descriptor of coordinators) closeSync(descriptor);
+        }
+        // Individual files are the receipt entries; don't double-count the directory.
+      });
+    }
   }
   return reclaimed;
 }
@@ -768,129 +759,6 @@ function releaseIdentities(directory: string, version: string): string[] | undef
   } catch {
     return undefined;
   }
-}
-
-/** Only control records supply release references; build trees are never scanned as records. */
-function releaseReferences(state: string): { texts: string[]; unreadable?: string } {
-  const texts: string[] = [];
-  const pending = [path.join(state, "check-evidence"), path.join(state, "merge-queue")];
-  const seen = new Set<string>();
-  while (pending.length) {
-    const filename = pending.pop()!;
-    if (seen.has(filename)) continue;
-    seen.add(filename);
-    try {
-      const stats = lstatSync(filename);
-      if (stats.isSymbolicLink()) {
-        texts.push(readlinkSync(filename));
-        const resolved = realpathSync(filename);
-        if (!resolved.startsWith(path.resolve(state) + path.sep))
-          throw new Error(`reference symlink escapes owned state: ${filename}`);
-        pending.push(resolved);
-        continue;
-      }
-      if (stats.isDirectory()) {
-        const names = entries(filename);
-        if (names.includes(".git")) continue;
-        for (const name of names) {
-          if (
-            ["node_modules", "checkouts", "worktrees", "DerivedData"].includes(name) ||
-            name.endsWith(".app")
-          )
-            continue;
-          pending.push(path.join(filename, name));
-        }
-      } else if (
-        stats.isFile() &&
-        (stats.size <= referenceBytes || /\.(?:json|jsonl|md|txt|log)$/iu.test(filename))
-      ) {
-        const descriptor = openSync(filename, "r");
-        try {
-          const buffer = Buffer.alloc(1024 ** 2);
-          let carry = "";
-          const decoder = new StringDecoder("utf8");
-          while (true) {
-            const count = readSync(descriptor, buffer, 0, buffer.length, null);
-            if (!count) break;
-            const text = carry + decoder.write(buffer.subarray(0, count));
-            // JSON permits escaped slashes and Unicode in path values. Keep the
-            // original too: free-form notes can contain literal backslashes. Only
-            // JSON's own escapes are decoded; "\T" in a binary record would throw
-            // and leave every release artifact unreclaimed.
-            const decoded = text.replace(
-              /\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/gu,
-              (escape) => JSON.parse(`"${escape}"`) as string,
-            );
-            if (text.includes("release-")) texts.push(text);
-            if (decoded !== text && decoded.includes("release-")) texts.push(decoded);
-            carry = text.slice(-65_536);
-          }
-        } finally {
-          closeSync(descriptor);
-        }
-      }
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") continue;
-      return { texts, unreadable: filename };
-    }
-  }
-  return { texts };
-}
-
-/**
- * Whether reference records name a release file, or a directory above it followed by a
- * terminator or the end of a record. A file's absolute path contains its path relative to
- * the release's parent, so only that relative form is looked up. What follows each mention
- * of the release directory is sorted once, so each file costs a few binary searches instead
- * of a scan of every record at every ancestor (minutes per release).
- */
-export function releaseReferenceCheck(
-  texts: readonly string[],
-  releaseRoot: string,
-  files: readonly string[],
-): (filename: string) => boolean {
-  const parent = path.dirname(releaseRoot);
-  const name = path.basename(releaseRoot);
-  // The longest lookup is a relative directory, a separator and a two-character terminator.
-  // A loop, not a spread: a release holds more files than one call takes arguments.
-  let longest = name.length;
-  for (const file of files) longest = Math.max(longest, path.relative(parent, file).length);
-  const length = longest + 3;
-  const mentions: string[] = [];
-  const endings = new Set<string>();
-  for (const text of texts)
-    for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
-      mentions.push(text.slice(at, at + length));
-      if (at + length >= text.length) endings.add(text.slice(at));
-    }
-  mentions.sort();
-  const mentioned = (prefix: string) => {
-    let low = 0;
-    let high = mentions.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (mentions[middle]! < prefix) low = middle + 1;
-      else high = middle;
-    }
-    return low < mentions.length && mentions[low]!.startsWith(prefix);
-  };
-  return (filename) => {
-    if (mentioned(path.relative(parent, filename))) return true;
-    for (
-      let directory = path.dirname(filename);
-      directory.startsWith(releaseRoot);
-      directory = path.dirname(directory)
-    ) {
-      const relative = path.relative(parent, directory);
-      for (const value of [relative, relative + path.sep])
-        if (
-          endings.has(value) ||
-          ['"', "'", "\n", " ", ")", ",", "} "].some((end) => mentioned(value + end))
-        )
-          return true;
-    }
-    return false;
-  };
 }
 
 function completedRelease(directory: string): boolean {

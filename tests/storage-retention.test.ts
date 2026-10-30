@@ -21,7 +21,6 @@ import {
   addRunIdsFromReads,
   reclaimVmStorage,
   referencedRunIds,
-  releaseReferenceCheck,
 } from "../scripts/test-vm/retention.js";
 
 const roots: string[] = [];
@@ -125,7 +124,9 @@ describe("storage retention safety", () => {
     }
   });
 
-  it("prunes old large artifacts, retaining small records, installed Beta, latest four versions and referenced files", async () => {
+  // Release folders come from the retired local pipeline; only the installed Beta's stays.
+  // Its records no longer keep anything, so a record that cannot be decoded cannot either.
+  it("prunes every release's large build outputs except the installed Beta's, keeping records, source and symbols", async () => {
     const f = fixture();
     const directories = Array.from({ length: 6 }, (_, i) => f.release(i + 1));
     for (const directory of directories) {
@@ -133,41 +134,38 @@ describe("storage retention safety", () => {
       for (const name of ["proof.json", "notes.md", "receipt.txt"])
         writeFileSync(path.join(directory, name), "kept");
     }
-    const old = directories[1]!;
-    mkdirSync(path.join(old, "source/src"), { recursive: true });
-    mkdirSync(path.join(old, "source/node_modules"), { recursive: true });
-    const sourceFile = path.join(old, "source/src/large.ts");
-    const generated = path.join(old, "source/node_modules/large-output");
-    writeFileSync(sourceFile, Buffer.alloc(1024 ** 2 + 1));
-    writeFileSync(generated, Buffer.alloc(1024 ** 2 + 1));
-    const referenced = path.join(old, "referenced.tar");
-    const keptDirectory = path.join(old, "kept");
-    mkdirSync(keptDirectory);
-    const nested = path.join(keptDirectory, "nested.tar");
-    const extensionless = path.join(old, "extensionless.tar");
-    writeFileSync(nested, Buffer.alloc(1024 ** 2 + 1));
-    writeFileSync(extensionless, Buffer.alloc(1024 ** 2 + 1));
-    writeFileSync(referenced, Buffer.alloc(1024 ** 2 + 1));
+    const newest = directories[5]!;
+    mkdirSync(path.join(newest, "source/src"), { recursive: true });
+    mkdirSync(path.join(newest, "source/node_modules"), { recursive: true });
+    const sourceFile = path.join(newest, "source/src/large.ts");
+    const generated = path.join(newest, "source/node_modules/large-output");
+    const symbols = path.join(newest, "mac/Helper.dSYM/Contents/Resources/DWARF/Helper");
+    mkdirSync(path.dirname(symbols), { recursive: true });
+    for (const filename of [sourceFile, generated, symbols])
+      writeFileSync(filename, Buffer.alloc(1024 ** 2 + 1));
+    const named = path.join(newest, "named.tar");
+    writeFileSync(named, Buffer.alloc(1024 ** 2 + 1));
     mkdirSync(path.join(f.state, "check-evidence"));
+    mkdirSync(path.join(f.state, "merge-queue/symbol-backup"), { recursive: true });
     writeFileSync(
       path.join(f.state, "check-evidence/receipt.json"),
-      JSON.stringify({ artifact: referenced, directory: keptDirectory + path.sep }),
+      JSON.stringify({ artifact: named, directory: newest + path.sep }),
     );
-    writeFileSync(path.join(f.state, "check-evidence/record"), extensionless);
+    writeFileSync(
+      path.join(f.state, "merge-queue/symbol-backup/mapping.prt"),
+      Buffer.from(`PK\u0003\u0004 ${named} C:\\Temp \\U00e9`),
+    );
     await reclaimVmStorage(f.options);
-    expect(existsSync(sourceFile)).toBe(true);
+    expect(existsSync(path.join(directories[0]!, "payload.tar"))).toBe(true);
+    for (const directory of directories.slice(1))
+      expect(existsSync(path.join(directory, "payload.tar"))).toBe(false);
+    expect(existsSync(named)).toBe(false);
     expect(existsSync(generated)).toBe(false);
-    expect(existsSync(nested)).toBe(true);
-    expect(existsSync(extensionless)).toBe(true);
-    expect(existsSync(path.join(old, "payload.tar"))).toBe(false);
-    expect(existsSync(referenced)).toBe(true);
-    expect(
-      [directories[0]!, ...directories.slice(2)].every((d) =>
-        existsSync(path.join(d, "payload.tar")),
-      ),
-    ).toBe(true);
-    for (const name of ["proof.json", "notes.md", "receipt.txt"])
-      expect(readFileSync(path.join(old, name), "utf8")).toBe("kept");
+    expect(existsSync(sourceFile)).toBe(true);
+    expect(existsSync(symbols)).toBe(true);
+    for (const directory of directories)
+      for (const name of ["proof.json", "notes.md", "receipt.txt"])
+        expect(readFileSync(path.join(directory, name), "utf8")).toBe("kept");
   });
 
   it("keeps crash symbols and deobfuscation records of every size while removing adjacent release bundles", async () => {
@@ -232,52 +230,6 @@ describe("storage retention safety", () => {
     }
     await reclaimVmStorage(f.options);
     expect(existsSync(artifact)).toBe(false);
-  });
-
-  it("honours symlinked and JSON-escaped reference records", async () => {
-    const f = fixture();
-    for (let n = 1; n <= 6; n++) f.release(n);
-    const old = path.join(f.state, "release-0.1.2-local", sha(22));
-    const linked = path.join(old, "linked.tar");
-    const escaped = path.join(old, "escaped.tar");
-    for (const filename of [linked, escaped]) writeFileSync(filename, Buffer.alloc(1024 ** 2 + 1));
-    mkdirSync(path.join(f.state, "records"));
-    mkdirSync(path.join(f.state, "check-evidence"));
-    writeFileSync(path.join(f.state, "records/source.json"), JSON.stringify({ artifact: linked }));
-    symlinkSync(
-      path.join(f.state, "records/source.json"),
-      path.join(f.state, "check-evidence/linked.json"),
-    );
-    writeFileSync(
-      path.join(f.state, "check-evidence/escaped.json"),
-      JSON.stringify({ artifact: escaped }).replaceAll("/", "\\/"),
-    );
-    await reclaimVmStorage(f.options);
-    expect(existsSync(linked)).toBe(true);
-    expect(existsSync(escaped)).toBe(true);
-  });
-
-  // A symbol backup zip under merge-queue held the bytes "\\T"; decoding it as a JSON escape
-  // threw, every record counted as unreadable, and release artifacts were never reclaimed.
-  it("reads records whose backslashes are not JSON escapes", async () => {
-    const f = fixture();
-    for (let n = 1; n <= 6; n++) f.release(n);
-    const old = path.join(f.state, "release-0.1.2-local", sha(22));
-    const stale = path.join(old, "stale.tar");
-    const escaped = path.join(old, "escaped.tar");
-    for (const filename of [stale, escaped]) writeFileSync(filename, Buffer.alloc(1024 ** 2 + 1));
-    mkdirSync(path.join(f.state, "merge-queue/symbol-backup"), { recursive: true });
-    writeFileSync(
-      path.join(f.state, "merge-queue/symbol-backup/mapping.prt"),
-      Buffer.from("PK\u0003\u0004 C:\\Temp\\release-notes \\U00e9 \\B"),
-    );
-    writeFileSync(
-      path.join(f.state, "merge-queue/escaped.json"),
-      JSON.stringify({ artifact: escaped }).replaceAll("/", "\\/"),
-    );
-    await reclaimVmStorage(f.options);
-    expect(existsSync(escaped)).toBe(true);
-    expect(existsSync(stale)).toBe(false);
   });
 
   it("refuses symlink escapes without deleting their targets or neighbouring artifacts", async () => {
@@ -560,85 +512,5 @@ describe("storage retention safety", () => {
         );
         expect(found, `buffer ${size}, shift ${shift}`).toEqual(new Set(ids));
       }
-  });
-
-  // Each release file was checked by scanning every reference record at every ancestor
-  // directory, which took minutes per release; the index must answer exactly as that did.
-  it("answers release references exactly like a scan of every record", () => {
-    const root = "/state/release-0.1.2-local";
-    const files = [
-      `${root}/${sha(22)}/mac/payload.tar`,
-      `${root}/${sha(22)}/mac/apps/desktop/dist/main.js`,
-      `${root}/${sha(22)}/phone/app-release.apk`,
-      `${root}/${sha(23)}/source/node_modules/x/addon.node`,
-    ];
-    const scanned = (filename: string, texts: readonly string[]) => {
-      const relative = path.relative(path.dirname(root), filename);
-      if (texts.some((text) => text.includes(filename) || text.includes(relative))) return true;
-      for (
-        let directory = path.dirname(filename);
-        directory.startsWith(root);
-        directory = path.dirname(directory)
-      ) {
-        const relativeDirectory = path.relative(path.dirname(root), directory);
-        if (
-          texts.some((text) =>
-            [directory, relativeDirectory].some(
-              (value) =>
-                ['"', "'", "\n", " ", ")", ",", "} "].some(
-                  (end) => text.includes(value + end) || text.includes(value + path.sep + end),
-                ) ||
-                text.endsWith(value) ||
-                text.endsWith(value + path.sep),
-            ),
-          )
-        )
-          return true;
-      }
-      return false;
-    };
-    const named = files.flatMap((file) => {
-      const parts = path.relative(path.dirname(root), file).split("/");
-      return parts.map((_, n) => parts.slice(0, n + 1).join("/"));
-    });
-    const fragments = [
-      ...named,
-      ...named.map((name) => `/state/${name}`),
-      "release-0.1.2-local-r2/" + sha(22),
-      "payload.tar.gz",
-      "release-",
-      "\u0000",
-      '"',
-      "'",
-      "\n",
-      " ",
-      ")",
-      ",",
-      "} ",
-      "/",
-      "x",
-    ];
-    let seed = 11;
-    const random = () => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) / 2 ** 31;
-    for (let n = 0; n < 1_500; n += 1) {
-      const texts = Array.from({ length: 1 + Math.floor(random() * 3) }, () => {
-        let text = "";
-        for (let count = Math.floor(random() * 5); count >= 0; count -= 1)
-          text += fragments[Math.floor(random() * fragments.length)];
-        return text;
-      });
-      const check = releaseReferenceCheck(texts, root, files);
-      for (const file of files)
-        expect(check(file), JSON.stringify({ file, texts })).toBe(scanned(file, texts));
-    }
-  });
-
-  // Releases hold tens of thousands of files; spreading them into one call overflowed the stack.
-  it("checks references for a release with very many files", () => {
-    const root = "/state/release-0.1.2-local";
-    const files = Array.from({ length: 300_000 }, (_, n) => `${root}/${sha(22)}/mac/file-${n}.tar`);
-    const check = releaseReferenceCheck([`kept ${files[123]} for review`], root, files);
-    expect(check(files[123]!)).toBe(true);
-    expect(check(files[124]!)).toBe(false);
   });
 });
