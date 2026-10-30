@@ -122,7 +122,7 @@ async function waitForSelection(deploymentId: string, signal: AbortSignal): Prom
   await new Promise<void>((resolve, reject) => {
     let dirty = false,
       checking = false;
-    const observer = watch(data, { recursive: true }, () => {
+    const observer = watch(data, { recursive: false }, () => {
       dirty = true;
       void check();
     });
