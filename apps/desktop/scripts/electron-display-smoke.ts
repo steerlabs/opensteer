@@ -163,7 +163,7 @@ function verify(outcome: DisplaySmokeResult): void {
     decoded: true,
     independentSibling: true,
     inputSent: false,
-    controlSent: false,
+    inputFrameSent: false,
     cleared: true,
     queuedOutputDiscarded: true,
   });

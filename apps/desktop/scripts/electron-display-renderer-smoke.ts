@@ -410,9 +410,7 @@ async function ownerAuthority(acceleration: HardwareAcceleration): Promise<Displ
   siblingSocket.frames(frames.slice(0, 1));
   await until(() => siblingSocket.idle && sibling.picture.getSnapshot().shown !== null);
   const view = run.streams.retain(run.target);
-  view.takeOver();
   const inputSent = view.input(1, [{ kind: "nav", to: "home" }]);
-  view.giveBack();
   view.release();
   decoderControl.holdOutputs = 1;
   socket.frames(frames.slice(1));
@@ -434,9 +432,7 @@ async function ownerAuthority(acceleration: HardwareAcceleration): Promise<Displ
       decoded,
       independentSibling,
       inputSent,
-      controlSent: timeline.some(
-        (entry) => entry === "display.control" || entry.startsWith("display.input"),
-      ),
+      inputFrameSent: timeline.some((entry) => entry.startsWith("display.input")),
       cleared:
         run.picture.getSnapshot().shown === null &&
         sample(canvas, 30, 300).every((value) => value <= 8),
