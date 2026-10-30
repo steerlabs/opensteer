@@ -332,7 +332,9 @@ function publicGuard(repo: string, manifest: Manifest) {
 async function verifyDraftAssets(repo: string, tag: string, run: Run, expectedBytes?: Buffer) {
   const temp = await mkdtemp(path.join(tmpdir(), "opensteer-draft-check-"));
   try {
-    await run("gh", ["release", "download", tag, "--repo", repo, "--dir", temp]);
+    await run("gh", ["release", "download", tag, "--repo", repo, "--dir", temp], {
+      timeoutMs: 610_000,
+    });
     const bytes = await readFile(path.join(temp, "release.json"));
     if (expectedBytes && !bytes.equals(expectedBytes))
       throw new Error("Existing release.json differs");
@@ -380,22 +382,26 @@ export async function draft(
   try {
     const notesPath = path.join(notesDir, "notes.md");
     await writeFile(notesPath, manifest.notes);
-    await run("gh", [
-      "release",
-      "create",
-      manifest.tag,
-      "--repo",
-      repo,
-      "--draft",
-      "--target",
-      manifest.sourceSha,
-      "--title",
-      manifest.title,
-      "--notes-file",
-      notesPath,
-      ...(manifest.prerelease ? ["--prerelease", "--latest=false"] : []),
-      ...[...assetsFor(manifest.channel), "release.json"].map((name) => path.join(dir, name)),
-    ]);
+    await run(
+      "gh",
+      [
+        "release",
+        "create",
+        manifest.tag,
+        "--repo",
+        repo,
+        "--draft",
+        "--target",
+        manifest.sourceSha,
+        "--title",
+        manifest.title,
+        "--notes-file",
+        notesPath,
+        ...(manifest.prerelease ? ["--prerelease", "--latest=false"] : []),
+        ...[...assetsFor(manifest.channel), "release.json"].map((name) => path.join(dir, name)),
+      ],
+      { timeoutMs: 610_000 },
+    );
   } finally {
     await rm(notesDir, { recursive: true, force: true });
   }
@@ -436,22 +442,26 @@ export async function publish(
   const temp = await mkdtemp(path.join(tmpdir(), "opensteer-published-check-"));
   try {
     for (const name of [...Object.keys(manifest.assets), "release.json"]) {
-      await run("curl", [
-        "-q",
-        "-fsSL",
-        "--proto",
-        "=https",
-        "--proto-redir",
-        "=https",
-        "--tlsv1.2",
-        "--connect-timeout",
-        "30",
-        "--max-time",
-        "600",
-        "-o",
-        path.join(temp, name),
-        `https://github.com/${repo}/releases/download/${tag}/${name}`,
-      ]);
+      await run(
+        "curl",
+        [
+          "-q",
+          "-fsSL",
+          "--proto",
+          "=https",
+          "--proto-redir",
+          "=https",
+          "--tlsv1.2",
+          "--connect-timeout",
+          "30",
+          "--max-time",
+          "600",
+          "-o",
+          path.join(temp, name),
+          `https://github.com/${repo}/releases/download/${tag}/${name}`,
+        ],
+        { timeoutMs: 610_000 },
+      );
     }
     await verifyAssets(temp, manifest);
     if (!(await readFile(path.join(temp, "release.json"))).equals(bytes))

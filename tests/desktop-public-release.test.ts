@@ -205,8 +205,10 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
   let exists = false;
   let uploads = 0;
   let remoteDrift = "";
-  const run: typeof runBounded = async (exe, args) => {
+  const run: typeof runBounded = async (exe, args, options) => {
     expect(exe).toBe("gh");
+    if (args[1] === "create" || args[1] === "download")
+      expect(options?.timeoutMs).toBeGreaterThanOrEqual(600_000);
     if (args[0] === "api")
       return JSON.stringify([[exists ? release : { ...release, tag_name: "v0.11.2" }]]);
     if (args[1] === "create") {
@@ -256,7 +258,9 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
   let tamperDraft = false;
   let tamperPublic = false;
   let patches = 0;
-  const run: typeof runBounded = async (exe, args) => {
+  const run: typeof runBounded = async (exe, args, options) => {
+    if ((exe === "gh" && args[1] === "download") || exe === "curl")
+      expect(options?.timeoutMs).toBeGreaterThanOrEqual(600_000);
     if (exe === "gh" && args.includes("PATCH")) {
       patches++;
       expect(args).toContain("draft=false");
