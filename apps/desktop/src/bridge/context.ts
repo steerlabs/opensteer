@@ -38,6 +38,7 @@ export interface DesktopBridgeOptions {
   readonly isWorkspaceContents?: (
     sender: Pick<WebContents, "send" | "once" | "removeListener" | "isDestroyed">,
   ) => boolean;
+  readonly dictation?: import("../dictation/dictation-service.js").DictationService;
   readonly downloads: Pick<DesktopDownloads, "snapshot" | "subscribe" | "open" | "show" | "cancel">;
   readonly log?: (
     event: string,

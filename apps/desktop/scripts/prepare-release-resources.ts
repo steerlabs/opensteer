@@ -174,6 +174,7 @@ async function main(): Promise<void> {
         "desktop",
         // Populated on macOS only, like computer-use.
         "passwords",
+        "dictation",
         "personal-runtime",
         "portablefs",
         "process-supervisor",
@@ -258,6 +259,7 @@ async function main(): Promise<void> {
     if (targetOs === "darwin") {
       await stageComputerUseHelper(path.join(temporary, "computer-use"), targetArch);
       await stagePasswordsBroker(path.join(temporary, "passwords"), targetArch);
+      await stageDictationHelper(path.join(temporary, "dictation"), targetArch);
     }
 
     if (agentPhone) {
@@ -395,6 +397,38 @@ async function stageComputerUseHelper(
  * embedded the provisioning profile; electron-builder is told not to re-sign
  * the bundle, so a release build verifies all three here.
  */
+async function stageDictationHelper(
+  directory: string,
+  targetArch: "amd64" | "arm64",
+): Promise<void> {
+  const appName = "Opensteer Dictation.app";
+  const target = path.join(directory, appName);
+  await run(
+    "/usr/bin/ditto",
+    [path.join(repositoryRoot, "apps/desktop/native/dictation/dist", appName), target],
+    repositoryRoot,
+  );
+  const executable = path.join(target, "Contents/MacOS/Opensteer Dictation");
+  await assertRegularFile(executable, "Dictation helper");
+  await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", target], repositoryRoot);
+  const version = (
+    await capture(
+      "/usr/bin/plutil",
+      ["-extract", "CFBundleVersion", "raw", "-o", "-", path.join(target, "Contents/Info.plist")],
+      repositoryRoot,
+    )
+  ).trim();
+  await writeJson(path.join(directory, "release.json"), {
+    architecture: targetArch,
+    executableSha256: createHash("sha256")
+      .update(await readFile(executable))
+      .digest("hex"),
+    operatingSystem: "darwin",
+    schemaVersion: 1,
+    version,
+  });
+}
+
 async function stagePasswordsBroker(
   directory: string,
   targetArch: "amd64" | "arm64",

@@ -53,6 +53,8 @@ extraResources:
       - "**/*"
   # `Opensteer Passwords.app` and its import worker, which the broker build
   # already signed with its provisioning profile.
+  - from: generated-resources/dictation
+    to: dictation
   - from: generated-resources/passwords
     to: passwords
     filter:
@@ -124,6 +126,7 @@ mac:
     # are what grant its keychain group; `build-passwords-broker.ts` signs
     # it and the worker inside it, and re-signing would drop both.
     - /Contents/Resources/passwords/
+    - /Contents/Resources/dictation/
     - /Contents/Resources/personal-runtime/
     - /Contents/Resources/process-supervisor/
     - /Contents/Resources/runner/
