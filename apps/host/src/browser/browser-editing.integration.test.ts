@@ -1,3 +1,4 @@
+import { ownChild } from "../agents/owned-child.test-support.js";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,6 +38,7 @@ integration("Host and Chromium editing contract", () => {
   let runtime: HostRuntime | undefined;
   const sockets: WebSocket[] = [];
   let engineProcess: ChildProcess | undefined;
+  let engineOwner: ReturnType<typeof ownChild> | undefined;
   let fixture: ReturnType<typeof createServer> | undefined;
 
   beforeEach(async () => {
@@ -75,15 +77,27 @@ integration("Host and Chromium editing contract", () => {
 
   afterEach(async () => {
     for (const socket of sockets) socket.terminate();
-    if (engineProcess && engineProcess.exitCode === null) {
-      const exited = once(engineProcess, "exit");
-      engineProcess.send("stop");
-      await exited;
+    const failures: unknown[] = [];
+    for (const stop of [
+      () =>
+        engineOwner?.close(() => {
+          if (engineProcess?.connected) engineProcess.send("stop");
+        }),
+      () => browserRuntime?.close(),
+      () => runtime?.close(),
+      () => portableFs?.close(),
+      async () => {
+        fixture?.closeAllConnections();
+        if (fixture) await new Promise<void>((resolve) => fixture!.close(() => resolve()));
+      },
+    ]) {
+      try {
+        await stop();
+      } catch (error) {
+        failures.push(error);
+      }
     }
-    fixture?.closeAllConnections();
-    if (fixture) await new Promise<void>((resolve) => fixture!.close(() => resolve()));
-    await runtime?.close();
-    await Promise.allSettled([browserRuntime?.close(), portableFs?.close()]);
+    if (failures.length) throw new AggregateError(failures, "Browser editing cleanup failed");
     if (dataDirectory) await rm(dataDirectory, { force: true, recursive: true });
   });
 
@@ -202,6 +216,7 @@ integration("Host and Chromium editing contract", () => {
         ),
         { execArgv: ["--import", "tsx"], stdio: ["ignore", "pipe", "pipe", "ipc"] },
       );
+      engineOwner = ownChild(engineProcess);
       engineProcess.stderr?.on("data", (chunk) => process.stderr.write(chunk));
       const [ready] = await once(engineProcess, "message");
       const engineAddress = z.object({ type: z.literal("ready"), url: z.string() }).parse(ready);

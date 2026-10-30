@@ -624,6 +624,7 @@ describe("MockHostClient", () => {
   });
 
   it("reports the streams a reply is still writing through the live read", async () => {
+    vi.useFakeTimers();
     const client = new MockHostClient({ latencyMs: 40, now: () => fixedNow });
     try {
       const thread = client.getSnapshot().threads.find(({ status }) => status === "idle")!;
@@ -632,7 +633,9 @@ describe("MockHostClient", () => {
         (client.getSnapshot().transcripts[thread.id] ?? []).find(
           (entry) => entry.kind === "reasoning" && entry.state === "streaming",
         );
-      await vi.waitFor(() => expect(streaming()).toBeDefined());
+      // Advance only to the first emission, then hold domain time during the live read.
+      await vi.advanceTimersByTimeAsync(20);
+      expect(streaming()).toBeDefined();
       const drawn = streaming();
       if (drawn?.kind !== "reasoning") throw new Error("Nothing is streaming.");
       const live = unwrap(await client.rpc["thread.live.get"]({ threadId: thread.id }));
@@ -653,10 +656,12 @@ describe("MockHostClient", () => {
           }),
         }),
       ]);
+      await vi.runAllTimersAsync();
       await sending;
       expect(unwrap(await client.rpc["thread.live.get"]({ threadId: thread.id })).runs).toEqual([]);
     } finally {
       client.dispose();
+      vi.useRealTimers();
     }
   });
 });

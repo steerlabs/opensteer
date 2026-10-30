@@ -43,9 +43,13 @@ export const browserHarness = fileURLToPath(
   new URL("../apps/runner/browser-harness/browser-harness.mjs", import.meta.url),
 );
 
-const cleanup: Array<{ readonly label: string; readonly run: () => Promise<unknown> }> = [];
-export function addCleanup(label: string, run: () => Promise<unknown>): void {
-  cleanup.push({ label, run });
+const cleanup: Array<{
+  readonly label: string;
+  readonly run: () => Promise<unknown>;
+  readonly stage: number;
+}> = [];
+export function addCleanup(label: string, run: () => Promise<unknown>, stage = 1): void {
+  cleanup.push({ label, run, stage });
 }
 
 export function browserCleanupArtifactDirectory(): string {
@@ -60,7 +64,10 @@ afterEach(async (context) => {
   await mkdir(directory, { recursive: true });
   const report = path.join(directory, `${randomUUID()}.jsonl`);
   const failures: unknown[] = [];
-  for (const { label, run } of cleanup.splice(0).reverse()) {
+  for (const { label, run } of cleanup
+    .splice(0)
+    .reverse()
+    .sort((a, b) => a.stage - b.stage)) {
     const started = performance.now();
     const record = (outcome: string, error?: unknown) =>
       appendFile(
@@ -108,7 +115,7 @@ export async function deployment(
     }),
   );
   const stack = await startVerticalStack({
-    ...(browser ? { browser } : {}),
+    ...(browser ? { browser, beforeHostClose: () => browser.close() } : {}),
     ...(options.activityClock ? { browserActivityClock: options.activityClock } : {}),
     browserHarnessExecutable: browserHarness,
     ...(browserServiceEnrollmentToken ? { browserServiceEnrollmentToken } : {}),
@@ -120,9 +127,8 @@ export async function deployment(
     runTimeoutMs: 90_000,
     maxConcurrentRuns: options.maxConcurrentRuns ?? 1,
   });
-  addCleanup("deployment", () => stack.close());
-  // Final profile commits need the Host's vault and database to stay available.
-  if (browser) addCleanup("local Browser Runtime before Host", () => browser.close());
+  addCleanup("deployment", () => stack.close(), 0);
+  // The stack owns browser final-save ordering, including cancellation during startup.
   return stack;
 }
 
