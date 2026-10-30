@@ -1889,6 +1889,12 @@ integration.sequential("Run recovery acceptance", () => {
       .where("runnerBindingGeneration", "=", successorGeneration)
       .orderBy("runnerOrdinal", "asc")
       .execute();
+    const seed = await store.database
+      .selectFrom("runs")
+      .innerJoin("messages", "messages.id", "runs.seedInputId")
+      .select("messages.author")
+      .where("runs.id", "=", runId)
+      .executeTakeFirstOrThrow();
     const assistant = stored.find((event) => event.type === "assistant.message")!;
     expect(recordSchema.parse(assistant.data).content).toEqual([
       { type: "text", text: "Recovery task completed." },
@@ -1900,7 +1906,13 @@ integration.sequential("Run recovery acceptance", () => {
         expect(replyMessageId).toBe(recordSchema.parse(assistant.data).messageId);
         return { ...event, data };
       }),
-    ).toEqual(emitted);
+    ).toEqual(
+      emitted.map((event) =>
+        event.type === "run.started" || event.type === "run.completed"
+          ? { ...event, data: { ...recordSchema.parse(event.data), startedBy: seed.author } }
+          : event,
+      ),
+    );
     checkpoints.push({
       stage: "same connection successor completed",
       fence,

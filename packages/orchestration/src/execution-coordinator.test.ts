@@ -764,6 +764,12 @@ function failureEvent(command: CommandRow): AgentEvent {
   return AgentEventSchema.parse({
     createdAt: new Date().toISOString(),
     data: {
+      startedBy: {
+        displayName: "Alex",
+        kind: "human",
+        userId: createId("user"),
+        principalId: "test-principal",
+      },
       code: "dispatch_failed",
       message: "The Run could not be dispatched",
       retryable: false,
@@ -789,7 +795,15 @@ function statusEvent(
   }
   return AgentEventSchema.parse({
     createdAt: new Date().toISOString(),
-    data: { status },
+    data: {
+      status,
+      startedBy: {
+        displayName: "Alex",
+        kind: "human",
+        userId: createId("user"),
+        principalId: "test-principal",
+      },
+    },
     environmentId: command.environmentId,
     eventId: createId("event"),
     runId: command.runId,

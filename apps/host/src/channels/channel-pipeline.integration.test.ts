@@ -146,6 +146,11 @@ integration("messaging pipeline", () => {
     // 3. What the agent writes on the way stays in the Thread. When the Run
     //    completes its reply is sent, and a reply longer than Slack accepts
     //    becomes ordered parts of one message.
+    const seed = await database
+      .selectFrom("messages")
+      .select("author")
+      .where("id", "=", run.seedInputId)
+      .executeTakeFirstOrThrow();
     const binding = await beginRun(run);
     const narrationId = createId("message");
     await emit(binding, run, 1, "assistant.message", {
@@ -189,7 +194,7 @@ integration("messaging pipeline", () => {
         .where("runId", "=", run.id)
         .where("type", "=", "run.completed")
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ data: { replyMessageId, status: "completed" } });
+    ).resolves.toEqual({ data: { replyMessageId, startedBy: seed.author, status: "completed" } });
     const parts = await database
       .selectFrom("channelDeliveries")
       .select(["part", "partCount", "status"])
@@ -1337,6 +1342,7 @@ integration("messaging pipeline", () => {
         .select([
           "runs.id",
           "runs.replyTarget",
+          "runs.seedInputId",
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",

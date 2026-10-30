@@ -367,11 +367,19 @@ describe("mutation-owned harness catalog reconciliation", () => {
 
 function runEvent(
   environmentId: EnvironmentId,
-  outcome: { readonly data: unknown; readonly type: "run.completed" | "run.failed" },
+  outcome: { readonly data: object; readonly type: "run.completed" | "run.failed" },
 ): AgentEvent {
   return AgentEventSchema.parse({
     createdAt: "2026-09-05T00:00:00.000Z",
-    data: outcome.data,
+    data: {
+      ...outcome.data,
+      startedBy: {
+        displayName: "Alex",
+        kind: "human",
+        userId: createId("user"),
+        principalId: "test-principal",
+      },
+    },
     environmentId,
     eventId: createId("event"),
     runId: createId("run"),

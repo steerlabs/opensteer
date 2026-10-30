@@ -48,7 +48,15 @@ describe("Host runtime wiring", () => {
     const runEvent = (type: "run.completed" | "run.started", runId: string | null) =>
       ({
         createdAt: "2026-08-09T09:00:00.000Z",
-        data: { status: type === "run.completed" ? "completed" : "running" },
+        data: {
+          status: type === "run.completed" ? "completed" : "running",
+          startedBy: {
+            displayName: "Alex",
+            kind: "human",
+            userId: createId("user"),
+            principalId: "test-principal",
+          },
+        },
         environmentId: createId("environment"),
         eventId: createId("event"),
         runId,

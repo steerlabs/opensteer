@@ -87,7 +87,8 @@ integration("migration lineage", () => {
     const provider = { getMigrations: async () => ({ "0001_shared": { up: async () => {} } }) };
     await migrateToLatest(database, provider);
     // A checkout from another lineage applied a migration this build never had.
-    await sql`insert into kysely_migration (name, timestamp) values ('0002_other_lineage', now()::text)`.execute(
+    // Kysely orders this text column, so use its ISO timestamp format.
+    await sql`insert into kysely_migration (name, timestamp) values ('0002_other_lineage', ${new Date().toISOString()})`.execute(
       database,
     );
 

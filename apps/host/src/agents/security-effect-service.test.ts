@@ -14,6 +14,18 @@ describe("SecurityEffectService", () => {
       environmentId: createId("environment"),
       runId: createId("run"),
       threadId: createId("thread"),
+      data: {
+        code: "forbidden",
+        message: "Access revoked",
+        retryable: false,
+        status: "failed",
+        startedBy: {
+          displayName: "Alex",
+          kind: "human",
+          userId: createId("user"),
+          principalId: "test-principal",
+        },
+      },
       type: "run.failed",
     } as AgentEvent;
     const failActiveRunsForWorkspaceDeletion = vi.fn(async () => recovery([terminal]));
@@ -73,6 +85,18 @@ describe("SecurityEffectService", () => {
       environmentId,
       runId,
       threadId,
+      data: {
+        code: "forbidden",
+        message: "Access revoked",
+        retryable: false,
+        status: "failed",
+        startedBy: {
+          displayName: "Alex",
+          kind: "human",
+          userId: createId("user"),
+          principalId: "test-principal",
+        },
+      },
       type: "run.failed",
     } as AgentEvent;
     const failActiveRunsForMembershipRevocation = vi
