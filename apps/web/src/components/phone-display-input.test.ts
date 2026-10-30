@@ -244,6 +244,38 @@ describe("owner input batching", () => {
     expect(sent).toHaveLength(2);
   });
 
+  it("merges same-button mouse moves in a frame and preserves modifier, button and press boundaries", () => {
+    const { input, sent, frame } = harness();
+    const move: Extract<DisplayInputEvent, { kind: "mouse" }> = {
+      kind: "mouse",
+      phase: "move",
+      button: "none",
+      modifiers: [],
+      x: 0.1,
+      y: 0.5,
+    };
+    input.mouse(1, move);
+    input.mouse(1, { ...move, x: 0.2 });
+    input.mouse(1, { ...move, x: 0.3 });
+    frame();
+    expect(sent[0]?.events).toEqual([{ ...move, x: 0.3 }]);
+    const shifted: typeof move = { ...move, modifiers: ["shift"] };
+    const left: typeof move = { ...shifted, button: "left" };
+    input.mouse(1, move);
+    input.mouse(1, shifted);
+    input.mouse(1, left);
+    input.mouse(1, { ...left, phase: "down", clickCount: 1 });
+    input.mouse(1, left);
+    frame();
+    expect(sent.slice(1).flatMap((batch) => batch.events)).toEqual([
+      move,
+      shifted,
+      left,
+      { ...left, phase: "down", clickCount: 1 },
+      left,
+    ]);
+  });
+
   it("cancels at the last point it sent, once", () => {
     const { input, sent, frame } = harness();
     input.down(1, at(0.1), 1);

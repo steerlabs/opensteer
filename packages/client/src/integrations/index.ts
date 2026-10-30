@@ -31,3 +31,4 @@ export {
 export { apiKeyDisclosure, connectableApiKeyMethod } from "./api-key.js";
 export * from "./phone-display-stream.js";
 export * from "./display-editing.js";
+export * from "./display-input.js";

@@ -6,6 +6,7 @@ import {
 import { EditingClipboardItemsSchema, type EditingContext } from "@opensteer/protocol/editing";
 import type { EditingOperation, EditingTargetAbilities } from "../editing/types.js";
 import type { ViewerClipboardResult } from "../host/browser-editing.js";
+import { mergeDisplayInput } from "./display-input.js";
 import type { DisplayEditingMessage, DisplayLease } from "./phone-display-stream.js";
 
 /** Rich data is forwarded as metadata so the producer explicitly refuses it. */
@@ -38,6 +39,12 @@ interface Pending {
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
 }
+/** Movement waiting for the producer to answer this view's earlier input. */
+interface Held {
+  readonly geometry: number;
+  readonly events: DisplayInputEvent[];
+  readonly callers: Pick<Pending, "resolve" | "reject">[];
+}
 
 /** The lease owns input; this adapter fences its private context and receipt lifetimes. */
 export class DisplayEditingSession {
@@ -55,6 +62,7 @@ export class DisplayEditingSession {
   #scope: string | null = null;
   #geometry: number | null = null;
   #disposed = false;
+  #held: Held | null = null;
 
   constructor(lease: DisplayLease) {
     this.#lease = lease;
@@ -100,8 +108,21 @@ export class DisplayEditingSession {
     pending.sequences.clear();
     if (error) pending.reject(error);
     else pending.resolve(result);
+    if (!this.#pending.size) this.#sendHeld();
+  }
+  #sendHeld(): void {
+    const held = this.#held;
+    if (!held) return;
+    this.#held = null;
+    void this.#transmit(held.geometry, held.events).then(
+      (result) => held.callers.forEach((caller) => caller.resolve(result)),
+      (error: Error) => held.callers.forEach((caller) => caller.reject(error)),
+    );
   }
   #cancel(reason: string): void {
+    const held = this.#held;
+    this.#held = null;
+    for (const caller of held?.callers ?? []) caller.reject(new Error(reason));
     for (const pending of new Set(this.#pending.values())) this.#finish(pending, new Error(reason));
   }
   #refuse(reason: string, message: string): Error {
@@ -242,8 +263,29 @@ export class DisplayEditingSession {
       geometry !== snapshot.display.generation
     )
       return Promise.reject(this.#refuse("stale", "The display changed. Try again."));
+    // The producer's lane is short and a frame is shorter than its answer: movement
+    // and wheel turns wait for this view's earlier input to be answered, merged.
+    if (this.#pending.size && events.length && events.every(merges)) {
+      const held = (this.#held ??= { geometry, events: [], callers: [] });
+      for (const event of events) {
+        const last = held.events.at(-1);
+        const merged = last ? mergeDisplayInput(last, event) : null;
+        if (merged) held.events[held.events.length - 1] = merged;
+        else held.events.push(event);
+      }
+      return new Promise((resolve, reject) => held.callers.push({ resolve, reject }));
+    }
     if (this.#pending.size >= 128)
       return Promise.reject(this.#refuse("capacity", "Waiting for this device to respond."));
+    // Presses and edits never wait, and follow the movement before them.
+    this.#sendHeld();
+    return this.#transmit(geometry, events, copy);
+  }
+  #transmit(
+    geometry: number,
+    events: readonly DisplayInputEvent[],
+    copy = false,
+  ): Promise<ViewerClipboardResult | undefined> {
     return new Promise((resolve, reject) => {
       const pending: Pending = {
         copy,
@@ -281,4 +323,11 @@ export class DisplayEditingSession {
     this.#cancel("The display changed. Try again.");
     this.#listeners.clear();
   }
+}
+
+function merges(event: DisplayInputEvent): boolean {
+  return (
+    event.kind === "scroll" ||
+    ((event.kind === "mouse" || event.kind === "pointer") && event.phase === "move")
+  );
 }

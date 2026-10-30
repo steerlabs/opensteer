@@ -1016,6 +1016,110 @@ describe("display editing receipt adapter", () => {
     hold(socket);
     return { lease, socket, editing };
   }
+  it("paces continuous batches by receipts and settles merged callers together", async () => {
+    const { socket, editing } = await editingFixture();
+    const first = editing.input(1, [pointer(0.1)]);
+    const second = editing.input(1, [pointer(0.2)]);
+    const third = editing.input(1, [pointer(0.9)]);
+    expect(socket.messages("display.input")).toHaveLength(1);
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+    await first;
+    expect(socket.messages("display.input").map((batch) => batch.events)).toEqual([
+      [pointer(0.1)],
+      [pointer(0.9)],
+    ]);
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
+    await Promise.all([second, third]);
+    editing.dispose();
+  });
+  it("flushes held movement before an immediate press and proxy edit", async () => {
+    const { socket, editing } = await editingFixture();
+    const calls = [editing.input(1, [pointer(0.1)]), editing.input(1, [pointer(0.7)])];
+    expect(socket.messages("display.input")).toHaveLength(1);
+    const press = { kind: "pointer", phase: "down", x: 0.7, y: 0.5, t: 2 } as const;
+    calls.push(editing.input(1, [press]));
+    calls.push(editing.input(1, [pointer(0.8)]));
+    calls.push(editing.send({ kind: "copy" }));
+    expect(socket.messages("display.input").map((batch) => batch.events)).toEqual([
+      [pointer(0.1)],
+      [pointer(0.7)],
+      [press],
+      [pointer(0.8)],
+      [{ kind: "copy" }],
+    ]);
+    for (let sequence = 0; sequence < 5; sequence++)
+      socket.json({ type: "display.input.result", sequence, outcome: "dispatched" });
+    socket.json({ type: "display.clipboard", sequence: 4, outcome: "empty" });
+    await Promise.all(calls);
+    editing.dispose();
+  });
+  it.each(["scope", "geometry", "dispose"] as const)(
+    "drops held movement on %s cancellation without a receipt",
+    async (cancel) => {
+      const { socket, editing } = await editingFixture();
+      const first = editing.input(1, [pointer(0.1)]);
+      const held = editing.input(1, [pointer(0.8)]);
+      const rejected = [
+        expect(first).rejects.toThrow("changed"),
+        expect(held).rejects.toThrow("changed"),
+      ];
+      expect(socket.messages("display.input")).toHaveLength(1);
+      if (cancel === "dispose") editing.dispose();
+      else if (cancel === "geometry") editing.setGeometry(null);
+      else
+        socket.json({
+          type: "display.state",
+          state: "live",
+          generation: 2,
+          width: 720,
+          height: 1280,
+          editingVersion: 1,
+          sharedInput: 1,
+        });
+      await Promise.all(rejected);
+      socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+      expect(socket.messages("display.input")).toHaveLength(1);
+      expect(editing.getSnapshot().receipt).toBeNull();
+      editing.dispose();
+    },
+  );
+  it.each(["refused", "stale", "timeout"] as const)(
+    "releases held movement after an outstanding batch is %s",
+    async (outcome) => {
+      const { socket, editing } = await editingFixture();
+      const first = editing.input(1, [pointer(0.1)]);
+      const rejected = expect(first).rejects.toThrow();
+      const held = editing.input(1, [pointer(0.8)]);
+      expect(socket.messages("display.input")).toHaveLength(1);
+      if (outcome === "timeout") vi.advanceTimersByTime(10000);
+      else
+        socket.json({ type: "display.input.result", sequence: 0, outcome, reason: "unavailable" });
+      await rejected;
+      expect(socket.messages("display.input").map((batch) => batch.events)).toEqual([
+        [pointer(0.1)],
+        [pointer(0.8)],
+      ]);
+      socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
+      await held;
+      editing.dispose();
+    },
+  );
+  it("waits for the last outstanding receipt before releasing held movement", async () => {
+    const { socket, editing } = await editingFixture();
+    const calls = [
+      editing.input(1, [pointer(0.1)]),
+      editing.input(1, [{ kind: "nav", to: "back" }]),
+      editing.input(1, [pointer(0.8)]),
+    ];
+    expect(socket.messages("display.input")).toHaveLength(2);
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
+    expect(socket.messages("display.input")).toHaveLength(2);
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+    expect(socket.messages("display.input")).toHaveLength(3);
+    socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
+    await Promise.all(calls);
+    editing.dispose();
+  });
   it("correlates copy by actual batch sequence and never accepts unsolicited clipboard", async () => {
     const { socket, editing } = await editingFixture();
     const pending = editing.send({ kind: "copy" });
