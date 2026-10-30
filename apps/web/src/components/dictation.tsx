@@ -27,6 +27,7 @@ const absent: DictationSnapshot = {
   owner: null,
   preview: null,
   progress: null,
+  startedAt: null,
   listeningSince: null,
   notice: null,
 };

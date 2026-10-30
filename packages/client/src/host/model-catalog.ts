@@ -166,7 +166,8 @@ export function spansWorkLocations(
   return new Set(placements.map((placement) => placement.environmentId)).size > 1;
 }
 
-function samePlacement(
+/** Whether two refs name the same account on the same work location. */
+export function samePlacement(
   placement: Pick<ThreadPlacementOption, "environmentId" | "harnessInstanceId">,
   ref: { readonly environmentId: string; readonly harnessInstanceId: string },
 ): boolean {
@@ -176,7 +177,8 @@ function samePlacement(
   );
 }
 
-function sameModel(
+/** Whether two refs name the same model of the same lab. */
+export function sameModel(
   left: Pick<ModelSelection, "modelId" | "providerId">,
   right: Pick<ModelSelection, "modelId" | "providerId">,
 ): boolean {
