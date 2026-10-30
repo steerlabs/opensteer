@@ -1465,8 +1465,9 @@ function ThreadPaneForUser(
                 modelOptions={thread.modelSelection.options}
                 mutationGate={mutationGate}
                 page={sheet?.page ?? null}
-                onChangeModel={() =>
+                onChangeModel={(conversation) =>
                   navigation.navigate("ThreadSettings", {
+                    ...(conversation ? { conversation: true } : {}),
                     deploymentId: props.deploymentId,
                     threadId: thread.id,
                   })

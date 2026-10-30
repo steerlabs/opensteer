@@ -16,20 +16,24 @@ const paths: Readonly<Record<string, string>> = {
   opencode: "M22 24H2V0h20zM17 4.8H7v14.4h10z",
 };
 
-export function EngineMark(props: { readonly driverKind: string }): ReactNode {
+export function EngineMark(props: {
+  readonly driverKind: string;
+  readonly tint?: string;
+}): ReactNode {
+  const tint = props.tint ?? color.textSoft;
   const provider = harnessCatalogEntry(props.driverKind)?.brandProviderId;
   if (provider === "pi")
     return (
-      <Text accessible={false} style={{ color: color.textSoft, fontSize: 14 }}>
+      <Text accessible={false} style={{ color: tint, fontSize: 14 }}>
         π
       </Text>
     );
   const path = provider === undefined ? undefined : paths[provider];
   return path === undefined ? (
-    <Symbol name="sparkles" size={12} tint={color.textSoft} />
+    <Symbol name="sparkles" size={12} tint={tint} />
   ) : (
     <Svg accessible={false} height={14} width={14} viewBox="0 0 24 24">
-      <Path d={path} fill={color.textSoft} />
+      <Path d={path} fill={tint} />
     </Svg>
   );
 }

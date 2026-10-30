@@ -477,9 +477,11 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
                   workspace.status,
                   selection !== null,
                   blockedPlacement,
+                  workspace.kind === "main" ? "Opensteer" : workspace.name,
                 )}
                 sendBlocked={sendBlocked}
                 sendLabel="Start task"
+                leadingFooter={<AssigneePicker specialists={specialists} workspace={workspace} />}
                 footerExtras={
                   <>
                     <ExecutionControls
@@ -505,7 +507,6 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
                   </>
                 }
               />
-              <AssigneePicker specialists={specialists} workspace={workspace} />
               <div className="hero__suggestions">
                 {suggestions.map((suggestion) => (
                   <button
@@ -644,6 +645,7 @@ export function newThreadPlaceholder(
   workspaceStatus: WorkspaceSummary["status"],
   hasExecutionSelection: boolean,
   blockedPlacement: ThreadPlacementOption | null = null,
+  assignee = "Opensteer",
 ): string {
   if (workspaceStatus !== "ready") return "This Workspace is not ready yet.";
   // Naming the blocked option is the whole point: the person chose it, and
@@ -655,7 +657,7 @@ export function newThreadPlaceholder(
     return `${blockedPlacement.accountName} on ${blockedPlacement.whereLabel} is unavailable — choose another option or wait for it to reconnect.`;
   }
   if (!hasExecutionSelection) return "Choose an available model to start.";
-  return "What should this task do?";
+  return `What should ${assignee} do?`;
 }
 
 /**

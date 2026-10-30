@@ -3,36 +3,31 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { textWidth } from "./text-width.js";
 
 /**
- * The order in which the composer's execution control gives up what it says
- * when the row is too narrow, first to last. A folded part leaves the row
- * entirely — every setting stays in the control's menu — so the row never
- * holds a bare mark beside another control, and no name is ever cut to a
- * fragment. What is left at the end is the engine's mark alone, the one
- * control still in the row.
+ * The order in which the composer's line gives up what it says when it is
+ * too narrow, first to last. A folded part leaves the line entirely — every
+ * setting stays in its control's menu — so no name is ever cut to a fragment.
+ * The model's name is the last thing given up.
  */
 export const composerFold = {
-  /** The whole account pill: the menu lists the engine's accounts. */
-  account: 1,
-  /** Choose AI's sparkle, never beside a pill: its words already say it all. */
-  choiceMark: 1,
+  /**
+   * Who does the task, down to their mark: the placeholder already names
+   * them, and the model's name matters more.
+   */
+  assignee: 1,
   /** The whole access pill, shown only for a mode worth seeing at a glance. */
   access: 2,
-  /** Where the work runs, said only when choices span computers. */
-  route: 3,
-  /** The reasoning level and any changed speed, after the model's name. */
-  reasoning: 4,
-  /** The engine's name before the model's: its mark still says which engine. */
-  engine: 5,
-  /** The menu's chevron, a decoration the model's name outranks. */
-  chevron: 6,
+  /** The effort's words after the model's name; its bars still say it. */
+  reasoning: 3,
+  /** The effort's bars too: the menu still says it, and the name matters more. */
+  reasoningMeter: 4,
   /** Last to go, and first shortened as far as its `data-fold-floor` allows. */
-  model: 7,
+  model: 5,
   /**
    * Beside a conversation's controls, the field's room for its whole
    * placeholder (its `data-fold-text`): given up only when Attach, the
    * control's mark, Stop and Send would not otherwise all keep their place.
    */
-  field: 8,
+  field: 6,
 } as const;
 
 /**

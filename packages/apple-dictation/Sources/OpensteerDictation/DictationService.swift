@@ -101,8 +101,6 @@ public actor DictationService {
       let granted = s.capture.permission() == .granted ? true : await s.capture.requestPermission()
       guard current(s), !s.stopping else { return }
       guard granted else { throw DictationError.permissionDenied }
-      try await s.recognizer.admit()
-      guard current(s), !s.stopping else { return }
       do {
         try s.capture.start(queue: s.queue) { reason in
           Task { await self.scheduleFinish(s, reason: reason) }
@@ -113,6 +111,16 @@ public actor DictationService {
       s.overrun = Task {
         for await _ in s.queue.failures { await self.fail(s, .recognitionFailed) }
       }
+      s.ticker = Task {
+        while !Task.isCancelled {
+          do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+          self.flush(s)
+          self.level(s, s.queue.latestLevel)
+        }
+      }
+      try await s.recognizer.admit()
+      // Stop closes capture but still drains audio recorded during admission.
+      guard current(s) else { return }
       s.consumer = Task {
         do { try await s.recognizer.results { result in await self.receive(s, result) } } catch {
           await self.fail(s, .recognitionFailed)
@@ -122,6 +130,7 @@ public actor DictationService {
       s.feeder = Task {
         do {
           try await s.recognizer.prepare()
+          guard self.current(s) else { return }
           for await _ in s.queue.wakes {
             try Task.checkCancellation()
             while true {
@@ -135,13 +144,6 @@ public actor DictationService {
         } catch {
           await self.fail(s, .recognitionFailed)
           throw error
-        }
-      }
-      s.ticker = Task {
-        while !Task.isCancelled {
-          do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-          self.flush(s)
-          self.level(s, s.queue.latestLevel)
         }
       }
     } catch {
@@ -177,7 +179,7 @@ public actor DictationService {
   public func interrupt() { if let s = active { scheduleFinish(s, reason: .interrupted) } }
   private func scheduleFinish(_ s: Session, reason: DictationEndReason) {
     guard current(s), !s.stopping else { return }
-    // Fence admission at command acceptance, before the finalizer task runs.
+    // Fence capture startup at command acceptance, before the finalizer task runs.
     let deadline = ContinuousClock.now + finalizationTimeout
     s.stopping = true
     s.capture.stop()
@@ -207,10 +209,18 @@ public actor DictationService {
       await terminate(s, reason, nil)
       return
     }
+    // Admission may still be resolving while capture is already closed.
+    await s.work?.value
+    guard current(s) else { return }
+    guard s.consumer != nil else {
+      await terminate(s, reason, nil)
+      return
+    }
     do {
       try await s.feeder?.value
       guard current(s) else { return }
       try await s.recognizer.finalize()
+      guard current(s) else { return }
       try await s.consumer?.value
       guard current(s) else { return }
       try s.tracker.finish()

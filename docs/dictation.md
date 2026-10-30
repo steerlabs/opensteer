@@ -41,9 +41,11 @@ Do not announce partial text, waveform or timer ticks to assistive technology.
 `packages/apple-dictation` owns shared capture, model reservations and teardown.
 Serialize inventory operations even across suspended calls; equivalent ICU/BCP-47
 locales share a reservation. Terminal delivery may precede cleanup, but the next
-session must wait. Cancellation supersedes admission/finalization; stop flushes
-recognized text before ending, including timeout. Input identity/format changes
-end capture; output-only route changes do not.
+session must wait. The mic opens as soon as permission allows; up to 10 seconds
+of audio stay in memory, in order, while recognizer admission and preparation
+complete. Overflow fails explicitly. Cancellation supersedes admission/finalization;
+stop flushes recognized text before ending, including timeout. Input
+identity/format changes end capture; output-only route changes do not.
 
 iOS uses record/measurement with Bluetooth HFP for headset microphones and
 deactivates with notification so other audio resumes. Microphone tests need a
@@ -58,7 +60,7 @@ resolves a null port. Availability refreshes on launch and foreground. Only a
 microphone usage description is required: no speech authorization or background
 audio mode is requested.
 
-The mic beside Attach downloads the preferred language when needed; tap again
+The mic beside Send downloads the preferred language when needed; tap again
 when ready to dictate. Live words replace the selected range without changing the
 saved draft until completion. Stop keeps words, Cancel restores the draft, and
 Send waits for the final words before rechecking the normal send gates. Typing

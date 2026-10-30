@@ -1,4 +1,9 @@
-import { accessModeOptions, accessModeUnavailableReason } from "@opensteer/client/host";
+import {
+  optionsSummary,
+  reasoningLevel,
+  accessModeOptions,
+  accessModeUnavailableReason,
+} from "@opensteer/client/host";
 import type { ModelSelection, ThreadAccessMode } from "@opensteer/core";
 import type { HarnessModelDescriptor } from "@opensteer/protocol";
 import { useState, type ReactNode } from "react";
@@ -31,20 +36,8 @@ export function ComposerPills(props: {
 }): ReactNode {
   const accessLabel =
     accessModeOptions.find((option) => option.mode === props.accessMode)?.label ?? props.accessMode;
-  const reasoning = props.model?.options.find(
-    (option) =>
-      option.type === "select" &&
-      (option.id === "effort" ||
-        option.id === "thinking" ||
-        option.label.toLocaleLowerCase() === "reasoning"),
-  );
-  const reasoningLabel =
-    reasoning?.type === "select"
-      ? ((
-          reasoning.values.find((value) => value.value === props.modelOptions[reasoning.id]) ??
-          reasoning.values.find((value) => value.value === reasoning.defaultValue)
-        )?.label ?? null)
-      : null;
+  const reasoningLabel = props.model ? optionsSummary(props.model, props.modelOptions) : null;
+  const level = props.model ? reasoningLevel(props.model, props.modelOptions) : null;
   const label = `${props.engineName} · ${props.modelLabel}`;
   const fullLabel = `AI: ${label}${reasoningLabel === null ? "" : ` · ${reasoningLabel}`}`;
   const blockedReason =
@@ -54,15 +47,13 @@ export function ComposerPills(props: {
   const blocked = blockedReason !== null;
   const summary =
     [reasoningLabel, blocked ? "Unavailable" : null].filter(Boolean).join(" · ") || null;
-  // Most said first; each next form gives up the next words in the web
-  // composer's order — the reasoning level, then the engine's name, which its
-  // mark still says — and only the last, the model alone, is ever shortened.
+  // The model and its effort read as one phrase, "GPT-6.1 Terra Extra high".
+  // Short of room the effort gives way to its bars first; only the model alone
+  // is ever shortened.
   const fit = useFittedForm(
-    [
-      [props.engineName, props.modelLabel, summary],
-      [props.engineName, props.modelLabel],
-      [props.modelLabel],
-    ].map((words) => words.filter(Boolean).join(" · ")),
+    [[props.modelLabel, summary], [props.modelLabel]].map((words) =>
+      words.filter(Boolean).join(" "),
+    ),
   );
   return (
     <View onLayout={fit.onLane}>
@@ -97,8 +88,26 @@ export function ComposerPills(props: {
             onLayout={fit.onText}
             style={[styles.name, blocked && styles.blocked]}
           >
-            {fit.form}
+            {props.modelLabel}
+            {fit.form !== props.modelLabel && summary ? (
+              <Text style={styles.summary}> {summary}</Text>
+            ) : null}
           </Text>
+          {fit.form === props.modelLabel && level ? (
+            <View accessible={false} style={styles.level}>
+              {Array.from({ length: level.steps }, (_, index) => (
+                <View
+                  key={index}
+                  style={[
+                    styles.levelBar,
+                    // Rising from 40% to the full 12 points, like the web meter.
+                    { height: 12 * (0.4 + (0.6 * index) / Math.max(1, level.steps - 1)) },
+                    index < level.level && styles.levelBarOn,
+                  ]}
+                />
+              ))}
+            </View>
+          ) : null}
           <Symbol
             name={blocked ? "exclamationmark.circle" : "chevron.down"}
             size={12}
@@ -187,6 +196,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[10],
   },
   blocked: { color: color.red },
+  level: { alignItems: "flex-end", flexDirection: "row", gap: 1.5, height: 12 },
+  levelBar: { backgroundColor: color.lineStrong, borderRadius: 1, width: 2 },
+  levelBarOn: { backgroundColor: color.muted },
+  summary: { color: color.muted, fontWeight: "400" },
   // Wide enough that no form wraps or shortens while it is measured.
   gauge: {
     alignItems: "flex-start",

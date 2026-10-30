@@ -91,7 +91,30 @@ vi.mock("react-native", () => ({
       onInput={(event) => onChangeText(event.currentTarget.value)}
     />
   ),
-  View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  View: ({
+    children,
+    accessibilityRole,
+    accessibilityLabel,
+    onAccessibilityAction,
+  }: {
+    children?: ReactNode;
+    accessibilityRole?: string;
+    accessibilityLabel?: string;
+    onAccessibilityAction?: (event: { nativeEvent: { actionName: string } }) => void;
+  }) => (
+    <div
+      role={accessibilityRole}
+      aria-label={accessibilityLabel}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight")
+          onAccessibilityAction?.({
+            nativeEvent: { actionName: event.key === "ArrowLeft" ? "decrement" : "increment" },
+          });
+      }}
+    >
+      {children}
+    </div>
+  ),
 }));
 const navigation = vi.hoisted(() => ({
   goBack: vi.fn(),
@@ -168,7 +191,7 @@ vi.mock("../ui/composer-action.js", () => ({
     label: string;
     onPress: () => void;
   }) => (
-    <button disabled={disabled} onClick={onPress}>
+    <button aria-label={label} disabled={disabled} onClick={onPress}>
       {label}
     </button>
   ),

@@ -1,16 +1,10 @@
-import {
-  ExecutionSelectionSchema,
-  ThreadAccessModeSchema,
-  type ExecutionPreferences,
-} from "@opensteer/core";
+import { ThreadAccessModeSchema, type ExecutionPreferences } from "@opensteer/core";
 import { type ThreadPlacementOption, type ThreadSummary } from "@opensteer/client/host";
 import type { HarnessModelDescriptor } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import {
   buildThreadModelPicker,
   settingsDisabledReason,
-  type AccountRow,
-  type ModelRow,
   type ThreadModelPicker,
   type ThreadModelPickerInput,
 } from "./settings-controller.js";
@@ -114,346 +108,91 @@ function build(
     preferences: noPreferences,
     query: "",
     step: { kind: "engines" },
-    subject: { kind: "thread", thread: thread(current) },
+    subject: {
+      kind: "thread",
+      thread: thread(current, {
+        providerSessionId: "session",
+        continuationIdentity: { continuationKey: "current", driverKind: "codex" },
+      }),
+    },
     ...overrides,
   });
 }
 
-function rows(picker: ThreadModelPicker) {
-  return picker.sections.flatMap((section) => section.rows);
-}
-
-function models(picker: ThreadModelPicker): ModelRow[] {
-  return rows(picker).filter((row): row is ModelRow => row.kind === "model");
-}
-
-function accounts(picker: ThreadModelPicker): AccountRow[] {
-  return rows(picker).filter((row): row is AccountRow => row.kind === "account");
-}
-
-function account(picker: ThreadModelPicker, harness: string): AccountRow | undefined {
-  return accounts(picker).find((row) => row.placement.harnessInstanceId === harness);
-}
-
 describe("Thread model picker", () => {
-  const gpt = model("openai", "gpt-5", "GPT-5");
-  const o3 = model("openai", "o3", "o3");
-  const opus = model("anthropic", "opus", "Claude Opus");
-  const primary = placement({ account: "Primary", harness: "primary", models: [gpt, o3] });
-  const team = placement({ account: "Team key", harness: "team", models: [gpt, opus] });
+  const gpt = model("openai", "gpt", "GPT");
+  const primary = placement({ account: "Primary", harness: "primary", models: [gpt] });
   const claude = placement({
     account: "Claude",
-    driver: "claude",
     harness: "claude",
+    driver: "claude",
     models: [gpt],
   });
-  const accountStep = { driverKind: "codex", kind: "accounts" } as const;
-  const modelStep = {
-    environmentId: "main",
-    harnessInstanceId: "team",
-    kind: "account-models",
-    returnTo: "accounts",
-  } as const;
-
-  it("starts with engines and statuses, skipping accounts only for one available account", () => {
-    const picker = build([primary, team, claude], gpt);
-    expect(picker.title).toBe("AI");
-    expect(models(picker)).toEqual([]);
-    expect(rows(picker)).toMatchObject([
-      { kind: "engine", title: "Codex", status: "ready", nextStep: accountStep },
+  it("browses chips without changing the current selection", () => {
+    const picker = build([primary, claude], gpt, {
+      step: { kind: "engines", driverKind: "claude" },
+    });
+    expect(picker.menu.browsed?.driverKind).toBe("claude");
+    expect(picker.currentRoute?.placement).toBe(primary);
+    expect(picker.models.every((row) => !row.selected)).toBe(true);
+    expect(picker.options).toEqual([]);
+  });
+  it("searches all AIs with engine and account details", () => {
+    const picker = build([primary, claude], gpt, { query: "GPT" });
+    expect(picker.models).toHaveLength(2);
+    expect(picker.models[1]?.detail).toContain("Claude");
+  });
+  it("keeps unavailable choices visible without silently replacing them", () => {
+    const offline = { ...primary, available: false, detail: "Offline" };
+    const picker = build([offline, claude], gpt);
+    expect(picker.unavailableCurrent?.detail).toBe("Offline");
+    expect(picker.menu.blocked).toBe(offline);
+    expect(picker.models).toEqual([]);
+    expect(picker.accounts[0]?.selected).toBe(true);
+  });
+  it("marks incompatible models as starting fresh", () => {
+    const picker = build(
+      [
+        primary,
+        placement({
+          account: "Claude",
+          harness: "claude",
+          driver: "claude",
+          continuationKey: "other",
+          models: [gpt],
+        }),
+      ],
+      gpt,
       {
-        kind: "engine",
-        title: "Claude Code",
-        status: "ready",
-        nextStep: {
-          kind: "account-models",
-          harnessInstanceId: "claude",
-          returnTo: "engines",
+        step: {
+          kind: "engines",
+          driverKind: claude.driverKind as import("@opensteer/core").HarnessId,
         },
       },
-    ]);
-    expect(picker.showSearch).toBe(true);
+    );
+    expect(picker.models[0]?.detail).toContain("Starts fresh here");
   });
-
-  it("browses only one engine's accounts and only the chosen account's models", () => {
-    const picker = build([primary, team, claude], gpt, { step: accountStep });
-    expect(accounts(picker).map(({ title, action }) => [title, action.kind])).toEqual([
-      ["Primary", "choose-model"],
-      ["Team key", "choose-model"],
-    ]);
-    const offered = build([primary, team, claude], gpt, { step: modelStep });
-    expect(offered.sections.map(({ title }) => title)).toEqual(["OpenAI", "Anthropic"]);
-    expect(
-      models(offered).map(({ title, route }) => [title, route?.placement.harnessInstanceId]),
-    ).toEqual([
-      ["GPT-5", "team"],
-      ["Claude Opus", "team"],
-    ]);
-    expect(models(offered).every(({ selected }) => !selected)).toBe(true);
-    expect(models(offered)[0]).toMatchObject({ suggested: true });
-  });
-
-  it("searches flat routes with account words and never deduplicates engines or accounts", () => {
-    const placements = [
-      primary,
+  it("uses shared ladder and switch settings", () => {
+    const configured = model("openai", "gpt", "GPT", [
       {
-        ...team,
-        observedConnections: [
-          {
-            accountLabel: "team@example.com",
-            connectionSlot: "account",
-            label: "Account",
-            status: "connected" as const,
-          },
+        type: "select",
+        id: "effort",
+        label: "Reasoning",
+        defaultValue: "auto",
+        values: [
+          { value: "auto", label: "Default" },
+          { value: "low", label: "Low" },
+          { value: "high", label: "High" },
         ],
       },
-      claude,
-    ];
-    const search = build(placements, gpt, { query: "GPT-5" });
-    expect(models(search).map(({ route }) => route?.placement.harnessInstanceId)).toEqual([
-      "primary",
-      "team",
-      "claude",
+      { type: "toggle", id: "fast", label: "Fast", defaultValue: false },
     ]);
-    const narrowed = build(placements, gpt, { query: "team@example GPT" });
-    expect(models(narrowed).map(({ route }) => route?.placement.harnessInstanceId)).toEqual([
-      "team",
-    ]);
-    expect(models(narrowed)[0]?.detail).toContain("Team key");
-    expect(build(placements, gpt, { query: "no match" }).emptyMessage).toBe("No matches");
-  });
-
-  it("lists recent complete choices newest first and keeps unavailable choices named", () => {
-    const blocked = {
-      ...team,
-      available: false,
-      detail: "Sign in again",
-      availability: "authentication-required" as const,
-    };
-    const selection = (p: ThreadPlacementOption) =>
-      ({
-        environmentId: p.environmentId,
-        harnessInstanceId: p.harnessInstanceId,
-        modelSelection: p.modelSelection,
-      }) as ExecutionPreferences["history"][number];
-    const picker = build([primary, blocked], gpt, {
-      preferences: { ...noPreferences, history: [selection(blocked), selection(primary)] },
-    });
-    expect(picker.sections.find(({ id }) => id === "recent")).toMatchObject({
-      title: "Recent",
-      rows: [
-        {
-          kind: "unavailable",
-          title: "Codex · gpt-5",
-          detail: expect.stringContaining("Team key"),
-        },
-        {
-          kind: "model",
-          title: "Codex · GPT-5",
-          route: { placement: { harnessInstanceId: "primary" } },
-        },
-      ],
-    });
-    expect(picker.sections.find(({ id }) => id === "recent")?.rows[0]?.detail).toContain(
-      "Sign in again",
-    );
-  });
-
-  it("keeps unavailable accounts with reasons and Check again, even when skipping the account step", () => {
-    const blocked = {
-      ...team,
-      available: false,
-      detail: "Sign in to use Codex",
-      availability: "authentication-required" as const,
-    };
-    const picker = build([primary, blocked], gpt, { step: accountStep });
-    expect(account(picker, "team")).toMatchObject({
-      action: { kind: "refresh", reason: "Sign in to use Codex" },
-      status: "attention",
-    });
-    const engine = rows(build([primary, blocked], gpt))[0];
-    expect(engine).toMatchObject({
-      nextStep: { kind: "account-models", harnessInstanceId: "primary", returnTo: "engines" },
-    });
-    if (engine?.kind !== "engine") throw new Error("Expected an engine");
-    expect(
-      account(build([primary, blocked], gpt, { step: engine.nextStep }), "team")?.action.kind,
-    ).toBe("refresh");
-    expect(
-      rows(build([{ ...blocked, availability: "disconnected" }], gpt)).find(
-        ({ kind }) => kind === "engine",
-      ),
-    ).toMatchObject({ status: "idle" });
-  });
-
-  it("suggests the current model, otherwise the account's last model, otherwise its default", () => {
-    const other = placement({
-      account: "Other",
-      harness: "team",
-      models: [opus, { ...o3, isDefault: true }],
-    });
-    const remembered = {
-      environmentId: "main",
-      harnessInstanceId: "team",
-      modelSelection: { providerId: "anthropic", modelId: "opus", options: {} },
-    } as ExecutionPreferences["history"][number];
-    const preferred = (p: ThreadPlacementOption, history: ExecutionPreferences["history"]) =>
-      models(
-        build([primary, p], gpt, { step: modelStep, preferences: { ...noPreferences, history } }),
-      ).find(({ suggested }) => suggested)?.route?.model.modelId;
-    expect(preferred(team, [remembered])).toBe("gpt-5");
-    expect(preferred(other, [remembered])).toBe("opus");
-    expect(preferred(other, [])).toBe("o3");
-  });
-
-  it("marks continuation-identity incompatible account switches as fresh starts", () => {
-    const current = placement({
-      account: "Primary",
-      harness: "primary",
-      models: [gpt],
-      continuationKey: "primary:v1",
-    });
-    const other = placement({
-      account: "Team key",
-      harness: "team",
-      models: [gpt],
-      continuationKey: "team:v1",
-    });
-    const subject = {
-      kind: "thread",
-      thread: thread(gpt, { continuationIdentity: current.continuationIdentity }),
-    } as const;
-    expect(
-      account(build([current, other], gpt, { step: accountStep, subject }), "team")?.detail,
-    ).toContain("Starts fresh here");
-    expect(models(build([current, other], gpt, { step: modelStep, subject }))[0]?.detail).toContain(
-      "Starts fresh here",
-    );
-  });
-
-  it("keeps a blocked selection visible and never marks another account's model selected", () => {
-    const blocked = {
-      ...primary,
-      available: false,
-      models: [],
-      detail: "This work location is not connected",
-    };
-    const picker = build([blocked, team], gpt);
-    expect(rows(picker)[0]).toMatchObject({
-      kind: "unavailable",
-      title: "Codex · GPT-5",
-      detail: expect.stringContaining("This work location is not connected"),
-    });
-    expect(picker.currentRoute).toBeNull();
-    expect(picker.options).toEqual([]);
-    const missing = build([team], gpt);
-    expect(rows(missing)[0]?.detail).toContain("no longer here");
-    const dropped = build([{ ...primary, models: [o3] }, team], gpt);
-    expect(rows(dropped)[0]?.detail).toContain("no longer offers this model");
-  });
-
-  it("abandons browsing a removed engine or unavailable account without choosing a replacement", () => {
-    expect(
-      build([primary], gpt, { step: { kind: "accounts", driverKind: "claude" } }),
-    ).toMatchObject({ step: { kind: "engines" }, lostStep: expect.stringContaining("no longer") });
-    expect(build([primary], gpt, { step: modelStep })).toMatchObject({
-      step: { kind: "engines" },
-      lostStep: expect.stringContaining("no longer available"),
-    });
-  });
-
-  it("shows current model options with chosen and clamped values", () => {
-    const configurable = model("openai", "gpt-options", "GPT Options", [
-      {
-        defaultValue: "medium",
-        id: "reasoning",
-        label: "Reasoning",
-        type: "select",
-        values: ["minimal", "low", "medium", "high", "xhigh", "max"].map((value) => ({
-          label: value.toUpperCase(),
-          value,
-        })),
-      },
-      { defaultValue: false, id: "fast", label: "Fast", type: "toggle" },
-    ]);
-    const placements = [{ ...primary, models: [configurable] }];
-    const chosen = build(placements, configurable, {
-      subject: {
-        kind: "thread",
-        thread: thread(configurable, {
-          modelSelection: {
-            modelId: "gpt-options",
-            options: { fast: true, reasoning: "xhigh" },
-            providerId: "openai",
-          },
-        }),
-      },
-    });
-    expect(chosen).toMatchObject({
-      showSearch: true,
-      title: "AI",
-      currentRoute: { model: { modelId: "gpt-options" } },
-    });
-    expect(chosen.options).toEqual([
-      expect.objectContaining({
-        value: "xhigh",
-        valueLabel: "XHIGH",
-        values: expect.arrayContaining([{ label: "MAX", value: "max" }]),
-      }),
-      { id: "fast", kind: "toggle", label: "Fast", value: true },
-    ]);
-    const stale = build(placements, configurable, {
-      subject: {
-        kind: "thread",
-        thread: thread(configurable, {
-          modelSelection: {
-            modelId: "gpt-options",
-            options: { reasoning: "gone" },
-            providerId: "openai",
-          },
-        }),
-      },
-    });
-    expect(stale.options).toEqual([
-      expect.objectContaining({ value: "medium", valueLabel: "MEDIUM" }),
-      expect.objectContaining({ value: false }),
+    const picker = build([{ ...primary, models: [configured] }], configured);
+    expect(picker.options).toMatchObject([
+      { kind: "ladder", step: null, automatic: { label: "Default" } },
+      { kind: "switch", on: false },
     ]);
   });
-
-  it("names work locations only when accounts span several and offers drafts without continuation checks", () => {
-    const remote = placement({
-      account: "Team key",
-      harness: "team",
-      models: [gpt],
-      environment: "Laptop",
-      continuationKey: "remote",
-    });
-    const picker = build([primary, remote], gpt, {
-      step: accountStep,
-      subject: { kind: "draft", selection: null },
-    });
-    expect(account(picker, "team")?.detail).toContain("Laptop");
-    expect(account(picker, "team")?.detail).not.toContain("Starts fresh");
-    expect(account(build([team], gpt, { step: accountStep }), "team")?.detail).toBeNull();
-  });
-
-  it("keeps blocked draft decisions visible", () => {
-    const blocked = { ...primary, available: false, detail: "This work location is not connected" };
-    const selection = ExecutionSelectionSchema.parse({
-      environmentId: "env_0192f4a1-1111-4000-8000-000000000001",
-      harnessInstanceId: "hin_0192f4a1-1111-4000-8000-000000000001",
-      modelSelection: primary.modelSelection,
-    });
-    const picker = build([{ ...blocked, ...selection }], gpt, {
-      subject: { kind: "draft", selection },
-    });
-    expect(rows(picker)[0]).toMatchObject({
-      kind: "unavailable",
-      title: "Codex · GPT-5",
-      detail: expect.stringContaining("This work location is not connected"),
-    });
-  });
-
   it("disables changes for ownership, activity, archived threads and connectivity", () => {
     expect(
       settingsDisabledReason({

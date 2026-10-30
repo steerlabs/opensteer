@@ -1,115 +1,59 @@
 // @vitest-environment happy-dom
-
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { HarnessModelDescriptorSchema } from "@opensteer/protocol";
-import { ModelOptionsPanel, optionsSummary } from "./model-options-picker.js";
-
+import { ModelSettingsPanel } from "./model-options-picker.js";
 const model = HarnessModelDescriptorSchema.parse({
-  displayName: "GPT-5.6-Sol",
-  isDefault: true,
-  modelId: "gpt-5.6-sol",
+  displayName: "Model",
+  modelId: "model",
   providerId: "openai",
+  isDefault: true,
   options: [
     {
-      defaultValue: "medium",
+      type: "select",
       id: "effort",
       label: "Reasoning",
-      type: "select",
+      defaultValue: "auto",
       values: [
-        { label: "Low", value: "low" },
-        { label: "Medium", value: "medium" },
-        { description: "Thinks longer before answering", label: "High", value: "high" },
+        { value: "auto", label: "Default" },
+        { value: "low", label: "Low" },
+        { value: "high", label: "High" },
       ],
     },
-    { defaultValue: false, id: "web", label: "Web search", type: "toggle" },
+    { type: "toggle", id: "fast", label: "Fast", defaultValue: false },
   ],
 });
-
-describe("optionsSummary", () => {
-  it("summarizes the current select labels and enabled toggles", () => {
-    expect(optionsSummary(model, {})).toBe("Medium");
-    expect(optionsSummary(model, { effort: "high", web: true })).toBe("High · Web search");
-    // Stored values must not be misrepresented as the new catalog default.
-    expect(optionsSummary(model, { effort: "xhigh" })).toBe("Saved configuration");
-  });
-});
-
-describe("ModelOptionsPanel", () => {
-  it("does not mark a new default as the saved legacy configuration", () => {
-    const sparse = {
-      ...model,
-      options: [
-        {
-          type: "select" as const,
-          id: "variant",
-          label: "Configuration",
-          defaultValue: "native-low",
-          values: [{ label: "Low", value: "native-low" }],
-        },
-      ],
-    };
-    const onChange = vi.fn();
-    const html = renderToStaticMarkup(
-      <ModelOptionsPanel
-        model={sparse}
-        onChange={onChange}
-        values={{ effort: "high", fast: true }}
-      />,
-    );
-    expect(html).toContain("Choose a configuration");
-    expect(html).not.toContain('aria-checked="true"');
-    expect(optionsSummary(sparse, { effort: "high", fast: true })).toBe("Saved configuration");
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it("cleans saved legacy keys only when a sparse variant is deliberately chosen", () => {
-    const sparse = HarnessModelDescriptorSchema.parse({
-      ...model,
-      options: [
-        {
-          type: "select",
-          id: "variant",
-          label: "Configuration",
-          defaultValue: "native-low",
-          values: [
-            { label: "Low", value: "native-low" },
-            { label: "High + Fast", value: "native-high-fast" },
-          ],
-        },
-      ],
-    });
-    const onChange = vi.fn();
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-
-    act(() => {
+it("applies ladder steps, returns to automatic, and flips the switch", () => {
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  const onChange = vi.fn();
+  const render = (values: Record<string, string | boolean>) =>
+    act(() =>
       root.render(
-        <ModelOptionsPanel
-          model={sparse}
+        <ModelSettingsPanel
+          model={model}
+          values={values}
           onChange={onChange}
-          values={{ effort: "high", fast: true, removed: "legacy" }}
+          choice={null}
+          onChoice={() => {}}
         />,
-      );
+      ),
+    );
+  try {
+    render({});
+    const slider = node.querySelector("input")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "1");
+      slider.dispatchEvent(new Event("change", { bubbles: true }));
     });
-
-    expect(onChange).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-checked="true"]')).toBeNull();
-    expect(container.textContent).toContain("Choose a configuration");
-
-    const highFast = [
-      ...container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'),
-    ].find((button) => button.textContent?.includes("High + Fast"));
-    expect(highFast).toBeDefined();
-    act(() => highFast!.click());
-
-    expect(onChange).toHaveBeenCalledOnce();
-    expect(onChange).toHaveBeenCalledWith({ variant: "native-high-fast" }, true);
-
+    expect(onChange).toHaveBeenLastCalledWith({ effort: "high" });
+    render({ effort: "high" });
+    act(() => node.querySelector<HTMLButtonElement>("[aria-pressed]")!.click());
+    expect(onChange).toHaveBeenLastCalledWith({});
+    act(() => node.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+    expect(onChange).toHaveBeenLastCalledWith({ effort: "high", fast: true });
+  } finally {
     act(() => root.unmount());
-    container.remove();
-  });
+  }
 });

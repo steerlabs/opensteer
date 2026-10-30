@@ -1293,14 +1293,6 @@ label.action-row input {
   border-top: 1px solid var(--line);
 }
 
-.picker__item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 36px;
-}
-
 .picker__row {
   flex: 1;
   display: flex;
@@ -1373,408 +1365,6 @@ label.action-row input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The engine and model menu: engines down the side, then the browsed engine's
-   accounts and one account's models. It keeps one size while the reader
-   browses, so moving between engines never makes the panel jump. Doubled to
-   outrank the shared popover's own size limits. */
-.popover.popover--engines {
-  display: flex;
-  width: min(600px, calc(100vw - 20px));
-  height: min(500px, 72vh, calc(100dvh - 20px));
-  max-height: none;
-  max-width: none;
-  padding: 0;
-  overflow: hidden;
-}
-
-.engine-picker {
-  display: flex;
-  width: 100%;
-  min-height: 0;
-}
-
-.engine-picker__rail {
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  gap: var(--space-2);
-  width: 172px;
-  padding: var(--space-8) var(--space-6);
-  overflow-y: auto;
-  border-right: 1px solid var(--line);
-}
-
-.engine-picker__tab {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-8);
-  min-height: 34px;
-  padding: 0 var(--space-10);
-  border-radius: var(--radius-sm);
-  color: var(--muted);
-  font-size: var(--text-md);
-  text-align: left;
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.engine-picker__tab:hover {
-  background: var(--surface-hover);
-  color: var(--text-soft);
-}
-
-.engine-picker__tab[aria-selected="true"] {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.engine-picker__tab > svg,
-.engine-picker__tab .provider-logo {
-  width: 15px;
-  height: 15px;
-  flex: none;
-}
-
-/* An engine with nothing that can run right now still gets a row: its mark
-   recedes and its dot says why it is quiet. */
-.engine-picker__tab--off > svg,
-.engine-picker__tab--off .provider-logo {
-  opacity: 0.55;
-}
-
-.engine-picker__name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.engine-picker__rail .status-dot {
-  width: 6px;
-  height: 6px;
-}
-
-.engine-picker__rail .status-dot--ready {
-  background: var(--green);
-}
-
-.engine-picker__rail .status-dot--attention {
-  background: var(--amber);
-}
-
-.engine-picker__rail .status-dot--idle {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--muted-dim);
-}
-
-.engine-picker__manage {
-  display: flex;
-  flex: none;
-  margin-top: auto;
-  padding-top: var(--space-6);
-}
-
-.engine-picker__main {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.engine-picker__main .picker__search input::-webkit-search-cancel-button {
-  display: none;
-}
-
-/* A new pane settles in rather than snapping: browsing reads as moving
-   through one menu, not as the menu being replaced. */
-.engine-picker__pane,
-.engine-picker__models {
-  animation: pane-in 160ms var(--ease-out);
-}
-
-@keyframes pane-in {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* The account whose models are listed below, while the one in use keeps the
-   check: looking at an account is not choosing it. */
-.picker__row.is-viewing {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-/* The settings of the choice in force, at the menu's foot: one quiet row
-   each, named on the left, set-to on the right. */
-.engine-picker__settings {
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  gap: 1px;
-  max-height: 40%;
-  overflow-y: auto;
-  padding: var(--space-4) var(--space-6);
-  border-top: 1px solid var(--line);
-}
-
-.engine-picker__settings-heading {
-  overflow: hidden;
-  padding: var(--space-6) var(--space-10) var(--space-2);
-  color: var(--muted);
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-bold);
-  letter-spacing: 0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.setting-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  min-height: 34px;
-  padding: 0 var(--space-10);
-  border-radius: var(--radius-sm);
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  text-align: left;
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.setting-row:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.setting-row__glyph {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 16px;
-  color: var(--muted);
-}
-
-.setting-row__glyph > svg {
-  width: 13px;
-  height: 13px;
-}
-
-.setting-row__glyph .level-meter {
-  width: auto;
-  height: 12px;
-  color: var(--text-soft);
-}
-
-.setting-row__name {
-  flex: 1;
-  min-width: 0;
-}
-
-.setting-row__value {
-  overflow: hidden;
-  max-width: 55%;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.setting-row__more {
-  flex: none;
-  width: 11px;
-  height: 11px;
-  color: var(--muted-dim);
-}
-
-/* A mode the chosen engine cannot enforce: named, marked, explained. */
-.setting-row.is-unavailable .setting-row__value,
-.setting-row.is-unavailable .setting-row__glyph {
-  color: var(--red);
-}
-
-.setting-row[role="switch"][aria-checked="true"] .setting-row__value {
-  color: var(--text-soft);
-}
-
-/* A setting's choices take the menu's place, with the way back above them. */
-.engine-picker__detail {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  animation: pane-in 160ms var(--ease-out);
-}
-
-.engine-picker__back {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-6);
-  min-height: 44px;
-  padding: 0 var(--space-12);
-  border-bottom: 1px solid var(--line);
-  color: var(--text);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
-  text-align: left;
-}
-
-.engine-picker__back:hover {
-  background: var(--surface-hover);
-}
-
-.engine-picker__back > svg {
-  width: 13px;
-  height: 13px;
-  color: var(--muted);
-}
-
-.engine-picker__detail .picker__detail {
-  white-space: normal;
-}
-
-@media (hover: none) {
-  .setting-row {
-    min-height: var(--touch-target);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .engine-picker__detail {
-    animation: none;
-  }
-}
-
-.engine-picker__blocked {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-10);
-  margin: var(--space-8) var(--space-6);
-  padding: var(--space-12) var(--space-14);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  color: var(--muted);
-  font-size: var(--text-md);
-  line-height: 1.45;
-}
-
-.engine-picker__blocked .picker__setup {
-  margin: 0;
-}
-
-/* Which engine a search result or recent choice runs on, at the row's end. */
-.picker__route-mark {
-  display: grid;
-  flex: none;
-  place-items: center;
-  margin-left: auto;
-  padding-left: var(--space-8);
-  color: var(--muted-dim);
-}
-
-.picker__route-mark > svg,
-.picker__route-mark .provider-logo {
-  width: 13px;
-  height: 13px;
-}
-
-.picker__glyph .provider-logo {
-  width: 14px;
-  height: 14px;
-}
-
-.switch-review__choices {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: var(--space-4) calc(-1 * var(--space-6)) var(--space-12);
-}
-
-.switch-review__choices .picker__detail {
-  white-space: normal;
-}
-
-/* On a narrow screen the engines become a row of tabs above the search, so
-   the models keep the panel's whole width. */
-@media (max-width: 620px) {
-  .popover.popover--engines {
-    height: min(500px, 72dvh);
-  }
-
-  .engine-picker {
-    flex-direction: column;
-  }
-
-  .engine-picker__rail {
-    flex-direction: row;
-    align-items: center;
-    gap: var(--space-4);
-    width: auto;
-    padding: var(--space-6);
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    scrollbar-width: none;
-  }
-
-  .engine-picker__rail::-webkit-scrollbar {
-    display: none;
-  }
-
-  .engine-picker__tab {
-    gap: var(--space-6);
-    min-height: 32px;
-  }
-
-  .engine-picker__name {
-    flex: none;
-  }
-
-  .engine-picker__manage {
-    margin: 0 0 0 auto;
-    padding: 0;
-  }
-}
-
-@media (hover: none) {
-  .engine-picker__tab {
-    min-height: var(--touch-target);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .engine-picker__pane,
-  .engine-picker__models {
-    animation: none;
-  }
-}
-
-/* "Default" beside the account new Threads land on. Inline with the label so
-   it reads as part of the name, not as a status. */
-.picker__tag {
-  margin-left: var(--space-6);
-  padding: 1px var(--space-6);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--ember-line);
-  background: var(--ember-wash);
-  color: var(--ember);
-  font-size: var(--text-3xs);
-  font-weight: var(--weight-bold);
-  vertical-align: 1px;
 }
 
 .picker__manage {
@@ -1908,10 +1498,10 @@ label.action-row input {
   gap: var(--space-6);
   height: 28px;
   padding: 0 var(--space-10);
-  border: 1px solid var(--line-strong);
+  border: 0;
   border-radius: var(--radius-full);
-  background: var(--surface-elevated);
-  color: var(--text-soft);
+  background: transparent;
+  color: var(--muted);
   font-size: var(--text-sm);
   white-space: nowrap;
   transition:
@@ -1921,13 +1511,13 @@ label.action-row input {
 
 .assignee__button:hover,
 .assignee__button[aria-expanded="true"] {
-  border-color: var(--line-hover);
+  background: var(--surface-hover);
   color: var(--text);
 }
 
 .assignee__button .brand__mark {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 
 .assignee__button > svg {
@@ -1942,6 +1532,16 @@ label.action-row input {
   text-overflow: ellipsis;
 }
 
+/* Short of room the chip keeps only its mark, so the model's name stays. */
+.assignee [data-folded] {
+  display: none;
+}
+
+.assignee__button:has([data-folded]) {
+  justify-content: center;
+  min-width: 32px;
+}
+
 .assignee-popover {
   width: min(320px, calc(100vw - 20px));
 }
@@ -1949,11 +1549,6 @@ label.action-row input {
 .assignee-popover .brand__mark {
   width: 16px;
   height: 16px;
-}
-
-@media (max-width: 900px) {
-  /* The mobile top bar carries the title and panel toggle; the desktop
-     breadcrumb header would duplicate it. */
 }
 
 @media (max-width: 680px) {
@@ -2244,3 +1839,403 @@ fieldset.action-panel {
 }
 
 /* The page a message will include: small, inside the box, at its top left. */
+
+/* The execution menu: AIs down the side, the browsed AI's models, the
+   settings of the model in force, and one line for the conversation. Its
+   height follows its content up to a cap, so a short list leaves no gap; the
+   side list sets its floor, so browsing AIs never shrinks it under the pointer. */
+.popover.popover--execution {
+  width: min(520px, calc(100vw - 2 * var(--space-10)));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+}
+.execution-menu {
+  display: flex;
+  min-height: 300px;
+  max-height: min(560px, 80dvh);
+}
+.execution-menu__engines {
+  display: flex;
+  flex: 0 0 160px;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-6);
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--text) 2%, transparent);
+  overflow-y: auto;
+}
+.execution-menu__engine {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  width: 100%;
+  min-height: 36px;
+  padding: var(--space-6) var(--space-10);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  text-align: left;
+}
+.execution-menu__engine > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.execution-menu__engine:hover,
+.execution-menu__engine[aria-selected="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.execution-menu__engine > svg,
+.execution-menu__engine .provider-logo {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.execution-menu__engine small {
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-normal);
+}
+.execution-menu__engine.is-unavailable {
+  color: var(--muted);
+}
+.execution-menu__engine.is-unavailable > svg,
+.execution-menu__engine.is-unavailable .provider-logo {
+  opacity: 0.5;
+}
+.execution-menu__heading {
+  display: block;
+  margin: var(--space-14) var(--space-10) var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+}
+.execution-menu__in-use {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--ember);
+}
+.execution-menu__pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.execution-menu__scroll {
+  flex: 0 1 auto;
+  min-height: 0;
+  padding: var(--space-6);
+  overflow: auto;
+}
+.execution-menu .picker__row {
+  flex: none;
+  min-height: 40px;
+  padding: var(--space-8) var(--space-10);
+  border-radius: var(--radius-xs);
+}
+.execution-menu .picker__label {
+  font-size: var(--text-xl);
+}
+.execution-menu .picker__detail {
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  white-space: normal;
+}
+.execution-menu__back {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-12);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+  text-align: left;
+}
+.execution-menu__back svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.execution-menu__settings {
+  flex: none;
+  max-height: 50%;
+  padding: var(--space-10) var(--space-16) var(--space-8);
+  border-top: 1px solid var(--line);
+  overflow: auto;
+}
+.execution-setting {
+  padding: var(--space-6) 0;
+}
+.execution-setting__label,
+.execution-setting__switch,
+.execution-setting__choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+.execution-setting__switch,
+.execution-setting__choice {
+  padding: var(--space-4) 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.execution-setting__switch {
+  justify-content: space-between;
+}
+.execution-setting__value {
+  margin-left: auto;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  font-weight: var(--weight-normal);
+}
+.execution-setting__choice svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.execution-setting__automatic {
+  padding: var(--space-2) var(--space-8);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-2xs);
+}
+.execution-setting__automatic[aria-pressed="true"] {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+.execution-setting input[type="range"] {
+  width: 100%;
+  margin: var(--space-10) 0 var(--space-4);
+  accent-color: var(--text-soft);
+  cursor: pointer;
+}
+/* While the engine chooses, the ladder has no step in force. */
+.execution-setting input[type="range"][data-idle] {
+  opacity: 0.45;
+}
+.execution-setting__ends {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: var(--text-2xs);
+}
+.execution-setting .picker__detail {
+  margin: var(--space-2) 0 0;
+}
+.execution-switch {
+  flex: none;
+  width: 32px;
+  height: 19px;
+  padding: var(--space-2);
+  border-radius: 999px;
+  background: var(--line-hover);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.execution-switch i {
+  display: block;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+.execution-switch[data-on="true"] {
+  background: var(--ember);
+}
+.execution-switch[data-on="true"] i {
+  transform: translateX(13px);
+}
+.execution-menu__bottom {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  margin-top: auto;
+  padding: var(--space-12) var(--space-16);
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  text-align: left;
+}
+.execution-menu__bottom:hover {
+  background: var(--surface-hover);
+}
+.execution-menu__bottom svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.execution-menu__bottom > svg:last-child {
+  margin-left: auto;
+}
+.execution-menu__bottom-words {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-menu__bottom-account {
+  color: var(--muted);
+}
+.execution-menu__exhausted {
+  color: var(--red-text);
+}
+.exec-pill__label {
+  color: var(--text-soft);
+}
+.exec-summary {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.exec-summary__meter {
+  display: none;
+}
+.exec-summary[data-folded] .exec-summary__words {
+  display: none;
+}
+.exec-summary[data-folded] .exec-summary__meter {
+  display: inline-flex;
+}
+.exec-summary[data-folded] .exec-summary__meter[data-folded] {
+  display: none;
+}
+.composer {
+  position: relative;
+}
+.composer-usage {
+  padding: var(--space-8) var(--space-12);
+  border-radius: inherit;
+  background: var(--amber-wash);
+  color: var(--amber-text);
+  font-size: var(--text-sm);
+  white-space: normal;
+}
+.composer-usage button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: var(--weight-strong);
+  text-decoration: underline;
+}
+/* A phone, or a narrow window: the same menu as a sheet from the bottom, the
+   AIs as a row of chips the next of which peeks past the edge. */
+@media (max-width: 599px) {
+  .popover.popover--execution {
+    top: auto !important;
+    bottom: 0;
+    left: 0 !important;
+    width: 100vw;
+    padding-bottom: env(safe-area-inset-bottom);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+  .execution-menu {
+    flex-direction: column;
+    min-height: 0;
+    max-height: 85dvh;
+  }
+  .execution-menu__engines {
+    flex: none;
+    flex-direction: row;
+    gap: var(--space-6);
+    padding: var(--space-12);
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+    overflow: auto hidden;
+    scrollbar-width: none;
+    mask-image: linear-gradient(to right, black calc(100% - var(--space-28)), transparent);
+  }
+  .execution-menu__engines::-webkit-scrollbar {
+    display: none;
+  }
+  .execution-menu__engines > div {
+    flex: none;
+  }
+  .execution-menu__heading {
+    display: none;
+  }
+  .execution-menu__engine {
+    width: auto;
+    min-height: 44px;
+    padding: var(--space-8) var(--space-14);
+    border-radius: 999px;
+    background: var(--surface-raised);
+    white-space: nowrap;
+  }
+  .execution-menu__engine > span {
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--space-6);
+  }
+  .execution-menu__engine[aria-selected="true"] {
+    background: var(--text);
+    color: var(--bg);
+  }
+  .execution-menu__in-use {
+    margin-left: 0;
+  }
+  .execution-menu .picker__row,
+  .execution-menu__back,
+  .execution-menu__bottom,
+  .execution-setting__switch,
+  .execution-setting__choice {
+    min-height: 44px;
+  }
+  .execution-menu .picker__label {
+    font-size: var(--display-xs);
+  }
+  .execution-menu .picker__detail {
+    font-size: var(--text-lg);
+  }
+  .assignee__button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 var(--space-4);
+  }
+}
+.exec-controls .exec-summary[data-folded] {
+  display: inline-flex;
+}
+.composer__settings {
+  justify-content: flex-start;
+}
+.composer__settings .exec-controls {
+  margin-left: auto;
+}
+
+@media (max-width: 599px) {
+  .composer__footer button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+.execution-menu [aria-label="Models"] .picker__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

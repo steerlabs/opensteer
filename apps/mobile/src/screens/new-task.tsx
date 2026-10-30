@@ -382,8 +382,9 @@ function NewTask(props: {
       execution={execution}
       inputRef={input}
       onChangeText={changeText}
-      onChooseAI={(pickerAttemptId) =>
+      onChooseAI={(pickerAttemptId, conversation) =>
         navigation.navigate("NewThread", {
+          ...(conversation ? { conversation: true } : {}),
           deploymentId,
           ...(pickerAttemptId === undefined ? {} : { pickerAttemptId }),
         })

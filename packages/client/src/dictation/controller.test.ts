@@ -99,7 +99,12 @@ describe("dictation controller", () => {
   it("previews without mutating the draft, preserves selection until speech, commits before resolving one finish promise", async () => {
     const f = runtime();
     await f.start();
-    expect(f.controller.getSnapshot()).toMatchObject({ phase: "starting", preview: null });
+    // The press is the start: the recording bar counts from it before native capture answers.
+    expect(f.controller.getSnapshot()).toMatchObject({
+      phase: "starting",
+      preview: null,
+      startedAt: 1000,
+    });
     f.emit({ type: "listening" });
     expect(f.controller.getSnapshot().listeningSince).toBe(1000);
     f.emit(text([], []));
