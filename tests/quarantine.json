@@ -477,5 +477,21 @@
     "evidence": [
       "integration (1) on 7cab25b (PR #243, which changed only how task rows render): the clipboard result arrived late ('Matcher did not succeed in time'; expected [ { type: 'clipboard.result', … } ] to deeply equal [ ObjectContaining{…} ]) after 25.7 s. The same job passed on rerun at the same SHA (run 41009135701, attempt 2) in 17.7 s. Reproduce under the integration shard's load; fix why the native clipboard result can miss the matcher's window, keeping the projection and attribution assertions unchanged."
     ]
+  },
+  {
+    "file": "apps/browser-runtime/src/browser/chromium-runtime.test.ts",
+    "name": [
+      "real Chromium runtime",
+      "checkpoints and restores cookies, local storage, and IndexedDB across placements"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-10-30T06:00:00Z",
+    "deadline": "2026-11-06T06:00:00Z",
+    "sha": "7870453ee544688227da991d4044f1f9cd72b066",
+    "evidence": [
+      "tests (1) on 7870453 (PR #245, which changed only tests/quarantine.json): after 788 ms the restored storage digest was e3b0c442…b855, the SHA-256 of empty input, instead of 800410d6…b0b8, so the checkpoint restored nothing; the run also logged 'Browser Runtime sent an event before its snapshot' and 'Page.navigate failed'. The same job passed on rerun at the same SHA (run 41010720550, attempt 2) in 3.96 s. Fix why a checkpoint can be read before its storage is written, keeping the cookie, local storage and IndexedDB round-trip assertions unchanged."
+    ]
   }
 ]
