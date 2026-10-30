@@ -1074,10 +1074,10 @@ export class BrowserService {
   }
 
   /**
-   * Deletes a profile, then stops what still holds it: its live sessions and
-   * the tabs waiting to restore it. The deletion already fences them, so a
-   * session this fails to stop can neither save nor start again, and deleting
-   * again retries the rest.
+   * Deletes a profile, its tabs and its grants at once, then stops its live
+   * sessions. The deletion already fences those: they can neither save nor
+   * start again, and a Host that stops first fails them on restart, so a stop
+   * that fails is reported rather than failing a deletion that has happened.
    */
   async deleteProfile(input: {
     readonly ownerId: UserId;
@@ -1085,17 +1085,11 @@ export class BrowserService {
   }): Promise<void> {
     const { sessionIds } = await this.#repository.deleteBrowserProfile(input);
     this.invalidatePlaceAuthority();
-    try {
-      const results = await Promise.allSettled(
-        sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
-      );
-      const failure = results.find((result) => result.status === "rejected");
-      if (failure) {
-        throw unavailable("Some tabs using this profile didn’t close. Try again.", failure.reason);
-      }
-    } finally {
-      await this.#ownerProfilesChanged(input.ownerId);
-    }
+    const stops = await Promise.allSettled(
+      sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
+    );
+    for (const stop of stops) if (stop.status === "rejected") this.#onError(stop.reason);
+    await this.#ownerProfilesChanged(input.ownerId);
   }
 
   /** Every device of the owner rereads its profiles, whichever Workspace it follows. */

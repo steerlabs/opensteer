@@ -3689,7 +3689,7 @@ describeStore("PostgreSQL store", (it) => {
     });
   });
 
-  it("deletes a profile so no session or save can follow, and names what still holds it", async ({
+  it("deletes a profile with its tabs so no session, save or grant can follow", async ({
     storeFixture,
   }) => {
     const { store, database, enrollBrowserRunner } = storeFixture;
@@ -3783,8 +3783,7 @@ describeStore("PostgreSQL store", (it) => {
         .where("id", "=", id)
         .execute();
     const live = await startSession(createBrowserSessionId());
-    // A lineage restored once whose tab still waits to restore it: only its
-    // latest session can close that tab.
+    // A lineage restored once, its tab still waiting to restore the profile.
     const first = await startSession(createBrowserSessionId());
     await close(first.id);
     const restored = await startSession(createBrowserSessionId(), first.id);
@@ -3816,7 +3815,15 @@ describeStore("PostgreSQL store", (it) => {
 
     const deleted = await store.deleteBrowserProfile({ ownerId, profileId: profile.id });
 
-    expect([...deleted.sessionIds].sort()).toEqual([live.id, restored.id].sort());
+    // Only the live session is left for the Host to stop; the waiting tab closed with it.
+    expect(deleted.sessionIds).toEqual([live.id]);
+    expect(
+      await database
+        .selectFrom("workspaceTabs")
+        .select("closedAt")
+        .where("id", "=", `${first.id}-tab-0`)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ closedAt: expect.any(Date) });
     expect((await store.listBrowserProfiles(ownerId)).map(({ id }) => id)).toEqual([kept.id]);
     expect(await store.readBrowserProfileRevision(profile.id)).toBeNull();
     expect(await store.listActiveBrowserProfileGrants(ownerId)).toEqual([
@@ -3857,8 +3864,7 @@ describeStore("PostgreSQL store", (it) => {
         workspaceId: specialist.id,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
-    // The sessions still hold it until they are stopped, so deleting again
-    // names them again and a retry can finish.
+    // Deleting again changes nothing and still names the session to stop.
     await expect(store.deleteBrowserProfile({ ownerId, profileId: profile.id })).resolves.toEqual(
       deleted,
     );
