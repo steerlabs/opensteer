@@ -17,5 +17,10 @@
     "hostCallback": "com.steerlabs.opensteer.beta:/oauth/host-callback"
   },
   "portalUrl": "https://beta.opensteer.com",
-  "schemaVersion": 6
+  "schemaVersion": 6,
+  "updates": {
+    "owner": "steerlabs",
+    "repo": "opensteer",
+    "channel": "insider"
+  }
 }

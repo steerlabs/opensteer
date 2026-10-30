@@ -127,7 +127,7 @@ export class AccountNotificationDevicesClient {
   ): Promise<T> {
     const accountOrigin = this.#accountOrigin;
     if (accountOrigin === null) {
-      throw new Error("Opensteer Account requests are disabled in this source build.");
+      throw new Error("Opensteer Account isn't available yet.");
     }
     const lease = await this.#authorization.accountAuthorizationLease();
     if (!lease || !/^Bearer [^\p{Control}\s]+$/u.test(lease.authorization)) {

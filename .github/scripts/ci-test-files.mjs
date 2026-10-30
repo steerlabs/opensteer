@@ -20,6 +20,7 @@ export const defaultTestInclude = [
 export const darwinOnlyTests = [
   "tests/storage-retention.test.ts",
   "tests/release-phone-cache.test.ts",
+  "tests/desktop-public-release.test.ts",
   "tests/kernel-lock.test.ts",
   "tests/vm-slot-queue.test.ts",
   "tests/mac-app-delivery.test.ts",

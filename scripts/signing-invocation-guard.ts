@@ -117,7 +117,7 @@ function invocations(
   return found;
 }
 const contributorElectronBuilderArgv =
-  '["exec","electron-builder","--mac","--dir",process.arch==="arm64"?"--arm64":"--x64","--config","electron-builder.yml","-c.mac.identity=-","-c.mac.notarize=false","-c.mac.hardenedRuntime=false",]';
+  '["exec","electron-builder","--mac","--dir",process.arch==="arm64"?"--arm64":"--x64","--config","electron-builder.yml","-c.directories.output=release/contributor","-c.mac.identity=-","-c.mac.notarize=false","-c.mac.hardenedRuntime=false",]';
 function reviewed(file: string, tool: string, span: string, source: string): boolean {
   // The auditor's tool vocabulary and result labels are data, not executions.
   // Keep these exemptions structural: a bare signer added here is still rejected.
@@ -146,6 +146,14 @@ function reviewed(file: string, tool: string, span: string, source: string): boo
       span,
     ) &&
     !/["'](?:--sign|-s)["']/u.test(span)
+  )
+    return true;
+  // The same for a shell line. Its span runs to the end of the line, so a signer
+  // chained after the verification is still rejected.
+  if (
+    tool === "codesign" &&
+    /^\s*(?:\/usr\/bin\/)?codesign\s+(?:--verify|-dv|-d|--display)\s/u.test(span) &&
+    !/(?:^|\s)(?:--sign|-s)(?:[\s=]|$)/u.test(span)
   )
     return true;
   if (

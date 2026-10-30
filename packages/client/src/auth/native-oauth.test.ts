@@ -81,6 +81,35 @@ describe("NativeOAuthManager", () => {
     }
   });
 
+  it("keeps Host-native sign-in working with no Account issuer or traffic", async () => {
+    const fixture = await managerFixture({ accountOrigin: null });
+    await fixture.manager.initialize();
+    expect(await fixture.manager.state()).toMatchObject({
+      account: { available: false, status: "signed-out" },
+    });
+    await expect(fixture.manager.beginAccountSignIn()).rejects.toThrow(/isn't available yet/u);
+    await expect(fixture.manager.beginAccountReauthorization()).rejects.toThrow(
+      /isn't available yet/u,
+    );
+    expect(fixture.opened).toEqual([]);
+    expect(fixture.exchanges).toEqual([]);
+    await fixture.manager.beginHostSignIn(fixture.connection);
+    const authorize = new URL(fixture.opened[0]!);
+    await fixture.manager.handleCallback(
+      callbackUrl("host", authorize.searchParams.get("state")!, "host-code"),
+    );
+    expect(fixture.manager.hostCredentialState(fixture.connection)).toMatchObject({
+      status: "signed-in",
+    });
+    expect(
+      fixture.opened.every((url) => new URL(url).origin === "https://host.opensteer.test"),
+    ).toBe(true);
+    expect(fixture.exchanges.map(({ url }) => new URL(url).origin)).toEqual([
+      "https://host.opensteer.test",
+    ]);
+    expect(fixture.refreshes).toEqual([]);
+  });
+
   it("requests an explicit fresh Account session without replaying an Account mutation", async () => {
     const fixture = await managerFixture();
     await fixture.manager.initialize();
@@ -987,6 +1016,7 @@ describe("NativeOAuthManager credential boundaries", () => {
 
 async function managerFixture(
   options: {
+    readonly accountOrigin?: string | null;
     readonly exchangeGate?: Promise<void>;
     readonly fetch?: typeof globalThis.fetch;
     readonly grantedScope?: string;
@@ -1089,7 +1119,10 @@ async function managerFixture(
     ),
   };
   const manager = new NativeOAuthManager({
-    accountOrigin: "https://accounts.opensteer.test",
+    accountOrigin:
+      options.accountOrigin === undefined
+        ? "https://accounts.opensteer.test"
+        : options.accountOrigin,
     accountSessions,
     catalog,
     fetch: options.fetch ?? fetch,

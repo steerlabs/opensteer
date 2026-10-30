@@ -14,6 +14,7 @@
     "build:agent-phone": "tsx scripts/build-agent-phone.ts",
     "check": "tsx scripts/check.ts",
     "clean": "pnpm -r --if-present clean",
+    "desktop:public-release": "tsx scripts/desktop-public-release.ts",
     "desktop:install-local": "tsx scripts/install-beta-mac-local.ts",
     "dev": "tsx scripts/dev.ts",
     "dev:host": "pnpm --filter @opensteer/host dev",
@@ -47,12 +48,14 @@
     "test:vm": "tsx scripts/test-vm.ts",
     "test:vm:golden": "tsx scripts/test-vm.ts --golden",
     "eval:agent-tools": "tsx evals/agent-tools/run.ts",
-    "check:changed": "tsx scripts/check-changed.ts"
+    "check:changed": "tsx scripts/check-changed.ts",
+    "desktop:build-release": "tsx scripts/build-desktop-macos.ts"
   },
   "devDependencies": {
     "@opensteer/shared": "workspace:*",
     "@types/node": "26.2.0",
     "@types/ws": "catalog:",
+    "app-builder-lib": "26.15.3",
     "esbuild": "0.28.2",
     "oxlint": "1.77.0",
     "oxlint-tsgolint": "^7.0.2001",

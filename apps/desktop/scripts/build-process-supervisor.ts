@@ -29,7 +29,9 @@ const output = path.join(
 );
 
 const reviewedSource = process.env.OPENSTEER_PROCESS_SUPERVISOR_BINARY_SOURCE;
-if (process.env.OPENSTEER_DESKTOP_RELEASE === "1") {
+// Explicit reviewed inputs are immutable in contributor builds too; lifecycle
+// hooks must not rebuild the producer’s bytes after their digest was pinned.
+if (process.env.OPENSTEER_DESKTOP_RELEASE === "1" || reviewedSource !== undefined) {
   if (!reviewedSource || !process.env.OPENSTEER_PROCESS_SUPERVISOR_BINARY_SHA256)
     throw new Error("Release requires a reviewed supervisor input");
   await assertRegularFile(reviewedSource, "Reviewed supervisor input");

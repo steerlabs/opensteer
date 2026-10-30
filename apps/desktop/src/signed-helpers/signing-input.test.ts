@@ -63,3 +63,52 @@ it("refuses a missing signing file even with development trust requested", () =>
   ).toThrow();
   expect(() => readSigningMode({ OPENSTEER_DESKTOP_RELEASE: "1" })).toThrow();
 });
+
+it("accepts complete CI authority and rejects partial or mismatched signing inputs", () => {
+  const { readSigningMode } =
+    require("../../scripts/signing-input.cjs") as typeof import("../../scripts/signing-input.cjs");
+  const environment = {
+    OPENSTEER_DESKTOP_RELEASE: "1",
+    OPENSTEER_RELEASE_SIGNING_IDENTITY: fixture.identity,
+    OPENSTEER_APPLE_TEAM_ID: fixture.teamId,
+  };
+  expect(readSigningMode(environment)).toEqual({ mode: "signed", signing: fixture });
+  expect(() => readSigningMode({ ...environment, OPENSTEER_APPLE_TEAM_ID: undefined })).toThrow();
+  expect(() =>
+    readSigningMode({ ...environment, OPENSTEER_APPLE_TEAM_ID: "ZZZZZ12345" }),
+  ).toThrow();
+});
+
+it("keeps matching file-based signing compatible and refuses conflicting inherited authority", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const directory = await mkdtemp(path.join(tmpdir(), "signing-input-"));
+  const keychain = path.join(directory, "fixture.keychain-db");
+  const filename = path.join(directory, "signing.json");
+  const { readSigningMode } =
+    require("../../scripts/signing-input.cjs") as typeof import("../../scripts/signing-input.cjs");
+  try {
+    await writeFile(keychain, "fixture, no keys");
+    await writeFile(filename, JSON.stringify({ ...fixture, keychain }));
+    const environment = {
+      OPENSTEER_DESKTOP_SIGNING_FILE: filename,
+      OPENSTEER_RELEASE_SIGNING_IDENTITY: fixture.identity,
+      OPENSTEER_APPLE_TEAM_ID: fixture.teamId,
+      CSC_KEYCHAIN: keychain,
+    };
+    expect(readSigningMode(environment)).toEqual({
+      mode: "signed",
+      signing: { ...fixture, keychain },
+    });
+    expect(() =>
+      readSigningMode({ ...environment, OPENSTEER_APPLE_TEAM_ID: "ZZZZZ12345" }),
+    ).toThrow(/disagree/);
+    expect(readSigningMode({ ...environment, OPENSTEER_DESKTOP_SIGNING_FILE: undefined })).toEqual({
+      mode: "signed",
+      signing: { ...fixture, keychain },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

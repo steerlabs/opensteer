@@ -9,7 +9,11 @@ import {
   type AgentPhoneArtifactManifest,
 } from "../packages/protocol/src/android-phone.js";
 
-import { androidBuildTools, inspectAgentPhoneApk } from "./release-agent-phone.cjs";
+import {
+  androidBuildTools,
+  inspectAgentPhoneApk,
+  writeAgentPhoneReleaseReceipt,
+} from "./release-agent-phone.cjs";
 
 /**
  * Builds the Opensteer Agent Phone app (`apps/agent-phone`) and puts it where
@@ -86,9 +90,7 @@ async function main(argv: readonly string[]): Promise<void> {
   const sdk = process.env.ANDROID_HOME ?? path.join(homedir(), "Library/Android/sdk");
   const buildTools = androidBuildTools({ ANDROID_HOME: sdk });
   const variant = options.release ? "release" : "debug";
-  const properties = options.release
-    ? await readFile(path.join(projectDirectory, "gradle.properties"), "utf8")
-    : undefined;
+  const properties = await readFile(path.join(projectDirectory, "gradle.properties"), "utf8");
   const configuredJvmArgs = properties?.match(/^org\.gradle\.jvmargs=(.+)$/mu)?.[1];
   if (options.release && !configuredJvmArgs)
     throw Error("Release Gradle JVM arguments are missing");
@@ -121,22 +123,19 @@ async function main(argv: readonly string[]): Promise<void> {
       `:app:assemble${options.release ? "Release" : "Debug"}`,
       // Release preparation owns every compiler process so cancellation can
       // join the whole process group instead of leaving persistent daemons.
-      ...(options.release
-        ? [
-            "--no-daemon",
-            // The wrapper does not preload Gradle's instrumentation agent.
-            // Match that state as well as heap options, or Gradle still forks.
-            // https://github.com/gradle/gradle/issues/33211
-            "-Dorg.gradle.internal.instrumentation.agent=false",
-            `-Dorg.gradle.jvmargs=${releaseJvmArgs}`,
-            "-Pkotlin.compiler.execution.strategy=in-process",
-          ]
-        : []),
+      "--no-daemon",
+      // The wrapper does not preload Gradle's instrumentation agent.
+      // Match that state as well as heap options, or Gradle still forks.
+      // https://github.com/gradle/gradle/issues/33211
+      "-Dorg.gradle.internal.instrumentation.agent=false",
+      `-Dorg.gradle.jvmargs=${releaseJvmArgs}`,
+      "-Pkotlin.compiler.execution.strategy=in-process",
       ...(options.e2eCa ? [":fixture:assembleDebug", `-PopensteerE2eCa=${options.e2eCa}`] : []),
     ],
     {
       ANDROID_HOME: sdk,
-      ...(options.release ? { GRADLE_OPTS: releaseJvmArgs, JAVA_OPTS: "" } : {}),
+      GRADLE_OPTS: releaseJvmArgs,
+      JAVA_OPTS: "",
     },
     "inherit",
   );
@@ -149,7 +148,19 @@ async function main(argv: readonly string[]): Promise<void> {
     : options.e2eCa
       ? [e2eDestination]
       : productDestinations;
-  for (const destination of destinations) await place(apk, manifest, destination);
+  for (const destination of destinations) {
+    await place(apk, manifest, destination);
+    if (options.release && process.env.OPENSTEER_SOURCE_REVISION) {
+      writeAgentPhoneReleaseReceipt(
+        destination,
+        {
+          sourceRevision: process.env.OPENSTEER_SOURCE_REVISION ?? "",
+          version: process.env.OPENSTEER_RELEASE_VERSION ?? "",
+        },
+        buildTools,
+      );
+    }
+  }
   if (options.e2eCa) {
     const fixture = path.join(e2eDestination, fixtureName);
     await copyFile(

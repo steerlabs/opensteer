@@ -1,5 +1,13 @@
 const { createHash } = require("node:crypto");
-const { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } = require("node:fs");
+const {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join, resolve, sep } = require("node:path");
 const {
@@ -31,6 +39,7 @@ async function verifyPackagedDesktopContents(context) {
     verifyPackagedDesktopRelease(packagedManifest, context.packager.appInfo, identity);
   }
   const desktop = readPackagedDesktopPolicy(archivePath);
+  verifyAppUpdateConfig(resources, desktop);
   await timePhase("package.after-pack.extract-import-check", async () =>
     verifyPackagedRuntimeImports(archivePath),
   );
@@ -67,6 +76,7 @@ async function verifyPackagedDesktopContents(context) {
       executableSha256: join("Contents", "MacOS", "Opensteer Passwords"),
       workerSha256: join("Contents", "Helpers", "Opensteer Passwords Import"),
     });
+    allowOwnerWrites(join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`));
   }
 }
 
@@ -133,6 +143,8 @@ function verifyDesktopApplicationIdentity(desktop, appInfo, protocols) {
 }
 
 module.exports = verifyPackagedDesktop;
+module.exports.verifyAppUpdateConfig = verifyAppUpdateConfig;
+module.exports.allowOwnerWrites = allowOwnerWrites;
 module.exports.readPackagedDesktopPolicy = readPackagedDesktopPolicy;
 module.exports.verifyDesktopApplicationIdentity = verifyDesktopApplicationIdentity;
 module.exports.verifyPackagedRuntimeImports = verifyPackagedRuntimeImports;
@@ -182,27 +194,24 @@ function readPackagedDesktopPolicy(archivePath) {
   const desktopManifest = asarFile(archivePath, "dist/desktop-release.json");
   const desktop = exactObject(
     desktopManifest,
-    ["accountUrl", "application", "capabilities", "oauth", "schemaVersion"],
-    // Only a build that belongs to a managed portal carries one; a self-hosted
-    // build's manifest stays exactly as it was.
-    ["portalUrl"],
+    ["application", "capabilities", "oauth", "schemaVersion"],
+    // Service origins are present only when the build offers those services;
+    // only Mac arm64 release builds carry updates.
+    ["accountUrl", "portalUrl", "updates"],
   );
-  if (typeof desktop.accountUrl !== "string") {
-    throw new Error("Packaged Desktop manifest is invalid.");
-  }
-  const account = new URL(desktop.accountUrl);
   if (
     desktop.schemaVersion !== 6 ||
-    account.protocol !== "https:" ||
-    account.username ||
-    account.password ||
-    account.pathname !== "/" ||
-    account.search ||
-    account.hash ||
+    !bareHttpsOriginOrAbsent(desktop.accountUrl) ||
+    (desktop.capabilities?.connect === true
+      ? typeof desktop.accountUrl !== "string"
+      : desktop.accountUrl !== undefined) ||
     !exactApplication(desktop.application) ||
     !exactCapabilities(desktop.capabilities) ||
     !exactOAuthIdentity(desktop.oauth) ||
-    !bareHttpsOriginOrAbsent(desktop.portalUrl)
+    !bareHttpsOriginOrAbsent(desktop.portalUrl) ||
+    !updateFeedOrAbsent(desktop.updates) ||
+    (desktop.updates &&
+      desktop.updates.channel !== (desktop.application.channel === "stable" ? "latest" : "insider"))
   ) {
     throw new Error("Packaged Desktop manifest is invalid.");
   }
@@ -228,12 +237,56 @@ function bareHttpsOriginOrAbsent(value) {
   );
 }
 
-function exactApplication(value) {
+function updateFeedOrAbsent(value) {
+  if (value === undefined) return true;
   return (
     value &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).sort()) === JSON.stringify(["channel", "id", "name"]) &&
+    Object.keys(value).every((key) => ["owner", "repo", "channel", "host"].includes(key)) &&
+    value.owner === "steerlabs" &&
+    value.repo === "opensteer" &&
+    ["latest", "insider"].includes(value.channel) &&
+    (value.host === undefined ||
+      (typeof value.host === "string" && /^[a-zA-Z0-9.-]+(?::[0-9]+)?$/u.test(value.host)))
+  );
+}
+
+function verifyAppUpdateConfig(resources, desktop) {
+  const file = join(resources, "app-update.yml");
+  if (!desktop.updates) {
+    if (existsSync(file)) throw new Error("Unexpected Desktop update configuration.");
+    return;
+  }
+  const updates = desktop.updates;
+  if (updates.channel !== (desktop.application.channel === "stable" ? "latest" : "insider"))
+    throw new Error("Desktop update configuration channel mismatch.");
+  const expected = {
+    provider: "github",
+    owner: updates.owner,
+    repo: updates.repo,
+    ...(updates.host ? { host: updates.host } : {}),
+    updaterCacheDirName:
+      updates.channel === "latest" ? "opensteer-updater" : "opensteer-beta-updater",
+  };
+  const actual = require("yaml").parse(readFileSync(file, "utf8"));
+  if (
+    !actual ||
+    Object.keys(actual).length !== Object.keys(expected).length ||
+    Object.entries(expected).some(([key, value]) => actual[key] !== value)
+  )
+    throw new Error("Packaged Desktop update configuration does not match the policy.");
+}
+
+function exactApplication(value) {
+  const keys = ["channel", "id", "name"];
+  if (value?.stage !== undefined) keys.push("stage");
+  return (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    JSON.stringify(Object.keys(value).sort()) === JSON.stringify(keys.sort()) &&
+    (value.stage === undefined || value.stage === "alpha") &&
     ["beta", "stable"].includes(value.channel) &&
     /^[a-z][a-z0-9]*(?:\.[a-z0-9][a-z0-9-]*)+$/u.test(value.id) &&
     typeof value.name === "string" &&
@@ -277,6 +330,22 @@ function validNativeCallback(value) {
     !url.hash &&
     canonical === value
   );
+}
+
+/**
+ * Release inputs are staged read-only. Squirrel.Mac clears the quarantine
+ * attribute from every file of a downloaded update and later replaces the
+ * installed bundle, and both fail on entries their owner cannot write. Code
+ * signatures seal contents, not permission bits, so this runs before signing
+ * without touching any verified digest.
+ */
+function allowOwnerWrites(path) {
+  const metadata = lstatSync(path);
+  if (metadata.isSymbolicLink()) return;
+  if ((metadata.mode & 0o200) === 0) chmodSync(path, (metadata.mode & 0o7777) | 0o200);
+  if (metadata.isDirectory()) {
+    for (const name of readdirSync(path)) allowOwnerWrites(join(path, name));
+  }
 }
 
 function resourcesDirectory(context) {
@@ -614,7 +683,7 @@ function exactCapabilities(value) {
     !Array.isArray(value) &&
     JSON.stringify(Object.keys(value).sort()) ===
       JSON.stringify(["connect", "localAgents", "personal", "portableFs"].sort()) &&
-    value.connect === true &&
+    typeof value.connect === "boolean" &&
     value.personal === true &&
     typeof value.localAgents === "boolean" &&
     typeof value.portableFs === "boolean"

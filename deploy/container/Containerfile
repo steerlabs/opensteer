@@ -59,7 +59,7 @@ ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 WORKDIR /source
 COPY package.json ./package.json
-COPY scripts/release-identity.cjs ./scripts/release-identity.cjs
+COPY scripts/release-identity.cjs scripts/release-version.cjs ./scripts/
 RUN OPENSTEER_RELEASE_VERSION="${OPENSTEER_RELEASE_VERSION}" \
     OPENSTEER_SOURCE_REVISION="${OPENSTEER_SOURCE_REVISION}" \
     node -e \

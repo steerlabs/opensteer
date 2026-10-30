@@ -62,6 +62,7 @@ export function desktopBrowserAppFocusShortcut(input: DesktopForwardedKey): bool
  * page first refusal.
  */
 export function createDesktopApplicationMenu(options: {
+  readonly restartToUpdate?: () => void;
   readonly workspaceContents: (window: BaseWindow) => WebContents | null;
   readonly browserKey?: (key: DesktopForwardedKey) => void;
 }): Menu {
@@ -100,7 +101,34 @@ export function createDesktopApplicationMenu(options: {
       }),
   });
   return Menu.buildFromTemplate([
-    ...(mac ? [{ role: "appMenu" as const }] : []),
+    ...(mac
+      ? [
+          {
+            role: "appMenu" as const,
+            ...(options.restartToUpdate
+              ? {
+                  submenu: [
+                    { role: "about" as const },
+                    {
+                      id: "restart-to-update",
+                      label: "Restart to Update",
+                      visible: false,
+                      click: () => options.restartToUpdate?.(),
+                    },
+                    { type: "separator" as const },
+                    { role: "services" as const },
+                    { type: "separator" as const },
+                    { role: "hide" as const },
+                    { role: "hideOthers" as const },
+                    { role: "unhide" as const },
+                    { type: "separator" as const },
+                    { role: "quit" as const },
+                  ],
+                }
+              : {}),
+          },
+        ]
+      : []),
     {
       label: "File",
       submenu: [

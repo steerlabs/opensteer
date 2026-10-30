@@ -22,6 +22,8 @@ export class DesktopShutdown {
   readonly #steps: DesktopShutdownStep[] = [];
   readonly #startup = new AbortController();
   #stopping = false;
+  #installing = false;
+  #quitInstaller: (() => void) | undefined;
 
   constructor(options: {
     readonly application: Pick<App, "on" | "exit">;
@@ -31,6 +33,7 @@ export class DesktopShutdown {
     this.#application = options.application;
     this.#log = options.log;
     options.application.on("before-quit", (event) => {
+      if (this.#installing) return;
       event.preventDefault();
       this.request("before-quit");
     });
@@ -56,7 +59,15 @@ export class DesktopShutdown {
     this.#steps.push(step);
   }
 
-  request(reason: string): void {
+  setUpdateInstaller(install: (() => void) | undefined): void {
+    this.#quitInstaller = install;
+  }
+
+  requestUpdate(install: () => void): void {
+    this.request("restart-to-update", install);
+  }
+
+  request(reason: string, install = this.#quitInstaller): void {
     if (this.#stopping) {
       this.#log("desktop.shutdown.request-repeated", { reason });
       return;
@@ -83,8 +94,21 @@ export class DesktopShutdown {
           failed = true;
         }
       }
-      clearTimeout(watchdog);
       this.#log("desktop.shutdown.finished", { failed, elapsedMs: performance.now() - started });
+      if (install) {
+        // Electron closes windows before before-quit. The caller destroys them
+        // after cleanup; allow Squirrel's subsequent app.quit through unchanged.
+        this.#installing = true;
+        try {
+          install();
+          // Keep the original deadline armed if Squirrel never terminates us.
+          return;
+        } catch {
+          this.#log("desktop.shutdown.update-handoff-failed", {});
+          failed = true;
+        }
+      }
+      clearTimeout(watchdog);
       this.#application.exit(failed ? 1 : 0);
     })();
   }

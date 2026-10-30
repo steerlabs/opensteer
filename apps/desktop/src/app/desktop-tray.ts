@@ -11,6 +11,7 @@ export class DesktopTrayService {
   readonly #runner: Pick<LocalRunnerService, "enrolledRunners" | "subscribe">;
   #refreshTail: Promise<void> = Promise.resolve();
   #tray: Tray | null = null;
+  #restartToUpdate: (() => void) | null = null;
   #unsubscribeCatalog: (() => void) | null = null;
   #unsubscribeRunner: (() => void) | null = null;
 
@@ -43,6 +44,11 @@ export class DesktopTrayService {
     this.#unsubscribeCatalog = this.#catalog.subscribe(() => this.#scheduleRefresh());
     this.#unsubscribeRunner = this.#runner.subscribe(() => this.#scheduleRefresh());
     await this.#refresh();
+  }
+
+  setRestartToUpdate(restart: (() => void) | undefined): void {
+    this.#restartToUpdate = restart ?? null;
+    this.#scheduleRefresh();
   }
 
   dispose(): void {
@@ -92,6 +98,9 @@ export class DesktopTrayService {
           ? ([{ type: "separator" }, ...statuses] satisfies MenuItemConstructorOptions[])
           : []),
         { type: "separator" },
+        ...(this.#restartToUpdate
+          ? [{ click: this.#restartToUpdate, label: "Restart to Update" }]
+          : []),
         { click: this.#quit, label: "Quit Opensteer" },
       ]),
     );

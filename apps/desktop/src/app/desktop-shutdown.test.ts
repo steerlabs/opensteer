@@ -117,3 +117,58 @@ it("aggregate disposal errors retain every cause, continue cleanup, and repeated
   expect(application.exit).toHaveBeenCalledExactlyOnceWith(1);
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each([false, true])(
+  "update shutdown cleans up before handoff and bounds Squirrel termination (throws=%s)",
+  async (throws) => {
+    const { shutdown, application } = fixture();
+    const sequence: string[] = [];
+    shutdown.add({
+      component: "personal",
+      step: "stop",
+      order: 10,
+      timeoutMs: 1000,
+      stop: () => {
+        sequence.push("children-stopped");
+      },
+    });
+    const install = () => {
+      sequence.push("windows-destroyed-and-install");
+      application.emit("before-quit", { preventDefault: prevented });
+      if (throws) throw new Error("private URL must not be logged");
+    };
+    const prevented = vi.fn();
+    shutdown.requestUpdate(install);
+    shutdown.request("repeated");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sequence).toEqual(["children-stopped", "windows-destroyed-and-install"]);
+    expect(prevented).not.toHaveBeenCalled();
+    if (!throws) expect(application.exit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(desktopShutdownTimeoutMs);
+    expect(application.exit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+it("installs a ready update on ordinary quit only after cleanup", async () => {
+  const { shutdown, application } = fixture();
+  const calls: string[] = [];
+  shutdown.add({
+    component: "child",
+    step: "stop",
+    order: 1,
+    timeoutMs: 100,
+    stop: () => {
+      calls.push("stop");
+    },
+  });
+  shutdown.setUpdateInstaller(() => {
+    calls.push("install");
+  });
+  application.emit("before-quit", { preventDefault: vi.fn() });
+  await vi.advanceTimersByTimeAsync(1);
+  expect(calls).toEqual(["stop", "install"]);
+  expect(application.exit).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(desktopShutdownTimeoutMs);
+  expect(application.exit).toHaveBeenCalledWith(1);
+});

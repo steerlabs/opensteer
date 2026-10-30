@@ -1,14 +1,12 @@
-import { createHash } from "node:crypto";
-import { copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
   agentPhoneBuildToolsVersion,
   agentPhoneReceiptName,
-  agentPhoneReleaseReceiptSchema,
+  writeAgentPhoneReleaseReceipt,
   agentPhoneReleaseSignerSha256,
   androidBuildTools,
-  inspectAgentPhoneApk,
   verifyAgentPhoneRelease,
 } from "./release-agent-phone.cjs";
 import { runBounded, type CommandOptions } from "./command-runner.js";
@@ -145,33 +143,11 @@ export async function buildAgentPhoneRelease(
       env,
     },
   );
-  const manifestBytes = await readFile(path.join(context.artifactDirectory, "agent-phone.json"));
-  const apk = inspectAgentPhoneApk(
-    path.join(context.artifactDirectory, "opensteer-agent-phone.apk"),
+  return writeAgentPhoneReleaseReceipt(
+    context.artifactDirectory,
+    context.identity,
     androidBuildTools(env),
-    "release",
   );
-  if (apk.versionName !== context.identity.version)
-    throw new Error("Agent Phone APK version differs from frozen source.");
-  const receipt = agentPhoneReleaseReceiptSchema.parse({
-    schemaVersion: 1,
-    ...context.identity,
-    apkSha256: apk.apkSha256,
-    apkSize: apk.apkSize,
-    manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
-    signingCertSha256: agentPhoneReleaseSignerSha256,
-  });
-  const bytes = Buffer.from(JSON.stringify(receipt, null, 2) + "\n");
-  const receiptPath = path.join(context.artifactDirectory, agentPhoneReceiptName);
-  await writeFile(`${receiptPath}.partial`, bytes, { mode: 0o600 });
-  await rename(`${receiptPath}.partial`, receiptPath);
-  const receiptSha256 = createHash("sha256").update(bytes).digest("hex");
-  verifyAgentPhoneRelease(context.artifactDirectory, receiptPath, {
-    ...context.identity,
-    receiptSha256,
-    buildTools: androidBuildTools(env),
-  });
-  return receiptSha256;
 }
 
 export async function stageAgentPhoneRelease(

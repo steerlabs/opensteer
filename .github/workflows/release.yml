@@ -1,0 +1,268 @@
+name: Desktop release
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "AGENTS.md"
+      - "CHANGELOG*.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/dependabot.yml"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/agent-context-budget.yml"
+      - ".github/actions/ci-browser/**"
+      - ".github/actions/ci-changes/**"
+      - ".github/actions/ci-setup/**"
+      - ".github/scripts/ci-*.mjs"
+      - ".github/scripts/ci-*.json"
+      - ".github/scripts/fork-safety.mjs"
+      - ".github/scripts/fork-safety.test.mjs"
+      - ".github/scripts/local-check.mjs"
+      - ".github/scripts/local-check.test.mjs"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Insider or stable promotion
+        type: choice
+        options: [insider, stable]
+        default: insider
+        required: true
+      insider_tag:
+        description: Published insider tag to rebuild as stable
+        type: string
+      publish:
+        description: Publish insider (false stops at draft; stable uses approval)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: release-desktop-${{ inputs.channel || 'insider' }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  preflight:
+    if: github.repository == 'steerlabs/opensteer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      channel: ${{ steps.resolve.outputs.channel }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: package.json
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+          INSIDER_TAG: ${{ inputs.insider_tag }}
+          EVENT: ${{ github.event_name }}
+        run: node .github/scripts/release-plan.mjs preflight
+  discover:
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      reuse: ${{ steps.discover.outputs.reuse }}
+      skip: ${{ steps.discover.outputs.skip }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: package.json
+      - id: discover
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.preflight.outputs.sha }}
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: node .github/scripts/release-plan.mjs discover
+  build:
+    needs: [preflight, discover]
+    if: needs.discover.outputs.skip == 'false' && needs.discover.outputs.reuse == 'false'
+    runs-on: macos-15
+    environment: release
+    timeout-minutes: 90
+    env:
+      OPENSTEER_DESKTOP_RELEASE_CHANNEL: ${{ needs.preflight.outputs.channel }}
+      OPENSTEER_DESKTOP_TARGET_ARCH: arm64
+      OPENSTEER_RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+      OPENSTEER_SOURCE_REVISION: ${{ needs.preflight.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: package.json
+          cache: pnpm
+      - uses: actions/setup-java@816722acf8fd27c9d1e9ae6ee6085da07e0d44c1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@035682743ab223ec9c6169af09811dff8247e520
+      - run: |
+          test "$(uname -m)" = arm64
+          pnpm install --frozen-lockfile
+          node -e 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.env.OPENSTEER_SOURCE_REVISION, process.env.OPENSTEER_RELEASE_VERSION)'
+      - name: Build signed Agent Phone
+        env:
+          KEYSTORE_BASE64: ${{ secrets.OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64 }}
+          OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD: ${{ secrets.OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD }}
+          OPENSTEER_AGENT_PHONE_KEY_PASSWORD: ${{ secrets.OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD }}
+          OPENSTEER_AGENT_PHONE_KEY_ALIAS: ${{ vars.OPENSTEER_AGENT_PHONE_KEY_ALIAS }}
+          OPENSTEER_AGENT_PHONE_KEYSTORE: ${{ runner.temp }}/release-keys/phone.keystore
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$RUNNER_TEMP/release-keys"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$OPENSTEER_AGENT_PHONE_KEYSTORE"
+          pnpm build:agent-phone --release
+      - name: Sign, notarize and staple desktop
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          PASSWORDS_PROFILE_BASE64: ${{ secrets.MACOS_PASSWORDS_PROVISIONING_PROFILE_BASE64 }}
+          OPENSTEER_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          OPENSTEER_PASSWORDS_PROVISIONING_PROFILE: ${{ runner.temp }}/release-keys/passwords.provisionprofile
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ runner.temp }}/release-keys/AuthKey.p8
+          CSC_LINK: ${{ runner.temp }}/release-keys/certificate.p12
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/release-keys/certificate.p12"
+          printf '%s' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY"
+          printf '%s' "$PASSWORDS_PROFILE_BASE64" | base64 --decode > "$OPENSTEER_PASSWORDS_PROVISIONING_PROFILE"
+          # Decrypt via environment, never a password argument. Import the PEM
+          # into an ephemeral keychain; its empty password is not a credential.
+          /usr/bin/openssl pkcs12 -in "$RUNNER_TEMP/release-keys/certificate.p12" -nodes \
+            -passin env:CSC_KEY_PASSWORD -out "$RUNNER_TEMP/release-keys/signing.pem"
+          keychain="$RUNNER_TEMP/release-keys/signing.keychain-db"
+          security create-keychain -p '' "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p '' "$keychain"
+          security import "$RUNNER_TEMP/release-keys/signing.pem" -k "$keychain" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k '' "$keychain" >/dev/null
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)".*/\1/p')
+          echo "::add-mask::$identity"
+          export OPENSTEER_RELEASE_SIGNING_IDENTITY="$identity" CSC_KEYCHAIN="$keychain"
+          pnpm desktop:build-release --out "$RUNNER_TEMP/macos-build"
+      - name: Verify and prepare exact release bytes
+        run: |
+          set -euo pipefail
+          app="$GITHUB_WORKSPACE/apps/desktop/release/mac-arm64/Opensteer.app"
+          if [[ "$OPENSTEER_DESKTOP_RELEASE_CHANNEL" == beta ]]; then
+            app="$GITHUB_WORKSPACE/apps/desktop/release/beta/mac-arm64/Opensteer Beta.app"
+          fi
+          xcrun stapler validate "$app"
+          spctl -a -vv -t exec "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/Opensteer.zip"
+          pnpm desktop:public-release prepare --channel "$OPENSTEER_DESKTOP_RELEASE_CHANNEL" \
+            --app-zip "$RUNNER_TEMP/Opensteer.zip" --version "$OPENSTEER_RELEASE_VERSION" \
+            --source-sha "$OPENSTEER_SOURCE_REVISION" --out "$RUNNER_TEMP/prepared"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-${{ needs.preflight.outputs.channel }}
+          path: ${{ runner.temp }}/prepared/
+          if-no-files-found: error
+      - name: Delete signing material
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/release-keys/signing.keychain-db"
+          trap 'rm -rf "$RUNNER_TEMP/release-keys"' EXIT
+          if [[ -f "$keychain" ]]; then security delete-keychain "$keychain"; fi
+          rm -rf "$RUNNER_TEMP/release-keys"
+  draft:
+    needs: [preflight, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: package.json
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: desktop-${{ needs.preflight.outputs.channel }}
+          path: ${{ runner.temp }}/prepared
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm desktop:public-release draft --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
+  publish-insider:
+    needs: [preflight, discover, draft]
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: package.json
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG"
+  publish-stable:
+    needs: [preflight, discover, draft]
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'stable' && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    runs-on: ubuntu-latest
+    environment: publish
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: package.json
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG"

@@ -28,8 +28,10 @@ const environment = {
   // Resource staging selects the source policy internally; contributors supply
   // runtime inputs, not a distribution channel or release identity.
   OPENSTEER_DESKTOP_RELEASE_CHANNEL: "stable",
-  OPENSTEER_PERSONAL_RUNTIME_OUTPUT: path.join(scratch, "runtime"),
-  OPENSTEER_PERSONAL_RUNTIME_SOURCE: path.join(scratch, "runtime"),
+  OPENSTEER_PERSONAL_RUNTIME_OUTPUT:
+    process.env.OPENSTEER_PERSONAL_RUNTIME_OUTPUT ?? path.join(scratch, "runtime"),
+  OPENSTEER_PERSONAL_RUNTIME_SOURCE:
+    process.env.OPENSTEER_PERSONAL_RUNTIME_OUTPUT ?? path.join(scratch, "runtime"),
   CSC_IDENTITY_AUTO_DISCOVERY: "false",
 };
 async function pnpm(...args: string[]): Promise<void> {
@@ -61,6 +63,7 @@ try {
     process.arch === "arm64" ? "--arm64" : "--x64",
     "--config",
     "electron-builder.yml",
+    "-c.directories.output=release/contributor",
     "-c.mac.identity=-",
     "-c.mac.notarize=false",
     "-c.mac.hardenedRuntime=false",

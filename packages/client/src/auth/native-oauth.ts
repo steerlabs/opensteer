@@ -250,7 +250,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
         : this.#accountOrigin === null
           ? {
               available: false,
-              detail: "Opensteer Account sign-in is disabled in this source build.",
+              detail: "Opensteer Account sign-in isn't available yet.",
               identity: null,
               status: "signed-out",
             }
@@ -315,7 +315,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   async beginAccountReauthorization(): Promise<DesktopAccountAuthState> {
     await this.#ensureStorageReady();
     if (this.#accountOrigin === null) {
-      throw new Error("Opensteer Account sign-in is disabled in this source build.");
+      throw new Error("Opensteer Account sign-in isn't available yet.");
     }
     const session = this.#accountSession;
     if (!session) {
@@ -333,7 +333,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   ): Promise<DesktopAccountAuthState> {
     await this.#ensureStorageReady();
     if (this.#accountOrigin === null) {
-      throw new Error("Opensteer Account sign-in is disabled in this source build.");
+      throw new Error("Opensteer Account sign-in isn't available yet.");
     }
     this.#accountDetail = null;
     this.#removePending((flow) => flow.kind === "account");

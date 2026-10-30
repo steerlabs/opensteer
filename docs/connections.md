@@ -6,6 +6,11 @@
 arrives through injected ports. See [Host boundaries](host-boundaries.md) for
 credential authority and [Mobile](mobile.md) for the phone's implementations.
 
+The public stable Mac app has no Opensteer Account issuer. Account sign-in, directory
+discovery, adoption and Connect are unavailable; Private network HTTPS access and
+one-use pairing codes continue to work without an Account. Beta retains its staging
+Account and Connect. See [Stable channel without an Account](releases.md#stable-channel-without-an-account).
+
 ## Route selection and lifetime
 
 [`connection-resolver.ts`](../packages/client/src/connections/connection-resolver.ts)

@@ -209,6 +209,7 @@ function AccountListingRow({ view }: { readonly view: SettingsView }) {
     ? (deploymentAccess?.personalAccountLink ?? null)
     : null;
   const blockedReason = deploymentMutationsBlockedReason(deploymentAccess);
+  if (desktopBridge && deploymentAccess?.account.available === false) return null;
   if (!personalLink || !supported) {
     // A server's Account listing is its operator's business, not a reader's.
     return view.kind === "personal" ? (

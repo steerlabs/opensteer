@@ -55,6 +55,8 @@ export function AddComputerDialog({
   readonly onClose: () => void;
   readonly snapshot: ShellContext["snapshot"];
 }) {
+  const { deploymentAccess, desktopBridge } = useShell();
+  const accountAvailable = !desktopBridge || deploymentAccess?.account.available !== false;
   const adding = localExecutionAction?.kind === "add";
   const personal = deploymentKind === "personal";
   const reachable = usePersonalReachable({ hostedOnThisComputer, personal });
@@ -115,8 +117,8 @@ export function AddComputerDialog({
             </li>
           ) : null}
           <li>
-            Install Opensteer on the other computer and sign in
-            {personal
+            Install Opensteer on the other computer{accountAvailable ? " and sign in" : ""}
+            {personal && accountAvailable
               ? ` with your Opensteer account. Then open ${homeName}.`
               : `. Then open ${deploymentName}.`}
           </li>
@@ -126,8 +128,8 @@ export function AddComputerDialog({
         </ol>
         {personal ? (
           <p className="section__hint">
-            No Opensteer account? Create a pairing code under Remote access on {homeName}, and enter
-            it on the other computer when you add {homeName} there.
+            {accountAvailable ? "No Opensteer account? " : ""}Create a pairing code under Remote
+            access on {homeName}, and enter it on the other computer when you add {homeName} there.
           </p>
         ) : null}
       </section>

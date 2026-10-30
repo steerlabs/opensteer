@@ -17,6 +17,17 @@ import {
 
 export type DesktopMode = "development" | "production" | "test";
 
+const DesktopUpdatesSchema = z.strictObject({
+  owner: z.literal("steerlabs"),
+  repo: z.literal("opensteer"),
+  channel: z.enum(["latest", "insider"]),
+  host: z
+    .string()
+    .regex(/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/u)
+    .optional(),
+});
+export type DesktopUpdates = z.infer<typeof DesktopUpdatesSchema>;
+
 export interface DesktopBrowserRuntimeConfig {
   readonly profileRoot: string;
   readonly runtimeId: string;
@@ -34,6 +45,7 @@ export interface DesktopConfiguration {
   /** Apex portal this build opens in the system browser. Null means the build
    * belongs to no portal and the app offers no such destination. */
   readonly portalUrl: URL | null;
+  readonly updates?: DesktopUpdates;
   readonly release: DesktopReleaseIdentity;
 }
 
@@ -131,8 +143,9 @@ export function readDesktopConfiguration(
   );
   const configuredHostUrl = optional(parsed.OPENSTEER_DESKTOP_HOST_URL);
   const hostUrl = configuredHostUrl ? hostPageUrl(configuredHostUrl, mode) : null;
-  const accountUrlValue =
-    packagedDesktop?.accountUrl ?? optional(parsed.OPENSTEER_DESKTOP_ACCOUNT_URL);
+  const accountUrlValue = packagedDesktop
+    ? packagedDesktop.accountUrl
+    : optional(parsed.OPENSTEER_DESKTOP_ACCOUNT_URL);
   const accountUrl = accountUrlValue
     ? serviceOrigin(accountUrlValue, mode, "Opensteer Account URL")
     : null;
@@ -261,6 +274,7 @@ export function readDesktopConfiguration(
       personal,
       portalUrl,
       release,
+      ...(packagedDesktop?.updates ? { updates: packagedDesktop.updates } : {}),
     },
   };
 }
@@ -310,25 +324,41 @@ const DesktopOAuthIdentitySchema = z
     { message: "Account and Host OAuth callbacks must use the same application scheme" },
   );
 
+const PackagedDesktopReleaseBaseSchema = z.strictObject({
+  application: z.strictObject({
+    channel: z.enum(["beta", "stable"]),
+    id: z.string().regex(/^[a-z][a-z0-9]*(?:\.[a-z0-9][a-z0-9-]*)+$/u),
+    name: z.string().trim().min(1).max(80),
+    stage: z.literal("alpha").optional(),
+  }),
+  capabilities: z.strictObject({
+    connect: z.boolean(),
+    personal: z.literal(true),
+    localAgents: z.boolean(),
+    portableFs: z.boolean(),
+  }),
+  oauth: DesktopOAuthIdentitySchema,
+  /** Present only for a build that belongs to a managed portal. */
+  portalUrl: z.url().optional(),
+  updates: DesktopUpdatesSchema.optional(),
+  schemaVersion: z.literal(6),
+});
+
 const PackagedDesktopReleaseSchema = z
-  .strictObject({
-    accountUrl: z.url(),
-    application: z.strictObject({
-      channel: z.enum(["beta", "stable"]),
-      id: z.string().regex(/^[a-z][a-z0-9]*(?:\.[a-z0-9][a-z0-9-]*)+$/u),
-      name: z.string().trim().min(1).max(80),
+  .union([
+    PackagedDesktopReleaseBaseSchema.extend({
+      accountUrl: z.url(),
+      capabilities: PackagedDesktopReleaseBaseSchema.shape.capabilities.extend({
+        connect: z.literal(true),
+      }),
     }),
-    capabilities: z.strictObject({
-      connect: z.literal(true),
-      personal: z.literal(true),
-      localAgents: z.boolean(),
-      portableFs: z.boolean(),
+    PackagedDesktopReleaseBaseSchema.extend({
+      accountUrl: z.never().optional(),
+      capabilities: PackagedDesktopReleaseBaseSchema.shape.capabilities.extend({
+        connect: z.literal(false),
+      }),
     }),
-    oauth: DesktopOAuthIdentitySchema,
-    /** Present only for a build that belongs to a managed portal. */
-    portalUrl: z.url().optional(),
-    schemaVersion: z.literal(6),
-  })
+  ])
   // RFC 8252: a native client's redirect scheme must be a name it actually owns
   // with the operating system. Asserting it *is* the application id — rather
   // than merely that it is private-use — is what makes a squattable generic
@@ -387,16 +417,20 @@ function readPackagedPortableFsRelease(
 }
 
 function readPackagedDesktopRelease(manifestPath: string): {
-  readonly accountUrl: string;
+  readonly updates?: DesktopUpdates;
+  readonly accountUrl: string | null;
   readonly localAgents: boolean;
   readonly portableFs: boolean;
   readonly portalUrl: string | undefined;
   readonly release: DesktopReleaseIdentity;
 } {
   const manifest = readEmbeddedDesktopRelease(manifestPath);
-  const accountUrl = serviceOrigin(manifest.accountUrl, "production", "Opensteer Account URL");
+  const accountUrl = manifest.accountUrl
+    ? serviceOrigin(manifest.accountUrl, "production", "Opensteer Account URL")
+    : null;
   return {
-    accountUrl: accountUrl.origin,
+    ...(manifest.updates ? { updates: manifest.updates } : {}),
+    accountUrl: accountUrl?.origin ?? null,
     localAgents: manifest.capabilities.localAgents,
     portableFs: manifest.capabilities.portableFs,
     portalUrl: manifest.portalUrl

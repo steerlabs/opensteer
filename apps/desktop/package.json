@@ -88,7 +88,8 @@
     "which": "2.0.2",
     "ws": "catalog:",
     "zod": "catalog:",
-    "zod-to-json-schema": "3.25.2"
+    "zod-to-json-schema": "3.25.2",
+    "electron-updater": "6.8.11"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",

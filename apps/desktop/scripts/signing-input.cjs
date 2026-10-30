@@ -29,8 +29,25 @@ function resolveSigningMode({ signing, distributable = false } = {}) {
 }
 function readSigningMode(environment = process.env) {
   const file = environment.OPENSTEER_DESKTOP_SIGNING_FILE;
+  const identity = environment.OPENSTEER_RELEASE_SIGNING_IDENTITY;
+  const teamId = environment.OPENSTEER_APPLE_TEAM_ID;
+  const keychain = environment.CSC_KEYCHAIN;
+  const hasEnvironmentInput = Boolean(identity || keychain || (!file && teamId));
+  const fromFile = file ? parseSigningInput(JSON.parse(readFileSync(file, "utf8"))) : undefined;
+  if (
+    fromFile &&
+    [
+      [identity, fromFile.identity],
+      [teamId, fromFile.teamId],
+      [keychain, fromFile.keychain],
+    ].some(([supplied, expected]) => supplied !== undefined && supplied !== expected)
+  )
+    throw Error("Environment signing inputs disagree with the signing file.");
   const mode = resolveSigningMode({
-    ...(file ? { signing: JSON.parse(readFileSync(file, "utf8")) } : {}),
+    ...(fromFile ? { signing: fromFile } : {}),
+    ...(!file && hasEnvironmentInput
+      ? { signing: { identity, teamId, ...(keychain ? { keychain } : {}) } }
+      : {}),
     distributable: environment.OPENSTEER_DESKTOP_RELEASE === "1",
   });
   if (mode.mode === "signed" && mode.signing.keychain && !statSync(mode.signing.keychain).isFile())
