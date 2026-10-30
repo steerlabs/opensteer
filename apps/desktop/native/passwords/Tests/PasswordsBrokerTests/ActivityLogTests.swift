@@ -4,7 +4,7 @@ import XCTest
 
 @testable import PasswordsBrokerKit
 
-/// Section 12 of FAILURES.md.
+/// Activity privacy and bounded-history regression coverage.
 final class ActivityLogTests: XCTestCase {
   private var directory: URL!
 

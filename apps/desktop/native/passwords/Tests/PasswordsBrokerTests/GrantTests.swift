@@ -3,7 +3,7 @@ import XCTest
 
 @testable import PasswordsBrokerKit
 
-/// Section 17 of FAILURES.md: Allow remembers an account for a Workspace and
+/// Grant authority: Allow remembers an account for a Workspace and
 /// site, and the next sign-in there needs no one.
 @MainActor
 final class GrantTests: BrokerTestCase {
