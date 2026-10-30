@@ -3,7 +3,7 @@ import { startDesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
 import { DesktopWebLinks, routeDesktopUrl } from "./app/web-links.js";
 import { DesktopPasskeyRequests } from "./passkeys/passkey-requests.js";
-import type { NativePasskeys } from "./passkeys/native-passkeys.js";
+import { createMacosNativePasskeys } from "./passkeys/macos-native-passkeys.js";
 import { DesktopDownloads } from "./downloads/desktop-downloads.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { DesktopBrowserPresentationManager } from "./browser/browser-presentation.js";
@@ -425,6 +425,7 @@ async function runDesktop(
       logsDirectory: path.join(loaded.config.dataDirectory, "logs"),
       supervisorExecutable: processSupervisorExecutable,
     }),
+    passkeys: loaded.config.personal.passkeys === true,
     portalOrigin: loaded.config.portalUrl,
     releaseDirectory: loaded.config.personal.releaseDirectory,
     userEnvironment: personalUserEnvironment,
@@ -529,10 +530,7 @@ async function runDesktop(
     projection: accessProjection,
     sessions: hostSessions,
   });
-  const nativePasskeys: NativePasskeys = {
-    available: () => false,
-    perform: async () => ({ kind: "refused", error: "NotAllowedError" }),
-  };
+  const nativePasskeys = createMacosNativePasskeys();
   const browserPresentation = new DesktopBrowserPresentationManager({
     transport: hostTransport,
     glassPreload: path.join(import.meta.dirname, "glass-preload.cjs"),

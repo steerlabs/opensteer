@@ -67,6 +67,7 @@ const cleanups: Array<() => Promise<void>> = [];
  */
 function runnerTarget(options: {
   readonly navigationVersion?: boolean;
+  readonly passkeysEnabled?: boolean;
   readonly passkeys?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
@@ -3623,6 +3624,7 @@ const exportedSnapshot = {
 };
 
 function freshService(options: {
+  readonly passkeysEnabled?: boolean;
   readonly passkeys?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
@@ -3635,6 +3637,7 @@ function freshService(options: {
   readonly runtime: { readonly url: URL };
 }): BrowserService {
   const service = new BrowserService({
+    passkeys: options.passkeysEnabled === true,
     ...profileStateOptions,
     connectTimeoutMs: 2_000,
     ...(options.actorMetadataTimeoutMs === undefined
@@ -4845,7 +4848,13 @@ it.each([
       const ownerId = createId("user"),
         workspaceId = createId("workspace");
       const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
-      const service = freshService({ keys, runtime, repository, passkeys: advertised });
+      const service = freshService({
+        keys,
+        runtime,
+        repository,
+        passkeys: advertised,
+        passkeysEnabled: flag === "1",
+      });
       const opened = await service.openAgentSession({
         ownerId,
         workspaceId,
@@ -4952,7 +4961,13 @@ it("runs the next control socket command after a passkey authorization deadline"
   const ownerId = createId("user"),
     workspaceId = createId("workspace");
   const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
-  const service = freshService({ keys, runtime, repository, passkeys: true });
+  const service = freshService({
+    keys,
+    runtime,
+    repository,
+    passkeys: true,
+    passkeysEnabled: true,
+  });
   const opened = await service.openAgentSession({
     ownerId,
     workspaceId,

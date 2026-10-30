@@ -74,6 +74,7 @@
     "@opensteer/browser-runtime-core": "workspace:*",
     "@opensteer/client": "workspace:*",
     "@opensteer/control-plane-protocol": "workspace:*",
+    "@opensteer/config": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
     "@opensteer/integration-catalog": "workspace:*",

@@ -29,6 +29,7 @@ export const JOURNEY_NAMES = [
   "launch",
   "remote-input",
   "native-browser",
+  "passkeys",
   "electron",
   "live-swift",
 ] as const;

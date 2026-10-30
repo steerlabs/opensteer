@@ -303,7 +303,13 @@ it.each(["switch", "logout", "refusal", "dispose", "different-user"] as const)(
       write: async () => undefined,
       invalidate: async () => undefined,
     };
-    const controller = presentation({ store });
+    const cache = new SavedViewCache({
+      store,
+      files: new MemoryPrivateFilesystem(),
+      directory: "/private/denials",
+    });
+    const load = vi.spyOn(cache, "load");
+    const controller = new SavedViewPresentation({ cache });
     controller.select(f.s.hostIdentity.deploymentId, f.s, () => current);
     controller.attach(f.client);
     await started.promise;
@@ -325,8 +331,10 @@ it.each(["switch", "logout", "refusal", "dispose", "different-user"] as const)(
     if (reason === "different-user")
       f.publish({ user: { ...f.snapshot().user!, id: createId("user") } });
     read.resolve(f.saved);
-    await read.promise;
-    await new Promise<void>((done) => setTimeout(done, 0));
+    // The controller attached its continuation to this load first, so it has
+    // run, and declined to show the result, before this await returns.
+    expect(load).toHaveBeenCalledOnce();
+    await load.mock.results[0]!.value;
     expect(frames).not.toContain("saved");
     expect(controller.getSnapshot().home.source).not.toBe("saved");
     controller.dispose();

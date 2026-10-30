@@ -7,7 +7,11 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { journeySteps, JourneyResultSchema } from "./native-browser-journey-contract.js";
+import {
+  journeySteps,
+  passkeyJourneySteps,
+  JourneyResultSchema,
+} from "./native-browser-journey-contract.js";
 import { homedir } from "node:os";
 import { NativeSmokeArtifacts } from "./electron-native-browser-artifacts.js";
 import { watchNativeCaseProcess } from "./electron-native-browser-process.js";
@@ -19,7 +23,12 @@ assert.match(
   /VirtualMac/,
   "Refusing native input outside the VM",
 );
-const selection = { ids: new Set(Object.keys(journeySteps)), noSerial: false, args: [] };
+const passkeys = process.argv.includes("--passkeys");
+const selection = {
+  ids: new Set(Object.keys(passkeys ? passkeyJourneySteps : journeySteps)),
+  noSerial: false,
+  args: [],
+};
 const watchdogMs = z.coerce
   .number()
   .int()
@@ -125,10 +134,14 @@ try {
       .update(readFileSync(path.join(desktop, "dist/web/index.html")))
       .digest("hex"),
     requiredVisualEvidence: "owned-window CoreGraphics screenshots; no page screenshot fallback",
-    command: "pnpm test:vm -- pnpm test:native-browser-journey",
+    command: passkeys
+      ? "pnpm test:vm -- --mobile bash scripts/test-macos-journeys.sh passkeys"
+      : "pnpm test:vm -- pnpm test:native-browser-journey",
     selection: { ids: [...selection.ids], noSerial: selection.noSerial, args: selection.args },
     watchdogMs,
-    execution: "one owned Electron process tree; serial lifecycle steps",
+    execution: passkeys
+      ? "two owned Electron launches; notice-only and native-capable"
+      : "one owned Electron process tree; serial lifecycle steps",
   });
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -139,14 +152,20 @@ try {
   const outcomes: ({ id: string; childPid: number | undefined; directory: string } & Awaited<
     ReturnType<typeof watchNativeCaseProcess>
   >)[] = [];
-  for (const id of ["journey"]) {
+  for (const id of passkeys ? ["notice", "journey"] : ["journey"]) {
+    const expectedIds = passkeys
+      ? [id === "notice" ? "passkeys-notice" : "passkeys"]
+      : [...selection.ids];
     await assertScreenUnlocked();
     const caseStarted = performance.now();
     const childRun = path.join(run, "case-runs", id);
     await mkdir(path.join(childRun, "logs"), { recursive: true, mode: 0o700 });
     const child = spawn(
       electron as string,
-      [path.join(import.meta.dirname, "electron-native-browser-child.js")],
+      [
+        path.join(import.meta.dirname, "electron-native-browser-child.js"),
+        ...(passkeys ? ["--passkeys", ...(id === "notice" ? ["--passkeys-notice"] : [])] : []),
+      ],
       {
         cwd: desktop,
         env: { ...env, OPENSTEER_NATIVE_SMOKE_RUN: childRun },
@@ -427,7 +446,8 @@ try {
     }
     const result = JourneyResultSchema.parse({
       status:
-        summary.cases.length === selection.ids.size &&
+        summary.cases.length === expectedIds.length &&
+        expectedIds.every((expected) => summary.cases.some((row) => row.id === expected)) &&
         summary.cases.every((row) => row.status === "PASS")
           ? "PASS"
           : "FAIL",
@@ -453,6 +473,21 @@ try {
     assert.deepEqual(outcome.inspectionErrors, []);
     assert.equal(result.status, "PASS");
   }
+  if (passkeys) {
+    const completed = [...artifacts.results.values()];
+    assert.equal(completed.length, selection.ids.size);
+    const result = JourneyResultSchema.parse({
+      status: completed.every((row) => row.status === "PASS") ? "PASS" : "FAIL",
+      steps: completed.map((row) => ({
+        id: row.id,
+        status: row.status,
+        seconds: z.object({ seconds: z.number() }).parse(row.measurements).seconds,
+      })),
+    });
+    const final = { ...result, run, processes: outcomes };
+    artifacts.json("result.json", final);
+    await writeFile(path.join(artifactRoot, "result.json"), JSON.stringify(final, null, 2) + "\n");
+  }
 } catch (error) {
   artifacts.json("parent-failure.json", {
     error: error instanceof Error ? error.stack : String(error),
@@ -471,7 +506,7 @@ try {
     error: error instanceof Error ? error.message : String(error),
     steps:
       previous?.steps ??
-      Object.keys(journeySteps).map((id) => ({
+      [...selection.ids].map((id) => ({
         id,
         status: "FAIL",
         seconds: 0,

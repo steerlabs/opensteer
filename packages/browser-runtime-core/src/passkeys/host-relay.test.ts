@@ -17,7 +17,10 @@ it("uses only recent unambiguous browser input and accepts only the bound Host r
     const controller = new AbortController();
     const input = {
       op: "get" as const,
-      options: PublicKeyCredentialRequestOptionsJSONSchema.parse({ challenge: "AQID" }),
+      options: PublicKeyCredentialRequestOptionsJSONSchema.parse({
+        challenge: "AQID",
+        hints: ["hybrid", "security-key"],
+      }),
       origin: "https://login.example.test",
       rpId: "example.test",
       clientDataJSON: serializeClientData({
@@ -36,6 +39,7 @@ it("uses only recent unambiguous browser input and accepts only the bound Host r
     const message = sent[0] as PasskeyCeremony;
     expect(message.cause).toEqual({ person: token });
     expect(message.options.challenge).toBe("AQID");
+    expect(message.options.hints).toEqual(["hybrid", "security-key"]);
     relay.result("other-session", {
       type: "passkey.result",
       ceremonyId: message.ceremonyId,

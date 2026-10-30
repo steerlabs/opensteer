@@ -346,6 +346,7 @@ const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeyS
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
   readonly requestResponseVault: RequestResponseVault;
@@ -2911,6 +2912,7 @@ export async function createHostServer(
         return;
       }
       attachRunnerAuxiliarySocket({
+        passkeys: dependencies.passkeys,
         log: app.log,
         browserAttachPublicKeys: dependencies.browserAttachPublicKeys,
         browserRelay: dependencies.browserRelay,
@@ -2982,7 +2984,7 @@ export async function createHostServer(
           mode,
           session,
           passkeys:
-            process.env.OPENSTEER_PASSKEYS === "1" &&
+            dependencies.passkeys === true &&
             (request.query.passkeys === "native" || request.query.passkeys === "notice")
               ? request.query.passkeys
               : undefined,
@@ -3053,7 +3055,7 @@ export async function advertisedBootstrapMethods(
 export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
-    "attachments" | "authenticator" | "personalRemoteAccess"
+    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys"
   >,
 ): readonly HostCapability[] {
   return [
@@ -3065,7 +3067,7 @@ export function advertisedCapabilities(
     "iphone-apps-v1",
     "ownerViewWindows",
     "browser-target-control-v1",
-    ...(process.env.OPENSTEER_PASSKEYS === "1" ? ["browser-passkeys-v1" as const] : []),
+    ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
     "browser-capture-region-v1",
     "browser-search-suggestions-v1",
     "workspace-tab-reopen-v1",
@@ -3479,6 +3481,7 @@ function runnerMessageLane(message: Parameters<RunnerRegistry["handle"]>[1]): st
  * beside — a boot the Host has already replaced.
  */
 function attachRunnerAuxiliarySocket(options: {
+  readonly passkeys?: boolean | undefined;
   readonly log: FastifyInstance["log"];
   readonly authenticator: RunnerAuthenticator;
   readonly browserAttachPublicKeys: readonly {
@@ -3597,7 +3600,9 @@ function attachRunnerAuxiliarySocket(options: {
         dispatch.onAttach(stream);
         release();
         clearTimeout(challengeTimeout);
-        await dispatch.send(runnerAuxiliaryWelcome(stream, dispatch.leaseFields?.()));
+        await dispatch.send(
+          runnerAuxiliaryWelcome(stream, dispatch.leaseFields?.(), options.passkeys),
+        );
         outcome(true, "authenticated");
         dispatch.onWelcomed?.(stream);
         continue;
