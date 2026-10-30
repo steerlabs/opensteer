@@ -134,6 +134,8 @@ type BrowserHostIdentity = FreshHostIdentity | ProfileHostIdentity;
 interface BrowserHost {
   acceptingSessions: boolean;
   passkeys: HostRelayAuthenticator | undefined;
+  readonly passkeysEnabled: boolean;
+  holdUntilClosed: boolean;
   browser: LaunchedBrowser;
   /** Serializes every profile commit, periodic or final, against one revision chain. */
   readonly checkpoints: AsyncMutex;
@@ -426,6 +428,21 @@ export class BrowserRuntime implements NativePresentationSource {
       const sessionGeneration = ++this.generation;
       let stage = "profile-state";
       try {
+        const passkeysEnabled = claims.passkeys === 1;
+        if (host && host.passkeysEnabled !== passkeysEnabled) {
+          if (!host.acceptingSessions || host.sessions.size > 0) {
+            throw new BrowserRuntimeError(
+              "conflict",
+              "The browser profile is in use with a different passkey mode. Close its sessions and retry.",
+              { retryable: true },
+            );
+          }
+          stage = "profile-close";
+          host.holdUntilClosed = true;
+          await this.checkpointAndCloseHost(host);
+          host = undefined;
+          stage = "profile-state";
+        }
         if (!host) {
           if (this.hosts.size >= this.maxProfileHosts) {
             throw new BrowserRuntimeError("conflict", "Browser Runtime host capacity is full.");
@@ -487,6 +504,8 @@ export class BrowserRuntime implements NativePresentationSource {
           };
           host = {
             passkeys,
+            passkeysEnabled,
+            holdUntilClosed: false,
             acceptingSessions: true,
             browser,
             checkpoints: new AsyncMutex(),
@@ -959,13 +978,18 @@ export class BrowserRuntime implements NativePresentationSource {
       if (this.hosts.get(identity.key)?.generation === host.generation)
         this.hosts.delete(identity.key);
     };
-    host.browser.onClose(closed);
+    // A context close event can precede process exit. A mode change reserves the
+    // profile until close completes, even if the checkpoint deadline expires.
+    const onClose = () => {
+      if (!host.holdUntilClosed) closed();
+    };
+    host.browser.onClose(onClose);
     host.browser.offClose(host.onBrowserClose);
     try {
       await settleCleanup([() => host.router.close(), () => host.browser.close()]);
       closed();
     } finally {
-      host.browser.offClose(closed);
+      host.browser.offClose(onClose);
     }
   }
 

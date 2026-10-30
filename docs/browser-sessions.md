@@ -1568,7 +1568,10 @@ clipboard writer. Text/HTML copy and image/file paste use the existing paths.
 It is off by default. A runtime must advertise `modules.browser.passkeys: 1`,
 receive the browser auxiliary welcome's `passkeys: 1`, and hold a signed attach
 ticket with `passkeys: 1` before launching the page provider. The existing page
-policy remains in effect otherwise. No Host API epoch changes.
+policy remains in effect otherwise. A shared profile browser is reused only when
+its passkey mode matches: an idle browser is checkpointed and closed before
+relaunch, while a profile held by another session refuses the attach for retry.
+No Host API epoch changes.
 
 Viewers opt in on their control socket with `passkeys=native` or `passkeys=notice`.
 The Host projects that mode and its consumer token only to opted-in viewers;
