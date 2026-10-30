@@ -1,13 +1,13 @@
 import Foundation
 
-/// Catalog data is embedded in the executable, so app bundles need no resource bundle.
+/// Catalog data is compiled in as Swift source, so app bundles need no resource bundle.
 public enum DataContracts {
   private struct Table: Decodable, Sendable {
     let grants: [String: DataAppGrants]
     let operations: [String: [String: DataOperationContract]]
   }
   private static let table: Table = {
-    do { return try JSONDecoder().decode(Table.self, from: Data(PackageResources.contracts_json)) }
+    do { return try JSONDecoder().decode(Table.self, from: Data(ContractTable.json.utf8)) }
     catch { preconditionFailure("Invalid embedded Apple contract table: \(error)") }
   }()
   public static let grants = table.grants

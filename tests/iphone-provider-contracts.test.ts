@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { validateJsonSchema } from "../packages/integration-adapters/src/index.js";
 import { getIntegrationDefinition } from "../packages/integration-catalog/src/index.js";
@@ -24,6 +24,19 @@ function config(id: string) {
 }
 
 describe("iPhone-only provider contracts", () => {
+  it("keeps the iPhone pod's shared sources free of SwiftPM-generated accessors", async () => {
+    // CocoaPods compiles these sources without SwiftPM, so `PackageResources` does not exist there.
+    const root = new URL("../packages/apple-data/Sources/OpensteerAppleData/", import.meta.url);
+    const sources = (await readdir(root, { recursive: true })).filter((file) =>
+      file.endsWith(".swift"),
+    );
+    expect(sources.length).toBeGreaterThan(0);
+    for (const file of sources)
+      expect(await readFile(new URL(file, root), "utf8"), file).not.toMatch(
+        /PackageResources|Bundle\.module/,
+      );
+  });
+
   it("preserves older Apple installations and compiles new contracts only into the iPhone", async () => {
     for (const [id, digest] of Object.entries(baseDigests)) {
       expect(integrationDefinitionDigest(getIntegrationDefinition(id)!)).toBe(digest);
@@ -34,7 +47,14 @@ describe("iPhone-only provider contracts", () => {
         import.meta.url,
       ),
     );
+    const embedded = new URL(
+      "../packages/apple-data/Sources/OpensteerAppleData/ContractTable.generated.swift",
+      import.meta.url,
+    );
+    const checkedInEmbedded = await readFile(embedded, "utf8");
     await generateAppleDataContracts();
+    // The iPhone pod compiles this Swift copy; it must stay byte-for-byte the shared table.
+    expect(await readFile(embedded, "utf8")).toBe(checkedInEmbedded);
     const shared = await readFile(
       new URL(
         "../packages/apple-data/Sources/OpensteerAppleData/Resources/contracts.json",
@@ -42,6 +62,7 @@ describe("iPhone-only provider contracts", () => {
       ),
     );
     expect(shared).toEqual(checkedIn);
+    expect(checkedInEmbedded).toContain(`#"""\n${shared.toString()}"""#`);
     expect(createHash("sha256").update(shared).digest("hex")).toBe(
       "76a94294995d172645009f98a6f36be80841bbe7bbf95095b9fa0b1102e5f6d4",
     );
