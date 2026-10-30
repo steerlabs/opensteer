@@ -102,7 +102,7 @@ function sleeping(source, expression, seen = new Set()) {
 function fakeTimers(source, node) {
   for (let parent = node.parent; parent; parent = parent.parent) {
     if (!["Program", "BlockStatement"].includes(parent.type)) continue;
-    let fake = false;
+    let fake;
     for (const statement of parent.body) {
       const hook = statement.expression;
       if (
@@ -125,17 +125,58 @@ function fakeTimers(source, node) {
         if (member(call.callee) === "useRealTimers") fake = false;
       }
     }
-    if (fake) return true;
+    if (fake !== undefined) return fake;
   }
   return false;
 }
-function testCall(node) {
-  if (node?.type !== "CallExpression") return false;
-  let callee = node.callee;
-  while (callee?.type === "MemberExpression" || callee?.type === "CallExpression")
+function testCallee(source, node) {
+  let callee = node;
+  while (callee) {
+    if (
+      ["test", "it", "describe"].some((exported) => imported(source, callee, exported, ["vitest"]))
+    )
+      return true;
+    if (callee.type === "Identifier") return ["test", "it", "describe"].includes(callee.name);
+    if (callee.type !== "MemberExpression" && callee.type !== "CallExpression") return false;
     callee = callee.object ?? callee.callee;
-  return ["test", "it", "describe"].includes(callee?.name);
+  }
+  return false;
 }
+function testCall(source, node) {
+  return node?.type === "CallExpression" && testCallee(source, node.callee);
+}
+function promiseParameter(source, node, executor) {
+  return (
+    node?.type === "Identifier" &&
+    executor.params.some((param) => binding(source, node)?.name === param)
+  );
+}
+function executorDeadline(source, executor) {
+  const statements =
+    executor.body.type === "BlockStatement" ? executor.body.body : [{ expression: executor.body }];
+  return statements.some((statement) => {
+    const expressions =
+      statement.type === "VariableDeclaration"
+        ? statement.declarations.map((declaration) => declaration.init)
+        : [statement.expression];
+    return expressions.some((call) => {
+      if (!timer(source, call)) return false;
+      const callback = call.arguments[0];
+      if (promiseParameter(source, callback, executor)) return true;
+      if (!["ArrowFunctionExpression", "FunctionExpression"].includes(callback?.type)) return false;
+      const body = callback.body;
+      const settlement =
+        body.type === "BlockStatement" && body.body.length === 1
+          ? (body.body[0].expression ?? body.body[0].argument)
+          : body;
+      return (
+        settlement?.type === "CallExpression" &&
+        promiseParameter(source, settlement.callee, executor)
+      );
+    });
+  });
+}
+
 export function assertBaselineShrinks(current, ceiling) {
   for (const [file, entries] of Object.entries(current))
     for (const [key, count] of Object.entries(entries)) {
@@ -184,22 +225,21 @@ const rules = {
           )
             return parent;
       };
-      if (!owner(node) || owner(node) !== owner(declaration) || !testCall(owner(node).parent))
+      if (
+        !owner(node) ||
+        owner(node) !== owner(declaration) ||
+        !testCall(source, owner(node).parent)
+      )
         return;
       const promise = declaration?.init;
       if (promise?.type !== "NewExpression" || promise.callee.name !== "Promise") return;
       const executor = promise.arguments[0];
       if (!executor?.params?.[0]) return;
       let exportsResolver = false;
-      let hasDeadline = false;
+      const hasDeadline = executorDeadline(source, executor);
       walk(executor.body, (child) => {
         if (child.type === "AssignmentExpression" && child.right.name === executor.params[0].name)
           exportsResolver = true;
-        if (
-          timer(source, child) ||
-          (child.type === "CallExpression" && member(child.callee) === "timeout")
-        )
-          hasDeadline = true;
       });
       if (exportsResolver && !hasDeadline)
         report(
@@ -229,9 +269,14 @@ const rules = {
     function loop(node) {
       let found = false;
       walk(node.body, (child) => {
-        if (child.type === "AwaitExpression" && sleeping(source, child.argument)) found = true;
+        if (
+          child.type === "AwaitExpression" &&
+          sleeping(source, child.argument) &&
+          !fakeTimers(source, child)
+        )
+          found = true;
       });
-      if (found && !fakeTimers(source, node))
+      if (found)
         report(
           node,
           "Replace delay-based polling with vi.waitFor/vi.waitUntil or the actual event.",
@@ -250,9 +295,7 @@ const rules = {
     (source, report, file) => ({
       MemberExpression(node) {
         if (!["skip", "todo", "fails"].includes(member(node))) return;
-        let base = node.object;
-        while (base?.type === "MemberExpression") base = base.object;
-        if (!["it", "test", "describe"].includes(base?.name)) return;
+        if (!testCallee(source, node.object)) return;
         const comments = source.getAllComments();
         if (
           !comments.some(
@@ -265,7 +308,7 @@ const rules = {
       Property(node) {
         if (name(node.key) !== "retry") return;
         const inConfig = /vitest[^/]*\.config\./.test(file);
-        if (inConfig ? node.value.value !== 0 : testCall(node.parent?.parent))
+        if (inConfig ? node.value.value !== 0 : testCall(source, node.parent?.parent))
           report(
             node,
             "Test retries hide failures; omit retry (configs may specify only retry: 0).",
@@ -289,7 +332,7 @@ const rules = {
     }),
     "all",
   ),
-  "no-unit-test-timeout": rule("no-unit-test-timeout", (_source, report, file) => {
+  "no-unit-test-timeout": rule("no-unit-test-timeout", (source, report, file) => {
     if (!/\.test\.tsx?$/.test(file)) return {};
     // Keep this aligned with the actual default-config lane, not a numerical ceiling on real stacks.
     if (
@@ -300,7 +343,7 @@ const rules = {
       return {};
     return {
       CallExpression(node) {
-        if (!testCall(node)) return;
+        if (!testCall(source, node)) return;
         if (
           node.arguments.length >= 3 &&
           !["ArrowFunctionExpression", "FunctionExpression"].includes(node.arguments[2].type)

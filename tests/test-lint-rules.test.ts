@@ -10,6 +10,96 @@ import plugin, {
 
 const cases = [
   [
+    "no-unit-test-timeout",
+    'import {test as baseIt} from "vitest"; const it = baseIt.extend({}); it("slow", () => {}, 10000);',
+    false,
+  ],
+  [
+    "no-unit-test-timeout",
+    'import {test as check} from "vitest"; function f(check) {check("app API", () => {}, 10000);}',
+    true,
+  ],
+  [
+    "no-real-time-wait-in-tests",
+    'beforeEach(() => vi.useRealTimers()); it("fake", async () => {vi.useFakeTimers(); await new Promise(r => setTimeout(r, 10));});',
+    true,
+  ],
+  [
+    "no-polling-loop-in-tests",
+    'beforeEach(() => vi.useFakeTimers()); it("real", async () => {while (!ready) {vi.useRealTimers(); await new Promise(r => setTimeout(r, 10));}});',
+    false,
+  ],
+  [
+    "no-unit-test-timeout",
+    'import * as vitest from "vitest"; vitest.test.each([1])("slow", () => {}, 10000);',
+    false,
+  ],
+  [
+    "no-unreasoned-skip-or-retry",
+    'import {describe as suite} from "vitest"; suite.skip("broken", () => {});',
+    false,
+  ],
+  [
+    "no-unreasoned-skip-or-retry",
+    'import {describe as suite} from "vitest"; suite("flaky", {retry: 1}, () => {});',
+    false,
+  ],
+  [
+    "no-unbounded-created-promise",
+    'it("deadline", async () => {let signal; const captured = new Promise((resolve, reject) => {signal = resolve; setTimeout(() => reject(new Error("deadline")), 100);}); await captured;});',
+    true,
+  ],
+  [
+    "no-unbounded-created-promise",
+    'it("deadline", async () => {let signal; const captured = new Promise(resolve => {signal = resolve; const timer = setTimeout(resolve, 100);}); await captured;});',
+    true,
+  ],
+  [
+    "no-unbounded-created-promise",
+    'it("shadow", async () => {let signal; const captured = new Promise(resolve => {signal = resolve; setTimeout((resolve) => resolve(), 100);}); await captured;});',
+    false,
+  ],
+  [
+    "no-unbounded-created-promise",
+    'it("unused", async () => {let signal; const captured = new Promise(resolve => {signal = resolve; const unused = () => setTimeout(resolve, 100);}); await captured;});',
+    false,
+  ],
+  [
+    "no-unbounded-created-promise",
+    'it("signal", async () => {let signal; const captured = new Promise(resolve => {signal = resolve; AbortSignal.timeout(100);}); await captured;});',
+    false,
+  ],
+  [
+    "no-unbounded-created-promise",
+    'import {test as check} from "vitest"; check("capture", async () => {let signal; const captured = new Promise(resolve => {signal = resolve;}); await captured;});',
+    false,
+  ],
+  [
+    "no-real-time-wait-in-tests",
+    'beforeEach(() => vi.useFakeTimers()); it("real", async () => {vi.useRealTimers(); await new Promise(r => setTimeout(r, 10));});',
+    false,
+  ],
+  [
+    "no-polling-loop-in-tests",
+    'beforeEach(() => vi.useFakeTimers()); it("real", async () => {vi.useRealTimers(); while (!ready) {await new Promise(r => setTimeout(r, 10));}});',
+    false,
+  ],
+  [
+    "no-unit-test-timeout",
+    'import {test as check} from "vitest"; check("slow", () => {}, 10000);',
+    false,
+  ],
+  [
+    "no-unreasoned-skip-or-retry",
+    'import {test as check} from "vitest"; check("flaky", {retry: 1}, () => {});',
+    false,
+  ],
+  [
+    "no-unbounded-created-promise",
+    'it("capture", async () => {let signal; const captured = new Promise(resolve => {signal = resolve; setTimeout(() => log("waiting"), 100);}); await captured;});',
+    false,
+  ],
+  [
     "no-real-time-wait-in-tests",
     'import * as timers from "node:timers/promises"; await timers.setTimeout(10);',
     false,
@@ -166,7 +256,7 @@ it("enforces test rules through the shipped oxlint parser and plugin loader", ()
       const found = diagnostics.some(
         (d) => d.filename === files[index] && d.code === `opensteer(${rule})`,
       );
-      expect(found, `case ${index}: ${rule}`).toBe(!valid);
+      expect.soft(found, `case ${index}: ${rule}`).toBe(!valid);
     });
     expect(diagnostics.filter((d) => d.filename === integration)).toEqual([]);
     expect(diagnostics.some((d) => d.filename === configs[0])).toBe(false);

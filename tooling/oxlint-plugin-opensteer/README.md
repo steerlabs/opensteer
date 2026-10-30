@@ -25,7 +25,8 @@ checks also cover `vitest*.config.*`.
   whose resolver escapes their executor, in the same test callback. Use the
   existing `@opensteer/shared/withTimeout` with a useful `timeoutError`. Worker
   callback gates, arbitrary async APIs and cross-function dataflow are outside
-  this narrow heuristic. A deadline inside the executor is recognized; passing
+  this narrow heuristic. A direct timer in the executor is recognized only when its callback settles that
+  promise through the resolver or rejecter binding; passing
   the promise to `withTimeout` or `Promise.race` is not a direct unbounded await.
 
 ## Migrating the baseline
