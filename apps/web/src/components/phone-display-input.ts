@@ -1,4 +1,4 @@
-import { mergeDisplayInput, maxInsertCharacters, signed } from "@opensteer/client/integrations";
+import { mergeDisplayInput, maxInsertCharacters } from "@opensteer/client/integrations";
 import type { DisplayInputEvent } from "@opensteer/protocol";
 
 export interface Rect {
@@ -288,4 +288,8 @@ function textChunks(text: string): string[] {
 
 function unit(value: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+}
+
+function signed(value: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(-1, value)) : 0;
 }

@@ -1104,6 +1104,37 @@ describe("display editing receipt adapter", () => {
       editing.dispose();
     },
   );
+  it("keeps the whole held wheel turn and drains a long held run one batch per receipt", async () => {
+    const { socket, editing } = await editingFixture();
+    const scroll = (dy: number) => ({ kind: "scroll", x: 0.5, y: 0.5, dx: 0, dy }) as const;
+    const calls = [editing.input(1, [pointer(0.1)])];
+    for (let turn = 0; turn < 3; turn++) calls.push(editing.input(1, [scroll(0.5)]));
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+    expect(socket.messages("display.input")[1]?.events).toEqual([scroll(1), scroll(0.5)]);
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
+    await Promise.all(calls);
+    // Movement and wheel turns that alternate cannot merge; a run of them still goes
+    // one wire batch per answer, not all at once into the producer's short lane.
+    const run = [editing.input(1, [pointer(0.1)])];
+    for (let index = 0; index < 50; index++)
+      run.push(editing.input(1, [pointer(index / 100)]), editing.input(1, [scroll(0.01)]));
+    const sizes = () =>
+      socket
+        .messages("display.input")
+        .slice(2)
+        .map((batch) => (batch.events as unknown[]).length);
+    expect(sizes()).toEqual([1]);
+    for (const [sequence, expected] of [
+      [2, [1, 64]],
+      [3, [1, 64, 36]],
+    ] as const) {
+      socket.json({ type: "display.input.result", sequence, outcome: "dispatched" });
+      expect(sizes()).toEqual(expected);
+    }
+    socket.json({ type: "display.input.result", sequence: 4, outcome: "dispatched" });
+    await Promise.all(run);
+    editing.dispose();
+  });
   it("waits for the last outstanding receipt before releasing held movement", async () => {
     const { socket, editing } = await editingFixture();
     const calls = [

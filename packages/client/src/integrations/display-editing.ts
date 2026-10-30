@@ -7,7 +7,11 @@ import { EditingClipboardItemsSchema, type EditingContext } from "@opensteer/pro
 import type { EditingOperation, EditingTargetAbilities } from "../editing/types.js";
 import type { ViewerClipboardResult } from "../host/browser-editing.js";
 import { mergeDisplayInput } from "./display-input.js";
-import type { DisplayEditingMessage, DisplayLease } from "./phone-display-stream.js";
+import {
+  maxDisplayInputEvents,
+  type DisplayEditingMessage,
+  type DisplayLease,
+} from "./phone-display-stream.js";
 
 /** Rich data is forwarded as metadata so the producer explicitly refuses it. */
 export const displayEditingAbilities: EditingTargetAbilities = {
@@ -110,14 +114,20 @@ export class DisplayEditingSession {
     else pending.resolve(result);
     if (!this.#pending.size) this.#sendHeld();
   }
-  #sendHeld(): void {
+  /** All held movement goes before other input; otherwise one wire batch per answer. */
+  #sendHeld(all = false): void {
     const held = this.#held;
     if (!held) return;
-    this.#held = null;
-    void this.#transmit(held.geometry, held.events).then(
-      (result) => held.callers.forEach((caller) => caller.resolve(result)),
-      (error: Error) => held.callers.forEach((caller) => caller.reject(error)),
-    );
+    const events = all ? held.events : held.events.splice(0, maxDisplayInputEvents);
+    if (all || !held.events.length) this.#held = null;
+    const sent = this.#transmit(held.geometry, events);
+    // Callers settle with the last piece; an earlier piece's refusal is its receipt.
+    if (this.#held === held) void sent.catch(() => undefined);
+    else
+      void sent.then(
+        (result) => held.callers.forEach((caller) => caller.resolve(result)),
+        (error: Error) => held.callers.forEach((caller) => caller.reject(error)),
+      );
   }
   #cancel(reason: string): void {
     const held = this.#held;
@@ -278,7 +288,7 @@ export class DisplayEditingSession {
     if (this.#pending.size >= 128)
       return Promise.reject(this.#refuse("capacity", "Waiting for this device to respond."));
     // Presses and edits never wait, and follow the movement before them.
-    this.#sendHeld();
+    this.#sendHeld(true);
     return this.#transmit(geometry, events, copy);
   }
   #transmit(

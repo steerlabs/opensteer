@@ -320,13 +320,20 @@ describe("owner input batching", () => {
     expect(sent.map(({ events }) => (events.at(-1) as { t: number }).t)).toEqual([0, 0]);
   });
 
-  it("merges a frame's wheel turns into one scroll at the newest point", () => {
+  it("merges a frame's wheel turns at the newest point without losing distance", () => {
     const { input, sent, frame } = harness();
     input.scroll(1, at(0.2), { dx: 0, dy: 0.25 });
-    input.scroll(1, at(0.3), { dx: 0.1, dy: 0.9 });
+    input.scroll(1, at(0.3), { dx: 0.1, dy: 0.5 });
+    input.scroll(1, at(0.4), { dx: 0, dy: 0.5 });
     frame();
     expect(sent).toEqual([
-      { geometry: 1, events: [{ kind: "scroll", x: 0.3, y: 0.5, dx: 0.1, dy: 1 }] },
+      {
+        geometry: 1,
+        events: [
+          { kind: "scroll", x: 0.3, y: 0.5, dx: 0.1, dy: 0.75 },
+          { kind: "scroll", x: 0.4, y: 0.5, dx: 0, dy: 0.5 },
+        ],
+      },
     ]);
   });
 

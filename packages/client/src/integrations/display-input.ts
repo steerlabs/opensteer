@@ -19,8 +19,12 @@ export function mergeDisplayInput(
       last.modifiers.every((modifier) => next.modifiers.includes(modifier))
       ? next
       : null;
-  if (last.kind === "scroll" && next.kind === "scroll")
-    return { ...next, dx: signed(last.dx + next.dx), dy: signed(last.dy + next.dy) };
+  if (last.kind === "scroll" && next.kind === "scroll") {
+    const dx = last.dx + next.dx;
+    const dy = last.dy + next.dy;
+    // A turn past one event's bound goes as another event rather than being lost.
+    return Math.abs(dx) <= 1 && Math.abs(dy) <= 1 ? { ...next, dx, dy } : null;
+  }
   if (last.kind !== "text" || next.kind !== "text") return null;
   if ("insert" in last && "insert" in next)
     return last.insert.length + next.insert.length <= maxInsertCharacters
@@ -31,8 +35,4 @@ export function mergeDisplayInput(
       ? { kind: "text", deleteBackward: last.deleteBackward + next.deleteBackward }
       : null;
   return null;
-}
-
-export function signed(value: number): number {
-  return Number.isFinite(value) ? Math.min(1, Math.max(-1, value)) : 0;
 }
