@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-/** One --arch keeps SwiftPM on its native build system, including embedded resources. */
+/** SwiftBuild omits embedded resources on release Xcodes; compile native slices before lipo. */
 export function buildSwiftProducts(
   directory: string,
   products: readonly string[],

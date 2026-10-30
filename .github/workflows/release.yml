@@ -149,7 +149,7 @@ jobs:
           xcrun clang++ --version
           { xcodebuild -version; xcrun --show-sdk-version; xcrun clang++ --version; swift --version; uname -m; sw_vers; } > "$RUNNER_TEMP/release-toolchain"
           echo "toolchain=$(shasum -a 256 "$RUNNER_TEMP/release-toolchain" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "swift=$(git ls-tree -r HEAD -- apps/desktop/native packages/apple-data packages/apple-dictation packages/macos-signing apps/desktop/scripts scripts/generate-apple-data-contracts.ts | shasum -a 256 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "swift=$(git ls-tree -r HEAD -- apps/desktop/native apps/desktop/scripts packages scripts/generate-apple-data-contracts.ts package.json pnpm-lock.yaml | shasum -a 256 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           java -version 2> "$RUNNER_TEMP/release-java"
           echo "java=$(shasum -a 256 "$RUNNER_TEMP/release-java" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       # No restore prefixes: PR caches and other toolchains cannot supply release products.
