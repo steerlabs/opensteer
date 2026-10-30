@@ -2,7 +2,6 @@ import type { NativeViewerSource } from "../host/surfaces.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ComputerUseSessionIdSchema,
-  DisplayControlIdSchema,
   displayRefreshCoalescingMs,
   encodeDisplayViewerFrame,
   type DisplayInputEvent,
@@ -14,7 +13,6 @@ import type { HostSnapshot } from "../host/client.js";
 import {
   DisplayStreams,
   sharedDisplayStreams,
-  phoneControlNote,
   computerDisplayScope,
   computerDisplayStatus,
   type DisplayFrame,
@@ -33,7 +31,7 @@ import {
  *   that never arrived, or on a later socket than the one that delivered it.
  * - A dropped frame, or one no view is decoding, is never acknowledged, so
  *   credit leaks until the Host closes the viewer as stalled.
- * - Reconnecting replays input or takes control again; it retries without
+ * - Reconnecting replays input; it retries without
  *   backoff, never resets its backoff, or retries after the last view left.
  * - A transient close (1001, 1006, 1008, 1013) is not retried, or a terminal
  *   one (1000, 1009, 4002, 4003) is, looping against a Host that said stop;
@@ -45,14 +43,9 @@ import {
  *   sends it, is taken for out-of-order frames and kills the socket.
  * - Cached frames older than `replayThrough` are offered for display, or the
  *   mark outlives its replay or its socket.
- * - Input goes out without held control, from a view that does not hold it,
- *   with a sequence that does not increase across batches, controls and
- *   sockets, or in a batch larger than the contract's 64 events.
- * - Control stays held when its view leaves, a second acquire races the
- *   first, or control that arrives for a departed view is kept.
- * - Control is still shown held after the socket that held it dropped.
- * - Giving back sticks at releasing when the Host answers busy or refused.
- * - A view of the session cannot use or give back control another took.
+ * - Input goes out without negotiated shared input, replays after reconnect,
+ *   exceeds 64 events per batch, or repeats a sequence.
+ * - A departing last sender fails to reset held input before socket close.
  * - A changed login leaves the old picture's stream looking live.
  * - An unreadable, oversized or out-of-order server message crashes the
  *   client or is believed, or is retried as if the Host could fix it.
@@ -61,8 +54,6 @@ import {
  */
 
 const sessionId = ComputerUseSessionIdSchema.parse("cus_11111111-1111-4111-8111-111111111111");
-const controlId = DisplayControlIdSchema.parse("dcl_22222222-2222-4222-8222-222222222222");
-const otherControlId = DisplayControlIdSchema.parse("dcl_33333333-3333-4333-8333-333333333333");
 const source = { kind: "task-session" as const, sessionId };
 const target = { scope: "scope-a", source };
 const pointer = (x: number): DisplayInputEvent => ({
@@ -152,8 +143,16 @@ function opened(): FakeSocket {
 function acks(socket: FakeSocket): unknown[] {
   return socket.messages("display.ack").map((message) => message.sequence);
 }
-function hold(socket: FakeSocket, id = controlId) {
-  socket.json({ type: "display.control", state: "held", controlId: id });
+function hold(socket: FakeSocket) {
+  socket.json({
+    type: "display.state",
+    state: "live",
+    sharedInput: 1,
+    editingVersion: 1,
+    generation: 1,
+    width: 360,
+    height: 780,
+  });
 }
 
 beforeEach(() => {
@@ -246,7 +245,9 @@ describe("phone display socket", () => {
       },
     });
     client.connectComputerDisplay(source);
-    expect(urls).toEqual([`wss://host.example/v1/computer-use/sessions/${sessionId}/display`]);
+    expect(urls).toEqual([
+      `wss://host.example/v1/computer-use/sessions/${sessionId}/display?sharedInput=1`,
+    ]);
     client.dispose();
   });
 
@@ -532,13 +533,12 @@ describe("platform display lifecycle", () => {
       socket.open();
       live(socket);
     });
-    first.takeOver();
     hold(sockets[0]!);
     const retired = [...sockets];
     network.forEach((listener) => listener());
     expect(sockets).toHaveLength(4);
     expect(retired.every((socket) => socket.closedWith !== null)).toBe(true);
-    expect(first.getSnapshot().control.state).toBe("released");
+    expect(first.getSnapshot().input).toBe("unavailable");
     const received = vi.fn();
     first.onFrame((frame) => {
       received(frame.header.sequence);
@@ -574,16 +574,15 @@ describe("platform display lifecycle", () => {
 });
 
 describe("reconnection", () => {
-  it("backs off, resets after a live stream, and never replays input or control", () => {
+  it("backs off, resets after a live stream, and never replays input", () => {
     const lease = streams.retain(target);
     const first = opened();
-    lease.takeOver();
     hold(first);
     expect(lease.input(1, [pointer(0.1)])).toBe(true);
     first.drop();
     expect(lease.getSnapshot()).toMatchObject({
       connection: "waiting",
-      control: { state: "released" },
+      input: "unavailable",
     });
     expect(lease.input(1, [pointer(0.2)])).toBe(false);
     vi.advanceTimersByTime(99);
@@ -596,7 +595,7 @@ describe("reconnection", () => {
     expect(delays).toEqual([100, 200]);
     const third = opened();
     expect(third.sent).toEqual([]);
-    expect(lease.getSnapshot().control).toEqual({ state: "released", reason: null });
+    expect(lease.getSnapshot().input).toBe("unavailable");
     third.drop();
     expect(delays).toEqual([100, 200, 100]);
   });
@@ -689,7 +688,6 @@ describe("reconnection", () => {
   it.each([1000, 1009, 4002, 4003])("stops for good after a terminal %i, keeping why", (code) => {
     const lease = streams.retain(target);
     const socket = opened();
-    lease.takeOver();
     hold(socket);
     socket.json({
       type: "display.state",
@@ -703,7 +701,7 @@ describe("reconnection", () => {
       connection: "closed",
       closeCode: code,
       display: { state: "unsupported" },
-      control: { state: "released" },
+      input: "unavailable",
     });
     expect(lease.input(1, [pointer(0.5)])).toBe(false);
     vi.advanceTimersByTime(60_000);
@@ -725,7 +723,7 @@ describe("reconnection", () => {
       connection: "closed",
       closeCode: 4003,
       display: null,
-      control: { state: "released", reason: null },
+      input: "unavailable",
       keyframeFailed: false,
     } satisfies DisplaySnapshot);
     lease.release();
@@ -734,56 +732,10 @@ describe("reconnection", () => {
   });
 });
 
-describe("owner control", () => {
-  it("takes control once at a time and answers busy and refusal", () => {
-    const lease = streams.retain(target);
-    const socket = opened();
-    lease.takeOver();
-    lease.takeOver();
-    expect(socket.messages("display.control")).toEqual([
-      { type: "display.control", action: "acquire" },
-    ]);
-    expect(lease.getSnapshot().control).toEqual({ state: "acquiring" });
-    socket.json({ type: "display.control", state: "busy" });
-    expect(lease.getSnapshot().control).toEqual({ state: "busy" });
-    expect(lease.input(1, [pointer(0.5)])).toBe(false);
-    lease.takeOver();
-    socket.json({ type: "display.control", state: "refused", controlId, reason: "secure-lock" });
-    expect(lease.getSnapshot().control).toEqual({ state: "refused", reason: "secure-lock" });
-    expect(socket.messages("display.control")).toHaveLength(2);
-  });
-
-  it("sends input only under held control, in increasing sequence, 64 events at most", () => {
-    const holder = streams.retain(target);
-    const socket = opened();
-    expect(holder.input(1, [pointer(0.5)])).toBe(false);
-    holder.takeOver();
-    hold(socket);
-    expect(holder.getSnapshot().control).toEqual({ state: "held", controlId });
-    const events = Array.from({ length: 70 }, (_, index) => pointer(index / 70));
-    expect(holder.input(3, events)).toBe(true);
-    expect(socket.messages("display.input")).toEqual([
-      { type: "display.input", controlId, geometry: 3, sequence: 0, events: events.slice(0, 64) },
-      { type: "display.input", controlId, geometry: 3, sequence: 1, events: events.slice(64) },
-    ]);
-    holder.giveBack();
-    expect(holder.getSnapshot().control).toEqual({ state: "releasing" });
-    expect(holder.input(3, [pointer(0.5)])).toBe(false);
-    socket.json({ type: "display.control", state: "released", controlId });
-    holder.takeOver();
-    hold(socket, otherControlId);
-    expect(holder.input(4, [pointer(0.5)])).toBe(true);
-    expect(socket.messages("display.input").at(-1)).toMatchObject({
-      controlId: otherControlId,
-      geometry: 4,
-      sequence: 2,
-    });
-  });
-
+describe("shared input", () => {
   it("batches escaped text by UTF-8 bytes below the Host frame bound", () => {
     const lease = streams.retain(target);
     const socket = opened();
-    lease.takeOver();
     hold(socket);
     const events: DisplayInputEvent[] = Array.from({ length: 64 }, () => ({
       kind: "text",
@@ -802,8 +754,6 @@ describe("owner control", () => {
   it("requires both viewer opt-in and producer editing support and delivers private results", () => {
     const lease = streams.retain({ ...target, editing: 1 });
     const socket = opened();
-    lease.takeOver();
-    hold(socket);
     expect(lease.input(1, [{ kind: "copy" }])).toBe(false);
     socket.json({
       type: "display.state",
@@ -812,6 +762,7 @@ describe("owner control", () => {
       width: 720,
       height: 1280,
       editingVersion: 1,
+      sharedInput: 1,
     });
     const results: unknown[] = [];
     lease.onEditingMessage((message) => results.push(message));
@@ -824,34 +775,9 @@ describe("owner control", () => {
     expect(connect).toHaveBeenCalledWith(source, { editing: 1 });
   });
 
-  it("acquires a negotiated Mac owner stream but leaves baseline owners view-only", () => {
-    const owner = {
-      kind: "owner-view" as const,
-      viewId: "cvw_11111111-1111-4111-8111-111111111111",
-      generation: 1,
-    };
-    const lease = streams.retain({ scope: "mac", source: owner, editing: 1 });
-    const socket = opened();
-    lease.takeOver();
-    expect(socket.messages("display.control")).toEqual([]);
-    socket.json({
-      type: "display.state",
-      state: "live",
-      generation: 1,
-      width: 720,
-      height: 1280,
-      editingVersion: 1,
-    });
-    lease.takeOver();
-    expect(socket.messages("display.control")).toEqual([
-      { type: "display.control", action: "acquire" },
-    ]);
-  });
-
   it("reports each exact input sequence before send so synchronous receipts cannot race", () => {
     const lease = streams.retain(target);
     const socket = opened();
-    lease.takeOver();
     hold(socket);
     const sequences: number[] = [];
     expect(
@@ -871,96 +797,26 @@ describe("owner control", () => {
   it("refuses input that breaks the contract instead of letting the Host close the viewer", () => {
     const lease = streams.retain(target);
     const socket = opened();
-    lease.takeOver();
     hold(socket);
     expect(() => lease.input(1, [pointer(1.5)])).toThrow();
     expect(lease.input(1, [])).toBe(false);
     expect(socket.messages("display.input")).toEqual([]);
   });
 
-  it("lets any view of the session use and give back the control one view took", () => {
-    const taker = streams.retain(target);
-    const other = streams.retain(target);
+  it("accepts both pooled views, renumbers batches, and resets only for the last sender", () => {
+    const first = streams.retain(target);
+    const second = streams.retain(target);
     const socket = opened();
-    taker.takeOver();
+    expect(first.input(1, [{ kind: "copy" }])).toBe(false);
     hold(socket);
-    expect(other.input(1, [pointer(0.5)])).toBe(true);
-    expect(socket.messages("display.input")).toHaveLength(1);
-    other.giveBack();
-    expect(socket.messages("display.control").at(-1)).toEqual({
-      type: "display.control",
-      action: "release",
-    });
-    expect(taker.getSnapshot().control).toEqual({ state: "releasing" });
-    socket.json({ type: "display.control", state: "released", controlId });
-    taker.release();
-    expect(socket.messages("display.control")).toHaveLength(2);
-  });
-
-  it.each(["busy", "refused"] as const)("treats %s while giving back as given back", (state) => {
-    const lease = streams.retain(target);
-    const socket = opened();
-    lease.takeOver();
-    hold(socket);
-    lease.giveBack();
-    socket.json({ type: "display.control", state, ...(state === "refused" ? { controlId } : {}) });
-    expect(lease.getSnapshot().control).toEqual({ state: "released", reason: null });
-  });
-
-  it("gives control back when the view that holds it leaves", () => {
-    const holder = streams.retain(target);
-    const watcher = streams.retain(target);
-    const socket = opened();
-    holder.takeOver();
-    hold(socket);
-    holder.release();
-    expect(socket.messages("display.control").at(-1)).toEqual({
-      type: "display.control",
-      action: "release",
-    });
-    expect(socket.closedWith).toBeNull();
-    expect(watcher.getSnapshot().control).toEqual({ state: "releasing" });
-    watcher.release();
-    expect(socket.closedWith).not.toBeNull();
-  });
-
-  it("gives control back before closing when the last view leaves", () => {
-    const lease = streams.retain(target);
-    const socket = opened();
-    lease.takeOver();
-    hold(socket);
-    lease.release();
-    expect(socket.messages("display.control").at(-1)).toEqual({
-      type: "display.control",
-      action: "release",
-    });
-    expect(socket.closedWith).not.toBeNull();
-  });
-
-  it("lets go of control that arrives after its view gave up on it", () => {
-    const holder = streams.retain(target);
-    streams.retain(target);
-    const socket = opened();
-    holder.takeOver();
-    holder.giveBack();
-    hold(socket);
-    expect(holder.getSnapshot().control).toEqual({ state: "releasing" });
-    expect(socket.messages("display.control")).toEqual([
-      { type: "display.control", action: "acquire" },
-      { type: "display.control", action: "release" },
-    ]);
-    socket.json({ type: "display.control", state: "released", controlId, reason: "viewer-gone" });
-    expect(holder.getSnapshot().control).toEqual({ state: "released", reason: "viewer-gone" });
-  });
-
-  it("releases control it never asked for", () => {
-    const lease = streams.retain(target);
-    const socket = opened();
-    hold(socket);
-    expect(socket.messages("display.control")).toEqual([
-      { type: "display.control", action: "release" },
-    ]);
-    expect(lease.input(1, [pointer(0.5)])).toBe(false);
+    expect(first.input(1, [{ kind: "text", insert: "one" }])).toBe(true);
+    expect(second.input(1, [{ kind: "text", insert: "two" }])).toBe(true);
+    expect(socket.messages("display.input").map((m) => m.sequence)).toEqual([0, 1]);
+    expect(socket.messages("display.input").every((m) => !("controlId" in m))).toBe(true);
+    first.release();
+    expect(socket.messages("display.input-reset")).toHaveLength(0);
+    second.release();
+    expect(socket.messages("display.input-reset")).toHaveLength(1);
   });
 });
 
@@ -969,7 +825,7 @@ describe("phone display words", () => {
     connection: "open",
     closeCode: null,
     display: null,
-    control: { state: "released", reason: null },
+    input: "unavailable",
     keyframeFailed: false,
   };
   const state = (
@@ -1015,20 +871,6 @@ describe("phone display words", () => {
     [{ ...state("live"), keyframeFailed: true }, "display-failed", false],
   ] as const)("maps %j to the shared Watch reason", (snapshot, reason, retrying) => {
     expect(computerDisplayStatus(snapshot)).toEqual({ reason, retrying });
-  });
-
-  it.each([
-    [{ state: "held", controlId }, "You’re controlling the phone"],
-    [{ state: "busy" }, "Another window is controlling the phone"],
-    [{ state: "refused", reason: "secure-lock" }, "Unlock the phone to take over"],
-    [{ state: "refused", reason: "paused" }, "Paused on the phone"],
-    [{ state: "released", reason: "stream-lost" }, "The phone lost its connection"],
-    [{ state: "released", reason: "timed-out" }, "The phone didn’t respond in time"],
-    [{ state: "released", reason: "viewer-gone" }, null],
-    [{ state: "released", reason: null }, null],
-    [{ state: "acquiring" }, null],
-  ] as const)("says who has control: %j", (control, words) => {
-    expect(phoneControlNote(control)).toBe(words);
   });
 
   it("scopes a stream to the reader, Deployment and a phone that streams", () => {
@@ -1086,10 +928,10 @@ describe("display editing receipt adapter", () => {
       width: 720,
       height: 1280,
       editingVersion: 1,
+      sharedInput: 1,
     });
     const editing = new DisplayEditingSession(lease);
     editing.setGeometry(1);
-    lease.takeOver();
     hold(socket);
     return { lease, socket, editing };
   }
@@ -1106,7 +948,7 @@ describe("display editing receipt adapter", () => {
     expect(editing.diagnostics.clipboard).toEqual({ copied: 1 });
     editing.dispose();
   });
-  it("rejects pending work on geometry/control loss and discards old context", async () => {
+  it("rejects pending work on geometry/connection loss and discards old context", async () => {
     const { socket, editing } = await editingFixture();
     socket.json({
       type: "display.editing",
@@ -1123,6 +965,7 @@ describe("display editing receipt adapter", () => {
       width: 720,
       height: 1280,
       editingVersion: 1,
+      sharedInput: 1,
     });
     await rejected;
     expect(editing.getSnapshot().context).toBeNull();

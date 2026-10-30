@@ -10,8 +10,6 @@ import {
   displayRefreshCoalescingMs,
   displayViewerCloseCodes,
   isRetryableDisplayViewerClose,
-  type DisplayControlId,
-  type DisplayControlReason,
   type DisplayInputEvent,
   type DisplayViewerClientMessage,
   type DisplayViewerFrameHeader,
@@ -26,7 +24,7 @@ import type { DisplayUnavailableReason } from "./computer-watch-status.js";
 /** The contract's bound on one input batch (`DisplayInputEventsSchema`). */
 const maxInputEvents = 64;
 const maxInputBytes = 256 * 1_024;
-/** Viewer JSON is a state or control line; anything near this is not one. */
+/** Viewer JSON is a state or editing line; anything near this is not one. */
 const maxServerTextCharacters = 256 * 1_024;
 const retryBaseMs = 300;
 const retryMaxMs = 12_000;
@@ -75,16 +73,6 @@ export interface DisplayFrame {
   done(): void;
 }
 
-/** The owner's hold on the phone's input, as this client last heard it. */
-export type DisplayControl =
-  | { readonly state: "released"; readonly reason: DisplayControlReason | null }
-  | { readonly state: "acquiring" }
-  | { readonly state: "held"; readonly controlId: DisplayControlId }
-  | { readonly state: "releasing" }
-  /** Another viewer, in another window or app, holds it. */
-  | { readonly state: "busy" }
-  | { readonly state: "refused"; readonly reason: DisplayControlReason | null };
-
 export interface DisplaySnapshot {
   /**
    * `waiting` is the backoff after a transient close; `closed` follows a
@@ -98,19 +86,12 @@ export interface DisplaySnapshot {
   readonly closeCode: number | null;
   /** The Host's latest word on the stream, kept across reconnects so it still says why. */
   readonly display: DisplayViewerState | null;
-  /**
-   * The session's control, shared by every view of it in this client: any of
-   * them may use or give back control one of them took.
-   */
-  readonly control: DisplayControl;
+  readonly input: "available" | "unavailable";
   /** Repeated keyframe requests went unanswered while live; a keyframe clears it. */
   readonly keyframeFailed: boolean;
 }
 
-export type DisplayEditingMessage = Exclude<
-  DisplayViewerServerMessage,
-  { type: "display.state" | "display.control" }
->;
+export type DisplayEditingMessage = Exclude<DisplayViewerServerMessage, { type: "display.state" }>;
 
 /** One view's hold on a pooled phone display socket. */
 export interface DisplayLease {
@@ -120,12 +101,10 @@ export interface DisplayLease {
   onFrame(listener: (frame: DisplayFrame) => void): () => void;
   /** Private editing context, batch receipts and copy results; never replayed. */
   onEditingMessage(listener: (message: DisplayEditingMessage) => void): () => void;
-  takeOver(): void;
-  giveBack(): void;
+  resetInput(): void;
   /**
-   * Sends owner input in picture `geometry` while the session's control is
-   * held, in batches the contract allows. False otherwise; the events are
-   * dropped, never queued for later.
+   * Sends input in picture `geometry` while input is available, in batches the
+   * contract allows. False otherwise; events are dropped, never queued.
    */
   input(
     geometry: number,
@@ -140,7 +119,7 @@ export interface DisplayLease {
    */
   viewport(maxLongSide: number): void;
   requestKeyframe(): void;
-  /** Gives back control this view took; the last view closes the socket. */
+  /** Releases held input; the last view closes the socket. */
   release(): void;
 }
 
@@ -148,7 +127,7 @@ const emptySnapshot: DisplaySnapshot = {
   connection: "connecting",
   closeCode: null,
   display: null,
-  control: { state: "released", reason: null },
+  input: "unavailable",
   keyframeFailed: false,
 };
 
@@ -191,9 +170,9 @@ interface Entry {
   timer: ReturnType<typeof setTimeout> | null;
   attempt: number;
   snapshot: DisplaySnapshot;
-  /** The view that took control; its departure gives control back. */
+  /** The last view that sent input; its departure resets held input. */
   holder: LeaseState | null;
-  /** Increases for every batch this client sends the session, across controls and sockets. */
+  /** Increases for every batch this client sends the session, across sockets. */
   inputSequence: number;
   disposed: boolean;
 }
@@ -211,13 +190,11 @@ type Received =
  * One viewer socket per exact authority, shared by every view of it in this
  * client. A tile beside the open phone costs one Host viewer; task and owner
  * authorities keep separate sockets while the Host shares their producer.
- * Only a task authority can acquire control.
  *
  * Credit is the flow control: a frame is acknowledged only once each view
  * that received it has decoded or dropped it, in stream order. A transient
  * close is retried with backoff while any view remains, and starts with
- * control released: input is never replayed and control is never taken back
- * on the owner's behalf. A terminal close ends the stream for these views.
+ * input unavailable: input is never replayed. A terminal close ends the stream for these views.
  */
 export class DisplayStreams {
   readonly #connect: (
@@ -307,14 +284,15 @@ export class DisplayStreams {
         if (!released) lease.editingMessages.add(listener);
         return () => lease.editingMessages.delete(listener);
       },
-      takeOver: () => {
-        if (!released) this.#takeOver(current, lease);
+      resetInput: () => {
+        if (!released) this.#resetInput(current);
       },
-      giveBack: () => {
-        if (!released) this.#giveBack(current);
+      input: (geometry, events, onSequence) => {
+        if (released) return false;
+        const sent = this.#input(current, geometry, events, onSequence);
+        if (sent) current.holder = lease;
+        return sent;
       },
-      input: (geometry, events, onSequence) =>
-        !released && this.#input(current, geometry, events, onSequence),
       viewport: (maxLongSide) => {
         if (released || !Number.isFinite(maxLongSide)) return;
         lease.maxLongSide = Math.min(1920, Math.max(320, Math.round(maxLongSide)));
@@ -326,7 +304,7 @@ export class DisplayStreams {
       release: () => {
         if (released) return;
         released = true;
-        if (current.holder === lease) this.#giveBack(current);
+        if (current.holder === lease) this.#resetInput(current);
         current.leases.delete(lease);
         lease.frames.clear();
         lease.editingMessages.clear();
@@ -378,7 +356,6 @@ export class DisplayStreams {
       if (allowed(entry.target)) continue;
       this.#entries.delete(key);
       entry.disposed = true;
-      entry.holder = null;
       this.#close(entry, "source-invalidated");
       this.#set(entry, {
         ...emptySnapshot,
@@ -422,13 +399,13 @@ export class DisplayStreams {
     );
   }
 
-  /** The socket goes, control and credit with it as any transient close; the views stay. */
+  /** The socket goes, input and credit with it as any transient close; the views stay. */
   #pause(entry: Entry, reason: DisplayClientDiagnostic["reason"]): void {
     this.#log(entry, { transition: "release", reason });
     this.#close(entry, reason);
     entry.holder = null;
     entry.attempt = 0;
-    this.#set(entry, { connection: "connecting", control: { state: "released", reason: null } });
+    this.#set(entry, { connection: "connecting", input: "unavailable" });
   }
 
   dispose(): void {
@@ -496,12 +473,10 @@ export class DisplayStreams {
           connection.replayRestarts = true;
         }
         this.#set(entry, { display: received.message });
-      } else if (received.message.type === "display.control")
-        this.#control(entry, received.message);
-      else if (
+      } else if (
         entry.target.editing === 1 &&
         entry.snapshot.display?.editingVersion === 1 &&
-        entry.snapshot.control.state === "held"
+        entry.snapshot.input === "available"
       )
         for (const lease of entry.leases)
           for (const listener of lease.editingMessages) listener(received.message);
@@ -519,18 +494,17 @@ export class DisplayStreams {
   }
 
   /**
-   * The socket is gone, and control and every credit it carried with it. Only
+   * The socket is gone, and input and every credit it carried with it. Only
    * a transient close is retried; a terminal one is kept to say how it ended.
    */
   #drop(entry: Entry, connection: Connection, code: number): void {
     if (entry.connection === connection) entry.connection = null;
     stopKeyframeRequests(connection);
     entry.holder = null;
-    const control = { state: "released", reason: null } as const;
     if (isRetryableDisplayViewerClose(code)) {
-      this.#set(entry, { closeCode: code, control });
+      this.#set(entry, { closeCode: code, input: "unavailable" });
       this.#retry(entry);
-    } else this.#set(entry, { connection: "closed", closeCode: code, control });
+    } else this.#set(entry, { connection: "closed", closeCode: code, input: "unavailable" });
   }
 
   #retry(entry: Entry): void {
@@ -552,6 +526,7 @@ export class DisplayStreams {
       clearTimeout(entry.timer);
     }
     entry.timer = null;
+    if (entry.holder) this.#resetInput(entry);
     const connection = entry.connection;
     entry.connection = null;
     if (!connection) return;
@@ -626,70 +601,10 @@ export class DisplayStreams {
     }
   }
 
-  #control(
-    entry: Entry,
-    message: Extract<DisplayViewerServerMessage, { type: "display.control" }>,
-  ) {
-    const current = entry.snapshot.control.state;
-    switch (message.state) {
-      case "held":
-        if (current === "held" || current === "releasing") return;
-        if (current === "acquiring" && entry.holder && message.controlId) {
-          this.#set(entry, { control: { state: "held", controlId: message.controlId } });
-          return;
-        }
-        // Control nobody here is waiting for is handed straight back.
-        entry.holder = null;
-        if (entry.connection)
-          send(entry.connection, { type: "display.control", action: "release" });
-        this.#set(entry, { control: { state: "releasing" } });
-        return;
-      case "busy":
-      case "refused":
-        // An answer to giving back means the control is gone either way.
-        if (current === "releasing") {
-          entry.holder = null;
-          this.#set(entry, { control: { state: "released", reason: null } });
-          return;
-        }
-        if (message.state === "busy" && current !== "acquiring") return;
-        entry.holder = null;
-        this.#set(entry, {
-          control:
-            message.state === "busy"
-              ? { state: "busy" }
-              : { state: "refused", reason: message.reason ?? null },
-        });
-        return;
-      case "released":
-        entry.holder = null;
-        this.#set(entry, { control: { state: "released", reason: message.reason ?? null } });
-        return;
-    }
-  }
-
-  #takeOver(entry: Entry, lease: LeaseState): void {
-    if (
-      entry.target.source.kind === "owner-view" &&
-      (entry.target.editing !== 1 || entry.snapshot.display?.editingVersion !== 1)
-    )
-      return;
-    const { connection, control } = entry.snapshot;
-    if (!entry.connection || connection !== "open") return;
-    if (control.state !== "released" && control.state !== "refused" && control.state !== "busy")
-      return;
-    entry.holder = lease;
-    send(entry.connection, { type: "display.control", action: "acquire" });
-    this.#set(entry, { control: { state: "acquiring" } });
-  }
-
-  #giveBack(entry: Entry): void {
+  #resetInput(entry: Entry): void {
     entry.holder = null;
-    const state = entry.snapshot.control.state;
-    if (state !== "acquiring" && state !== "held") return;
-    if (entry.connection?.socket.readyState === 1)
-      send(entry.connection, { type: "display.control", action: "release" });
-    this.#set(entry, { control: { state: "releasing" } });
+    if (entry.connection?.socket.readyState === 1 && entry.snapshot.display?.sharedInput === 1)
+      send(entry.connection, { type: "display.input-reset" });
   }
 
   #input(
@@ -698,9 +613,12 @@ export class DisplayStreams {
     events: readonly DisplayInputEvent[],
     onSequence?: (sequence: number) => void,
   ): boolean {
-    const control = entry.snapshot.control;
     const connection = entry.connection;
-    if (control.state !== "held" || connection?.socket.readyState !== 1 || events.length === 0)
+    if (
+      entry.snapshot.input !== "available" ||
+      connection?.socket.readyState !== 1 ||
+      events.length === 0
+    )
       return false;
     const parsed = events.map((event) => DisplayInputEventSchema.parse(event));
     if (
@@ -714,7 +632,6 @@ export class DisplayStreams {
       JSON.stringify(
         DisplayViewerClientMessageSchema.parse({
           type: "display.input",
-          controlId: control.controlId,
           geometry,
           sequence: entry.inputSequence + batches.length,
           events: items,
@@ -744,7 +661,16 @@ export class DisplayStreams {
   }
 
   #set(entry: Entry, patch: Partial<DisplaySnapshot>): void {
-    entry.snapshot = { ...entry.snapshot, ...patch };
+    const next = { ...entry.snapshot, ...patch };
+    entry.snapshot = {
+      ...next,
+      input:
+        next.connection === "open" &&
+        next.display?.sharedInput === 1 &&
+        next.display.state === "live"
+          ? "available"
+          : "unavailable",
+    };
     const listeners = [...entry.leases].flatMap((lease) => [...lease.listeners]);
     if (entry.snapshot.connection === "closed") {
       this.#terminal.set(entry.key, entry.snapshot);
@@ -771,8 +697,6 @@ function read(connection: Connection, data: unknown): Received {
     if (data.length > maxServerTextCharacters)
       throw new Error("A display message exceeds its limit.");
     const message = DisplayViewerServerMessageSchema.parse(JSON.parse(data));
-    if (message.type === "display.control" && message.state === "held" && !message.controlId)
-      throw new Error("Held control names no control.");
     return { kind: "message", message };
   }
   const bytes =
@@ -971,44 +895,5 @@ export function computerDisplayStatus(
             : "permission-required"
           : "display-failed",
       );
-  }
-}
-
-const controlReasonWords: Readonly<Record<DisplayControlReason, string | null>> = {
-  busy: "Another window is controlling the phone",
-  paused: "Paused on the phone",
-  "secure-lock": "Unlock the phone to take over",
-  // The Watch itself says the agent finished.
-  "session-ended": null,
-  "stream-lost": "The phone lost its connection",
-  "timed-out": "The phone didn’t respond in time",
-  // The owner gave it back, here or by leaving.
-  "released-by-owner": null,
-  "viewer-gone": null,
-};
-
-/** Who has the phone's input, or why the owner does not, in the same words everywhere. */
-export function phoneControlNote(control: DisplayControl, app = false): string | null {
-  const words = app
-    ? {
-        ...controlReasonWords,
-        busy: "Another window is controlling the app",
-        paused: "Paused on this Mac",
-        "secure-lock": "Unlock this Mac to take over",
-        "stream-lost": "The app lost its connection",
-        "timed-out": "The app didn’t respond in time",
-      }
-    : controlReasonWords;
-  switch (control.state) {
-    case "held":
-      return app ? "You’re controlling the app" : "You’re controlling the phone";
-    case "busy":
-      return words.busy;
-    case "refused":
-    case "released":
-      return control.reason ? words[control.reason] : null;
-    case "acquiring":
-    case "releasing":
-      return null;
   }
 }
