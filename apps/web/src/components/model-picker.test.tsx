@@ -75,6 +75,11 @@ describe("EnginePickerPanel", () => {
           </MemoryRouter>,
         ),
       );
+      await act(async () =>
+        container.firstElementChild!.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "w", bubbles: true }),
+        ),
+      );
       const search = container.querySelector<HTMLInputElement>(
         'input[aria-label="Search models"]',
       )!;
@@ -85,7 +90,7 @@ describe("EnginePickerPanel", () => {
         );
         search.dispatchEvent(new Event("input", { bubbles: true }));
       });
-      const results = container.querySelector('[role="group"][aria-label="Results"]')!;
+      const results = container.querySelector('[role="menu"][aria-label="Models"]')!;
       const rows = results.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]');
       expect(rows).toHaveLength(1);
       const row = rows[0]!;
@@ -256,11 +261,10 @@ describe("ModelPicker", () => {
 
     const container = document.createElement("div");
     container.innerHTML = html;
-    const blockedAccount = container.querySelector(
-      '[role="group"][aria-label="Codex accounts"] [role="menuitemradio"][aria-label="Codex Work"]',
-    );
-    expect(blockedAccount?.getAttribute("aria-checked")).toBe("true");
-    expect(blockedAccount?.textContent).toContain("This work location is not connected");
+    expect(
+      container.querySelector('[role="tab"][aria-label="Codex"]')?.getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(container.textContent).toContain("This work location is not connected");
   });
 });
 
@@ -313,3 +317,123 @@ function placement(
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+
+import { emptyExecutionPreferences } from "@opensteer/core";
+import { ExecutionControls } from "./execution-controls.js";
+
+it("opens usage recovery directly at accounts, applies access and routes the chosen account", async () => {
+  const exhausted = {
+    ...codexPersonal,
+    observedConnections: [{ ...personal, usage: { ...personal.usage, limitReached: true } }],
+  };
+  const onApply = vi.fn();
+  const onAccess = vi.fn();
+  const node = document.createElement("div");
+  document.body.append(node);
+  const root = createRoot(node);
+  const rect = new DOMRect(10, 100, 100, 30);
+  const spy = vi
+    .spyOn(HTMLElement.prototype, "getClientRects")
+    .mockReturnValue(Object.assign([rect], { item: () => rect }));
+  try {
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <ExecutionControls
+            placements={[exhausted, codexWork]}
+            preferences={emptyExecutionPreferences}
+            selection={{
+              environmentId: exhausted.environmentId,
+              harnessInstanceId: exhausted.harnessInstanceId,
+              modelSelection: selectionForModel(gptOnCodex),
+            }}
+            onApply={onApply}
+            access={{ engine: exhausted, mode: "full-access", onApply: onAccess }}
+          />
+        </MemoryRouter>,
+      ),
+    );
+    expect(node.textContent).toContain("alex@personal.test is out of Codex usage until");
+    const switchAccount = [...node.querySelectorAll("button")].find(
+      (item) => item.textContent === "Switch account",
+    )!;
+    await act(async () => switchAccount.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("‹ This conversation");
+    const access = [...dialog.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
+      (item) => item.textContent?.includes("Supervised"),
+    )!;
+    await act(async () => access.click());
+    expect(onAccess).toHaveBeenCalledExactlyOnceWith("approval-required");
+    const work = [...dialog.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((item) =>
+      item.textContent?.includes("alex@work.test"),
+    )!;
+    expect(dialog.querySelector(".execution-menu__exhausted")).not.toBeNull();
+    await act(async () => work.click());
+    expect(onApply).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ harnessInstanceId: codexWork.harnessInstanceId }),
+    );
+  } finally {
+    await act(async () => root.unmount());
+    node.remove();
+    spy.mockRestore();
+  }
+});
+
+it("reviews a session-ending account switch before applying it", async () => {
+  const onApply = vi.fn();
+  const node = document.createElement("div");
+  document.body.append(node);
+  const root = createRoot(node);
+  const rect = new DOMRect(10, 100, 100, 30);
+  const spy = vi
+    .spyOn(HTMLElement.prototype, "getClientRects")
+    .mockReturnValue(Object.assign([rect], { item: () => rect }));
+  try {
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <ExecutionControls
+            placements={[codexPersonal, codexWork]}
+            preferences={emptyExecutionPreferences}
+            selection={{
+              environmentId: codexPersonal.environmentId,
+              harnessInstanceId: codexPersonal.harnessInstanceId,
+              modelSelection: selectionForModel(gptOnCodex),
+            }}
+            onApply={onApply}
+            review={() => ({
+              kind: "incompatible",
+              access: null,
+              engineName: "Codex",
+              accountName: "Work",
+              expectedProviderSessionId: "session",
+              currentEngineName: "Codex",
+            })}
+          />
+        </MemoryRouter>,
+      ),
+    );
+    await act(async () => node.querySelector("button")!.click());
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>(".execution-menu__bottom")!.click(),
+    );
+    const account = [...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(
+      (item) => item.textContent?.includes("alex@work.test"),
+    )!;
+    await act(async () => account.click());
+    expect(onApply).not.toHaveBeenCalled();
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>(".switch-review button")].find(
+      (item) => item.textContent === "Use Codex",
+    )!;
+    await act(async () => confirm.click());
+    expect(onApply).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ harnessInstanceId: codexWork.harnessInstanceId }),
+      { continuation: { expectedProviderSessionId: "session", fresh: false } },
+    );
+  } finally {
+    await act(async () => root.unmount());
+    node.remove();
+    spy.mockRestore();
+  }
+});

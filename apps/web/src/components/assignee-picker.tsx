@@ -31,7 +31,6 @@ export function AssigneePicker({
   };
   return (
     <div className="assignee">
-      <span aria-hidden>Who should do it?</span>
       <button
         aria-expanded={open}
         aria-haspopup="menu"
