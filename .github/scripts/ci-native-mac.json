@@ -24,11 +24,7 @@
         "apps/desktop/scripts/build-computer-use-helper.ts"
       ],
       "scripts": ["apps/desktop/scripts/build-computer-use-helper.ts"],
-      "extra": [
-        "apps/desktop/scripts",
-        "apps/desktop/package.json",
-        "apps/web/public/computer-use.png"
-      ]
+      "extra": ["apps/desktop/package.json", "apps/web/public/computer-use.png"]
     },
     {
       "task": "passwords-helper",
@@ -39,11 +35,7 @@
         "apps/desktop/scripts/build-passwords-broker.ts"
       ],
       "scripts": ["apps/desktop/scripts/build-passwords-broker.ts"],
-      "extra": [
-        "apps/desktop/scripts",
-        "apps/desktop/package.json",
-        "apps/web/public/opensteer.png"
-      ]
+      "extra": ["apps/desktop/package.json", "apps/web/public/opensteer.png"]
     },
     {
       "task": "iphone",

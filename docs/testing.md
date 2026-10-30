@@ -165,7 +165,8 @@ The native lane separates helper builds, Swift packages, and native wire checks:
 one job per task in [ci-native-mac.json](../.github/scripts/ci-native-mac.json).
 Each task, including `iphone` with the Darwin-only files, runs only when one of its
 inputs changes: its Swift packages, the CI definition, what its node scripts and
-Vitest files import, or a file its tests read. `ci-native-inputs.json` lists those
+Vitest files import (including files loaded through `createRequire`), or a file its
+tests read. `ci-native-inputs.json` lists those
 imports (whole workspace packages), `pnpm exec tsx scripts/ci-native-inputs.ts`
 regenerates it, and `tests/ci-native-inputs.test.ts` fails when it is stale or when
 a Swift test names a repository file its task does not list. The `iphone` task's
