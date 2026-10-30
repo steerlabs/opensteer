@@ -376,3 +376,17 @@ it("cleans the exact registered Applications root without adopting prefix matche
   expect(report.remaining.temporary).toEqual([unrelated]);
   expect(report.exitCode).toBe(4);
 });
+
+it("cleans the registered mac-owner temporary root and its fixture directories", async () => {
+  const f = fixture();
+  const root = journeyTemporaryDirectory(id, "mac-owner");
+  f.add(root);
+  f.add(root + "/opensteer-owner-input.abcdef");
+  f.add(root + "/opensteer-window-groups.abcdef");
+  const reg = f.registration();
+  reg.temporary = [bindPath(root, f.io)];
+  validateRegistration(reg, "/guest", f.io);
+  const ports = systemPorts("/guest", 9999, reg, f.io);
+  await certify("postflight", ports, empty());
+  expect(f.io.exists(root)).toBe(false);
+});

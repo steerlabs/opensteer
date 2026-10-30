@@ -473,18 +473,14 @@ bash scripts/test-macos-journeys.sh --run-id "$id" --sha "$sha" --out "$HOME/ope
 bash scripts/test-macos-journeys.sh --postflight --run-id "$id" --out "$HOME/opensteer-runs/$id"
 ```
 
-The on-demand `mac-owner` selection runs `MacOwnerInputJourney/run-vm.sh` unchanged
-through the registered launcher, using its original environment, temporary app
-location and cleanup. It still requires the legacy `/Users/admin/opensteer-job`
-layout; the guest marker alone does not satisfy that script's guard. Files it
-wrote or changed in `~/opensteer-job/artifacts/mac-owner` during the run are
-copied read-only into the selected run's `mac-owner/` directory; evidence left
-by earlier runs or unselected engines is not. A rerun into the legacy output
-replaces its earlier copies. Stopping the run kills the script before its cleanup
-trap, so its unregistered `~/Applications/opensteer-owner-input.*` and
-`opensteer-window-groups.*` directories remain as residue that postflight
-reports and the job clone's deletion removes. It is excluded from default
-journeys and sweeps.
+The on-demand `mac-owner` selection uses the registered launcher and requires the
+legacy `/Users/admin/opensteer-job` layout. Its temporary fixture directories live
+under the registered run root. On interruption, its group gets a bounded grace
+period for its cleanup trap before the normal forced stop and registered cleanup.
+Files written or changed in `~/opensteer-job/artifacts/mac-owner` during the run
+are copied read-only into the selected run's `mac-owner/` directory; earlier
+or unselected engine evidence is omitted. It is excluded from default journeys
+and sweeps.
 
 After each journey, both invocation modes copy `.ips` and `.crash` files from
 `~/Library/Logs/DiagnosticReports` modified since that journey started into its

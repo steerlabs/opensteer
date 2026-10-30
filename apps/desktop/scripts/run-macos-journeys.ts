@@ -1,6 +1,8 @@
 import { collectJourneyEvidence } from "./journey-artifacts.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { bindPath, validatePathBinding } from "./journey-paths.js";
+import { stopLegacyGroup } from "./journey-legacy-stop.js";
+import type { ProcessIdentity } from "./journey-processes.js";
 import { stopRegisteredGroups } from "./journey-processes.js";
 import { launchRegisteredWorkload } from "./journey-launch.js";
 import {
@@ -59,6 +61,9 @@ const constants = {
   nativeResourceCache: NATIVE_RESOURCE_CACHE,
 };
 let interrupted = false;
+let legacyRunning = false;
+let legacyGroup: ProcessIdentity | undefined;
+let interruptStop: Promise<void> | undefined;
 let accepted = false;
 const selected: string[] = [];
 let registration: Registration | undefined;
@@ -96,7 +101,7 @@ async function execute(command: string, log: string, env = process.env): Promise
   return launchRegisteredWorkload({
     command,
     log,
-    env,
+    env: { ...env, OPENSTEER_LEGACY_GRACEFUL_STOP: legacyRunning ? "1" : "0" },
     applicationRoot: registration?.temporary.find(
       (binding) => binding.path === env.OPENSTEER_JOURNEY_APPS,
     ),
@@ -105,6 +110,7 @@ async function execute(command: string, log: string, env = process.env): Promise
       const proposed = { ...registration!, groups: [...registration!.groups, identity] };
       await record(proposed);
       registration = proposed;
+      if (legacyRunning) legacyGroup = identity;
     },
   });
 }
@@ -229,12 +235,10 @@ async function main() {
     output: bindPath(out),
     groups: [],
     keychain: [],
-    temporary: selected
-      .filter((name) => name !== "mac-owner")
-      .flatMap((name) => [
-        bindPath(journeyTemporaryDirectory(runId, name)),
-        bindPath(journeyApplicationDirectory(home, runId, name)),
-      ]),
+    temporary: selected.flatMap((name) => [
+      bindPath(journeyTemporaryDirectory(runId, name)),
+      ...(name === "mac-owner" ? [] : [bindPath(journeyApplicationDirectory(home, runId, name))]),
+    ]),
     canonical: CANONICAL_PATHS.filter((p) => !pre.after.canonical.includes(p)).map((p) =>
       bindPath(path.join(home, p)),
     ),
@@ -247,7 +251,10 @@ async function main() {
   }
   const signal = () => {
     interrupted = true;
-    void stopGroups(false).catch((error) => console.error(error));
+    interruptStop ??= (async () => {
+      if (legacyGroup) await stopLegacyGroup(legacyGroup);
+      await stopGroups(false);
+    })().catch((error) => console.error(error));
   };
   process.on("SIGTERM", signal);
   process.on("SIGHUP", signal);
@@ -288,6 +295,7 @@ async function main() {
       for (const name of selected) {
         if (interrupted) break;
         const directory = path.join(out, name);
+        mkdirSync(journeyTemporaryDirectory(runId, name), { recursive: true, mode: 0o700 });
         if (name !== "mac-owner") {
           const apps = journeyApplicationDirectory(home, runId, name);
           const original = registration.temporary.find((binding) => binding.path === apps)!;
@@ -298,13 +306,16 @@ async function main() {
             binding.path === apps ? bindPath(apps) : binding,
           );
           await record();
-          mkdirSync(journeyTemporaryDirectory(runId, name), { recursive: true, mode: 0o700 });
           for (const sub of ["config", "cache", "data", "downloads"])
             mkdirSync(path.join(directory, sub), { recursive: true });
         }
         const env =
           name === "mac-owner"
-            ? process.env
+            ? {
+                ...process.env,
+                TMPDIR: journeyTemporaryDirectory(runId, name) + "/",
+                OPENSTEER_LEGACY_TEMP_ROOT: journeyTemporaryDirectory(runId, name),
+              }
             : {
                 ...process.env,
                 OPENSTEER_JOURNEY_OUT: directory,
@@ -322,11 +333,15 @@ async function main() {
               };
         const startedAt = Date.now();
         const start = performance.now();
+        legacyRunning = name === "mac-owner";
         const code = await execute(
           `bash scripts/journey-command.sh ${name}`,
           path.join(out, `${name}.log`),
           env,
         );
+        await interruptStop;
+        legacyRunning = false;
+        legacyGroup = undefined;
         const evidence = await collectJourneyEvidence(
           home,
           startedAt,
@@ -367,6 +382,7 @@ async function main() {
         await delay(500);
       }
   } finally {
+    await interruptStop;
     await stopGroups();
     const ports = systemPorts(home, process.pid, registration);
     await ports.cleanup(ports.collect());
