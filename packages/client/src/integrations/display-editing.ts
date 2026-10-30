@@ -26,7 +26,8 @@ const refusalWords: Record<DisplayInputRefusal, string> = {
   stale: "The field changed. Try again.",
   unsupported: "This device doesn’t support this edit.",
   "too-large": "This edit is too large.",
-  "not-held": "Take over to edit.",
+  unavailable: "Input is unavailable.",
+  contended: "Another viewer is pressing. Try again.",
 };
 interface Pending {
   readonly copy: boolean;
@@ -74,16 +75,16 @@ export class DisplayEditingSession {
     if (geometry === null) this.#cancel("The display changed. Try again.");
   }
   #currentScope(): string | null {
-    const { control, connection, display } = this.#lease.getSnapshot();
-    return connection === "open" && control.state === "held" && display?.editingVersion === 1
-      ? `${control.controlId}:${display.generation}`
+    const { input, connection, display } = this.#lease.getSnapshot();
+    return connection === "open" && input === "available" && display?.editingVersion === 1
+      ? `${connection}:${display.generation}`
       : null;
   }
   #changed(): void {
     const scope = this.#currentScope();
     if (scope === this.#scope) return;
     this.#scope = scope;
-    this.#cancel("The display or control changed. Try again.");
+    this.#cancel("The display changed. Try again.");
     this.#set({ context: null, receipt: null });
   }
   #set(patch: Partial<DisplayEditingSnapshot>): void {
@@ -265,7 +266,7 @@ export class DisplayEditingSession {
             this.#pending.set(sequence, pending);
           })
         )
-          this.#finish(pending, new Error("Take over to edit."));
+          this.#finish(pending, new Error("Input is unavailable."));
       } catch (error) {
         this.#finish(
           pending,
