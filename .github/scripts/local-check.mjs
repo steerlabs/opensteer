@@ -12,7 +12,8 @@ export function localPlan(files, graph, present, baseGraph = graph) {
     (p) =>
       /\.test\.[cm]?[jt]sx?$/.test(p) &&
       (files.includes(p) ||
-        files.some((f) => p.startsWith(f.replace(/\.[cm]?[jt]sx?$/, "") + "."))),
+        // Any extension: a data file such as tests/quarantine.json selects its validator.
+        files.some((f) => p.startsWith(f.replace(/\.[^./]+$/, "") + "."))),
   );
   const existing = files.filter((p) => present.includes(p));
   const commands = [];

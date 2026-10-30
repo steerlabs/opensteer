@@ -558,20 +558,5 @@
     "evidence": [
       "W5 investigation: hold an older real Host catalogsForViewers projection; let a newer projection publish and await the client-applied generation/revision, then release and acknowledge receipt of the older projection on the real realtime socket. The client retains the newer catalog, and the original attribution/stop/replay assertions pass. The held producer is released and joined in finally. This rules out stale-revision acceptance for this controlled reversed completion, not every Host coalescing path. Historical realtime timeout remains unresolved; no fix is claimed from repeat passes. Keep running without retries or larger deadlines."
     ]
-  },
-  {
-    "file": "apps/host/src/agents/background-work.integration.test.ts",
-    "name": ["Background work", "keeps background work through a Host restart"],
-    "area": "Agent orchestration",
-    "owner": "Host/Runner maintainers",
-    "status": "quarantined",
-    "firstSeen": "2026-10-30T14:55:12Z",
-    "deadline": "2026-11-06T14:55:12Z",
-    "sha": "1f07627fcd1d735a2457a0af14ef567a7cb73c47",
-    "evidence": [
-      "https://github.com/steerlabs/opensteer/actions/runs/41073881100/job/124126629137: restart case exhausted 180 s; cleanup exhausted another 30 s. The containment AggregateError names stack startup/operations. Startup already returned and restartHost is this case's only tracked operation, so cleanup was waiting on the unfinished restart, not a second independent failure.",
-      "The log does not identify which restart stage stalled. Shutdown draining a live Run/event is a hypothesis; no evidence establishes a missed background wakeup, wall-clock deadline expiry or execution-lease race. Fixture containment then forcibly removes run databases (57P01 administrator termination), explaining the later connection errors.",
-      "Keep every completion/deadline/node assertion. Bound restart and individual database conditions and release the fake child in finally. The new unit regression proves the old polling deadline did not bound an in-flight database read. This register preserves ownership; it does not skip the test or authorize a passing gate."
-    ]
   }
 ]
