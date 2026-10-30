@@ -3081,7 +3081,13 @@ export class HttpHostClient {
   }
 
   async #bootstrap(force = false, revalidateCapabilities = false): Promise<void> {
-    if (this.#bootstrapPromise && !force) return this.#bootstrapPromise;
+    if (this.#bootstrapPromise && !force) {
+      // A bootstrap already under way may be reusing evidence this caller
+      // asked to replace, so the reverification runs beside it.
+      if (!revalidateCapabilities) return this.#bootstrapPromise;
+      await Promise.all([this.#bootstrapPromise, this.#refreshCapabilities({ revalidate: true })]);
+      return;
+    }
     const operation = this.#performBootstrap(revalidateCapabilities);
     this.#bootstrapPromise = operation;
     try {

@@ -5381,6 +5381,40 @@ describe("HttpHostClient attachment discovery", () => {
     }
   });
 
+  it("reverifies discovery on refresh while a periodic bootstrap is still running", async () => {
+    vi.useFakeTimers();
+    const workspace = makeWorkspace();
+    const capabilities = vi.fn(async () => [] as const);
+    let held: ReturnType<typeof Promise.withResolvers<Response>> | null = null;
+    let bootstraps = 0;
+    const client = createHttpHostClient({
+      capabilities,
+      fetch: async () => {
+        bootstraps += 1;
+        if (bootstraps === 2) {
+          held = Promise.withResolvers<Response>();
+          return held.promise;
+        }
+        return json(bootstrap([workspace]));
+      },
+      refreshIntervalMs: 15_000,
+      webSocketFactory: () => new FakeSocket(),
+    });
+    try {
+      await client.load();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(held).not.toBeNull();
+      const refreshed = client.refresh();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(capabilities).toHaveBeenCalledWith({ revalidate: true });
+      held!.resolve(json(bootstrap([workspace])));
+      await refreshed;
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["unauthorized", "unsupported-version"] as const)(
     "reverifies discovery on an RPC %s refusal",
     async (refusal) => {
