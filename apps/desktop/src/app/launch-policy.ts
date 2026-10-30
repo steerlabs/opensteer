@@ -32,8 +32,7 @@ export function assertDesktopLaunch(input: {
       !path.isAbsolute(home) ||
       !path.basename(home).startsWith("opensteer-launch-") ||
       input.environment.OPENSTEER_DESKTOP_DATA_DIR !== path.join(home, "userdata") ||
-      input.environment.OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT !==
-        path.join(home, "workspace") ||
+      input.environment.OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT !== undefined ||
       existsSync(path.join(home, "userdata"))
     ) {
       throw Error("Release smoke requires a fresh isolated HOME, userData and workspace");

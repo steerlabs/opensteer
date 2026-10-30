@@ -1,3 +1,4 @@
+import { open as openInspector } from "node:inspector";
 import { autoUpdater } from "electron-updater";
 import { startDesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
@@ -191,6 +192,9 @@ app.on("second-instance", (_event, argv) => {
 const releaseSmoke = process.env.OPENSTEER_DESKTOP_RELEASE_SMOKE === "1";
 
 if (acceptLaunch()) {
+  // Shipped fuses keep CLI inspection disabled; only a validated fresh smoke
+  // profile opens a loopback inspector for the release harness.
+  if (releaseSmoke) openInspector(0, "127.0.0.1");
   app.setName(desktopApplicationName(app.isPackaged, embeddedRelease.application.name));
   app.enableSandbox();
   void startDesktop().catch((error: unknown) => {
