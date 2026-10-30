@@ -13,7 +13,6 @@ actor AppleRecognizer: Recognizer {
   private var cancelled = false
   private let reservations: ReservationCoordinator
   private let languages: [String]
-  private var reservation: Locale?
 
   init(
     reservations: ReservationCoordinator = ReservationCoordinator(),
@@ -82,8 +81,11 @@ actor AppleRecognizer: Recognizer {
       localeIdentity($0) == localeIdentity(locale)
     }
     guard !cancelled else { throw CancellationError() }
-    if !existed { reservation = locale }
-    do { try await AssetInventory.reserve(locale: locale) } catch {
+    if !existed { await reservations.recordCreatedReservation(locale) }
+    do {
+      guard !cancelled else { throw CancellationError() }
+      try await AssetInventory.reserve(locale: locale)
+    } catch {
       await releaseUninstalled()
       throw error
     }
@@ -107,7 +109,7 @@ actor AppleRecognizer: Recognizer {
         try await installation.downloadAndInstall()
       }
       guard !cancelled else { throw CancellationError() }
-      reservation = nil
+      await reservations.recordCreatedReservation(nil)
       installation = nil
     } catch {
       await releaseUninstalled()
@@ -115,8 +117,7 @@ actor AppleRecognizer: Recognizer {
     }
   }
   private func releaseUninstalled() async {
-    if let locale = reservation {
-      reservation = nil
+    if let locale = await reservations.takeCreatedReservation() {
       if await AssetInventory.status(forModules: [module(locale)]) != .installed {
         await AssetInventory.release(reservedLocale: locale)
       }

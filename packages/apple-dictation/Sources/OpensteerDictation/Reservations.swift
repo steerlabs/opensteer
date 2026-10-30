@@ -9,6 +9,18 @@ func localeIdentity(_ locale: Locale) -> String {
 /// Actor isolation alone does not prevent reentrancy while Apple APIs are awaited.
 actor ReservationCoordinator {
   private var tail: Task<Void, Never>?
+  private var createdReservation: Locale?
+
+  /// Inventory transactions record ownership before suspending in Apple's reserve API.
+  func recordCreatedReservation(_ locale: Locale?) {
+    createdReservation = locale
+  }
+
+  /// Only the serialized transaction or cleanup can consume this service-wide ownership.
+  func takeCreatedReservation() -> Locale? {
+    defer { createdReservation = nil }
+    return createdReservation
+  }
 
   func run<T: Sendable>(_ operation: @escaping @Sendable () async -> T) async -> T {
     let previous = tail

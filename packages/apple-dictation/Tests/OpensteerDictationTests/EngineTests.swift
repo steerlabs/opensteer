@@ -320,8 +320,11 @@ final class EngineTests: XCTestCase {
     let trace = Trace()
     let reserve = Task {
       await coordinator.run {
+        await coordinator.recordCreatedReservation(Locale(identifier: "en_US"))
         trace.append("reserve")
         await gate.wait()
+        let owned = await coordinator.takeCreatedReservation()
+        XCTAssertEqual(owned.map(localeIdentity), "en-us")
         trace.append("release")
       }
     }
