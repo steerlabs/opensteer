@@ -34,13 +34,8 @@ interface ControlPlaneAuthConfig {
   readonly googleClientSecret?: string;
 }
 
-/**
- * Name of the Account session cookie. The `__Host-` prefix is a browser-checked
- * promise that the cookie is host-only and path-wide, which is what keeps a
- * sibling Deployment origin from writing an Account session cookie the Account
- * service would then read. Plain HTTP loopback development cannot carry that
- * prefix, so it falls back to the unprefixed name.
- */
+// Better Auth prefixes this configured name with __Secure- on HTTPS. Keep the
+// configured name stable so existing browser sessions remain readable.
 function accountSessionCookieName(publicOrigin: URL): string {
   return publicOrigin.protocol === "https:" ? "__Host-opensteer.account" : "opensteer.account";
 }
@@ -106,9 +101,8 @@ export function createControlPlaneAuth(
       session: {
         delete: {
           before: async (session) => {
-            // OAuth Provider 1.6.29 does not revoke session-bound provider
-            // tokens when a Better Auth session is deleted. Close that gap at
-            // the shared database boundary for sign-out and session revocation.
+            // The provider preserves offline_access tokens on logout; Account sign-out
+            // revokes all credentials issued to this session.
             await database
               .deleteFrom("oauthAccessTokens")
               .where("sessionId", "=", session.id)
@@ -149,10 +143,7 @@ export function createControlPlaneAuth(
     ],
     emailAndPassword: { enabled: false },
     plugins: [
-      // OAuth Provider 1.6.29 exposes no issuer option of its own: it reads the
-      // JWT plugin's issuer, falling back to the request base URL. Pinning it
-      // here is therefore the whole guard against issuer drift now that this
-      // process answers on the portal apex as well as the Account host.
+      // The provider uses the JWT issuer; pin it across both public hostnames.
       jwt({
         disableSettingJwtHeader: true,
         jwt: {
@@ -178,10 +169,6 @@ export function createControlPlaneAuth(
         idTokenExpiresIn: 10 * 60,
         loginPage: "/sign-in",
         refreshTokenExpiresIn: 30 * 24 * 60 * 60,
-        // Fastify publishes both discovery documents at the issuer root; the
-        // plugin cannot infer those outer routes from Better Auth's /api/auth
-        // base path, so acknowledge the verified integration explicitly.
-        silenceWarnings: { oauthAuthServerConfig: true, openidConfig: true },
         schema: {
           oauthAccessToken: { modelName: "oauthAccessTokens" },
           oauthClient: {
@@ -193,7 +180,25 @@ export function createControlPlaneAuth(
         scopes: [...controlPlaneOAuthScopes],
         storeClientSecret: "hashed",
         storeTokens: "hashed",
-        validAudiences: [config.publicOrigin.origin],
+        resources: [config.publicOrigin.origin],
+        // Existing clients have no resource links, and all use the Account API.
+        enforcePerClientResources: false,
+        customIdTokenClaims: ({ user, scopes }) => {
+          const name = user.name.split(" ").filter(Boolean);
+          return {
+            ...(scopes.includes("email")
+              ? { email: user.email, email_verified: user.emailVerified }
+              : {}),
+            ...(scopes.includes("profile")
+              ? {
+                  name: user.name,
+                  picture: user.image ?? undefined,
+                  given_name: name.length > 1 ? name.slice(0, -1).join(" ") : undefined,
+                  family_name: name.length > 1 ? name.at(-1) : undefined,
+                }
+              : {}),
+          };
+        },
       }),
     ],
     rateLimit: {
@@ -223,8 +228,7 @@ export function createControlPlaneAuth(
             google: {
               clientId: config.googleClientId,
               clientSecret: config.googleClientSecret,
-              // Better Auth 1.6 cannot vary the upstream Google prompt per
-              // request. Account selection preserves explicit interaction;
+              // Account selection preserves explicit interaction;
               // the Opensteer authorization server remains the freshness
               // authority for prompt=login.
               prompt: "select_account",
