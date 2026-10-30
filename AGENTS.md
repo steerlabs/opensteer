@@ -131,6 +131,7 @@ implementation details.
 | Browser sessions, page uploads or profile saving                       | [Browser sessions](docs/browser-sessions.md)                                                                  |
 | Browser profile formats                                                | [Snapshot contract](packages/browser-profile/src/snapshot.ts)                                                 |
 | Chrome sign-ins and the Chrome extension                               | [Chrome sign-ins](docs/browser-sources.md)                                                                    |
+| Voice dictation into the composer                                      | [Dictation](docs/dictation.md)                                                                                |
 | Saved-password sign-ins and Opensteer Passwords                        | [Opensteer Passwords](docs/passwords.md)                                                                      |
 | Agent-facing tools and bundled skills                                  | [Tool catalog](packages/agent-tools/src/catalog.ts); [shipped skills](apps/runner/agent-skills/skills)        |
 

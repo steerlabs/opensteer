@@ -11,6 +11,7 @@
     "./browser-relay": "./src/browser-relay.ts",
     "./deployment-status": "./src/deployment-status.ts",
     "./desktop": "./src/desktop.ts",
+    "./dictation": "./src/dictation.ts",
     "./display-stream": "./src/display-stream.ts",
     "./editing": "./src/editing.ts",
     "./passwords-broker": "./src/passwords-broker.ts"

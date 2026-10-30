@@ -1,4 +1,5 @@
 import { type DisplayClientDiagnostic } from "./display-stream.js";
+import type { DictationPort } from "./dictation.js";
 export { DisplayClientDiagnosticSchema } from "./display-stream.js";
 import { HostCapabilitySchema } from "@opensteer/deployment-authority";
 import { ComputerViewRefSchema } from "./computer-view.js";
@@ -1572,6 +1573,8 @@ export interface OpensteerDesktopBridge {
   browserPresentation?: DesktopBrowserPresentationBridge;
   /** Present only in the desktop app. */
   downloads?: DesktopDownloadsBridge;
+  /** On-device dictation on this Mac. Present only in the desktop app. */
+  dictation?: DictationPort;
   onWorkspaceTabCommand(listener: (command: DesktopWorkspaceTabCommand) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
   getLocalVisibility(): Promise<boolean>;
