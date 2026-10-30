@@ -91,44 +91,47 @@ await download(
   "d595961e563fcae057d4a0fb992f175a54d97fcc4a14dc2d474d92ddeea3b9f8",
 );
 await run("tar", ["-xzf", path.join(out, "node.tgz"), "-C", out]);
-await download(
-  "https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.bz2",
-  path.join(out, "postgres.tar.bz2"),
-  "dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979",
-);
-await run("tar", ["-xjf", path.join(out, "postgres.tar.bz2"), "-C", out]);
 const postgres = path.join(out, "postgres");
-const source = path.join(out, "postgresql-17.11");
-await run(
-  path.join(source, "configure"),
-  [
-    `--prefix=${postgres}`,
-    "--without-icu",
-    "--without-readline",
-    "--without-zlib",
-    "--without-lz4",
-    "--without-zstd",
-  ],
-  source,
-);
-await run("make", ["-j4"], source);
-await run("make", ["install"], source);
-// Relocate our own build before the runtime's external-dependency gate checks it.
-for (const directory of ["bin", "lib"]) {
-  const base = path.join(postgres, directory);
-  for (const entry of await readdir(base, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const file = path.join(base, entry.name);
-    const kind = await run("file", [file], root, true);
-    if (!kind.includes("Mach-O")) continue;
-    if (entry.name.endsWith(".dylib"))
-      await run("install_name_tool", ["-id", `@loader_path/${entry.name}`, file]);
-    const libraries = (await run("otool", ["-L", file], root, true)).split("\n").slice(1);
-    for (const line of libraries) {
-      const dependency = line.trim().split(" (", 1)[0]!;
-      if (!dependency.startsWith(postgres + "/")) continue;
-      const relative = path.relative(base, dependency);
-      await run("install_name_tool", ["-change", dependency, `@loader_path/${relative}`, file]);
+// Only the release workflow restores this source/toolchain-qualified, unsigned tree.
+if (process.env.OPENSTEER_RELEASE_POSTGRES_CACHE_HIT !== "true") {
+  await download(
+    "https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.bz2",
+    path.join(out, "postgres.tar.bz2"),
+    "dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979",
+  );
+  await run("tar", ["-xjf", path.join(out, "postgres.tar.bz2"), "-C", out]);
+  const source = path.join(out, "postgresql-17.11");
+  await run(
+    path.join(source, "configure"),
+    [
+      `--prefix=${postgres}`,
+      "--without-icu",
+      "--without-readline",
+      "--without-zlib",
+      "--without-lz4",
+      "--without-zstd",
+    ],
+    source,
+  );
+  await run("make", ["-j4"], source);
+  await run("make", ["install"], source);
+  // Relocate our own build before the runtime's external-dependency gate checks it.
+  for (const directory of ["bin", "lib"]) {
+    const base = path.join(postgres, directory);
+    for (const entry of await readdir(base, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const file = path.join(base, entry.name);
+      const kind = await run("file", [file], root, true);
+      if (!kind.includes("Mach-O")) continue;
+      if (entry.name.endsWith(".dylib"))
+        await run("install_name_tool", ["-id", `@loader_path/${entry.name}`, file]);
+      const libraries = (await run("otool", ["-L", file], root, true)).split("\n").slice(1);
+      for (const line of libraries) {
+        const dependency = line.trim().split(" (", 1)[0]!;
+        if (!dependency.startsWith(postgres + "/")) continue;
+        const relative = path.relative(base, dependency);
+        await run("install_name_tool", ["-change", dependency, `@loader_path/${relative}`, file]);
+      }
     }
   }
 }

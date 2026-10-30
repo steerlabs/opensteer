@@ -243,7 +243,7 @@ jobs:
       DEVELOPER_DIR: ${{ matrix.xcode }}
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.native-mac != 'false' }}
-    runs-on: macos-15
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -271,6 +271,7 @@ jobs:
           echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
           echo "inputs=$inputs" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        if: matrix.task != 'release-native'
         with:
           path: |
             packages/apple-data/.build
@@ -281,6 +282,13 @@ jobs:
             apps/desktop/native/dictation/.build
           key: swift-${{ runner.os }}-${{ runner.arch }}-${{ matrix.task }}-${{ steps.swift.outputs.toolchain }}-${{ steps.swift.outputs.inputs }}
       - run: mkdir -p "$RUNNER_TEMP/evidence"
+      - name: Prove universal release native builds without signing inputs
+        if: matrix.task == 'release-native'
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-version
+          xcrun clang++ --version
+          pnpm exec tsx apps/desktop/scripts/prove-release-native.ts
       - name: Build computer use helper
         if: matrix.task == 'computer-helper'
         run: pnpm --filter @opensteer/desktop build:computer-use-helper

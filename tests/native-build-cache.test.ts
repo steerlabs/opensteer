@@ -5,6 +5,7 @@ import { expect, it } from "vitest";
 import {
   hashNativeInputs,
   nativeBuildProducts,
+  nativeBuildRecipeInputs,
   nativeToolchainIdentity,
   verifyNativeProducts,
 } from "../apps/desktop/scripts/native-build-cache.js";
@@ -150,6 +151,28 @@ it("reuses verified compiler products and rebuilds on source, toolchain, flag, i
     expect((await nativeBuildProducts(options)).hit).toBe(false);
     expect((await nativeBuildProducts(options)).hit).toBe(true);
     expect(builds).toBe(9);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("invalidates both helper recipes when only the shared Swift builder changes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "native-shared-builder-"));
+  try {
+    const recipes = (["computer-use", "passwords"] as const).map((kind) =>
+      nativeBuildRecipeInputs(root, kind),
+    );
+    for (const file of new Set(recipes.flatMap((roots) => roots.map((entry) => entry.path)))) {
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, "original");
+    }
+    const before = await Promise.all(recipes.map((roots) => hashNativeInputs(roots, {})));
+    await writeFile(
+      path.join(root, "apps/desktop/scripts/build-swift-products.ts"),
+      "changed compiler flags",
+    );
+    for (const [index, roots] of recipes.entries())
+      expect((await hashNativeInputs(roots, {})).digest).not.toBe(before[index]!.digest);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -29,7 +29,7 @@ test("read-only preflight, secret-free discovery and only stable publication app
   assert.deepEqual(workflow.permissions, { contents: "read" });
   assert.doesNotMatch(text, /pull_request_target|OPENSTEER_DESKTOP_UPDATE_/);
   for (const [name, job] of Object.entries(workflow.jobs)) {
-    assert.ok(["ubuntu-latest", "macos-15"].includes(job["runs-on"]));
+    assert.equal(job["runs-on"], name === "build" ? "macos-26" : "ubuntu-latest");
     assert.deepEqual(job.permissions ?? workflow.permissions, {
       contents: ["discover", "draft", "publish-insider", "publish-stable"].includes(name)
         ? "write"

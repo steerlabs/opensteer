@@ -1,7 +1,7 @@
 {
-  "xcode": "Xcode 27.1\nBuild version 27A9275",
-  "sdk": "27.0",
-  "clang": "clang-2100.3.34.2",
+  "xcode": "Xcode 26.6\nBuild version 17F113",
+  "sdk": "26.5",
+  "clang": "clang-2100.1.1.101",
   "nodeHeaders": "24.13.0",
   "napi": 8,
   "headers": {

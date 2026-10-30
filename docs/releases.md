@@ -72,7 +72,11 @@ Production provenance, signer, profile, resource and APK receipt checks remain
 enforced. Debugger maps are omitted to retain the 2,048-file runtime manifest
 bound. Each command retains its 15-minute limit; configure, make and install
 are separate commands. A cold local PostgreSQL build measured 27/79/6 seconds;
-hosted timing still needs the first practice run. Only the pnpm store is cached.
+hosted timing still needs the first practice run. The release workflow also caches
+unsigned PostgreSQL, SwiftPM objects and Gradle dependencies under release-only
+keys bound to their source inputs and toolchains. It never restores a partial key
+or caches signing material. PR native proofs build cold on the release runner and
+Xcode.
 No private checkout, login keychain item or signing JSON is required by CI.
 
 Signing uses strict `OPENSTEER_RELEASE_SIGNING_IDENTITY`,

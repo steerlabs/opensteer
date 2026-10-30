@@ -1,3 +1,4 @@
+import { buildSwiftProducts } from "./build-swift-products.js";
 /**
  * Build `Opensteer Computer Use.app` — the only process on a Mac that holds the
  * Accessibility and Screen Recording grants (docs/computer-use.md §1).
@@ -72,7 +73,7 @@ async function main(): Promise<void> {
 
   const architectures = release ? releaseArchitectures : [arch() === "x64" ? "x86_64" : "arm64"];
   const build = async () => ({
-    ComputerUseHelper: await builtExecutable(await buildSwift(release)),
+    ComputerUseHelper: path.join(await buildSwift(release), "ComputerUseHelper"),
   });
   const packageAndVerify = async (products: Readonly<Record<string, string>>) => {
     const executable = products.ComputerUseHelper;
@@ -124,25 +125,14 @@ async function main(): Promise<void> {
 }
 
 /** Release output is universal; development explicitly targets this host. */
-async function buildSwift(release: boolean): Promise<readonly string[]> {
-  const architectures = release
-    ? releaseArchitectures
-    : ([arch() === "x64" ? "x86_64" : "arm64"] as const);
-  await run(
-    "/usr/bin/swift",
-    [
-      "build",
-      "-c",
-      "release",
-      // Only the shipped helper: test support imports the core @testable, which an optimized build refuses.
-      "--product",
-      "ComputerUseHelper",
-      ...(!release ? ["-Xswiftc", "-DOPENSTEER_DEV_TRUST"] : []),
-      ...architectures.flatMap((architecture) => ["--arch", architecture]),
-    ],
+async function buildSwift(release: boolean): Promise<string> {
+  return buildSwiftProducts(
     packageDirectory,
+    ["ComputerUseHelper"],
+    release ? releaseArchitectures : [arch() === "x64" ? "x86_64" : "arm64"],
+    "release",
+    !release ? ["-Xswiftc", "-DOPENSTEER_DEV_TRUST"] : [],
   );
-  return architectures;
 }
 
 function signingIdentity(arguments_: readonly string[]): string | undefined {
@@ -154,23 +144,6 @@ function signingIdentity(arguments_: readonly string[]): string | undefined {
     throw new Error("--sign may be provided only once.");
   }
   return identity;
-}
-
-async function builtExecutable(architectures: readonly string[]): Promise<string> {
-  const binPath = (
-    await capture(
-      "/usr/bin/swift",
-      [
-        "build",
-        "-c",
-        "release",
-        ...architectures.flatMap((architecture) => ["--arch", architecture]),
-        "--show-bin-path",
-      ],
-      packageDirectory,
-    )
-  ).trim();
-  return path.join(binPath, "ComputerUseHelper");
 }
 
 async function copyExecutable(source: string, destination: string): Promise<void> {
@@ -359,31 +332,6 @@ async function run(
     child.once("error", rejectPromise);
     child.once("exit", (code, signal) => {
       if (code === 0) resolvePromise();
-      else rejectPromise(new Error(`${executable} failed (${signal ?? `exit ${code}`}).`));
-    });
-  });
-}
-
-async function capture(
-  executable: string,
-  arguments_: readonly string[],
-  cwd: string = repositoryRoot,
-): Promise<string> {
-  return await new Promise<string>((resolvePromise, rejectPromise) => {
-    const child = spawn(executable, [...arguments_], {
-      cwd,
-      env: process.env,
-      shell: false,
-      stdio: ["ignore", "pipe", "inherit"],
-    });
-    let output = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (piece: string) => {
-      output += piece;
-    });
-    child.once("error", rejectPromise);
-    child.once("exit", (code, signal) => {
-      if (code === 0) resolvePromise(output);
       else rejectPromise(new Error(`${executable} failed (${signal ?? `exit ${code}`}).`));
     });
   });

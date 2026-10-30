@@ -113,6 +113,27 @@
       "tests": ["apps/desktop/native/dictation"],
       "scripts": ["apps/desktop/scripts/build-dictation-helper.ts"],
       "extra": ["apps/desktop/package.json"]
+    },
+    {
+      "task": "release-native",
+      "timeout": 20,
+      "runner": "macos-26",
+      "xcode": "/Applications/Xcode_26.6.app/Contents/Developer",
+      "swift": [
+        "apps/desktop/native/computer-use",
+        "apps/desktop/native/passwords",
+        "apps/desktop/native/dictation",
+        "packages/apple-data",
+        "packages/apple-dictation",
+        "packages/macos-signing"
+      ],
+      "scripts": [
+        "apps/desktop/scripts/prove-release-native.ts",
+        "apps/desktop/scripts/build-computer-use-helper.ts",
+        "apps/desktop/scripts/build-passwords-broker.ts",
+        "apps/desktop/scripts/build-dictation-helper.ts"
+      ],
+      "extra": ["apps/desktop/native/passkeys", ".github/workflows/release.yml"]
     }
   ]
 }
