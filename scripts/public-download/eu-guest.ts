@@ -330,23 +330,32 @@ try {
   error = e instanceof Error ? e.stack : String(e);
   process.exitCode = 1;
 } finally {
-  if (updateObserver && updateObserver.exitCode === null && updateObserver.signalCode === null) {
-    const done = new Promise<void>((resolve) => updateObserver!.once("close", () => resolve()));
-    updateObserver.kill("SIGTERM");
-    await done;
+  // Teardown failures are recorded, never thrown: PF must be released below, or the
+  // VM runner's export connection is blocked and the evidence is lost.
+  let network = "";
+  try {
+    if (updateObserver && updateObserver.exitCode === null && updateObserver.signalCode === null) {
+      const done = new Promise<void>((resolve) => updateObserver!.once("close", () => resolve()));
+      updateObserver.kill("SIGTERM");
+      await done;
+    }
+    if (running()) run("osascript", ["-e", `tell application "${product}" to quit`], true);
+    if (mirror?.pid) {
+      run("sudo", ["pkill", "-TERM", "-P", String(mirror.pid)], true);
+      mirror.kill("SIGTERM");
+      if (mirror.exitCode === null && mirror.signalCode === null)
+        await new Promise<void>((resolve) => mirror!.once("close", () => resolve()));
+    }
+    const shipIt = path.join(homedir(), `Library/Caches/${bundleId}.ShipIt`);
+    for (const name of ["ShipIt_stderr.log", "ShipIt_stdout.log", "ShipItState.plist"]) {
+      if (existsSync(path.join(shipIt, name)))
+        cpSync(path.join(shipIt, name), path.join(out, name));
+    }
+    network = readFileSync(log, "utf8");
+  } catch (e) {
+    error ??= e instanceof Error ? e.stack : String(e);
+    process.exitCode = 1;
   }
-  if (running()) run("osascript", ["-e", `tell application "${product}" to quit`], true);
-  if (mirror?.pid) {
-    run("sudo", ["pkill", "-TERM", "-P", String(mirror.pid)], true);
-    mirror.kill("SIGTERM");
-    if (mirror.exitCode === null && mirror.signalCode === null)
-      await new Promise<void>((resolve) => mirror!.once("close", () => resolve()));
-  }
-  const shipIt = path.join(homedir(), `Library/Caches/${bundleId}.ShipIt`);
-  for (const name of ["ShipIt_stderr.log", "ShipIt_stdout.log", "ShipItState.plist"]) {
-    if (existsSync(path.join(shipIt, name))) cpSync(path.join(shipIt, name), path.join(out, name));
-  }
-  const network = readFileSync(log, "utf8");
   let packetPassed = false;
   let mirrorTrafficPassed = false;
   let accountHostRequests: string[] = [];

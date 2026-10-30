@@ -137,7 +137,7 @@ test("PASS publication output binds the downloaded draft ZIP, never the local N+
   const lines = publicationLines(draft, downloaded, true);
   expect(lines).toEqual([
     `certified_zip_sha256=${downloaded}`,
-    `gh workflow run release.yml --repo steerlabs/opensteer --ref main -f channel=insider -f insider_tag=v1.2.3-insider -f publish=true -f certified_zip_sha256=${downloaded}`,
+    `gh workflow run release.yml --repo steerlabs/opensteer --ref main -f channel=insider -f publish=true -f certified_zip_sha256=${downloaded}`,
   ]);
   expect(lines.join("\n")).not.toContain(next);
   expect(() => publicationLines(draft, next, true)).toThrow();
@@ -147,6 +147,6 @@ test("PASS publication output binds the downloaded draft ZIP, never the local N+
     downloaded,
     true,
   );
-  expect(stable[1]).toContain("-f channel=stable -f publish=true");
-  expect(stable[1]).not.toContain("insider_tag");
+  // Stable rebuilds the published insider of the same version; insiders take no tag.
+  expect(stable[1]).toContain("-f channel=stable -f insider_tag=v1.2.3-insider -f publish=true");
 });

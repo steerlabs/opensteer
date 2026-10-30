@@ -9,7 +9,7 @@ import { z } from "zod";
 import { createRequire } from "node:module";
 import { journeySigning } from "./signing.js";
 import { createHash } from "node:crypto";
-import { pruneCompletedBuild } from "./build-cleanup.js";
+import { commandEvidence, pruneCompletedBuild } from "./build-cleanup.js";
 import { compareStableVersions } from "../engines.js";
 import { numericVersion } from "./evidence.js";
 import {
@@ -178,15 +178,21 @@ try {
   const ownerWrite = await run("find", [app, "!", "-perm", "-u+w"]);
   if (ownerWrite) throw new Error(`Bundle entries lack owner-write: ${ownerWrite}`);
   const evidence: Record<string, string> = {};
-  evidence.stapler = await run("/usr/bin/xcrun", ["stapler", "validate", app]);
-  evidence.codesign = await run("/usr/bin/codesign", [
+  const record = (name: string, exe: string, args: readonly string[]) =>
+    commandEvidence(run, path.join(directory, `${name}.log`), exe, args);
+  evidence.stapler = await record("stapler-validate", "/usr/bin/xcrun", [
+    "stapler",
+    "validate",
+    app,
+  ]);
+  evidence.codesign = await record("codesign-verify", "/usr/bin/codesign", [
     "--verify",
     "--deep",
     "--strict",
     "--verbose=2",
     app,
   ]);
-  evidence.spctl = await run("/usr/sbin/spctl", [
+  evidence.spctl = await record("spctl-assess", "/usr/sbin/spctl", [
     "--assess",
     "--type",
     "execute",

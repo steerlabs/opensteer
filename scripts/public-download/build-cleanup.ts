@@ -13,7 +13,19 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import type { runBounded } from "../command-runner.js";
 
+/** spctl and codesign report on stderr, so evidence keeps both streams, from this run only. */
+export async function commandEvidence(
+  run: typeof runBounded,
+  file: string,
+  exe: string,
+  args: readonly string[],
+) {
+  writeFileSync(file, "", { mode: 0o600 });
+  await run(exe, args, { outputFile: file });
+  return readFileSync(file, "utf8");
+}
 export async function pruneCompletedBuild(directory: string) {
   assert(
     path.isAbsolute(directory) && realpathSync(directory) === directory,
