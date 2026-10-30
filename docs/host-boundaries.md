@@ -149,6 +149,11 @@ capabilities and never use them to gate mandatory behavior.
 - New features/command fields require capability advertisements; older Hosts
   reject unknown strict inputs. Make removed fields optional in readers first,
   then stop sending them with a later necessary bump.
+- Passkeys add no epoch bump. The runtime advertises `modules.browser.passkeys: 1`;
+  the enabled Host sends `passkeys: 1` in its auxiliary welcome and signed attach
+  ticket, and viewers opt in only when the Host advertises `browser-passkeys-v1`.
+  Older Hosts, runtimes and viewers keep the absent policy. See
+  [Passkeys](browser-sessions.md#passkeys).
 
 [Saved-login compatibility](passwords.md#runtime-and-compatibility) separately
 negotiates integrations `passwordSignIn: 1` for the Personal vault authority and
