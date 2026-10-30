@@ -384,6 +384,8 @@ export interface HostRuntime {
   /** Observes the current execution lease pass without starting or draining work. */
   settleExecutionLeases(): Promise<number>;
   close(): Promise<void>;
+  /** The shutdown step `close()` is waiting on, until it finishes. */
+  closingStep(): string | undefined;
   listen(): Promise<string>;
 }
 
@@ -2531,6 +2533,7 @@ export async function createHostRuntime(
     continuations.start();
     automationFailures.start();
     let closed = false;
+    let closingStep: string | undefined;
     hostAuthorityPublisher?.start();
     if (hostAuthorityPublisher)
       void hostAuthorityPublisher.ready().then(resolveNotificationAuthority);
@@ -2679,48 +2682,55 @@ export async function createHostRuntime(
       async close() {
         if (closed) return;
         closed = true;
+        // Each awaited step names itself, so a shutdown that hangs says where.
+        const step = async (label: string, stop: () => unknown) => {
+          closingStep = label;
+          await stop();
+        };
         const notificationsClosed = notificationDispatcher?.close();
-        await workspaceReconcileLoop.close();
-        await executionLeaseLoop.close();
-        await triggerScheduleLoop.close();
-        await watchService?.close();
-        await continuations.close();
-        await automationFailures.close();
-        await hostAuthorityPublisher?.close();
-        await accountDirectoryPublisher?.close();
-        await notificationsClosed;
-        await channels.close();
+        await step("workspace reconcile loop", () => workspaceReconcileLoop.close());
+        await step("execution lease loop", () => executionLeaseLoop.close());
+        await step("trigger schedule loop", () => triggerScheduleLoop.close());
+        await step("watch service", () => watchService?.close());
+        await step("continuations", () => continuations.close());
+        await step("automation failures", () => automationFailures.close());
+        await step("host authority publisher", () => hostAuthorityPublisher?.close());
+        await step("account directory publisher", () => accountDirectoryPublisher?.close());
+        await step("notifications", () => notificationsClosed);
+        await step("channels", () => channels.close());
         messagingRelay.close();
         // Before the hub, so every live session is told to end rather than
         // finding its stream gone and being dropped in silence.
         computerViews?.shutdown();
         displayStreams?.close();
-        await computerUse.shutdown();
+        await step("computer use", () => computerUse.shutdown());
         computerApps.close();
-        await agentTools.close();
-        await integrationTools.close();
-        await integrationPlatform.close();
+        await step("agent tools", () => agentTools.close());
+        await step("integration tools", () => integrationTools.close());
+        await step("integration platform", () => integrationPlatform.close());
         unsubscribePlaceMembership?.();
-        await browser.close();
+        await step("browser", () => browser.close());
         passwordSignIns.close();
         browserSources.close();
         profileVault.destroy();
         runnerBrowsers.close();
         browserRelay.close();
-        await shellHub?.close();
-        await runners.close();
-        await coordinator.stop();
-        await workspaceMountService?.close();
-        await securityEffects.close();
+        await step("shell hub", () => shellHub?.close());
+        await step("runners", () => runners.close());
+        await step("coordinator", () => coordinator.stop());
+        await step("workspace mounts", () => workspaceMountService?.close());
+        await step("security effects", () => securityEffects.close());
         files.close();
-        await app.close();
-        await admission.close();
-        await threadStateLoop?.close();
-        await drainThreadStates();
+        await step("HTTP server", () => app.close());
+        await step("admission", () => admission.close());
+        await step("thread state loop", () => threadStateLoop?.close());
+        await step("thread state drain", () => drainThreadStates());
         threadStateStopped = true;
-        await authorityLease?.close();
-        await database.destroy();
+        await step("authority lease", () => authorityLease?.close());
+        await step("database", () => database.destroy());
+        closingStep = undefined;
       },
+      closingStep: () => closingStep,
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
     };
   } catch (error) {

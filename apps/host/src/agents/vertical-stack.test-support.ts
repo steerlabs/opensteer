@@ -560,7 +560,7 @@ async function startWithin(
     );
   // A journey may restart the Host, so cleanup always closes the current one.
   let host = await bootHost();
-  cleanups.push({ label: "Host", run: () => host.close() });
+  cleanups.push({ label: "Host", run: () => host.close(), pending: () => host.closingStep() });
   await host.listen();
   const requestOrigin = options.personal ? hostOrigin : publicOrigin;
   const personalOwner = options.personal
@@ -1755,6 +1755,8 @@ async function setupInitialAdministrator(dial: URL, origin: URL, token: string):
 interface Cleanup {
   readonly label: string;
   readonly run: () => Promise<unknown>;
+  /** What the step is still waiting on, for the timeout message. */
+  readonly pending?: () => string | undefined;
 }
 
 async function settleWithin(cleanup: Cleanup, timeoutMs: number): Promise<void> {
@@ -1763,10 +1765,14 @@ async function settleWithin(cleanup: Cleanup, timeoutMs: number): Promise<void> 
     await Promise.race([
       cleanup.run(),
       new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error(`Cleanup of the ${cleanup.label} did not finish`)),
-          timeoutMs,
-        );
+        timeout = setTimeout(() => {
+          const pending = cleanup.pending?.();
+          reject(
+            new Error(
+              `Cleanup of the ${cleanup.label} did not finish${pending ? ` (waiting on: ${pending})` : ""}`,
+            ),
+          );
+        }, timeoutMs);
         timeout.unref();
       }),
     ]);
