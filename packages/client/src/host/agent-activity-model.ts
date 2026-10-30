@@ -1,4 +1,9 @@
-import type { IntegrationCallSubject } from "@opensteer/core";
+import type {
+  AssignmentSummary,
+  WaitingRequest,
+  MessageAuthor,
+  IntegrationCallSubject,
+} from "@opensteer/core";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
 import type {
@@ -15,6 +20,7 @@ import type {
 } from "./client.js";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import { browserSignInStep, readBrowserSignInResult, type BrowserSignInStep } from "./passwords.js";
+import { requestWaitingOnAssignment } from "./waiting-requests.js";
 import { isTerminalRunEntryStatus } from "./transcript.js";
 
 /**
@@ -89,6 +95,14 @@ export type ActivityFeedEntry = Exclude<
  * stretch is its own turn, and the Run's outcome sits with the last one.
  */
 export interface Turn {
+  readonly personWaiting?: boolean;
+  readonly startedBy?: MessageAuthor;
+  readonly source?: {
+    readonly author: MessageAuthor;
+    readonly createdAt: string;
+    readonly task?: AssignmentEntry["assignment"];
+  };
+
   /**
    * The Run goes on in a later stretch, after a message that joined it: this
    * stretch says only what it did, and the reply in progress is the later one's.
@@ -136,7 +150,12 @@ export function groupTranscriptEntries(
   {
     inputQueuePaused = false,
     startHold = null,
-  }: { readonly inputQueuePaused?: boolean; readonly startHold?: string | null } = {},
+    assignments = {},
+  }: {
+    readonly inputQueuePaused?: boolean;
+    readonly startHold?: string | null;
+    readonly assignments?: Readonly<Record<string, AssignmentSummary>>;
+  } = {},
 ): TranscriptGroup[] {
   type Slot =
     | { readonly group: TranscriptGroup; readonly kind: "group" }
@@ -227,6 +246,24 @@ export function groupTranscriptEntries(
     for (const entry of slot.entries) if (entry.kind === "run") runs.set(slot.runId, entry);
   }
 
+  const inputsByRun = new Map<string | null, MessageEntry[]>();
+  const returnsByRun = new Map<
+    string | null,
+    Extract<TranscriptEntry, { kind: "assignment-return" }>
+  >();
+  const assignmentsById = new Map(Object.entries(assignments));
+  for (const entry of entries) {
+    if (entry.kind === "message" && entry.messageKind === "input") {
+      const inputs = inputsByRun.get(entry.runId) ?? [];
+      inputs.push(entry);
+      inputsByRun.set(entry.runId, inputs);
+    } else if (entry.kind === "assignment-return" && !returnsByRun.has(entry.runId)) {
+      returnsByRun.set(entry.runId, entry);
+    } else if (entry.kind === "assignment") {
+      assignmentsById.set(entry.assignment.id, entry.assignment);
+    }
+  }
+
   const groups: TranscriptGroup[] = [];
   for (const slot of slots) {
     if (slot.kind === "group") {
@@ -244,7 +281,31 @@ export function groupTranscriptEntries(
       ...(runEntry?.turnReplyMessageIds ?? []),
     ]);
     const continued = runId !== null && lastStretch.get(runId) !== slot;
+    const inputs = inputsByRun.get(runId) ?? [];
+    const returning = returnsByRun.get(runId);
+    const returnId =
+      returning?.assignmentId ??
+      (runEntry?.startedBy?.kind === "platform" && runEntry.startedBy.cause === "assignment-result"
+        ? runEntry.startedBy.referenceId
+        : undefined);
+    const task = returnId ? assignmentsById.get(returnId) : undefined;
+    const seed = inputs.find((entry) => entry.author.kind !== "human");
+    const startedBy = runEntry?.startedBy;
     const turn = {
+      ...(startedBy ? { startedBy } : {}),
+      personWaiting:
+        startedBy === undefined ||
+        runEntry?.personWaiting === true ||
+        inputs.some((entry) => entry.author.kind === "human"),
+      ...(startedBy && startedBy.kind !== "human"
+        ? {
+            source: {
+              author: startedBy,
+              createdAt: returning?.createdAt ?? seed?.createdAt ?? runEntry!.createdAt,
+              ...(task ? { task } : {}),
+            },
+          }
+        : {}),
       ...turnFrom(slot.entries, runId, run, replies),
       ...(continued ? { continued } : {}),
       inputQueuePaused,
@@ -403,11 +464,12 @@ export interface ConversationTurn {
 }
 
 export function conversationTurn(turn: Turn): ConversationTurn {
-  const startHold = turnStartHold(turn);
+  const startHold = turn.personWaiting === false ? null : turnStartHold(turn);
   // A Run working in the background is not writing anything, nobody is writing
   // for one that has not started, and one a message joined is writing its
   // reply after that message, not here.
   const composing =
+    turn.personWaiting !== false &&
     startHold === null &&
     turn.reply === null &&
     turn.continued !== true &&
@@ -444,6 +506,7 @@ export interface ConversationRow {
 }
 
 interface ConversationRowOptions {
+  readonly waitingRequests?: readonly WaitingRequest[];
   readonly atComputer: (turn: Turn) => boolean;
   readonly live: boolean;
   readonly pictured?: ((turn: Turn) => boolean) | undefined;
@@ -471,7 +534,42 @@ export function conversationRows(
   options: ConversationRowOptions,
 ): readonly ConversationRow[] {
   const rows: ConversationRow[] = [];
-  for (const group of groups) {
+  const automaticRuns = new Set(
+    groups.flatMap((group) =>
+      group.kind === "turn" &&
+      group.turn.startedBy !== undefined &&
+      group.turn.startedBy.kind !== "human"
+        ? [group.turn.runId]
+        : [],
+    ),
+  );
+  for (const original of groups) {
+    const group =
+      original.kind === "turn" && original.turn.personWaiting === false
+        ? {
+            ...original,
+            turn: {
+              ...original.turn,
+              assignments: original.turn.assignments.filter((entry) =>
+                conversationAssignmentNeedsReader(entry, options.waitingRequests),
+              ),
+            },
+          }
+        : original;
+    if (
+      group.kind === "assignment" &&
+      group.entry.assignment.origin !== "run" &&
+      !conversationAssignmentNeedsReader(group.entry, options.waitingRequests)
+    )
+      continue;
+    if (
+      group.kind === "message" &&
+      group.entry.messageKind === "input" &&
+      group.entry.author.kind !== "human" &&
+      group.entry.runId !== null &&
+      automaticRuns.has(group.entry.runId)
+    )
+      continue;
     if (group.kind === "turn" && !conversationTurnShows(group.turn, options)) continue;
     const previous = rows.at(-1)?.group;
     const joined =
@@ -493,6 +591,8 @@ function conversationTurnShows(
   turn: Turn,
   { atComputer, live, pictured }: ConversationRowOptions,
 ): boolean {
+  if (turn.personWaiting === false)
+    return turn.reply !== null || turn.assignments.length > 0 || (live && atComputer(turn));
   const { composing, reply, startHold } = conversationTurn(turn);
   return (
     reply !== null ||
@@ -500,6 +600,23 @@ function conversationTurnShows(
     (turn.run !== null && (hasRunOutcome(turn.run) || (turn.run.attempt ?? 1) > 1)) ||
     (live && (composing || startHold !== null || atComputer(turn) || pictured?.(turn) === true))
   );
+}
+
+/** Only decisions and failures interrupt Chat for work nobody asked to follow. */
+export function conversationAssignmentNeedsReader(
+  entry: AssignmentEntry,
+  waiting: readonly WaitingRequest[] = [],
+): boolean {
+  return (
+    requestWaitingOnAssignment(waiting, entry.assignment.id) !== null ||
+    entry.assignment.status === "failed"
+  );
+}
+
+/** A silent reply uses the Run's whole elapsed time, including waiting. */
+export function silentRunLabel(run: RunEntry): string {
+  if (!run.startedAt) return "Worked";
+  return `Worked for ${formatDuration(Math.max(0, Date.parse(run.endedAt ?? run.createdAt) - Date.parse(run.startedAt)))}`;
 }
 
 /* ---- Activity ---- */
@@ -750,7 +867,12 @@ export function workSummary(turn: Turn): WorkSummary {
   const verb = onlyThinking ? "Thought" : "Worked";
   return {
     errors,
-    label: duration ? `${verb} for ${duration}` : verb,
+    label:
+      turn.run?.status === "completed" && turn.run.replyMessageId === null && turn.run.endedAt
+        ? silentRunLabel(turn.run)
+        : duration
+          ? `${verb} for ${duration}`
+          : verb,
     meta: workMeta(steps),
     startedAt,
     state,

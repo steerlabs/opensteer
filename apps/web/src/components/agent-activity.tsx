@@ -30,6 +30,7 @@ import {
   formatElapsed,
   groupTranscriptEntries,
   hasRunOutcome,
+  silentRunLabel,
   isTerminalRunEntryStatus,
   incomingMessagePreview,
   messagePages,
@@ -82,7 +83,7 @@ import {
   useComputerUseStopForRun,
   useThreadPlace,
 } from "@opensteer/client/react";
-import type { BrowserPageContentPart } from "@opensteer/core";
+import type { AssignmentSummary, BrowserPageContentPart, WaitingRequest } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { AttachmentReader, MessageAttachments } from "./attachments/message-attachments.js";
 import { Dialog } from "./dialog.js";
@@ -175,6 +176,8 @@ const ReaderComputers = createContext<TranscriptComputers | null>(null);
 const RunPictures = createContext<HostClient | null>(null);
 
 const noWorkspaces: readonly WorkspaceSummary[] = [];
+const noWaitingRequests: readonly WaitingRequest[] = [];
+const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
 const noBrowsers: readonly BrowserSessionSummary[] = [];
 
 /**
@@ -190,6 +193,8 @@ export function AgentTranscript({
   computers = null,
   live = true,
   entries,
+  waitingRequests = noWaitingRequests,
+  assignments = noAssignments,
   browserSessions = noBrowsers,
   engineName,
   homeThreadId = null,
@@ -223,6 +228,8 @@ export function AgentTranscript({
   computers?: TranscriptComputers | null;
   live?: boolean;
   entries: readonly TranscriptEntry[];
+  waitingRequests?: readonly WaitingRequest[];
+  assignments?: Readonly<Record<string, AssignmentSummary>>;
   browserSessions?: readonly BrowserSessionSummary[];
   /**
    * Names the engine behind a recorded selection, as the reader knows it.
@@ -270,8 +277,8 @@ export function AgentTranscript({
   workspaces?: readonly WorkspaceSummary[];
 }) {
   const groups = useMemo(
-    () => groupTranscriptEntries(entries, { inputQueuePaused, startHold }),
-    [entries, inputQueuePaused, startHold],
+    () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
+    [entries, inputQueuePaused, startHold, assignments],
   );
   const unreadBoundaryKey = useMemo(
     () => firstUnreadGroupKey(groups, conversation ? null : unreadBoundarySequence),
@@ -286,6 +293,15 @@ export function AgentTranscript({
     return byTurn;
   }, [conversation, groups]);
   const threadPlace = useThreadPlace(pictures, threadId);
+  const stopTurn = groups.find(
+    (group) => group.kind === "turn" && turnState(group.turn) !== "settled",
+  );
+  const keptStop = useKeptComputerStop(
+    stopTurn?.kind === "turn" ? stopTurn.turn : null,
+    null,
+    computers,
+    live,
+  );
   const rows = useMemo(
     () =>
       conversation
@@ -294,12 +310,14 @@ export function AgentTranscript({
           // row that draws nothing takes no room on this screen. A reply
           // waiting on the person is kept while its live picture is.
           conversationRows(groups, {
-            atComputer: (turn) => turnComputer(turn) !== null,
+            atComputer: (turn) =>
+              turnComputer(turn) !== null || (keptStop !== null && turn.runId === keptStop.runId),
             live,
+            waitingRequests,
             pictured: (turn) => runPlace(threadPlace, workingRunId(turn)) !== null,
           })
         : groups.map((group) => ({ group, key: group.key })),
-    [conversation, groups, live, threadPlace],
+    [conversation, groups, live, threadPlace, waitingRequests, keptStop],
   );
   const indicator =
     live && !(requestShown && activity === "waiting_for_you")
@@ -628,10 +646,18 @@ const keptStoppedMs = 3_000;
  * then `Stopped using Mac mini` for a moment — instead of reading as
  * ordinary work.
  */
-function useKeptComputerStop(turn: Turn, now: ComputerUseNow | null): ComputerUseStop | null {
+function useKeptComputerStop(
+  turn: Turn | null,
+  now: ComputerUseNow | null,
+  source?: TranscriptComputers | null,
+  live?: boolean,
+): ComputerUseStop | null {
   const connected = useContext(TranscriptLive);
   const computers = useContext(ReaderComputers);
-  const stop = useComputerUseStopForRun(computers?.hostClient ?? null, turn.runId);
+  const stop = useComputerUseStopForRun(
+    (source === undefined ? computers : source)?.hostClient ?? null,
+    turn?.runId ?? null,
+  );
   const settledAt = stop?.phase === "stopped" ? stop.settledAt : null;
   const [expired, setExpired] = useState<number | null>(null);
   useEffect(() => {
@@ -642,7 +668,14 @@ function useKeptComputerStop(turn: Turn, now: ComputerUseNow | null): ComputerUs
     );
     return () => window.clearTimeout(timer);
   }, [settledAt]);
-  if (now !== null || stop === null || !connected || turnState(turn) === "settled") return null;
+  if (
+    now !== null ||
+    stop === null ||
+    !(live ?? connected) ||
+    turn === null ||
+    turnState(turn) === "settled"
+  )
+    return null;
   if (stop.phase === "failed") return null;
   if (
     settledAt !== null &&
@@ -686,12 +719,13 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const now = useComputerUseNow(turn);
   const kept = useKeptComputerStop(turn, now);
   const composing = view.composing && live && now === null && kept === null;
-  const working = live && workingRunId(turn) !== null;
+  const working = turn.personWaiting !== false && live && workingRunId(turn) !== null;
   const startHold = live ? view.startHold : null;
-  const outcome = turn.run !== null && showsRunOutcome(turn.run);
+  const outcome = turn.personWaiting !== false && turn.run !== null && showsRunOutcome(turn.run);
   // A Run that ended without a reply, stopped or failed, keeps its places under how it ended.
   const placesUnderOutcome = outcome && view.reply === null;
   const tasks = renderTask === undefined ? [] : turn.assignments;
+  const openActivity = useContext(OpenActivity);
   // The conversation leaves out a turn with nothing of its own to show
   // (`conversationRows`). One can still come to nothing here for what
   // only this screen knows: a Mac session it is not shown, or tasks it has no
@@ -715,6 +749,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
         <KeptComputerStopLine key={kept.sessionId} stop={kept} />
       ) : null}
       {composing && restartPending(turn.run) ? <RunRestart>{restartingLabel}</RunRestart> : null}
+      {view.reply && turn.source ? <TurnSource source={turn.source} /> : null}
       {view.reply ? (
         <ReplyBubble message={view.reply} turnKey={turnKey} />
       ) : composing ? (
@@ -728,7 +763,20 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       {tasks.map((entry) => (
         <Fragment key={entry.id}>{renderTask?.(entry)}</Fragment>
       ))}
-      {turn.run && outcome ? <RunOutcome conversation run={turn.run} /> : null}
+      {turn.run && outcome ? (
+        turn.run.status === "completed" && turn.run.replyMessageId === null ? (
+          <button
+            type="button"
+            className="run-note run-note--worked"
+            onClick={(event) => openActivity?.(turnKey, event.currentTarget)}
+          >
+            {silentRunLabel(turn.run)}
+            <Icon name="chevron-right" />
+          </button>
+        ) : (
+          <RunOutcome conversation run={turn.run} />
+        )
+      ) : null}
       {placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
     </div>
   );
@@ -1203,6 +1251,7 @@ function TurnContent({
   turn: Turn;
 }) {
   const active = turnState(turn) !== "settled";
+  const silent = turn.run?.status === "completed" && turn.run.replyMessageId === null;
   const work = entries ?? turn.work;
   const folded = fold === undefined ? null : !fold.open;
   const rows = useMemo(() => {
@@ -1210,8 +1259,11 @@ function TurnContent({
     // The reply keeps its row's key either way, so folding never redraws it.
     if (folded !== null)
       return [statusRow, ...workRows(folded ? work.filter((entry) => entry === turn.reply) : work)];
-    return [...workRows(work), ...(status && (work.length > 0 || active) ? [statusRow] : [])];
-  }, [work, active, folded, status, turn.reply]);
+    return [
+      ...workRows(work),
+      ...(status && (work.length > 0 || active || silent) ? [statusRow] : []),
+    ];
+  }, [work, active, folded, status, turn.reply, silent]);
   return (
     <div className="turn__content">
       {rows.map((row) =>
@@ -1911,6 +1963,31 @@ function UpdateLine({
   );
 }
 
+function TurnSource({ source }: { source: NonNullable<Turn["source"]> }) {
+  const { workspaces } = useContext(Speakers);
+  const home = useContext(HomeThread);
+  if (source.author.kind === "human") return null;
+  const from = source.task
+    ? {
+        glyph: "message" as const,
+        name: source.task.workerThread.title,
+        href: `/threads/${source.task.workerThread.id}`,
+      }
+    : updateSource(source.author, "input", workspaces, home);
+  const content = (
+    <>
+      <Icon name={from.glyph} /> {from.name} ·{" "}
+      <time dateTime={source.createdAt}>{formatClockTime(source.createdAt)}</time>
+      {from.href ? " ›" : null}
+    </>
+  );
+  return (
+    <div className="turn-source">
+      {from.href ? <AreaLink to={from.href}>{content}</AreaLink> : content}
+    </div>
+  );
+}
+
 /** Who an update came from, and where the reader can follow it. */
 function updateSource(
   author: UpdateAuthor,
@@ -2257,14 +2334,6 @@ function RunOutcome({
         <p className="run-note">
           <Icon name="stop" /> {conversation ? "Stopped." : "Run stopped."}
         </p>
-        {restart}
-      </>
-    );
-  }
-  if (run.status === "completed" && run.replyMessageId === null) {
-    return (
-      <>
-        <p className="run-note">Finished without a reply.</p>
         {restart}
       </>
     );

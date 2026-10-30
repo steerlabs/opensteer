@@ -107,6 +107,17 @@ export function threadActivityIndicator(
   },
 ): ThreadActivityIndicator | null {
   if (activity === "idle") return null;
+  const latest = options.groups.at(-1);
+  if (
+    options.conversation &&
+    options.groups.findLast((group) => group.kind === "turn")?.turn.personWaiting === false &&
+    !(
+      latest?.kind === "message" &&
+      latest.entry.messageKind === "input" &&
+      latest.entry.author.kind === "human"
+    )
+  )
+    return null;
   // A conversation draws no turn head, so this line says the work carries on.
   if (options.conversation && activity === "background") {
     return { kind: "status", label: activityLabels.background };
@@ -122,6 +133,7 @@ export function threadActivityIndicator(
     const replying = options.groups.some(
       (group) =>
         group.kind === "turn" &&
+        group.turn.personWaiting !== false &&
         group.turn.continued !== true &&
         turnState(group.turn) !== "settled",
     );

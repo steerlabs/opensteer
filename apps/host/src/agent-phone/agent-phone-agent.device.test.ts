@@ -56,7 +56,7 @@ import {
   ModelSelectionSchema,
   harnessRuntimeExpectedVersion,
   shippedHarnessCatalogEntry,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type RunnerId,
 } from "@opensteer/core";
 import { findExecutableOnPath, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";

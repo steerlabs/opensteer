@@ -1,4 +1,4 @@
-import { compareSequence, type AgentEvent, type Sequence } from "@opensteer/core";
+import { compareSequence, type AgentEventView as AgentEvent, type Sequence } from "@opensteer/core";
 import type { ThreadSummary } from "./client.js";
 
 const unloadedThreadLimit = 4096;

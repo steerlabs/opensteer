@@ -396,9 +396,20 @@ integration("notification decision boundary", () => {
           .executeTakeFirstOrThrow();
         const data =
           event.type === "run.completed" ? { ...event.data, status: "completed" } : event.data;
+        const seed = await transaction
+          .selectFrom("runs")
+          .innerJoin("messages", "messages.id", "runs.seedInputId")
+          .select(["messages.author", "runs.createdAt"])
+          .where("runs.id", "=", target.runId)
+          .executeTakeFirstOrThrow();
         const parsed = AgentEventSchema.parse({
           createdAt: createdAt.toISOString(),
-          data,
+          data: {
+            ...data,
+            startedAt: seed.createdAt.toISOString(),
+            personWaiting: seed.author.kind === "human",
+            startedBy: MessageAuthorSchema.parse(seed.author),
+          },
           environmentId: fixture.environmentId,
           eventId,
           runId: target.runId,

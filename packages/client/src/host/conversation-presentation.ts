@@ -105,3 +105,8 @@ export interface AskAbout {
 export function askAboutLabel(inChat: boolean): string {
   return inChat ? "Ask about this" : "Ask in Chat";
 }
+
+/** One automation's own page. */
+export function automationPath(triggerId: string): string {
+  return `/automations/${encodeURIComponent(triggerId)}`;
+}

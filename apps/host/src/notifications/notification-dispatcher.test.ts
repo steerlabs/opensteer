@@ -19,7 +19,18 @@ function fixture(kind: "reply-published" | "request-opened" = "reply-published")
   const requestId = createId("request");
   const event = AgentEventSchema.parse({
     createdAt: instant.toISOString(),
-    data: { replyMessageId: messageId, status: "completed" },
+    data: {
+      replyMessageId: messageId,
+      startedAt: "2026-08-09T09:00:00.000Z",
+      personWaiting: true,
+      startedBy: {
+        displayName: "Alex",
+        kind: "human",
+        userId: createId("user"),
+        principalId: "test-principal",
+      },
+      status: "completed",
+    },
     environmentId: createId("environment"),
     eventId: createId("event"),
     runId: createId("run"),

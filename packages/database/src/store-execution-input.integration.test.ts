@@ -1414,7 +1414,26 @@ describeStore("PostgreSQL store", (it) => {
     const events = await store.recoverCommandsAfterHostRestart();
 
     expect(events).toContainEqual(
-      expect.objectContaining({ data: { status: "queued" }, runId: unbound.run.id }),
+      expect.objectContaining({
+        data: {
+          status: "queued",
+          startedAt: (
+            await database
+              .selectFrom("runs")
+              .select("createdAt")
+              .where("id", "=", unbound.run.id)
+              .executeTakeFirstOrThrow()
+          ).createdAt.toISOString(),
+          personWaiting: true,
+          startedBy: {
+            displayName: "Alex",
+            kind: "human",
+            userId: fixture.userId,
+            principalId: await storeFixture.principalIdFor(fixture.userId),
+          },
+        },
+        runId: unbound.run.id,
+      }),
     );
     await expect(
       database
@@ -1557,7 +1576,23 @@ describeStore("PostgreSQL store", (it) => {
       if (lease === "live") {
         expect(outcome.events).toContainEqual(
           expect.objectContaining({
-            data: { status: "queued" },
+            data: {
+              status: "queued",
+              startedAt: (
+                await database
+                  .selectFrom("runs")
+                  .select("createdAt")
+                  .where("id", "=", turn.run.id)
+                  .executeTakeFirstOrThrow()
+              ).createdAt.toISOString(),
+              personWaiting: true,
+              startedBy: {
+                displayName: "Alex",
+                kind: "human",
+                userId: fixture.userId,
+                principalId: await storeFixture.principalIdFor(fixture.userId),
+              },
+            },
             runId: turn.run.id,
             type: "run.status",
           }),
@@ -1647,7 +1682,23 @@ describeStore("PostgreSQL store", (it) => {
       ).resolves.toEqual({ status: "starting" });
       expect(await store.recoverCommandsAfterHostRestart()).toContainEqual(
         expect.objectContaining({
-          data: { status: "queued" },
+          data: {
+            status: "queued",
+            startedAt: (
+              await database
+                .selectFrom("runs")
+                .select("createdAt")
+                .where("id", "=", next.run.id)
+                .executeTakeFirstOrThrow()
+            ).createdAt.toISOString(),
+            personWaiting: true,
+            startedBy: {
+              displayName: "Alex",
+              kind: "human",
+              userId: fixture.userId,
+              principalId: await storeFixture.principalIdFor(fixture.userId),
+            },
+          },
           runId: next.run.id,
           type: "run.status",
         }),

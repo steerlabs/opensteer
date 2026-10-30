@@ -3,7 +3,7 @@ import {
   compareSequence,
   liveStreamKeyId,
   liveStreamKeyOf,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type LiveStreamKey,
   type RunId,
   type Sequence,

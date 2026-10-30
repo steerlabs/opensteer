@@ -107,7 +107,4 @@ export function conversationPath(
     : `/threads/${encodeURIComponent(threadId)}${anchor}`;
 }
 
-/** One automation's own page. */
-export function automationPath(triggerId: string): string {
-  return `/automations/${encodeURIComponent(triggerId)}`;
-}
+export { automationPath } from "@opensteer/client/host";

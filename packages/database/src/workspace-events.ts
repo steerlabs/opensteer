@@ -2,6 +2,7 @@ import { assertRequestWorkspacesLocked } from "./request-workspace-locks.js";
 import { markThreadStatePending } from "./thread-status.js";
 import {
   AgentEventSchema,
+  MessageAuthorSchema,
   createId,
   type AgentEvent,
   type AssignmentSummary,
@@ -210,7 +211,7 @@ export async function appendHostWorkspaceEvent(
     .executeTakeFirstOrThrow();
   const event = AgentEventSchema.parse({
     createdAt: createdAt.toISOString(),
-    data: input.data,
+    data: await stampRunContext(transaction, input.type, input.runId, input.data),
     environmentId: input.environmentId,
     eventId,
     runId: input.runId,
@@ -239,4 +240,45 @@ export async function appendHostWorkspaceEvent(
     .executeTakeFirstOrThrow();
   if (event.type.startsWith("request.")) await markThreadStatePending(transaction, event.threadId);
   return event;
+}
+
+/** Lifecycle pages stand alone, including Host-written stops before execution. */
+export async function stampRunContext(
+  transaction: Transaction<DatabaseSchema>,
+  type: string,
+  runId: RunId | null,
+  data: object,
+): Promise<object> {
+  if (
+    ![
+      "run.started",
+      "run.status",
+      "run.restarted",
+      "run.phase",
+      "run.completed",
+      "run.failed",
+      "run.interrupted",
+    ].includes(type)
+  )
+    return data;
+  if (runId === null) throw new Error("Run lifecycle event has no Run");
+  const seed = await transaction
+    .selectFrom("runs")
+    .innerJoin("messages", "messages.id", "runs.seedInputId")
+    .select(["messages.author", "runs.createdAt"])
+    .select(
+      sql<boolean>`exists (
+      select 1 from messages input where input.run_id = runs.id
+      and input.kind = 'input' and input.author->>'kind' = 'human'
+    )`.as("personWaiting"),
+    )
+    .where("runs.id", "=", runId)
+    .executeTakeFirstOrThrow();
+  const startedBy = MessageAuthorSchema.parse(seed.author);
+  return {
+    ...data,
+    startedBy,
+    startedAt: seed.createdAt.toISOString(),
+    personWaiting: startedBy.kind === "human" || seed.personWaiting,
+  };
 }

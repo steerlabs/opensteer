@@ -25,7 +25,13 @@ export function largeTranscriptFixture() {
   let messages = 0;
   let tools = 0;
   for (let run = 1; run <= 188; run++) {
-    add("run.started", { status: "running" }, run);
+    const startedBy = {
+      displayName: "Alex",
+      kind: "human",
+      userId: id("usr", 1),
+      principalId: id("pri", 1),
+    };
+    add("run.started", { status: "running", startedBy }, run);
     const messageCount = 5 + Number(run <= 144);
     const toolCount = 5 + Number(run <= 138);
     for (let step = 0; step < 18 + Number(run <= 4); step++) {
@@ -87,7 +93,11 @@ export function largeTranscriptFixture() {
         },
         run,
       );
-    add("run.completed", { status: "completed", replyMessageId: id("msg", messages) }, run);
+    add(
+      "run.completed",
+      { status: "completed", replyMessageId: id("msg", messages), startedBy },
+      run,
+    );
   }
   const entries = events.reduce<TranscriptEntry[]>(foldTranscriptEvent, []);
   return {

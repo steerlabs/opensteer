@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AgentEventSchema, AgentEventViewSchema, createId } from "./index.js";
+import {
+  AgentEventSchema,
+  AgentEventViewSchema,
+  runnerEventDataSchemas,
+  createId,
+} from "./index.js";
 
 const createdAt = "2026-08-23T20:00:00.000Z";
 const environmentId = createId("environment");
@@ -146,5 +151,41 @@ describe("Agent event contracts", () => {
     ]) {
       expect(AgentEventSchema.safeParse(event("run.usage", data)).success).toBe(false);
     }
+  });
+});
+
+it("requires the seed author durably, accepts older Host omissions, and keeps it out of Runner data", () => {
+  const startedBy = { kind: "platform", cause: "assignment-result" };
+  for (const [type, data] of [
+    ["run.started", { status: "running" }],
+    ["run.status", { status: "starting" }],
+    ["run.restarted", { attempt: 2, reason: "steer" }],
+    ["run.phase", { phase: "turn" }],
+    ["run.completed", { status: "completed", replyMessageId: null }],
+    ["run.failed", { status: "failed", code: "test", message: "Failed", retryable: false }],
+    ["run.interrupted", { status: "interrupted" }],
+  ] as const) {
+    expect(AgentEventSchema.safeParse(event(type, data)).success).toBe(false);
+    expect(AgentEventViewSchema.safeParse(event(type, data)).success).toBe(true);
+    expect(
+      AgentEventSchema.safeParse(
+        event(type, {
+          ...data,
+          startedBy,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          personWaiting: false,
+        }),
+      ).success,
+    ).toBe(true);
+  }
+  expect(
+    runnerEventDataSchemas["run.completed"].parse({
+      status: "completed",
+      startedBy,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      personWaiting: true,
+    }),
+  ).toEqual({
+    status: "completed",
   });
 });

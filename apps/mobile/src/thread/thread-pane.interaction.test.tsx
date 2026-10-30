@@ -1950,6 +1950,41 @@ describe("a reply at work on a Mac", () => {
     }
   });
 
+  it("keeps a silent automatic turn's pending and confirmed computer Stop", async () => {
+    const runId = createId("run");
+    const entry = ran(runId, { startedBy: { kind: "platform", cause: "assignment-result" } });
+    const working = (stopping: boolean, active: boolean) =>
+      snapshotFor({
+        entries: [{ ...entry, stopping }, clickingInNotes(runId, false)],
+        machines: macs(sessions(active ? [notesSession(runId)] : [])),
+        run: { id: runId, status: "running" },
+        threadId: chatId,
+      });
+    const host = fakeHost(working(false, true));
+    const { container } = await mount(host, chatId);
+    let finish: (() => void) | undefined;
+    host.stopComputerSession.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return { ok: true, data: {} };
+    });
+    await press(container, "Stop using Mac");
+    host.move(working(true, false));
+    await settle();
+    expect(container.textContent).toContain("Stopping");
+    await act(async () => {
+      finish?.();
+    });
+    await settle();
+    expect(container.textContent).toContain("Stopped using Mac mini");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 3100));
+    });
+    await settle();
+    expect(container.textContent).not.toContain("Stopped using Mac mini");
+  }, 10000);
+
   it("keeps the reader's own Mac's line with Stop and its app's chip, then the Stop it leaves for three seconds, then closes the gap", async () => {
     const reply = joinedWhileClicking();
     const working = (machines: readonly MachineSummary[]) =>

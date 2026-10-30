@@ -927,6 +927,8 @@ function ThreadView({
                     ?.engineName ?? null
                 }
                 entries={conversation}
+                waitingRequests={snapshot.waitingRequests}
+                assignments={snapshot.assignments}
                 inputQueuePaused={thread.inputQueuePaused}
                 homeThreadId={snapshot.homeThreadId}
                 askAbout={askAbout}

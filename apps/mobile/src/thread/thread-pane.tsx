@@ -485,8 +485,13 @@ function ThreadPaneForUser(
         })
       : null;
   const grouped = useMemo(
-    () => groupTranscriptEntries(conversation, { inputQueuePaused, startHold }),
-    [conversation, inputQueuePaused, startHold],
+    () =>
+      groupTranscriptEntries(conversation, {
+        inputQueuePaused,
+        startHold,
+        assignments: snapshot.assignments,
+      }),
+    [conversation, inputQueuePaused, startHold, snapshot.assignments],
   );
   // `groupTranscriptEntries` builds every group afresh, so one streamed delta
   // hands back a hundred new objects for a hundred rows that did not change. An
@@ -520,9 +525,10 @@ function ThreadPaneForUser(
         ? conversationRows(groups, {
             atComputer: (turn) => computerLine(turn, computers, live) !== null,
             live,
+            waitingRequests: snapshot.waitingRequests,
           })
         : groups.map((group) => ({ group, key: group.key })),
-    [computers, conversational, groups, live],
+    [computers, conversational, groups, live, snapshot.waitingRequests],
   );
   const canLoadEarlier = snapshot.window?.hasMore ?? false;
 
@@ -1638,6 +1644,10 @@ function sameGroup(left: TranscriptGroup, right: TranscriptGroup): boolean {
     return (
       right.kind === "turn" &&
       left.turn.run === right.turn.run &&
+      left.turn.personWaiting === right.turn.personWaiting &&
+      left.turn.startedBy === right.turn.startedBy &&
+      left.turn.source?.task === right.turn.source?.task &&
+      left.turn.source?.createdAt === right.turn.source?.createdAt &&
       left.turn.continued === right.turn.continued &&
       left.turn.inputQueuePaused === right.turn.inputQueuePaused &&
       left.turn.startHold === right.turn.startHold &&

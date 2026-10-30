@@ -14,6 +14,8 @@ import {
   activityFeedPresentation,
   conversationActivityTurn,
   conversationTurn,
+  conversationRows,
+  silentRunLabel,
   conversationTurnRevealing,
   activityStepHead,
   displayCommand,
@@ -1805,4 +1807,184 @@ describe("Host-authored computer operations", () => {
       outer.id,
     ]);
   });
+});
+
+describe("quiet Chat", () => {
+  const startedBy = { kind: "platform" as const, cause: "assignment-result" };
+  const rows = (entries: TranscriptEntry[], atComputer = false) =>
+    conversationRows(groupTranscriptEntries(entries), { live: true, atComputer: () => atComputer });
+  it("hides a returning task's silent turn, including typing and failures", () => {
+    for (const status of ["running", "completed", "failed", "interrupted"] as const) {
+      const entry = run({ startedBy, status });
+      expect(rows([entry])).toEqual([]);
+      const group = groupTranscriptEntries([entry])[0];
+      if (group?.kind === "turn") expect(conversationTurn(group.turn).composing).toBe(false);
+    }
+  });
+  it("keeps the reply, live computer use, human steers and unknown older Hosts", () => {
+    const entry = run({ startedBy, replyMessageId: "reply" });
+    expect(rows([entry, message({ id: "reply" })])).toHaveLength(1);
+    expect(rows([run({ startedBy, status: "running" })], true)).toHaveLength(1);
+    expect(rows([input(), run({ startedBy })])).toHaveLength(2);
+    expect(rows([run()])).toHaveLength(1);
+  });
+  it("keeps outcomes when a reloaded page omits the person's steer", () => {
+    for (const status of ["completed", "failed", "interrupted"] as const)
+      expect(rows([run({ startedBy, personWaiting: true, status })])).toHaveLength(1);
+  });
+  it("does not invent elapsed time for an older Host", () => {
+    expect(silentRunLabel(run({ endedAt: at(60) }))).toBe("Worked");
+  });
+  it("uses whole Run elapsed time for silent human work", () => {
+    expect(silentRunLabel(run({ createdAt: at(60), startedAt: at(0), endedAt: at(60) }))).toBe(
+      "Worked for 1m",
+    );
+  });
+});
+
+it("shows only decisions and failed assignments from automatic work, including standalone assignments", () => {
+  const automatic = run({ startedBy: { kind: "platform", cause: "assignment-result" } });
+  const task: import("./client.js").AssignmentEntry = {
+    kind: "assignment",
+    id: "assignment:task",
+    createdAt: at(0),
+    runId: automatic.runId,
+    assignment: {
+      id: createId("delegation"),
+      createdAt: at(0),
+      updatedAt: at(1),
+      finishedAt: null,
+      currentRunId: createId("run"),
+      currentRunStatus: "running",
+      initialRunId: createId("run"),
+      modelLabel: null,
+      objectivePreview: "Check",
+      origin: "run",
+      parentThreadId: createId("thread"),
+      resultPreview: null,
+      returnStatus: "pending",
+      revision: 1,
+      status: "open",
+      workerThread: {
+        id: createId("thread"),
+        title: "Research",
+        icon: null,
+        environmentId: createId("environment"),
+        workspaceId: createId("workspace"),
+        pendingRequests: 0,
+        status: "running",
+      },
+    },
+  };
+  for (const origin of ["run", "trigger", "watch"] as const) {
+    for (const state of ["running", "completed", "waiting", "failed"] as const) {
+      const entry = {
+        ...task,
+        runId: origin === "run" ? automatic.runId : null,
+        assignment: {
+          ...task.assignment,
+          origin,
+          status:
+            state === "failed"
+              ? ("failed" as const)
+              : state === "completed"
+                ? ("completed" as const)
+                : ("open" as const),
+          currentRunStatus: state,
+        },
+      };
+      const groups = groupTranscriptEntries(origin === "run" ? [automatic, entry] : [entry]);
+      const rows = conversationRows(groups, {
+        atComputer: () => false,
+        live: true,
+        waitingRequests:
+          state === "waiting"
+            ? [
+                {
+                  assignments: [{ id: task.assignment.id }],
+                } as import("@opensteer/core").WaitingRequest,
+              ]
+            : [],
+      });
+      expect(rows.length, `${origin} ${state}`).toBe(
+        state === "waiting" || state === "failed" ? 1 : 0,
+      );
+    }
+  }
+  const returning: TranscriptEntry = {
+    kind: "assignment-return",
+    assignmentId: task.assignment.id,
+    createdAt: at(3),
+    id: "return",
+    runId: automatic.runId,
+    sequence: "10",
+  };
+  const reply = message({ id: "reply" });
+  const groups = groupTranscriptEntries(
+    [returning, { ...automatic, replyMessageId: reply.id }, reply],
+    { assignments: { [task.assignment.id]: task.assignment } },
+  );
+  const turn = groups.find((group) => group.kind === "turn");
+  expect(turn?.turn.source?.task?.workerThread.title).toBe("Research");
+  const page = groupTranscriptEntries(
+    [
+      {
+        ...automatic,
+        startedBy: {
+          kind: "platform",
+          cause: "assignment-result",
+          referenceId: task.assignment.id,
+        },
+        replyMessageId: reply.id,
+      },
+      reply,
+    ],
+    { assignments: { [task.assignment.id]: task.assignment } },
+  );
+  expect(page.find((group) => group.kind === "turn")?.turn.source?.task?.workerThread.title).toBe(
+    "Research",
+  );
+});
+
+it("a human restart or steer keeps automatic work's outcomes, and reports remain updates", () => {
+  for (const status of ["completed", "failed", "interrupted", "running"] as const) {
+    const automatic = run({
+      status,
+      attempt: 2,
+      startedBy: { kind: "platform", cause: "assignment-result" },
+    });
+    const groups = groupTranscriptEntries([automatic, input()]);
+    const turn = groups.findLast((group) => group.kind === "turn");
+    expect(turn?.turn.personWaiting).toBe(true);
+    expect(conversationRows(groups, { live: true, atComputer: () => false })).toHaveLength(2);
+  }
+  const report = input({
+    runId: null,
+    author: { kind: "platform", cause: "report" },
+    policy: "report",
+  });
+  expect(
+    conversationRows(groupTranscriptEntries([report]), { live: true, atComputer: () => false })[0]
+      ?.group,
+  ).toMatchObject({ kind: "message", entry: report });
+});
+
+it("automatic background work has no Chat indicator, while a new human input still does", () => {
+  const automatic = run({
+    status: "running",
+    background: true,
+    startedBy: { kind: "platform", cause: "assignment-result" },
+  });
+  expect(
+    threadActivityIndicator("background", {
+      conversation: true,
+      groups: groupTranscriptEntries([automatic]),
+    }),
+  ).toBeNull();
+  expect(
+    threadActivityIndicator("working", {
+      conversation: true,
+      groups: groupTranscriptEntries([automatic, input({ runId: null })]),
+    }),
+  ).toEqual({ kind: "typing" });
 });

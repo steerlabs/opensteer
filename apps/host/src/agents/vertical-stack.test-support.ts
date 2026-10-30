@@ -18,7 +18,7 @@ import {
   createId,
   HarnessIdSchema,
   zeroSequence,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type ArtifactContentPart,
   type Attachment,
   type EnvironmentId,

@@ -17,6 +17,7 @@ import {
   mockComputerUseTurn,
 } from "@opensteer/client/mock";
 import { createId, ThreadIdSchema, WorkspaceIdSchema, RunnerIdSchema } from "@opensteer/core";
+import { computerUseStops } from "@opensteer/client/integrations";
 import { AgentTranscript } from "./agent-activity.js";
 import { useWorkspaceNavigation } from "./workspace/navigation.js";
 import { WorkspaceProvider } from "./workspace/workspace-context.js";
@@ -533,3 +534,52 @@ describe("task mark bylines", () => {
     }
   });
 });
+
+it("keeps a silent automatic turn through pending Stop and its kept window", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  const machine = client.getSnapshot().machines.find((m) => m.device?.form === "phone")!;
+  const session = machine.computerUse!.sessions[0]!;
+  const entry: RunEntry = {
+    ...run,
+    id: `run:${session.runId}`,
+    runId: session.runId,
+    status: "running",
+    startedBy: { kind: "platform", cause: "assignment-result" },
+  };
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  const draw = (stopping: boolean) =>
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <TestWorkspace>
+            <AgentTranscript
+              conversation
+              entries={[{ ...entry, stopping }]}
+              computers={{ hostClient: client, machines: [] }}
+            />
+          </TestWorkspace>
+        </MemoryRouter>,
+      ),
+    );
+  draw(false);
+  act(() =>
+    computerUseStops(client).stop({
+      machineName: machine.name,
+      sessionId: session.sessionId,
+      runId: session.runId,
+    }),
+  );
+  draw(true);
+  expect(container.textContent).toContain("Stopping");
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  expect(container.textContent).toContain("Stopped using");
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 3100));
+  });
+  expect(container.textContent).not.toContain("Stopped using");
+}, 10000);

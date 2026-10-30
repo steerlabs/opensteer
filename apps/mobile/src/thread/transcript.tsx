@@ -7,6 +7,7 @@ import {
   formatClockTime,
   formatElapsed,
   hasRunOutcome,
+  silentRunLabel,
   incomingMessagePreview,
   messageAuthorName,
   messageFoldLines,
@@ -115,6 +116,9 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
             onOpenActivity={props.onOpenActivity}
             onOpenReplyUnderWay={props.onOpenReplyUnderWay}
             onReply={props.onReply}
+            onOpenThread={props.onOpenThread}
+            workspaces={props.workspaces}
+            homeThreadId={props.homeThreadId}
             turn={group.turn}
             turnKey={group.key}
           />
@@ -305,7 +309,11 @@ function WorkStatus(props: {
 export function replyActivityKeys(groups: readonly TranscriptGroup[]): ReadonlyMap<string, string> {
   const keys = new Map<string, string>();
   for (const activity of conversationActivities(groups)) {
-    if (activity.steps.length === 0) continue;
+    if (
+      activity.steps.length === 0 &&
+      !(activity.turn.run?.status === "completed" && activity.turn.run.replyMessageId === null)
+    )
+      continue;
     for (const key of activity.keys) keys.set(key, activity.key);
   }
   return keys;
@@ -319,6 +327,9 @@ export function replyActivityKeys(groups: readonly TranscriptGroup[]): ReadonlyM
  * reads as what was said.
  */
 function ConversationTurn(props: {
+  readonly onOpenThread: (threadId: string) => void;
+  readonly workspaces: readonly WorkspaceSummary[];
+  readonly homeThreadId: string | null;
   readonly activityKey: string | null;
   readonly live: boolean;
   readonly onOpenActivity: ((activityKey: string) => void) | undefined;
@@ -337,8 +348,18 @@ function ConversationTurn(props: {
       ? undefined
       : () => onOpenActivity(activityKey);
   const outcome =
-    turn.run !== null && (hasRunOutcome(turn.run) || restarted(turn.run)) ? (
-      <RunOutcome conversation run={turn.run} />
+    turn.personWaiting !== false &&
+    turn.run !== null &&
+    (hasRunOutcome(turn.run) || restarted(turn.run)) ? (
+      turn.run.status === "completed" && turn.run.replyMessageId === null ? (
+        <Pressable accessibilityRole="button" onPress={onActivity}>
+          <AppText role="caption" tone="muted" style={{ fontSize: 12.5 }}>
+            {silentRunLabel(turn.run)}
+          </AppText>
+        </Pressable>
+      ) : (
+        <RunOutcome conversation run={turn.run} />
+      )
     ) : null;
   return (
     <View style={styles.turn}>
@@ -346,6 +367,14 @@ function ConversationTurn(props: {
         <ComputerUseLine key={line.now.session.sessionId} now={line.now} />
       ) : line?.kind === "kept" ? (
         <KeptComputerStopLine key={line.stop.sessionId} stop={line.stop} />
+      ) : null}
+      {view.reply !== null && turn.source ? (
+        <TurnSource
+          source={turn.source}
+          onOpenThread={props.onOpenThread}
+          workspaces={props.workspaces}
+          homeThreadId={props.homeThreadId}
+        />
       ) : null}
       {view.reply !== null ? (
         <ReplyBubble
@@ -499,6 +528,7 @@ function TurnContent(props: {
   readonly live: boolean;
 }): ReactNode {
   const active = turnState(props.turn) !== "settled";
+  const silent = props.turn.run?.status === "completed" && props.turn.run.replyMessageId === null;
   const status = props.status !== false;
   const work = props.entries ?? props.turn.work;
   const { reply } = props.turn;
@@ -508,11 +538,11 @@ function TurnContent(props: {
   const rows = useMemo(
     () => [
       ...workRows(closed ? [reply] : work),
-      ...(status && (work.length > 0 || active)
+      ...(status && (work.length > 0 || active || silent)
         ? [{ kind: "status" as const, key: "status" }]
         : []),
     ],
-    [work, active, status, closed, reply],
+    [work, active, status, closed, reply, silent],
   );
   const { fold } = props;
   return rows.map((row) => {
@@ -1108,6 +1138,43 @@ function MessageFold(props: {
 
 type UpdateAuthor = Exclude<MessageEntry["author"], { readonly kind: "human" }>;
 
+/** Why Opensteer spoke unprompted: what woke the turn, above its reply. */
+function TurnSource(props: {
+  readonly source: NonNullable<Turn["source"]>;
+  readonly onOpenThread: (threadId: string) => void;
+  readonly workspaces: readonly WorkspaceSummary[];
+  readonly homeThreadId: string | null;
+}): ReactNode {
+  const { author, task, createdAt } = props.source;
+  const name = task?.workerThread.title ?? messageAuthorName(author, "input", props.homeThreadId);
+  const threadId =
+    task?.workerThread.id ??
+    (author.kind === "agent" && props.workspaces.some(({ id }) => id === author.workspaceId)
+      ? author.threadId
+      : null);
+  const content = (
+    <View style={styles.updateLineHead}>
+      <Symbol
+        name={author.kind === "trigger" || author.kind === "watch" ? "bolt" : "bubble.left"}
+        size={14}
+        tint={color.muted}
+      />
+      <AppText role="caption" tone="muted" style={{ fontSize: 12 }}>
+        {name} · {formatClockTime(createdAt)}
+        {threadId ? " ›" : ""}
+      </AppText>
+    </View>
+  );
+  // Automations have no page on mobile, so they are named and left at that.
+  return threadId ? (
+    <Pressable accessibilityRole="link" onPress={() => props.onOpenThread(threadId)}>
+      {content}
+    </Pressable>
+  ) : (
+    content
+  );
+}
+
 /**
  * In a conversation, what another agent or an automation sent its agent: one
  * line saying who, and whether it was left for later or is work now, opening
@@ -1411,10 +1478,11 @@ function RunOutcome(props: {
     );
   }
   if (run.status === "completed" && run.replyMessageId === null) {
+    if (props.conversation !== true) return footer;
     return (
       <>
         <AppText role="secondary" tone="muted">
-          Finished without a reply.
+          {silentRunLabel(run)}
         </AppText>
         {footer}
       </>

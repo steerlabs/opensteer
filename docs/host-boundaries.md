@@ -303,6 +303,13 @@ as epochs 32 and 37 do. A change these rules cover is never a bump:
   as the browser socket: [the tolerance guard](../tests/host-response-tolerance.test.ts)
   walks only the declared Host and Account response graphs, which is how epochs 35
   and 39 slipped through.
+  Run lifecycle events (`run.started`, `run.status`, `run.restarted`, `run.phase`
+  and all three terminal events) durably require `startedBy`, the seed message's
+  author, `startedAt`, the Run's creation time, and `personWaiting`, whether its seed or any input it took is human-authored. The Host stamps these fields for Runner and Host writes; migration 0114 backfills
+  history. View readers and `RunEntry` keep these fields optional: an older Host omits them,
+  which means unknown and preserves the existing conversation rendering. Only
+  a known non-human author enables quiet turns. These read-only added fields need
+  neither a capability advertisement nor an epoch bump.
 - **Added kinds.** Readers skip, or fall back on, a union member or enum value they
   do not know, rather than refusing the whole list or frame.
   Machine presentation readers retain known platforms, clear an unknown device

@@ -1,3 +1,4 @@
+import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -13,7 +14,7 @@ import {
   PendingRequestSchema,
   ThreadAccessModeSchema,
   createId,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type ContentPart,
   type EnvironmentId,
   type MessageId,
@@ -334,7 +335,7 @@ integration.sequential("conversation delivery", () => {
       const run = await runRow(runId);
       const generation = bindingGeneration ?? run.bindingGeneration;
       if (generation === null) throw new Error("The Run has no binding to report from");
-      return store.commitRunnerEvent({
+      const committed = await store.commitRunnerEvent({
         environmentId: f.environmentId,
         event: {
           bindingGeneration: generation,
@@ -350,6 +351,36 @@ integration.sequential("conversation delivery", () => {
         runnerBootId: f.runnerBootId,
         runnerId: f.runnerId,
       });
+      if (
+        [
+          "run.started",
+          "run.status",
+          "run.restarted",
+          "run.phase",
+          "run.completed",
+          "run.failed",
+          "run.interrupted",
+        ].includes(type) &&
+        !committed.wasDuplicate
+      ) {
+        const seed = await database
+          .selectFrom("messages")
+          .select("author")
+          .where("id", "=", run.seedInputId)
+          .executeTakeFirstOrThrow();
+        const inputs = await database
+          .selectFrom("messages")
+          .select("author")
+          .where("runId", "=", runId)
+          .where("kind", "=", "input")
+          .execute();
+        expect(committed.event.data).toMatchObject({
+          startedBy: seed.author,
+          startedAt: run.createdAt.toISOString(),
+          personWaiting: inputs.some((input) => input.author.kind === "human"),
+        });
+      }
+      return committed;
     }
     async function start(f: Fixture, runId: RunId) {
       const bound = await claimAndBind(f, runId);
@@ -692,6 +723,40 @@ integration.sequential("conversation delivery", () => {
   /** The person's first message in an idle conversation, started and running. */
 
   /** The person answers on the approval card and the Runner accepts it. */
+
+  it("stamps Host and Runner lifecycle context after a human joins an automatic wake", async ({
+    storeFixture,
+  }) => {
+    const { fixture, platformInput, start, send, emit, runRow, running, finish, database } =
+      storeFixture;
+    const f = await fixture("automatic-human-context");
+    const sourceRunId = await running(f);
+    await finish(f, sourceRunId);
+    const automatic = await platformInput(f, "automatic-wake", sourceRunId);
+    if (!automatic.run) throw new Error("Expected an automatic Run");
+    const runId = automatic.run.id;
+    const started = await start(f, runId);
+    expect(started.started.event.data).toMatchObject({ personWaiting: false });
+    await send(f, "human-steer");
+    const phase = await emit(f, runId, "run.phase", { phase: "turn" });
+    expect(phase.event.data).toMatchObject({ personWaiting: true });
+    const row = await runRow(runId);
+    const hostEvent = await database.transaction().execute((tx) =>
+      appendHostWorkspaceEvent(tx, {
+        type: "run.interrupted",
+        data: { status: "interrupted" },
+        runId,
+        threadId: f.thread.id,
+        workspaceId: f.workspace.id,
+        environmentId: f.environmentId,
+      }),
+    );
+    expect(hostEvent.data).toMatchObject({
+      startedBy: automatic.message.author,
+      startedAt: row.createdAt.toISOString(),
+      personWaiting: true,
+    });
+  });
 
   it("joins a person's message into the reply under way, once, without a second Run", async ({
     storeFixture,

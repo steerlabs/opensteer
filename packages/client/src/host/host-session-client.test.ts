@@ -7,7 +7,7 @@ import {
   createId,
   BrowserTabGroupIdSchema,
   emptyExecutionPreferences,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type Message,
   type NotificationView,
   type Request as OpensteerRequest,

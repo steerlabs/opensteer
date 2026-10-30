@@ -789,6 +789,17 @@ before pagination; clients apply the event's flag on replay. Direct navigation a
 agent searches reach unlisted work. Questions in unlisted work roll up to the nearest listed
 ancestor, including Chat for automation-anchored work.
 
+Chat shows what was said and work that needs its reader. A Run's seed author
+(`startedBy` on lifecycle events) distinguishes human work from automatic wakes;
+`personWaiting` records whether its seed or any input it took is human-authored, so a steer remains known on every history page. `startedAt` records the Run's real start. Known
+non-human turns show only their reply, tasks needing the reader or failed tasks,
+and live computer use with its Stop. Their waking input becomes one linked source
+line above a reply; silent completion leaves nothing in Chat. Standalone trigger
+and watch assignments appear only for decisions or failure. A person's silent
+completion shows “Worked for” with elapsed time from `startedAt` (or “Worked” when unknown) and opens Activity;
+stops and failures keep their outcomes. Older Hosts omit `startedBy`, preserving
+the prior presentation ([compatibility](host-boundaries.md#compatibility)).
+
 In the conversation that handed it out, a task is one bubble that changes in place and opens the
 task's own Thread. Its result draws nothing more: the bubble shows how the task ended, and the reply
 it starts says what came back. There is no separate task panel: every client opens the Thread
