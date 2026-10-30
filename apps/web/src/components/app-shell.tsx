@@ -1033,7 +1033,6 @@ export function AppShell({
                     throw error;
                   }
                 }}
-                onOpenShortcuts={openShortcuts}
                 onSetTaskDone={setTaskDone}
                 onToggleCollapsed={toggleSidebar}
               />

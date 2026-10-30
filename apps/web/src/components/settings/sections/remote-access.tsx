@@ -474,7 +474,7 @@ function PersonalRemoteAccessForm({
                     </button>
                   ) : undefined
                 }
-                detail="In Opensteer on the other device, choose Add a computer or server, then Another computer of yours › Use a pairing code, and enter the address and this one-use code."
+                detail="On the other device, choose Switch computer… › Add a computer or server › Another computer of yours › Use a pairing code (on mobile, Add deployment… › Pair a computer). Enter the address and this one-use code."
                 icon="key"
                 title="Pair with a code"
               />
