@@ -60,5 +60,5 @@ interface or rollout switch here.
 
 The relying-party test independently verifies registration/assertion. Fixture TLS
 identity is public; trust exceptions must stay confined to pinned test launchers,
-never production. See `../test-support/passkey-policy-scenario.ts` and
+never production. See `../test-support/passkey-provider-scenario.ts` and
 `../browser/page-policy.ts`.
