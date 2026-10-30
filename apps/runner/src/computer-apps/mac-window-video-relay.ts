@@ -1,5 +1,6 @@
 import {
   DisplayAckSchema,
+  displaySourceKey,
   macDisplayMaxWindows,
   decodeDisplayMediaFrame,
   displayFirstFrameTimeoutMs,
@@ -95,6 +96,12 @@ export class MacWindowVideoRelay {
       const entry = this.#streams.get(event.params.streamId);
       if (!entry || entry.closed) return;
       if (event.event === "display.owner-input") {
+        if (
+          !entry.sources.some(
+            (source) => displaySourceKey(source) === displaySourceKey(event.params.source),
+          )
+        )
+          return;
         void this.#emit({ type: "runner.integrations.mac-owner.event", ...event.params }).catch(
           () => this.#close(entry, "event-send-failed"),
         );
@@ -196,10 +203,7 @@ export class MacWindowVideoRelay {
       if (!entry || entry.closed || entry.terminal) return;
       if (
         !entry.sources.some(
-          (source) =>
-            source.kind === "owner-view" &&
-            source.viewId === message.source.viewId &&
-            source.generation === message.source.generation,
+          (source) => displaySourceKey(source) === displaySourceKey(message.source),
         )
       )
         return;
