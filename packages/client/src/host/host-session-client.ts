@@ -1,3 +1,4 @@
+import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
 import { BrowserPreferences } from "./browser-preferences.js";
 import { WorkspaceTabActivations } from "./workspace-tab-activations.js";
@@ -986,6 +987,7 @@ export class HttpHostClient {
   readonly #deniedAssignments = new Set<string>();
   readonly #threadWorkspace = new Map<string, string>();
   #viewerGeneration = 0;
+  #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
   readonly #lifecycleListeners = new Set<
     (event: "background" | "foreground" | "network") => void
@@ -1139,6 +1141,7 @@ export class HttpHostClient {
     this.#snapshot = {
       ...this.#snapshot,
       network: this.#network,
+      savedViewReadiness: this.#savedViewReadiness,
       threadRenameAvailable: this.#capabilities?.includes("thread-titles-v1") === true,
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
@@ -2084,14 +2087,18 @@ export class HttpHostClient {
   }
 
   async loadTranscriptAround(threadId: string, messageId: string): Promise<void> {
+    const generation = this.#viewerGeneration,
+      userId = this.#snapshot.user?.id;
     await this.#threadHydrations.get(threadId);
     await this.#latestTranscriptLoads.get(threadId);
     await this.#messagePageLoads.get(threadId);
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({ threadId, aroundMessageId: messageId }),
     );
+    if (!this.#viewerStillCurrent(generation, userId)) return;
     if (page.threadId !== threadId) throw new Error("Thread event page mismatch.");
     this.#historicalThreads.add(threadId);
+    this.#acceptHomeWindow(threadId, page.thread.workspaceId, false);
     this.#update({
       ...this.#snapshot,
       assignments: withAssignmentsFrom(this.#snapshot.assignments, page.events),
@@ -2329,6 +2336,8 @@ export class HttpHostClient {
       if (workspaceId) this.#ensureWorkspaceChannel(workspaceId);
       if (this.#observedThreads.has(threadId)) this.#ensureRequests(threadId);
       this.#applyReadStates([page.readState], markers);
+      if (this.#acceptHomeWindow(threadId, workspaceId, !this.#historicalThreads.has(threadId)))
+        this.#update(this.#snapshot);
     } catch (error) {
       // A worker the Host will not show this viewer takes its tasks with it.
       if (this.#viewerStillCurrent(generation, userId))
@@ -3329,6 +3338,9 @@ export class HttpHostClient {
       ]);
       if (!merged || !this.#viewerStillCurrent(generation, userId)) return;
       if (scope !== null && !this.#workspaceTaskScopes.has(scope)) return;
+      const tasksWereReady = this.#savedViewReadiness.tasksReady;
+      if (scope === null)
+        this.#savedViewReadiness = { ...this.#savedViewReadiness, tasksReady: false };
       this.#update(
         scope === null
           ? { ...this.#snapshot, tasks: merged, ...(active ? { activeTasks: active.entries } : {}) }
@@ -3338,6 +3350,14 @@ export class HttpHostClient {
             },
       );
       this.#applyReadStates(readStates, markers);
+      if (
+        scope === null &&
+        (tasksWereReady || (cursor === null && active !== null)) &&
+        this.#viewerStillCurrent(generation, userId)
+      ) {
+        this.#savedViewReadiness = { ...this.#savedViewReadiness, tasksReady: true };
+        this.#update(this.#snapshot);
+      }
     } catch (error) {
       if (
         scope !== null &&
@@ -3652,6 +3672,13 @@ export class HttpHostClient {
     // or marking it read. A later activation joins this same read.
     if (this.#prefetchHome && this.#snapshot.homeThreadId)
       this.#ensureThreadHydration(this.#snapshot.homeThreadId);
+    if (homeWorkspace?.kind === "main" && homeWorkspace.homeThreadId === null) {
+      this.#savedViewReadiness = {
+        ...this.#savedViewReadiness,
+        home: { status: "absent", workspaceId: homeWorkspace.id },
+      };
+      this.#update(this.#snapshot);
+    }
     // A patch older than this read is already in what it answered.
     for (const [sessionId, mark] of this.#presenceMarks) {
       if (mark > presenceMark) continue;
@@ -4481,11 +4508,37 @@ export class HttpHostClient {
         ...this.#snapshot.workspaces.filter((item) => item.id !== workspace.id),
       ],
     };
+    const home = this.#savedViewReadiness.home;
+    if (
+      home.status === "window" &&
+      (transcripts[home.threadId] !== this.#snapshot.transcripts[home.threadId] ||
+        transcriptWindows[home.threadId] !== this.#snapshot.transcriptWindows[home.threadId])
+    ) {
+      // The accepted answer certified the old window and its text, not this
+      // snapshot's replacement. Withdraw it before any observer can capture.
+      this.#savedViewReadiness = { ...this.#savedViewReadiness, home: { status: "unknown" } };
+    }
     this.#update({
       ...next,
       ...(workspace.id === next.homeWorkspaceId ? { homeThreadId: workspace.homeThreadId } : {}),
     });
     this.#applyReadStates(snapshot.readStates);
+    if (workspace.kind === "main" && workspace.id === this.#snapshot.homeWorkspaceId) {
+      if (workspace.homeThreadId === null) {
+        this.#savedViewReadiness = {
+          ...this.#savedViewReadiness,
+          home: { status: "absent", workspaceId: workspace.id },
+        };
+        this.#update(this.#snapshot);
+      } else if (
+        !this.#historicalThreads.has(workspace.homeThreadId) &&
+        !this.#showsThread(workspace.homeThreadId) &&
+        snapshot.messageWindows.some(({ threadId }) => threadId === workspace.homeThreadId) &&
+        this.#acceptHomeWindow(workspace.homeThreadId, workspace.id, true)
+      ) {
+        this.#update(this.#snapshot);
+      }
+    }
     this.#applyNotificationPreferences(snapshot.notificationPreferences);
     // A snapshot stands in for whatever the stream said in between, and the
     // queue reads follow that stream.
@@ -5142,6 +5195,7 @@ export class HttpHostClient {
   }
 
   #expireSession(): void {
+    this.#savedViewReadiness = emptySavedViewReadiness();
     this.#viewerGeneration += 1;
     this.#retainedWorkspaceTabLineages.clear();
     this.#workspaceTabReads.clear();
@@ -5217,6 +5271,10 @@ export class HttpHostClient {
   }
 
   #refuseWorkspace(workspaceId: string): void {
+    this.#savedViewReadiness = {
+      ...emptySavedViewReadiness(),
+      workspaceRefusal: this.#savedViewReadiness.workspaceRefusal + 1,
+    };
     this.#viewerGeneration += 1;
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
@@ -5318,8 +5376,35 @@ export class HttpHostClient {
     });
   }
 
+  #acceptHomeWindow(threadId: string, workspaceId: string, latest: boolean): boolean {
+    if (
+      this.#snapshot.homeThreadId !== threadId ||
+      this.#snapshot.homeWorkspaceId !== workspaceId ||
+      this.#snapshot.session !== "authenticated"
+    )
+      return false;
+    this.#savedViewReadiness = {
+      ...this.#savedViewReadiness,
+      home: { status: "window", threadId, workspaceId, latest },
+    };
+    return true;
+  }
+
   #update(snapshot: HostSnapshot): void {
     if (this.#disposed) return;
+    if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
+    const home = this.#savedViewReadiness.home;
+    if (
+      (home.status === "window" &&
+        (home.threadId !== snapshot.homeThreadId ||
+          home.workspaceId !== snapshot.homeWorkspaceId ||
+          !snapshot.transcripts[home.threadId] ||
+          !snapshot.transcriptWindows[home.threadId])) ||
+      (home.status === "absent" &&
+        (snapshot.homeThreadId !== null || home.workspaceId !== snapshot.homeWorkspaceId))
+    ) {
+      this.#savedViewReadiness = { ...this.#savedViewReadiness, home: { status: "unknown" } };
+    }
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
@@ -5462,6 +5547,7 @@ export class HttpHostClient {
     };
     this.#snapshot = {
       ...snapshot,
+      savedViewReadiness: this.#savedViewReadiness,
       threadRenameAvailable: this.#capabilities?.includes("thread-titles-v1") === true,
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
@@ -5850,6 +5936,7 @@ function emptySnapshot(): HostSnapshot {
     environments: [],
     executionPreferences: emptyExecutionPreferences,
     harnesses: [],
+    savedViewReadiness: emptySavedViewReadiness(),
     homeWorkspaceId: null,
     homeThreadId: null,
     notificationMutes: [],

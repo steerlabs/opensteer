@@ -1,6 +1,6 @@
 import type { SavedViewCrypto } from "./saved-host-view-store.js";
 
-/** Lazy loading makes a custom client without ExpoCryptoAES a cache miss, not an app failure. */
+/** Use the installed native AES API; failed cache operations have no WebCrypto fallback. */
 export const nativeSavedViewCrypto: SavedViewCrypto = {
   async generateKey() {
     const { AESEncryptionKey, AESKeySize } = await import("expo-crypto");
