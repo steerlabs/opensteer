@@ -70,6 +70,68 @@ struct MacVideoLifecycleDiagnostic: Encodable, Sendable {
   var noSubmissionMs: Double? = nil
 }
 
+/// Encoder submission and peer delivery credit for one producer.
+struct MacVideoCredit {
+  enum Admission: Equatable {
+    case submit(key: Bool)
+    case withheld(String)
+  }
+
+  static let maxInFlight = 3
+  static let maxOutstandingBytes = 1_048_576
+  static let maxAckAge: TimeInterval = 0.5
+
+  private(set) var inFlight = 0
+  var needsKey = true
+  private(set) var outstanding: [(sequence: Int, bytes: Int, sentAt: TimeInterval)] = []
+
+  var outstandingBytes: Int { outstanding.reduce(0) { $0 + $1.bytes } }
+
+  mutating func admit(now: TimeInterval) -> Admission {
+    let reason: String? =
+      inFlight >= Self.maxInFlight ? "inFlight"
+      : outstandingBytes >= Self.maxOutstandingBytes ? "bytes"
+      : outstanding.first.map({ now - $0.sentAt >= Self.maxAckAge }) == true ? "ack-age" : nil
+    // A withheld sample never reaches the encoder, so the reference chain is intact.
+    if let reason { return .withheld(reason) }
+    inFlight += 1
+    defer { needsKey = false }
+    return .submit(key: needsKey)
+  }
+
+  /// The encoder returned (or never accepted) a submitted sample.
+  mutating func returned() { inFlight = max(0, inFlight - 1) }
+  mutating func drained() { inFlight = 0 }
+
+  /// Reserves peer credit before enqueueing: the media peer can acknowledge immediately.
+  mutating func reserve(sequence: Int, bytes: Int, now: TimeInterval) -> Bool {
+    guard outstandingBytes + bytes <= Self.maxOutstandingBytes else {
+      needsKey = true
+      return false
+    }
+    outstanding.append((sequence, bytes, now))
+    return true
+  }
+
+  /// Encoded output that will not reach the peer breaks its reference chain.
+  mutating func lost(_ sequence: Int? = nil) {
+    if let sequence { outstanding.removeAll { $0.sequence == sequence } }
+    needsKey = true
+  }
+
+  mutating func acknowledge(_ sequence: Int) -> Bool {
+    guard outstanding.first?.sequence == sequence else { return false }
+    outstanding.removeFirst()
+    return true
+  }
+
+  /// A new generation or closed publication starts over from a key.
+  mutating func reset() {
+    outstanding.removeAll()
+    needsKey = true
+  }
+}
+
 final class MacVideoLease: @unchecked Sendable {
   private let expiry: Locked<TimeInterval>
   init(expiresAt: TimeInterval) { expiry = Locked(expiresAt) }
@@ -150,8 +212,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     var lastCompleteAt: TimeInterval = 0
     var completeSince: TimeInterval = 0
     var stallReported = false
-    var inFlight = 0
-    var needsKey = true
+    var credit = MacVideoCredit()
     var width = 0
     var height = 0
     var current: CVPixelBuffer?
@@ -161,7 +222,6 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     var composition: WindowCapture.Composition?
     var fps = 0
     var sourceRect = CGRect.zero
-    var outstanding: [(sequence: Int, bytes: Int, sentAt: TimeInterval)] = []
   }
 
   let id: String
@@ -266,9 +326,9 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       state.stallReported = true
       return MacVideoLifecycleDiagnostic(
         streamId: id, event: "producer-stalled", generation: state.generation,
-        inFlight: state.inFlight, outstanding: state.outstanding.count,
-        outstandingBytes: state.outstanding.reduce(0) { $0 + $1.bytes },
-        oldestAckAgeMs: state.outstanding.first.map { max(0, now - $0.sentAt) * 1000 } ?? 0,
+        inFlight: state.credit.inFlight, outstanding: state.credit.outstanding.count,
+        outstandingBytes: state.credit.outstandingBytes,
+        oldestAckAgeMs: state.credit.outstanding.first.map { max(0, now - $0.sentAt) * 1000 } ?? 0,
         noSubmissionMs: (now - since) * 1000)
     }
     if let row {
@@ -281,16 +341,15 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     guard MacVideoDiagnostic.path != nil else { return }
     MacVideoDiagnostic.write(["time": Date().timeIntervalSince1970 * 1000, "event": event,
       "streamId": id, "generation": state.generation, "sequence": state.sequence,
-      "inFlight": state.inFlight, "outstanding": state.outstanding.count,
-      "outstandingBytes": state.outstanding.reduce(0) { $0 + $1.bytes },
-      "oldestAckAge": state.outstanding.first.map { ProcessInfo.processInfo.systemUptime - $0.sentAt } ?? 0,
+      "inFlight": state.credit.inFlight, "outstanding": state.credit.outstanding.count,
+      "outstandingBytes": state.credit.outstandingBytes,
+      "oldestAckAge": state.credit.outstanding.first.map { ProcessInfo.processInfo.systemUptime - $0.sentAt } ?? 0,
       "visible": state.visible, "open": state.open, "ended": state.ended, "reason": reason])
   }
 
   func acknowledge(_ sequence: Int) {
     publication.withLock { state in
-      guard state.outstanding.first?.sequence == sequence else { diagnostic("ack-rejected", state); return }
-      state.outstanding.removeFirst()
+      guard state.credit.acknowledge(sequence) else { diagnostic("ack-rejected", state); return }
       diagnostic("ack", state)
     }
   }
@@ -392,7 +451,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
           VTCompressionSessionInvalidate(encoder)
         }
         encoder = nil
-        publication.withLock { $0.inFlight = 0; $0.current = nil }
+        publication.withLock { $0.credit.drained(); $0.current = nil }
         continuation.resume()
       }
     }
@@ -415,8 +474,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
             publication.withLock {
               $0.generation += 1
               $0.current = nil
-              $0.outstanding.removeAll()
-              $0.needsKey = true
+              $0.credit.reset()
             }
           }
           if let encoder { VTCompressionSessionInvalidate(encoder) }
@@ -433,7 +491,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
               guard let context, let generation else { return }
               let producer = Unmanaged<MacWindowVideoProducer>.fromOpaque(context)
                 .takeUnretainedValue()
-              producer.publication.withLock { $0.inFlight = max(0, $0.inFlight - 1) }
+              producer.publication.withLock { $0.credit.returned() }
               let inputGeneration = Int(bitPattern: generation)
               guard producer.publication.withLock({ !$0.ended && $0.generation == inputGeneration })
               else { return }
@@ -442,7 +500,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
                 return
               }
               guard !flags.contains(.frameDropped), let sample else {
-                producer.publication.withLock { $0.needsKey = true }
+                producer.publication.withLock { $0.credit.lost() }
                 return
               }
               producer.encoded(sample, generation: inputGeneration)
@@ -589,8 +647,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       state.stallReported = false
       if !visible {
         state.generation += 1
-        state.needsKey = true
-        state.outstanding.removeAll()
+        state.credit.reset()
       }
       return MacVideoState(
         streamId: id, state: visible ? "starting" : "warming", reason: nil,
@@ -662,13 +719,9 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       guard state.open, !state.ended else { diagnostic("encode-rejected", state, reason: "closed"); return nil }
       state.current = buffer
       guard state.visible else { diagnostic("encode-rejected", state, reason: "warm"); return nil }
-      let bytes = state.outstanding.reduce(0) { $0 + $1.bytes }
-      guard state.inFlight < 3, bytes < 1_048_576,
-        state.outstanding.first.map({ ProcessInfo.processInfo.systemUptime - $0.sentAt < 0.5 })
-          ?? true
-      else {
-        diagnostic("encode-rejected", state, reason: state.inFlight >= 3 ? "inFlight" : bytes >= 1_048_576 ? "bytes" : "ack-age")
-        state.needsKey = true
+      let admission = state.credit.admit(now: ProcessInfo.processInfo.systemUptime)
+      guard case .submit(let key) = admission else {
+        if case .withheld(let reason) = admission { diagnostic("encode-rejected", state, reason: reason) }
         return nil
       }
       if state.stallReported {
@@ -678,9 +731,6 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       }
       state.lastSubmissionAt = ProcessInfo.processInfo.systemUptime
       diagnostic("encode-submitted", state)
-      state.inFlight += 1
-      let key = state.needsKey
-      state.needsKey = false
       return (state.generation, key)
     }
     guard let (generation, key) = admitted else { return }
@@ -690,7 +740,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       presentationTimeStamp: pts, duration: .invalid, frameProperties: properties,
       sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: generation), infoFlagsOut: nil)
     if status != noErr {
-      publication.withLock { $0.inFlight = max(0, $0.inFlight - 1) }
+      publication.withLock { $0.credit.returned() }
       fail("encoder-failed")
     }
   }
@@ -699,7 +749,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     queue.async { [self] in
       guard eligible() else { return }
       let buffer = publication.withLock { state -> CVPixelBuffer? in
-        state.needsKey = true
+        state.credit.needsKey = true
         return state.open && state.visible && !state.ended ? state.current : nil
       }
       if let buffer {
@@ -720,6 +770,10 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   }
 
   private func encoded(_ sample: CMSampleBuffer, generation: Int) {
+    var sent = false
+    defer {
+      if !sent { publication.withLock { if $0.generation == generation { $0.credit.lost() } } }
+    }
     guard eligible(), CMSampleBufferDataIsReady(sample),
       let format = CMSampleBufferGetFormatDescription(sample),
       let block = CMSampleBufferGetDataBuffer(sample)
@@ -812,19 +866,14 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     withUnsafeBytes(of: &size) { envelope.append(contentsOf: $0) }
     envelope.append(json)
     envelope.append(annex)
-    // Reserve credit before enqueueing: the media peer can acknowledge immediately.
     let reserved = publication.withLock { state in
-      guard state.open, state.visible, !state.ended, state.generation == generation,
-        state.outstanding.reduce(0, { $0 + $1.bytes }) + envelope.count <= 1_048_576
-      else { return false }
-      state.outstanding.append(
-        (header.sequence, envelope.count, ProcessInfo.processInfo.systemUptime))
-      return true
+      guard state.open, state.visible, !state.ended, state.generation == generation else {
+        return false
+      }
+      return state.credit.reserve(
+        sequence: header.sequence, bytes: envelope.count, now: ProcessInfo.processInfo.systemUptime)
     }
-    guard reserved else {
-      publication.withLock { $0.needsKey = true }
-      return
-    }
+    guard reserved else { return }
     guard let output = output.current,
       output.sendMedia(
         envelope,
@@ -836,12 +885,10 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
             }
         })
     else {
-      publication.withLock {
-        $0.outstanding.removeAll { $0.sequence == header.sequence }
-        $0.needsKey = true
-      }
+      publication.withLock { $0.credit.lost(header.sequence) }
       return
     }
+    sent = true
     publication.withLock { state in
       diagnostic("encoded-sent", state)
       guard state.open, state.generation == generation else { return }
@@ -861,10 +908,9 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       state.open = false
       state.verified = false
       state.current = nil
-      state.outstanding.removeAll()
+      state.credit.reset()
       let withheld = state.generation
       state.generation += 1
-      state.needsKey = true
       return MacVideoState(
         streamId: id, state: "protected", reason: reason,
         generation: withheld, width: 0, height: 0)
@@ -880,7 +926,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       state.ended = true
       state.open = false
       state.current = nil
-      state.outstanding.removeAll()
+      state.credit.reset()
       return MacVideoState(
         streamId: id, state: failed ? "failed" : "stopped", reason: reason,
         generation: state.generation, width: 0, height: 0)
