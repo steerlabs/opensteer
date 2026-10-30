@@ -175,8 +175,10 @@ as `.claude/skills/`.
   when Tim asks or part of it needs his approval.
 - When you split a request across agents, each works on its own branch in its
   own worktree and opens no PR. You merge their branches into one PR branch and
-  open one PR. Every PR runs CI on one shared queue, so a dozen small PRs block
-  everyone's checks for hours.
+  open one PR.
+- Push when the change is ready for review, not after every edit. Every PR and
+  every push runs CI on one shared queue of 60 jobs, so a dozen small PRs or
+  pushes block everyone's checks for hours.
 - The body says what changed and why, the evidence, and any checks you couldn't
   run.
 - After pushing, call `watch_pull_request` and end your turn; you're woken on
