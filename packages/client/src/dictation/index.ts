@@ -1,10 +1,12 @@
-export { DictationController } from "./controller.js";
+export { DictationController, dictationView } from "./controller.js";
 export type {
   DictationControllerInput,
   DictationFinish,
+  DictationNotice,
   DictationPhase,
   DictationSnapshot,
   DictationTarget,
+  DictationView,
 } from "./controller.js";
 export { insertDictationText, joinDictationText } from "./text.js";
 export type { DictationSelection } from "./text.js";

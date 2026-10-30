@@ -4,7 +4,7 @@ import type {
   DictationEvent,
   DictationPort,
 } from "@opensteer/protocol/dictation";
-import { DictationController, type DictationTarget } from "./controller.js";
+import { DictationController, dictationView, type DictationTarget } from "./controller.js";
 
 const installed: DictationAvailability = {
   available: true,
@@ -115,13 +115,13 @@ describe("dictation controller", () => {
     f.target.read().selection = { start: 0, end: 0 };
     f.emit(text(["good"]));
     expect(f.controller.getSnapshot()).toBe(snapshot);
-    const finish = f.controller.stop();
-    expect(f.controller.stop()).toBe(finish);
+    const finish = f.controller.stop("one");
+    expect(f.controller.stop("one")).toBe(finish);
     expect(f.port.stop).toHaveBeenCalledTimes(1);
     f.emit(completed);
     expect(await finish).toEqual({ kind: "committed", text: "a good day" });
     expect(f.target.commit).toHaveBeenCalledExactlyOnceWith("a good day", { start: 6, end: 6 });
-    expect(await f.controller.stop()).toEqual({ kind: "idle" });
+    expect(await f.controller.stop("one")).toEqual({ kind: "idle" });
   });
 
   it("keeps level ticks off the snapshot store and fences duplicate and foreign events", async () => {
@@ -150,8 +150,8 @@ describe("dictation controller", () => {
     );
     await f.start();
     f.emit(text([], ["good"]));
-    const finish = f.controller.stop();
-    f.controller.cancel();
+    const finish = f.controller.stop("one");
+    f.controller.cancel("one");
     reject(new Error("late"));
     f.emit(completed);
     expect(await finish).toEqual({ kind: "aborted" });
@@ -168,7 +168,7 @@ describe("dictation controller", () => {
       await f.start();
       f.emit({ type: "listening" });
       f.emit(text([], ["good"]));
-      const finish = phase === "finishing" ? f.controller.stop() : null;
+      const finish = phase === "finishing" ? f.controller.stop("one") : null;
       f.edit("a good! day");
       f.controller.release("other");
       expect(f.controller.getSnapshot().owner).toBe("one");
@@ -190,14 +190,14 @@ describe("dictation controller", () => {
         f.emit({ type: "listening" });
         f.emit(text(["good"]));
       }
-      const finish = phase === "finishing" ? f.controller.stop() : null;
+      const finish = phase === "finishing" ? f.controller.stop("one") : null;
       f.controller.leave("other");
       f.controller.leave("one");
       if (phase === "starting") {
         expect(f.port.cancel).toHaveBeenCalledTimes(1);
         expect(f.target.commit).not.toHaveBeenCalled();
       } else {
-        const waiting = f.controller.stop();
+        const waiting = f.controller.stop("one");
         expect(await waiting).toEqual({ kind: "aborted" });
         if (finish) expect(waiting).toBe(finish);
         f.emit(completed);
@@ -211,7 +211,7 @@ describe("dictation controller", () => {
     await f.start();
     f.emit(text(["good"]));
     f.edit("Recovered draft");
-    const finish = f.controller.stop();
+    const finish = f.controller.stop("one");
     f.emit(completed);
     expect(await finish).toEqual({ kind: "committed", text: "Recovered draft good" });
   });
@@ -219,7 +219,7 @@ describe("dictation controller", () => {
   it("stops during starting without removing a selection; empty notice expires after five seconds", async () => {
     const f = runtime();
     await f.start();
-    const finish = f.controller.stop();
+    const finish = f.controller.stop("one");
     f.emit(completed);
     expect(await finish).toEqual({ kind: "empty" });
     expect(f.target.commit).not.toHaveBeenCalled();
@@ -238,7 +238,7 @@ describe("dictation controller", () => {
       f.emit(text(["good"], ["words"]));
       if (failure === "rejection")
         vi.mocked(f.port.stop).mockRejectedValueOnce(new Error("transport"));
-      const finish = f.controller.stop();
+      const finish = f.controller.stop("one");
       if (failure === "gap") f.emit(text(["lost"]), { seq: 5 });
       if (failure === "malformed") f.emit({ type: "level", level: 2 });
       await Promise.resolve();
@@ -258,7 +258,7 @@ describe("dictation controller", () => {
     async (error) => {
       const f = runtime();
       await f.start();
-      const finish = f.controller.stop();
+      const finish = f.controller.stop("one");
       f.emit({ type: "ended", reason: "failed", error });
       expect(await finish).toEqual({ kind: "failed" });
       expect(f.target.commit).not.toHaveBeenCalled();
@@ -280,7 +280,7 @@ describe("dictation controller", () => {
       const f = runtime();
       await f.start();
       f.emit(text(["good"]));
-      const finish = f.controller.stop();
+      const finish = f.controller.stop("one");
       f.emit({ type: "ended", reason, error: null });
       expect(await finish).toEqual({ kind: "failed" });
       expect(f.draft().text).toBe("a good day");
@@ -299,7 +299,7 @@ describe("dictation controller", () => {
     expect(f.port.download).toHaveBeenCalledTimes(1);
     expect(f.port.availability).toHaveBeenCalledTimes(2);
     expect(f.controller.getSnapshot().notice?.message).toBe(
-      "English is ready. Tap the mic to dictate.",
+      "English is ready. Use the mic to dictate.",
     );
     vi.advanceTimersByTime(5000);
     expect(f.controller.getSnapshot().notice).toBeNull();
@@ -395,10 +395,90 @@ describe("dictation controller", () => {
   it("cancelled downloads abort waiters without producing a downloaded notice", async () => {
     const f = runtime({ ...installed, available: true, model: "download" });
     await f.start();
-    const finish = f.controller.stop();
+    const finish = f.controller.stop("one");
     f.emit(completed);
     expect(await finish).toEqual({ kind: "aborted" });
     expect(f.controller.getSnapshot().notice).toBeNull();
+    expect(f.port.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("scopes stop and cancel to their owner, so another composer's Send never sends these words", async () => {
+    const f = runtime();
+    await f.start();
+    f.emit({ type: "listening" });
+    f.emit(text(["private words"]));
+    expect(await f.controller.stop("two")).toEqual({ kind: "idle" });
+    f.controller.cancel("two");
+    expect(f.port.stop).not.toHaveBeenCalled();
+    expect(f.port.cancel).not.toHaveBeenCalled();
+    const two = dictationView(f.controller.getSnapshot(), "two");
+    expect(two).toMatchObject({ visible: true, blocked: true, phase: "idle", preview: null });
+    const one = dictationView(f.controller.getSnapshot(), "one");
+    expect(one).toMatchObject({ blocked: false, phase: "listening", languageName: "English" });
+    expect(one.preview?.text).toBe("a private words day");
+  });
+
+  it("does not report the limit after a manual stop that finalizes past ten minutes", async () => {
+    const f = runtime();
+    await f.start();
+    f.emit({ type: "listening" });
+    f.emit(text(["good"]));
+    vi.advanceTimersByTime(599_000);
+    const finish = f.controller.stop("one");
+    vi.advanceTimersByTime(5_000);
+    expect(f.port.stop).toHaveBeenCalledTimes(1);
+    f.emit(completed);
+    expect(await finish).toEqual({ kind: "committed", text: "a good day" });
+    expect(f.controller.getSnapshot().notice).toBeNull();
+  });
+
+  it("says nothing was kept when dictation is interrupted before any final words", async () => {
+    const f = runtime();
+    await f.start();
+    f.emit({ type: "listening" });
+    f.emit(text([], ["still tentative"]));
+    f.emit({ type: "ended", reason: "interrupted", error: null });
+    expect(f.target.commit).not.toHaveBeenCalled();
+    expect(f.controller.getSnapshot().notice?.message).toBe("Dictation stopped.");
+  });
+
+  it("reports a Settings failure only on the notice that offered Settings", async () => {
+    const f = runtime({ ...installed, microphone: "denied" });
+    await f.controller.refresh();
+    let reject!: (error: Error) => void;
+    vi.mocked(f.port.openMicrophoneSettings).mockReturnValueOnce(
+      new Promise<void>((_, fail) => {
+        reject = fail;
+      }),
+    );
+    f.controller.start(f.target);
+    f.controller.openMicrophoneSettings();
+    f.controller.start({ ...f.target, owner: "two" });
+    reject(new Error("no Settings"));
+    await vi.runAllTimersAsync();
+    expect(f.controller.getSnapshot().notice).toMatchObject({
+      owner: "two",
+      kind: "permission-denied",
+    });
+    vi.mocked(f.port.openMicrophoneSettings).mockImplementationOnce(() => {
+      throw new Error("no bridge");
+    });
+    f.controller.openMicrophoneSettings();
+    expect(f.controller.getSnapshot().notice).toMatchObject({
+      owner: "two",
+      kind: "service-unavailable",
+    });
+  });
+
+  it("starts nothing new while disposing, even from a subscriber reacting to idle", async () => {
+    const f = runtime();
+    await f.start();
+    f.controller.subscribe(() => {
+      if (f.controller.getSnapshot().phase === "idle") f.controller.start(f.target);
+    });
+    f.controller.dispose();
+    f.controller.dispose();
+    expect(f.port.start).toHaveBeenCalledTimes(1);
     expect(f.port.cancel).toHaveBeenCalledTimes(1);
   });
 });

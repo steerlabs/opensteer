@@ -11,20 +11,59 @@ import { dictationNoticeMessage, type DictationNoticeKind } from "./presentation
 import { insertDictationText, joinDictationText, type DictationSelection } from "./text.js";
 
 export type DictationPhase = "idle" | "downloading" | "starting" | "listening" | "finishing";
+export interface DictationNotice {
+  owner: string;
+  kind: DictationNoticeKind;
+  message: string;
+  action: "open-settings" | null;
+}
 export interface DictationSnapshot {
   availability: DictationAvailability | null;
   phase: DictationPhase;
   owner: string | null;
+  /**
+   * The active session's language, captured when it started, so a refresh
+   * that lands mid-session cannot relabel what is already being dictated.
+   */
+  language: string | null;
   /** Apply this selection only when preview.text changes; selection moves are not edits. */
   preview: { text: string; selection: DictationSelection } | null;
   progress: number | null;
   listeningSince: number | null;
-  notice: {
-    owner: string;
-    kind: DictationNoticeKind;
-    message: string;
-    action: "open-settings" | null;
-  } | null;
+  notice: DictationNotice | null;
+}
+
+/** What one composer renders: its own session, or why its microphone is unusable. */
+export interface DictationView {
+  /** Show the microphone at all. */
+  visible: boolean;
+  /** Another composer owns the session or download, so this microphone is disabled. */
+  blocked: boolean;
+  /** This composer's phase; `idle` while another composer owns the session. */
+  phase: DictationPhase;
+  /** For labels: the active session's language, else the available one. */
+  languageName: string | null;
+  preview: DictationSnapshot["preview"];
+  progress: number | null;
+  listeningSince: number | null;
+  notice: DictationNotice | null;
+}
+
+export function dictationView(snapshot: DictationSnapshot, owner: string): DictationView {
+  const mine = snapshot.owner === owner;
+  const availability = snapshot.availability;
+  return {
+    visible: availability?.available === true,
+    blocked: snapshot.owner !== null && !mine,
+    phase: mine ? snapshot.phase : "idle",
+    languageName:
+      (mine ? snapshot.language : null) ??
+      (availability?.available === true ? availability.languageName : null),
+    preview: mine ? snapshot.preview : null,
+    progress: mine ? snapshot.progress : null,
+    listeningSince: mine ? snapshot.listeningSince : null,
+    notice: snapshot.notice?.owner === owner ? snapshot.notice : null,
+  };
 }
 export interface DictationTarget {
   /** Include deployment, user, thread and instance when composers coexist. */
@@ -79,6 +118,7 @@ export class DictationController {
     availability: null,
     phase: "idle",
     owner: null,
+    language: null,
     preview: null,
     progress: null,
     listeningSince: null,
@@ -130,7 +170,7 @@ export class DictationController {
     const availability = this.#snapshot.availability;
     if (!this.#input.port || !availability?.available) return;
     if (availability.microphone === "denied") {
-      this.#notice(target.owner, "permission-denied", availability.languageName);
+      this.#notice(target.owner, "permission-denied", availability.languageName, false);
       void this.refresh();
       return;
     }
@@ -155,27 +195,32 @@ export class DictationController {
       timer: null,
     };
     this.#session = session;
-    this.#publish({ phase: session.download ? "downloading" : "starting", owner: target.owner });
+    this.#publish({
+      phase: session.download ? "downloading" : "starting",
+      owner: target.owner,
+      language: session.language,
+    });
     this.#command(session, session.download ? "download" : "start");
   }
 
-  /** Do not make this async: callers share the exact promise, even during finalization. */
-  stop(): Promise<DictationFinish> {
+  /**
+   * Finishes this owner's dictation. Owner-scoped because two composers can
+   * be mounted at once: another composer's Send must never finish, and then
+   * send, this one's words. Do not make this async: callers share the exact
+   * promise, even during finalization.
+   */
+  stop(owner: string): Promise<DictationFinish> {
     const session = this.#session;
-    if (!session) return Promise.resolve({ kind: "idle" });
-    this.dismissNotice();
-    if (session.download) {
-      this.cancel();
-    } else if (this.#snapshot.phase !== "finishing") {
-      this.#publish({ phase: "finishing" });
-      this.#command(session, "stop");
-    }
-    return session.finish;
+    if (!session || session.target.owner !== owner) return Promise.resolve({ kind: "idle" });
+    return this.#stop(session);
   }
 
-  cancel(): void {
+  /** Discards this owner's dictation or download; the draft stays exactly as it was. */
+  cancel(owner: string): void {
+    const session = this.#session;
+    if (!session || session.target.owner !== owner) return;
     this.dismissNotice();
-    if (this.#session) this.#terminate(this.#session, "cancelled", null, true);
+    this.#terminate(session, "cancelled", null, true);
   }
 
   /** The input handler has already adopted the displayed text plus the person's edit. */
@@ -191,8 +236,8 @@ export class DictationController {
     // Resolve the send waiter now, but retain the original target for the eventual commit.
     session.left = true;
     session.resolve({ kind: "aborted" });
-    if (this.#snapshot.phase === "starting") this.cancel();
-    else if (this.#snapshot.phase === "listening") void this.stop();
+    if (this.#snapshot.phase === "starting") this.cancel(owner);
+    else if (this.#snapshot.phase === "listening") void this.#stop(session);
   }
 
   dismissNotice(): void {
@@ -202,19 +247,44 @@ export class DictationController {
   }
 
   openMicrophoneSettings(): void {
-    void this.#input.port?.openMicrophoneSettings().catch(() => {
-      const notice = this.#snapshot.notice;
-      if (notice) this.#notice(notice.owner, "service-unavailable", "");
-    });
+    const notice = this.#snapshot.notice;
+    // Only the notice that offered Settings may report that Settings failed to open.
+    const failed = () => {
+      if (!this.#disposed && notice && this.#snapshot.notice === notice) {
+        this.#notice(notice.owner, "service-unavailable", "", false);
+      }
+    };
+    try {
+      void this.#input.port?.openMicrophoneSettings().catch(failed);
+    } catch {
+      failed();
+    }
   }
 
   /** Runtime teardown cancels native work and removes subscriptions and timers. */
   dispose(): void {
-    this.cancel();
+    if (this.#disposed) return;
+    // Fence first: the idle snapshot published by cancelling must not let a subscriber start anew.
     this.#disposed = true;
+    if (this.#session) this.#terminate(this.#session, "cancelled", null, true);
+    this.dismissNotice();
     this.#unsubscribe();
     this.#listeners.clear();
     this.#levels.clear();
+  }
+
+  #stop(session: Session): Promise<DictationFinish> {
+    this.dismissNotice();
+    if (session.download) {
+      this.#terminate(session, "cancelled", null, true);
+    } else if (this.#snapshot.phase !== "finishing") {
+      // Finalizing can outlast the limit; a manual stop must not later report the limit.
+      this.#clear(session.timer);
+      session.timer = null;
+      this.#publish({ phase: "finishing" });
+      this.#command(session, "stop");
+    }
+    return session.finish;
   }
 
   #publish(patch: Partial<DictationSnapshot>): void {
@@ -227,13 +297,13 @@ export class DictationController {
   #clear(timer: Timer | null): void {
     if (timer !== null) (this.#input.clearTimer ?? globalThis.clearTimeout)(timer);
   }
-  #notice(owner: string, kind: DictationNoticeKind, language: string): void {
+  #notice(owner: string, kind: DictationNoticeKind, language: string, committed: boolean): void {
     this.dismissNotice();
     this.#publish({
       notice: {
         owner,
         kind,
-        message: dictationNoticeMessage(kind, language),
+        message: dictationNoticeMessage(kind, { language, committed }),
         action: kind === "permission-denied" ? "open-settings" : null,
       },
     });
@@ -281,15 +351,14 @@ export class DictationController {
         break;
       case "listening":
         if (session.download || this.#snapshot.listeningSince !== null) break;
+        // A stop accepted while starting already decided the end; capture is only draining.
+        if (this.#snapshot.phase === "finishing") break;
         session.timer = this.#timer(() => {
           if (this.#session !== session) return;
           session.limit = true;
-          void this.stop();
+          void this.#stop(session);
         }, 600_000);
-        this.#publish({
-          listeningSince: (this.#input.now ?? Date.now)(),
-          phase: this.#snapshot.phase === "finishing" ? "finishing" : "listening",
-        });
+        this.#publish({ listeningSince: (this.#input.now ?? Date.now)(), phase: "listening" });
         break;
       case "text": {
         if (session.download) break;
@@ -330,6 +399,7 @@ export class DictationController {
     }
     let finish: DictationFinish = { kind: "aborted" };
     let notice: DictationNoticeKind | null = null;
+    let committed = false;
     if (reason !== "cancelled") {
       const failed = reason !== "completed";
       if (session.download) {
@@ -351,6 +421,7 @@ export class DictationController {
                   transcript,
                 );
           session.target.commit(insertion.text, insertion.selection);
+          committed = true;
           finish = { kind: "committed", text: insertion.text };
         } else finish = { kind: "empty" };
         if (failed) {
@@ -362,12 +433,15 @@ export class DictationController {
     this.#publish({
       phase: "idle",
       owner: null,
+      language: null,
       preview: null,
       progress: null,
       listeningSince: null,
     });
     for (const listener of this.#levels) listener(0);
-    if (notice) this.#notice(session.target.owner, notice, session.language);
+    if (notice && !this.#disposed) {
+      this.#notice(session.target.owner, notice, session.language, committed);
+    }
     session.resolve(session.left ? { kind: "aborted" } : finish);
     if (session.download || error === "permission-denied" || error === "model-unavailable")
       void this.refresh();

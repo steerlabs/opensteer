@@ -34,7 +34,17 @@ export function dictationElapsed(elapsedMs: number): string {
   return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
 }
 
-export function dictationNoticeMessage(kind: DictationNoticeKind, language: string): string {
+/**
+ * `committed` says whether the session's words reached the draft, so a
+ * notice never promises text that a failure before any speech did not keep.
+ * The wording names the mic button without a click or tap, so it reads
+ * naturally on a Mac and an iPhone alike.
+ */
+export function dictationNoticeMessage(
+  kind: DictationNoticeKind,
+  context: { language: string; committed: boolean },
+): string {
+  const kept = context.committed ? " Your words so far are in the message." : "";
   switch (kind) {
     case "permission-denied":
       return "Allow microphone access in Settings to dictate.";
@@ -43,24 +53,26 @@ export function dictationNoticeMessage(kind: DictationNoticeKind, language: stri
     case "microphone-unavailable":
       return "Couldn't start the microphone. Check your input and try again.";
     case "model-unavailable":
-      return language + " isn't ready for dictation. Tap the mic to download it.";
+      return context.language + " isn't ready for dictation. Use the mic to download it.";
     case "download-failed":
       return (
-        "Couldn't download " + language + ". Check your connection and storage, then try again."
+        "Couldn't download " +
+        context.language +
+        ". Check your connection and storage, then try again."
       );
     case "recognition-failed":
-      return "Dictation stopped unexpectedly. Your words so far are in the message.";
+      return "Dictation stopped unexpectedly." + kept;
     case "service-unavailable":
       return "Dictation isn't responding. Try again.";
     case "interrupted":
-      return "Dictation stopped. Your words so far are in the message.";
+      return "Dictation stopped." + kept;
     case "device-changed":
-      return "Your microphone changed. Tap the mic to keep going.";
+      return "Your microphone changed." + kept + " Use the mic to keep going.";
     case "limit":
-      return "Dictation stops after 10 minutes. Tap the mic to keep going.";
+      return "Dictation stops after 10 minutes. Use the mic to keep going.";
     case "empty":
       return "No speech detected.";
     case "downloaded":
-      return language + " is ready. Tap the mic to dictate.";
+      return context.language + " is ready. Use the mic to dictate.";
   }
 }

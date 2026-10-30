@@ -56,8 +56,13 @@ that original draft even after its composer leaves.
 
 The state machine is idle → starting → listening → finishing → idle, or idle →
 downloading → idle. A download never starts capture automatically. Disable other
-owners' mic controls while a session is active. Render shared presentation labels,
-status formatters and owner-scoped notices from the same export.
+owners' mic controls while a session is active. Each composer renders
+dictationView(snapshot, owner): whether the mic shows, whether another composer
+blocks it, its own phase, preview, progress, timer start and notice, and the
+language label (the active session's, so a refresh mid-session cannot relabel it).
+stop and cancel take the owner, so one composer can never finish or discard
+another's words. Render shared presentation labels and status formatters from the
+same export; notices only promise kept words when they reached the draft.
 
 Preview stays null until speech arrives. Then render its text over the unchanged
 draft, and apply its UTF-16 selection only when the preview text changes. Selection
@@ -65,7 +70,7 @@ moves alone do not relocate dictation. On completion the controller inserts fina
 segments at the captured selection, or appends if the draft changed externally.
 Failures also retain the last tentative tail. Cancel discards the preview.
 
-For Send/Enter, await stop() (one shared promise per session). Send the explicit
+For Send/Enter, await stop(owner) (one shared promise per session; another owner's call returns idle and touches nothing). Send the explicit
 text on committed; use the current draft on idle/empty; never send on failed/aborted.
 Re-check existing send gates and mounted ownership after awaiting, and deduplicate
 Send presses in the composer. Typing, paste, cut, delete and IME start must adopt

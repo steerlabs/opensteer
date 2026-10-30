@@ -24,6 +24,9 @@ it.each([
   ["ລາວ", "ລາວ", "ລາວລາວ"],
   ["ខ្មែរ", "ខ្មែរ", "ខ្មែរខ្មែរ"],
   ["မြန်မာ", "မြန်မာ", "မြန်မာမြန်မာ"],
+  ["cafe\u0301", "noir", "cafe\u0301 noir"],
+  ["word\u0301\u0302", "next", "word\u0301\u0302 next"],
+  ["😀", "Hi", "😀Hi"],
 ])("joins %j and %j without changing segment contents", (left, right, result) => {
   expect(joinDictationText([left!, right!])).toBe(result);
 });
