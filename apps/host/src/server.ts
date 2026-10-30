@@ -308,6 +308,7 @@ import {
 } from "./server/browser-source-registration.js";
 import type { BrowserSourceService } from "./browser/browser-source-service.js";
 import { browserSnapshotCompatibilityReason } from "./browser/browser-snapshot-compatibility.js";
+import { registerResponseCompression } from "./server/response-compression.js";
 import { registerHostApi } from "./server/host-api-registration.js";
 import type { AttachmentService } from "./attachments/attachment-service.js";
 import { normalizeHostError } from "./server/http-errors.js";
@@ -453,6 +454,7 @@ export async function createHostServer(
     logger: options.logger ?? false,
     requestIdHeader: false,
   });
+  await registerResponseCompression(app);
   const harnessCatalogReconciliations = new HarnessCatalogReconciliationOwner({
     catalogs: dependencies.store,
     onError: (environmentId, error) =>

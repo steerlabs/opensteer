@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fastify/compress": "catalog:",
     "@fastify/websocket": "catalog:",
     "@jitl/quickjs-singlefile-mjs-release-sync": "0.32.0",
     "@modelcontextprotocol/sdk": "1.32.0",
