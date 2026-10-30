@@ -268,6 +268,16 @@ describe("display input and socket messages", () => {
     expect(DisplayViewerServerMessageSchema.safeParse(refusal).success).toBe(false);
   });
 
+  it("accepts only a bare input reset from a viewer", () => {
+    expect(DisplayViewerClientMessageSchema.parse({ type: "display.input-reset" })).toEqual({
+      type: "display.input-reset",
+    });
+    expect(
+      DisplayViewerClientMessageSchema.safeParse({ type: "display.input-reset", sequence: 1 })
+        .success,
+    ).toBe(false);
+  });
+
   it("projects shared input and names why a batch was refused", () => {
     const state = { type: "display.state", state: "live", generation: 1, width: 720, height: 1280 };
     expect(DisplayViewerStateSchema.parse({ ...state, sharedInput: 1 }).sharedInput).toBe(1);

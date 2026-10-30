@@ -358,6 +358,13 @@ export const DisplayViewerClientMessageSchema = z.discriminatedUnion("type", [
     /** Sent only by a previous-release viewer; such a batch is never applied. */
     controlId: LegacyDisplayControlIdSchema.optional(),
   }),
+  /**
+   * Release everything this viewer holds on the display (touch, buttons, keys)
+   * and drop its unapplied batches: it blurred, hid or is leaving. Sent only
+   * after the Host projected sharedInput; the Host acts on it only from the
+   * viewer currently holding the person lane.
+   */
+  z.strictObject({ type: z.literal("display.input-reset") }),
   /** A previous-release viewer's Take over or Give back; answered or ignored, never applied. */
   z.strictObject({ type: z.literal("display.control"), action: z.enum(["acquire", "release"]) }),
 ]);

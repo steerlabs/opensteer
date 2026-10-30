@@ -252,6 +252,7 @@ describe("computer use errors", () => {
       "app-not-running",
       "no-session",
       "busy",
+      "owner-in-control",
       "stale-observation",
       "stopped-by-user",
       "unsupported",

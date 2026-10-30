@@ -376,6 +376,12 @@ export const ComputerUseErrorCodeSchema = z.enum([
   "app-not-running",
   "no-session",
   "busy",
+  /**
+   * Read only: a previous-release phone or Mac helper refused an act during
+   * Take over. Nothing current produces it; shared input never refuses an agent
+   * because a person is using the device.
+   */
+  "owner-in-control",
   "stale-observation",
   "stopped-by-user",
   "unsupported",
