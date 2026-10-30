@@ -136,6 +136,8 @@ export interface ComputerViewMutationOptions {
 type TranscriptWindow = Omit<ThreadMessageWindow, "threadId"> & { threadId: string };
 
 export interface WorkspaceSummary {
+  /** Computer owning local files; absent for shared storage and older snapshots. */
+  environmentId?: string;
   homeThreadId: string | null;
   description: string;
   fileCount: number;

@@ -391,16 +391,26 @@ export class VoiceController {
     const snapshot = host.getSnapshot();
     let threadId = snapshot.homeThreadId;
     if (!threadId) {
-      const placement = threadPlacementOptions(snapshot.environments, snapshot.harnesses).find(
-        (option) =>
-          option.environmentId === session.account.environmentId &&
-          option.harnessInstanceId === session.account.harnessInstanceId,
-      );
+      const owner = snapshot.workspaces.find(
+        (workspace) => workspace.id === snapshot.homeWorkspaceId,
+      )?.environmentId;
+      const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
+      const placement =
+        placements.find(
+          (option) =>
+            option.available &&
+            option.environmentId === (owner ?? session.account.environmentId) &&
+            option.harnessInstanceId === session.account.harnessInstanceId,
+        ) ??
+        placements.find(
+          (option) => option.available && option.environmentId === owner && option.defaultAccount,
+        );
       const workspaceId = snapshot.homeWorkspaceId;
       if (!workspaceId || !placement) throw new Error("Chat is unavailable.");
       const home = await this.#attempt(session, () =>
         host.createHome({
-          ...session.account,
+          environmentId: placement.environmentId,
+          harnessInstanceId: placement.harnessInstanceId,
           workspaceId,
           accessMode: snapshot.executionPreferences.accessMode,
           modelSelection: placement.modelSelection,

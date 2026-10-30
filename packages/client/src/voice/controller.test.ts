@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HarnessInstanceIdSchema } from "@opensteer/core";
 import type { RunEntry } from "../host/client.js";
 import { VoiceStartError, type VoiceCall, type VoiceSnapshot as Snapshot } from "./contract.js";
 import { VoiceController, voiceAccount, type VoiceControllerInput } from "./controller.js";
@@ -223,6 +224,79 @@ describe("VoiceController", () => {
         content: [{ type: "text", text: "show me how to write a PR" }],
       }),
     );
+    f.dispose();
+  });
+
+  it("creates first Chat with an account on the computer owning Main's files", async () => {
+    const f = setup({ home: "absent" });
+    const snapshot = f.host.getSnapshot();
+    const account = voiceAccount(snapshot)!;
+    const environment = snapshot.environments.find((entry) => entry.id === account.environmentId)!;
+    f.publish({
+      environments: [
+        ...snapshot.environments,
+        {
+          ...environment,
+          id: "owner",
+          harnessCatalogs: environment.harnessCatalogs
+            .filter((catalog) => catalog.harnessInstanceId === account.harnessInstanceId)
+            .map((catalog) => ({
+              ...catalog,
+              harnessInstanceId: HarnessInstanceIdSchema.parse(
+                "hin_12345678-1234-4123-8123-123456789abc",
+              ),
+            })),
+        },
+      ],
+      harnesses: [
+        ...snapshot.harnesses,
+        ...snapshot.harnesses
+          .filter((harness) => harness.id === account.harnessInstanceId)
+          .map((harness) => ({
+            ...harness,
+            id: "hin_12345678-1234-4123-8123-123456789abc",
+            environmentId: "owner",
+          })),
+      ],
+      workspaces: snapshot.workspaces.map((workspace) => ({
+        ...workspace,
+        environmentId: "owner",
+      })),
+    });
+    const createHome = vi
+      .spyOn(f.host, "createHome")
+      .mockRejectedValue(new Error("fixture stops before send"));
+    await f.controller.start();
+    f.emit({ type: "heard", turnId: "ask", text: "What is two plus two?" });
+    await vi.waitFor(
+      () =>
+        expect(createHome).toHaveBeenCalledWith(
+          expect.objectContaining({
+            environmentId: "owner",
+            harnessInstanceId: "hin_12345678-1234-4123-8123-123456789abc",
+          }),
+        ),
+      { timeout: 100 },
+    );
+    f.dispose();
+  });
+
+  it("does not create Chat on a voice computer when Main has no runnable account", async () => {
+    const f = setup({ home: "absent" });
+    const snapshot = f.host.getSnapshot();
+    f.publish({
+      workspaces: snapshot.workspaces.map((workspace) => ({
+        ...workspace,
+        environmentId: "offline-owner",
+      })),
+    });
+    const createHome = vi.spyOn(f.host, "createHome");
+    await f.controller.start();
+    f.emit({ type: "heard", turnId: "ask", text: "What is two plus two?" });
+    await vi.waitFor(() => expect(f.controller.getSnapshot().notice).not.toBeNull(), {
+      timeout: 100,
+    });
+    expect(createHome).not.toHaveBeenCalled();
     f.dispose();
   });
 

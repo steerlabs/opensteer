@@ -6202,6 +6202,9 @@ function toWorkspaceSummary(
     harnessLabel: harness?.name ?? "No harness",
     id: workspace.id,
     kind: workspace.kind,
+    ...(workspace.location.kind === "machine"
+      ? { environmentId: workspace.location.environmentId }
+      : {}),
     machineName: workspace.location.kind === "machine" ? workspace.location.name : null,
     name: workspace.name,
     icon: workspace.icon,
