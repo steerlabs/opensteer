@@ -20,7 +20,8 @@
       "swift": [
         "apps/desktop/native/computer-use",
         "packages/apple-data",
-        "packages/macos-signing"
+        "packages/macos-signing",
+        "apps/desktop/scripts/build-computer-use-helper.ts"
       ],
       "scripts": ["apps/desktop/scripts/build-computer-use-helper.ts"],
       "extra": [
@@ -32,7 +33,11 @@
     {
       "task": "passwords-helper",
       "timeout": 8,
-      "swift": ["apps/desktop/native/passwords", "packages/macos-signing"],
+      "swift": [
+        "apps/desktop/native/passwords",
+        "packages/macos-signing",
+        "apps/desktop/scripts/build-passwords-broker.ts"
+      ],
       "scripts": ["apps/desktop/scripts/build-passwords-broker.ts"],
       "extra": [
         "apps/desktop/scripts",
