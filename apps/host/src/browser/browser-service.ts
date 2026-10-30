@@ -1,3 +1,4 @@
+import { BrowserCatalogRevisions } from "./browser-catalog-revisions.js";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import {
@@ -1173,7 +1174,7 @@ export class BrowserService {
         });
       }
       return [...occupants.values()];
-    });
+    }, ownerId);
   }
 
   async readTabCatalog(ownerId: UserId, sessionId: BrowserSessionId): Promise<BrowserTabCatalog> {
@@ -1881,47 +1882,53 @@ export class BrowserService {
     if (this.#actorKeys.size > 4096) this.#actorKeys.delete(this.#actorKeys.keys().next().value!);
   }
 
-  async #restoreHoldings(sessionId: BrowserSessionId, viewers?: readonly UserId[]): Promise<void> {
-    const epoch = this.#authorityGeneration;
-    const holdings = await this.#repository.listBrowserPlaceHoldings(sessionId);
-    if (epoch !== this.#authorityGeneration || this.#closed) return;
-    this.#holdings.set(
-      sessionId,
-      new Set(
-        holdings.flatMap((holding) =>
-          holding.tabId ? [`${holding.agentBindingId}:${holding.tabId}`] : [],
-        ),
-      ),
-    );
-    const missing = [
-      ...new Map(
-        holdings
-          .filter((holding) => !this.#actorKeys.has(`${sessionId}:${holding.agentBindingId}`))
-          .map((holding) => [holding.agentBindingId, holding]),
-      ).values(),
-    ];
-    if (missing.length) {
-      const ownerIds =
-        viewers ?? (await this.#repository.listBrowserSessionViewers(sessionId))?.userIds ?? [];
-      const audience = await this.#repository.resolvePlaceActors({
-        agentBindingIds: missing.map((holding) => holding.agentBindingId),
-        ownerIds,
-      });
+  #restoreHoldings(sessionId: BrowserSessionId, viewers?: readonly UserId[]): Promise<void> {
+    return this.#serializeKey(`holdings:${sessionId}`, async () => {
+      const epoch = this.#authorityGeneration;
+      const holdings = await this.#repository.listBrowserPlaceHoldings(sessionId);
       if (epoch !== this.#authorityGeneration || this.#closed) return;
-      for (const holding of missing)
-        if (!this.#endedBindings.has(holding.agentBindingId))
-          this.#installActor(
-            holding,
-            sessionId,
-            audience.filter((identity) => identity.agentBindingId === holding.agentBindingId),
-          );
-    }
-    for (const holding of holdings) {
-      const token = this.#actorKeys.get(`${sessionId}:${holding.agentBindingId}`);
-      const actor = token ? this.#actors.get(token) : undefined;
-      if (actor && holding.tabId && !actor.surfaces.has(holding.tabId))
-        actor.surfaces.set(holding.tabId, { at: 0, seq: 0, heldAt: holding.lastUsedAt.getTime() });
-    }
+      const missing = [
+        ...new Map(
+          holdings
+            .filter((holding) => !this.#actorKeys.has(`${sessionId}:${holding.agentBindingId}`))
+            .map((holding) => [holding.agentBindingId, holding]),
+        ).values(),
+      ];
+      if (missing.length) {
+        const ownerIds =
+          viewers ?? (await this.#repository.listBrowserSessionViewers(sessionId))?.userIds ?? [];
+        const audience = await this.#repository.resolvePlaceActors({
+          agentBindingIds: missing.map((holding) => holding.agentBindingId),
+          ownerIds,
+        });
+        if (epoch !== this.#authorityGeneration || this.#closed) return;
+        for (const holding of missing)
+          if (!this.#endedBindings.has(holding.agentBindingId))
+            this.#installActor(
+              holding,
+              sessionId,
+              audience.filter((identity) => identity.agentBindingId === holding.agentBindingId),
+            );
+      }
+      this.#holdings.set(
+        sessionId,
+        new Set(
+          holdings.flatMap((holding) =>
+            holding.tabId ? [`${holding.agentBindingId}:${holding.tabId}`] : [],
+          ),
+        ),
+      );
+      for (const holding of holdings) {
+        const token = this.#actorKeys.get(`${sessionId}:${holding.agentBindingId}`);
+        const actor = token ? this.#actors.get(token) : undefined;
+        if (actor && holding.tabId && !actor.surfaces.has(holding.tabId))
+          actor.surfaces.set(holding.tabId, {
+            at: 0,
+            seq: 0,
+            heldAt: holding.lastUsedAt.getTime(),
+          });
+      }
+    });
   }
 
   async catalogsForViewers(
@@ -3930,7 +3937,7 @@ class HostedBrowserBroker {
   readonly #onTabsChanged: () => void;
   readonly #onActivity: (activity: BrowserRuntimeActivity) => void;
   readonly #catalogGeneration = Date.now();
-  #catalogRevision = 0;
+  readonly #catalogRevisions = new BrowserCatalogRevisions();
   readonly #runtimeTargets = new Map<string, boolean>();
   readonly #latestFrames = new Map<string, { frame: Buffer; header: BrowserBinaryFrameHeader }>();
   readonly #frameIds = new Map<string, number>();
@@ -4064,7 +4071,7 @@ class HostedBrowserBroker {
   >();
   readonly #dialogs = new Map<string, BrowserDialog>();
   bumpCatalog(): void {
-    this.#catalogRevision++;
+    this.#catalogRevisions.advance();
     this.#onTabsChanged();
   }
   restoreIcon(id: BrowserSurfaceId, url: string, favicon: string): void {
@@ -4104,10 +4111,10 @@ class HostedBrowserBroker {
         .find((icon) => icon?.ref === iconRef)?.favicon ?? null
     );
   }
-  catalog(occupants: (surfaceId: string) => PlaceOccupant[]): BrowserTabCatalog {
+  catalog(occupants: (surfaceId: string) => PlaceOccupant[], viewer?: UserId): BrowserTabCatalog {
     const candidate = {
       generation: this.#catalogGeneration,
-      revision: this.#catalogRevision,
+      revision: this.#catalogRevisions.revision,
       inventoryRevision: this.inventoryRevision,
       tabs:
         this.#snapshot?.surfaces.map((surface, index) => ({
@@ -4125,7 +4132,15 @@ class HostedBrowserBroker {
           occupants: occupants(surface.id),
         })) ?? [],
     };
-    return BrowserTabCatalogSchema.parse(candidate);
+    const validated = BrowserTabCatalogSchema.parse(candidate);
+    if (!viewer) return validated;
+    const remembered = this.#catalogRevisions.has(viewer);
+    const result = this.#catalogRevisions.assign(viewer, validated);
+    // New or evicted readers need a fresh revision, not a viewer-wide notice.
+    // Otherwise more readers than the history bound would perpetually evict
+    // each other while processing follow-up notices.
+    if (remembered && result.revision > validated.revision) this.#onTabsChanged();
+    return result;
   }
 
   /** The page the person sees: the active tab's title and site. */
@@ -5555,6 +5570,7 @@ class HostedBrowserBroker {
           await this.#onTerminal();
         } finally {
           this.#icons.clear();
+          this.#catalogRevisions.clear();
         }
       }
     });

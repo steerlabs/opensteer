@@ -1587,8 +1587,52 @@ describe("BrowserService", () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const answer = (requestId: string, result: Record<string, unknown>) =>
       runtime.sendServer({ type: "cdp.result", requestId, result });
-    return { answer, authority, audience, backing, cdp, forwarded, service };
+    return {
+      answer,
+      authority,
+      audience,
+      backing,
+      cdp,
+      forwarded,
+      service,
+      sessionId: opened.session.id,
+    };
   }
+
+  it("versions restored holdings and repeated identical catalog reads", async () => {
+    const f = await actorAdmissionFixture();
+    vi.useRealTimers();
+    try {
+      const first = await f.service.readTabCatalog(f.authority.ownerId, f.sessionId);
+      vi.spyOn(f.backing, "resolvePlaceActors").mockResolvedValue(f.audience);
+      vi.spyOn(f.backing, "listBrowserPlaceHoldings").mockResolvedValue([
+        {
+          agentBindingId: f.authority.agentBindingId,
+          ownerId: f.authority.ownerId,
+          tabId: first.tabs[0]!.id,
+          lastUsedAt: new Date(),
+        },
+      ]);
+      const restored = await f.service.readTabCatalog(f.authority.ownerId, f.sessionId);
+      expect(restored.tabs[0]!.occupants).toHaveLength(1);
+      expect(restored.revision).toBeGreaterThan(first.revision);
+      expect((await f.service.readTabCatalog(f.authority.ownerId, f.sessionId)).revision).toBe(
+        restored.revision,
+      );
+      vi.mocked(f.backing.resolvePlaceActors).mockResolvedValue([]);
+      f.service.invalidatePlaceAuthority();
+      await f.service.catalogsForViewers(f.sessionId);
+      const removed = await f.service.readTabCatalog(f.authority.ownerId, f.sessionId);
+      expect(removed.tabs[0]!.occupants).toHaveLength(0);
+      expect(removed.revision).toBeGreaterThan(restored.revision);
+      await f.service.stop(f.authority.ownerId, f.sessionId);
+      const terminal = await f.service.readTabCatalog(f.authority.ownerId, f.sessionId);
+      expect(terminal.tabs).toHaveLength(0);
+      expect(terminal.revision).toBeGreaterThan(removed.revision);
+    } finally {
+      await f.service.close();
+    }
+  });
 
   it.each(["viewers", "actors"] as const)(
     "bounds a stalled actor metadata lookup on a controlled clock (%s)",
