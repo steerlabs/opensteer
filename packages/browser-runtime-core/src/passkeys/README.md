@@ -4,12 +4,6 @@ Production launchers have no authenticator and keep the absent WebAuthn policy.
 An optional `PasskeyAuthenticator` enables the page provider for engine tests.
 Native WebAuthn remains disabled in both modes, including uncovered frames.
 
-`installBrowserPagePolicy` is the single serialized installer. Playwright installs
-it with the context init script; Electron uses a main-frame session preload for
-first documents and the debugger's new-document script for frames and later
-documents. Installation is idempotent. Calls wait at most three seconds for a
-callable binding, then reject with `NotAllowedError`.
-
 Each isolated browser context gets a random 256-bit binding name. Context scope
 covers Playwright popup scripts that run before page discovery and Electron popup
 preload preferences inherited before a page wrapper exists. A provider captures
@@ -52,15 +46,11 @@ Electron reserves its hub subscriptions and installs the bridge before attachmen
 then dispatches the initial domains without awaiting renderer replies. The hub
 keeps its single Runtime inventory and serialized ownership accounting.
 
-Electron preserves site policy for provider-supported documents and adds its deny
-header to foreign subframes. The shared core validates options, resolves the RP
-ID and serializes client data. Authenticator outcomes retain their own signed
-client-data bytes verbatim. Binary fields have separate bounds from text fields;
-a 1,024-byte challenge and native attestation data are supported. JSON parsers use
-`EncodingError` for malformed base64url and `TypeError` for dictionary errors.
-`toJSON()` encodes the currently exposed buffers into fresh objects. A captured
-private dependent abort signal observes cancellation even if page listeners stop
-propagation on the original signal.
+Electron preserves site policy for supported documents and denies foreign
+subframes. Authenticator outcomes must retain their signed client-data bytes
+verbatim. A private dependent abort signal must still observe cancellation when
+page listeners stop propagation. Options, RP ID and encoding rules live in the
+shared core and its tests.
 
 Only one ceremony can be pending per tab. Abort, context destruction, page close,
 session loss and bounded timeouts cancel its signal, including when an
@@ -68,8 +58,7 @@ authenticator ignores cancellation. Errors carry fixed messages and never includ
 credential material. There is no Host transport, production authenticator, user
 interface or rollout switch here.
 
-The shared HTTPS relying-party scenario runs against the software authenticator
-in headless Playwright and the disposable Electron VM. The server independently
-verifies registration and assertion with SimpleWebAuthn. The fixture TLS identity
-is public and trusted through its pinned SPKI in Playwright and a certificate
-verify proc confined to the Electron smoke launcher.
+The relying-party test independently verifies registration/assertion. Fixture TLS
+identity is public; trust exceptions must stay confined to pinned test launchers,
+never production. See `../test-support/passkey-policy-scenario.ts` and
+`../browser/page-policy.ts`.
