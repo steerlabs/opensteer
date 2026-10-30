@@ -218,79 +218,41 @@ describe("a task's line in the conversation that handed it out", () => {
   });
 });
 
-// Ways a group can fail: tasks one turn handed out stack into a list again,
-// the group hides that one of them needs the reader, or opening it loses a
-// task or does not let the reader close it again.
+// Ways it can fail: tasks one turn handed out hide behind a count the reader
+// has to open, one that needs the reader is not said on its own line, or a
+// task that ends is announced twice or not at all.
 describe("tasks one turn handed out together", () => {
-  it("read as one line of counts that opens in place to each task", async () => {
+  it("read as a line each, every one saying where it stands and opening its task", async () => {
     const { node } = await chatWith(
       (seeded) => [
         variant(seeded, 0, settled("completed")),
-        variant(seeded, 1, { currentRunStatus: "running" }),
-        variant(seeded, 2, settled("completed")),
+        variant(seeded, 1, { currentRunStatus: "waiting" }),
+        variant(seeded, 2, { currentRunStatus: "running" }),
       ],
-      () => [],
+      ([, asking]) => [askingAbout(clients[0]!, asking!, "Which quarter should I use?")],
     );
-    expect(lines(node)).toHaveLength(1);
-    const group = node.querySelector<HTMLButtonElement>("button.task-line__open")!;
-    expect(group.getAttribute("aria-expanded")).toBe("false");
-    expect(node.querySelectorAll(".task-stack__mark")).toHaveLength(3);
-    expect(node.querySelector(".task-line__title")?.textContent).toBe("3 tasks");
-    expect(node.querySelector(".task-line__state")?.textContent).toBe("2 finished·1 working");
-    expect(group.getAttribute("aria-label")).toBe("3 tasks: 2 finished, 1 working. Show tasks");
-    // Only the count that says something wears a dot.
-    expect(
-      [...node.querySelectorAll<HTMLElement>(".task-line__part")].map(
-        (part) => part.querySelector<HTMLElement>(".task-dot")?.dataset.tone ?? null,
-      ),
-    ).toEqual([null, "working"]);
-
-    await act(async () => group.click());
-    expect(group.getAttribute("aria-expanded")).toBe("true");
-    const opened = node.querySelector('[role="group"][aria-label="3 tasks"]')!;
-    expect(
-      [...opened.querySelectorAll(".task-line__state")].map((state) => state.textContent),
-    ).toEqual(["Finished", "Working", "Finished"]);
-    expect(opened.querySelectorAll("a.task-line__open")).toHaveLength(3);
-
-    await act(async () => group.click());
-    expect(group.getAttribute("aria-expanded")).toBe("false");
-    expect(node.querySelector('[role="group"][aria-label="3 tasks"]')).toBeNull();
+    expect(lines(node).map((line) => line.querySelector(".task-line__state")?.textContent)).toEqual(
+      ["Finished", "Needs you", "Working"],
+    );
+    expect(lines(node)[1]!.querySelector(".task-line__note")?.textContent).toBe(
+      "Which quarter should I use?",
+    );
+    expect(node.querySelectorAll("a.task-line__open")).toHaveLength(3);
+    expect(node.querySelector("button.task-line__open")).toBeNull();
   });
 
-  it("still says when a task in a closed group ends, once, and not again when opened", async () => {
+  it("says when one of them ends, once", async () => {
     const { node, tasks, update } = await chatWith((seeded) => [
       variant(seeded, 0, { currentRunStatus: "running" }),
       variant(seeded, 1, { currentRunStatus: "running" }),
     ]);
     const said = () =>
-      [...node.querySelectorAll<HTMLElement>('.task-line-group [role="status"]')]
+      [...node.querySelectorAll<HTMLElement>('.task-lines [role="status"]')]
         .map(({ textContent }) => textContent)
         .filter(Boolean);
     expect(said()).toEqual([]);
     await act(async () => update({ ...tasks[0]!, ...settled("failed") }));
     expect(said()).toEqual([expect.stringMatching(/: Couldn’t finish$/)]);
-    await act(async () => node.querySelector<HTMLButtonElement>("button.task-line__open")!.click());
-    expect(said()).toEqual([expect.stringMatching(/: Couldn’t finish$/)]);
-  });
-
-  it("says first that one of them needs the reader", async () => {
-    const { node } = await chatWith(
-      (seeded) => [
-        variant(seeded, 0, settled("completed")),
-        variant(seeded, 1, { currentRunStatus: "waiting" }),
-      ],
-      ([, asking]) => [askingAbout(clients[0]!, asking!, "Which quarter should I use?")],
-    );
-    const parts = [...node.querySelectorAll<HTMLElement>(".task-line__part")];
-    expect(parts.map((part) => part.textContent)).toEqual(["1 needs you", "·1 finished"]);
-    expect(parts[0]!.querySelector<HTMLElement>(".task-dot")?.dataset.tone).toBe("waiting");
-  });
-
-  it("stays a single line for a single task", async () => {
-    const { node } = await chatWith((seeded) => [variant(seeded, 0, settled("completed"))]);
-    expect(node.querySelector("button.task-line__open")).toBeNull();
-    expect(node.querySelector(".task-stack")).toBeNull();
   });
 });
 

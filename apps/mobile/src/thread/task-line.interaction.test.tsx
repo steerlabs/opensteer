@@ -251,31 +251,33 @@ describe("a task's line on a phone", () => {
 
 // Ways a group can fail on a phone: tasks one turn handed out stack into a
 // list again, it hides that one needs the reader, or it does not open.
+// Ways it can fail: tasks one turn handed out hide behind a count the reader
+// has to open, one that needs the reader is not said on its own line, or a
+// task that ends is announced twice or not at all.
 describe("tasks one turn handed out together, on a phone", () => {
-  it("read as one line of counts that opens in place to each task", async () => {
-    const { node } = await linesFor((seeded) => [
-      variant(seeded, 0, settled("completed")),
-      variant(seeded, 1, { currentRunStatus: "running" }),
-      variant(seeded, 2, settled("completed")),
-    ]);
-    const group = node.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
-    expect(group.getAttribute("aria-label")).toBe("3 tasks: 2 finished, 1 working");
-    expect(group.getAttribute("aria-expanded")).toBe("false");
-    expect(group.querySelectorAll("[data-task-icon]")).toHaveLength(3);
-    expect(
-      [...group.querySelectorAll<HTMLElement>("[data-dot]")].map(({ dataset }) => dataset.dot),
-    ).toEqual(["ember"]);
-    expect(node.querySelectorAll('[aria-label$=", Finished"], [data-menu-action]')).toHaveLength(0);
-
-    await act(async () => group.click());
-    expect(group.getAttribute("aria-expanded")).toBe("true");
+  it("read as a line each, every one saying where it stands and opening its task", async () => {
+    const { node } = await linesFor(
+      (seeded) => [
+        variant(seeded, 0, settled("completed")),
+        variant(seeded, 1, { currentRunStatus: "waiting" }),
+        variant(seeded, 2, { currentRunStatus: "running" }),
+      ],
+      (client, [, task]) => [asking(client, task!, "Which quarter should I use?")],
+    );
+    expect(node.querySelector("button[aria-expanded]")).toBeNull();
     expect(node.querySelectorAll('[data-menu-action="open"]')).toHaveLength(3);
-    await act(async () => group.click());
-    expect(node.querySelectorAll('[data-menu-action="open"]')).toHaveLength(0);
+    const labels = [...node.querySelectorAll("button[aria-label]")].map((line) =>
+      line.getAttribute("aria-label"),
+    );
+    expect(labels).toEqual([
+      expect.stringMatching(/, Finished/u),
+      expect.stringMatching(/, Needs you · Which quarter should I use\?$/u),
+      expect.stringMatching(/, Working$/u),
+    ]);
   });
 
-  it("still says when a task in a closed group ends, once, and not again when opened", async () => {
-    const { node, tasks, update } = await linesFor((seeded) => [
+  it("says when one of them ends, once", async () => {
+    const { tasks, update } = await linesFor((seeded) => [
       variant(seeded, 0, { currentRunStatus: "running" }),
       variant(seeded, 1, { currentRunStatus: "running" }),
     ]);
@@ -283,20 +285,5 @@ describe("tasks one turn handed out together, on a phone", () => {
     announce.mockClear();
     await act(async () => update({ ...tasks[0]!, ...settled("failed") }));
     expect(announce.mock.calls).toEqual([[expect.stringMatching(/: Couldn’t finish$/)]]);
-    await act(async () => node.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click());
-    expect(announce).toHaveBeenCalledTimes(1);
-  });
-
-  it("says first that one of them needs the reader", async () => {
-    const { node } = await linesFor(
-      (seeded) => [
-        variant(seeded, 0, settled("completed")),
-        variant(seeded, 1, { currentRunStatus: "waiting" }),
-      ],
-      (client, [, task]) => [asking(client, task!, "Which quarter should I use?")],
-    );
-    expect(node.querySelector("button[aria-expanded]")?.getAttribute("aria-label")).toBe(
-      "2 tasks: 1 needs you, 1 finished",
-    );
   });
 });

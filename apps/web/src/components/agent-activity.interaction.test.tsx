@@ -124,8 +124,18 @@ function button(container: HTMLElement, text: string): HTMLButtonElement | undef
   );
 }
 
+/** A turn's status line, which opens and closes its folded steps. */
+function status(container: HTMLElement): HTMLElement {
+  const head = container.querySelector<HTMLElement>(".work__head");
+  if (!head) throw new Error("No status line");
+  return head;
+}
+
 describe("AgentTranscript work", () => {
-  it("keeps prose visible beside compact tool groups and opens tool details independently", () => {
+  // Failure modes: steps crowd out what the agent wrote; a failed step the
+  // agent read and carried on from shows as an alarm on the turn; opening a
+  // step's detail opens or closes anything else.
+  it("folds steps behind the status line, keeps prose in view and opens details independently", () => {
     const container = mount([
       run,
       tool(),
@@ -139,18 +149,24 @@ describe("AgentTranscript work", () => {
       { ...note, body: "OpenCode is an open-source coding agent.", id: "message-reply" },
     ]);
 
-    const head = container.querySelector(".work__head");
-    expect(head?.textContent).toContain("Worked for 3s");
+    const head = status(container);
+    expect(head.textContent).toBe("Worked for 3s");
+    expect(head.tagName).toBe("BUTTON");
+    expect(head.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector(".trace-errors")).toBeNull();
+    expect(container.textContent).toContain("public page");
     expect(container.textContent).toContain("open-source coding agent");
-    expect(head?.textContent).toContain("1 error");
-    expect(head?.tagName).toBe("DIV");
+    expect(container.querySelector(".trace-step")).toBeNull();
 
     // Two commands fold into a row; the agent's note sits between rows.
+    click(head);
     const commands = button(container, "Ran 2 commands");
     expect(commands).toBeDefined();
-    expect(container.textContent).toContain("public page");
     expect(button(container, "Opened a browser")).toBeDefined();
     expect(container.querySelector('a[href="/threads/thread-1?panel=browser"]')).toBeNull();
+    const text = container.textContent!;
+    expect(text.indexOf("Ran 2 commands")).toBeLessThan(text.indexOf("public page"));
+    expect(text.indexOf("public page")).toBeLessThan(text.indexOf("Opened a browser"));
 
     click(commands);
     const lines = container.querySelectorAll(".trace-step__lines .trace-step__head");
@@ -163,11 +179,15 @@ describe("AgentTranscript work", () => {
 
     click(commands);
     expect(container.textContent).not.toContain("lint failed");
+    click(head);
+    expect(container.querySelector(".trace-step")).toBeNull();
     expect(container.textContent).toContain("public page");
     expect(container.textContent).toContain("open-source coding agent");
   });
 
-  it("shows live reasoning outside status and tool disclosures and preserves it on completion", () => {
+  // Failure modes: a live turn streams every thought and step into view; the
+  // reader's opened steps or the thought's node are lost when the run ends.
+  it("says what a live turn is doing on its status line and keeps opened steps through completion", () => {
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
@@ -183,9 +203,9 @@ describe("AgentTranscript work", () => {
 
     render(root, [{ ...run, status: "running" }, first, thought, second]);
 
-    const work = container.querySelector(".work__head");
-    expect(work?.hasAttribute("aria-expanded")).toBe(false);
-    expect(button(container, "Running commands")).toBeUndefined();
+    expect(status(container).textContent).toBe("Running a command");
+    expect(container.querySelector(".trace-thought")).toBeNull();
+    click(status(container));
     expect(button(container, "Thinking")?.getAttribute("aria-expanded")).toBe("true");
     expect(container.querySelector(".trace-step__thought")?.textContent).toContain(
       "live rendering path",
@@ -193,7 +213,6 @@ describe("AgentTranscript work", () => {
     expect(container.querySelector(".trace-thought")?.parentElement?.className).toBe(
       "turn__content",
     );
-    expect(container.querySelector(".work .trace-step__thought")).toBeNull();
     const thoughtNode = container.querySelector(".trace-thought");
 
     render(root, [
@@ -203,6 +222,7 @@ describe("AgentTranscript work", () => {
       { ...second, completedAt: "2026-08-16T10:00:05.000Z", state: "done" },
     ]);
 
+    expect(status(container).textContent).toBe("Worked for 4s");
     expect(container.querySelector(".trace-thought")).toBe(thoughtNode);
     expect(container.querySelector(".trace-step__thought")?.textContent).toContain(
       "live rendering path",
@@ -218,6 +238,7 @@ describe("AgentTranscript work", () => {
       reasoning({ state: "done", text: "Snapshot thought" }),
     ]);
     const root = roots.at(-1)!;
+    click(status(container));
     expect(container.querySelector(".trace-step__thought")?.textContent).toBe("Snapshot thought");
     click(button(container, "Thought"));
     render(root, [
@@ -235,45 +256,43 @@ describe("AgentTranscript work", () => {
 
   it("starts historical thoughts compact with their own disclosure", () => {
     const container = mount([run, reasoning({ state: "done" }), note]);
-    expect(container.querySelector(".trace-step__thought")).toBeNull();
     expect(container.textContent).toContain(note.body);
+    click(status(container));
+    expect(container.querySelector(".trace-step__thought")).toBeNull();
     click(button(container, "Thought"));
     expect(container.querySelector(".trace-step__thought")?.textContent).toContain(
       "live rendering path",
     );
   });
 
-  it("keeps a progress message mounted and ordered when later tools arrive and the run finishes", () => {
+  // Failure modes: the status line jumps from below the reply to above it
+  // when the run ends; the agent's words remount as tools arrive.
+  it("leads with one status line and keeps the agent's words mounted as tools arrive and the run ends", () => {
     const first = tool();
     const next = tool({ arguments: { command: "second-command" } });
     const container = mount([{ ...run, status: "running" }, first, note]);
     const root = roots.at(-1)!;
     const messageNode = container.querySelector(".msg--assistant__body");
     const statusNode = container.querySelector('[aria-label="Agent status"]');
-    expect(container.textContent!.indexOf(note.body)).toBeLessThan(
-      container.textContent!.indexOf("Working"),
-    );
+    const content = () => [...container.querySelector(".turn__content")!.children];
+    expect(content()).toEqual([statusNode, messageNode]);
     render(root, [{ ...run, status: "running" }, first, note, next]);
-    expect(container.querySelector(".msg--assistant__body")).toBe(messageNode);
-    expect(container.querySelector('[aria-label="Agent status"]')).toBe(statusNode);
-    expect(container.textContent!.indexOf(note.body)).toBeLessThan(
-      container.textContent!.indexOf("Working"),
-    );
+    expect(content()).toEqual([statusNode, messageNode]);
     render(root, [run, first, note, next]);
-    expect(container.querySelector(".msg--assistant__body")).toBe(messageNode);
-    const children = [...container.querySelector(".turn__content")!.children];
-    expect(children[1]).toBe(messageNode);
-    expect(children[2]?.textContent).toContain("second-command");
+    expect(content()).toEqual([statusNode, messageNode]);
     const answer = { ...note, id: "final-answer", body: "Final answer after the work." };
     render(root, [run, first, note, next, answer]);
-    expect(container.querySelector(".msg--assistant__body")).toBe(messageNode);
-    const text = container.textContent!;
-    expect(text.indexOf("second-command")).toBeLessThan(text.indexOf("Worked"));
-    expect(text.indexOf(answer.body)).toBeLessThan(text.indexOf("Worked"));
-    expect(container.querySelector(".turn__content")?.lastElementChild).toBe(statusNode);
+    const [, , answerNode] = content();
+    expect(content()).toEqual([statusNode, messageNode, answerNode]);
+    expect(answerNode?.textContent).toBe(answer.body);
+    click(status(container));
+    expect(content()[0]).toBe(statusNode);
+    expect(content()[2]).toBe(messageNode);
+    expect(content()[3]?.textContent).toContain("second-command");
+    expect(content().at(-1)).toBe(answerNode);
   });
 
-  it("keeps the same footer after all replies through writing, waiting, stopping and completion", () => {
+  it("keeps the same status line above the reply through writing, waiting, stopping and completion", () => {
     const first = tool();
     const answer = {
       ...note,
@@ -283,7 +302,7 @@ describe("AgentTranscript work", () => {
     };
     const container = mount([{ ...run, status: "running" }, first, note, answer]);
     const root = roots.at(-1)!;
-    const status = container.querySelector('[aria-label="Agent status"]');
+    const statusNode = container.querySelector('[aria-label="Agent status"]');
     const message = container.querySelectorAll(".msg--assistant__body")[1];
     const phases: readonly [RunEntry, string][] = [
       [{ ...run, status: "running" }, "Writing"],
@@ -294,11 +313,8 @@ describe("AgentTranscript work", () => {
     for (const [phase, label] of phases) {
       render(root, [phase, first, note, { ...answer, streaming: phase.status !== "completed" }]);
       expect(container.querySelectorAll(".msg--assistant__body")[1]).toBe(message);
-      expect(container.querySelector(".turn__content")?.lastElementChild).toBe(status);
-      expect(status?.textContent).toContain(label);
-      expect(container.textContent!.indexOf(answer.body)).toBeLessThan(
-        container.textContent!.indexOf(label),
-      );
+      expect(container.querySelector(".turn__content")?.firstElementChild).toBe(statusNode);
+      expect(statusNode?.textContent).toContain(label);
     }
   });
 
@@ -318,6 +334,8 @@ describe("a Computer use row", () => {
 
   it("reads as one Slack row that opens into a timeline of steps", () => {
     const container = mount(slack("settled"));
+    expect(status(container).textContent).toBe("Worked for 1m 27s");
+    click(status(container));
     const heads = [...container.querySelectorAll(".turn__content > .trace-step")].map(
       (row) => row.querySelector(".trace-step__head")?.textContent,
     );
@@ -325,10 +343,6 @@ describe("a Computer use row", () => {
       'Listed apps on a Macfor "Computer use" and "Slack"1 error',
       "Used Slack9 steps on Alex's MacBook Pro1 error",
     ]);
-    expect(container.querySelector(".work__meta")?.textContent).toBe(
-      "4 integration lookups, 9 steps in Slack",
-    );
-    expect(container.querySelector(".work__head .trace-errors")?.textContent).toBe("2 errors");
     for (const reference of mockComputerUseToolRefs) {
       expect(container.innerHTML).not.toContain(reference);
     }
@@ -372,11 +386,12 @@ describe("a Computer use row", () => {
 
   it("updates the row's live step in place while it runs", () => {
     const container = mount(slack("running"));
-    const head = button(container, "Using Slack");
-    expect(head?.querySelector(".trace-step__detail--live")?.textContent).toBe("Clicking in Slack");
     expect(container.querySelector(".work__label")?.textContent).toBe(
       "Clicking in Slack on Alex's MacBook Pro",
     );
+    click(status(container));
+    const head = button(container, "Using Slack");
+    expect(head?.querySelector(".trace-step__detail--live")?.textContent).toBe("Clicking in Slack");
     click(head);
     expect(container.querySelector(".trace-step__place")?.textContent).toBe(
       "on Alex's MacBook Pro",
@@ -390,6 +405,7 @@ describe("a Computer use row", () => {
 
   it("keeps a lookup's output, full of references, closed until asked for", () => {
     const container = mount(slack("settled"));
+    click(status(container));
     click(button(container, "Listed apps on a Mac"));
     const [, , found] = container.querySelectorAll(".trace-step__lines .trace-step__head");
     click(found);
@@ -403,7 +419,7 @@ describe("a Computer use row", () => {
   });
 });
 
-it("opens the exact phone from its conversation chip and keeps only Stop on the activity line", () => {
+it("opens the exact phone from its conversation chip and keeps Stop and the steps on the activity line", () => {
   const client = new MockHostClient({ latencyMs: 0 });
   const machine = client.getSnapshot().machines.find((machine) => machine.device?.form === "phone");
   const session = machine?.computerUse?.sessions[0];
@@ -456,6 +472,14 @@ it("opens the exact phone from its conversation chip and keeps only Stop on the 
     container.querySelector(`button[aria-label="Stop using phone, ${machine.name}"]`)?.textContent,
   ).toBe("Stop using phone");
   expect(container.querySelector('[aria-label^="Watch "]')).toBeNull();
+  // A task's steps fold behind this line, so it still opens them while the
+  // agent is on the phone, beside Stop rather than in its place.
+  const steps = container.querySelector<HTMLButtonElement>("button.computer-now__where");
+  expect(steps?.getAttribute("aria-expanded")).toBe("false");
+  expect(container.querySelector(".trace-step")).toBeNull();
+  click(steps);
+  expect(steps?.getAttribute("aria-expanded")).toBe("true");
+  expect(container.querySelector(".trace-step")).not.toBeNull();
   const chip = container.querySelector<HTMLAnchorElement>(
     `a[aria-label="Open ${machine.name}, agent working"]`,
   );

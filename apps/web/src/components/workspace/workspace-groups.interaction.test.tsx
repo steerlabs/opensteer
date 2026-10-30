@@ -522,7 +522,7 @@ describe("task marks", () => {
     await settle();
   }
   async function picker() {
-    await click(element(".conv-header__switcher"));
+    await click(element(".conv-header__menu"));
     await click(element('[data-action="change-icon"]'));
   }
   it.each(["chat", "thread"])("keeps Chat's identity through its %s URL", async (route) => {
@@ -536,7 +536,7 @@ describe("task marks", () => {
     expect(element(".conv-header__name").textContent).toBe("Chat");
     expect(element(".conv-header .chat-orb")).toBeDefined();
     expect(document.querySelector(".conv-header .task-mark")).toBeNull();
-    await click(element(".conv-header__switcher"));
+    await click(element(".conv-header__menu"));
     expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
     expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
   });
@@ -564,10 +564,10 @@ describe("task marks", () => {
     expect(element(".conv-header__name").textContent).toBe("Travel");
     expect(element(".conv-header__mark .workspace-orb").getAttribute("data-color")).toBe("blue");
     expect(document.querySelector(".conv-header__mark .task-mark")).toBeNull();
-    await click(element(".conv-header__switcher"));
+    await click(element(".conv-header__menu"));
     expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
     expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
-    await press(element(".conv-header__switcher"), "Escape");
+    await press(element(".conv-header__menu"), "Escape");
     await act(async () =>
       element(`.side-task[data-thread-id="${flights}"]`).dispatchEvent(
         new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
@@ -667,7 +667,7 @@ describe("task marks", () => {
       if (owner === "unknown") expect(released).toHaveBeenCalled();
     },
   );
-  it("shows a task's subject and separate working state in its row, header and search", async () => {
+  it("shows a task's subject and separate working state in its row and header", async () => {
     await mount(`/threads/${flights}`);
     expect(
       element(`.side-task[data-thread-id="${flights}"] .task-mark`).getAttribute("data-icon"),
@@ -679,12 +679,8 @@ describe("task marks", () => {
     expect(element(".conv-header").textContent).toContain("Travel");
     // Working shows on the task's mark and is spoken with its name, never as a word beside it.
     expect(element(".conv-header__mark [data-state]").getAttribute("data-state")).toBe("working");
-    expect(element(".conv-header__switcher").getAttribute("aria-label")).toContain("working");
+    expect(element(".conv-header__menu").getAttribute("aria-label")).toContain("working");
     expect(element(".conv-header").textContent).not.toContain("Working");
-    await click(element(".conv-header__switcher"));
-    expect(
-      element(`.switcher__row[aria-current="true"] .task-mark`).getAttribute("data-icon"),
-    ).toBe("plane");
     expect(element(".task-mark").getAttribute("aria-hidden")).toBe("true");
   });
   it("updates every occupant in place on an icon-only edit, keeping the acting task hue", async () => {
@@ -764,7 +760,7 @@ describe("task marks", () => {
   it("edits from the header with keyboard search, locks Use default and restores focus", async () => {
     await mount(`/threads/${flights}`);
     const dispatch = vi.spyOn(client, "dispatch");
-    const opener = element(".conv-header__switcher");
+    const opener = element(".conv-header__menu");
     await picker();
     expect(document.querySelector('[aria-label="Initials"]')).toBeNull();
     expect(document.querySelectorAll(".workspace-icon-picker__grid button")).toHaveLength(130);
@@ -813,7 +809,7 @@ describe("task marks", () => {
   });
   it("excludes Chat and hides task mark edits for an older Host", async () => {
     await mount("/");
-    await click(element(".conv-header__switcher"));
+    await click(element(".conv-header__menu"));
     expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
     act(() => root?.unmount());
     setRoot(null);
@@ -839,7 +835,7 @@ describe("task marks", () => {
           },
         }),
     });
-    await click(element(".conv-header__switcher"));
+    await click(element(".conv-header__menu"));
     expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
   });
 });

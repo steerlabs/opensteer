@@ -293,13 +293,15 @@ describe("selection actions own exactly their axis, one history entry each", () 
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
   });
 
-  it("header switcher: only the conversation", async () => {
+  it("a task in the header's menu: only the conversation", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const middle = element(".place");
-    await click(element(".conv-header__switcher"));
-    const rows = [...document.querySelectorAll<HTMLButtonElement>(".switcher__row")];
-    const target = rows.find((row) => row.getAttribute("aria-current") !== "true")!;
+    await click(element(".conv-header__menu"));
+    // The menu is this conversation's: no search across every task, which the sidebar has.
+    expect(document.querySelector(".popover--conversation-menu input")).toBeNull();
+    const target = element<HTMLButtonElement>(".conversation-menu__task");
+    expect(target.getAttribute("aria-label")).toMatch(/, (Working|Needs you)$/u);
     const before = history.length;
     await click(target);
     expect(history.length).toBe(before + 1);

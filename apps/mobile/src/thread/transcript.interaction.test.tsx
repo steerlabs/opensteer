@@ -375,20 +375,25 @@ describe("native transcript prose", () => {
     expect(container.querySelector('[aria-label="Agent status"]')).toBeNull();
   });
 
-  it("shows snapshot reasoning and progress beside compact tools, independently of status", () => {
+  // Failure modes: a live turn streams every thought and step into view; the
+  // agent's words fold away with its steps; a step can no longer be opened.
+  it("folds a live turn's thoughts and steps behind its status line and keeps its words", () => {
     const { container, render, onOpenStep } = setup();
     render([run, command, thought, note, { ...command, id: "tool:a:2", callId: "call-2" }]);
-    expect(container.textContent).toContain(thought.text);
+    expect(statusLine(container).textContent).toBe("Working");
+    expect(statusLine(container).getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).toContain(note.body);
-    const status = container.querySelector('[aria-label="Agent status"]');
-    expect(status?.textContent).toContain("Working");
-    expect(status?.textContent).not.toContain(thought.text);
-    expect(status?.querySelector("button")).toBeNull();
+    expect(container.textContent).not.toContain(thought.text);
+    expect(container.textContent).not.toContain("Ran a command");
+
+    act(() => statusLine(container).click());
+    expect(container.textContent).toContain(thought.text);
     press(container, "Ran a command");
     expect(onOpenStep).toHaveBeenCalledWith(command.id);
-    expect(container.textContent).toContain(thought.text);
 
+    // The reader's choice holds as the run ends.
     render([{ ...run, status: "completed" }, command, thought, note]);
+    expect(statusLine(container).textContent).toBe("Worked for 2s");
     expect(container.textContent).toContain(thought.text);
     press(container, "Thought");
     // The headline can repeat the opening words, so inspect the prose span itself.
@@ -397,38 +402,28 @@ describe("native transcript prose", () => {
     ).toHaveLength(1);
   });
 
-  it("preserves a manual collapse while revealing a later thought and keeping message order", () => {
+  // Failure mode: the status line jumps from below the reply to above it when
+  // the run ends, or the agent's words remount as tools arrive.
+  it("leads with one status line and keeps the agent's words mounted as tools arrive and the run ends", () => {
     const { container, render } = setup();
     render([run, thought, note]);
     const message = container.querySelector("p");
-    const status = container.querySelector('[aria-label="Agent status"]');
-    expect(container.textContent!.indexOf(note.body)).toBeLessThan(
-      container.textContent!.indexOf("Working"),
-    );
-    press(container, "Thought");
+    const status = statusLine(container);
     const next = { ...thought, id: "reasoning:a:2", text: "A new independent thought." };
     render([run, thought, note, command, next]);
     expect(container.querySelector("p")).toBe(message);
-    expect(container.querySelector('[aria-label="Agent status"]')).toBe(status);
-    expect(container.textContent!.indexOf(note.body)).toBeLessThan(
-      container.textContent!.indexOf("Working"),
-    );
-    const buttons = [...container.querySelectorAll("button")];
-    expect(buttons[0]?.getAttribute("aria-expanded")).toBe("false");
-    expect(buttons.at(-1)?.getAttribute("aria-expanded")).toBe("true");
-    expect(container.textContent!.indexOf(note.body)).toBeLessThan(
-      container.textContent!.indexOf("first-command"),
-    );
+    expect(statusLine(container)).toBe(status);
     const answer = { ...note, id: "final-answer", body: "Final answer after the work." };
     render([{ ...run, status: "completed" }, thought, note, command, next, answer]);
     expect(container.querySelector("p")).toBe(message);
+    expect(statusLine(container)).toBe(status);
+    expect(status.textContent).toBe("Worked for 2s");
     const text = container.textContent!;
-    expect(text.indexOf("first-command")).toBeLessThan(text.indexOf("Worked"));
-    expect(text.indexOf(answer.body)).toBeLessThan(text.indexOf("Worked"));
-    expect(container.querySelector('[aria-label="Agent status"]')).toBe(status);
+    expect(text.indexOf("Worked")).toBeLessThan(text.indexOf(note.body));
+    expect(text.indexOf(note.body)).toBeLessThan(text.indexOf(answer.body));
   });
 
-  it("keeps the same footer after all replies through writing, waiting and stopping, then folds the answered turn behind it", () => {
+  it("keeps the same status line through writing, waiting, stopping and the end, opening every step in place", () => {
     const { container, render } = setup();
     const answer = {
       ...note,
@@ -437,7 +432,7 @@ describe("native transcript prose", () => {
       streaming: true,
     };
     render([run, command, note, answer]);
-    const status = container.querySelector('[aria-label="Agent status"]');
+    const status = statusLine(container);
     const message = container.querySelectorAll("p")[1];
     const phases: readonly [RunEntry, string][] = [
       [run, "Writing"],
@@ -447,15 +442,11 @@ describe("native transcript prose", () => {
     for (const [phase, label] of phases) {
       render([phase, command, note, answer]);
       expect(container.querySelectorAll("p")[1]).toBe(message);
-      expect(container.querySelector('[aria-label="Agent status"]')).toBe(status);
-      expect(status?.parentElement?.nextElementSibling).toBeNull();
-      expect(status?.textContent).toContain(label);
-      expect(container.textContent!.indexOf(answer.body)).toBeLessThan(
-        container.textContent!.indexOf(label),
-      );
+      expect(statusLine(container)).toBe(status);
+      expect(status.textContent).toContain(label);
     }
 
-    // Answered, the turn is its reply over a closed "Worked" line, and the
+    // Answered, the turn is its words under a closed "Worked" line, and the
     // steps are not drawn at all, not merely hidden.
     const answered = [
       { ...run, replyMessageId: answer.id, status: "completed" } satisfies RunEntry,
@@ -464,38 +455,29 @@ describe("native transcript prose", () => {
       { ...answer, streaming: false },
     ];
     render(answered);
-    const worked = () =>
-      [...container.querySelectorAll("button")].find((item) =>
-        item.textContent?.startsWith("Worked"),
-      );
-    expect(worked()?.getAttribute("aria-expanded")).toBe("false");
-    expect(worked()?.nextElementSibling).toBeNull();
-    expect(container.querySelector('[aria-label="Agent status"]')).toBeNull();
-    expect(container.querySelectorAll("p")).toHaveLength(1);
-    expect(container.querySelector("p")).toBe(message);
-    expect(container.textContent).not.toContain(note.body);
+    expect(statusLine(container)).toBe(status);
+    expect(status.textContent).toMatch(/^Worked/u);
+    expect(status.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelectorAll("p")).toHaveLength(2);
+    expect(container.querySelectorAll("p")[1]).toBe(message);
     expect(container.textContent).not.toContain("Ran a command");
-    expect(container.textContent!.indexOf(answer.body)).toBeLessThan(
-      container.textContent!.indexOf("Worked"),
-    );
 
-    // Opened, every step is back where it happened, with the reply among them.
-    press(container, "Worked");
-    expect(worked()?.getAttribute("aria-expanded")).toBe("true");
+    // Opened, every step is back where it happened, between the words.
+    act(() => status.click());
+    expect(status.getAttribute("aria-expanded")).toBe("true");
     const text = container.textContent!;
+    expect(text.indexOf("Worked")).toBeLessThan(text.indexOf("Ran a command"));
     expect(text.indexOf("Ran a command")).toBeLessThan(text.indexOf(note.body));
     expect(text.indexOf(note.body)).toBeLessThan(text.indexOf(answer.body));
-    expect(text.indexOf(answer.body)).toBeLessThan(text.indexOf("Worked"));
     expect(container.querySelectorAll("p")[1]).toBe(message);
     // The reader's choice holds while the Thread moves on around it.
     render(answered.map((entry) => ({ ...entry })));
-    expect(worked()?.getAttribute("aria-expanded")).toBe("true");
+    expect(statusLine(container).getAttribute("aria-expanded")).toBe("true");
+    act(() => statusLine(container).click());
+    expect(container.textContent).not.toContain("Ran a command");
     expect(container.textContent).toContain(note.body);
-    press(container, "Worked");
-    expect(worked()?.getAttribute("aria-expanded")).toBe("false");
-    expect(container.textContent).not.toContain(note.body);
 
-    // A turn that failed or stopped keeps in view the steps that explain it.
+    // A turn that failed or stopped says so below its words; its steps stay one tap away.
     const ended: readonly [RunEntry, string][] = [
       [
         {
@@ -511,14 +493,20 @@ describe("native transcript prose", () => {
       render([outcome, command, note]);
       expect(container.textContent).toContain(said);
       expect(container.textContent).toContain(note.body);
-      expect(container.textContent).toContain("Ran a command");
-      expect(worked()).toBeUndefined();
-      expect(container.querySelector('[aria-label="Agent status"]')?.textContent).toContain(
-        "Worked",
+      expect(statusLine(container).textContent).toMatch(/^Worked/u);
+      expect(container.textContent!.indexOf(note.body)).toBeLessThan(
+        container.textContent!.indexOf(said),
       );
     }
   });
 });
+
+/** A task's turn leads with its status line, which opens and closes its steps. */
+function statusLine(container: HTMLElement): HTMLElement {
+  const line = container.querySelector("button");
+  if (!line) throw new Error("No status line");
+  return line;
+}
 
 // Ways an old delegation's line can fail: it opens the conversation that
 // handed the work out instead of the one that did it, where the task, its
@@ -564,12 +552,12 @@ describe("a Computer use row", () => {
   it("folds one app's steps into one row and lists them as a timeline", () => {
     const { container, render, onOpenStep } = setup();
     render(slack("settled"));
+    expect(statusLine(container).textContent).toBe("Worked for 1m 27s");
+    act(() => statusLine(container).click());
     const text = container.textContent ?? "";
     expect(text).toContain("Listed apps on a Mac");
     expect(text).toContain("Used Slack");
     expect(text).toContain("9 steps on Alex's MacBook Pro");
-    expect(text).toContain("4 integration lookups, 9 steps in Slack");
-    expect(text).toContain("2 errors");
     expect(text).not.toContain("Integration call");
     for (const reference of mockComputerUseToolRefs) expect(text).not.toContain(reference);
     expect(container.querySelector('[data-symbol="laptopcomputer"]')).not.toBeNull();

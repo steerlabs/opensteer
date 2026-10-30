@@ -440,11 +440,11 @@ describe("the review's findings", () => {
 
 describe("stopping a task and finishing it: one Stop", () => {
   const menuRow = (label: string) =>
-    [...document.querySelectorAll<HTMLButtonElement>(".switcher__actions .picker__row")].find(
-      (node) => node.querySelector(".picker__label")?.textContent === label,
-    ) ?? null;
+    [
+      ...document.querySelectorAll<HTMLButtonElement>(".conversation-menu__actions .picker__row"),
+    ].find((node) => node.querySelector(".picker__label")?.textContent === label) ?? null;
   async function openMenu() {
-    await click(element(".conv-header__switcher"));
+    await click(element(".conv-header__menu"));
     await settle(40);
   }
   const thread = (id: string) => client.getSnapshot().threads.find((item) => item.id === id)!;
@@ -480,12 +480,12 @@ describe("stopping a task and finishing it: one Stop", () => {
     const setDone = vi.spyOn(client, "setTaskDone");
     await openMenu();
     await click(menuRow("Mark Done")!);
-    expect(element(".switcher__confirm").textContent).toContain("Stop and mark Done?");
-    expect(element(".switcher__confirm").textContent).toContain(
+    expect(element(".conversation-menu__confirm").textContent).toContain("Stop and mark Done?");
+    expect(element(".conversation-menu__confirm").textContent).toContain(
       "This stops its work and the tasks it handed out, and pauses its schedules.",
     );
     expect(setDone).not.toHaveBeenCalled();
-    await click(element(".switcher__confirm .btn--danger"));
+    await click(element(".conversation-menu__confirm .btn--danger"));
     await settle(100);
     expect(setDone).toHaveBeenCalledExactlyOnceWith(own, true);
     expect(thread(own).doneAt).not.toBeNull();
@@ -512,12 +512,12 @@ describe("stopping a task and finishing it: one Stop", () => {
     const own = await startOwnTask("Review a short proposal");
     await openMenu();
     await click(menuRow("Stop task…")!);
-    expect(element(".switcher__confirm").textContent).toContain("Its run stops now");
+    expect(element(".conversation-menu__confirm").textContent).toContain("Its run stops now");
     // Another client ends the run while this client is still reading the question.
     await act(async () => client.stopRun(own));
     await settle(100);
-    expect(document.querySelector(".switcher__confirm")).toBeNull();
-    expect(document.querySelector(".switcher__search")).not.toBeNull();
+    expect(document.querySelector(".conversation-menu__confirm")).toBeNull();
+    expect(document.querySelector(".conversation-menu__actions")).not.toBeNull();
     expect(menuRow("Mark Done")).not.toBeNull();
     expect(document.querySelector(".shell-error, .toast--error")).toBeNull();
   });
