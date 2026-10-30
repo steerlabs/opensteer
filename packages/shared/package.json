@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./plist": "./src/plist.ts",
     "./advertisedJsonSchema": "./src/advertisedJsonSchema.ts",
     "./atomicPrivateFile": "./src/atomicPrivateFile.ts",
     "./base64url": "./src/base64url.ts",

@@ -92,7 +92,7 @@
       "task": "passwords-tests",
       "timeout": 14,
       "swift": ["apps/desktop/native/passwords", "packages/macos-signing"],
-      "tests": ["apps/desktop/native/passwords"],
+      "tests": ["apps/desktop/native/passwords", "packages/macos-signing"],
       "extra": ["apps/desktop/src/passwords/paths.ts", "packages/client/src/host/passwords.ts"]
     }
   ]
