@@ -176,6 +176,8 @@ class PhoneDeskTest {
         var afterSelect: () -> Unit = {}
         var duringLaunchable: () -> Unit = {}
         var duringPrepare: (String) -> Unit = {}
+        /** Runs between a multi-tap's strokes, for what changes on the phone meanwhile. */
+        var betweenTaps: () -> Unit = {}
         /** Thrown from the edit lane, as the device does while a person holds a key. */
         var editRefusal: Exception? = null
         override fun <T> edit(action: () -> T): T {
@@ -236,6 +238,13 @@ class PhoneDeskTest {
         }
         override fun focusedInput(): LiveElement? = elements.firstOrNull { it.second.editable }?.second
         override fun tap(point: DisplayPoint, count: Int, budget: Budget, admit: () -> Unit) = changing("tap", admit) {
+            // Like the device, each later stroke of a multi-tap is admitted again before it is sent.
+            repeat(count - 1) {
+                now += Device.DOUBLE_TAP_SPACING_MS
+                betweenTaps()
+                if (runCatching(admit).isFailure) return@changing Effect.FAILED
+            }
+            now -= (count - 1) * Device.DOUBLE_TAP_SPACING_MS
             gesture("tap ${point.x},${point.y} x$count", Device.tapMs(count))
         }
         override fun press(point: DisplayPoint, durationMs: Int, budget: Budget, admit: () -> Unit) = changing("press", admit) {
@@ -1030,6 +1039,23 @@ class PhoneDeskTest {
         val error = result.fields.getValue("error") as JsonObject
         assertEquals("A person is touching the screen; try again.", error.string("message"))
         assertTrue(device.did.isEmpty())
+    }
+
+    @Test fun aDoubleTapIsNotAskedAgainForTimeItWasAlreadyAdmitted() {
+        val id = observe().observation().string("observationId")
+        val time = budget()
+        // By the second stroke less time is left than the whole double tap needed at the first.
+        device.betweenTaps = { device.now = time.until - Device.TAP_MS - 50 }
+        actValue(id, PhoneAction.Tap(PhoneTarget.Element(0), 2), time = time)
+        assertTrue(device.did.any { it.endsWith(" x2") })
+    }
+
+    @Test fun aDoubleTapStopsBeforeItsSecondStrokeWhenOpensteerComesForward() {
+        val id = observe().observation().string("observationId")
+        device.betweenTaps = { device.ownApp = true }
+        val result = actValue(id, PhoneAction.Tap(PhoneTarget.Element(0), 2))
+        assertEquals("failed", result.errorCode())
+        assertTrue(device.did.none { it.endsWith(" x2") })
     }
 
     @Test fun agentTypingWhileThePersonHoldsAKeyReportsTheRetryMessage() {

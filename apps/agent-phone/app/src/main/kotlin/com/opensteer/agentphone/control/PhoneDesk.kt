@@ -502,7 +502,12 @@ class PhoneDesk(
     private fun run(action: PhoneAction, snapshot: Snapshot, session: ActiveSession, budget: Budget, saved: PreparedLoginText?): String = when (action) {
         is PhoneAction.Tap -> {
             val at = locate(action.target, snapshot)
-            effect(device.tap(at.point, action.count, budget) { admit(budget, session, Device.tapMs(action.count), "tap", touch = true) }, "tap")
+            var admitted = false
+            effect(device.tap(at.point, action.count, budget) {
+                // A multi-tap's later strokes repeat every check, but not the time already admitted.
+                admit(budget, session, if (admitted) 0 else Device.tapMs(action.count), "tap", touch = true)
+                admitted = true
+            }, "tap")
             Performed.tap(at.name, at.shown, action.count)
         }
         is PhoneAction.LongPress -> {

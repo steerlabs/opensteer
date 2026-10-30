@@ -538,8 +538,9 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
      */
     private fun dispatch(segments: List<GestureSegment>, durationMs: Long, budget: Budget, admit: () -> Unit): Effect {
         val answer = java.util.concurrent.CompletableFuture<GestureScheduler.Result>()
-        gestures.scheduler.agent(segments, personAdmit(admit), { answer.complete(it) }, { answer.completeExceptionally(it) },
-            authority = { !budget.halted && !personKeysHeld() })
+        val admitted = personAdmit(admit)
+        gestures.scheduler.agent(segments, admitted, { answer.complete(it) }, { answer.completeExceptionally(it) },
+            authority = { runCatching(admitted).isSuccess })
         val result = try { answer.get(minOf(durationMs + GESTURE_GRACE_MS, budget.remainingMs()).coerceAtLeast(1), TimeUnit.MILLISECONDS) }
             catch (error: java.util.concurrent.ExecutionException) { throw requireNotNull(error.cause) }
             catch (_: java.util.concurrent.TimeoutException) { return Effect.UNKNOWN }

@@ -538,8 +538,9 @@ A viewer with shared input clicks, drags, scrolls and types directly while the a
 running. The person’s press waits for the agent gesture to finish or cancels it with an honest
 interrupted result. An agent gesture during a held person contact fails with
 “A person is touching the screen; try again.”, and an agent gesture or text edit while the
-person holds a key fails with “A person is holding a key; try again.” A withdrawn agent
-gesture sends no further strokes. Two viewers share one person lane: while one holds a touch
+person holds a key fails with “A person is holding a key; try again.” Each later stroke of an
+agent multi-tap repeats every admission check (Stop, Pause, Opensteer in front, a held key)
+without asking again for time already admitted, so a withdrawn gesture sends no further strokes. Two viewers share one person lane: while one holds a touch
 or key, another viewer’s batch receives `contended`.
 
 Blur, hide, F6 and leaving send `display.input-reset` and cancel local composition. Reset is
