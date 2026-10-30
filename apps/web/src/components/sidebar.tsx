@@ -25,6 +25,7 @@ import {
   browserTabStrip,
   browserSiteLabel,
   describeHostConnection,
+  listedRowThreadId,
   taskRowLabel,
   type HostClient,
   type PlaceItem,
@@ -185,6 +186,8 @@ export function Sidebar({
       : pathname.startsWith("/threads/")
         ? decodeURIComponent(pathname.slice("/threads/".length))
         : null;
+  // A helper has no row, so the task it works for, or Chat, is where the reader is.
+  const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
   const shownPlaceKey =
     workspace.selection.kind === "place"
       ? destinationPlaceKey(workspace.selection.destination)
@@ -453,7 +456,7 @@ export function Sidebar({
         <ChatRow
           ask={homeThreadId ? (directory.attentionByThread.get(homeThreadId) ?? null) : null}
           onNavigate={onCloseMobile}
-          open={openThreadId !== null && openThreadId === homeThreadId}
+          open={openRowThreadId !== null && openRowThreadId === homeThreadId}
           row={list.chat}
           workspace={workspace}
         />
@@ -512,7 +515,7 @@ export function Sidebar({
                     key={row.threadId}
                     onNavigate={onCloseMobile}
                     onSetDone={onSetTaskDone}
-                    open={row.threadId === openThreadId}
+                    open={row.threadId === openRowThreadId}
                     row={row}
                     workspace={workspace}
                   />

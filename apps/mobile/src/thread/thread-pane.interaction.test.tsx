@@ -407,13 +407,12 @@ vi.mock("./attachment-views.js", async () => {
     MessageAttachments: () => null,
   };
 });
-vi.mock("./assignment-card.js", async () => {
+vi.mock("./task-line.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
-  const actual =
-    await vi.importActual<typeof import("./assignment-card.js")>("./assignment-card.js");
+  const actual = await vi.importActual<typeof import("./task-line.js")>("./task-line.js");
   return {
     ...actual,
-    AssignmentCard: () => null,
+    AssignmentLines: () => null,
     TaskScopeContext: React.createContext(null),
   };
 });
@@ -2366,7 +2365,7 @@ describe("a task", () => {
   });
 });
 
-// Ways a finished task's title can fail: the bar drops "Completed" while the
+// Ways a finished task's title can fail: the bar drops "Finished" while the
 // drawn transcript is a window from before the ending, and the title has no
 // menu either — nothing on screen, nor its accessible name, says the task
 // ended; or the bar keeps a second status line beside a menu that already
@@ -2377,7 +2376,7 @@ describe("a finished task's title", () => {
     ["a menu to rename it", true, false],
     ["a menu to open who asked", false, true],
   ] as const)(
-    "says Completed when opened before its ending with %s",
+    "says Finished when opened before its ending with %s",
     async (_, capable, readableRequester) => {
       const earlierRun = createId("run");
       const endingRun = createId("run");
@@ -2428,8 +2427,8 @@ describe("a finished task's title", () => {
       expect(text(container)).not.toContain("Returned to");
       const bar = container.querySelector("header")!;
       const trigger = bar.querySelector('[aria-label$="Task actions"]');
-      expect(trigger?.getAttribute("aria-label")).toMatch(/, Completed\. Task actions$/);
-      expect(bar.textContent).not.toContain("Completed");
+      expect(trigger?.getAttribute("aria-label")).toMatch(/, Finished\. Task actions$/);
+      expect(bar.textContent).not.toContain("Finished");
       expect(hasButton(container, "Mark Done")).toBe(true);
       expect(hasButton(container, "Rename…")).toBe(capable);
     },
@@ -2755,4 +2754,37 @@ it("a shared Done update freezes the phone composer and Reopen restores it", asy
   await settle();
   expect(text(container)).not.toContain("This task is Done");
   expect(container.querySelector("textarea, input")).not.toBeNull();
+});
+
+// Ways a task's page can fail on a phone: it gives no way back to the
+// conversation it works for, names the reader's Chat by its Thread title, or
+// offers a way into a conversation the reader cannot open.
+describe("a task's way back", () => {
+  const withParent = (parentThreadId: string) => {
+    const snapshot = snapshotFor({ entries: [], run: null, threadId: workId });
+    return {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === workId ? { ...thread, parentThreadId } : thread,
+      ),
+    };
+  };
+
+  it("leads back to Chat by name, at the top of the task", async () => {
+    const { container } = await mount(fakeHost(withParent(chatId)), workId);
+    const back = button(container, "Back to Chat");
+    expect(back.textContent).toBe("Chat");
+    expect(container.querySelector("button")).toBe(back);
+    await act(async () => back.click());
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      name: "Home",
+      params: { deploymentId },
+      type: "POP_TO",
+    });
+  });
+
+  it("offers none into a conversation the reader cannot open", async () => {
+    const { container } = await mount(fakeHost(withParent(createId("thread"))), workId);
+    expect(container.querySelector('[aria-label^="Back to"]')).toBeNull();
+  });
 });

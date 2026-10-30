@@ -173,11 +173,11 @@ try {
     await page.locator(".specialist-cards").waitFor();
     await capture(page, "specialists", density);
     await page.goto(`${web.origin}/`);
-    await page.locator(".task-bubble").first().waitFor();
+    await page.locator(".task-line").first().waitFor();
     await capture(page, "conversation-assignment", density);
     await check(`${density}x · assignment marks, request badge and Chat excluded`, async () => {
       const observed = {
-        marks: await page.locator(".task-bubble .task-mark").count(),
+        marks: await page.locator(".task-line .task-mark").count(),
         orb: await page.locator(".conv-header .chat-orb").count(),
       };
       await page.locator(".conv-header__switcher").click();

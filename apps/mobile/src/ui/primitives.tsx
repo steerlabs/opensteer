@@ -282,6 +282,8 @@ export function SwitchRow(props: {
  */
 export function StatusDot(props: {
   readonly live?: boolean;
+  /** Points across; a task's line uses the smaller dot beside its words. */
+  readonly size?: 6 | 8;
   /** `ember` is the agent itself at work somewhere, as a live computer-use session is. */
   readonly tone: "green" | "amber" | "red" | "muted" | "ember";
 }): ReactNode {
@@ -310,7 +312,12 @@ export function StatusDot(props: {
   const animated = useAnimatedStyle(() => ({ opacity: opacity.value }));
   return (
     <Animated.View
-      style={[styles.statusDot, { backgroundColor: dotColor(props.tone) }, animated]}
+      style={[
+        styles.statusDot,
+        props.size === undefined ? null : { height: props.size, width: props.size },
+        { backgroundColor: dotColor(props.tone) },
+        animated,
+      ]}
     />
   );
 }

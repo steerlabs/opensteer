@@ -1,12 +1,18 @@
-import { CHAT_THREAD_TITLE, requestTitleText, type AssignmentSummary } from "@opensteer/core";
+import {
+  CHAT_THREAD_TITLE,
+  requestTitleText,
+  type AssignmentStatus,
+  type AssignmentSummary,
+  type DelegationOutcome,
+} from "@opensteer/core";
 import { formatDuration, groupTranscriptEntries, workSummary } from "./agent-activity-model.js";
-import type { AssignmentEntry, HostSnapshot, TranscriptEntry } from "./client.js";
+import type { AssignmentEntry, DelegationEntry, HostSnapshot, TranscriptEntry } from "./client.js";
 import { accountGettingReady, threadAccountPreparing } from "./thread-placement.js";
 import { taskMark, type TaskMark } from "./task-marks.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 
 /**
- * How a task reads on its card, its own title, its return row and its detail, so
+ * How a task reads on its row, its own title, its return row and its detail, so
  * web and mobile say the same thing about the same Host facts.
  *
  * The word is the assignment's own lifecycle. While it is open, what is added
@@ -106,7 +112,7 @@ export function assignmentPresentation(
   const title = assignmentTitle(assignment, reader);
   const model = assignment.modelLabel;
   if (assignment.status !== "open") {
-    const [word, tone] = settledState(assignment);
+    const [word, tone] = settledState(assignment.status);
     return {
       announcement: `${title}: ${word}`,
       detail:
@@ -225,7 +231,7 @@ function openState(
   assignment: AssignmentSummary,
   waitsOnReader: boolean,
 ): [string, AssignmentTone] {
-  if (waitsOnReader) return ["Needs you", "waiting"];
+  if (waitsOnReader) return [needsYou, "waiting"];
   if (assignment.currentRunStatus === "waiting" || assignment.workerThread.pendingRequests > 0)
     return ["Waiting for approval", "queued"];
   switch (assignment.currentRunStatus) {
@@ -242,16 +248,109 @@ function openState(
   }
 }
 
-function settledState(assignment: AssignmentSummary): [string, AssignmentTone] {
-  switch (assignment.status) {
+function settledState(status: Exclude<AssignmentStatus, "open">): [string, AssignmentTone] {
+  switch (status) {
     case "completed":
-      return ["Completed", "completed"];
+      return ["Finished", "completed"];
     case "failed":
-      return ["Failed", "failed"];
-    default:
+      return ["Couldn’t finish", "failed"];
+    case "cancelled":
       return ["Stopped", "stopped"];
   }
 }
+
+const delegationStatus: Record<DelegationOutcome, Exclude<AssignmentStatus, "open">> = {
+  completed: "completed",
+  failed: "failed",
+  interrupted: "cancelled",
+};
+
+/**
+ * Work handed out before Assignments existed, which settled when its one Run
+ * ended. It reads in an Assignment's words, so an old conversation says what
+ * a new one would about the same ending.
+ */
+export function delegationPresentation(
+  delegation: DelegationEntry,
+  reader: Pick<HostSnapshot, "threads">,
+): AssignmentPresentation {
+  const title =
+    reader.threads.find(({ id }) => id === delegation.childThread.id)?.title ??
+    delegation.childThread.title;
+  const [word, tone] = settledState(delegationStatus[delegation.outcome]);
+  return {
+    announcement: `${title}: ${word}`,
+    detail:
+      delegation.delivery.status === "undeliverable"
+        ? { kind: "undeliverable", text: "Its result could not be returned here." }
+        : null,
+    model: null,
+    moving: false,
+    open: false,
+    stopBlocked: null,
+    tone,
+    word,
+  };
+}
+
+/**
+ * What a task's row adds under its title, or null: the question it waits on,
+ * or what keeps it from going on or from reporting back. The step it is
+ * taking is the task's own news; "Working" already says it works.
+ */
+export function taskRowNote(presentation: AssignmentPresentation): AssignmentDetail | null {
+  return presentation.detail?.kind === "step" ? null : presentation.detail;
+}
+
+/** One state in a group's summary: how many tasks read that word. */
+export interface TaskGroupPart {
+  readonly tone: AssignmentTone;
+  /** Whether a task counted here is working now, so its dot may pulse. */
+  readonly moving: boolean;
+  readonly text: string;
+}
+
+/**
+ * Tasks one turn handed out, read as one: how many, and how many read each
+ * word, what asks for the reader or went wrong first. The counts use each
+ * task's own word, so a group never says what its rows would not.
+ */
+export function taskGroupSummary(presentations: readonly AssignmentPresentation[]): {
+  readonly label: string;
+  readonly parts: readonly TaskGroupPart[];
+} {
+  const byWord = new Map<string, { count: number; moving: boolean; tone: AssignmentTone }>();
+  for (const { moving, tone, word } of presentations) {
+    const held = byWord.get(word);
+    byWord.set(word, {
+      count: (held?.count ?? 0) + 1,
+      moving: (held?.moving ?? false) || moving,
+      tone,
+    });
+  }
+  // A copy sorted in place: Hermes, which the phone runs, has no `toSorted`.
+  const parts = [...byWord]
+    .sort(([, left], [, right]) => groupOrder[left.tone] - groupOrder[right.tone])
+    .map(([word, { count, moving, tone }]) => ({
+      moving,
+      text: `${count} ${(word === needsYou && count > 1 ? "Need you" : word).toLowerCase()}`,
+      tone,
+    }));
+  return { label: `${presentations.length} tasks`, parts };
+}
+
+const needsYou = "Needs you";
+
+/** What a reader looks for first in a group: what asks for them, then what went wrong. */
+const groupOrder: Record<AssignmentTone, number> = {
+  waiting: 0,
+  failed: 1,
+  completed: 2,
+  working: 3,
+  paused: 4,
+  queued: 5,
+  stopped: 6,
+};
 
 /**
  * The step the worker is taking now, from its own transcript, held while a

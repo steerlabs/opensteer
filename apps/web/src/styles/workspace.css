@@ -1390,6 +1390,63 @@ button.side-needs:hover {
   gap: var(--space-2);
 }
 
+/* Work handed out by another conversation leads back to it, one quiet line
+   above the name. */
+.conv-header--trail {
+  flex-wrap: wrap;
+  row-gap: 0;
+  height: auto;
+  min-height: 50px;
+  padding-top: var(--space-6);
+}
+
+.conv-header__trail {
+  display: flex;
+  flex-basis: 100%;
+  min-width: 0;
+}
+
+.conv-header__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  max-width: 100%;
+  min-width: 0;
+  margin-left: calc(-1 * var(--space-4));
+  padding: var(--space-2) var(--space-6) var(--space-2) var(--space-4);
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.conv-header__back:hover {
+  background: rgb(255 255 255 / 4%);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.conv-header__back:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 1px;
+}
+
+.conv-header__back svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.conv-header__back-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conv-header__actions .icon-btn svg {
   width: 17px;
   height: 17px;

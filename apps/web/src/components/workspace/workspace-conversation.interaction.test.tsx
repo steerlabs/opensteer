@@ -584,18 +584,18 @@ describe("task titles", () => {
     },
   );
 
-  it("updates a delegated task card when its worker is renamed", async () => {
+  it("updates a delegated task line when its worker is renamed", async () => {
     await mount("/");
-    const card = element<HTMLAnchorElement>(".task-bubble");
+    const card = element<HTMLAnchorElement>(".task-line__open");
     const worker = card.getAttribute("href")!.match(/threads\/([^?]+)/u)![1]!;
     await act(async () => {
       await client.renameThread(worker, "Renamed delegated task");
     });
     await settle();
-    expect(element(".task-bubble__title").textContent).toBe("Renamed delegated task");
+    expect(element(".task-line__title").textContent).toBe("Renamed delegated task");
   });
 
-  it("refreshes a completed task card from a higher assignment revision without holding its worker", async () => {
+  it("refreshes a completed task line from a higher assignment revision without holding its worker", async () => {
     await mount("/");
     const home = client.getSnapshot().homeThreadId!;
     await act(async () => {
@@ -638,7 +638,7 @@ describe("task titles", () => {
     });
     expect(client.getSnapshot().threads.some(({ id }) => id === worker)).toBe(false);
     const cardTitle = () =>
-      element(`.task-bubble[href*="${worker}"] .task-bubble__title`).textContent;
+      element(`.task-line__open[href*="${worker}"] .task-line__title`).textContent;
     expect(cardTitle()).toBe(assignment.workerThread.title);
     await act(async () => {
       await client.renameThread(worker, "Guest room mattress");

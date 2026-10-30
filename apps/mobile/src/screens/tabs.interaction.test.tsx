@@ -493,12 +493,11 @@ vi.mock("../thread/attachment-views.js", async () => {
     MessageAttachments: () => null,
   };
 });
-vi.mock("../thread/assignment-card.js", async () => {
+vi.mock("../thread/task-line.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
-  const actual = await vi.importActual<typeof import("../thread/assignment-card.js")>(
-    "../thread/assignment-card.js",
-  );
-  return { ...actual, AssignmentCard: () => null, TaskScopeContext: React.createContext(null) };
+  const actual =
+    await vi.importActual<typeof import("../thread/task-line.js")>("../thread/task-line.js");
+  return { ...actual, AssignmentLines: () => null, TaskScopeContext: React.createContext(null) };
 });
 vi.mock("../thread/waiting-questions.js", () => ({ WaitingQuestions: () => null }));
 vi.mock("../thread/composer-bar.js", () => ({

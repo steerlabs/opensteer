@@ -367,7 +367,7 @@ enrollment proofs cannot mark an existing machine as needing update. Android
 integrations versions are separate from the Runner proof format.
 
 Epoch 27 requires Assignment summaries to carry a label derived from pinned Run models so
-completed task cards remain accurate after reload. Migration 0071 updates stored
+completed tasks name the right model after reload. Migration 0071 updates stored
 Assignment events before the stricter event parser reads them.
 Epoch 28 requires `run.completed` to name the Run's reply (`replyMessageId`), which a
 conversation draws as Opensteer's message. The Host adds it when it commits the Runner's event, so

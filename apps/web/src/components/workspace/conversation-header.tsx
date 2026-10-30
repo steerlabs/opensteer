@@ -10,15 +10,18 @@ import { TaskIconEditor } from "../task-icon-editor.js";
 import { WorkspaceOrb } from "../workspace-orb.js";
 import { ThreadTitleEditor } from "../thread-title-editor.js";
 import { useHostSelector } from "@opensteer/client/react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   assignmentPresentation,
   assignmentRequester,
   conversationName,
   placeList,
+  threadRequester,
   threadStopTarget,
   workerAssignment,
   type HostClient,
+  type HostSnapshot,
+  type RequesterLink,
   type TaskRow,
 } from "@opensteer/client/host";
 import { useActionReview } from "@opensteer/client/react";
@@ -27,17 +30,19 @@ import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
 import { TaskBadge, TaskMark, TaskState, ChatOrb, taskStateWords } from "./task-mark.js";
+import { AreaLink } from "./area-link.js";
 import { destinationPlaceKey } from "./navigation.js";
 import { DrawerButton } from "./place-stage.js";
 import { homeThreadKind, useTaskDirectory } from "./task-directory.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /**
- * The conversation's head: its mark, which also shows how the task is doing,
- * its name, switching and renaming, why it is not plainly working when that is
- * known, and the conversation's own controls. Docked beside the computer, the
- * name gets the width: the dock keeps only Expand and Close, and Find joins
- * the name's menu, where ⌘F still reaches it.
+ * The conversation's head: the way back to the conversation it works for, its
+ * mark, which also shows how the task is doing, its name, switching and
+ * renaming, why it is not plainly working when that is known, and the
+ * conversation's own controls. Docked beside the computer, the name gets the
+ * width: the dock keeps only Expand and Close, and Find joins the name's menu,
+ * where ⌘F still reaches it.
  */
 export function ConversationHeader({
   cause,
@@ -86,8 +91,27 @@ export function ConversationHeader({
   };
   const docked = work && !phone;
   const tone = !home && row ? row.tone : null;
+  const selectRequester = useCallback(
+    (snapshot: HostSnapshot) =>
+      homeThreadKind(threadId, snapshot) === null ? threadRequester(snapshot, threadId) : null,
+    [threadId],
+  );
+  const requester = useHostSelector(hostClient, selectRequester, sameRequester);
   return (
-    <header className="conv-header">
+    <header className={requester ? "conv-header conv-header--trail" : "conv-header"}>
+      {requester ? (
+        <nav aria-label="Works for" className="conv-header__trail">
+          <AreaLink
+            aria-label={`Back to ${requester.title}`}
+            className="conv-header__back"
+            title={requester.title}
+            to={nav.threadPath(requester.threadId)}
+          >
+            <Icon name="arrow-left" />
+            <span className="conv-header__back-title">{requester.title}</span>
+          </AreaLink>
+        </nav>
+      ) : null}
       {/* In Work the place's own bar carries the way back to the sidebar. */}
       {work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
       <span className="conv-header__mark">
@@ -273,6 +297,10 @@ export function ConversationHeader({
       ) : null}
     </header>
   );
+}
+
+function sameRequester(left: RequesterLink | null, right: RequesterLink | null): boolean {
+  return left === right || (left?.threadId === right?.threadId && left?.title === right?.title);
 }
 
 /**

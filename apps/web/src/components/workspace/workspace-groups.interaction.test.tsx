@@ -634,22 +634,20 @@ describe("task marks", () => {
         });
         return "/";
       });
-      const card = () => element(".task-bubble");
+      // The line draws only the task's own mark; who does it is in its name and tooltip.
+      const card = () => element(".task-line__open");
+      expect(card().querySelector(".chat-orb, .workspace-orb")).toBeNull();
       if (owner === "unknown") {
         expect(card().textContent).not.toContain("Opensteer");
         expect(card().getAttribute("aria-label")).not.toContain("Opensteer");
-        expect(card().querySelector(".chat-orb")).toBeNull();
-        expect(card().querySelector(".task-bubble__byline")).toBeNull();
+        expect(card().getAttribute("title")).not.toContain("Opensteer");
         expect(observed!).toHaveBeenCalledWith(flights);
       } else {
         const name = owner === "main" ? "Opensteer" : "Travel";
-        expect(element(".task-bubble__byline").textContent).toContain(name);
+        expect(card().getAttribute("title")).toContain(name);
         expect(card().getAttribute("aria-label")).toContain(name);
-        expect(
-          card().querySelector(owner === "main" ? ".chat-orb" : ".workspace-orb"),
-        ).not.toBeNull();
       }
-      const mark = element(".task-bubble .task-mark").outerHTML;
+      const mark = element(".task-line .task-mark").outerHTML;
       catalogResolved = true;
       await act(async () => {
         await client.dispatch({
@@ -660,11 +658,11 @@ describe("task marks", () => {
         });
       });
       await settle();
-      expect(element(".task-bubble .task-mark").outerHTML).toBe(mark);
+      expect(element(".task-line .task-mark").outerHTML).toBe(mark);
+      expect(card().querySelector(".chat-orb, .workspace-orb")).toBeNull();
       if (owner !== "main") {
-        expect(element(".task-bubble__byline").textContent).toContain("Travel");
+        expect(card().getAttribute("title")).toContain("Travel");
         expect(card().getAttribute("aria-label")).toContain("Travel");
-        expect(element(".task-bubble .workspace-orb").getAttribute("data-color")).toBe("purple");
       }
       if (owner === "unknown") expect(released).toHaveBeenCalled();
     },

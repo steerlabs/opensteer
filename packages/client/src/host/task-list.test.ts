@@ -10,11 +10,13 @@ import {
 import { MockHostClient } from "../mock/mock-host-client.js";
 import type { BrowserSessionSummary, HostSnapshot, TaskEntry } from "./client.js";
 import {
+  listedRowThreadId,
   sameTaskRow,
   taskCanBeDone,
   taskList,
   taskRowLabel,
   taskTime,
+  threadRequester,
   workspaceTaskList,
 } from "./task-list.js";
 import { liveWork } from "./surfaces.js";
@@ -394,5 +396,119 @@ describe("shared Done capability", () => {
     const list = taskList(snapshot);
     expect(list.done).toHaveLength(0);
     expect(list.ready.find(({ threadId }) => threadId === row.thread.id)?.canBeDone).toBe(false);
+  });
+});
+
+// Failure modes: an open helper, which has no row, leaves the sidebar with
+// nothing marked as where the reader is; a chain through a Thread this client
+// does not hold, or round a loop, marks some unrelated row or never ends.
+describe("listedRowThreadId", () => {
+  const chat = threadId(70);
+  const task = threadId(71);
+  const helper = threadId(72);
+  const inner = threadId(73);
+  const thread = (
+    id: string,
+    parentThreadId: string | null,
+    listed: boolean,
+  ): HostSnapshot["threads"][number] => ({ ...template, id, listed, parentThreadId });
+  const held = (threads: readonly HostSnapshot["threads"][number][]): HostSnapshot => ({
+    ...base,
+    activeTasks: [],
+    homeThreadId: chat,
+    tasks: { ...base.tasks!, entries: [] },
+    threads: [...threads],
+    workspaceTasks: {},
+  });
+
+  it("stands a helper's nearest listed ancestor, or Chat, in for it", () => {
+    const snapshot = held([
+      thread(task, chat, true),
+      thread(helper, task, false),
+      thread(inner, helper, false),
+    ]);
+    expect(listedRowThreadId(snapshot, task)).toBe(task);
+    expect(listedRowThreadId(snapshot, helper)).toBe(task);
+    expect(listedRowThreadId(snapshot, inner)).toBe(task);
+    expect(listedRowThreadId(held([thread(helper, chat, false)]), helper)).toBe(chat);
+    expect(listedRowThreadId(snapshot, chat)).toBe(chat);
+  });
+
+  it("leaves the Thread itself where the chain cannot be followed", () => {
+    expect(listedRowThreadId(held([thread(helper, task, false)]), helper)).toBe(helper);
+    expect(listedRowThreadId(held([thread(helper, null, false)]), helper)).toBe(helper);
+    expect(
+      listedRowThreadId(held([thread(helper, inner, false), thread(inner, helper, false)]), helper),
+    ).toBe(helper);
+    expect(listedRowThreadId(held([]), helper)).toBe(helper);
+  });
+});
+
+// Failure modes: a helper's way back names whoever handed it its latest task
+// instead of the task it lives under (so the header and the sidebar disagree),
+// calls the reader's own Chat by its Thread title, or links a conversation this
+// reader cannot open.
+describe("threadRequester", () => {
+  const chat = threadId(80);
+  const task = threadId(81);
+  const helper = threadId(82);
+  const elsewhere = threadId(83);
+  const snapshot = (
+    threads: readonly HostSnapshot["threads"][number][],
+    assignments: HostSnapshot["assignments"] = {},
+  ): HostSnapshot => ({
+    ...base,
+    activeTasks: [],
+    assignments,
+    homeThreadId: chat,
+    tasks: { ...base.tasks!, entries: [] },
+    threads: [...threads],
+    workspaceTasks: {},
+  });
+  const thread = (id: string, title: string, parentThreadId: string | null) => ({
+    ...template,
+    id,
+    parentThreadId,
+    title,
+  });
+  const assignment = Object.values(base.assignments)[0]!;
+
+  it("leads back to where it lives, by the name the reader knows, as the sidebar does", () => {
+    const tasks = [
+      { ...thread(task, "Plan Tokyo trip", chat), listed: true },
+      { ...thread(helper, "Check fares", task), listed: false },
+    ];
+    expect(threadRequester(snapshot(tasks), task)).toEqual({ threadId: chat, title: "Chat" });
+    // An automation anchored on Chat hands the helper its current task; it still lives under the trip.
+    const retasked = snapshot(tasks, {
+      [assignment.id]: {
+        ...assignment,
+        parentThreadId: ThreadIdSchema.parse(chat),
+        workerThread: { ...assignment.workerThread, id: ThreadIdSchema.parse(helper) },
+      },
+    });
+    expect(threadRequester(retasked, helper)).toEqual({ threadId: task, title: "Plan Tokyo trip" });
+    expect(listedRowThreadId(retasked, helper)).toBe(task);
+  });
+
+  it("names its task's requester only when the Thread itself is not held", () => {
+    expect(
+      threadRequester(
+        snapshot([thread(task, "Plan Tokyo trip", chat)], {
+          [assignment.id]: {
+            ...assignment,
+            parentThreadId: ThreadIdSchema.parse(task),
+            workerThread: { ...assignment.workerThread, id: ThreadIdSchema.parse(helper) },
+          },
+        }),
+        helper,
+      ),
+    ).toEqual({ threadId: task, title: "Plan Tokyo trip" });
+  });
+
+  it("offers no way back to a conversation this reader cannot open, or to none", () => {
+    expect(threadRequester(snapshot([thread(task, "Plan", elsewhere)]), task)).toBeNull();
+    expect(threadRequester(snapshot([thread(task, "Plan", null)]), task)).toBeNull();
+    expect(threadRequester(snapshot([]), task)).toBeNull();
   });
 });

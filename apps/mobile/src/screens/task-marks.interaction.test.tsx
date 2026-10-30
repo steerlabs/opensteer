@@ -197,7 +197,7 @@ vi.mock("../ui/task-mark.js", () => ({
 
 const { SpecialistScreen } = await import("./specialist.js");
 const { useThreadHeader } = await import("./thread-header.js");
-const { AssignmentCard, TaskScopeContext } = await import("../thread/assignment-card.js");
+const { AssignmentLines, TaskScopeContext } = await import("../thread/task-line.js");
 const { TaskMenu } = await import("../thread/task-status.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -497,15 +497,15 @@ describe("mobile task mark review journeys", () => {
   // reader (working, waiting, failed, stopped) or a lost connection disappears
   // with it; the specialist's name or the task menu goes too.
   it.each([
-    ["completed", "Completed", null, false],
-    ["completed", "Completed", "Travel", false],
-    ["completed", "Completed", null, true],
-    ["failed", "Failed", null, false],
+    ["completed", "Finished", null, false],
+    ["completed", "Finished", "Travel", false],
+    ["completed", "Finished", null, true],
+    ["failed", "Couldn’t finish", null, false],
     ["stopped", "Stopped", null, false],
     ["waiting", "Needs you", null, false],
     ["working", "Working", null, false],
   ] as const)(
-    "keeps a %s task's menu state accessible while compacting only Completed (%s, specialist %s, offline %s)",
+    "keeps a %s task's menu state accessible while compacting only Finished (%s, specialist %s, offline %s)",
     async (tone, word, workspaceName, offline) => {
       const host = await client();
       const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
@@ -554,8 +554,11 @@ describe("mobile task mark review journeys", () => {
       expect(bar).toContain("Tokyo flights");
       if (offline) expect(bar).toContain("Offline");
       if (workspaceName !== null) expect(bar).toContain(workspaceName);
-      if (tone === "completed") expect(bar).not.toContain(word);
-      else expect(bar).toContain(word);
+      // The word stands alone on its line; "Mark Done" in the menu is not that line.
+      const says = [...container.querySelectorAll("*")].some(
+        (node) => node.childElementCount === 0 && node.textContent === word,
+      );
+      expect(says).toBe(tone !== "completed");
       expect(
         container.querySelector('[aria-label$="Task actions"]')?.getAttribute("aria-label"),
       ).toBe(
@@ -569,7 +572,7 @@ describe("mobile task mark review journeys", () => {
     },
   );
 
-  it("keeps a Travel tile/name beside the task mark and updates only owner colour", async () => {
+  it("names a Travel owner without drawing it, and keeps the task's mark through its recolour", async () => {
     const host = await client();
     const snapshot = host.getSnapshot();
     const workspace = {
@@ -592,22 +595,20 @@ describe("mobile task mark review journeys", () => {
       <TaskScopeContext
         value={{ hostClient: state.client, onViewWork: open, dockedRequestId: null }}
       >
-        <AssignmentCard entry={entryFor(assignment)} />
+        <AssignmentLines entries={[entryFor(assignment)]} />
       </TaskScopeContext>,
     );
-    expect(container.querySelector('[data-workspace="Travel"]')?.getAttribute("data-color")).toBe(
-      "blue",
-    );
-    expect(container.textContent).toContain("Travel");
+    // The line draws only the task's own mark; who does it is said, not drawn.
+    expect(container.querySelector("[data-workspace]")).toBeNull();
+    expect(container.textContent).not.toContain("Travel");
     expect(container.querySelector('[aria-label^="Tokyo flights, Travel,"]')).not.toBeNull();
     state.move({
       ...snapshot,
       workspaces: [{ ...workspace, color: "magenta" }],
       threads: [thread],
     });
-    expect(container.querySelector('[data-workspace="Travel"]')?.getAttribute("data-color")).toBe(
-      "magenta",
-    );
+    expect(container.querySelector("[data-workspace]")).toBeNull();
+    expect(container.querySelector('[aria-label^="Tokyo flights, Travel,"]')).not.toBeNull();
     expect(
       container.querySelector('[data-task-icon="plane"]')?.getAttribute("data-task-color"),
     ).toBe("teal");
@@ -642,19 +643,22 @@ describe("mobile task mark review journeys", () => {
       <TaskScopeContext
         value={{ hostClient: state.client, onViewWork: () => undefined, dockedRequestId: null }}
       >
-        <AssignmentCard entry={entryFor(assignment)} />
+        <AssignmentLines entries={[entryFor(assignment)]} />
       </TaskScopeContext>,
     );
     expect(container.textContent).not.toContain("Opensteer");
+    expect(container.querySelector("[aria-label]")?.getAttribute("aria-label")).not.toContain(
+      "Opensteer",
+    );
     expect(container.querySelector("[data-chat-orb]")).toBeNull();
     expect(container.querySelector("[data-workspace]")).toBeNull();
     expect(container.querySelector('[data-task-icon="plane"]')).not.toBeNull();
     state.move({ ...snapshot, workspaces: [workspace], threads: [] });
-    expect(container.querySelector('[data-workspace="Travel"]')).not.toBeNull();
+    expect(container.querySelector("[data-workspace]")).toBeNull();
     expect(container.querySelector("[aria-label]")?.getAttribute("aria-label")).toContain("Travel");
   });
 
-  it("uses the orb and Opensteer name only for a known Main assignment", async () => {
+  it("names Opensteer, without its orb, only for a known Main assignment", async () => {
     const host = await client();
     const snapshot = host.getSnapshot();
     const thread = snapshot.threads.find(({ id }) => id === snapshot.homeThreadId)!;
@@ -663,10 +667,10 @@ describe("mobile task mark review journeys", () => {
       <TaskScopeContext
         value={{ hostClient: host, onViewWork: () => undefined, dockedRequestId: null }}
       >
-        <AssignmentCard entry={entryFor(assignment)} />
+        <AssignmentLines entries={[entryFor(assignment)]} />
       </TaskScopeContext>,
     );
-    expect(container.querySelector("[data-chat-orb]")).not.toBeNull();
+    expect(container.querySelector("[data-chat-orb]")).toBeNull();
     expect(container.querySelector("[aria-label]")?.getAttribute("aria-label")).toContain(
       "Opensteer",
     );
