@@ -185,17 +185,7 @@ try {
     copy = path.join(home, path.basename(bundle));
     await command("/usr/bin/ditto", [bundle, copy], 20_000);
   }
-  const observer = path.join(home, "observer");
-  await command(
-    "xcrun",
-    [
-      "swiftc",
-      path.join(import.meta.dirname, "smoke-desktop-release-observer.swift"),
-      "-o",
-      observer,
-    ],
-    20_000,
-  );
+  const observer = path.join(import.meta.dirname, "smoke-desktop-release-observer.py");
   const [hostPort, postgresPort] = await bounded(
     "loopback ports could not be reserved",
     5_000,
@@ -253,9 +243,13 @@ try {
       throw Error("Host health was not OK");
   });
   await bounded("renderer never presented its loaded window", 10_000, () =>
-    command(observer, ["window", String(child.pid)], 8_000),
+    command("/usr/bin/python3", [observer, "window", String(child.pid)], 8_000),
   );
-  const output = await readFile(path.join(artifacts, "stdout.log"), "utf8");
+  const output = (
+    await Promise.all(
+      ["stdout.log", "stderr.log"].map((name) => readFile(path.join(artifacts, name), "utf8")),
+    )
+  ).join("\n");
   if (/"event":"desktop\.(?:failed|preload\.error)"/u.test(output))
     throw Error("Desktop reported a fatal or preload error");
   capture();
@@ -265,7 +259,7 @@ try {
   if (result.code !== 0 || result.signal !== null)
     throw Error(`Desktop quit unexpectedly: ${JSON.stringify(result)}`);
   await bounded("captured desktop children did not exit", 12_000, () =>
-    command(observer, ["exit", ...[...children].map(String)], 11_000),
+    command("/usr/bin/python3", [observer, "exit", ...[...children].map(String)], 11_000),
   );
   console.log(
     `Desktop external launch check passed in ${((performance.now() - started) / 1000).toFixed(1)}s`,
