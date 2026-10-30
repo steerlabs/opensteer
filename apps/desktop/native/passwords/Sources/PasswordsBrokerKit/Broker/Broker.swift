@@ -209,7 +209,7 @@ public final class Broker: IPCServerDelegate {
     case .status:
       try Wire.empty(params)
       whenExamined(call) {
-        guard let status = self.status else { throw Self.notUnlocked }
+        guard let status = self.status else { throw self.unavailableFailure }
         self.reply(call, status.json)
       }
     case .windowOpen:
@@ -262,7 +262,7 @@ public final class Broker: IPCServerDelegate {
 
   private func probe(_ params: Wire.ProbeParams, call: HeldCall) {
     switch condition {
-    case .unavailable: return reply(call, Wire.Availability.unavailable.json)
+    case .unavailable, .updateRequired: return reply(call, Wire.Availability.unavailable.json)
     case .notSetUp, .needsReset, .unsupported: return reply(call, Wire.Availability.notSetUp.json)
     case .ready: break
     }
@@ -599,7 +599,7 @@ public final class Broker: IPCServerDelegate {
   private var releaseRefusal: Refusal? {
     switch condition {
     case .ready: return agentSignInsSetting ? nil : .reason(.passwordsOff)
-    case .unavailable: return .notUnlocked
+    case .unavailable, .updateRequired: return .notUnlocked
     case .notSetUp, .needsReset, .unsupported: return .reason(.notSetUp)
     }
   }
@@ -607,7 +607,7 @@ public final class Broker: IPCServerDelegate {
   private func answer(_ call: HeldCall, _ refusal: Refusal) {
     switch refusal {
     case .reason(let reason): reply(call, Wire.Decision.unavailable(reason).json)
-    case .notUnlocked: reply(call, failure: Self.notUnlocked)
+    case .notUnlocked: reply(call, failure: unavailableFailure)
     }
   }
 
@@ -636,6 +636,10 @@ public final class Broker: IPCServerDelegate {
   // MARK: Ending
 
   private static let ended = Wire.Failure(.unavailable, Copy.signInEnded)
+  private var unavailableFailure: Wire.Failure {
+    condition == .updateRequired ? Wire.Failure(.unavailable, Copy.updateRequired) : Self.notUnlocked
+  }
+
   private static let notUnlocked = Wire.Failure(.unavailable, Copy.notUnlockedSinceRestart)
 
   /// The screen locked: the window's saved logins are hidden again. Sign-ins

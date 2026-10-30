@@ -367,7 +367,7 @@ final class VaultTamperTests: XCTestCase {
     let object = try CanonicalJSON.encode(.object(["ct": .string("AA"), "v": .integer(2)]))
     XCTAssertThrowsVaultError(.unsupportedVersion, try SealedObject.parse(object, hash: Hex.sha256(object)))
     guard case .object(var itemFields) = item.json else { return XCTFail() }
-    itemFields["v"] = .integer(2)
+    itemFields["v"] = .integer(3)
     XCTAssertThrowsVaultError(.unsupportedVersion, try Item(json: .object(itemFields), revision: 1))
   }
 }
@@ -426,7 +426,7 @@ extension VaultTamperTests {
       v1, epochKey: epochKey, binding: Bindings.manifest(vaultId: vaultId, epoch: 0, seq: 9, purpose: "manifest"),
       keyBinding: Bindings.manifest(vaultId: vaultId, epoch: 0, seq: 9, purpose: "manifest-key"))
     XCTAssertThrowsVaultError(
-      .unsupportedVersion,
+      .corruptObject(Hex.sha256(sealed)),
       try Manifest.open(sealed, hash: Hex.sha256(sealed), epochKey: epochKey, vaultId: vaultId, epoch: 0, seq: 9))
   }
 

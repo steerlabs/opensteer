@@ -7,6 +7,7 @@ import PasswordsCore
 @MainActor
 public final class PasswordsWindowModel: ObservableObject {
   public enum Screen: Equatable {
+    case updateRequired
     case unsupported
     case setUp
     case settingUp
@@ -89,6 +90,7 @@ public final class PasswordsWindowModel: ObservableObject {
   private func refresh() {
     let next: Screen
     switch broker.condition {
+    case .updateRequired: next = .updateRequired
     case .unsupported: next = .unsupported
     case .needsReset(let reason): next = .needsReset(reason)
     case .notSetUp: next = screen == .settingUp ? .settingUp : .setUp
@@ -323,6 +325,7 @@ public final class PasswordsWindowModel: ObservableObject {
     case PresenceError.failed: return Copy.notConfirmed
     case PresenceError.unavailable: return Copy.cannotAuthenticate
     case VaultError.headMoved: return Copy.changedElsewhere
+    case VaultError.invalidPasskeyOrigins: return "Keep a website on each saved passkey’s site."
     case VaultError.invalidItem, VaultError.tooManyItems: return Copy.tooLong
     case is VaultError, VaultServiceError.notReady: return Copy.couldNotOpen
     default: return Copy.couldNotSave

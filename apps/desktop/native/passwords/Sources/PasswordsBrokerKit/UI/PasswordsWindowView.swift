@@ -35,6 +35,8 @@ public struct PasswordsWindowView: View {
 
   @ViewBuilder private var content: some View {
     switch model.screen {
+    case .updateRequired:
+      CenteredScreen(symbol: "lock", title: Copy.appName, lead: Copy.updateRequired) { EmptyView() }
     case .unsupported:
       CenteredScreen(symbol: "lock.slash", title: Copy.appName, lead: Copy.unsupported) { EmptyView() }
     case .unavailable:

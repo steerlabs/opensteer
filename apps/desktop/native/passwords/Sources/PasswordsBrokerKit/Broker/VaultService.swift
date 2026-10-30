@@ -7,6 +7,7 @@ public enum VaultCondition: Equatable, Sendable {
   case ready
   /// No Secure Enclave: this Mac cannot hold a vault.
   case unsupported
+  case updateRequired
   case needsReset(NeedsReset)
   /// The Mac has not been unlocked since it started, so the keys cannot be
   /// read yet. Nothing is wrong with the vault.
@@ -20,7 +21,7 @@ public enum VaultCondition: Equatable, Sendable {
     case .ready: return .ready
     case .unsupported: return .unsupported
     case .needsReset: return .needsReset
-    case .unavailable: return nil
+    case .unavailable, .updateRequired: return nil
     }
   }
 }
@@ -198,6 +199,8 @@ public final class VaultService: @unchecked Sendable {
     guard Vault.exists(at: root) else { return .notSetUp }
     do {
       return try open()
+    } catch VaultError.unsupportedVersion {
+      return .updateRequired
     } catch is NotUnlockedSinceRestart {
       return .unavailable
     } catch {
@@ -229,15 +232,19 @@ public final class VaultService: @unchecked Sendable {
     let opened: Vault
     do {
       opened = try Vault.open(root: root, protectedStore: protectedStore)
+      let agreement = KeyID.of(loaded.agreementPublicKey)
+      guard opened.head.owners.contains(where: { $0.agreementKeyID == agreement }) else {
+        return .needsReset(.otherMac)
+      }
+      let checked = try opened.unlock(owner: loaded)
+      checked.close()
+    } catch VaultError.unsupportedVersion {
+      return .updateRequired
     } catch let error as NotUnlockedSinceRestart {
       throw error
     } catch {
       Log.vault.error("The vault could not be opened.")
       return .needsReset(.damaged)
-    }
-    let agreement = KeyID.of(loaded.agreementPublicKey)
-    guard opened.head.owners.contains(where: { $0.agreementKeyID == agreement }) else {
-      return .needsReset(.otherMac)
     }
     vault = opened
     owner = loaded
@@ -264,6 +271,7 @@ public final class VaultService: @unchecked Sendable {
   /// Removes the vault folder, grants included, and every protected value.
   public func startFresh(_ authentication: Authentication) async throws -> VaultCondition {
     try await run {
+      guard case .needsReset = self.examineNow() else { throw VaultServiceError.notReady }
       self.discardImportNow()
       self.vault = nil
       self.owner = nil
@@ -324,7 +332,7 @@ public final class VaultService: @unchecked Sendable {
     try await run {
       let unlocked = try self.unlockNow()
       defer { unlocked.close() }
-      return !(try unlocked.items(withinSite: site).isEmpty)
+      return try unlocked.items(withinSite: site).contains { $0.password != nil }
     }
   }
 
@@ -339,7 +347,7 @@ public final class VaultService: @unchecked Sendable {
     try await run {
       let unlocked = try self.unlockNow()
       defer { unlocked.close() }
-      let items = try unlocked.items(withinSite: site)
+      let items = try unlocked.items(withinSite: site).filter { $0.password != nil }
       if let grant = try unlocked.grant(for: key), grant.authorizes(permissionVersion: permissionVersion),
         let item = items.first(where: { $0.id == grant.loginId && $0.revision == grant.revision })
       {
@@ -360,8 +368,9 @@ public final class VaultService: @unchecked Sendable {
     var originsByIdentity: [Identity: Set<String>] = [:]
     var kept: [Item] = []
     for item in newestFirst {
+      guard let password = item.password else { continue }
       let identity = Identity(
-        username: Array(item.username.utf8), password: Array(item.password.utf8))
+        username: Array(item.username.utf8), password: Array(password.utf8))
       let origins = Set(item.origins)
       if let seen = originsByIdentity[identity], !seen.isDisjoint(with: origins) { continue }
       originsByIdentity[identity, default: []].formUnion(origins)
@@ -384,7 +393,7 @@ public final class VaultService: @unchecked Sendable {
       let unlocked = try self.unlockNow()
       defer { unlocked.close() }
       guard self.agentSignInsNow() else { return .off }
-      let items = try unlocked.items(withinSite: site)
+      let items = try unlocked.items(withinSite: site).filter { $0.password != nil }
       guard let item = items.first(where: { $0.id == loginId && $0.revision == revision }) else {
         return .changed(Self.accountChoices(items))
       }
@@ -412,7 +421,7 @@ public final class VaultService: @unchecked Sendable {
       let unlocked = try self.unlockNow()
       defer { unlocked.close() }
       guard self.agentSignInsNow() else { return .refused(.passwordsOff) }
-      guard let item = try? unlocked.item(id: login.id), item.revision == login.revision else {
+      guard let item = try? unlocked.item(id: login.id), item.revision == login.revision, let password = item.password else {
         return .refused(.revoked)
       }
       if let key {
@@ -436,7 +445,7 @@ public final class VaultService: @unchecked Sendable {
         guard expiresAt > Date() else { return .refused(.ended) }
         switch params.field {
         case .username: return .released(item.username)
-        case .password: return .released(item.password)
+        case .password: return .released(password)
         case .totp:
           guard let totp = item.totp else { return .refused(.noTOTP) }
           return .released(try totp.code(at: Date()))

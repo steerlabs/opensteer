@@ -85,6 +85,15 @@ empty grants. Stored password/username bytes must survive without trimming or
 Unicode normalization. Exact formats and limits: `Sources/PasswordsCore/Vault/`
 and `Sources/PasswordsCore/Crypto/`.
 
+Items are `"v":1`, or `"v":2` when they carry passkeys: 0–8 ES256 credentials,
+a nullable password, and at least one credential. A password-only item still
+encodes byte-identically as v1, and this reader creates no v2 items. Newer item
+payloads are skipped with their entries and sealed bytes preserved; newer
+manifest, commit, HEAD or checkpoint versions require an Opensteer update, never
+Start Fresh, and integrity checks still apply. Reads apply only structure and
+size limits so domain-rule updates cannot make a saved passkey unreadable; writes
+apply the current relying-party and site rules.
+
 ## Sites and import traps
 
 HTTPS DNS origins only: reject localhost, IPs, public suffixes, userinfo, trailing

@@ -77,14 +77,14 @@ final class VaultTests: XCTestCase {
     let items = try fixture.items()
     for (index, password) in passwords.enumerated() {
       let item = try XCTUnwrap(items.first { $0.origins == ["https://site\(index).example.com"] })
-      XCTAssertEqual(Array(item.password.utf8), Array(password.utf8), "password \(index)")
+      XCTAssertEqual(Array(try XCTUnwrap(item.password).utf8), Array(password.utf8), "password \(index)")
       XCTAssertEqual(Array(item.username.utf8), Array(" u\u{0301}ser\(index)\t".utf8), "username \(index)")
     }
     // NFD and NFC spellings are different passwords.
     let first = try XCTUnwrap(items.first { $0.origins == ["https://site0.example.com"] })
     let second = try XCTUnwrap(items.first { $0.origins == ["https://site1.example.com"] })
     XCTAssertEqual(first.password, second.password, "Swift == ignores normalisation")
-    XCTAssertFalse(first.password.utf8.elementsEqual(second.password.utf8))
+    XCTAssertFalse(try XCTUnwrap(first.password).utf8.elementsEqual(XCTUnwrap(second.password).utf8))
   }
 
   func testUnchangedItemsKeepObjects() throws {

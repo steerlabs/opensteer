@@ -20,6 +20,7 @@ public enum Copy {
   public static let setUpNote =
     "Passwords are kept only on this Mac and aren’t backed up. If this Mac is lost or erased, ones saved only here are gone."
   public static let setUpAction = "Set Up Passwords"
+  public static let updateRequired = "Update Opensteer to use the passwords saved by a newer version."
   public static let unsupported =
     "This Mac can’t keep Opensteer Passwords. It needs Touch ID–class security hardware (Apple silicon, or an Intel Mac with a T2 chip)."
   public static let developmentBanner = "Development build: use test passwords only."

@@ -111,7 +111,8 @@ struct Commit {
     } catch {
       throw corrupt("not canonical JSON")
     }
-    guard formatVersion(of: value) == 1 else { throw VaultError.unsupportedVersion }
+    if let version = formatVersion(of: value), version > 1 { throw VaultError.unsupportedVersion }
+    guard formatVersion(of: value) == 1 else { throw corrupt("invalid commit version") }
     do {
       let object = try StrictObject(
         value,
