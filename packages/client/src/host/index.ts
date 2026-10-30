@@ -5,6 +5,7 @@ export * from "./agent-activity-model.js";
 export * from "./conversation-presentation.js";
 export * from "./client.js";
 export * from "./browser-access.js";
+export * from "./browser-profile-settings.js";
 export * from "./browser-sign-in.js";
 export * from "./composer-surface.js";
 export * from "./connection-usage.js";
