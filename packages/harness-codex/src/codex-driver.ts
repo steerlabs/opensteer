@@ -846,10 +846,13 @@ class CodexHarnessAdapter implements HarnessAdapter {
     return startCodexVoiceCall({
       input,
       prepare: async (directory) => {
-        const environment = {
-          ...(await codexProcessEnvironment(input.environment, input.providerState, this.#source)),
-          CODEX_SQLITE_HOME: directory,
-        };
+        // The account's own state home: a fresh one blocks app-server startup
+        // until it has backfilled every session in the Codex home.
+        const environment = await codexProcessEnvironment(
+          input.environment,
+          input.providerState,
+          this.#source,
+        );
         const features = Object.fromEntries(
           Object.entries(await codexFeatureBoundary(this.#launch)).map(([name, approved]) => [
             name,
@@ -871,8 +874,6 @@ class CodexHarnessAdapter implements HarnessAdapter {
               ),
               "-c",
               `log_dir=${JSON.stringify(directory)}`,
-              "-c",
-              `sqlite_home=${JSON.stringify(directory)}`,
               "-c",
               "project_doc_max_bytes=0",
               "-c",

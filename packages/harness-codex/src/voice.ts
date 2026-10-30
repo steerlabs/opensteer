@@ -151,9 +151,8 @@ export async function startCodexVoiceCall(options: {
         ).config,
         "effective voice config",
       );
-      // 0.162.0 uses sqlite_home before CODEX_SQLITE_HOME. Refuse managed overrides.
-      if (effective.sqlite_home !== directory || effective.log_dir !== directory)
-        throw voiceError("voice-refused");
+      // Refuse a managed override that would move the call's text log elsewhere.
+      if (effective.log_dir !== directory) throw voiceError("voice-refused");
       const started = requireObject(
         await client.request("thread/start", {
           cwd: directory,

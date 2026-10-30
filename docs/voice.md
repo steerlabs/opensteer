@@ -40,10 +40,11 @@ undocumented Codex API; every engine pin bump must re-qualify a live call.
   and ephemeral thread with the title-generation lockdown (no tools, MCP,
   skills or project instructions; read-only; interactions refused), and any
   turn that starts is interrupted at once.
-- Codex writes a TRACE SQLite log, including voice payloads, that no setting
-  disables. The call's `sqlite_home` and `log_dir` live in a private temporary
-  directory that is deleted when the call ends, so nothing reaches the
-  person's Codex home or outlives the call.
+- Codex keeps a TRACE SQLite log, including realtime events, in the account's
+  state home with its own 10-day retention, exactly as Codex's own voice does;
+  no setting disables it. The call cannot move that home: a fresh one blocks
+  app-server startup until it has backfilled every session in the Codex home.
+  Only the call's text `log_dir` lives in its private temporary directory.
 - The voice model is generative. Instructions do not stop it answering simple
   questions itself or claiming it will act, and it does not follow structured
   formats. So it is never the router: every finished utterance goes to Chat
@@ -65,7 +66,7 @@ undocumented Codex API; every engine pin bump must re-qualify a live call.
 The microphone is open only while a call is, with the voice bar always
 visible. While on, the room's audio goes to the vendor on the person's own
 account. Opensteer never logs SDP (it carries local addresses), transcripts or
-spoken text.
+spoken text; Codex's own log on that computer is the one exception above.
 
 ## Platforms
 

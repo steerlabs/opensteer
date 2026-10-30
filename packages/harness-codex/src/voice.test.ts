@@ -146,12 +146,18 @@ describe("Codex voice calls", () => {
     expect(processRecord).toMatchObject({
       argv: expect.arrayContaining([
         `log_dir=${JSON.stringify(join(f.root, name!))}`,
-        `sqlite_home=${JSON.stringify(join(f.root, name!))}`,
         "project_doc_max_bytes=0",
         'developer_instructions=""',
       ]),
-      environment: { CODEX_SQLITE_HOME: join(f.root, name!) },
     });
+    // A fresh state home blocks app-server startup until it backfills every
+    // session in the Codex home, so the call keeps the account's own.
+    const launched = processRecord as {
+      readonly argv: readonly string[];
+      readonly environment: { readonly CODEX_SQLITE_HOME: string | null };
+    };
+    expect(launched.argv.some((arg) => arg.startsWith("sqlite_home="))).toBe(false);
+    expect(launched.environment.CODEX_SQLITE_HOME).not.toBe(join(f.root, name!));
     expect(records).toContainEqual(expect.objectContaining({ method: "thread/realtime/stop" }));
     await f.adapter.close();
   });
