@@ -17,7 +17,7 @@ export async function withTimeout<T>(
       ? signal.reason
       : new Error(options.abortFallback ?? "Operation aborted");
   }
-  let timer: NodeJS.Timeout | undefined;
+  let timer: (ReturnType<typeof setTimeout> & { unref?: () => void }) | undefined;
   let relayAbort: (() => void) | undefined;
   try {
     return await Promise.race([

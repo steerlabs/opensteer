@@ -4,7 +4,7 @@ import XCTest
 
 @testable import PasswordsBrokerKit
 
-/// Section 9 of FAILURES.md: the socket, `hello`, framing and validation.
+/// IPC contract: the socket, `hello`, framing and validation.
 @MainActor
 final class IPCTests: BrokerTestCase {
   func testHelloAndStatus() async throws {

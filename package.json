@@ -24,7 +24,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "init:self-host": "tsx scripts/init-self-host.ts",
-    "lint": "oxlint . --deny-warnings && pnpm lint:type-aware",
+    "lint": "node tooling/oxlint-plugin-opensteer/baseline.mjs && oxlint . --deny-warnings && pnpm lint:type-aware",
     "lint:type-aware": "oxlint . -A all --type-aware -W typescript/no-floating-promises -D typescript/no-misused-promises",
     "portablefs:local": "tsx scripts/portablefs-local.ts",
     "prebuild": "pnpm --filter @opensteer/runner build:native-fs",
