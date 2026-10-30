@@ -5,7 +5,11 @@ description: Test Opensteer mobile remote text input with focused JS checks, nat
 
 # Test mobile editing
 
-Paths below are relative to `apps/mobile/modules/remote-text-input` unless a command starts from the checkout root. Use the reserved VM/device workflow in `docs/testing.md`; do not run GUI journeys on the host.
+Run shell commands from the checkout root unless a command explicitly changes
+directory. Abbreviated source references such as `tests/native/journey.tsx` are
+relative to `apps/mobile/modules/remote-text-input`; paths beginning with `apps/`
+are relative to the checkout root. Use the reserved VM/device workflow in
+`docs/testing.md`; do not run GUI journeys on the host.
 
 Run individual JS checks and the mobile typecheck:
 
