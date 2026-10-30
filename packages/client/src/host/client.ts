@@ -1,3 +1,4 @@
+import type { BrowserPasskeys } from "./browser-passkeys.js";
 import type { BrowserEditingStore } from "./browser-editing.js";
 import type { BrowserPreferences } from "./browser-preferences.js";
 import type {
@@ -957,6 +958,7 @@ export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
 export interface HostClient {
+  readonly browserPasskeys?: BrowserPasskeys;
   readonly recentSites: RecentSitesStore;
   readonly browserPreferences: BrowserPreferences;
   retainComputerView(

@@ -43,6 +43,8 @@ import {
   BrowserServerMessageSchema,
   BrowserSessionIdSchema,
   type BrowserSessionId,
+  type BrowserClientMessage,
+  type BrowserServerMessage,
 } from "@opensteer/protocol/browser";
 
 export interface DesktopBrowserSocketObservation {
@@ -52,6 +54,14 @@ export interface DesktopBrowserSocketObservation {
   readonly mode: "control";
   readonly type: "admitted" | "closed";
 }
+
+export type DesktopBrowserControlObservation =
+  | DesktopBrowserSocketObservation
+  | (Omit<DesktopBrowserSocketObservation, "type"> &
+      (
+        | { readonly type: "message"; readonly message: BrowserServerMessage }
+        | { readonly type: "presentation"; readonly surfaceId: string | null }
+      ));
 
 const maximumHostResponseBytes = 16 * 1_024 * 1_024;
 const maximumBinaryBytes = 25 * 1_024 * 1_024;
@@ -69,6 +79,7 @@ interface OwnedSocket {
   readonly network: HostNetworkSocket;
   readonly ownerId: number;
   readonly end: (code: number, reason: string, initiator: SocketEndInitiator) => void;
+  readonly passkeyConsumer: (surfaceId: string) => string | null;
   readonly diagnoseTarget: (data: string | Uint8Array) => void;
 }
 
@@ -117,6 +128,7 @@ export class DesktopHostTransport extends HostTransport {
   readonly #projection: Pick<DesktopAccessProjection, "read">;
   readonly #sockets = new Map<string, OwnedSocket>();
   readonly #binary = new Map<string, BinaryTransfer>();
+  readonly #browserControlListeners = new Set<(event: DesktopBrowserControlObservation) => void>();
   readonly #browserSocketListeners = new Set<(event: DesktopBrowserSocketObservation) => void>();
   readonly #ownerGenerations = new Map<number, number>();
   #socketGeneration = 0;
@@ -451,10 +463,30 @@ export class DesktopHostTransport extends HostTransport {
         // A logger cannot change socket ownership or delivery.
       }
     };
+    let presentedSurface: string | null = null;
+    let consumerToken: string | null = null;
     const diagnoseTarget = (data: string | Uint8Array) => {
       if (diagnostic.kind !== "browser" || typeof data !== "string") return;
       try {
         const message = BrowserClientMessageSchema.safeParse(JSON.parse(data));
+        if (
+          browser &&
+          admitted &&
+          message.success &&
+          (message.data.type === "stream.subscribe" || message.data.type === "stream.unsubscribe")
+        ) {
+          presentedSurface =
+            message.data.type === "stream.subscribe" ? (message.data.surfaceId ?? null) : null;
+          for (const listener of this.#browserControlListeners)
+            listener({
+              connectionId,
+              ownerId,
+              ...browser,
+              type: "presentation",
+              surfaceId:
+                message.data.type === "stream.subscribe" ? (message.data.surfaceId ?? null) : null,
+            });
+        }
         if (
           message.success &&
           message.data.type === "stream.subscribe" &&
@@ -476,6 +508,14 @@ export class DesktopHostTransport extends HostTransport {
     let closed = false;
     let admitted = false;
     const observe = (type: DesktopBrowserSocketObservation["type"]) => {
+      if (browser)
+        for (const listener of this.#browserControlListeners) {
+          try {
+            listener({ connectionId, ownerId, ...browser, type });
+          } catch {
+            /* Observers cannot retain a socket. */
+          }
+        }
       if (browser)
         for (const listener of this.#browserSocketListeners) {
           try {
@@ -572,15 +612,45 @@ export class DesktopHostTransport extends HostTransport {
               snapshot.data.type === "browser.snapshot" &&
               snapshot.data.sessionId === browser.sessionId
             ) {
+              consumerToken =
+                snapshot.data.passkeys === "native" || snapshot.data.passkeys === "notice"
+                  ? (snapshot.data.passkeyConsumerToken ?? null)
+                  : null;
               admitted = true;
               observe("admitted");
             }
           }
+          let rendererData = data;
+          if (browser && admitted && typeof data === "string") {
+            let raw: unknown = null;
+            try {
+              raw = JSON.parse(data);
+              const message = BrowserServerMessageSchema.parse(raw);
+              for (const listener of this.#browserControlListeners)
+                listener({ connectionId, ownerId, ...browser, type: "message", message });
+              // Main presents the request; the renderer learns only that its offer ended.
+              if (message.type === "browser.passkey.request")
+                rendererData = JSON.stringify({
+                  type: "browser.passkey.withdrawn",
+                  requestId: message.requestId,
+                });
+            } catch {
+              /* The renderer's existing protocol boundary reports invalid frames. */
+            }
+            // A malformed request still never carries its ceremony details to the renderer.
+            if (
+              rendererData === data &&
+              typeof raw === "object" &&
+              raw !== null &&
+              (raw as { type?: unknown }).type === "browser.passkey.request"
+            )
+              return;
+          }
           if (
             !deliver(
-              typeof data === "string"
-                ? { data, type: "text" }
-                : { data: new Uint8Array(data), type: "binary" },
+              typeof rendererData === "string"
+                ? { data: rendererData, type: "text" }
+                : { data: new Uint8Array(rendererData), type: "binary" },
             )
           )
             invalidate(
@@ -608,7 +678,14 @@ export class DesktopHostTransport extends HostTransport {
       generation === this.#socketGeneration &&
       ownerGeneration === (this.#ownerGenerations.get(ownerId) ?? 0)
     )
-      this.#sockets.set(connectionId, { end, network, ownerId, diagnoseTarget });
+      this.#sockets.set(connectionId, {
+        end,
+        network,
+        ownerId,
+        diagnoseTarget,
+        passkeyConsumer: (surfaceId) =>
+          admitted && presentedSurface === surfaceId ? consumerToken : null,
+      });
     else if (!closed) {
       end(4_001, "Deployment changed", "deployment-changed");
       network.close(4_001, "Deployment changed");
@@ -619,8 +696,19 @@ export class DesktopHostTransport extends HostTransport {
   sendWebSocket(ownerId: number, input: unknown): void {
     const command = DesktopHostWebSocketCommandSchema.parse(input);
     const socket = this.#ownedSocket(ownerId, command.connectionId);
-    socket.network.send(command.data);
+    if (typeof command.data === "string") {
+      let value: unknown;
+      try {
+        value = JSON.parse(command.data);
+      } catch {
+        value = null;
+      }
+      const message = BrowserClientMessageSchema.safeParse(value);
+      if (message.success && message.data.type.startsWith("passkey."))
+        throw new Error("Passkeys are answered by desktop main.");
+    }
     socket.diagnoseTarget(command.data);
+    socket.network.send(command.data);
   }
 
   closeWebSocket(ownerId: number, input: unknown): void {
@@ -654,6 +742,21 @@ export class DesktopHostTransport extends HostTransport {
     };
   }
 
+  passkeyConsumerToken(ownerId: number, connectionId: string, surfaceId: string): string | null {
+    const socket = this.#sockets.get(connectionId);
+    return socket?.ownerId === ownerId ? socket.passkeyConsumer(surfaceId) : null;
+  }
+  observeBrowserControl(listener: (event: DesktopBrowserControlObservation) => void): () => void {
+    this.#browserControlListeners.add(listener);
+    return () => {
+      this.#browserControlListeners.delete(listener);
+    };
+  }
+  sendBrowserControl(ownerId: number, connectionId: string, message: BrowserClientMessage): void {
+    this.#ownedSocket(ownerId, connectionId).network.send(
+      JSON.stringify(BrowserClientMessageSchema.parse(message)),
+    );
+  }
   openBrowserSurface(ownerId: number, connectionId: string, url: string): void {
     this.#ownedSocket(ownerId, connectionId).network.send(
       JSON.stringify(BrowserClientMessageSchema.parse({ type: "surface.open", url })),

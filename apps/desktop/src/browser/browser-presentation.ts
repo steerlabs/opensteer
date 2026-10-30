@@ -90,12 +90,14 @@ interface Owner {
 export class DesktopBrowserPresentationManager {
   readonly #sources = new Set<NativePresentationSource>();
   readonly #owners = new Map<number, Owner>();
+  readonly #passkeyListeners = new Set<() => void>();
   readonly #presentations = new Map<DesktopBrowserPresentationId, Presentation>();
   readonly #authority = new Map<number, Map<BrowserSessionId, Authority>>();
   readonly #transport: Pick<
     DesktopHostTransport,
     "observeBrowserSockets" | "closeSocketsForOwner" | "openBrowserSurface"
-  >;
+  > &
+    Partial<Pick<DesktopHostTransport, "passkeyConsumerToken">>;
   readonly #glassPreload: string;
   readonly #onError: (error: unknown) => void;
   readonly #quit: () => void;
@@ -105,7 +107,8 @@ export class DesktopBrowserPresentationManager {
     transport: Pick<
       DesktopHostTransport,
       "observeBrowserSockets" | "closeSocketsForOwner" | "openBrowserSurface"
-    >;
+    > &
+      Partial<Pick<DesktopHostTransport, "passkeyConsumerToken">>;
     glassPreload: string;
     onError: (error: unknown) => void;
     quit: () => void;
@@ -119,8 +122,10 @@ export class DesktopBrowserPresentationManager {
 
   registerSource(source: NativePresentationSource): () => void {
     this.#sources.add(source);
+    this.#passkeyChanged();
     return () => {
       this.#sources.delete(source);
+      this.#passkeyChanged();
       for (const presentation of this.#presentations.values())
         if (presentation.source === source) this.#end(presentation, "runtime-stopped");
     };
@@ -175,6 +180,46 @@ export class DesktopBrowserPresentationManager {
     return [...this.#sources].some((source) => source.hasSession(sessionId));
   }
 
+  /** A native request belongs to this exact visible page slot, not its retained viewer socket. */
+  passkeyBinding(
+    ownerId: number,
+    sessionId: BrowserSessionId,
+    surfaceId: string,
+  ): object | "streamed" | null {
+    if (!this.isLocal(sessionId)) return "streamed";
+    const owner = this.#owners.get(ownerId);
+    const presentation = owner?.current;
+    const page = presentation?.page;
+    if (
+      !owner ||
+      !presentation ||
+      !page ||
+      !this.#valid(presentation) ||
+      presentation.sessionId !== sessionId ||
+      page.surface.surfaceId !== surfaceId ||
+      page.disposed ||
+      !page.placement ||
+      page.revision !== presentation.revision ||
+      presentation.rect.width <= 0 ||
+      presentation.rect.height <= 0 ||
+      [...this.#presentations.values()].some(
+        (candidate) =>
+          candidate.owner === owner && (candidate !== presentation || candidate.pending !== null),
+      )
+    )
+      return null;
+    return page;
+  }
+  observePasskeyPresentation(listener: () => void): () => void {
+    this.#passkeyListeners.add(listener);
+    return () => {
+      this.#passkeyListeners.delete(listener);
+    };
+  }
+  #passkeyChanged(): void {
+    for (const listener of this.#passkeyListeners) listener();
+  }
+
   async present(
     sender: WebContents,
     input: DesktopBrowserPresentInput,
@@ -211,6 +256,7 @@ export class DesktopBrowserPresentationManager {
       scene: null,
     };
     this.#presentations.set(presentation.id, presentation);
+    this.#passkeyChanged();
     try {
       this.#swap(presentation, input.surfaceId);
     } catch (error) {
@@ -232,6 +278,7 @@ export class DesktopBrowserPresentationManager {
       input.surfaceId !== (presentation.pending ?? presentation.page)?.surface.surfaceId
     ) {
       presentation.revision += 1;
+      this.#passkeyChanged();
       presentation.scene = null;
       if (presentation.page?.surface.surfaceId === input.surfaceId) {
         if (presentation.pending) this.#disposePage(presentation.pending);
@@ -365,6 +412,7 @@ export class DesktopBrowserPresentationManager {
   dispose(): void {
     this.endAll();
     this.#unsubscribe();
+    this.#passkeyListeners.clear();
     for (const owner of this.#owners.values()) owner.glass?.close();
   }
 
@@ -424,6 +472,7 @@ export class DesktopBrowserPresentationManager {
       dispose: () => undefined,
     };
     presentation.pending = page;
+    this.#passkeyChanged();
     const disposeEvents = this.#observePage(presentation, page);
     page.dispose = disposeEvents;
     const owner = presentation.owner;
@@ -453,6 +502,7 @@ export class DesktopBrowserPresentationManager {
           presentation.pending = null;
           presentation.page = page;
           owner.current = presentation;
+          this.#passkeyChanged();
           this.#order(owner);
           this.#placed(presentation, page);
           this.#emit(owner, {
@@ -483,6 +533,21 @@ export class DesktopBrowserPresentationManager {
       this.#valid(presentation) &&
       presentation.page === page &&
       presentation.owner.current === presentation;
+    const passkeyInput = page.surface.page.observePasskeyInput?.(() => {
+      if (!current()) return;
+      const tokens = new Set<string>();
+      for (const connectionId of presentation.authority.sockets) {
+        const token = this.#transport.passkeyConsumerToken?.(
+          presentation.owner.contents.id,
+          connectionId,
+          page.surface.surfaceId,
+        );
+        if (token) tokens.add(token);
+      }
+      page.surface.passkeyInput?.(
+        tokens.size === 1 ? (tokens.values().next().value ?? null) : null,
+      );
+    });
     const surfaceEvents = page.surface.onEvent((event) => {
       if (event.type === "closed") this.#end(presentation, "page-closed");
       else {
@@ -630,6 +695,7 @@ export class DesktopBrowserPresentationManager {
     contents.on("context-menu", context);
     contents.on("render-process-gone", gone);
     return () => {
+      passkeyInput?.();
       surfaceEvents();
       contents.off("before-input-event", key);
       contents.off("found-in-page", find);
@@ -641,6 +707,7 @@ export class DesktopBrowserPresentationManager {
   }
 
   #stage(presentation: Presentation): void {
+    this.#passkeyChanged();
     for (const page of [presentation.page, presentation.pending]) {
       if (!page) continue;
       page.native.setStage(this.#dips(presentation), presentation.owner.window.isFocused());
@@ -781,6 +848,7 @@ export class DesktopBrowserPresentationManager {
     if (presentation.page) this.#disposePage(presentation.page);
     presentation.pending = null;
     presentation.page = null;
+    this.#passkeyChanged();
     this.#order(owner);
     this.#emit(owner, { type: "ended", presentationId: presentation.id, reason });
   }

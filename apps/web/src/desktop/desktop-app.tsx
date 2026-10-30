@@ -90,6 +90,21 @@ export function DesktopApp({ bridge }: { readonly bridge: OpensteerDesktopBridge
 }
 
 function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridge }) {
+  const [passkeyMode, setPasskeyMode] = useState<"native" | "notice" | null>(null);
+  useEffect(() => {
+    let live = true;
+    void (bridge.passkeys?.available() ?? Promise.resolve(false)).then(
+      (available) => {
+        if (live) setPasskeyMode(available ? "native" : "notice");
+      },
+      () => {
+        if (live) setPasskeyMode("notice");
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [bridge]);
   const [snapshot, setSnapshot] = useState<DeploymentAccessSnapshot | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -149,8 +164,15 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     selectedConnection?.capabilities,
   ]);
   const hostClient = useMemo(() => {
-    if (!selected) return null;
+    if (!selected || passkeyMode === null) return null;
     return createBrowserHostClient({
+      passkeys: {
+        mode: passkeyMode,
+        present: async (requestId) => {
+          if (!bridge.passkeys) throw new Error("Native passkeys are unavailable.");
+          await bridge.passkeys.present({ requestId });
+        },
+      },
       baseUrl: selected.canonicalOrigin,
       capabilities: selectedConnection?.capabilities ?? null,
       fetch: createDesktopHostFetch(bridge, selected.canonicalOrigin),
@@ -159,7 +181,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       lifecycle: browserClientLifecycle({ socketTrustWindowMs: Number.POSITIVE_INFINITY }),
       webSocketFactory: createDesktopHostWebSocketFactory(bridge, selected.canonicalOrigin),
     });
-  }, [bridge, hostTransportIdentity]);
+  }, [bridge, hostTransportIdentity, passkeyMode]);
 
   useEffect(() => () => hostClient?.dispose(), [hostClient]);
 

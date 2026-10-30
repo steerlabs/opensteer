@@ -1,3 +1,17 @@
+import { browserBase } from "./browser-message-base.js";
+import {
+  PasskeyCeremonySchema,
+  PasskeyCancelSchema,
+  PasskeyRuntimeCancelSchema,
+  PasskeyResultSchema,
+  BrowserPasskeyRequestSchema,
+  BrowserPasskeyOfferSchema,
+  BrowserPasskeyWithdrawnSchema,
+  BrowserPasskeyNoticeSchema,
+  PasskeyClaimSchema,
+  PasskeyRespondSchema,
+  PasskeyModeSchema,
+} from "./passkeys.js";
 import {
   BrowserTabGroupColorSchema,
   browserTabGroupTitleMaxLength,
@@ -135,6 +149,7 @@ export const BrowserAttachTicketClaimsSchema = z
   .strictObject({
     access: BrowserProfileAccessSchema,
     audience: z.literal("opensteer-browser-runtime"),
+    passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
     /**
      * The Host understands the editing contract (`editing.ts`): the runtime may
@@ -268,13 +283,6 @@ export const BrowserCdpEventSchema = z.strictObject({
   sessionId: BrowserCdpSessionIdSchema.optional(),
 });
 
-const browserBase = {
-  /** Host-issued identity; consumer input is always overwritten at the Host boundary. */
-  producerId: z.uuid().optional(),
-  inputSequenceStart: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-  inputSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-  inputGeneration: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-} as const;
 const browserRequestBase = {
   ...browserBase,
   requestId: z.uuid(),
@@ -308,8 +316,11 @@ export const browserPromptTextMaxLength = 10_000;
 /** The most text one paste carries to a page; typing fields stop there. */
 export const browserPasteTextMaxLength = 1_000_000;
 
-export const BrowserClientMessageSchema = z
+const BaselineBrowserClientMessageSchema = z
   .discriminatedUnion("type", [
+    PasskeyResultSchema,
+    PasskeyClaimSchema,
+    PasskeyRespondSchema,
     z.strictObject({
       ...browserBase,
       /**
@@ -614,6 +625,10 @@ export const BrowserClientMessageSchema = z
       });
     }
   });
+export const BrowserClientMessageSchema = z.union([
+  BaselineBrowserClientMessageSchema,
+  PasskeyCancelSchema,
+]);
 export type BrowserClientMessage = z.infer<typeof BrowserClientMessageSchema>;
 
 const BrowserSnapshotSchema = z
@@ -623,6 +638,8 @@ const BrowserSnapshotSchema = z
     ...browserBase,
     sessionId: BrowserSessionIdSchema,
     state: z.literal("ready"),
+    passkeys: PasskeyModeSchema.optional(),
+    passkeyConsumerToken: z.uuid().optional(),
     targetedStreamingVersion: z.literal(1).optional(),
     inputLanesVersion: z.literal(1).optional(),
     /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
@@ -664,7 +681,10 @@ export const BrowserRuntimeActivitySchema = z.strictObject({
 });
 export type BrowserRuntimeActivity = z.infer<typeof BrowserRuntimeActivitySchema>;
 
-export const BrowserServerMessageSchema = z.discriminatedUnion("type", [
+const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
+  BrowserPasskeyOfferSchema,
+  BrowserPasskeyWithdrawnSchema,
+  BrowserPasskeyNoticeSchema,
   BrowserRuntimeActivitySchema,
   BrowserSnapshotSchema,
   z.strictObject({
@@ -809,6 +829,12 @@ export const BrowserServerMessageSchema = z.discriminatedUnion("type", [
     operationId: z.uuid(),
     type: z.literal("login.ended"),
   }),
+]);
+export const BrowserServerMessageSchema = z.union([
+  BaselineBrowserServerMessageSchema,
+  PasskeyCeremonySchema,
+  PasskeyRuntimeCancelSchema,
+  BrowserPasskeyRequestSchema,
 ]);
 export type BrowserServerMessage = z.infer<typeof BrowserServerMessageSchema>;
 

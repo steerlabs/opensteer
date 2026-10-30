@@ -2026,6 +2026,9 @@ importers:
       '@opensteer/integration-core':
         specifier: workspace:*
         version: link:../integration-core
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@opensteer/triggers':
         specifier: workspace:*
         version: link:../triggers

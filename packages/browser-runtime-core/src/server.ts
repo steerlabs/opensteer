@@ -92,14 +92,23 @@ export class BrowserRuntimeServer {
         websocket.close(1008, "attach rejected");
         return;
       }
-      this.accept(websocket, ticket);
+      this.accept(
+        websocket,
+        ticket,
+        Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
+      );
     });
   }
 
   private acceptDeviceBridgeKeys(request: IncomingMessage): void {
     const token = request.headers["x-opensteer-browser-bridge-token"];
     const encodedKeys = request.headers["x-opensteer-browser-attach-keys"];
-    if (token === undefined && encodedKeys === undefined) return;
+    if (
+      token === undefined &&
+      encodedKeys === undefined &&
+      request.headers["x-opensteer-browser-passkeys"] === undefined
+    )
+      return;
     const bridge = this.relayBridge;
     if (
       !bridge ||
@@ -148,7 +157,7 @@ export class BrowserRuntimeServer {
     return closing;
   }
 
-  private accept(websocket: WebSocket, ticket: string): void {
+  private accept(websocket: WebSocket, ticket: string, passkeys: boolean): void {
     const sink = new WebSocketBrowserSink(websocket, this.maxBufferedBytes);
     let attachment: BrowserAttachment | null = null;
     let disconnected = false;
@@ -192,7 +201,7 @@ export class BrowserRuntimeServer {
       void attachment?.close().catch(() => undefined);
     });
 
-    void this.runtime.attach(ticket, sink).then(
+    void this.runtime.attach(ticket, sink, { passkeys }).then(
       async (attached) => {
         attachment = attached;
         if (disconnected) {

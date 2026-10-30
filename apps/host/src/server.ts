@@ -1,3 +1,4 @@
+import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
 import { searchSuggestions } from "./browser/search-suggestions.js";
 import type { BrowserTabGroupService } from "./browser/browser-tab-group-service.js";
 import { AgentPhoneUpdateHub } from "./agent-phone/update-hub.js";
@@ -492,6 +493,7 @@ export async function createHostServer(
       readonly session: AuthenticatedSession;
       readonly mode: "control" | "watch";
       readonly editing: 1 | 2 | undefined;
+      readonly passkeys: "native" | "notice" | undefined;
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
@@ -2959,7 +2961,10 @@ export async function createHostServer(
     },
   );
 
-  app.get<{ Params: { sessionId: string }; Querystring: { mode?: string; editing?: string } }>(
+  app.get<{
+    Params: { sessionId: string };
+    Querystring: { mode?: string; editing?: string; passkeys?: string };
+  }>(
     "/v1/browser-sessions/:sessionId/connect",
     {
       preValidation: async (request) => {
@@ -2976,6 +2981,11 @@ export async function createHostServer(
         browserSocketSessions.set(request.raw, {
           mode,
           session,
+          passkeys:
+            process.env.OPENSTEER_PASSKEYS === "1" &&
+            (request.query.passkeys === "native" || request.query.passkeys === "notice")
+              ? request.query.passkeys
+              : undefined,
           editing:
             request.query.editing === "2" ? 2 : request.query.editing === "1" ? 1 : undefined,
         });
@@ -2992,6 +3002,7 @@ export async function createHostServer(
         BrowserSessionIdSchema.parse(request.params.sessionId),
         admitted.mode,
         admitted.editing,
+        admitted.passkeys,
         async () => {
           try {
             const current = await dependencies.authenticator.authenticateSession(request.headers, {
@@ -3054,6 +3065,7 @@ export function advertisedCapabilities(
     "iphone-apps-v1",
     "ownerViewWindows",
     "browser-target-control-v1",
+    ...(process.env.OPENSTEER_PASSKEYS === "1" ? ["browser-passkeys-v1" as const] : []),
     "browser-capture-region-v1",
     "browser-search-suggestions-v1",
     "workspace-tab-reopen-v1",
@@ -3075,6 +3087,7 @@ function attachBrowserSocket(
   sessionId: import("@opensteer/protocol").BrowserSessionId,
   mode: "control" | "watch",
   editing: 1 | 2 | undefined,
+  passkeys: "native" | "notice" | undefined,
   signedIn: () => Promise<boolean>,
 ): void {
   installWebSocketLiveness(socket);
@@ -3127,6 +3140,7 @@ function attachBrowserSocket(
       authSessionId: session.id,
       mode,
       editing,
+      passkeys,
       signedIn,
     });
     if (socket.readyState !== socket.OPEN) {
@@ -3583,21 +3597,7 @@ function attachRunnerAuxiliarySocket(options: {
         dispatch.onAttach(stream);
         release();
         clearTimeout(challengeTimeout);
-        await dispatch.send({
-          ...stream.fence,
-          ...dispatch.leaseFields?.(),
-          ...(module === "integrations" && stream.identity.modules.integrations?.loginText === 1
-            ? { loginText: 1 }
-            : {}),
-          ...(module === "integrations" &&
-          stream.identity.modules.integrations?.passwordSignIn === 1
-            ? { passwordSignIn: 1 }
-            : {}),
-          heartbeatIntervalMs: 15_000,
-          serverTime: new Date().toISOString(),
-          streamLeaseExpiresAt: stream.streamLeaseExpiresAt,
-          type: "host.auxiliary.welcome",
-        });
+        await dispatch.send(runnerAuxiliaryWelcome(stream, dispatch.leaseFields?.()));
         outcome(true, "authenticated");
         dispatch.onWelcomed?.(stream);
         continue;

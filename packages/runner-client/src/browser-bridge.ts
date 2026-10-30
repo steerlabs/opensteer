@@ -60,6 +60,10 @@ export class LocalBrowserRuntimeBridge {
   readonly #maxBufferedBytes: number;
   readonly #runtimeId: string;
   readonly #url: URL;
+  #passkeys = false;
+  setPasskeysEnabled(enabled: boolean): void {
+    this.#passkeys = enabled;
+  }
   #attachKeysHeader: string | undefined;
 
   constructor(options: {
@@ -166,6 +170,7 @@ export class LocalBrowserRuntimeBridge {
     const socket = new WebSocket(url, {
       followRedirects: false,
       headers: {
+        ...(this.#passkeys ? { "x-opensteer-browser-passkeys": "1" } : {}),
         authorization: `Bearer ${attachTicket}`,
         "x-opensteer-browser-attach-keys": attachKeysHeader,
         "x-opensteer-browser-bridge-token": this.#bridgeToken,

@@ -274,7 +274,9 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       // popup and frame ahead of the page's own scripts.
       // Context init scripts precede popup page events. One random binding per
       // isolated context lets those first scripts queue until their page attaches.
-      const authenticator = this.passkeys ? this.authenticator : undefined;
+      const authenticator = this.passkeys
+        ? (request.authenticator ?? this.authenticator)
+        : undefined;
       const providerConfig = authenticator ? createPasskeyProviderConfig() : undefined;
       await context.addInitScript({
         content: browserPagePolicyScriptFor(providerConfig),
@@ -560,6 +562,7 @@ class PlaywrightPageHandle implements BrowserPage {
       if (this.contextHandle.authenticator) {
         const bridge = new PasskeyBridge(channel, this.contextHandle.authenticator, {
           lateBootstrap: true,
+          targetId: () => this.targetId(),
           ...(this.contextHandle.providerConfig
             ? { config: this.contextHandle.providerConfig }
             : {}),
