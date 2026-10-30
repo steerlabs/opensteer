@@ -1,3 +1,4 @@
+import { readCodexCaptures } from "../agents/codex-capture.test-support.js";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { startHoldingHop, type HoldingHop } from "./machine-access-hop.test-support.js";
 import { probeTestServer } from "@opensteer/shared/test-support/serverProbes";
@@ -744,6 +745,7 @@ async function startRig(
                 fakeCodexAppServer,
                 "--scenario=long-stream-held",
                 `--release-file=${releaseFile}`,
+                "--capture-records",
                 `--capture=${captureFile}`,
                 ...(options.slowStop ? ["--ignore-interrupt"] : []),
               ],
@@ -1079,11 +1081,7 @@ function turnsOf(capture: readonly Captured[]): Turn[] {
 }
 
 async function captured(file: string): Promise<Captured[]> {
-  const text = await readFile(file, "utf8").catch(() => "");
-  return text
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as Captured);
+  return (await readCodexCaptures(file)) as Captured[];
 }
 
 function aliasesIn(notice: string): string[] {

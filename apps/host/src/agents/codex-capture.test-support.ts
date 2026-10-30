@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 
 const captureSchema = z
@@ -12,12 +13,51 @@ const captureSchema = z
   })
   .passthrough();
 
-/** Read captures made with --capture-process-id, excluding task-naming app servers. */
+const publishedSchema = captureSchema.extend({
+  captureProcessId: z.number().int(),
+  captureProcessIdentity: z.string(),
+  // The engine thread is the fixture's Run identity; initialize precedes it.
+  captureRunId: z.string().nullable(),
+  captureOrder: z.number().int().nonnegative(),
+  captureTime: z.number(),
+});
+
+/** Only .json names are published; a writer may still be filling its .pending file. */
+export async function readCodexCaptures(path: string) {
+  let names: string[];
+  try {
+    names = await readdir(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const records: z.infer<typeof publishedSchema>[] = [];
+  for (const name of names.filter((name) => name.endsWith(".json"))) {
+    let text: string;
+    try {
+      text = await readFile(join(path, name), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    try {
+      records.push(publishedSchema.parse(JSON.parse(text)));
+    } catch {
+      // JSON and schema errors may include credential payloads. Never attach a cause.
+      throw new Error("Malformed published Codex capture");
+    }
+  }
+  return records.sort((a, b) =>
+    a.captureProcessIdentity === b.captureProcessIdentity
+      ? a.captureOrder - b.captureOrder
+      : a.captureTime - b.captureTime ||
+        a.captureProcessIdentity.localeCompare(b.captureProcessIdentity),
+  );
+}
+
+/** Read captures made with --capture-records, excluding task-naming app servers. */
 export async function readCodexRunCaptures(path: string) {
-  const captures = (await readFile(path, "utf8").catch(() => ""))
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => captureSchema.parse(JSON.parse(line)));
+  const captures = await readCodexCaptures(path);
   const naming = (entry: z.infer<typeof captureSchema>) =>
     (entry.method === "thread/start" && entry.params?.ephemeral === true) ||
     entry.params?.threadId?.startsWith("codex-title-") === true;
