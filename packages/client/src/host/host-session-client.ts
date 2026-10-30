@@ -1158,6 +1158,8 @@ export class HttpHostClient {
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
+      browserProfileManageAvailable:
+        this.#capabilities?.includes("browser-profile-manage-v1") === true,
       searchSuggestionsAvailable:
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
@@ -1331,6 +1333,26 @@ export class HttpHostClient {
         this.#update(
           applyOptimisticCommandPatch(this.#snapshot, { grant: result.grant, type: result.type }),
         );
+        break;
+      case "browser.profile.rename":
+        this.#update(
+          applyOptimisticCommandPatch(this.#snapshot, {
+            profile: result.profile,
+            type: result.type,
+          }),
+        );
+        break;
+      case "browser.profile.delete":
+        if (commandIs(parsedCommand, result.type)) {
+          // Its history on this device goes with it.
+          this.recentSites.clear({ kind: "profile", profileId: parsedCommand.profileId });
+          this.#update(
+            applyOptimisticCommandPatch(this.#snapshot, {
+              profileId: parsedCommand.profileId,
+              type: result.type,
+            }),
+          );
+        }
         break;
       case "browser.profileGrant.revoke":
         if (commandIs(parsedCommand, result.type)) {
@@ -3433,6 +3455,7 @@ export class HttpHostClient {
       taskMarksAvailable: capabilities.includes("task-marks-v1"),
       sharedTaskDoneAvailable: capabilities.includes("shared-task-done-v1"),
       workspaceTabReopenAvailable: capabilities.includes("workspace-tab-reopen-v1"),
+      browserProfileManageAvailable: capabilities.includes("browser-profile-manage-v1"),
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       voiceAvailable: capabilities.includes("voice-v1"),
@@ -5576,6 +5599,8 @@ export class HttpHostClient {
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
+      browserProfileManageAvailable:
+        this.#capabilities?.includes("browser-profile-manage-v1") === true,
       searchSuggestionsAvailable:
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,

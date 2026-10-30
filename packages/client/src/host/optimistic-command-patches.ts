@@ -46,6 +46,11 @@ type OptimisticCommandPatch =
       readonly type: Extract<CommandType, "browser.profile.grant">;
     }
   | { readonly grantId: string; readonly type: Extract<CommandType, "browser.profileGrant.revoke"> }
+  | {
+      readonly profile: BrowserProfileSummary;
+      readonly type: Extract<CommandType, "browser.profile.rename">;
+    }
+  | { readonly profileId: string; readonly type: Extract<CommandType, "browser.profile.delete"> }
   | { readonly sessionId: string; readonly type: Extract<CommandType, "browser.session.close"> }
   | {
       readonly type: Extract<CommandType, "workspace.create">;
@@ -137,6 +142,19 @@ export const optimisticCommandPatches = {
   "browser.profileGrant.revoke": (snapshot, { grantId }) => ({
     ...snapshot,
     browserProfileGrants: snapshot.browserProfileGrants.filter((grant) => grant.id !== grantId),
+  }),
+  "browser.profile.rename": (snapshot, { profile }) => ({
+    ...snapshot,
+    browserProfiles: snapshot.browserProfiles.map((existing) =>
+      existing.id === profile.id ? profile : existing,
+    ),
+  }),
+  "browser.profile.delete": (snapshot, { profileId }) => ({
+    ...snapshot,
+    browserProfiles: snapshot.browserProfiles.filter((profile) => profile.id !== profileId),
+    browserProfileGrants: snapshot.browserProfileGrants.filter(
+      (grant) => grant.profileId !== profileId,
+    ),
   }),
   "browser.session.close": (snapshot, { sessionId }) => ({
     ...snapshot,
@@ -243,6 +261,10 @@ export function applyOptimisticCommandPatch(
     case "browser.profile.grant":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "browser.profileGrant.revoke":
+      return optimisticCommandPatches[patch.type](snapshot, patch);
+    case "browser.profile.rename":
+      return optimisticCommandPatches[patch.type](snapshot, patch);
+    case "browser.profile.delete":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "browser.session.close":
       return optimisticCommandPatches[patch.type](snapshot, patch);

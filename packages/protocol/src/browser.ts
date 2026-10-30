@@ -1450,8 +1450,10 @@ export const CreateBrowserProfileGrantResponseSchema = z.object({
   grant: BrowserProfileGrantSchema,
 });
 
+export const BrowserProfileNameSchema = z.string().trim().min(1).max(120);
+
 export const CreateBrowserProfileBodySchema = z.strictObject({
-  name: z.string().trim().min(1).max(120),
+  name: BrowserProfileNameSchema,
 });
 
 export const CreateBrowserProfileResponseSchema = z.object({
@@ -1459,7 +1461,7 @@ export const CreateBrowserProfileResponseSchema = z.object({
 });
 
 export const SaveBrowserSessionProfileBodySchema = z.strictObject({
-  name: z.string().trim().min(1).max(120),
+  name: BrowserProfileNameSchema,
 });
 
 export const SaveBrowserSessionProfileResponseSchema = z.object({

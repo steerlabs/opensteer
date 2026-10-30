@@ -4369,6 +4369,16 @@ async function ensureBrowserGrant(
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-grants:${input.createdBy}`}, 0))`.execute(
     transaction,
   );
+  // Under the grant lock a deletion also takes, so approval never grants a deleted profile.
+  const profile = await transaction
+    .selectFrom("browserProfiles")
+    .select("archivedAt")
+    .where("id", "=", input.profileId)
+    .where("ownerId", "=", input.createdBy)
+    .executeTakeFirst();
+  if (!profile || profile.archivedAt) {
+    throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+  }
   const existing = await transaction
     .selectFrom("browserProfileGrants")
     .select(["id", "createdAt", "profileId", "workspaceId"])

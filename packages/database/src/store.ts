@@ -685,6 +685,21 @@ export class OpensteerStore {
     return browserSessionStore.listBrowserProfiles(this.#database, ownerId);
   }
 
+  async renameBrowserProfile(input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<BrowserProfileRecord> {
+    return browserSessionStore.renameBrowserProfile(this.#database, input);
+  }
+
+  async deleteBrowserProfile(input: {
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }> {
+    return browserSessionStore.deleteBrowserProfile(this.#database, input);
+  }
+
   async readBrowserProfileRevision(
     profileId: BrowserProfileId,
   ): Promise<BrowserProfileRevisionRecord | null> {

@@ -476,6 +476,10 @@ export function App({
               />
               <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
               <Route path="chrome" element={<SettingsSectionRoute section="chrome" />} />
+              <Route
+                path="browser-profiles"
+                element={<SettingsSectionRoute section="browser-profiles" />}
+              />
               <Route path="passwords" element={<SettingsSectionRoute section="passwords" />} />
               <Route
                 path="remote-access"

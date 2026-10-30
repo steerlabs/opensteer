@@ -68,7 +68,15 @@ export function settingsWhatThisIs(input: {
  * ------------------------------------------------------------------------- */
 
 export type SettingsSectionId =
-  "account" | "ai-engines" | "apps" | "chrome" | "computers" | "devices" | "general" | "passwords";
+  | "account"
+  | "ai-engines"
+  | "apps"
+  | "browser-profiles"
+  | "chrome"
+  | "computers"
+  | "devices"
+  | "general"
+  | "passwords";
 
 export const defaultSettingsSection = "ai-engines" as const satisfies SettingsSectionId;
 
@@ -110,6 +118,12 @@ export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>
     id: "chrome",
     label: "Chrome",
     description: "Sign-ins agents can use from your Chrome",
+  },
+  "browser-profiles": {
+    icon: "browser",
+    id: "browser-profiles",
+    label: "Browser profiles",
+    description: "Separate browsers with their own sign-ins, and who may use each",
   },
   passwords: {
     icon: "shield",
@@ -163,9 +177,9 @@ export function settingsItem(id: SettingsSectionId, kind: DeploymentDisplayKind)
  */
 export function settingsRail(kind: DeploymentDisplayKind): SettingsRailModel {
   return {
-    agents: (["ai-engines", "apps", "computers", "chrome", "passwords"] as const).map(
-      (id) => settingsItems[id],
-    ),
+    agents: (
+      ["ai-engines", "apps", "computers", "browser-profiles", "chrome", "passwords"] as const
+    ).map((id) => settingsItems[id]),
     devices: settingsItem("devices", kind),
   };
 }

@@ -8,12 +8,7 @@ import { ErrorNotice } from "../onboarding-card.js";
 import { PlaceList } from "./place-list.js";
 import { PlaceSignInCard } from "./place-account.js";
 
-/**
- * The places half of the sidebar's place menu: every place this app can open,
- * checked while the menu is open, the sign-in that brings the rest, and the
- * way to add one more. Choosing a place closes the menu; everything else
- * keeps it open, because the answer appears right here.
- */
+/** Places in the switch dialog, checked while open. Choosing or adding one closes it. */
 export function PlaceMenuPlaces({
   onClose,
   places,

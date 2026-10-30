@@ -29,6 +29,7 @@ import type { DeploymentMark } from "../threads/deployment-switcher-model.js";
 import {
   chromeSettingsFooter,
   chromeSettingsRow,
+  browserProfilesSettingsRow,
   connectedAppsSettingsRow,
   type SettingsActionModel,
 } from "./settings-model.js";
@@ -117,7 +118,9 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {props.onChromeAction === undefined && props.passwords === null ? null : (
+        {props.onChromeAction === undefined &&
+        props.onBrowserProfilesAction === undefined &&
+        props.passwords === null ? null : (
           <Section
             footer={<Text modifiers={[secondary, footnote]}>{chromeSettingsFooter}</Text>}
             title="Browser"
@@ -128,6 +131,14 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
                 onPress={props.onChromeAction}
                 symbol="globe"
                 title={chromeSettingsRow.title}
+              />
+            )}
+            {props.onBrowserProfilesAction === undefined ? null : (
+              <LinkRow
+                detail={browserProfilesSettingsRow.detail}
+                onPress={props.onBrowserProfilesAction}
+                symbol="globe"
+                title={browserProfilesSettingsRow.title}
               />
             )}
             {props.passwords === null ? null : (

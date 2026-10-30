@@ -248,6 +248,14 @@ export function SettingsScreen(): ReactNode {
                 navigation.navigate("Chrome", { deploymentId: selection.deploymentId });
               }
         }
+        onBrowserProfilesAction={
+          selection.deploymentId === null || selection.hostClient === null
+            ? undefined
+            : () => {
+                if (selection.deploymentId === null) return;
+                navigation.navigate("BrowserProfiles", { deploymentId: selection.deploymentId });
+              }
+        }
         onConnectedAppsAction={
           selection.deploymentId === null || selection.hostClient === null
             ? undefined

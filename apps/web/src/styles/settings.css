@@ -549,3 +549,140 @@ html.electron-shell .settings-navigation__header :is(a, button) {
     min-height: var(--touch-target);
   }
 }
+
+/* ---- A Settings row you can rename or remove: Chrome sources, browser profiles ---- */
+
+.settings-item + .settings-item,
+.settings-item + .card__form {
+  border-top: 1px solid var(--line);
+}
+
+.settings-item__rename {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.settings-item__rename .text-input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.settings-item__confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-10) var(--space-16);
+  margin: 0 var(--space-16) var(--space-14) calc(var(--space-16) + 34px + var(--space-12));
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--red-line);
+  border-radius: var(--radius-sm);
+  background: var(--red-wash);
+  animation: rise-in var(--duration-fast) var(--ease-out);
+}
+
+.settings-item__confirm p {
+  flex: 1 1 18rem;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.settings-item__confirm-actions {
+  display: flex;
+  gap: var(--space-8);
+}
+
+.settings-item__error {
+  margin: 0 var(--space-16) var(--space-12);
+  color: var(--red-text);
+  font-size: var(--text-md);
+}
+
+@media (max-width: 560px) {
+  .settings-item__confirm {
+    margin-left: var(--space-16);
+  }
+
+  .card__row:has(.settings-item__rename) .card__row-glyph {
+    display: none;
+  }
+}
+
+/* ---- Settings → Browser profiles ---- */
+
+.browser-profile-settings__empty {
+  margin: 0;
+  max-width: 56ch;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  line-height: 1.5;
+}
+
+.browser-profile-settings__new {
+  align-self: flex-start;
+}
+
+.card__row-glyph.browser-profile-settings__avatar {
+  border: 0;
+  background: none;
+}
+
+/* Specialists hang under their profile, aligned with its name. */
+.browser-profile-settings__specialists {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-10);
+  margin: 0 var(--space-16) var(--space-14) calc(var(--space-16) + 34px + var(--space-12));
+  animation: rise-in var(--duration-fast) var(--ease-out);
+}
+
+.browser-profile-settings__specialists ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.browser-profile-settings__specialists li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  min-height: 32px;
+  padding-left: var(--space-10);
+  border-left: 1px solid var(--line-strong);
+}
+
+.browser-profile-settings__specialist {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-profile-settings__none,
+.browser-profile-settings__note {
+  max-width: 56ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+@media (max-width: 560px) {
+  .browser-profile-settings__specialists {
+    margin-left: var(--space-16);
+  }
+}

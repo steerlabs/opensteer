@@ -793,6 +793,8 @@ export interface HostSnapshot {
   taskMarksAvailable: boolean;
   sharedTaskDoneAvailable?: boolean;
   workspaceTabReopenAvailable?: boolean;
+  /** The Host serves `browser-profile-manage-v1`: a person can rename and delete profiles. */
+  browserProfileManageAvailable?: boolean;
   searchSuggestionsAvailable?: boolean;
   iphoneAppsAvailable: boolean;
   ownerViewWindowsAvailable?: boolean;
