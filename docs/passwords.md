@@ -6,6 +6,8 @@ and approvals. [Chrome sign-ins](browser-sources.md) owns cookie reuse;
 [browser sessions](browser-sessions.md) owns the CDP boundary; surface control
 belongs to [computer use](computer-use.md) and [Agent Phone](agent-phone.md).
 
+Passkeys don't use Opensteer Passwords; they use the [OS passkey manager](browser-sessions.md#passkeys).
+
 ## Promise and limits
 
 Authorization/input results contain metadata and status, never saved values.

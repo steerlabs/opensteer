@@ -13,6 +13,10 @@ export const journeySteps: Record<string, string> = {
   nativeFailure: "Failed native replacement shows unavailable without picture streaming",
   revoke: "Revoke authority and unmount synchronously",
 };
+export const passkeyJourneySteps = {
+  "passkeys-notice": "Personal browser passkeys on a notice-only Mac",
+  passkeys: "Personal browser passkey registration, sign-in, Continue and refusal",
+};
 export const JourneyResultSchema = z.object({
   status: z.enum(["PASS", "FAIL"]),
   steps: z.array(

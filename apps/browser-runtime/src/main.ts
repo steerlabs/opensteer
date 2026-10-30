@@ -32,6 +32,7 @@ async function main(): Promise<void> {
     resolvePublicKey: (keyId) => publicKeys.get(keyId) ?? null,
   });
   const launcher = new PlaywrightChromiumLauncher({
+    probePasskeys: true,
     chromiumSandbox: config.chromiumSandbox,
     executablePath: config.executablePath,
     headless: config.headless,
@@ -175,7 +176,6 @@ async function startBrowserRelay(options: {
           profileSnapshotVersion: browserProfileSnapshotVersion,
           stateImport: true,
           fileStaging: true,
-          passkeys: 1,
           cdpBoundary: 1,
           ...(options.headless ? { editing: 2 as const, clipboard: true } : {}),
           sharedControl: 1,

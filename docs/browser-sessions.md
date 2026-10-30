@@ -347,39 +347,51 @@ requires a separate authenticated transfer. See
 
 ## Passkeys
 
-No Browser Session can complete a WebAuthn ceremony: Electron ships none of
-Chrome's passkey interface, and a cloud browser's prompts never reach the page
-stream, so Chromium would wait silently for a security key for at least three
-minutes. Every page therefore sees a browser without WebAuthn
-([page policy](../packages/browser-runtime-core/src/browser/page-policy.ts)):
-`PublicKeyCredential` is absent in every frame, so a site that checks for
-passkey support offers its other sign-in methods, and a `publicKey` credential
-request rejects at once with `NotAllowedError`, with the one Electron limitation
-below. Password and other credential requests are untouched. The person's
-sign-in to a site that wants a passkey can be brought from their own Chrome
-([Chrome sign-ins](browser-sources.md)), which copies the site's cookies but not
-the passkey.
+`OPENSTEER_PASSKEYS=1` on the Host enables passkeys in the Personal browser and
+hosted Chromium tabs. Pages see a WebAuthn provider installed before their scripts;
+its CDP bridge checks the browser's document identity, trusted HTTPS origin, RP ID
+and Permissions Policy before forwarding a ceremony. Both engines keep Chromium's
+own WebAuthn implementation disabled. Conditional autofill isn't supported.
 
-Each engine applies the policy before a page's own scripts run. Playwright
-launches Chromium with the `WebAuth` Blink feature disabled and installs the
-policy as a context init script, which it runs in every page, popup and frame;
-agent tabs open through the context, so their first document is covered too.
-Electron disables the same feature for every browser page, a popup included
-after it navigates, and adds the policy's `Permissions-Policy` to every document
-response, which covers every frame beneath it. Documents without a valid header,
-such as a popup its opener writes into or a page a service worker serves, get
-the policy script through two hooks, each used where its timing holds: a preload
-in each page's main frame covers its first document, and a script the page
-registers through its debugger covers every later document and every frame of
-that page's process, `about:blank` ones included. Electron has no pause-on-start,
-so a first document cannot wait for that registration, and a frame preload
-sometimes never runs. Known limitation: a cross-site frame a service worker
-builds inside a page that has no header itself runs in its own process, which
-neither hook reaches, so it can still send a request; a site that checks for
-passkey support never sends one, because `PublicKeyCredential` is absent there
-too. The
-[shared scenario](../packages/browser-runtime-core/src/test-support/passkey-policy-scenario.ts)
-checks both engines.
+The Host routes a person's request only to the viewer where their input reached
+that tab. A capable desktop presents the OS passkey manager; an agent or page-load
+request first offers Continue. The first person to claim it chooses the desktop.
+Main holds the request and its presentation binding, while the renderer names only
+an opaque request ID and never receives the request's origin, options or client data. Losing the tab presentation, authority or connection cancels
+the ceremony without sending it to another device. The authenticator's signed
+bytes return unchanged; Opensteer never stores a passkey private key.
+
+macOS requires 13.5 or later and Apple's browser passkey entitlement; security keys
+require 14.4 or later. The OS manager handles local passkeys, installed credential
+providers and nearby-phone options. Current builds lack the entitlement and opt in
+as notice viewers, as do web, iPhone, Linux and Windows viewers. A person using a
+notice viewer gets an immediate refusal and a message to open the tab on a Mac.
+Cross-origin frames are refused, even when the site's Permissions Policy permits
+them. Headless Shell lacks the browser security evidence the provider needs, so it
+keeps the absent policy. See the [native addon](../apps/desktop/native/passkeys/README.md)
+for availability, packaging and signed-build qualification.
+
+The flag defaults off in `packages/config`. A hosted operator sets
+`OPENSTEER_PASSKEYS=1` in the Host environment. For the desktop's Personal Host,
+quit the app and launch its executable with that value, for example
+`OPENSTEER_PASSKEYS=1 /Applications/Opensteer.app/Contents/MacOS/Opensteer`;
+the desktop configuration passes it to the supervised Host, including in signed
+builds. Restart to change it. This enables routing but doesn't grant the OS
+entitlement. With the flag off, pages retain the existing absent policy:
+`PublicKeyCredential` is absent and public-key requests reject with
+`NotAllowedError`, leaving password and other credential requests unchanged.
+
+Run `pnpm exec vitest run tests/passkey-routing.test.ts` for the real Chromium
+runtime, browser WebSocket wire, Host routing and independently verified synthetic
+RP ceremonies without PostgreSQL. The [shared provider scenario](../packages/browser-runtime-core/src/test-support/passkey-provider-scenario.ts)
+covers popup eligibility and page semantics in both engines; the
+[provider-off scenario](../packages/browser-runtime-core/src/test-support/passkey-policy-scenario.ts)
+checks the absent policy. Run
+`OPENSTEER_VM_SLOTS=1 pnpm test:vm -- --mobile bash scripts/test-macos-journeys.sh passkeys`
+for the desktop's real Personal Host and native presentation. That journey uses a
+software authenticator and pinned synthetic RP certificate imported only by its
+test entry; shipped apps cannot select it. Real OS sheets still require signed-build
+qualification after entitlement approval.
 
 ### Native passkey routing
 
