@@ -26,6 +26,7 @@ channel's `accountUrl`:
 mkdir -p "$MOBILE_EVIDENCE_DIR"
 pnpm install --frozen-lockfile
 unset EXPO_PUBLIC_OPENSTEER_MOCK EXPO_PUBLIC_OPENSTEER_MOCK_HOME
+export EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN="${EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN:?Set the channel accountUrl}"
 # Prebuilt React Native dependencies leave folly, glog and double-conversion unresolved
 # when a Release build links, so build React Native from source.
 export RCT_USE_RN_DEP=0 RCT_USE_PREBUILT_RNCORE=0
@@ -39,7 +40,7 @@ xcodebuild -workspace apps/mobile/ios/Opensteer.xcworkspace -scheme Opensteer \
 MOBILE_APP_PATH="$MOBILE_EVIDENCE_DIR/DerivedData/Build/Products/Release-iphoneos/Opensteer.app"
 codesign --verify --deep --strict "$MOBILE_APP_PATH"
 test -s "$MOBILE_APP_PATH/main.jsbundle"
-grep -qF "$EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN" "$MOBILE_APP_PATH/main.jsbundle"
+grep -qF "${EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN:?}" "$MOBILE_APP_PATH/main.jsbundle"
 xcrun devicectl device install app --device "$MOBILE_DEVICE_ID" "$MOBILE_APP_PATH" \
   --json-output "$MOBILE_EVIDENCE_DIR/install.json" --timeout 120
 xcrun devicectl device process launch --device "$MOBILE_DEVICE_ID" com.opensteer.mobile \

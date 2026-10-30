@@ -6,7 +6,7 @@ let package = Package(
   platforms: [.macOS(.v14), .iOS("16.4")],
   products: [.library(name: "OpensteerAppleData", targets: ["OpensteerAppleData"])],
   targets: [
-    .target(name: "OpensteerAppleData", path: "Sources/OpensteerAppleData", exclude: ["Resources/contracts.json"]),
+    .target(name: "OpensteerAppleData", path: "Sources/OpensteerAppleData", resources: [.embedInCode("Resources/contracts.json")]),
     .testTarget(name: "OpensteerAppleDataTests", dependencies: ["OpensteerAppleData"]),
   ]
 )
