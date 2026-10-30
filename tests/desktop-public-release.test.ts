@@ -284,16 +284,27 @@ it("publishes only the certified zip and never publishes stable without certific
       return "";
     };
   const tag = certified.manifest.tag;
-  const certifiedHash = certifiedZip(certified.manifest);
+  const expected = {
+    channel: "beta",
+    sourceSha: certified.manifest.sourceSha,
+    certifiedZipSha256: certifiedZip(certified.manifest),
+  };
+  await expect(publish("steerlabs/opensteer", tag, provider(swapped), expected)).rejects.toThrow(
+    /certified/u,
+  );
+  // The workflow's publisher is newer than the source, so it is told which source to expect.
   await expect(
-    publish("steerlabs/opensteer", tag, provider(swapped), "beta", certifiedHash),
-  ).rejects.toThrow(/certified/u);
+    publish("steerlabs/opensteer", tag, provider(certified), {
+      ...expected,
+      sourceSha: "f".repeat(40),
+    }),
+  ).rejects.toThrow(/source/u);
   expect(patches).toBe(0);
-  await publish("steerlabs/opensteer", tag, provider(certified), "beta", certifiedHash);
+  await publish("steerlabs/opensteer", tag, provider(certified), expected);
   expect(patches).toBe(1);
   const stable = await releaseFixture("stable");
   await expect(
-    publish("steerlabs/opensteer", stable.manifest.tag, provider(stable), "stable"),
+    publish("steerlabs/opensteer", stable.manifest.tag, provider(stable), { channel: "stable" }),
   ).rejects.toThrow(/certified/u);
   expect(patches).toBe(1);
 });
@@ -333,30 +344,40 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
     } else throw new Error("Unexpected provider");
     return "";
   };
-  await publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest));
+  await publish("steerlabs/opensteer", manifest.tag, run, {
+    certifiedZipSha256: certifiedZip(manifest),
+  });
   expect(patches).toBe(1);
   // A draft retargeted away from the built source must not be published.
   release.target_commitish = "main";
   await expect(
-    publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest)),
+    publish("steerlabs/opensteer", manifest.tag, run, {
+      certifiedZipSha256: certifiedZip(manifest),
+    }),
   ).rejects.toThrow("disagree");
   expect(patches).toBe(1);
   release.target_commitish = manifest.sourceSha;
   // A draft whose bytes drifted must never become public or Latest.
   tamperDraft = true;
   await expect(
-    publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest)),
+    publish("steerlabs/opensteer", manifest.tag, run, {
+      certifiedZipSha256: certifiedZip(manifest),
+    }),
   ).rejects.toThrow("Asset differs");
   expect(patches).toBe(1);
   tamperDraft = false;
   tamperPublic = true;
   await expect(
-    publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest)),
+    publish("steerlabs/opensteer", manifest.tag, run, {
+      certifiedZipSha256: certifiedZip(manifest),
+    }),
   ).rejects.toThrow("Asset differs");
   // Rerunning on an already published release only repeats the anonymous check.
   release.draft = false;
   tamperPublic = false;
-  await publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest));
+  await publish("steerlabs/opensteer", manifest.tag, run, {
+    certifiedZipSha256: certifiedZip(manifest),
+  });
   expect(patches).toBe(2);
 });
 
@@ -397,7 +418,7 @@ it("beta drafts and publication never mark Latest", async () => {
     return "";
   };
   await draft(dir, "steerlabs/opensteer", run, "beta");
-  await publish("steerlabs/opensteer", manifest.tag, run, "beta");
+  await publish("steerlabs/opensteer", manifest.tag, run, { channel: "beta" });
 });
 
 it.skipIf(process.platform !== "darwin")("rejects a real ad-hoc-signed archive", async () => {

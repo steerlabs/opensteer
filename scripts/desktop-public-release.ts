@@ -411,8 +411,15 @@ export async function publish(
   repoInput: string,
   tagInput: string,
   run: Run = runBounded,
-  channel?: string,
-  certifiedZipSha256?: string,
+  {
+    channel,
+    sourceSha,
+    certifiedZipSha256,
+  }: {
+    channel?: string | undefined;
+    sourceSha?: string | undefined;
+    certifiedZipSha256?: string | undefined;
+  } = {},
 ) {
   const repo = repoSchema.parse(repoInput);
   const tag = tagSchema.parse(tagInput);
@@ -423,6 +430,10 @@ export async function publish(
   releaseManifest(release, manifest);
   checkChannel(manifest, channel);
   publicGuard(repo, manifest);
+  // The workflow runs this publisher from its own commit, not the release source,
+  // so it names the source it resolved instead of trusting the draft's claim.
+  if (sourceSha !== undefined && manifest.sourceSha !== sourceSha)
+    throw new Error("Draft was built from another source");
   // The update journey certifies one exact zip. verifyDraftAssets has just checked
   // the freshly downloaded zip against the manifest, so comparing the manifest's
   // hash refuses a later swap even when release.json and SHA256SUMS were rewritten.
@@ -516,13 +527,11 @@ export async function main(args = process.argv.slice(2)) {
   else if (subcommand === "draft")
     await draft(required("dir"), required("repo"), runBounded, values.channel);
   else if (subcommand === "publish")
-    await publish(
-      required("repo"),
-      required("tag"),
-      runBounded,
-      values.channel,
-      values["certified-zip-sha256"] || undefined,
-    );
+    await publish(required("repo"), required("tag"), runBounded, {
+      channel: values.channel,
+      sourceSha: values["source-sha"] || undefined,
+      certifiedZipSha256: values["certified-zip-sha256"] || undefined,
+    });
   else throw new Error("Usage: desktop:public-release prepare|draft|publish [options]");
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

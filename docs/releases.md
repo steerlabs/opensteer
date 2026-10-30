@@ -40,7 +40,9 @@ A dispatch of either channel stops at the draft unless `publish=true`, which nee
 the zip sha256 the [update journey](testing.md#gui-test-vms) certified for that
 draft. Publish downloads the draft again and refuses any other zip, even one whose
 release.json and SHA256SUMS were rewritten to match. Automatic insiders on push
-carry no certificate.
+carry no certificate. Publish jobs run the workflow commit's publisher, not the
+source's, so a source older than a publisher flag can still be promoted; the
+publisher must keep reading release.json from any source still eligible for it.
 
 ### Derived versions
 

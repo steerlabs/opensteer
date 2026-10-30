@@ -531,7 +531,7 @@ test("insiders auto-publish on push, dispatch stops at draft unless publish, sta
 
 // Publication ships exactly the zip the update journey certified. A dispatch without
 // a certified hash fails before building; automatic insiders on push stay unbound.
-test("publish=true requires the certified zip sha256 and passes it to publish", () => {
+test("publish=true requires the certified zip sha256; this run's publisher checks it against the source", () => {
   assert.equal(workflow.on.workflow_dispatch.inputs.certified_zip_sha256.type, "string");
   const guard = workflow.jobs.preflight.steps.find((s) => s.if?.includes("certified_zip_sha256"));
   const refused = (inputs) =>
@@ -547,16 +547,35 @@ test("publish=true requires the certified zip sha256 and passes it to publish", 
     writeFileSync(path.join(dir, "pnpm"), `#!/bin/sh\nprintf '%s\\n' "$*" > "${calls}"\n`, {
       mode: 0o755,
     });
+    // Promoting a source that predates the publisher's flags: the publisher still
+    // comes from this run's commit, and the source only names what it must verify.
+    const source = "1".repeat(40);
+    const context = {
+      github: { sha: "2".repeat(40) },
+      needs: { preflight: { outputs: { sha: source } } },
+    };
     for (const job of ["publish-insider", "publish-stable"]) {
-      const step = workflow.jobs[job].steps.find((s) => s.run?.includes("publish --repo"));
+      const { steps } = workflow.jobs[job];
+      const checkout = steps.find((s) => s.uses?.startsWith("actions/checkout@"));
+      assert.equal(
+        runInNewContext(checkout.with.ref.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), context),
+        context.github.sha,
+      );
+      const step = steps.find((s) => s.run?.includes("publish --repo"));
       assert.equal(step.env.CERTIFIED_ZIP_SHA256, "${{ inputs.certified_zip_sha256 }}");
+      assert.equal(step.env.SOURCE_SHA, "${{ needs.preflight.outputs.sha }}");
       for (const hash of ["a".repeat(64), ""]) {
         execFileSync("bash", ["-c", step.run], {
-          env: { PATH: `${dir}:${process.env.PATH}`, TAG: "t", CERTIFIED_ZIP_SHA256: hash },
+          env: {
+            PATH: `${dir}:${process.env.PATH}`,
+            TAG: "t",
+            SOURCE_SHA: source,
+            CERTIFIED_ZIP_SHA256: hash,
+          },
         });
         assert.equal(
           readFileSync(calls, "utf8").trim(),
-          `desktop:public-release publish --repo steerlabs/opensteer --tag t --certified-zip-sha256=${hash}`,
+          `desktop:public-release publish --repo steerlabs/opensteer --tag t --source-sha ${source} --certified-zip-sha256=${hash}`,
         );
       }
     }
