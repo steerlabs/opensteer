@@ -385,7 +385,7 @@ describe("a reply's live picture belongs to its working Run", () => {
 
 describe("task titles", () => {
   async function headerRename() {
-    await click(element(".conv-header__switcher"));
+    await click(element(".conv-header__menu"));
     await click(element('[aria-label="Rename task"]'));
   }
   async function key(field: Element, key: string, isComposing = false) {
@@ -686,7 +686,7 @@ describe("task titles", () => {
 
   it("hides rename for Chat and an older Host", async () => {
     await mount("/");
-    await click(element(".conv-header__switcher"));
+    await click(element(".conv-header__menu"));
     expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
     act(() => root?.unmount());
     setRoot(null);
@@ -706,7 +706,7 @@ describe("task titles", () => {
       });
       return `/threads/${source.getSnapshot().threads.find((thread) => thread.role === "work")!.id}`;
     });
-    await click(element(".conv-header__switcher"));
+    await click(element(".conv-header__menu"));
     expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
     await act(async () =>
       element(".side-task[data-thread-id]").dispatchEvent(

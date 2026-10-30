@@ -5,8 +5,10 @@ import {
   taskCanBeDone,
   assignmentPresentation,
   assignmentRequester,
+  assignmentTitle,
   blockingDetail,
   formatDuration,
+  tasksUnderWay,
   workerAssignment,
   type AssignmentTone,
   type HostClient,
@@ -159,8 +161,33 @@ interface TaskMenuProps {
   readonly connectionLabel?: string | null;
 }
 
+/** The prefix of the menu action that opens a task this conversation started. */
+const underWayAction = "open-task:";
+
+/** A task this conversation started that is still going, as its menu lists it. */
+interface UnderWay {
+  readonly threadId: string;
+  readonly title: string;
+  readonly word: string;
+}
+
+const noneUnderWay: readonly UnderWay[] = [];
+
+function sameUnderWay(left: readonly UnderWay[], right: readonly UnderWay[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (task, index) =>
+        task.threadId === right[index]?.threadId &&
+        task.title === right[index]?.title &&
+        task.word === right[index]?.word,
+    )
+  );
+}
+
 /**
- * What a task's title menu would offer, and whether it has anything at all.
+ * What a task's title menu would offer, and whether it has anything at all:
+ * the tasks it started that are still going, then what can be done to it.
  * Without one the title is plain words, and whatever the menu would have said
  * has to stay on the bar.
  */
@@ -168,7 +195,24 @@ export function useTaskMenuChoices(
   hostClient: HostClient,
   threadId: string | null,
   task: TaskHeading | null,
-): { readonly any: boolean; readonly canChangeIcon: boolean; readonly canRename: boolean } {
+): {
+  readonly any: boolean;
+  readonly canChangeIcon: boolean;
+  readonly canRename: boolean;
+  readonly underWay: readonly UnderWay[];
+} {
+  const underWay = useHostSelector(
+    hostClient,
+    (snapshot) =>
+      threadId === null
+        ? noneUnderWay
+        : tasksUnderWay(threadId, snapshot.assignments).map((assignment) => ({
+            threadId: assignment.workerThread.id,
+            title: assignmentTitle(assignment, snapshot),
+            word: assignmentPresentation(assignment, snapshot).word,
+          })),
+    sameUnderWay,
+  );
   const canRename = useHostSelector(
     hostClient,
     (snapshot) =>
@@ -190,20 +234,31 @@ export function useTaskMenuChoices(
     return thread !== null && taskCanBeDone(snapshot, thread);
   });
   const any =
+    underWay.length > 0 ||
     canBeDone ||
     canRename ||
     canChangeIcon ||
     (task !== null && (task.requesterThreadId !== null || task.open));
-  return { any, canChangeIcon, canRename };
+  return { any, canChangeIcon, canRename, underWay };
 }
 
 export function TaskMenu(props: TaskMenuProps): ReactNode {
   const { task, threadId } = props;
   useLifecycleNews(task?.announcement ?? "");
-  const { any, canChangeIcon, canRename } = useTaskMenuChoices(props.hostClient, threadId, task);
+  const { any, canChangeIcon, canRename, underWay } = useTaskMenuChoices(
+    props.hostClient,
+    threadId,
+    task,
+  );
   if (!any) return props.children;
   return task === null ? (
-    <Menu key={threadId} {...props} canRename={canRename} canChangeIcon={canChangeIcon} />
+    <Menu
+      key={threadId}
+      {...props}
+      canRename={canRename}
+      canChangeIcon={canChangeIcon}
+      underWay={underWay}
+    />
   ) : (
     <AssignedMenu
       key={threadId}
@@ -211,6 +266,7 @@ export function TaskMenu(props: TaskMenuProps): ReactNode {
       canRename={canRename}
       canChangeIcon={canChangeIcon}
       task={task}
+      underWay={underWay}
     />
   );
 }
@@ -220,6 +276,7 @@ function AssignedMenu(
     readonly canRename: boolean;
     readonly canChangeIcon: boolean;
     readonly task: TaskHeading;
+    readonly underWay: readonly UnderWay[];
   },
 ): ReactNode {
   const stop = useAssignmentStop(props.hostClient, {
@@ -235,6 +292,7 @@ function Menu(
     readonly canRename: boolean;
     readonly canChangeIcon: boolean;
     readonly stop?: ReturnType<typeof useAssignmentStop>;
+    readonly underWay: readonly UnderWay[];
   },
 ): ReactNode {
   const { task, title, threadId } = props;
@@ -273,6 +331,19 @@ function Menu(
       ) : null}
       <MenuView
         actions={[
+          ...(props.underWay.length > 0
+            ? [
+                {
+                  displayInline: true,
+                  id: "under-way",
+                  subactions: props.underWay.map((started) => ({
+                    id: `${underWayAction}${started.threadId}`,
+                    title: `${started.title} · ${started.word}`,
+                  })),
+                  title: "Started here",
+                },
+              ]
+            : []),
           ...(doneThread !== null
             ? [
                 {
@@ -307,6 +378,8 @@ function Menu(
         ]}
         colorScheme="dark"
         onPressAction={({ nativeEvent }) => {
+          if (nativeEvent.event.startsWith(underWayAction))
+            props.onOpenThread(nativeEvent.event.slice(underWayAction.length));
           if (nativeEvent.event === "icon" && props.canChangeIcon) setChangingIcon(true);
           if (nativeEvent.event === "done" && doneThread !== null)
             setTaskDone(props.hostClient, doneThread.id, doneThread.doneAt === null);

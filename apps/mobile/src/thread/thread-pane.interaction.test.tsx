@@ -307,22 +307,28 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("../ui/glass.js", () => ({ useLiquidGlass: () => false }));
 vi.mock("@expo/ui/community/menu", () => ({
   MenuView: (props: {
-    readonly actions: readonly { readonly id?: string; readonly title: string }[];
+    readonly actions: readonly {
+      readonly id?: string;
+      readonly title: string;
+      readonly subactions?: readonly { readonly id?: string; readonly title: string }[];
+    }[];
     readonly children?: ReactNode;
     readonly onPressAction?: (event: { readonly nativeEvent: { readonly event: string } }) => void;
   }) => (
     <div>
       {props.children}
-      {props.actions.map((action) => (
-        <button
-          key={action.id ?? action.title}
-          onClick={() =>
-            props.onPressAction?.({ nativeEvent: { event: action.id ?? action.title } })
-          }
-        >
-          {action.title}
-        </button>
-      ))}
+      {props.actions
+        .flatMap((action) => [action, ...(action.subactions ?? [])])
+        .map((action) => (
+          <button
+            key={action.id ?? action.title}
+            onClick={() =>
+              props.onPressAction?.({ nativeEvent: { event: action.id ?? action.title } })
+            }
+          >
+            {action.title}
+          </button>
+        ))}
     </div>
   ),
 }));
@@ -2355,7 +2361,7 @@ describe("a task", () => {
     return { entries, note, runId };
   }
 
-  it("keeps its queue tray, every control on it, its steps and its own Stop", async () => {
+  it("keeps its queue tray, every control on it, its steps behind its status line and its own Stop", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
     const host = fakeHost(
@@ -2375,7 +2381,9 @@ describe("a task", () => {
       expect(hasButton(container, control)).toBe(true);
     }
     expect(text(container)).toContain(task.note.body);
-    expect(container.querySelector('[aria-label="Agent status"]')).not.toBeNull();
+    expect(
+      container.querySelector('button[aria-description="Shows this reply\'s steps"]'),
+    ).not.toBeNull();
     expect(button(container, "Stop this run").dataset["kind"]).toBe("stop");
     expect(hasButton(container, "Stop the reply")).toBe(false);
     expect(headers.at(-1)?.title).toBe(base.threads.find(({ id }) => id === workId)?.title);
@@ -2476,6 +2484,58 @@ describe("a finished task's title", () => {
       expect(hasButton(container, "Rename…")).toBe(capable);
     },
   );
+});
+
+// Ways it can fail: the tasks a conversation started are only reachable by
+// scrolling back to where it started them, or the menu lists finished ones.
+describe("a task's title menu", () => {
+  it("lists the tasks it started that are still going, each opening its own conversation", async () => {
+    const work = base.threads.find(({ id }) => id === workId)!;
+    const task = (title: string, status: "completed" | "open") =>
+      AssignmentSummarySchema.parse({
+        createdAt: "2026-10-30T15:00:00Z",
+        updatedAt: "2026-10-30T15:05:00Z",
+        currentRunId: createId("run"),
+        currentRunStatus: status === "open" ? "running" : "completed",
+        finishedAt: status === "open" ? null : "2026-10-30T15:05:00Z",
+        id: createId("delegation"),
+        initialRunId: createId("run"),
+        modelLabel: null,
+        objectivePreview: title,
+        origin: "run",
+        parentThreadId: workId,
+        resultPreview: null,
+        returnStatus: status === "open" ? "pending" : "delivered",
+        revision: 1,
+        status,
+        workerThread: {
+          id: createId("thread"),
+          environmentId: work.environmentId,
+          workspaceId: work.workspaceId,
+          status: status === "open" ? "running" : "idle",
+          pendingRequests: 0,
+          title,
+          icon: null,
+        },
+      });
+    const going = task("Check OpenTable", "open");
+    const finished = task("Check Resy", "completed");
+    const host = fakeHost({
+      ...snapshotFor({ entries: [], run: null, threadId: workId }),
+      assignments: { [going.id]: going, [finished.id]: finished },
+    });
+    const { container } = await mount(host, workId, { header: true });
+    expect(hasButton(container, "Started here")).toBe(true);
+    expect(hasButton(container, "Check Resy")).toBe(false);
+    await press(container, "Check OpenTable · Working");
+    expect(harness.dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: "Thread",
+        params: { deploymentId, threadId: going.workerThread.id },
+        type: "PUSH",
+      }),
+    );
+  });
 });
 
 describe("renaming a task on a phone", () => {

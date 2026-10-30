@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import type { AssignmentSummary } from "@opensteer/core";
 import {
@@ -9,7 +9,6 @@ import {
   assignmentStatusLine,
   currentAssignment,
   delegationPresentation,
-  taskGroupSummary,
   taskRowNote,
   threadMark,
   type AssignmentEntry,
@@ -30,22 +29,19 @@ import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 /**
  * Another Thread's work, where it was handed out: one quiet line per task —
  * its mark, its title, a dot and a word for where it stands — that opens the
- * task. Only the dot and the word change as the task moves. Tasks one turn
- * handed out together read as one line until opened in place, and a task
+ * task. Only the dot and the word change as the task moves, and a task
  * waiting on the reader says what it asks under its title.
  */
 export function TaskLines({ entries }: { entries: readonly AssignmentEntry[] }) {
   if (entries.length === 0) return null;
   return (
     <div className="task-lines">
-      {entries.length === 1 ? (
-        <>
-          <ObservedWorker entry={entries[0]!} />
-          <AssignmentLine entry={entries[0]!} />
-        </>
-      ) : (
-        <TaskLineGroup entries={entries} />
-      )}
+      {entries.map((entry) => (
+        <Fragment key={entry.id}>
+          <ObservedWorker entry={entry} />
+          <AssignmentLine entry={entry} />
+        </Fragment>
+      ))}
     </div>
   );
 }
@@ -214,7 +210,8 @@ function TaskLine({
   );
 }
 
-function TaskLineState({
+/** Where a task stands, as its line says it: the dot, and the word. */
+export function TaskLineState({
   moving,
   tone,
   word,
@@ -240,73 +237,6 @@ function TaskDot({ moving, tone }: { moving: boolean; tone: AssignmentTone }) {
       data-moving={moving ? "true" : undefined}
       data-tone={tone}
     />
-  );
-}
-
-/** Only these say anything in a group's counts; the rest are the quiet default. */
-const signalTones = new Set<AssignmentTone>(["failed", "waiting", "working"]);
-
-/**
- * Tasks one turn handed out together, as one line: their marks stacked, how
- * many, and how many read each word. It opens in place to a line for each,
- * and keeps every open one observed while it is closed.
- */
-function TaskLineGroup({ entries }: { entries: readonly AssignmentEntry[] }) {
-  const { snapshot } = useShell();
-  const [open, setOpen] = useState(false);
-  const assignments = entries.map((entry) => currentAssignment(entry, snapshot.assignments));
-  const summary = taskGroupSummary(
-    assignments.map((assignment) => assignmentPresentation(assignment, snapshot)),
-  );
-  const counts = summary.parts.map(({ text }) => text).join(", ");
-  return (
-    <div className="task-line-group">
-      {entries.map((entry) => (
-        <ObservedWorker entry={entry} key={entry.id} />
-      ))}
-      <div className="task-line" data-group="true">
-        <div className="task-line__row">
-          <button
-            aria-expanded={open}
-            aria-label={`${summary.label}: ${counts}. ${open ? "Hide" : "Show"} tasks`}
-            className="task-line__open"
-            onClick={() => setOpen((value) => !value)}
-            type="button"
-          >
-            <span aria-hidden="true" className="task-stack">
-              {assignments.slice(0, 3).map((assignment) => (
-                <span className="task-stack__mark" key={assignment.id}>
-                  <TaskMark size={16} mark={assignmentMark(assignment, snapshot)} />
-                </span>
-              ))}
-            </span>
-            <span className="task-line__title">{summary.label}</span>
-            <span className="task-line__state">
-              {summary.parts.map((part, index) => (
-                <span className="task-line__part" key={part.text}>
-                  {index > 0 ? <span className="task-line__sep">·</span> : null}
-                  {signalTones.has(part.tone) ? (
-                    <TaskDot moving={part.moving} tone={part.tone} />
-                  ) : null}
-                  {part.text}
-                </span>
-              ))}
-            </span>
-          </button>
-          <Icon
-            className={open ? "task-line__chevron task-line__chevron--open" : "task-line__chevron"}
-            name="chevron-right"
-          />
-        </div>
-      </div>
-      {open ? (
-        <div aria-label={summary.label} className="task-line-group__lines" role="group">
-          {entries.map((entry) => (
-            <AssignmentLine entry={entry} key={entry.id} />
-          ))}
-        </div>
-      ) : null}
-    </div>
   );
 }
 
