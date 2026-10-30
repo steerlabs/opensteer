@@ -533,9 +533,17 @@ export class MobileClient {
     const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
     return this.#operations.run(async () => {
-      await invalidation;
-      if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
-      await this.#signOutNow(id);
+      try {
+        await invalidation;
+        if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
+        await this.#signOutNow(id);
+      } catch (error) {
+        // A sign-out or removal that did not happen leaves the login and its live
+        // attachment in place; the saved view it erased stays erased.
+        this.#changingLogins.delete(id);
+        await this.#republish();
+        throw error;
+      }
     });
   }
 
@@ -743,9 +751,17 @@ export class MobileClient {
     const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
     return this.#operations.run(async () => {
-      await invalidation;
-      if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
-      await this.#removeNow(id);
+      try {
+        await invalidation;
+        if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
+        await this.#removeNow(id);
+      } catch (error) {
+        // A sign-out or removal that did not happen leaves the login and its live
+        // attachment in place; the saved view it erased stays erased.
+        this.#changingLogins.delete(id);
+        await this.#republish();
+        throw error;
+      }
     });
   }
 

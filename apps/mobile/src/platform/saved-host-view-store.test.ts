@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createId } from "@opensteer/core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
@@ -38,7 +38,7 @@ it("uses real AEAD, fresh nonces, one small key slot and rejects other scopes/ta
   const first = readFileSync(path);
   await store.write(value, () => true);
   expect(readFileSync(path)).not.toEqual(first);
-  expect(f.keys.keys).toHaveLength(1);
+  expect(f.slots()).toHaveLength(1);
   for (const changed of [
     { epoch: value.epoch + 1 },
     { schema: 2 },
@@ -64,20 +64,20 @@ it("missing/locked keys miss, and deletion erases before failed ciphertext clean
     value = view(),
     store = f.open();
   expect(await store.load(value, () => true)).toBeNull();
-  expect(f.keys.keys).toEqual([]);
+  expect(f.slots()).toEqual([]);
   await store.write(value, () => true);
   const get = f.keys.getItemAsync.bind(f.keys);
   f.keys.getItemAsync = async () => {
     throw new Error("locked");
   };
   expect(await store.load(value, () => true)).toBeNull();
-  expect(f.keys.keys).toHaveLength(1);
+  expect(f.slots()).toHaveLength(1);
   f.keys.getItemAsync = get;
   f.interrupt((step) => {
     if (step.startsWith("delete:")) throw new Error("disk failure");
   });
   await store.invalidate(value.hostIdentity.deploymentId);
-  expect(f.keys.keys).toEqual([]);
+  expect(f.slots()).toEqual([]);
   expect(await f.open().load(value, () => true)).toBeNull();
 });
 it("reports secure deletion failure and never commits a fenced encryption", async () => {
@@ -143,7 +143,7 @@ it("bounds committed files to four, evicts oldest write, skips on cleanup failur
     values = Array.from({ length: 6 }, () => view());
   for (const value of values) await store.write(value, () => true);
   expect(f.list()).toHaveLength(4);
-  expect(f.keys.keys).toHaveLength(4);
+  expect(f.slots()).toHaveLength(4);
   expect(await store.load(values[0]!, () => true)).toBeNull();
   f.interrupt((s) => {
     if (s.startsWith("delete:")) throw new Error("disk full");
@@ -164,6 +164,20 @@ it("bounds committed files to four, evicts oldest write, skips on cleanup failur
       () => true,
     ),
   ).rejects.toThrow();
+});
+
+it("bounds key slots after the OS purges the cache files that named them", async () => {
+  const f = fixture(),
+    store = f.open(),
+    purged = Array.from({ length: 3 }, () => view());
+  for (const value of purged) await store.write(value, () => true);
+  expect(f.slots()).toHaveLength(3);
+  // The OS may clear the cache directory at any time; secure storage survives it.
+  for (const { name } of f.list()) rmSync(`${f.directory}/${name}`);
+  for (let index = 0; index < 4; index++) await store.write(view(), () => true);
+  expect(f.slots()).toHaveLength(4);
+  for (const value of purged)
+    expect(f.slots()).not.toContain(`saved.${value.hostIdentity.deploymentId}`);
 });
 
 it("authenticates Account issuer and subject even when the two login IDs and key match", async () => {

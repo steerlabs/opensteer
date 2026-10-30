@@ -55,6 +55,21 @@ export function createSavedHostViewStore(options: {
       ? parsed.data
       : null;
   };
+  // Keys outlive purgeable cache files, so key ownership is kept beside the keys
+  // in secure storage: it bounds keys even after the OS clears the files.
+  const ownersName = `${options.keyPrefix}.owners`;
+  const readOwners = async (): Promise<string[]> => {
+    try {
+      const stored = await options.keys.getItemAsync(ownersName);
+      return stored === null ? [] : z.array(DeploymentIdSchema).parse(JSON.parse(stored));
+    } catch {
+      return [];
+    }
+  };
+  const writeOwners = (owners: readonly string[]): Promise<void> =>
+    owners.length === 0
+      ? options.keys.deleteItemAsync(ownersName)
+      : options.keys.setItemAsync(ownersName, JSON.stringify(owners));
   const enumerate = (): readonly SavedViewFile[] =>
     options.list().filter(({ name }) => ownedName.test(name));
   const settle = async (): Promise<readonly SavedViewFile[]> => {
@@ -107,18 +122,25 @@ export function createSavedHostViewStore(options: {
         const committed = await settle();
         if (!isCurrent()) return;
         const id = view.hostIdentity.deploymentId;
+        // Owners in write order; a file the index does not know counts as oldest.
         // The journal may hold one additional envelope during replacement (at most 5 MiB).
-        const others = committed
-          .filter(({ name }) => name !== `${id}.bin`)
-          .sort((a, b) => a.modifiedAt - b.modifiedAt || a.name.localeCompare(b.name));
-        while (others.length >= 4) {
-          const oldest = others.shift()!;
-          const evicted = ownedName.exec(oldest.name)![1]!;
+        const owners = (await readOwners()).filter((owner) => owner !== id);
+        const unindexed = committed
+          .filter(({ name }) => !name.startsWith(`${id}.`))
+          .sort((a, b) => a.modifiedAt - b.modifiedAt || a.name.localeCompare(b.name))
+          .map(({ name }) => ownedName.exec(name)![1]!)
+          .filter((owner, index, all) => !owners.includes(owner) && all.indexOf(owner) === index);
+        owners.unshift(...unindexed);
+        while (owners.length >= 4) {
+          const evicted = owners.shift()!;
           await options.keys.deleteItemAsync(keyName(evicted));
           if (!isCurrent()) return;
           await options.files.removeFile(path(evicted));
           if (!isCurrent()) return;
         }
+        // Recorded before a key can exist, so an interrupted write cannot strand one.
+        await writeOwners([...owners, id]);
+        if (!isCurrent()) return;
         let key = await slot(view);
         if (!isCurrent()) return;
         if (key === null) {
@@ -149,7 +171,10 @@ export function createSavedHostViewStore(options: {
     invalidate: (id) =>
       mutations.run(async () => {
         await options.keys.deleteItemAsync(keyName(id));
-        // Successful key deletion is erasure even if encrypted-file cleanup fails.
+        // Successful key deletion is erasure even if index or encrypted-file cleanup fails.
+        await readOwners()
+          .then((owners) => writeOwners(owners.filter((owner) => owner !== id)))
+          .catch(() => undefined);
         await options.files.removeFile(path(id)).catch(() => undefined);
       }),
   };

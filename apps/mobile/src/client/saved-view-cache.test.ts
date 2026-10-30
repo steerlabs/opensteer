@@ -46,12 +46,12 @@ it("persists denial before deletion, misses across restart, and clears only afte
   expect(first.getFailure()).toMatch(/cleanup could not be completed/u);
   const restarted = open();
   expect(await restarted.load(value, () => true)).toBeNull();
-  expect(f.keys.keys).toHaveLength(1);
+  expect(f.slots()).toHaveLength(1);
   expect(files.text(marker)).toBe("");
   f.keys.interrupt = () => {};
   await restarted.retryInvalidation();
   expect(files.text(marker)).toBeNull();
-  expect(f.keys.keys).toEqual([]);
+  expect(f.slots()).toEqual([]);
   expect(await restarted.load(value, () => true)).toBeNull();
 });
 it("erases the key despite marker failure, misses immediately after restart, and retries the marker", async () => {
@@ -65,19 +65,21 @@ it("erases the key despite marker failure, misses immediately after restart, and
   await cache.invalidate(value.hostIdentity.deploymentId);
   expect(cache.isBlocked(value.hostIdentity.deploymentId)).toBe(true);
   expect(cache.getFailure()).toMatch(/cleanup could not be completed/u);
-  expect(deletion).toHaveBeenCalledOnce();
-  expect(f.keys.keys).toEqual([]);
+  expect(deletion.mock.calls.filter(([key]) => key !== "saved.owners")).toEqual([
+    [`saved.${value.hostIdentity.deploymentId}`],
+  ]);
+  expect(f.slots()).toEqual([]);
   // Restart before storage is repaired or cleanup is retried.
   const restarted = new SavedViewCache({ store: f.open(), files, directory: "/private/denials" });
   expect(await restarted.load(value, () => true)).toBeNull();
   expect(await cache.load(value, () => true)).toBeNull();
   await cache.write(value, () => true);
-  expect(f.keys.keys).toEqual([]);
+  expect(f.slots()).toEqual([]);
   expect(cache.isPending(value.hostIdentity.deploymentId)).toBe(true);
   write.mockRestore();
   await cache.retryInvalidation();
   expect(cache.getFailure()).toBeNull();
-  expect(f.keys.keys).toEqual([]);
+  expect(f.slots()).toEqual([]);
 });
 it("misses across the credential/key crash boundary in either write order", async () => {
   const f = savedViewFixture(cleanup),
@@ -107,16 +109,16 @@ it("misses across the credential/key crash boundary in either write order", asyn
   expect(await load()).toEqual(value);
   // A credential committed after key erasure, but before its replacement key:
   // the old ciphertext is still present and must not become readable.
-  await f.keys.deleteItemAsync(f.keys.keys[0]!);
+  await f.keys.deleteItemAsync(f.slots()[0]!);
   const next = { ...value, loginId: globalThis.crypto.randomUUID() };
   await sessions.save({ ...session, viewLoginId: next.loginId });
   expect(f.list()).toHaveLength(1);
-  expect(f.keys.keys).toEqual([]);
+  expect(f.slots()).toEqual([]);
   expect(await load()).toBeNull();
   // Conversely, an existing key/ciphertext must not follow a newer credential ID.
   await f.open().write(next, () => true);
   expect(await load()).toEqual(next);
   await sessions.save({ ...session, viewLoginId: globalThis.crypto.randomUUID() });
-  expect(f.keys.keys).toHaveLength(1);
+  expect(f.slots()).toHaveLength(1);
   expect(await load()).toBeNull();
 });

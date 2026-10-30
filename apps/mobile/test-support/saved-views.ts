@@ -96,6 +96,8 @@ export function savedViewFixture(cleanup: (() => void)[]) {
     root,
     files,
     keys,
+    /** Per-Deployment key slots, without the key-ownership index beside them. */
+    slots: () => keys.keys.filter((key) => key !== "saved.owners"),
     list,
     open,
     interrupt: (fn: typeof interrupt) => {

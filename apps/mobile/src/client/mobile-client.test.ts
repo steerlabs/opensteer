@@ -2028,6 +2028,8 @@ describe("MobileClient per-deployment sign out", () => {
     expect(await client.sessions.load(DeploymentIdSchema.parse(serverId))).not.toBeNull();
     const row = client.getSnapshot().rows.find((candidate) => candidate.deploymentId === serverId);
     expect(row?.status).toBe("connected");
+    // The login and its live attachment remain; only the saved view stays erased.
+    expect(client.getSnapshot().selection.hostClient).not.toBeNull();
     client.dispose();
   });
 });
