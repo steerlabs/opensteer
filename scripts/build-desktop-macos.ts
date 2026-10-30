@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { sha256File } from "@opensteer/shared/fileDigest";
 import { runBounded } from "./command-runner.js";
+import { signedMacHelpers } from "./signed-mac-helpers.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const require = createRequire(import.meta.url);
@@ -185,8 +186,7 @@ if (unsigned) {
     OPENSTEER_AGENT_PHONE_RELEASE_RECEIPT_SHA256: digest,
   });
   await desktop("exec", "tsx", "scripts/build-personal-runtime.ts");
-  await desktop("build:passwords-broker");
-  await desktop("build:dictation-helper");
+  for (const helper of signedMacHelpers) await desktop(helper.command);
   await desktop("package:mac");
 }
 await writeFile(
