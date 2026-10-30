@@ -4241,9 +4241,9 @@ export async function delegateThreadInTransaction(
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow()
     : null;
-  // Work a conversation gives an existing Thread makes it one of the person's
-  // tasks, whoever created it. Nothing ever takes a task off the list.
-  const listedNow = reusedRow !== null && !reusedRow.listed && parent.role === "conversation";
+  const listed = await delegationListsThread(transaction, parent.role, input.origin);
+  // Delegation can promote a task; only a migration can take it off the list.
+  const listedNow = reusedRow !== null && !reusedRow.listed && listed;
   const threadRow = reusedRow
     ? listedNow
       ? await transaction
@@ -4260,9 +4260,7 @@ export async function delegateThreadInTransaction(
         createdByPrincipalId: actorPrincipalId,
         id: threadId,
         lineageRootThreadId: parent.lineageRootThreadId,
-        // Work a conversation hands off is the person's own task; work a task
-        // hands off belongs inside that task.
-        listed: parent.role === "conversation",
+        listed,
         modelSelection: jsonValue(ModelSelectionSchema.parse(input.modelSelection)),
         parentThreadId: input.origin.parentThreadId,
         status: deriveThreadStatus({
@@ -4405,4 +4403,20 @@ export async function delegateThreadInTransaction(
     run: runFromRow(assignedRun),
     thread,
   };
+}
+
+/** Only work handed off during a person's Chat turn belongs in their task list. */
+async function delegationListsThread(
+  transaction: Transaction<DatabaseSchema>,
+  parentRole: string,
+  origin: DelegateThreadRequest["origin"],
+): Promise<boolean> {
+  if (parentRole !== "conversation" || origin.kind !== "run") return false;
+  const seed = await transaction
+    .selectFrom("runs")
+    .innerJoin("messages", "messages.id", "runs.seedInputId")
+    .select("messages.author")
+    .where("runs.id", "=", origin.parentRunId)
+    .executeTakeFirstOrThrow();
+  return MessageAuthorSchema.parse(seed.author).kind === "human";
 }

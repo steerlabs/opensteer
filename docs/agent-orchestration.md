@@ -776,13 +776,18 @@ finished task's model. The label remains available when the worker Thread or its
 not loaded. Protocol epoch 27 requires this field; migration 0071 fills historical Assignment
 events from the Run named in each event before those events are replayed.
 
-Navigation lists a person's tasks. A Thread is listed once a person creates it as a root Thread
-or a `conversation` Thread such as Chat gives it work — at creation, or later by delegating into an
-existing Thread, which publishes `thread.listed`. Work another task delegates is not listed and is
-reached through that task; nothing unlists a Thread. `parentThreadId` stays lineage only. Workspace
-snapshots and `tasks.list` filter on `listed` before pagination, and
-clients apply the same flag to live and directly loaded Threads, so reloads, pages and events
-agree. Direct navigation and authorized agent searches reach unlisted work.
+Navigation lists a person's tasks: root Threads, and work a person handed off from a
+`conversation` Thread such as Chat. A person's own new Thread is listed as a root or when made in
+a conversation; a conversation's delegation is listed only during a Run whose seed input was
+authored by a `human`. Delegation must have origin `run`; trigger and watch origins never
+list work. The same rule promotes an existing unlisted Thread and publishes `thread.listed`.
+Work handed to a task stays inside that task, whoever handed it, even when a person woke the Run. Nothing
+at runtime unlists a Thread. Migration 0113 recomputes existing listing by this rule
+(keeping roots listed), and rewrites every durable Thread snapshot an event carries.
+`parentThreadId` stays lineage only. Workspace snapshots and `tasks.list` filter on `listed`
+before pagination; clients apply the event's flag on replay. Direct navigation and authorized
+agent searches reach unlisted work. Questions in unlisted work roll up to the nearest listed
+ancestor, including Chat for automation-anchored work.
 
 In the conversation that handed it out, a task is one bubble that changes in place and opens the
 task's own Thread. Its result draws nothing more: the bubble shows how the task ended, and the reply

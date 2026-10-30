@@ -9027,12 +9027,19 @@ class MockHostState {
       person: null,
       steered: [],
     };
+    const seed = (this.snapshot.transcripts[parent.id] ?? []).find(
+      (entry) =>
+        entry.kind === "message" &&
+        entry.runId === parentRunId &&
+        (entry.messageKind === "input" || entry.messageKind === "continuation"),
+    );
     const worker: ThreadSummary = {
       ...parent,
       createdAt,
       id: this.nextId("thread"),
       inputQueuePaused: false,
-      listed: parent.role === "conversation",
+      listed:
+        parent.role === "conversation" && seed?.kind === "message" && seed.author.kind === "human",
       parentThreadId: parent.id,
       pendingRequests: 0,
       providerSessionId: createId("providerSession"),

@@ -5589,7 +5589,7 @@ function projectAgentEvent(
       return {
         ...snapshot,
         threads: snapshot.threads.some(({ id }) => id === thread.id)
-          ? patchThread(snapshot.threads, thread.id, { listed: true })
+          ? patchThread(snapshot.threads, thread.id, { listed: thread.listed })
           : [thread, ...snapshot.threads],
       };
     }
