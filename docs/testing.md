@@ -291,6 +291,20 @@ hashes, Chromium version, scripts, page-state oracles and an exact rerun command
 
 ## Integration databases
 
+Integration requires isolated `forks` and `retry: 0`; global setup rejects unsafe
+configuration before database access. Tests own immutable database clones and
+must register cleanup before asynchronous startup, stop producers before dropping
+databases, and respect cancellation. Never replace isolation with shared TRUNCATE.
+See [vitest.integration.config.ts](../vitest.integration.config.ts) and
+[database test support](../packages/database/src/test-database.test-support.ts).
+
+An unexpected timeout, aborted signal or unproved cleanup poisons the current
+Vitest file. Later tests fail before fixtures with
+`worker contaminated by <test>: <original error>`; diagnose the first failure,
+not each downstream case. Poison does not carry to another file. Expected-failure
+timeout tests may continue after a proved drain, but unproved database cleanup
+still poisons them. See [tests/file-poison.test.ts](../tests/file-poison.test.ts).
+
 `pnpm test:integration [file]` uses disposable PostgreSQL. Launcher, database and run-record details live in
 [the scripts README](../scripts/README.md#integration-databases).
 
