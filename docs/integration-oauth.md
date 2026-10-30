@@ -10,7 +10,9 @@ Multiple custom apps require Host API epoch 5 because older clients assume uniqu
 
 ## Deployment behavior
 
-Managed authorization binds both Deployment authority and the initiating Account subject. The owner's sign-in cannot substitute for another member. Launch and completion must resolve the same account-link generation; unlink/relink invalidates outstanding consent, ordinary token refresh does not. Invalid internal bindings are deployment errors. Personal authorization also requires the linked owner and canonical local surface; remote access is not permission to start consent there. See `apps/host/src/integrations/integration-account-binding.ts`.
+Managed authorization binds both Deployment authority and the initiating Account subject. The owner's sign-in cannot substitute for another member. Launch and completion must resolve the same account-link generation; unlink/relink invalidates outstanding consent, ordinary token refresh does not. Invalid internal bindings are deployment errors. Personal authorization also requires the linked owner. See `apps/host/src/integrations/integration-account-binding.ts`.
+
+Where a sign-in can finish is decided by where the provider returns, not by the device that started it. A Personal remote session (a phone, or a browser or desktop attached through Connect or a private network) may begin any sign-in that returns to the Account service: managed apps and relayed custom apps, which the Host completes from its status poll. One returning to the Host's own loopback callback can only be finished by a browser on that computer, so the Host refuses to begin it remotely and reports `CANONICAL_SURFACE_REQUIRED` when the selected app is one (`oauthSourceFinishesOnHostComputer`). Clients then offer another app by choice, never as a fallback. A remote browser sign-in ends on the Account service's completion page rather than a redirect to the loopback origin. MCP sign-ins return to the Host's callback, so they stay on that computer.
 
 Independent HTTPS Hosts use their registered direct callback. Account-linked local Hosts may relay HTTPS-only callbacks through Account while retaining custom secrets and token exchange locally. The relay receives authorization responses, never the custom app secret or resulting provider token; it remains an Account-service dependency. Public issuer identity and internal control transport origin must remain distinct.
 
@@ -38,7 +40,7 @@ Installation URLs belong to their registration revision. Broker metadata version
 
 Only the Host's committed durable result establishes success. Installation, popup closure or a sealed broker response does not. Closing setup is not cancellation. Keep recovery state to opaque attempt IDs; launch tickets, provider codes and tokens must not enter return URLs or router state.
 
-Direct provider and MCP callbacks must match the launch browser binding and claim state exactly once before processing the response or exchanging tokens.
+Direct provider and MCP callbacks must match the launch browser binding and claim state exactly once before processing the response or exchanging tokens. The launch accepts any origin that reaches the Host, since its single-use ticket is the authority; a launch from another origin cannot complete a direct callback, whose binding cookie must be set on the callback's own origin.
 
 Return only to the initiating Deployment's verified canonical origin and stored relative path. Native completion uses the fixed application callback with stored Deployment/attempt IDs, never a caller-supplied native URL. Unclaimed callbacks cannot acquire redirect destinations from browser input. Desktop shows a completion page because the external browser lacks its Personal Host session. Broker acknowledgment releases temporary material and cannot undo a committed connection.
 

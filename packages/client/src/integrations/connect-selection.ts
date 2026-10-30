@@ -7,7 +7,10 @@ import type {
   IntegrationProviderApplication,
   IntegrationProviderManifest,
 } from "@opensteer/integration-core";
-import { sameIntegrationOAuthApplicationSource } from "@opensteer/integration-core";
+import {
+  oauthSourceFinishesOnHostComputer,
+  sameIntegrationOAuthApplicationSource,
+} from "@opensteer/integration-core";
 
 /**
  * What one Connect flow decides before it touches the Host, shared by the web
@@ -76,11 +79,19 @@ export function canShareApps(dashboard: IntegrationDashboard): boolean {
   return dashboard.isAdministrator;
 }
 
+/**
+ * The apps a sign-in can use from this device. A remote session cannot finish
+ * one whose provider returns to the Host computer's loopback address.
+ */
 export function connectSignInOptions(
   dashboard: IntegrationDashboard,
   provider: IntegrationProvider,
 ): readonly ConnectSignInOption[] {
-  return (dashboard.providerAuthorizations[provider]?.availableSources ?? []).map((source) => {
+  const remote = dashboard.authorizationSurface === "personal-remote";
+  const sources = (dashboard.providerAuthorizations[provider]?.availableSources ?? []).filter(
+    (source) => !remote || !oauthSourceFinishesOnHostComputer(source),
+  );
+  return sources.map((source) => {
     if (source.kind === "hosted-oauth") {
       return {
         application: null,
@@ -122,8 +133,12 @@ export function initialConnectSource(
 /**
  * A Host with eligible apps and no default reports a failure code, because
  * nothing is *selected* — the person can still connect by choosing one. So an
- * eligible app outranks the code, except on a surface that may not launch
- * authorization at all.
+ * eligible app outranks the code.
+ *
+ * A remote session's Host reports CANONICAL_SURFACE_REQUIRED when its selected
+ * app returns to the Host computer; another app that can finish here is then
+ * offered by choice. An older Host reports it for every remote sign-in, with a
+ * selection that could finish anywhere, and that refusal stands.
  */
 export function connectAvailability(
   dashboard: IntegrationDashboard,
@@ -131,10 +146,14 @@ export function connectAvailability(
 ): ConnectAvailability {
   const canSetUp = canSetUpOwnApp(dashboard, provider);
   const authorization = dashboard.providerAuthorizations[provider] ?? null;
+  const options = connectSignInOptions(dashboard, provider);
   if (authorization?.code === "CANONICAL_SURFACE_REQUIRED") {
-    return { detail: authorization.detail, kind: "other-surface" };
+    const selected = authorization.selectedSource;
+    return options.length > 0 && selected !== null && oauthSourceFinishesOnHostComputer(selected)
+      ? { kind: "ready" }
+      : { detail: authorization.detail, kind: "other-surface" };
   }
-  if (connectSignInOptions(dashboard, provider).length > 0) return { kind: "ready" };
+  if (options.length > 0) return { kind: "ready" };
   if (!authorization) {
     return {
       canSetUpOwnApp: canSetUp,

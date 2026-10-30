@@ -165,8 +165,9 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
   }
 }
 
-// Hosted OAuth launches from the canonical surface too, so there is no remote alternative to offer.
-export const canonicalAuthorizationRepair = "Authorize from the owner computer.";
+// Shown for a sign-in whose provider returns to this computer's loopback address.
+export const canonicalAuthorizationRepair =
+  "This sign-in returns to the computer running Opensteer, so finish it there.";
 
 export function canonicalAuthorizationRequired(): OpensteerError {
   return new OpensteerError({

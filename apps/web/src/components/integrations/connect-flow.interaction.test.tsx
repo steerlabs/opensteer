@@ -217,7 +217,7 @@ describe("ConnectFlow", () => {
     await click("Continue to Slack");
     await click("Cancel");
 
-    expect(text()).toContain("Slack is connected as Oversteer");
+    expect(text()).toContain("Slack is connected as oversteer.slack.com");
     expect(text()).not.toContain("No account was connected");
     expect(onConnected).toHaveBeenCalledWith(connectionId);
   });
@@ -479,12 +479,12 @@ describe("ConnectFlow", () => {
       return new Promise(() => {});
     });
     await click("Continue to GitHub");
-    expect(text()).toContain("Finish signing in at GitHub");
+    expect(text()).toContain("Finish signing in to GitHub");
 
     await act(async () => answerCancel(completed(connectionId)));
 
     expect(newerWait.aborted).toBe(false);
-    expect(text()).toContain("Finish signing in at GitHub");
+    expect(text()).toContain("Finish signing in to GitHub");
     expect(buttons()).toContain("Cancel");
     expect(operations.checkRepositoryAccess).toHaveBeenCalledTimes(1);
   });

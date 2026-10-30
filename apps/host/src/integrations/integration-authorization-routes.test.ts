@@ -34,14 +34,10 @@ describe("integration authorization transaction routes", () => {
     }));
     const app = Fastify();
     apps.push(app);
-    const requireCanonicalSurface = vi.fn((headers: { readonly host?: string }) => {
-      if (headers.host !== "host.example.test") throw new Error("canonical surface required");
-    });
     registerIntegrationAuthorizationRoutes(app, {
       attempts: { launch } as unknown as IntegrationAuthAttemptLifecycle,
       authenticator: {
         publicOrigin: "https://host.example.test",
-        requireCanonicalSurface,
       } as unknown as HostAuthenticator,
       deploymentId,
     });
@@ -62,13 +58,17 @@ describe("integration authorization transaction routes", () => {
     );
     expect(launch).toHaveBeenCalledWith({ id: attemptId, launchTicket });
 
+    // A phone or another computer opens the launch through a Personal route.
+    // The ticket is the authority, and the Host began only a sign-in that
+    // returns to the Account service, which needs no cookie on this origin.
     const remote = await app.inject({
       headers: { host: "personal-route.example.test" },
       method: "GET",
       url: `/v1/integration-authorizations/${attemptId}/launch?ticket=${launchTicket}`,
     });
-    expect(remote.statusCode).toBe(500);
-    expect(launch).toHaveBeenCalledOnce();
+    expect(remote.statusCode).toBe(303);
+    expect(remote.headers.location).toBe("https://accounts.example.test/authorize?state=opaque");
+    expect(launch).toHaveBeenCalledTimes(2);
   });
 
   it("exposes status and cancellation only to the authenticated owner", async () => {

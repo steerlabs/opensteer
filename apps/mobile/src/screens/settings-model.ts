@@ -281,6 +281,11 @@ export function computersSettingsFooterFor(rows: readonly ComputerSettingsRow[])
 }
 
 /** Chrome is connected from a computer; the phone sees it and manages allowed sites. */
+export const connectedAppsSettingsRow = {
+  detail: "Gmail, GitHub and the other accounts agents use",
+  title: "Connected apps",
+} as const;
+
 export const chromeSettingsRow = {
   detail: "Your Chrome and the sites agents can sign in to",
   title: "Chrome",

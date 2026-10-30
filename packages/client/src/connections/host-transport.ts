@@ -113,17 +113,17 @@ export class HostTransport {
   }
 
   /**
-   * The provider callback is registered against the Host's canonical origin,
-   * so the consent browser must start there as well. A remote Personal route
-   * deliberately does not change its loopback canonical authority and cannot
-   * originate provider OAuth on another computer.
+   * Where the system browser opens an authorization launch. A sign-in returning
+   * to the Host's own callback needs its launch cookie on the canonical origin,
+   * so that is where it opens. A Personal remote route is the exception: its
+   * canonical origin is another computer's loopback, and the Host begins only
+   * sign-ins there that return to the Account service.
    */
   async integrationAuthorizationOrigin(): Promise<string> {
     const { resolved } = await this.current();
-    if (resolved.access === "connect" || resolved.access === "private") {
-      throw new Error("Connect integrations on the computer that hosts this Personal Opensteer.");
-    }
-    return resolved.canonicalOrigin;
+    return resolved.access === "connect" || resolved.access === "private"
+      ? resolved.origin
+      : resolved.canonicalOrigin;
   }
 
   subscribe(listener: () => void): () => void {

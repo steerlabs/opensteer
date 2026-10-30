@@ -28,6 +28,10 @@ const personalSource = {
   providerApplicationId: personalAppId,
   providerApplicationRevision: 3,
 };
+const loopbackSource = {
+  ...personalSource,
+  callbackUrl: "http://127.0.0.1:4310/v1/integrations/oauth/callback/slack",
+};
 const sharedSource = {
   ...personalSource,
   providerApplicationId: sharedAppId,
@@ -117,10 +121,41 @@ describe("connectAvailability", () => {
     );
   });
 
-  it("keeps the Personal remote boundary even when an app is eligible", () => {
+  it("offers a remote session only the apps whose sign-in it can finish", () => {
+    // The Host selected a loopback app, which only the Host computer's browser
+    // can return to; Opensteer's app is offered by choice, never preselected.
+    const remote = dashboard({
+      code: "CANONICAL_SURFACE_REQUIRED",
+      remote: true,
+      selected: loopbackSource,
+      sources: [loopbackSource, hosted],
+    });
+
+    expect(connectSignInOptions(remote, "slack").map(({ source }) => source)).toEqual([hosted]);
+    expect(initialConnectSource(remote, "slack")).toBeNull();
+    expect(connectAvailability(remote, "slack")).toEqual({ kind: "ready" });
     expect(
       connectAvailability(
-        dashboard({ code: "CANONICAL_SURFACE_REQUIRED", sources: [personalSource] }),
+        dashboard({
+          code: "CANONICAL_SURFACE_REQUIRED",
+          remote: true,
+          selected: loopbackSource,
+          sources: [loopbackSource],
+        }),
+        "slack",
+      ),
+    ).toEqual({ detail: detailFor("CANONICAL_SURFACE_REQUIRED"), kind: "other-surface" });
+  });
+
+  it("keeps an older Host's refusal of every remote sign-in", () => {
+    expect(
+      connectAvailability(
+        dashboard({
+          code: "CANONICAL_SURFACE_REQUIRED",
+          remote: true,
+          selected: hosted,
+          sources: [hosted],
+        }),
         "slack",
       ).kind,
     ).toBe("other-surface");
@@ -252,6 +287,7 @@ function connection(id: string, status: "connected" | "needs-attention") {
 function dashboard(input: {
   readonly code?: IntegrationDashboard["providerAuthorizations"]["slack"]["code"];
   readonly hostedOAuthStatus?: IntegrationDashboard["providerAuthorizations"]["slack"]["hostedOAuthStatus"];
+  readonly remote?: boolean;
   readonly selected?: IntegrationDashboard["providerAuthorizations"]["slack"]["selectedSource"];
   readonly sources?: IntegrationDashboard["providerAuthorizations"]["slack"]["availableSources"];
 }): IntegrationDashboard {
@@ -262,7 +298,7 @@ function dashboard(input: {
       application({ availability: "personal", canManage: true, id: personalAppId, revision: 3 }),
       application({ availability: "deployment", canManage: false, id: sharedAppId, revision: 1 }),
     ],
-    authorizationSurface: "canonical",
+    authorizationSurface: input.remote ? "personal-remote" : "canonical",
     callbackUrls: { slack: "https://deployment.test/v1/integrations/oauth/callback/slack" },
     connections: [],
     hostedOAuthDisclosure: "Opensteer brokers the authorization only.",
