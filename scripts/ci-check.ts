@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { darwinTask } from "../.github/scripts/ci-changes.mjs";
 import { validateResults } from "../.github/scripts/ci-check.mjs";
 import { checkInventories } from "../.github/scripts/ci-inventories.mjs";
 import { darwinOnlyTests } from "../.github/scripts/ci-test-files.mjs";
@@ -22,7 +23,8 @@ for (const [lane, count] of [
     lane,
   );
 }
-if (plan.lanes["native-mac"]) {
+// One task runs the Darwin-only files; Swift-only tasks upload no inventory.
+if (plan.nativeMac?.includes(darwinTask)) {
   const inventory = read("darwin-1.inventory.json");
   checkInventories([inventory], 1, "darwin");
   if (
