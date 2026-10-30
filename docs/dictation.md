@@ -121,16 +121,18 @@ new reservations on unsuccessful installation. Inventory operations share a serv
 coordinator, including suspended reservation calls. Terminal events arrive promptly; the next
 session waits for native cleanup. Equivalent ICU and BCP-47 locale identifiers retain the same
 reservation. Input configuration notifications end capture only when its input identity or format
-changes; output and category changes alone do not. The level ticker samples capture independently
-of analyzer preparation and backpressure.
+changes, or a restart fails. Unchanged-input engine reconfiguration reinstalls the tap and
+restarts capture, serialized with teardown; output-only route changes do nothing. The level ticker
+samples capture independently of analyzer preparation and backpressure.
 
 Results replace overlapping audio ranges and promote at Apple's finalization watermark,
 including unchanged tentative results. Text coalesces every 100 ms, retaining every newly
 finalized segment. Stop removes capture, drains the bounded ten-second queue and converter,
 finishes input, finalizes and consumes results, then flushes text before ending. Cancellation
-supersedes admission and finalization. Preparation/draining and finalization each
-have a five-second stop deadline. Stopping a model download cancels it rather than
-reporting installation success. Overflow and
+supersedes admission and finalization. One five-second deadline from stop acceptance covers
+preparation, draining, converter flush, input completion, finalization and result consumption;
+a timeout flushes recognized text before ending with `recognition-failed`. Stopping a model
+download cancels it rather than reporting installation success. Overflow and
 wire limits (1,000 segments per array, 50,000 UTF-16 units per segment) fail explicitly.
 
 iOS uses `.record` / `.measurement` with Bluetooth HFP for minimally processed speech

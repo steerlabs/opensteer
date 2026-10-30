@@ -31,6 +31,9 @@ public actor DictationService {
   private let makeCapture: @Sendable () -> AudioCapture
   private let makeRecognizer: @Sendable () -> Recognizer
   private let finalizationTimeout: Duration
+  private let beforeFinish: @Sendable () async -> Void
+  private let onCleanupWait: @Sendable () -> Void
+  private let onCleanupReady: @Sendable () -> Void
   private var active: Session?
   /// Terminal events are prompt
   /// Subsequent work waits for native cleanup.
@@ -45,16 +48,25 @@ public actor DictationService {
       return UnsupportedRecognizer()
     }
     finalizationTimeout = .seconds(5)
+    beforeFinish = {}
+    onCleanupWait = {}
+    onCleanupReady = {}
   }
   init(
     emit: @escaping @Sendable (DictationEvent) -> Void,
     capture: @escaping @Sendable () -> AudioCapture,
-    recognizer: @escaping @Sendable () -> Recognizer, timeout: Duration = .seconds(5)
+    recognizer: @escaping @Sendable () -> Recognizer, timeout: Duration = .seconds(5),
+    beforeFinish: @escaping @Sendable () async -> Void = {},
+    onCleanupWait: @escaping @Sendable () -> Void = {},
+    onCleanupReady: @escaping @Sendable () -> Void = {}
   ) {
     self.emit = emit
     makeCapture = capture
     makeRecognizer = recognizer
     finalizationTimeout = timeout
+    self.beforeFinish = beforeFinish
+    self.onCleanupWait = onCleanupWait
+    self.onCleanupReady = onCleanupReady
   }
   public func availability() async -> DictationAvailability {
     guard #available(iOS 26, macOS 26, *) else { return .unavailable(.os) }
@@ -79,8 +91,11 @@ public actor DictationService {
     s.work = Task { await self.begin(s) }
   }
   private func current(_ s: Session) -> Bool { active === s }
+  func admissionTask() -> Task<Void, Never>? { active?.work }
   private func begin(_ s: Session) async {
+    onCleanupWait()
     await cleanup?.value
+    onCleanupReady()
     guard current(s), !s.stopping else { return }
     do {
       let granted = s.capture.permission() == .granted ? true : await s.capture.requestPermission()
@@ -163,11 +178,24 @@ public actor DictationService {
   private func scheduleFinish(_ s: Session, reason: DictationEndReason) {
     guard current(s), !s.stopping else { return }
     // Fence admission at command acceptance, before the finalizer task runs.
+    let deadline = ContinuousClock.now + finalizationTimeout
     s.stopping = true
     s.capture.stop()
     s.queue.finish()
     let reason: DictationEndReason = s.downloading && reason == .completed ? .cancelled : reason
-    s.finisher = Task { await self.finish(s, reason: reason) }
+    if s.listening {
+      s.deadline = Task {
+        do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+        guard self.current(s) else { return }
+        try? s.tracker.finish()
+        self.flush(s)
+        await self.fail(s, .recognitionFailed)
+      }
+    }
+    s.finisher = Task {
+      await self.beforeFinish()
+      await self.finish(s, reason: reason)
+    }
   }
   public func cancel(session: String) async {
     if let s = active, s.id == session { await terminate(s, .cancelled, nil) }
@@ -178,19 +206,9 @@ public actor DictationService {
       await terminate(s, reason, nil)
       return
     }
-    // Preparation and backpressured draining can stall before finalization starts.
-    s.deadline = Task {
-      do { try await Task.sleep(for: finalizationTimeout) } catch { return }
-      await self.fail(s, .recognitionFailed)
-    }
     do {
       try await s.feeder?.value
       guard current(s) else { return }
-      s.deadline?.cancel()
-      s.deadline = Task {
-        do { try await Task.sleep(for: finalizationTimeout) } catch { return }
-        await self.fail(s, .recognitionFailed)
-      }
       try await s.recognizer.finalize()
       try await s.consumer?.value
       guard current(s) else { return }

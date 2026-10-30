@@ -69,6 +69,13 @@ final class Capture: AudioCapture, @unchecked Sendable {
     defer { lock.unlock() }
     return startCount
   }
+  var monitor: InputChanges?
+  var route = Route()
+  let center = NotificationCenter()
+  let source = NSObject()
+  var restartFails = false
+  var beforeStop: (@Sendable () -> Void)?
+  var restartBarrier: (@Sendable () -> Void)?
   var burst = 1
   init(trace: Trace = Trace()) { operations = trace }
   func permission() -> DictationMicrophone { granted ? .granted : .undetermined }
@@ -82,9 +89,22 @@ final class Capture: AudioCapture, @unchecked Sendable {
     startCount += 1
     lock.unlock()
     operations.append("captureStart")
+    monitor = InputChanges(
+      center: center, object: source, read: { self.route.input },
+      restart: {
+        self.restartBarrier?()
+        self.operations.append("restart")
+        if self.restartFails { throw DictationError.microphoneUnavailable }
+        queue.append(buffer())
+      }, changed: { changed(.deviceChanged) })
     for _ in 0..<burst { queue.append(buffer()) }
   }
-  func stop() { operations.append("captureStop") }
+  func stop() {
+    beforeStop?()
+    monitor?.stop()
+    operations.append("captureStop")
+  }
+  func reconfigure() { center.post(name: .AVAudioEngineConfigurationChange, object: source) }
 }
 
 func buffer(seconds: Double = 0.1) -> AVAudioPCMBuffer {
@@ -105,10 +125,14 @@ actor FakeRecognizer: Recognizer {
   var admissionGate: Gate?
   var cleanupGate: Gate?
   var preparationGate: Gate?
-  func gates(admission: Gate? = nil, cleanup: Gate? = nil, preparation: Gate? = nil) {
+  var feedGate: Gate?
+  func gates(
+    admission: Gate? = nil, cleanup: Gate? = nil, preparation: Gate? = nil, feed: Gate? = nil
+  ) {
     admissionGate = admission
     cleanupGate = cleanup
     preparationGate = preparation
+    feedGate = feed
   }
   var receiveLate: (@Sendable (RecognitionResult) async -> Void)?
   var failingResults = false
@@ -116,7 +140,6 @@ actor FakeRecognizer: Recognizer {
   var hanging = false
   var longText = false
   var delayedPreparation = false
-  var delayedFeed = false
   var delayedDownload = false
   init(trace: Trace = Trace()) {
     operations = trace
@@ -124,12 +147,11 @@ actor FakeRecognizer: Recognizer {
   }
   func configure(
     hanging: Bool = false, longText: Bool = false, delayedPreparation: Bool = false,
-    delayedFeed: Bool = false, delayedDownload: Bool = false
+    delayedDownload: Bool = false
   ) {
     self.hanging = hanging
     self.longText = longText
     self.delayedPreparation = delayedPreparation
-    self.delayedFeed = delayedFeed
     self.delayedDownload = delayedDownload
   }
   func availability(microphone: DictationMicrophone) async -> DictationAvailability {
@@ -153,7 +175,7 @@ actor FakeRecognizer: Recognizer {
   }
   func feed(_ buffer: AVAudioPCMBuffer) async throws {
     operations.append("feed")
-    if delayedFeed { try await Task.sleep(for: .seconds(60)) }
+    await feedGate?.wait()
     output.yield(
       .init(
         start: 0, end: 1, finalization: 0,
@@ -198,13 +220,20 @@ final class EngineTests: XCTestCase {
     let capture = Capture()
     let recognizer = FakeRecognizer()
     let gate = Gate()
+    let finish = Gate()
     await recognizer.gates(admission: gate)
     let service = DictationService(
-      emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+      emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer },
+      beforeFinish: { await finish.wait() })
     try await service.start(session: id)
     try await wait { await gate.entered }
+    let admission = await service.admissionTask()
     await service.stop(session: id)
+    try await wait { await finish.entered }
     await gate.open()
+    await admission?.value
+    XCTAssertTrue(events.ended.isEmpty)
+    await finish.open()
     try await wait { !events.ended.isEmpty }
     XCTAssertEqual(events.ended.map(\.payload), [.ended(.completed, nil)])
     XCTAssertEqual(capture.starts, 0)
@@ -216,8 +245,12 @@ final class EngineTests: XCTestCase {
     let recognizer = FakeRecognizer()
     let gate = Gate()
     await recognizer.gates(cleanup: gate)
+    let waiting = Trace()
+    let ready = Trace()
     let service = DictationService(
-      emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+      emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer },
+      onCleanupWait: { waiting.append("begin") },
+      onCleanupReady: { ready.append("ready") })
     try await service.start(session: id)
     try await wait { capture.starts == 1 }
     await service.cancel(session: id)
@@ -225,12 +258,20 @@ final class EngineTests: XCTestCase {
     let count = events.all.count
     await recognizer.lateResult()
     try await service.start(session: other)
+    try await wait { waiting.all.count == 2 }
+    // An actor round trip proves begin reached its cleanup suspension.
+    await service.stop(session: "unknown")
+    XCTAssertEqual(ready.all.count, 1)
     XCTAssertEqual(capture.starts, 1)
+    let beforeCleanup = await recognizer.trace
+    XCTAssertEqual(beforeCleanup.filter { $0 == "admit" }.count, 1)
     XCTAssertEqual(events.all.count, count)
     await gate.open()
     try await wait { capture.starts == 2 }
+    try await wait { await recognizer.trace.contains("cleaned") }
     let trace = await recognizer.trace
-    XCTAssertLessThan(trace.firstIndex(of: "cleaned")!, trace.lastIndex(of: "admit")!)
+    XCTAssertLessThan(
+      try XCTUnwrap(trace.firstIndex(of: "cleaned")), try XCTUnwrap(trace.lastIndex(of: "admit")))
     XCTAssertEqual(events.all.filter { $0.session == id }.count, count)
     await service.cancel(session: other)
   }
@@ -256,22 +297,78 @@ final class EngineTests: XCTestCase {
     await gate.open()
   }
 
-  func testCaptureConfigurationIgnoresOutputAndCategoryChanges() {
-    let center = NotificationCenter()
-    let source = NSObject()
-    let route = Route()
-    let trace = Trace()
-    let monitor = InputChanges(center: center, object: source, read: { route.input }) {
-      trace.append("changed")
+  func testCaptureReconfigurationContinuesAudioOrFinalizes() async throws {
+    for scenario in 0..<4 {
+      let events = Events()
+      let capture = Capture()
+      let recognizer = FakeRecognizer()
+      let service = DictationService(
+        emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+      try await service.start(session: id)
+      try await wait { events.all.contains { $0.payload == .listening } }
+      try await wait { await recognizer.trace.contains("feed") }
+      if scenario == 1 {
+        capture.route.replace(.init(devices: ["headset"], sampleRate: 48000, channels: 1))
+      } else if scenario == 2 {
+        capture.restartFails = true
+      } else if scenario == 3 {
+        capture.route.replace(.init(devices: ["mic"], sampleRate: 16000, channels: 1))
+      }
+      // Output-only route changes do nothing; configuration changes must restart.
+      capture.monitor?.inputChanged()
+      if scenario == 0 { XCTAssertFalse(capture.operations.all.contains("restart")) }
+      capture.reconfigure()
+      if scenario == 0 {
+        try await wait { await recognizer.trace.filter { $0 == "feed" }.count == 2 }
+        XCTAssertTrue(events.ended.isEmpty)
+        XCTAssertEqual(events.all.filter { $0.payload == .listening }.count, 1)
+        await service.stop(session: id)
+      }
+      try await wait { events.ended.count == 1 }
+      XCTAssertEqual(
+        events.ended.map(\.payload), [.ended(scenario == 0 ? .completed : .deviceChanged, nil)])
+      XCTAssertTrue(
+        events.all.contains { $0.payload == .text(finalized: ["last words"], volatile: []) })
+      let restarts = capture.operations.all.filter { $0 == "restart" }.count
+      capture.reconfigure()
+      capture.monitor?.inputChanged()
+      XCTAssertEqual(capture.operations.all.filter { $0 == "restart" }.count, restarts)
     }
-    withExtendedLifetime(monitor) {
-      // Output override and category notifications preserve the input snapshot.
-      center.post(name: .AVAudioEngineConfigurationChange, object: source)
-      center.post(name: .AVAudioEngineConfigurationChange, object: source)
-      XCTAssertEqual(trace.all, [])
-      route.replace(AudioInputIdentity(devices: ["headset"], sampleRate: 48000, channels: 1))
-      center.post(name: .AVAudioEngineConfigurationChange, object: source)
-      XCTAssertEqual(trace.all, ["changed"])
+  }
+
+  func testReconfigurationRacingTeardownCannotRestartAfterEnded() async throws {
+    for cancel in [false, true] {
+      let events = Events()
+      let capture = Capture()
+      let recognizer = FakeRecognizer()
+      let entered = DispatchSemaphore(value: 0)
+      let release = DispatchSemaphore(value: 0)
+      let stopping = DispatchSemaphore(value: 0)
+      capture.beforeStop = { stopping.signal() }
+      capture.restartBarrier = {
+        entered.signal()
+        release.wait()
+      }
+      let service = DictationService(
+        emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+      try await service.start(session: id)
+      try await wait { events.all.contains { $0.payload == .listening } }
+      let configuration = Task.detached { capture.reconfigure() }
+      XCTAssertEqual(entered.wait(timeout: .now() + 3), .success)
+      let teardown = Task {
+        if cancel { await service.cancel(session: id) } else { await service.stop(session: id) }
+      }
+      XCTAssertEqual(stopping.wait(timeout: .now() + 3), .success)
+      release.signal()
+      await configuration.value
+      await teardown.value
+      try await wait { events.ended.count == 1 }
+      capture.reconfigure()
+      XCTAssertEqual(events.ended.map(\.payload), [.ended(cancel ? .cancelled : .completed, nil)])
+      XCTAssertEqual(capture.operations.all.filter { $0 == "restart" }.count, 1)
+      XCTAssertLessThan(
+        capture.operations.all.firstIndex(of: "restart")!,
+        capture.operations.all.firstIndex(of: "captureStop")!)
     }
   }
 
@@ -409,20 +506,20 @@ final class EngineTests: XCTestCase {
     XCTAssertEqual(events.ended.map(\.payload), [.ended(.failed, .busy), .ended(.cancelled, nil)])
   }
   func testOverflowDeadlineAndUTF16LimitsFailExplicitly() async throws {
-    for scenario in 0..<5 {
+    for scenario in 0..<3 {
       let events = Events()
       let capture = Capture()
       let recognizer = FakeRecognizer()
       capture.burst = scenario == 0 ? 101 : 1
       await recognizer.configure(
         hanging: scenario == 1, longText: scenario == 2,
-        delayedPreparation: scenario == 0 || scenario == 3, delayedFeed: scenario == 4)
+        delayedPreparation: scenario == 0)
       let service = DictationService(
         emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer },
         timeout: .milliseconds(25))
       try await service.start(session: id)
       try await wait { events.all.contains { $0.payload == .listening } }
-      if scenario == 1 || scenario >= 3 {
+      if scenario == 1 {
         let stop = Task { await service.stop(session: id) }
         try await wait { !events.ended.isEmpty }
         stop.cancel()
@@ -433,6 +530,39 @@ final class EngineTests: XCTestCase {
       XCTAssertEqual(events.ended.map(\.payload), [.ended(.failed, .recognitionFailed)])
     }
   }
+  func testStopDeadlineCoversBlockedPreparationAndSend() async throws {
+    for preparation in [true, false] {
+      let events = Events()
+      let capture = Capture()
+      let recognizer = FakeRecognizer()
+      let blocked = Gate()
+      if preparation {
+        await recognizer.gates(preparation: blocked)
+      } else {
+        await recognizer.gates(feed: blocked)
+      }
+      let service = DictationService(
+        emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer },
+        timeout: .milliseconds(30))
+      try await service.start(session: id)
+      try await wait { await blocked.entered }
+      await recognizer.lateResult()
+      let start = ContinuousClock.now
+      await service.stop(session: id)
+      try await wait { events.ended.count == 1 }
+      XCTAssertLessThan(start.duration(to: .now), .seconds(1))
+      XCTAssertEqual(events.ended.map(\.payload), [.ended(.failed, .recognitionFailed)])
+      XCTAssertTrue(events.all.contains { $0.payload == .text(finalized: ["late"], volatile: []) })
+      let count = events.all.count
+      let admission = await service.admissionTask()
+      await blocked.open()
+      await admission?.value
+      await service.stop(session: id)
+      await service.cancel(session: id)
+      XCTAssertEqual(events.all.count, count)
+    }
+  }
+
   func testStoppedDownloadIsCancelledRatherThanInstalled() async throws {
     let events = Events()
     let capture = Capture()
@@ -502,7 +632,7 @@ final class EngineTests: XCTestCase {
 }
 
 /// Input snapshots can change from notification-producing threads.
-private final class Route: @unchecked Sendable {
+final class Route: @unchecked Sendable {
   private let lock = NSLock()
   private var value = AudioInputIdentity(devices: ["mic"], sampleRate: 48000, channels: 1)
   var input: AudioInputIdentity {
