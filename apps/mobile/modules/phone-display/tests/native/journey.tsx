@@ -2,7 +2,7 @@ import "../../../../src/runtime.js";
 import { registerRootComponent } from "expo";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useRef, useState, type ComponentRef, type RefObject } from "react";
-import { Dimensions, Platform, Text, View } from "react-native";
+import { AppState, Dimensions, Platform, Text, View } from "react-native";
 import type { BrowserFrameStore, BrowserFrameView } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { useNativeBrowserPicture } from "../../../../src/browser/native-browser-picture.js";
@@ -249,6 +249,36 @@ function Journey() {
         ...options,
       });
     };
+    /** Another app takes over until `probes` leave the screen; resolves once this app is active again. */
+    const background = async (step: string, probes: Probe[]) => {
+      let left = false;
+      let subscription: { remove(): void } | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const returned = new Promise<void>((resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`never happened within 20000 ms: ${step} returned to active`)),
+          20_000,
+        );
+        subscription = AppState.addEventListener("change", (state) => {
+          if (state !== "active") left = true;
+          else if (left) resolve();
+        });
+      });
+      try {
+        const screen = Dimensions.get("screen");
+        const window = Dimensions.get("window");
+        await post("/background", {
+          step,
+          probes,
+          screen: { width: screen.width, height: screen.height },
+          window: { width: window.width, height: window.height },
+        });
+        await returned;
+      } finally {
+        clearTimeout(timer);
+        subscription?.remove();
+      }
+    };
     const expect = async (step: string, condition: boolean, details: unknown = {}) => {
       await post("/assert", { step, passed: condition, details });
     };
@@ -353,10 +383,12 @@ function Journey() {
 
       // Background: the view clears itself and tells JavaScript, which stops aiming at it.
       const clearedBefore = cleared.seen.length;
-      await post("/background", {});
-      await cleared
-        .next(() => true, "native cleared event after background", 6_000)
-        .catch(() => undefined);
+      await background("picture-left-foreground", greenYellow(fit(area, 48, 64)));
+      // The event may already have arrived while another app was in front.
+      if (cleared.seen.length === clearedBefore)
+        await cleared
+          .next(() => true, "native cleared event after background", 6_000)
+          .catch(() => undefined);
       await expect("native cleared on background", cleared.seen.length > clearedBefore, {
         cleared: cleared.seen,
       });
@@ -457,7 +489,7 @@ function Journey() {
       await check("video-live-after-replay", center([0, 0, 255], "blue delta after replay"));
 
       // Background resets the decoder; the old epoch is refused until JavaScript starts a new one.
-      await post("/background", {});
+      await background("video-left-foreground", center([0, 0, 255], "blue delta"));
       await expect(
         "old epoch refused after background",
         !(await decodeDisplayFrame(

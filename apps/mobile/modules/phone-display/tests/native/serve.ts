@@ -2,7 +2,6 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { inflateSync } from "node:zlib";
 import { z } from "zod";
 
@@ -42,6 +41,8 @@ const Check = z.object({
   screen: z.object({ width: z.number().positive(), height: z.number().positive() }),
   window: z.object({ width: z.number().positive(), height: z.number().positive() }),
   never: z.boolean().optional(),
+  /** Passes once no probe matches: the probed pixels have left the screen. */
+  gone: z.boolean().optional(),
   ms: z.number().int().positive().max(5_000).optional(),
 });
 const palette = [
@@ -151,7 +152,10 @@ async function check(input: z.infer<typeof Check>) {
       };
     });
     observations.push({ file: path.basename(file), scale, samples });
-    if (input.never) {
+    if (input.gone) {
+      if (samples.every((sample) => !sample.matches)) return { passed: true, observations };
+      if (Date.now() >= deadline) return { passed: false, observations };
+    } else if (input.never) {
       if (samples.some((sample) => sample.matches)) return { passed: false, observations };
       if (Date.now() >= deadline) return { passed: true, observations };
     } else {
@@ -220,14 +224,15 @@ const server = createServer((request, response) => {
         ...outcome,
       });
     } else if (url.pathname === "/background") {
-      // Another app takes the foreground, then the journey's app returns as a person would.
+      // Another app takes the foreground until the journey's pixels are off
+      // screen, then the journey's app returns as a person would.
+      const parsed = Check.parse(input);
       execFileSync("xcrun", ["simctl", "launch", udid, "com.apple.Preferences"], {
         stdio: "ignore",
       });
-      await delay(2_000);
-      screenshot("backgrounded");
+      const outcome = await check({ ...parsed, gone: true, ms: 5_000 });
+      record(`pixels:${parsed.step}`, outcome.passed, { gone: true, ...outcome });
       execFileSync("xcrun", ["simctl", "launch", udid, bundle], { stdio: "ignore" });
-      await delay(1_000);
     } else if (url.pathname === "/done") {
       const { failed, message } = z
         .object({ failed: z.boolean(), message: z.string().optional() })

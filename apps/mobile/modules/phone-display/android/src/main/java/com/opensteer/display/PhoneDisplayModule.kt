@@ -236,7 +236,8 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
   private val worker = Handler(thread.looper)
   private val main = Handler(Looper.getMainLooper())
   private val queue = PictureQueue<ByteArray>()
-  private val picture = PictureSurface(context)
+  // A picture that never draws loses its pixels, so JavaScript stops aiming at them.
+  private val picture = PictureSurface(context) { onCleared(mapOf("generation" to queue.generation)) }
   private var attached = false
   private var visible = true
   private var destroyed = false
@@ -303,17 +304,18 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
 /**
  * Draws the one shown bitmap into its aspect-fit rect. A picture settles as
  * presented only when it is actually drawn, so input never aims at one that
- * was replaced or cleared first; a view that never draws drops it after a
- * bounded wait.
+ * was replaced or cleared first. A view that does not draw it within a bounded
+ * wait drops it and removes its pixels, so it can never appear later without
+ * a receipt that describes it.
  */
-private class PictureSurface(context: Context) : View(context) {
+private class PictureSurface(context: Context, private val abandoned: () -> Unit) : View(context) {
   private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
   private val clip = Path()
   private val target = RectF()
   private var bitmap: Bitmap? = null
   private var request: PictureRequest? = null
   private var undrawn: PictureReceipt? = null
-  private val abandon = Runnable { settle(PictureOutcome.DROPPED) }
+  private val abandon = Runnable { if (show(null, null)) abandoned() }
   /** Returns whether a picture was on screen before. */
   fun show(next: Bitmap?, nextRequest: PictureRequest?, receipt: PictureReceipt? = null): Boolean {
     val had = bitmap != null
@@ -334,7 +336,8 @@ private class PictureSurface(context: Context) : View(context) {
     val shown = bitmap ?: return
     // Laid out in density-independent pixels, as React Native lays out the page around it.
     val density = resources.displayMetrics.density
-    val rect = request?.rect(width / density.toDouble(), height / density.toDouble()) ?: return settle(PictureOutcome.DROPPED)
+    // An empty view leaves the receipt to the bounded wait: a later layout may still draw it.
+    val rect = request?.rect(width / density.toDouble(), height / density.toDouble()) ?: return
     target.set(rect[0].toFloat() * density, rect[1].toFloat() * density, rect[2].toFloat() * density, rect[3].toFloat() * density)
     val radius = (request?.cornerRadius ?: 0.0).toFloat() * density
     canvas.save()
