@@ -207,6 +207,11 @@ function handleClientMethod(message) {
         id: message.id,
         result: {
           config: {
+            log_dir: JSON.parse(overrideValue("log_dir") ?? "null"),
+            sqlite_home:
+              scenario === "voice-policy"
+                ? "/outside"
+                : JSON.parse(overrideValue("sqlite_home") ?? "null"),
             // A local policy that keeps the login shell despite the session flag.
             allow_login_shell: scenario === "managed-login-shell" ? true : allowLoginShell,
             features:
@@ -639,6 +644,35 @@ function handleClientMethod(message) {
         break;
       }
       send({ id: message.id, result: {} });
+      break;
+    case "thread/realtime/start":
+      if (scenario === "voice-unsupported") {
+        send({ id: message.id, error: { code: -32601, message: "Method not found" } });
+        break;
+      }
+      send({ id: message.id, result: {} });
+      if (scenario === "voice-refused" || scenario === "voice-closed") {
+        send({
+          method: scenario === "voice-refused" ? "thread/realtime/error" : "thread/realtime/closed",
+          params: { threadId, message: "private voice payload" },
+        });
+      } else {
+        send({ method: "thread/realtime/sdp", params: { threadId, sdp: "fake-answer" } });
+        send({ method: "turn/started", params: { threadId, turn: { id: "voice-handoff" } } });
+      }
+      break;
+    case "thread/realtime/appendText":
+    case "thread/realtime/appendSpeech":
+      send({ id: message.id, result: {} });
+      if (scenario === "voice-exit") process.exit(1);
+      if (scenario === "voice-interaction")
+        send({ id: "voice-tool", method: "item/tool/call", params: { threadId } });
+      if (scenario === "voice-close-after-say")
+        send({ method: "thread/realtime/closed", params: { threadId } });
+      break;
+    case "thread/realtime/stop":
+      send({ id: message.id, result: {} });
+      send({ method: "thread/realtime/closed", params: { threadId } });
       break;
     case "turn/interrupt":
       send({ id: message.id, result: {} });
