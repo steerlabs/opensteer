@@ -50,6 +50,18 @@ export const PasskeyDescriptorSchema = z.object({
     ),
 });
 const descriptors = z.array(PasskeyDescriptorSchema).max(64).default([]);
+const hintValues = ["security-key", "client-device", "hybrid"] as const;
+const hints = z
+  .array(z.string().max(64))
+  .max(16)
+  .optional()
+  .transform((values) =>
+    values?.filter((value): value is (typeof hintValues)[number] =>
+      hintValues.includes(value as (typeof hintValues)[number]),
+    ),
+  )
+  .optional();
+const normalizedHints = z.array(z.enum(hintValues)).max(16).optional();
 const extensions = z.object({ credProps: z.boolean().optional() }).default({});
 const userVerification = known(["required", "preferred", "discouraged"] as const).transform(
   (value) => value ?? "preferred",
@@ -98,6 +110,7 @@ export const PublicKeyCredentialCreationOptionsJSONSchema = z
     attestation: known(["none", "indirect", "direct", "enterprise"] as const).transform(
       (value) => value ?? "none",
     ),
+    hints,
     extensions,
   })
   .transform(({ authenticatorSelection, ...options }) => ({
@@ -115,6 +128,7 @@ export const PublicKeyCredentialRequestOptionsJSONSchema = z.object({
   timeout: z.number().finite().nonnegative().optional(),
   allowCredentials: descriptors,
   userVerification,
+  hints,
   extensions,
 });
 export type PasskeyCreationOptions = z.infer<typeof PublicKeyCredentialCreationOptionsJSONSchema>;
@@ -156,6 +170,7 @@ export const NormalizedPasskeyCreationOptionsJSONSchema = z.strictObject({
       authenticatorAttachment: selection.authenticatorAttachment,
     })),
   attestation: z.enum(["none", "indirect", "direct", "enterprise"]),
+  hints: normalizedHints,
   extensions: normalizedExtensions,
 });
 export const NormalizedPasskeyRequestOptionsJSONSchema = z.strictObject({
@@ -164,5 +179,6 @@ export const NormalizedPasskeyRequestOptionsJSONSchema = z.strictObject({
   timeout: z.number().finite().nonnegative().optional(),
   allowCredentials: z.array(normalizedDescriptor).max(64),
   userVerification: UserVerificationSchema,
+  hints: normalizedHints,
   extensions: normalizedExtensions,
 });

@@ -846,3 +846,12 @@ If marker creation fails, key erasure is still attempted, memory remains blocked
 and cleanup reports failure and retries the marker on foreground. Content can
 resurface after restart only if both the private-file marker write and the secure
 key deletion fail and the app is terminated before a retry succeeds.
+
+### Message dictation
+
+On supported iOS 26+ hardware, the composer offers on-device dictation beside
+Attach. The optional Expo module owns microphone capture through the shared Swift
+engine; audio stays in native memory. Send finishes recognition before delivering
+the message, typing keeps the displayed edit, and leaving saves words into the
+original draft. Android and unsupported iOS devices hide the mic. See
+[Dictation](dictation.md#iphone) for lifecycle and verification details.

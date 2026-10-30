@@ -4,6 +4,7 @@ asar: true
 asarUnpack:
   - "**/node_modules/sharp/**/*"
   - "**/node_modules/@img/**/*"
+  - "**/dist/passkeys/*.node"
 beforePack: scripts/before-pack.cjs
 afterPack: scripts/after-pack.cjs
 afterSign: scripts/after-sign.cjs

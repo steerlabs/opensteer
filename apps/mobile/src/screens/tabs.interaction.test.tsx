@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { DictationController } from "@opensteer/client/dictation";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,6 +103,9 @@ const harness = vi.hoisted(() => ({
 }));
 
 type Children = { readonly children?: ReactNode };
+
+const dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
+vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 
 vi.mock("react-native", async () => {
   const React = await vi.importActual<typeof import("react")>("react");

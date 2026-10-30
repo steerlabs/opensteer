@@ -662,7 +662,8 @@ it.each([true, false])(
             type: "host.snapshot",
             snapshot: {
               workspace: boot.homeWorkspace,
-              sequence: "7",
+              // Newer than the accepted page (7), so that history no longer covers it.
+              sequence: "8",
               threads: [initial.thread],
               threadWindow: {
                 byteCount: 2,

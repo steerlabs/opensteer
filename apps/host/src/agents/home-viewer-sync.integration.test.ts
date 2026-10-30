@@ -14,6 +14,7 @@ import {
   DesktopHostHttpResponseSchema,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
@@ -101,6 +102,17 @@ interface BridgeFailures {
   };
   readonly httpOperations: Set<string>;
   readonly transportOperations: Set<string>;
+}
+
+/**
+ * Bounds a wait on a step this test controls. A missed precondition then fails
+ * in seconds with its name instead of timing out the whole test, which would
+ * contaminate every later test in the file.
+ */
+function within<T>(step: Promise<T>, what: string, timeoutMs = 15_000): Promise<T> {
+  return withTimeout(step, timeoutMs, {
+    timeoutError: () => new Error(`Timed out after ${timeoutMs} ms waiting for ${what}.`),
+  });
 }
 
 integration(
@@ -373,8 +385,6 @@ integration(
         httpOperations: new Set(),
         transportOperations: new Set(),
       };
-      const history = hold("initial Home history prefetch");
-      failures.holdResponse = { operation: "/v1/rpc/thread.events.list", enter: history.enter };
       const client = await desktopBoundClient(stack, requests, sockets, failures);
       clients.push(client);
       await client.load();
@@ -383,9 +393,13 @@ integration(
       });
       const firstUnread = client.getSnapshot().threadReadStates[threadId]?.unreadSequence;
       if (!firstUnread) throw new Error("First answer was not unread");
-      // Loading Home starts the prefetch before any explicit activation.
-      await history.entered;
+      // Complete Home's prefetch before activation: covered history can now skip that read.
+      await within(client.loadLatestTranscript(threadId), "Home history to warm before activation");
+      const history = hold("explicit delayed Home history");
+      failures.holdResponse = { operation: "/v1/rpc/thread.events.list", enter: history.enter };
       client.activateThread(threadId);
+      const delayedPage = client.loadLatestTranscript(threadId);
+      await history.entered;
       const mark = await stack.api["commands.dispatch"]({
         idempotencyKey: `racing-mark-${randomUUID()}`,
         threadId,
@@ -412,6 +426,7 @@ integration(
       const newerUnread = client.getSnapshot().threadReadStates[threadId]?.unreadSequence;
       const revisionBeforePage = client.getSnapshot().revision;
       history.release();
+      await within(delayedPage, "the delayed thread.events.list page to settle");
       await vi.waitFor(
         () => {
           expect(client.getSnapshot().revision).toBeGreaterThan(revisionBeforePage);
@@ -1056,6 +1071,8 @@ integration(
       }
       const doneOnOtherDevice = entryOf(otherDevice)?.thread.doneAt ?? null;
 
+      // A covered Done page must not prevent the explicit refresh from reaching the gate.
+      await within(reader.loadLatestTranscript(taskId), "Done task history to warm before refresh");
       const history = hold("Done task history");
       failures.holdResponse = { operation: "/v1/rpc/thread.events.list", enter: history.enter };
       // History read while the task is Done lands only after the other device reopens it.
@@ -1066,7 +1083,7 @@ integration(
         timeout: 15_000,
       });
       history.release();
-      await staleHistory;
+      await within(staleHistory, "the stale history read to settle");
       expect(entryOf(reader)?.thread.doneAt).toBeNull();
       expect(reader.getSnapshot().threads.find(({ id }) => id === taskId)?.doneAt ?? null).toBe(
         null,

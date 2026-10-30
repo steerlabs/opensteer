@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { DictationController } from "@opensteer/client/dictation";
+import type { DictationEvent, DictationPort } from "@opensteer/protocol/dictation";
 import {
   HostClientRequestError,
   type HostClient,
@@ -60,6 +62,9 @@ import type { ThreadHeaderState } from "./thread-pane.js";
 const harness = vi.hoisted(() => ({
   paneRenders: 0,
   drafts: null as ThreadDraftStore | null,
+  focusCleanups: new Set<() => void>(),
+  select: null as
+    null | ((event: { nativeEvent: { selection: { start: number; end: number } } }) => void),
   navigate: vi.fn(),
   dispatch: vi.fn(),
   setParams: vi.fn(),
@@ -83,6 +88,10 @@ const harness = vi.hoisted(() => ({
     readonly onScrollEndDrag?: () => void;
   },
 }));
+
+const selectionCalls: { text: string | undefined; start: number; end: number }[] = [];
+let dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
+vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 
 vi.mock("react-native", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
@@ -167,18 +176,40 @@ vi.mock("react-native", async () => {
     StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
     Text: ({ children }: Children) => <span>{children}</span>,
     TextInput: (props: {
+      readonly ref?: Ref<unknown>;
+      readonly onSelectionChange?: (event: {
+        nativeEvent: { selection: { start: number; end: number } };
+      }) => void;
       readonly accessibilityLabel?: string;
       readonly onChangeText?: (text: string) => void;
       readonly placeholder?: string;
       readonly value?: string;
-    }) => (
-      <textarea
-        aria-label={props.accessibilityLabel}
-        onChange={(event) => props.onChangeText?.(event.currentTarget.value)}
-        placeholder={props.placeholder}
-        value={props.value}
-      />
-    ),
+    }) => {
+      harness.select = props.onSelectionChange ?? null;
+      React.useImperativeHandle(props.ref, () => ({
+        focus: () => undefined,
+        setSelection: (start: number, end: number) =>
+          selectionCalls.push({ text: props.value, start, end }),
+      }));
+      return (
+        <textarea
+          aria-label={props.accessibilityLabel}
+          onChange={(event) => props.onChangeText?.(event.currentTarget.value)}
+          onSelect={(event) =>
+            props.onSelectionChange?.({
+              nativeEvent: {
+                selection: {
+                  start: event.currentTarget.selectionStart,
+                  end: event.currentTarget.selectionEnd,
+                },
+              },
+            })
+          }
+          placeholder={props.placeholder}
+          value={props.value}
+        />
+      );
+    },
     useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
     // A row's air above it is all a test reads of its style.
     View: (
@@ -257,7 +288,17 @@ vi.mock("@react-navigation/native", async () => {
       popTo: (name: string, params: object) => ({ name, params, type: "POP_TO" }),
       push: (name: string, params: object) => ({ name, params, type: "PUSH" }),
     },
-    useFocusEffect: (effect: () => (() => void) | undefined) => React.useEffect(effect, [effect]),
+    useFocusEffect: (effect: () => (() => void) | undefined) =>
+      React.useEffect(() => {
+        const cleanup = effect();
+        if (cleanup) harness.focusCleanups.add(cleanup);
+        return () => {
+          if (cleanup) {
+            harness.focusCleanups.delete(cleanup);
+            cleanup();
+          }
+        };
+      }, [effect]),
     useIsFocused: () => true,
     // One object for the screen's life, as the real hook returns.
     useNavigation: () => navigation,
@@ -525,6 +566,8 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
+  dictation.dispose();
+  dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
   document.body.replaceChildren();
   harness.drafts = null;
   harness.dismissModal = null;
@@ -2787,4 +2830,175 @@ describe("a task's way back", () => {
     const { container } = await mount(fakeHost(withParent(createId("thread"))), workId);
     expect(container.querySelector('[aria-label^="Back to"]')).toBeNull();
   });
+});
+
+async function enableDictation(
+  model: "installed" | "download" = "installed",
+  microphone: "granted" | "denied" = "granted",
+) {
+  let listener: ((event: DictationEvent) => void) | undefined;
+  let session = "";
+  let seq = 0;
+  const port: DictationPort = {
+    availability: async () => ({
+      available: true,
+      locale: "en-US",
+      languageName: "English",
+      model,
+      microphone,
+    }),
+    start: vi.fn(async (id) => {
+      session = id;
+      seq = 0;
+    }),
+    download: vi.fn(async (id) => {
+      session = id;
+      seq = 0;
+    }),
+    stop: vi.fn(async () => undefined),
+    cancel: vi.fn(async () => undefined),
+    subscribe: (next) => {
+      listener = next;
+      return () => {
+        listener = undefined;
+      };
+    },
+    openMicrophoneSettings: vi.fn(async () => undefined),
+  };
+  dictation.dispose();
+  dictation = new DictationController({ port, createId: () => crypto.randomUUID() });
+  await dictation.refresh();
+  return {
+    port,
+    emit: async (payload: object) => {
+      await act(async () => listener?.({ session, seq: ++seq, ...payload } as DictationEvent));
+      await settle();
+    },
+  };
+}
+
+it("dictates at the caret, cancels preview, adopts edits and sends finalized words once", async () => {
+  const speech = await enableDictation();
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const { container } = await mount(host, workId);
+  await type(container, "Message", "Hi there");
+  const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')!;
+  await act(async () => {
+    harness.select?.({ nativeEvent: { selection: { start: 2, end: 2 } } });
+  });
+  await press(container, "Start dictation (English)");
+  await speech.emit({ type: "listening" });
+  await speech.emit({ type: "text", finalized: [], volatile: ["my"] });
+  expect(field.value).toBe("Hi my there");
+  await press(container, "Cancel dictation");
+  expect(field.value).toBe("Hi there");
+  await act(async () => harness.select?.({ nativeEvent: { selection: { start: 3, end: 8 } } }));
+  await press(container, "Start dictation (English)");
+  await speech.emit({ type: "listening" });
+  await speech.emit({ type: "text", finalized: [], volatile: ["my"] });
+  expect(field.value).toBe("Hi my");
+  expect(selectionCalls.at(-1)).toEqual({ text: "Hi my", start: 5, end: 5 });
+  const calls = selectionCalls.length;
+  await act(async () => harness.select?.({ nativeEvent: { selection: { start: 0, end: 0 } } }));
+  await speech.emit({ type: "text", finalized: [], volatile: ["my"] });
+  expect(selectionCalls).toHaveLength(calls);
+  await speech.emit({ type: "text", finalized: [], volatile: ["my friend"] });
+  expect(selectionCalls.at(-1)).toEqual({ text: "Hi my friend", start: 12, end: 12 });
+  await type(container, "Message", "Hi my there!");
+  expect(speech.port.cancel).toHaveBeenCalled();
+  expect(field.value).toBe("Hi my there!");
+  await press(container, "Start dictation (English)");
+  await speech.emit({ type: "listening" });
+  await speech.emit({ type: "text", finalized: ["friend"], volatile: [] });
+  await press(container, "Send message");
+  await press(container, "Send message");
+  expect(speech.port.stop).toHaveBeenCalledTimes(1);
+  await speech.emit({ type: "ended", reason: "completed", error: null });
+  expect(host.dispatch.mock.calls[0]?.[0]).toMatchObject({
+    type: "thread.sendMessage",
+    content: [{ type: "text", text: "Hi my there! friend" }],
+  });
+  expect(sent(host.dispatch)).toHaveLength(1);
+  expect(selectionCalls.at(-1)).toEqual({ text: "Hi my there! friend", start: 19, end: 19 });
+});
+
+it("keeps denied permission actionable and downloads without starting the microphone", async () => {
+  let speech = await enableDictation("installed", "denied");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const { container } = await mount(host, workId);
+  await press(container, "Start dictation (English)");
+  await press(container, "Open Settings");
+  expect(speech.port.openMicrophoneSettings).toHaveBeenCalledOnce();
+  speech = await enableDictation("download");
+  // Re-render the existing composer against its new runtime.
+  await type(container, "Message", "download");
+  await press(container, "Start dictation (English)");
+  await speech.emit({ type: "downloading", progress: 0.42 });
+  expect(text(container)).toContain("42%");
+  await speech.emit({ type: "ended", reason: "completed", error: null });
+  expect(text(container)).toContain("English is ready");
+  expect(speech.port.start).not.toHaveBeenCalled();
+});
+
+it.each(["failed", "aborted", "unmount", "blur", "read-only"])(
+  "does not send after dictation %s",
+  async (outcome) => {
+    const speech = await enableDictation();
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container } = await mount(host, workId);
+    await press(container, "Start dictation (English)");
+    await speech.emit({ type: "listening" });
+    await speech.emit({ type: "text", finalized: ["hello"], volatile: [] });
+    await press(container, "Send message");
+    if (outcome === "aborted") await type(container, "Message", "edited while finishing");
+    if (outcome === "read-only") {
+      const next = snapshotFor({ entries: [], run: null, threadId: workId });
+      host.move({
+        ...next,
+        threads: next.threads.map((t) => (t.id === workId ? { ...t, status: "archived" } : t)),
+      });
+      await settle();
+    }
+    if (outcome === "unmount") await act(async () => roots.pop()?.unmount());
+    if (outcome === "blur")
+      await act(async () => {
+        for (const cleanup of harness.focusCleanups) cleanup();
+      });
+    await speech.emit({
+      type: "ended",
+      reason: outcome === "failed" ? "failed" : "completed",
+      error: outcome === "failed" ? "recognition-failed" : null,
+    });
+    expect(sent(host.dispatch)).toHaveLength(0);
+  },
+);
+
+it("hides an unsupported mic and disables it while another composer owns dictation", async () => {
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const { container } = await mount(host, workId);
+  expect(hasButton(container, "Start dictation (English)")).toBe(false);
+  await act(async () => {
+    await enableDictation();
+  });
+  await type(container, "Message", "refresh");
+  await act(async () =>
+    dictation.start({
+      owner: "another",
+      read: () => ({ text: "", selection: { start: 0, end: 0 } }),
+      commit: () => undefined,
+    }),
+  );
+  expect(button(container, "Start dictation (English)").disabled).toBe(true);
+  await act(async () => dictation.cancel("another"));
+});
+
+it("does not send an empty message when Send finishes a microphone with no speech", async () => {
+  const speech = await enableDictation();
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const { container } = await mount(host, workId);
+  await press(container, "Start dictation (English)");
+  await press(container, "Send message");
+  await speech.emit({ type: "ended", reason: "completed", error: null });
+  expect(sent(host.dispatch)).toHaveLength(0);
+  expect(text(container)).toContain("No speech detected");
 });
