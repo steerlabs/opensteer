@@ -1,7 +1,7 @@
 const { withPodfile } = require("expo/config-plugins");
 
 // Expo autolinking registers modules that expose a Swift Module class. This
-// SwiftPM/pod data library has no JS module; add its one local pod explicitly.
+// SwiftPM/pod engine has no JS module; add its one local pod explicitly.
 module.exports = function withDictation(config) {
   return withPodfile(config, (next) => {
     const anchor = "  use_expo_modules!";
