@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { execFileSync, type ChildProcess } from "node:child_process";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -22,6 +22,7 @@ const home = await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "opens
 const data = path.join(home, "userdata");
 let app: ElectronApplication | undefined;
 let page: Page | undefined;
+let launched: ChildProcess | undefined;
 let step = "packaged executable did not launch";
 let children: number[] = [];
 const processTable = () =>
@@ -34,9 +35,23 @@ const alive = (pid: number) => {
     return false;
   }
 };
+async function bounded<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(Error(step)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const deadline = setTimeout(() => {
   console.error(`Launch check exceeded 180 seconds: ${step}`);
-  for (const pid of [...children, app?.process().pid].reverse()) {
+  if (launched?.pid) children.push(...descendantPids(processTable(), launched.pid));
+  for (const pid of [...children.reverse(), launched?.pid]) {
     if (pid && alive(pid)) process.kill(pid, "SIGKILL");
   }
   process.exit(1);
@@ -54,22 +69,22 @@ try {
       OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT: path.join(home, "workspace"),
     },
   });
-  app
-    .process()
-    .stdout?.on(
-      "data",
-      (chunk: Buffer) => void writeFile(path.join(artifacts, "stdout.log"), chunk, { flag: "a" }),
-    );
-  app
-    .process()
-    .stderr?.on(
-      "data",
-      (chunk: Buffer) => void writeFile(path.join(artifacts, "stderr.log"), chunk, { flag: "a" }),
-    );
+  launched = app.process();
+  launched.stdout?.on(
+    "data",
+    (chunk: Buffer) => void writeFile(path.join(artifacts, "stdout.log"), chunk, { flag: "a" }),
+  );
+  launched.stderr?.on(
+    "data",
+    (chunk: Buffer) => void writeFile(path.join(artifacts, "stderr.log"), chunk, { flag: "a" }),
+  );
   // Decline the first-run move prompt without touching the installed application.
-  await app.evaluate(({ dialog }) => {
-    dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
-  });
+  await bounded(
+    app.evaluate(({ dialog }) => {
+      dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+    }),
+    5_000,
+  );
   step = "desktop window never opened";
   page = await app.firstWindow({ timeout: 30_000 });
   const fatal: string[] = [];
@@ -81,27 +96,30 @@ try {
     .waitFor({ timeout: 30_000 });
   step = "Personal Host never became ready";
   // This is the same action as the welcome screen's setup button.
-  await page.evaluate(() => {
-    void (
-      window as Window & {
-        opensteerDesktop: import("@opensteer/protocol/desktop").OpensteerDesktopBridge;
-      }
-    ).opensteerDesktop.createPersonalDeployment();
-  });
+  await bounded(
+    page.evaluate(() => {
+      void (
+        window as Window & {
+          opensteerDesktop?: import("../packages/protocol/src/desktop.js").OpensteerDesktopBridge;
+        }
+      ).opensteerDesktop!.createPersonalDeployment();
+    }),
+    5_000,
+  );
   await page.waitForFunction(
     async () => {
       const snapshot = await (
         window as Window & {
-          opensteerDesktop: import("@opensteer/protocol/desktop").OpensteerDesktopBridge;
+          opensteerDesktop?: import("../packages/protocol/src/desktop.js").OpensteerDesktopBridge;
         }
-      ).opensteerDesktop.getDeploymentAccessSnapshot();
-      if (snapshot.personalSetup?.state === "failed") throw Error("Personal setup failed");
+      ).opensteerDesktop!.getDeploymentAccessSnapshot();
+      if (snapshot.personalSetup?.issue != null) throw Error("Personal setup failed");
       return snapshot.personalSetup?.state === "ready";
     },
     undefined,
     { timeout: 80_000 },
   );
-  children = descendantPids(processTable(), app.process().pid!);
+  children = descendantPids(processTable(), launched!.pid!);
   const deployments = await readdir(path.join(data, "deployments"));
   const manifest = JSON.parse(
     await readFile(path.join(data, "deployments", deployments[0]!, "deployment.v1.json"), "utf8"),
@@ -115,12 +133,9 @@ try {
   await page.getByPlaceholder("Ask Opensteer…").waitFor({ timeout: 15_000 });
   if (fatal.length) throw Error(`Renderer fatal errors: ${fatal.join("; ")}`);
   step = "desktop did not quit cleanly";
-  children = [...new Set([...children, ...descendantPids(processTable(), app.process().pid!)])];
-  const child = app.process();
-  await Promise.race([
-    app.close(),
-    new Promise<never>((_, reject) => setTimeout(() => reject(Error(step)), 15_000).unref()),
-  ]);
+  children = [...new Set([...children, ...descendantPids(processTable(), launched!.pid!)])];
+  const child = launched!;
+  await bounded(app.close(), 15_000);
   if (child.exitCode !== 0) throw Error(`Desktop exited ${child.exitCode}`);
   step = "desktop children survived quit";
   const survivors = children.filter(alive);
@@ -139,9 +154,10 @@ try {
   );
   process.exitCode = 1;
 } finally {
-  if (app?.process().pid) children.push(...descendantPids(processTable(), app.process().pid!));
-  for (const pid of [...children.reverse(), app?.process().pid]) {
+  if (launched?.pid) children.push(...descendantPids(processTable(), launched!.pid!));
+  for (const pid of [...children.reverse(), launched?.pid]) {
     if (pid && alive(pid)) process.kill(pid, "SIGKILL");
   }
   clearTimeout(deadline);
+  await rm(home, { recursive: true, force: true });
 }

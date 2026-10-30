@@ -782,3 +782,15 @@ test("a cancelled source skips cleanly only after main advances and a newer push
     f.close();
   }
 });
+
+test("final release bytes launch before upload, for both channels, with failure evidence", () => {
+  const steps = workflow.jobs.build.steps;
+  const prepare = steps.findIndex((s) => s.name === "Verify and prepare exact release bytes");
+  const launch = steps[prepare + 1];
+  assert.equal(launch.name, "Launch check");
+  assert.equal(launch["timeout-minutes"], 3);
+  assert.match(launch.run, /smoke-desktop-release.ts/);
+  assert.match(launch.run, /beta\/mac-arm64\/Opensteer Beta.app/);
+  assert.match(launch.run, /release\/mac-arm64\/Opensteer.app/);
+  assert.equal(steps[prepare + 2].if, "failure()");
+});
