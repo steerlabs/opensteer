@@ -280,6 +280,11 @@ export function computersSettingsFooterFor(rows: readonly ComputerSettingsRow[])
     : computersSettingsFooter;
 }
 
+export const browserProfilesSettingsRow = {
+  detail: "Separate browsers with their own sign-ins",
+  title: "Browser profiles",
+} as const;
+
 /** Chrome is connected from a computer; the phone sees it and manages allowed sites. */
 export const chromeSettingsRow = {
   detail: "Your Chrome and the sites agents can sign in to",
