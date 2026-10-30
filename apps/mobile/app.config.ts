@@ -90,6 +90,8 @@ const config: ExpoConfig = {
     supportsTablet: true,
     // Resizing shares one navigation history and draft owner across device poses.
     infoPlist: {
+      NSMicrophoneUsageDescription:
+        "Opensteer uses the microphone only while you dictate a message.",
       NSCalendarsFullAccessUsageDescription:
         "Agents you allow can read your calendar, and change it if you let them, while Opensteer is open.",
       NSRemindersFullAccessUsageDescription:
@@ -132,6 +134,7 @@ const config: ExpoConfig = {
   plugins: [
     "expo-secure-store",
     "./plugins/with-apple-data.cjs",
+    "./plugins/with-dictation.cjs",
     "expo-web-browser",
     [
       "expo-image-picker",
