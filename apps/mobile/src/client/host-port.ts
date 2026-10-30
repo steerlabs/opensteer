@@ -93,6 +93,8 @@ export function createNetworkHostPort(options: {
         capabilities,
         fetch: network.fetch,
         lifecycle: options.lifecycle,
+        // The phone opens on Chat, so Home's history starts with bootstrap.
+        prefetchHome: true,
         webSocketFactory: network.webSocketFactory,
       });
     },

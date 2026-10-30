@@ -222,6 +222,8 @@ export async function runMobileNetworkSample(options: {
       baseUrl: proxy.origin,
       fetch: measuredFetch,
       lifecycle,
+      // As apps/mobile's Host port configures the phone.
+      prefetchHome: true,
       random: () => 0.5,
       capabilities: async () => {
         const verified = await verifyAccessEndpoint({
