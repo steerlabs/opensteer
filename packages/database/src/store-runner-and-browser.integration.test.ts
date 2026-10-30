@@ -3841,6 +3841,14 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       store.renameBrowserProfile({ name: "Back", ownerId, profileId: profile.id }),
     ).rejects.toMatchObject({ code: "not_found" });
+    // A late replay of its creation must not hand it back.
+    await expect(
+      store.createBrowserProfile({
+        idempotencyKey: "profile-delete-shopping",
+        name: "Shopping",
+        ownerId,
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
     await expect(
       store.createBrowserProfileGrant({
         access: "full-control",

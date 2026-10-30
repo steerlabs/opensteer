@@ -1343,6 +1343,8 @@ export class HttpHostClient {
         break;
       case "browser.profile.delete":
         if (commandIs(parsedCommand, result.type)) {
+          // Its history on this device goes with it.
+          this.recentSites.clear({ kind: "profile", profileId: parsedCommand.profileId });
           this.#update(
             applyOptimisticCommandPatch(this.#snapshot, {
               profileId: parsedCommand.profileId,

@@ -205,12 +205,18 @@ export async function createBrowserProfile(
         recorded.data.request.name !== input.name
       )
         throw idempotencyConflict(input.idempotencyKey);
-      return transaction
+      const profile = await transaction
         .selectFrom("browserProfiles")
         .select(["id", "name", "ownerId", "revision"])
         .where("id", "=", recorded.data.profileId)
         .where("ownerId", "=", input.ownerId)
-        .executeTakeFirstOrThrow();
+        .where("archivedAt", "is", null)
+        .executeTakeFirst();
+      // A replay after deletion must not hand the deleted profile back.
+      if (!profile) {
+        throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+      }
+      return profile;
     }
     await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
       transaction,
@@ -1960,10 +1966,12 @@ export async function createBrowserProfileGrant(
       transaction,
     );
     const [profile, existing, activeOwnerGrants] = await Promise.all([
+      // KEY SHARE waits out a deletion's FOR UPDATE, so a grant never outlives its profile.
       transaction
         .selectFrom("browserProfiles")
         .select(["archivedAt", "ownerId"])
         .where("id", "=", input.profileId)
+        .forKeyShare()
         .executeTakeFirst(),
       transaction
         .selectFrom("browserProfileGrants")
