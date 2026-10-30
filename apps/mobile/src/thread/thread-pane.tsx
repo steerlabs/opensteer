@@ -46,7 +46,6 @@ import {
   AppState,
   FlatList,
   KeyboardAvoidingView,
-  Linking,
   Platform,
   Pressable,
   StyleSheet,
@@ -965,11 +964,6 @@ function ThreadPaneForUser(
               onOpenStep={openStep}
               onOpenBrowsers={openBrowsers}
               onOpenThread={openSource}
-              onOpenAutomation={(path) => {
-                const origin =
-                  client.getSnapshot().selection.connection?.authority.document.canonicalOrigin;
-                if (origin) void Linking.openURL(new URL(path, origin).toString());
-              }}
               spacingTop={item.spacingTop}
               unreadBoundary={item.unreadBoundary}
               homeThreadId={snapshot.homeThreadId}
@@ -984,7 +978,6 @@ function ThreadPaneForUser(
       ),
     [
       anchorMessageId,
-      client,
       askAbout,
       conversational,
       engineName,

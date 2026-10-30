@@ -83,7 +83,7 @@ import {
   useComputerUseStopForRun,
   useThreadPlace,
 } from "@opensteer/client/react";
-import type { BrowserPageContentPart } from "@opensteer/core";
+import type { AssignmentSummary, BrowserPageContentPart, WaitingRequest } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { AttachmentReader, MessageAttachments } from "./attachments/message-attachments.js";
 import { Dialog } from "./dialog.js";
@@ -176,8 +176,8 @@ const ReaderComputers = createContext<TranscriptComputers | null>(null);
 const RunPictures = createContext<HostClient | null>(null);
 
 const noWorkspaces: readonly WorkspaceSummary[] = [];
-const noWaitingRequests: readonly import("@opensteer/core").WaitingRequest[] = [];
-const noAssignments: Readonly<Record<string, import("@opensteer/core").AssignmentSummary>> = {};
+const noWaitingRequests: readonly WaitingRequest[] = [];
+const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
 const noBrowsers: readonly BrowserSessionSummary[] = [];
 
 /**
@@ -228,8 +228,8 @@ export function AgentTranscript({
   computers?: TranscriptComputers | null;
   live?: boolean;
   entries: readonly TranscriptEntry[];
-  waitingRequests?: readonly import("@opensteer/core").WaitingRequest[];
-  assignments?: Readonly<Record<string, import("@opensteer/core").AssignmentSummary>>;
+  waitingRequests?: readonly WaitingRequest[];
+  assignments?: Readonly<Record<string, AssignmentSummary>>;
   browserSessions?: readonly BrowserSessionSummary[];
   /**
    * Names the engine behind a recorded selection, as the reader knows it.
@@ -746,6 +746,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
             onClick={(event) => openActivity?.(turnKey, event.currentTarget)}
           >
             {silentRunLabel(turn.run)}
+            <Icon name="chevron-right" />
           </button>
         ) : (
           <RunOutcome conversation run={turn.run} />
@@ -1951,7 +1952,8 @@ function TurnSource({ source }: { source: NonNullable<Turn["source"]> }) {
   const content = (
     <>
       <Icon name={from.glyph} /> {from.name} ·{" "}
-      <time dateTime={source.createdAt}>{formatClockTime(source.createdAt)}</time> ›
+      <time dateTime={source.createdAt}>{formatClockTime(source.createdAt)}</time>
+      {from.href ? " ›" : null}
     </>
   );
   return (
@@ -2307,14 +2309,6 @@ function RunOutcome({
         <p className="run-note">
           <Icon name="stop" /> {conversation ? "Stopped." : "Run stopped."}
         </p>
-        {restart}
-      </>
-    );
-  }
-  if (run.status === "completed" && run.replyMessageId === null) {
-    return (
-      <>
-        {conversation ? <p className="run-note">{silentRunLabel(run)}</p> : null}
         {restart}
       </>
     );

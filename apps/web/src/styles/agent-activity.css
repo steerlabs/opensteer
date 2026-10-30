@@ -1222,8 +1222,24 @@ div.trace-step__head .trace-step__detail {
   flex: 1;
 }
 
+/* The silent turn's line opens its Activity, so it is a button drawn as text. */
 .run-note--worked {
+  gap: var(--space-2);
+  border: 0;
+  background: none;
+  font: inherit;
   font-size: 12.5px;
+  color: var(--muted-dim);
+  cursor: pointer;
+}
+
+.run-note--worked:hover {
+  color: var(--text-soft);
+}
+
+.run-note--worked .icon {
+  width: 13px;
+  height: 13px;
 }
 
 .turn-source,

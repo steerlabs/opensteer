@@ -1,5 +1,4 @@
 import {
-  automationPath,
   type AskAbout,
   incomingMessageAction,
   activityStepHead,
@@ -91,7 +90,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   /** Opens another Thread this one points at: a delegation, or an agent's message. */
   readonly onOpenThread: (threadId: string) => void;
   /** Opens the exact conversation's browser inventory. */
-  readonly onOpenAutomation?: ((path: string) => void) | undefined;
   readonly onOpenBrowsers: (threadId: string) => void;
   /** Given, every update another agent published offers it. */
   readonly askAbout?: AskAbout | undefined;
@@ -119,7 +117,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
             onOpenReplyUnderWay={props.onOpenReplyUnderWay}
             onReply={props.onReply}
             onOpenThread={props.onOpenThread}
-            onOpenAutomation={props.onOpenAutomation}
             workspaces={props.workspaces}
             homeThreadId={props.homeThreadId}
             turn={group.turn}
@@ -330,7 +327,6 @@ export function replyActivityKeys(groups: readonly TranscriptGroup[]): ReadonlyM
  * reads as what was said.
  */
 function ConversationTurn(props: {
-  readonly onOpenAutomation?: ((path: string) => void) | undefined;
   readonly onOpenThread: (threadId: string) => void;
   readonly workspaces: readonly WorkspaceSummary[];
   readonly homeThreadId: string | null;
@@ -375,7 +371,6 @@ function ConversationTurn(props: {
       {view.reply !== null && turn.source ? (
         <TurnSource
           source={turn.source}
-          onOpenAutomation={props.onOpenAutomation}
           onOpenThread={props.onOpenThread}
           workspaces={props.workspaces}
           homeThreadId={props.homeThreadId}
@@ -1143,14 +1138,8 @@ function MessageFold(props: {
 
 type UpdateAuthor = Exclude<MessageEntry["author"], { readonly kind: "human" }>;
 
-/**
- * In a conversation, what another agent or an automation sent its agent: one
- * line saying who, and whether it was left for later or is work now, opening
- * in place to what was said. The conversation stays between the reader and the
- * agent they are talking to.
- */
+/** Why Opensteer spoke unprompted: what woke the turn, above its reply. */
 function TurnSource(props: {
-  readonly onOpenAutomation?: ((path: string) => void) | undefined;
   readonly source: NonNullable<Turn["source"]>;
   readonly onOpenThread: (threadId: string) => void;
   readonly workspaces: readonly WorkspaceSummary[];
@@ -1171,19 +1160,14 @@ function TurnSource(props: {
         tint={color.muted}
       />
       <AppText role="caption" tone="muted" style={{ fontSize: 12 }}>
-        {name} · {formatClockTime(createdAt)} ›
+        {name} · {formatClockTime(createdAt)}
+        {threadId ? " ›" : ""}
       </AppText>
     </View>
   );
-  const automation =
-    author.kind === "trigger" || author.kind === "watch" ? automationPath(author.triggerId) : null;
-  const onPress = threadId
-    ? () => props.onOpenThread(threadId)
-    : automation && props.onOpenAutomation
-      ? () => props.onOpenAutomation?.(automation)
-      : undefined;
-  return onPress ? (
-    <Pressable accessibilityRole="link" onPress={onPress}>
+  // Automations have no page on mobile, so they are named and left at that.
+  return threadId ? (
+    <Pressable accessibilityRole="link" onPress={() => props.onOpenThread(threadId)}>
       {content}
     </Pressable>
   ) : (
@@ -1191,6 +1175,12 @@ function TurnSource(props: {
   );
 }
 
+/**
+ * In a conversation, what another agent or an automation sent its agent: one
+ * line saying who, and whether it was left for later or is work now, opening
+ * in place to what was said. The conversation stays between the reader and the
+ * agent they are talking to.
+ */
 function UpdateLine(props: {
   readonly author: UpdateAuthor;
   readonly homeThreadId: string | null;
@@ -1492,7 +1482,7 @@ function RunOutcome(props: {
     return (
       <>
         <AppText role="secondary" tone="muted">
-          {props.conversation === true ? silentRunLabel(run) : null}
+          {silentRunLabel(run)}
         </AppText>
         {footer}
       </>
