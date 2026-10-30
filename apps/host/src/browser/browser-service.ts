@@ -5201,11 +5201,14 @@ class HostedBrowserBroker {
         return Promise.reject(
           new OpensteerError({ code: "not_found", message: "Browser tab not found." }),
         );
+      const frameWindow =
+        message.type === "stream.subscribe" && !!surfaceId && message.frameWindow === 1;
       const captureRegion = message.type === "stream.subscribe" && message.captureRegion === true;
       if (
         outlet.subscription === subscription &&
         outlet.surfaceId === surfaceId &&
-        outlet.captureRegion === captureRegion
+        outlet.captureRegion === captureRegion &&
+        outlet.frameWindow === frameWindow
       )
         return Promise.resolve();
       if (
@@ -5237,6 +5240,7 @@ class HostedBrowserBroker {
       const context = shown && this.#editingContexts.get(shown.id);
       if (outlet.editing && context && context.geometryRevision === shown.geometryRevision)
         void outlet.sendText(JSON.stringify(context)).catch(() => undefined);
+      outlet.frameWindow = frameWindow;
       outlet.captureRegion = captureRegion;
       outlet.resetSubscription();
       outlet.subscription = subscription;
@@ -5730,7 +5734,10 @@ const watchAcknowledgementTimeoutMs = 15_000;
  * is done with the picture, which is its credit for the next: a token that is
  * not the outstanding one is simply late and changes nothing.
  */
-class BrowserConsumerOutlet {
+export class BrowserConsumerOutlet {
+  frameWindow = false;
+  #window = 1;
+  #rtts: number[] = [];
   userId: UserId | null = null;
   passkeys: PasskeyMode | undefined;
   authorized: () => Promise<boolean> = async () => false;
@@ -5750,7 +5757,10 @@ class BrowserConsumerOutlet {
   #closed = false;
   #frameInFlight = false;
   #pending: { readonly frame: Buffer; readonly header: BrowserBinaryFrameHeader } | null = null;
-  #outstanding: { readonly token: string; readonly timer: NodeJS.Timeout } | null = null;
+  #outstanding = new Map<
+    string,
+    { sentAt: number; bytes: number; timer: NodeJS.Timeout; saturated: boolean }
+  >();
   readonly diagnostics: {
     editing?: Readonly<Record<string, number>>;
     stage: string;
@@ -5760,7 +5770,6 @@ class BrowserConsumerOutlet {
     code?: number;
     reason?: string;
   }[] = [];
-  #sentAt = 0;
   #diagnose(record: (typeof this.diagnostics)[number]): void {
     if (this.diagnostics.length === 256) this.diagnostics.shift();
     const diagnostic = { ...record, editing: { ...this.editingCounters } };
@@ -5850,7 +5859,14 @@ class BrowserConsumerOutlet {
       }
       return;
     }
-    if (this.#frameInFlight || this.#outstanding) {
+    if (
+      this.#frameInFlight ||
+      this.#outstanding.size >= this.#window ||
+      (this.#outstanding.size > 0 &&
+        [...this.#outstanding.values()].reduce((sum, item) => sum + item.bytes, 0) +
+          watchFrameEnvelope(frame, header, "00000000-0000-0000-0000-000000000000").byteLength >
+          1024 * 1024)
+    ) {
       if (this.#pending) this.#diagnose({ stage: "drop", frameId: this.#pending.header.frameId });
       this.#pending = { frame, header };
       return;
@@ -5869,12 +5885,16 @@ class BrowserConsumerOutlet {
         watchAcknowledgementTimeoutMs,
       );
       timer.unref();
-      this.#outstanding = { token, timer };
       const { capture: _capture, ...legacyHeader } = header;
       outbound = watchFrameEnvelope(frame, this.captureRegion ? header : legacyHeader, token);
+      this.#outstanding.set(token, {
+        sentAt: performance.now(),
+        bytes: outbound.byteLength,
+        timer,
+        saturated: this.#outstanding.size + 1 >= this.#window,
+      });
     }
     const started = performance.now();
-    this.#sentAt = started;
     void this.peer.send(outbound, true).then(
       () => {
         this.#diagnose({
@@ -5884,17 +5904,27 @@ class BrowserConsumerOutlet {
           durationMs: performance.now() - started,
         });
         this.#frameInFlight = false;
-        if (!this.#outstanding) this.#flushPending();
+        this.#flushPending();
       },
       () => this.#end(browserViewerCloseCodes.tryAgain, "Slow browser consumer"),
     );
   }
 
   acknowledge(token: string): Promise<void> {
-    if (this.#outstanding?.token !== token) return Promise.resolve();
-    this.#diagnose({ stage: "credit", durationMs: performance.now() - this.#sentAt });
-    clearTimeout(this.#outstanding.timer);
-    this.#outstanding = null;
+    const receipt = this.#outstanding.get(token);
+    if (!receipt) return Promise.resolve();
+    const delay = performance.now() - receipt.sentAt;
+    this.#diagnose({ stage: "credit", durationMs: delay });
+    clearTimeout(receipt.timer);
+    this.#outstanding.delete(token);
+    this.#rtts.push(delay);
+    if (this.#rtts.length > 32) this.#rtts.shift();
+    const baseline = Math.min(...this.#rtts);
+    if (this.frameWindow) {
+      if (delay > 2 * baseline + 30) this.#window = Math.max(1, Math.floor(this.#window / 2));
+      else if (receipt.saturated && delay <= 1.25 * baseline + 10)
+        this.#window = Math.min(4, this.#window + 1);
+    }
     if (!this.#frameInFlight) this.#flushPending();
     return Promise.resolve();
   }
@@ -5906,8 +5936,10 @@ class BrowserConsumerOutlet {
 
   /** Subscribing again starts over: no credit owed, no picture waiting. */
   resetSubscription(): void {
-    if (this.#outstanding) clearTimeout(this.#outstanding.timer);
-    this.#outstanding = null;
+    for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
+    this.#outstanding.clear();
+    this.#window = 1;
+    this.#rtts = [];
     this.#pending = null;
     this.#lastFrameId = -1;
   }
@@ -5931,8 +5963,10 @@ class BrowserConsumerOutlet {
     this.legacyClipboard.close();
     this.legacyClipboardKeys.clear();
     this.#pending = null;
-    if (this.#outstanding) clearTimeout(this.#outstanding.timer);
-    this.#outstanding = null;
+    for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
+    this.#outstanding.clear();
+    this.#window = 1;
+    this.#rtts = [];
     clearInterval(this.#accessTimer);
     this.#onClose();
   }

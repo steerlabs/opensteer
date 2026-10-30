@@ -331,6 +331,7 @@ const BaselineBrowserClientMessageSchema = z
        * still arrive, and no screencast starts for this consumer.
        */
       frames: z.literal(false).optional(),
+      frameWindow: z.literal(1).optional(),
       captureRegion: z.literal(true).optional(),
       surfaceId: BrowserSurfaceIdSchema.optional(),
       type: z.literal("stream.subscribe"),
