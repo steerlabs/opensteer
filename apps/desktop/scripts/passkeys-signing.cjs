@@ -46,6 +46,10 @@ function passkeyInputPaths(env, channel) {
     throw new Error("Passkeys require a release profile and entitlement input for this channel");
   return { profile, entitlements };
 }
+function releasePasskeyInputs(env) {
+  if (env.OPENSTEER_DESKTOP_RELEASE !== "1") return undefined;
+  return passkeyInputPaths(env, env.OPENSTEER_DESKTOP_RELEASE_CHANNEL);
+}
 function validatePasskeyEntitlementInput(value) {
   if (
     !value ||
@@ -190,11 +194,20 @@ function preparePasskeySigning(desktop, env, identity) {
     `-c.mac.provisioningProfile=${resolve(profile)}`,
   ];
 }
-function verifyPasskeyAddon(appPath, signed = false, teamId, required = true) {
+function verifyPasskeyAddon(appPath, signed = false, teamId, required = true, forbidden = false) {
   const filename = join(
     appPath,
     "Contents/Resources/app.asar.unpacked/dist/passkeys/opensteer-passkeys.node",
   );
+  if (forbidden) {
+    try {
+      lstatSync(filename);
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    throw new Error("Unprovisioned releases must not contain a passkey addon");
+  }
   if (!required && !existsSync(filename)) return;
   regular(filename);
   if (
@@ -253,6 +266,7 @@ function verifyNoInheritedPasskeyCapability(appPath) {
 }
 module.exports = {
   passkeyInputPaths,
+  releasePasskeyInputs,
   validatePasskeyEntitlementInput,
   validatePasskeyProfile,
   selectedSigningCertificate,

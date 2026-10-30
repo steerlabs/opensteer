@@ -8,3 +8,7 @@ export function preparePasskeySigning(
   env: NodeJS.ProcessEnv,
   identity: PasskeySigningIdentity,
 ): string[];
+
+export function releasePasskeyInputs(
+  env: NodeJS.ProcessEnv,
+): { profile: string; entitlements: string } | undefined;
