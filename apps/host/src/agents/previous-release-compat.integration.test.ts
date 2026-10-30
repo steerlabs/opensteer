@@ -8,7 +8,11 @@ import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@openste
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { HttpHostClient, taskCanBeDone, taskList } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { HostToRunnerMessageSchema } from "@opensteer/protocol";
+import {
+  HostToClientMessageSchema,
+  HostToRunnerMessageSchema,
+  type WorkspaceSnapshot,
+} from "@opensteer/protocol";
 import type { HostClient } from "@opensteer/client/host";
 import { sql } from "kysely";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -100,11 +104,18 @@ integration.sequential("previous public release client journeys", () => {
         );
         // The launch client already sets shared Done itself.
         expect(releasedCapabilities).toContain("shared-task-done-v1");
+        expect(releasedCapabilities).not.toContain("snapshot-messages-omit-v1");
         const threadId = await active.createThread({
           modelSelection,
           title: "Previous release compatibility",
           workspaceId: active.mainWorkspaceId,
         });
+        await active.sendMessage({
+          text: "History for the released subscriber",
+          threadId,
+          workspaceId: active.mainWorkspaceId,
+        });
+        const snapshots: WorkspaceSnapshot[] = [];
         const headers = { cookie: active.sessionCookie, origin: active.hostOrigin.origin };
         const transport: typeof fetch = async (input, init) => {
           const request = new Request(
@@ -132,6 +143,8 @@ integration.sequential("previous public release client journeys", () => {
               const message = JSON.parse(data.toString());
               try {
                 released.reader.HostToClientMessageSchema.parse(message);
+                const frame = HostToClientMessageSchema.parse(message);
+                if (frame.type === "host.snapshot") snapshots.push(frame.snapshot);
               } catch (error) {
                 readerErrors.push(error);
               }
@@ -146,6 +159,11 @@ integration.sequential("previous public release client journeys", () => {
         await vi.waitFor(() => expect(old.getSnapshot().connection).toBe("connected"), {
           timeout: 15_000,
         });
+        expect(snapshots.length).toBeGreaterThan(0);
+        expect(snapshots.every((snapshot) => snapshot.messagesOmitted === undefined)).toBe(true);
+        expect(snapshots.flatMap((snapshot) => snapshot.messages)).toContainEqual(
+          expect.objectContaining({ threadId }),
+        );
         old.activateWorkspace(active.mainWorkspaceId);
         old.activateThread(threadId);
         await old.loadLatestTranscript(threadId);
@@ -180,10 +198,32 @@ integration.sequential("previous public release client journeys", () => {
         const CurrentClient = HttpHostClient as unknown as typeof released.reader.HttpHostClient;
         const current = new CurrentClient({
           ...options,
-          capabilities: ["shared-task-done-v1"],
+          // Simulate an older Host's advertisement. Its actual released
+          // strict request reader must accept every frame from this client.
+          capabilities: releasedCapabilities,
+          webSocketFactory: (url: string) => {
+            const socket = options.webSocketFactory(url);
+            socket.binaryType = "arraybuffer";
+            return {
+              binaryType: "arraybuffer" as const,
+              get readyState() {
+                return socket.readyState;
+              },
+              addEventListener: socket.addEventListener.bind(socket),
+              close: socket.close.bind(socket),
+              send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+                if (typeof data !== "string") throw new Error("Expected JSON client frame");
+                released.reader.ClientToHostMessageSchema.parse(JSON.parse(data));
+                socket.send(data);
+              },
+            };
+          },
         });
         clients.push(current);
         await current.load();
+        await vi.waitFor(() => expect(current.getSnapshot().connection).toBe("connected"), {
+          timeout: 15_000,
+        });
         current.activateWorkspace(active.mainWorkspaceId);
         current.activateThread(threadId);
         const ordinary = await old.dispatch({

@@ -3049,6 +3049,7 @@ export function advertisedCapabilities(
     "chat-attachments",
     "thread-titles-v1",
     "task-marks-v1",
+    "snapshot-messages-omit-v1",
     "shared-task-done-v1",
     "iphone-apps-v1",
     "ownerViewWindows",
@@ -4051,6 +4052,7 @@ function attachRealtimeSocket(
       try {
         unsubscribe = await realtime.subscribe({
           afterSequence: message.afterSequence,
+          ...(message.snapshotMessages ? { snapshotMessages: message.snapshotMessages } : {}),
           sink,
           userId: session.user.id,
           workspaceId: message.workspaceId,
