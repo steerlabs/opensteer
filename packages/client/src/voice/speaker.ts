@@ -57,8 +57,9 @@ export class VoiceSpeaker {
   /**
    * The newest Chat message the person already had, in the Host's own clock:
    * replies at or before it are history, whatever this device's clock says.
+   * Undefined until Chat's history has loaded; null when Chat has none.
    */
-  readonly #since: number | null;
+  #since: number | null | undefined;
   #queue: Speech[] = [];
   #current: { readonly speech: Speech; started: boolean } | null = null;
   #talking = false;
@@ -72,25 +73,20 @@ export class VoiceSpeaker {
   constructor(input: VoiceSpeakerInput) {
     this.#input = input;
     this.#timers = voiceTimers(input);
-    let since: number | null = null;
-    for (const entry of input.baseline.transcripts[input.baseline.homeThreadId ?? ""] ?? []) {
-      if (durableReply(entry)) this.#messages.add(entry.id);
-      const at = entry.kind === "message" ? Date.parse(entry.createdAt) : Number.NaN;
-      if (Number.isFinite(at)) since = Math.max(since ?? at, at);
-    }
-    this.#since = since;
+    const home = input.baseline.homeThreadId;
+    // A Chat that voice creates during the call has no history to skip.
+    if (!home) this.#since = null;
+    else if (input.baseline.transcriptWindows[home]) this.#takeHistory(input.baseline, home);
     for (const { request } of input.baseline.waitingRequests) this.#requests.add(request.id);
     this.#unsubscribe = input.hostClient.subscribe(() => this.#read());
     this.#read();
   }
 
-  /** The voice began a turn of speech. */
   speaking(): void {
     this.#talking = true;
     if (this.#current) this.#current.started = true;
   }
 
-  /** The voice finished a turn of speech. */
   spoke(): void {
     this.#talking = false;
     if (this.#current?.started) this.#finish();
@@ -129,10 +125,16 @@ export class VoiceSpeaker {
       // Set identity before observeThread: it may synchronously publish history.
       this.#release = this.#threadId ? this.#input.hostClient.observeThread(this.#threadId) : null;
     }
-    for (const entry of snapshot.transcripts[snapshot.homeThreadId ?? ""] ?? []) {
+    // Chat's history arriving after the call began is history, not news.
+    if (this.#since === undefined && this.#threadId && snapshot.transcriptWindows[this.#threadId])
+      this.#takeHistory(snapshot, this.#threadId);
+    const since = this.#since;
+    const replies =
+      since === undefined ? [] : (snapshot.transcripts[snapshot.homeThreadId ?? ""] ?? []);
+    for (const entry of replies) {
       if (!durableReply(entry) || this.#messages.has(entry.id)) continue;
       this.#messages.add(entry.id);
-      if (this.#since !== null && !(Date.parse(entry.createdAt) > this.#since)) continue;
+      if (since !== null && since !== undefined && !(Date.parse(entry.createdAt) > since)) continue;
       const text = voiceSpeakableText(entry.body);
       if (text) this.#enqueue({ kind: "reply", text, runId: entry.runId });
     }
@@ -142,6 +144,16 @@ export class VoiceSpeaker {
       this.#enqueue({ kind: "request", requestId: request.id });
     }
     this.#drain();
+  }
+
+  #takeHistory(snapshot: HostSnapshot, threadId: string): void {
+    let since: number | null = null;
+    for (const entry of snapshot.transcripts[threadId] ?? []) {
+      if (durableReply(entry)) this.#messages.add(entry.id);
+      const at = entry.kind === "message" ? Date.parse(entry.createdAt) : Number.NaN;
+      if (Number.isFinite(at)) since = Math.max(since ?? at, at);
+    }
+    this.#since = since;
   }
 
   #enqueue(speech: Speech): void {

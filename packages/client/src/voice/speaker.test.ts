@@ -117,6 +117,52 @@ describe("VoiceSpeaker", () => {
     f.host.dispose();
   });
 
+  it("treats Chat history that loads after the call began as history", () => {
+    const f = setup();
+    const { [f.id]: _loaded, ...unloaded } = f.host.getSnapshot().transcriptWindows;
+    f.publish({ transcriptWindows: unloaded, transcripts: {} });
+    const speaker = f.make();
+    const yesterday = voiceTestNow - 86_400_000;
+    const window = { threadId: f.id, byteCount: 0, hasMore: false, itemCount: 1, nextBefore: null };
+    f.publish({
+      transcriptWindows: { ...unloaded, [f.id]: { ...window, totalItems: 1 } },
+      transcripts: { [f.id]: [voiceReply("old", "Old private reply", yesterday)] },
+    });
+    expect(f.say).not.toHaveBeenCalled();
+    f.publish({
+      transcripts: {
+        [f.id]: [
+          voiceReply("old", "Old private reply", yesterday),
+          voiceReply("new", "New reply", yesterday + 1_000),
+        ],
+      },
+    });
+    expect(f.say.mock.calls).toEqual([["New reply"]]);
+    speaker.dispose();
+    f.host.dispose();
+  });
+
+  it("speaks every reply in a Chat that voice creates during the call", () => {
+    const f = voiceHost("absent");
+    const say = vi.fn(async (_text: string) => {});
+    const speaker = new VoiceSpeaker({ hostClient: f.host, baseline: f.host.getSnapshot(), say });
+    const window = {
+      threadId: "chat",
+      byteCount: 0,
+      hasMore: false,
+      itemCount: 1,
+      nextBefore: null,
+    };
+    f.publish({
+      homeThreadId: "chat",
+      transcriptWindows: { chat: { ...window, totalItems: 1 } },
+      transcripts: { chat: [voiceReply("first", "Four.", voiceTestNow - 86_400_000)] },
+    });
+    expect(say.mock.calls).toEqual([["Four."]]);
+    speaker.dispose();
+    f.host.dispose();
+  });
+
   it("baselines Requests and rechecks queued Requests without reading their payload", () => {
     const f = setup();
     const request = (id: string) =>
