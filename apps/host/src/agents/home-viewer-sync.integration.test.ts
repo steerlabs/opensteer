@@ -371,6 +371,9 @@ integration(
         release: released,
       };
       client.activateThread(threadId);
+      // Activation may join history the client already holds; ask for the
+      // latest page explicitly so it is the one held behind the race.
+      const delayedPage = client.loadLatestTranscript(threadId);
       await captured;
       const mark = await stack.api["commands.dispatch"]({
         idempotencyKey: `racing-mark-${randomUUID()}`,
@@ -398,6 +401,7 @@ integration(
       const newerUnread = client.getSnapshot().threadReadStates[threadId]?.unreadSequence;
       const revisionBeforePage = client.getSnapshot().revision;
       release();
+      await delayedPage;
       await vi.waitFor(
         () => {
           expect(client.getSnapshot().revision).toBeGreaterThan(revisionBeforePage);

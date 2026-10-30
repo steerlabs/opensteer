@@ -4468,7 +4468,7 @@ export class HttpHostClient {
       if (existing.workspaceId !== workspace.id || incomingThreadIds.has(existing.id)) continue;
       // An active conversation or open task detail stays outside the default
       // visible Thread page; both were hydrated from durable history.
-      if (this.#showsThread(existing.id) || coversSnapshot(existing.id)) continue;
+      if (this.#showsThread(existing.id)) continue;
       this.#historicalThreads.delete(existing.id);
       this.#hydratedThreads.delete(existing.id);
       delete transcripts[existing.id];
@@ -4512,8 +4512,7 @@ export class HttpHostClient {
       ...this.#snapshot.threads.filter(
         (thread) =>
           (thread.workspaceId !== workspace.id ||
-            ((this.#showsThread(thread.id) || coversSnapshot(thread.id)) &&
-              !incomingThreadIds.has(thread.id))) &&
+            (this.#showsThread(thread.id) && !incomingThreadIds.has(thread.id))) &&
           !workspaceThreadIds.has(thread.id),
       ),
     ];
