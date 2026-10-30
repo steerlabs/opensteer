@@ -45,6 +45,7 @@ export class SavedViewPresentation {
   #scope: SavedViewScope | null = null;
   #lease: () => boolean = () => false;
   #generation = 0;
+  #load: Promise<void> = Promise.resolve();
   #captureRevision = 0;
   #client: HostClient | null = null;
   #detach: (() => void) | null = null;
@@ -142,7 +143,7 @@ export class SavedViewPresentation {
       return;
     const generation = this.#generation;
     const current = () => this.#current(generation);
-    void this.#cache
+    this.#load = this.#cache
       .load(scope, current)
       .then((view) => {
         if (!view || !current() || this.#fresh.home || this.#fresh.tasks || this.#blocked) return;
@@ -173,6 +174,11 @@ export class SavedViewPresentation {
         });
       })
       .catch(() => undefined);
+  }
+
+  /** Joins the latest disk load, including its presentation fence checks. */
+  joinLoad(): Promise<void> {
+    return this.#load;
   }
 
   /** A legacy login may acquire its ID after bootstrap, without starting a disk fallback. */

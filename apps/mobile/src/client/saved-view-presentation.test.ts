@@ -14,6 +14,7 @@ import {
   type WebSocketClient,
 } from "@opensteer/client/host";
 import { afterEach, expect, it, vi } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { homeReadFailedLabel, SavedViewPresentation } from "./saved-view-presentation.js";
 function presentation(options: { readonly store: SavedViewStore; readonly now?: () => Date }) {
   return new SavedViewPresentation({
@@ -325,8 +326,9 @@ it.each(["switch", "logout", "refusal", "dispose", "different-user"] as const)(
     if (reason === "different-user")
       f.publish({ user: { ...f.snapshot().user!, id: createId("user") } });
     read.resolve(f.saved);
-    await read.promise;
-    await new Promise<void>((done) => setTimeout(done, 0));
+    await withTimeout(controller.joinLoad(), 1_000, {
+      timeoutError: () => new Error(`Saved-view load handling never settled after ${reason}`),
+    });
     expect(frames).not.toContain("saved");
     expect(controller.getSnapshot().home.source).not.toBe("saved");
     controller.dispose();
