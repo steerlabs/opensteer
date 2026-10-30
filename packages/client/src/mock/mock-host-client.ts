@@ -11765,6 +11765,7 @@ function createInitialSnapshot(): HostSnapshot {
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
     ownerViewWindowsAvailable: true,
+    voiceAvailable: true,
     workspaceSharingAvailable: true,
     threads: withMockThreadMarks([
       {
