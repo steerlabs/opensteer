@@ -46,7 +46,7 @@ class DisplayWireTest {
         fields["type"] = jsonOf("host.integrations.display.control")
         fields["action"] = jsonOf("acquire")
         val control = IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) as DisplayMessage.Control
-        val refusal = DisplayWire.controlState(control.fence, control.sessionId, control.streamId, control.controlId, "refused", "stream-lost")
+        val refusal = DisplayWire.controlState(control.fence, control.sessionId, control.streamId, control.controlId, "refused", "released-by-owner")
         assertEquals(jsonOf("refused"), refusal.fields["state"])
         fields["unknown"] = jsonOf(true)
         assertThrows(WireException::class.java) { IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) }

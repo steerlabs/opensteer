@@ -15,15 +15,15 @@ import type { MachineSummary } from "@opensteer/protocol";
  *   description, or without low-latency hardware preference.
  * - A frame is acknowledged before the decoder outputs it.
  * - The picture box keeps a guessed shape instead of the stream's.
- * - Take over is offered before there is a live picture, or input flows
- *   without held control.
+ * - Input flows before there is a live picture or before the Host offers
+ *   shared input, or the view still offers a Take over mode.
  * - A press lands where the element is rather than where the picture is
  *   drawn inside it; keys and navigation are not delivered in order.
  * - An IME's partial composition is typed, its commit or a paste is lost, or
  *   a shortcut such as Cmd+C is taken from the page.
  * - A view that goes away mid-drag, such as the enlarged picture closing,
  *   leaves the phone's finger down.
- * - Hiding the page leaves control held or the socket open.
+ * - Hiding the page leaves the viewer's held input unreleased or the socket open.
  * - Protection leaves the last picture on screen.
  */
 

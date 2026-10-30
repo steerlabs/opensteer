@@ -45,7 +45,9 @@ class FixtureSocket implements WebSocketClient {
         width: 200,
         height: 400,
         editingVersion: 1,
+        sharedInput: 1,
       });
+      this.publish();
     });
   }
   addEventListener(type: string, listener: (event: never) => void) {
@@ -66,16 +68,7 @@ class FixtureSocket implements WebSocketClient {
     const message = DisplayViewerClientMessageSchema.parse(JSON.parse(data));
     this.log("display-wire", message);
     queueMicrotask(() => {
-      if (message.type === "display.control") {
-        if (message.action === "acquire") {
-          this.json({
-            type: "display.control",
-            state: "held",
-            controlId: "dcl_22222222-2222-4222-8222-222222222222",
-          });
-          this.publish();
-        } else this.json({ type: "display.control", state: "released" });
-      } else if (message.type === "display.input") {
+      if (message.type === "display.input") {
         const refused = this.reject();
         this.json({
           type: "display.input.result",

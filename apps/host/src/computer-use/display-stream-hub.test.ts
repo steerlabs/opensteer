@@ -2178,7 +2178,7 @@ describe("phone display Host sockets", () => {
 });
 
 describe("Mac owner input over authenticated display sockets", () => {
-  it("re-resolves the same binding without Take over after readiness loss", async () => {
+  it("re-resolves the same binding after readiness loss and ignores a legacy Take over", async () => {
     const negotiation = { mac: true, macOwnerInput: true, macHelperInput: true };
     const f = await fixture(true, negotiation);
     const viewer = await f.macViewer(true);

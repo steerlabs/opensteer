@@ -218,7 +218,7 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
         until("reset cancels person contact") { receipts("button_touch").lastOrNull() == "cancel" }
         check((act(heldObservation, listOf(PhoneAction.Wait(1))) as ComputerUseOutcome.Ok).value.let { (it as JsonObject).fields["error"] == JsonNull })
         send(DisplayMessage.Control(fence, session, stream, control, "acquire"))
-        until("legacy Host refused") { state("refused")?.fields?.get("reason") == jsonOf("stream-lost") }
+        until("legacy Host refused") { state("refused")?.fields?.get("reason") == jsonOf("released-by-owner") }
         val replies = states.count { it.fields["type"] == jsonOf("runner.integrations.display.input-result") }
         send(DisplayMessage.Input(fence, session, stream, firstGeneration, 999, listOf(DisplayInput.Nav("home")), controlId = control))
         send(DisplayMessage.Input(fence, session, stream, firstGeneration, 1, listOf(

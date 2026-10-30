@@ -387,9 +387,10 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
         active.socket?.cancel(); active.socket = null
         state(active, state, reason)
     }
+    /** A previous-release Host's Take over: refused with the one reason its viewers show no words for. */
     private fun control(message: DisplayMessage.Control, send: (JsonObject) -> Unit) {
         if (message.action == "acquire") send(DisplayWire.controlState(message.fence, message.sessionId, message.streamId,
-            message.controlId, "refused", "stream-lost"))
+            message.controlId, "refused", "released-by-owner"))
     }
     /** Coalesced on the owner lane, with no contents in the context or diagnostics. */
     fun editingChanged() {
