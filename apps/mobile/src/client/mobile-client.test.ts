@@ -367,7 +367,6 @@ function open(
     catalogFilePath: "/private/deployments.json",
     doneShelfFilePath: "/private/done-shelf.json",
     draftsFilePath: "/private/drafts.json",
-    sidebarFilePath: "/private/sidebar.json",
     fetch: options.fetch ?? testFetch,
     hostPort: port,
     ...(options.savedViewStore ? { savedViewStore: options.savedViewStore } : {}),

@@ -23,29 +23,21 @@ import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { useAppForeground } from "../ui/foreground.js";
 
-export type TabsScreenProps = StaticScreenProps<{
-  readonly deploymentId: string;
-  /**
-   * The conversation Tabs was opened from — a task, or Chat once it exists —
-   * which a tab opened from here talks to. Null where there was none.
-   */
-  readonly threadId: string | null;
-}>;
+export type TabsScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
 
 /**
  * Tabs: every tab, app and phone this person may see on the Deployment, in
  * their own order — tabs they opened by hand, tasks' and delegated work's
  * tabs, saved tabs and the person's own views — from the shared place list
- * web and desktop read. A tile opens exactly its tab, over the conversation
- * Tabs was opened from. Nothing here chooses a conversation from who is in a
- * tab.
+ * web and desktop read. A tile opens exactly its tab, alone. Nothing here
+ * chooses a conversation, from who is in a tab or from what was in front.
  */
 export function TabsScreen(props: TabsScreenProps): ReactNode {
-  const { deploymentId, threadId } = props.route.params;
+  const { deploymentId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
   useSidebarMenu(hostClient);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
-  return <AttachedTabs deploymentId={deploymentId} hostClient={hostClient} threadId={threadId} />;
+  return <AttachedTabs deploymentId={deploymentId} hostClient={hostClient} />;
 }
 
 const selectReader = (snapshot: HostSnapshot) =>
@@ -54,7 +46,6 @@ const selectReader = (snapshot: HostSnapshot) =>
 function AttachedTabs(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
-  readonly threadId: string | null;
 }): ReactNode {
   const { hostClient } = props;
   // Only who is reading: a streamed token re-renders nothing here.
@@ -96,7 +87,6 @@ function AttachedTabs(props: {
       hostClient={hostClient}
       key={reader}
       onRetry={reload}
-      threadId={props.threadId}
     />
   );
 }
@@ -114,9 +104,8 @@ function TabsForReader(props: {
   readonly failure: string | null;
   readonly hostClient: HostClient;
   readonly onRetry: () => void;
-  readonly threadId: string | null;
 }): ReactNode {
-  const { deploymentId, hostClient, threadId } = props;
+  const { deploymentId, hostClient } = props;
   const navigation = useNavigation();
   const places = usePlaceList(hostClient);
   const sessions = useHostSelector(hostClient, selectSessions);
@@ -133,12 +122,9 @@ function TabsForReader(props: {
   const open = useCallback(
     (tile: TabTile) =>
       navigation.dispatch(
-        StackActions.push(
-          "WorkspaceBrowser",
-          workspaceRoute(deploymentId, threadId, tile.destination),
-        ),
+        StackActions.push("WorkspaceBrowser", workspaceRoute(deploymentId, tile.destination)),
       ),
-    [deploymentId, navigation, threadId],
+    [deploymentId, navigation],
   );
   return (
     <Screen edgeToEdge>

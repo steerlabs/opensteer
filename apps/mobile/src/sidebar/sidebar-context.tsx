@@ -12,26 +12,23 @@ import type { HostInstance } from "react-native";
 export interface SidebarControl {
   readonly close: () => void;
   /**
-   * The Menu. Where the window has room to dock the sidebar, it shows or hides
-   * the docked column and remembers the choice; elsewhere it opens the drawer
-   * over the current root destination. The trigger, when it is a view this app
-   * drew, gets screen-reader focus back when the drawer closes without going
-   * anywhere.
+   * The Menu, where the sidebar is a drawer: it opens it over the current
+   * root destination. Docked, the sidebar is already in view and this does
+   * nothing. The trigger, when it is a view this app drew, gets screen-reader
+   * focus back when the drawer closes without going anywhere.
    */
   readonly open: (trigger?: HostInstance | null) => void;
 }
 
 /**
- * Whether the sidebar can dock beside the screens, and if so whether the
- * reader has it shown. `unavailable` is a window with no room for it, where it
- * is the drawer.
+ * Whether the sidebar is docked beside the screens. The window's room alone
+ * decides: where there is room it is always docked, and elsewhere it is the
+ * drawer.
  */
-export type SidebarDock = "hidden" | "shown" | "unavailable";
+export const SidebarDockedContext = createContext(false);
 
-export const SidebarDockContext = createContext<SidebarDock>("unavailable");
-
-export function useSidebarDock(): SidebarDock {
-  return useContext(SidebarDockContext);
+export function useSidebarDocked(): boolean {
+  return useContext(SidebarDockedContext);
 }
 
 export const SidebarControlContext = createContext<SidebarControl | null>(null);

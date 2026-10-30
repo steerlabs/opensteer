@@ -22,11 +22,10 @@ import {
  * - a width hovering on a threshold flips the arrangement every frame;
  * - an interior occlusion sits over controls nobody moved out of its way;
  * - right-to-left puts the sidebar or page on the trailing side of a fold;
- * - watching a page shows three cramped panes on an ordinary inner display;
- * - the reader's choice to hide the sidebar is overridden by room to show it;
+ * - a page in front takes the docked sidebar away, so switching means going back;
  * - a keyboard under tabletop leaves the conversation no room to type in;
  * - a division no pane is split at is ignored, so a single pane, a hidden
- *   sidebar or large text puts content across a fold, or under an occluding one;
+ *   sidebar drawer or large text puts content across a fold, or under an occluding one;
  * - of several divisions only the one used for a split is honoured;
  * - a fit is judged on the surface's raw width, so a pane passes that the
  *   safe area (a notch, the vertical bar) then leaves too narrow;
@@ -60,8 +59,7 @@ function shell(overrides: Partial<ShellInput>) {
     ready: true,
     regions: [],
     rtl: false,
-    shown: true,
-    watching: false,
+    aroundFolds: false,
     ...overrides,
   });
 }
@@ -175,13 +173,14 @@ describe("the shell's sidebar", () => {
     );
   });
 
-  it("lets watching a page take the room, so a normal display shows two panes, not three", () => {
-    expect(shell({ bounds: { height: 1133, width: 744 }, watching: true }).sidebar).toEqual(drawer);
-    expect(shell({ bounds: { height: 744, width: 1133 }, watching: true }).sidebar).toEqual(drawer);
-  });
-
-  it("never overrides the reader's choice to hide it", () => {
-    expect(shell({ bounds: { height: 1133, width: 744 }, shown: false }).sidebar).toEqual(drawer);
+  it("stays docked beside a page and its conversation", () => {
+    const column = { gap: 0, mode: "column", width: 320 };
+    expect(shell({ aroundFolds: true, bounds: { height: 1133, width: 744 } }).sidebar).toEqual(
+      column,
+    );
+    expect(shell({ aroundFolds: true, bounds: { height: 744, width: 1133 } }).sidebar).toEqual(
+      column,
+    );
   });
 
   it("puts the column on the leading side of a fold in right-to-left", () => {
@@ -299,13 +298,6 @@ describe("every reserved division, whichever arrangement is chosen", () => {
     });
   });
 
-  it("honours the fold with the sidebar hidden, on the larger side", () => {
-    const fold = division(470, 0, 24, 1000);
-    const result = shell({ bounds: { height: 1000, width: 1000 }, regions: [fold], shown: false });
-    expect(result.sidebar).toEqual(drawer);
-    expect(result.content).toEqual({ height: 1000, width: 506, x: 494, y: 0 });
-  });
-
   it("honours the fold for text too large for two columns", () => {
     const fold = division(470, 0, 24, 1000);
     const result = shell({ bounds: { height: 1000, width: 1000 }, fontScale: 3, regions: [fold] });
@@ -325,9 +317,10 @@ describe("every reserved division, whichever arrangement is chosen", () => {
     const result = shell({
       bounds: { height: 1000, width: 1000 },
       regions: [fold],
+      fontScale: 3,
       rtl: true,
-      shown: false,
     });
+    expect(result.sidebar).toEqual(drawer);
     expect(result.content).toEqual({ height: 1000, width: 600, x: 0, y: 0 });
   });
 
@@ -388,7 +381,7 @@ describe("the shell and the page pair together", () => {
     }));
 
   function watch(bounds: { height: number; width: number }, regions: ReservedRegion[]) {
-    const outer = shell({ bounds, regions, watching: true });
+    const outer = shell({ aroundFolds: true, bounds, regions });
     const inner = arrange({
       bounds: { height: outer.content.height, width: outer.content.width },
       regions: seenFrom(outer.content, regions),
@@ -406,12 +399,23 @@ describe("the shell and the page pair together", () => {
     });
   });
 
-  it("lets a watched page and its conversation sit either side of a vertical fold", () => {
+  it("keeps the sidebar on a vertical fold's leading side, and the page and its conversation on the other", () => {
     const { inner, outer } = watch({ height: 900, width: 1000 }, [division(480, 0, 20, 900)]);
-    expect(outer.content).toEqual({ height: 900, width: 1000, x: 0, y: 0 });
+    expect(outer.sidebar).toEqual({ gap: 20, mode: "column", width: 480 });
+    expect(outer.content).toEqual({ height: 900, width: 500, x: 500, y: 0 });
     expect(inner).toEqual({
-      pair: { gap: 20, mode: "side", pageWidth: 480 },
-      region: { height: 900, width: 1000, x: 0, y: 0 },
+      pair: { mode: "stacked" },
+      region: { height: 900, width: 500, x: 0, y: 0 },
+    });
+  });
+
+  it("lets a page beside the docked sidebar use a horizontal fold for tabletop", () => {
+    const { inner, outer } = watch({ height: 1000, width: 1000 }, [division(0, 400, 1000, 20)]);
+    expect(outer.sidebarRect).toEqual({ height: 580, width: 320, x: 0, y: 420 });
+    expect(outer.content).toEqual({ height: 1000, width: 680, x: 320, y: 0 });
+    expect(inner).toEqual({
+      pair: { gap: 20, mode: "tabletop", pageHeight: 400 },
+      region: { height: 1000, width: 680, x: 0, y: 0 },
     });
   });
 

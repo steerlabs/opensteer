@@ -14,12 +14,13 @@ import { isRecord } from "@opensteer/shared/isRecord";
 /**
  * Which conversation a tabs route belongs to. A conversation's own tabs — its
  * grid, or one of them over its sheet — are the task scope. A tab opened from
- * the sidebar's Tabs is the workspace scope: the conversation is the one Tabs
- * was opened from, carried as it was, and none before Chat exists.
+ * Tabs or the sidebar is the workspace scope and belongs to none: it is shown
+ * alone, whatever was in front when it was chosen. (A previous release's
+ * workspace route carried a conversation; it is ignored.)
  */
 type SurfacesScope =
   | { readonly scope?: undefined; readonly threadId: string }
-  | { readonly scope: "workspace"; readonly threadId: string | null };
+  | { readonly scope: "workspace"; readonly threadId?: undefined };
 
 /** Exactly one tab, app or phone. Nothing but the route chooses it. */
 type SurfacesTarget =
@@ -65,16 +66,12 @@ export function surfaceRoute(
   return { deploymentId, threadId, ...targetParams(destination) };
 }
 
-/**
- * A tab, app or phone opened from Tabs, over the sheet of the conversation Tabs
- * was opened from, or alone when there was none.
- */
+/** A tab, app or phone opened from Tabs or the sidebar, alone. */
 export function workspaceRoute(
   deploymentId: string,
-  threadId: string | null,
   destination: WorkspaceSurfaceDestination,
 ): SurfacesRoute {
-  return { deploymentId, scope: "workspace", threadId, ...targetParams(destination) };
+  return { deploymentId, scope: "workspace", ...targetParams(destination) };
 }
 
 function targetParams(destination: WorkspaceSurfaceDestination): SurfacesTarget {

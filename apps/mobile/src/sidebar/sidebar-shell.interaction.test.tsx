@@ -15,10 +15,13 @@ import type { ReservedRegion } from "react-native-reserved-regions";
  *   markers stop and alerts about what is on screen interrupt;
  * - an unmeasured fold is straddled because the column showed before the
  *   regions arrived;
- * - choosing a task from the docked sidebar piles tasks up behind Back, or
- *   rebuilds Chat instead of returning to the mounted one;
- * - docking or hiding the sidebar dismisses the keyboard or moves focus;
- * - the reader's choice to hide it is forgotten, or room overrides it;
+ * - choosing a task or a tab from the docked sidebar piles screens up behind
+ *   Back, or rebuilds Chat instead of returning to the mounted one;
+ * - a page in front takes the docked sidebar away, so switching to a task
+ *   or another tab means going back first;
+ * - a tab chosen from the sidebar, or Tabs opened over a task, carries the
+ *   conversation that happened to be in front, so the page is shown under it;
+ * - docking dismisses the keyboard or moves focus;
  * - the docked sidebar steals screen-reader focus on every fold.
  */
 
@@ -30,14 +33,16 @@ const harness = vi.hoisted(() => ({
   dismiss: vi.fn(),
   sendAccessibilityEvent: vi.fn(),
   dispatch: vi.fn(),
-  hidden: false,
-  written: [] as boolean[],
   panels: [] as {
     docked: boolean;
+    selectedPlace: unknown;
     selectedThreadId: string | null;
     visible: boolean;
-    actions: { onOpenTask: (deploymentId: string, threadId: string) => void };
-    onHide?: () => void;
+    actions: {
+      onOpenPlace: (destination: object) => void;
+      onOpenTask: (deploymentId: string, threadId: string) => void;
+      onTabs: () => void;
+    };
     scroll: { offset: number };
   }[],
   drawer: { lock: "", panel: null as ReactNode },
@@ -142,14 +147,7 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
 });
 vi.mock("../ui/mobile-client-context.js", () => ({
   useHostUserId: () => "user-a",
-  useMobileClient: () => ({
-    sidebar: {
-      read: async () => harness.hidden,
-      write: async (hidden: boolean) => {
-        harness.written.push(hidden);
-      },
-    },
-  }),
+  useMobileClient: () => ({}),
   useSelectedHostClient: () => null,
 }));
 vi.mock("./sidebar-panel.js", () => ({
@@ -157,15 +155,25 @@ vi.mock("./sidebar-panel.js", () => ({
     harness.panels.push(props);
     return (
       <nav data-docked={props.docked} data-visible={props.visible}>
-        {props.docked && props.onHide ? <button onClick={props.onHide}>Hide sidebar</button> : null}
         <button onClick={() => props.actions.onOpenTask("deployment-a", "thread-b")}>Task B</button>
+        <button onClick={() => props.actions.onOpenPlace(tabB)}>Tab B</button>
+        <button onClick={props.actions.onTabs}>Tabs</button>
       </nav>
     );
   },
 }));
 
 import { SidebarShell } from "./sidebar-shell.js";
-import { useSidebarControl, useSidebarDock, useSidebarVisible } from "./sidebar-context.js";
+import { useSidebarControl, useSidebarDocked, useSidebarVisible } from "./sidebar-context.js";
+
+const tabB = { kind: "browser", sessionId: "session-b", tabId: "tab-b" } as const;
+/** Tab B as a route names it. */
+const tabBRoute = {
+  deploymentId: "deployment-a",
+  scope: "workspace",
+  sessionId: tabB.sessionId,
+  tabId: tabB.tabId,
+};
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -176,8 +184,6 @@ afterEach(() => {
   harness.ready = true;
   harness.regions = [];
   harness.fontScale = 1;
-  harness.hidden = false;
-  harness.written = [];
   harness.panels = [];
   harness.dismiss.mockReset();
   harness.sendAccessibilityEvent.mockReset();
@@ -193,7 +199,7 @@ function Stack(): ReactNode {
   const [draft, setDraft] = useState("");
   const covered = useSidebarVisible();
   const control = useSidebarControl();
-  const dock = useSidebarDock();
+  const docked = useSidebarDocked();
   useEffect(() => {
     mounts.count += 1;
     return () => {
@@ -201,7 +207,7 @@ function Stack(): ReactNode {
     };
   }, []);
   return (
-    <main data-covered={covered} data-dock={dock}>
+    <main data-covered={covered} data-docked={docked}>
       <input aria-label="Draft" onChange={(event) => setDraft(event.target.value)} value={draft} />
       <button onClick={() => control?.open()}>Menu</button>
     </main>
@@ -264,16 +270,16 @@ function typeDraft(container: HTMLElement, words: string) {
 const lastPanel = () => harness.panels.at(-1)!;
 
 describe("the sidebar as the window changes shape", () => {
-  it("keeps the stack mounted with its draft, and navigates nowhere, through unfold, fold and hiding", async () => {
+  it("keeps the stack mounted with its draft, and navigates nowhere, through unfold and fold", async () => {
     const { container, render } = await mount([home, threadA]);
     typeDraft(container, "half a thought");
-    expect(main(container).dataset["dock"]).toBe("unavailable");
+    expect(main(container).dataset["docked"]).toBe("false");
     expect(lastPanel().docked).toBe(false);
 
     harness.bounds = { height: 1133, width: 744 };
     await render();
     expect(lastPanel().docked).toBe(true);
-    expect(main(container).dataset["dock"]).toBe("shown");
+    expect(main(container).dataset["docked"]).toBe("true");
 
     harness.bounds = { height: 844, width: 390 };
     await render();
@@ -289,11 +295,6 @@ describe("the sidebar as the window changes shape", () => {
     ];
     await render();
     expect(lastPanel().docked).toBe(true);
-
-    press(container, "Hide sidebar");
-    await render();
-    expect(lastPanel().docked).toBe(false);
-    expect(main(container).dataset["dock"]).toBe("hidden");
 
     expect(mounts).toEqual({ count: 1, unmounts: 0 });
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Draft"]')?.value).toBe(
@@ -355,18 +356,14 @@ describe("the sidebar as the window changes shape", () => {
     expect(harness.dispatch).not.toHaveBeenCalled();
   });
 
-  it("hides and shows the docked sidebar from the Menu without touching the keyboard, and remembers it", async () => {
+  it("leaves the docked sidebar where it is when the Menu is pressed, touching neither the keyboard nor the drawer", async () => {
     harness.bounds = { height: 1133, width: 744 };
     const { container, render } = await mount();
-    press(container, "Menu");
-    await render();
-    expect(lastPanel().docked).toBe(false);
     press(container, "Menu");
     await render();
     expect(lastPanel().docked).toBe(true);
     expect(harness.dismiss).not.toHaveBeenCalled();
     expect(harness.openDrawer).not.toHaveBeenCalled();
-    expect(harness.written).toEqual([true, false]);
   });
 
   it("opens the drawer from the Menu where there is no room to dock", async () => {
@@ -374,29 +371,83 @@ describe("the sidebar as the window changes shape", () => {
     press(container, "Menu");
     expect(harness.openDrawer).toHaveBeenCalledTimes(1);
     expect(harness.dismiss).toHaveBeenCalledTimes(1);
-    expect(harness.written).toEqual([]);
   });
 
-  it("keeps the sidebar hidden on a wide window when this phone last left it hidden", async () => {
-    harness.bounds = { height: 1133, width: 744 };
-    harness.hidden = true;
-    const { container } = await mount();
-    expect(lastPanel().docked).toBe(false);
-    expect(main(container).dataset["dock"]).toBe("hidden");
-  });
-
-  it("gives a page the room: watching one keeps the sidebar out of the way", async () => {
+  it("keeps the sidebar docked beside a page, and marks that exact page as the one open", async () => {
     harness.bounds = { height: 1133, width: 744 };
     const page = {
       key: "page-key",
       name: "WorkspaceBrowser",
+      params: tabBRoute,
+    };
+    const { render } = await mount([home, page]);
+    expect(lastPanel()).toMatchObject({ docked: true, selectedPlace: tabB, visible: true });
+    // A conversation's own page, opened from it, is the same page and keeps it too.
+    const owned = {
+      key: "owned-key",
+      name: "WorkspaceBrowser",
       params: { deploymentId: "deployment-a", sessionId: "s", tabId: "t", threadId: "thread-a" },
     };
-    const { render } = await mount([home, threadA, page]);
-    expect(lastPanel().docked).toBe(false);
-    expect(mounts).toEqual({ count: 1, unmounts: 0 });
+    await mount([home, threadA, owned]);
+    expect(lastPanel()).toMatchObject({
+      docked: true,
+      selectedPlace: { kind: "browser", sessionId: "s", tabId: "t" },
+    });
     await render();
     expect(harness.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("puts a tab chosen from the docked sidebar over the mounted Chat in place of a task, naming no conversation", async () => {
+    harness.bounds = { height: 1133, width: 744 };
+    const { container } = await mount([home, threadA]);
+    press(container, "Tab B");
+    expect(harness.dispatch).toHaveBeenCalledTimes(1);
+    const action = harness.dispatch.mock.calls[0]![0] as {
+      payload: { index: number; routes: { name: string; params?: object }[] };
+      type: string;
+    };
+    expect(action.type).toBe("RESET");
+    expect(action.payload.index).toBe(1);
+    expect(action.payload.routes[0]).toBe(home);
+    expect(action.payload.routes[1]).toEqual({
+      name: "WorkspaceBrowser",
+      params: tabBRoute,
+    });
+  });
+
+  it("pushes a tab chosen over Tabs, so Back returns to Tabs, and does nothing for the tab already open", async () => {
+    const tabs = { key: "tabs-key", name: "Tabs", params: { deploymentId: "deployment-a" } };
+    const { container } = await mount([home, tabs]);
+    press(container, "Tab B");
+    expect(harness.dispatch).toHaveBeenCalledExactlyOnceWith({
+      payload: {
+        name: "WorkspaceBrowser",
+        params: tabBRoute,
+      },
+      type: "PUSH",
+    });
+    harness.dispatch.mockReset();
+    const open = {
+      key: "page-key",
+      name: "WorkspaceBrowser",
+      params: tabBRoute,
+    };
+    const same = await mount([home, open]);
+    press(same.container, "Tab B");
+    expect(harness.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("opens Tabs over a task as the Deployment's tabs, carrying no conversation", async () => {
+    harness.bounds = { height: 1133, width: 744 };
+    const { container } = await mount([home, threadA]);
+    press(container, "Tabs");
+    const action = harness.dispatch.mock.calls[0]![0] as {
+      payload: { routes: { name: string; params?: object }[] };
+    };
+    expect(action.payload.routes[1]).toEqual({
+      name: "Tabs",
+      params: { deploymentId: "deployment-a" },
+    });
   });
 });
 
@@ -416,7 +467,7 @@ describe("the shell around what the system reserves", () => {
     expect(lastPanel().docked).toBe(false);
     expect(stackStyle(container)).toMatchObject({ marginStart: 0, marginTop: 0, width: 350 });
 
-    // The reader hid the sidebar on a wide window with a fold: the stack keeps to the larger side.
+    // Unfolded: the sidebar docks on the leading side of the fold, the stack on the other.
     harness.bounds = { height: 1000, width: 1000 };
     harness.regions = [
       {
@@ -426,34 +477,41 @@ describe("the shell around what the system reserves", () => {
       },
     ];
     await render();
-    press(container, "Hide sidebar");
-    await render();
-    expect(stackStyle(container)).toMatchObject({ marginStart: 494, width: 506 });
+    expect(lastPanel().docked).toBe(true);
+    expect(stackStyle(container)).toMatchObject({ marginStart: 24, width: 506 });
     expect(mounts).toEqual({ count: 1, unmounts: 0 });
     expect(harness.dispatch).not.toHaveBeenCalled();
   });
 
-  it("leaves a watched page's whole surface to the page pair, so the pair can use the fold", async () => {
+  it("leaves a page and its conversation the folds they can use, and a page alone the larger side", async () => {
     harness.bounds = { height: 900, width: 900 };
     harness.regions = [
       { frame: { height: 20, width: 900, x: 0, y: 420 }, kind: "division", occludesContent: false },
     ];
-    const page = {
+    const paired = {
       key: "page-key",
       name: "WorkspaceBrowser",
       params: { deploymentId: "deployment-a", sessionId: "s", tabId: "t", threadId: "thread-a" },
     };
+    const alone = {
+      key: "tab-key",
+      name: "WorkspaceBrowser",
+      params: tabBRoute,
+    };
     // A task alone keeps off the fold, on its larger side.
     const task = await mount([home, threadA]);
     expect(stackStyle(task.container)).toMatchObject({ marginBottom: 0, marginTop: 440 });
-    // A page in front: the pair below measures the fold itself and arranges around it.
-    const watched = await mount([home, threadA, page]);
+    // A page with its conversation: the pair below measures the fold itself and arranges around it.
+    const watched = await mount([home, threadA, paired]);
     expect(stackStyle(watched.container)).toMatchObject({
       marginBottom: 0,
       marginStart: 0,
       marginTop: 0,
       width: 900,
     });
+    // A page alone has nothing to put across the fold from it, so it keeps off it.
+    const tab = await mount([home, alone]);
+    expect(stackStyle(tab.container)).toMatchObject({ marginBottom: 0, marginTop: 440 });
   });
 
   it("gives the drawer and the docked column one scroll position, kept by the shell", async () => {

@@ -12,7 +12,6 @@ import {
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
   act,
   createContext,
@@ -48,14 +47,12 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  *   - a tile repeats task or origin captions, a saved tile retains a live
  *     Watch, an idle tile is ringed, or thumbnails resize with each frame;
  *   - two columns are squeezed onto a narrow pane or under large text.
- * J2 Who the page talks to
- *   - opening a tab from global Tabs addresses the tab's occupying task, or
- *     Chat when the person came from task A;
- *   - the draft typed in A is gone in the page's sheet, after switching tabs,
- *     after Back, or after returning to A;
- *   - before Chat exists, viewing a tab creates a conversation or shows a
- *     composer that would;
- *   - the sheet does not say which conversation it is.
+ * J2 A tab from Tabs is that tab
+ *   - the page is shown under the conversation that happened to be in front
+ *     (Chat, or task A), or the tab's occupying task, so on a narrow cover
+ *     screen a conversation covers the page that was chosen;
+ *   - the draft typed in Chat or A is gone after viewing a tab and returning;
+ *   - viewing a tab creates a conversation, or shows a composer that would.
  * J3 Restoring a saved tab
  *   - it never asks, asks twice, or asks while the computer is offline or the
  *     tab can never open;
@@ -80,7 +77,14 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  *   - Mac window video starts on iOS.
  * J7 Layout
  *   - stacked, side-by-side, tabletop or the keyboard remount the page or the
- *     conversation of a page opened from Tabs.
+ *     conversation of a task's page.
+ * J8 One sidebar for tasks and tabs
+ *   - the docked sidebar lists no tabs, so a tab is reached only through the
+ *     grid, or it goes away while a page is in front;
+ *   - choosing a tab there shows another conversation instead, or piles
+ *     screens behind Back, or rebuilds Chat;
+ *   - the open tab or task is not the one marked selected;
+ *   - folding the window loses the page, or the tab chosen.
  */
 
 const harness = vi.hoisted(() => ({
@@ -932,7 +936,6 @@ async function world(
       }),
       subscribe: () => () => undefined,
     },
-    sidebar: { read: async () => false, write: async () => undefined },
     subscribe: () => () => undefined,
   } as unknown as MobileClient;
   const stack = new TestStack(options.routes ?? [{ name: "Home", params: { deploymentId } }]);
@@ -1006,6 +1009,12 @@ function front(world: World): HTMLElement {
 function sidebar(world: World): HTMLElement {
   return world.container.querySelector<HTMLElement>('[data-testid="sidebar"]')!;
 }
+/** The sidebar docked beside the stack, where the window has room for it. */
+function dockedSidebar(world: World): HTMLElement {
+  const found = world.container.querySelector<HTMLElement>('[data-testid="sidebar-column"]');
+  if (found === null) throw new Error("The sidebar is not docked.");
+  return found;
+}
 function buttons(scope: HTMLElement): HTMLButtonElement[] {
   return [...scope.querySelectorAll("button")];
 }
@@ -1056,7 +1065,7 @@ async function press(target: HTMLButtonElement): Promise<void> {
   await settle();
 }
 async function openSidebarTabs(world: World): Promise<void> {
-  await press(control(sidebar(world), "Tabs"));
+  await press(control(sidebar(world), "All tabs"));
 }
 async function typeDraft(scope: HTMLElement, words: string): Promise<void> {
   const field = scope.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
@@ -1075,6 +1084,14 @@ function draftShown(scope: HTMLElement): string | null {
 }
 function sheetRecipient(scope: HTMLElement): string | null {
   return scope.querySelector('[data-testid="conversation-name"]')?.textContent ?? null;
+}
+
+/** A tab from Tabs or the sidebar, as its route names it: the tab, and no conversation. */
+function aloneRoute(place: { readonly destination: { readonly kind: string } }) {
+  const { destination } = place;
+  if (destination.kind !== "browser") throw new Error("Not a browser tab.");
+  const { sessionId, tabId } = destination as unknown as { sessionId: string; tabId: string };
+  return { deploymentId, scope: "workspace", sessionId, tabId };
 }
 
 function threadTitled(snapshot: HostSnapshot, title: string): string {
@@ -1111,20 +1128,19 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 
 describe("J1: Tabs from the sidebar lists every tab this person may see", () => {
-  it("is a sidebar destination with the Menu that keeps where it was opened from", async () => {
+  it("is a sidebar destination with the Menu, opened as the Deployment's own", async () => {
     const w = await world();
-    const snapshot = w.host.getSnapshot();
-    const homeId = snapshot.homeThreadId!;
     const destinations = buttons(sidebar(w))
       .map((button) => button.textContent?.trim())
-      .filter((label) => ["Chat", "New task", "Specialists", "Tabs"].includes(label ?? ""));
-    expect(destinations).toEqual(["Chat", "New task", "Specialists", "Tabs"]);
+      .filter((label) => ["Chat", "New task", "Specialists", "All tabs"].includes(label ?? ""));
+    expect(destinations).toEqual(["Chat", "New task", "Specialists", "All tabs"]);
 
-    // From Chat: pushed over Chat, carrying Chat's own conversation.
+    // From Chat: pushed over Chat, the Deployment's tabs rather than Chat's.
     await openSidebarTabs(w);
-    expect(w.stack.trace.at(-1)).toMatchObject({
+    expect(w.stack.trace.at(-1)).toEqual({
       action: "PUSH",
-      detail: { name: "Tabs", params: { deploymentId, threadId: homeId } },
+      detail: { name: "Tabs", params: { deploymentId } },
+      from: "sidebar",
     });
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Tabs"]);
     // The Menu, carrying any questions waiting, where Back would be.
@@ -1133,19 +1149,19 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       buttons(bar).some((button) => button.getAttribute("aria-label")?.startsWith("Menu")),
     ).toBe(true);
 
-    // From Tabs to Specialists and back: one destination replaces the other,
-    // and Specialists has no conversation to carry.
+    // From Tabs to Specialists and back: one destination replaces the other.
     await press(control(sidebar(w), "Specialists"));
     await openSidebarTabs(w);
-    expect(w.stack.trace.at(-1)).toMatchObject({
+    expect(w.stack.trace.at(-1)).toEqual({
       action: "REPLACE",
-      detail: { name: "Tabs", params: { deploymentId, threadId: null } },
+      detail: { name: "Tabs", params: { deploymentId } },
+      from: "sidebar",
     });
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Tabs"]);
     w.record("J1 sidebar destination from Chat and Specialists");
   });
 
-  it("from task A resets to Chat and Tabs while keeping task A as the conversation", async () => {
+  it("from task A resets to Chat and Tabs, carrying no conversation", async () => {
     const snapshot = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
     const taskA = threadTitled(snapshot, "Switch Slack to Opensteer");
     const w = await world({
@@ -1156,9 +1172,9 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     });
     await openSidebarTabs(w);
     expect(w.stack.trace.at(-1)).toMatchObject({ action: "RESET" });
-    expect(w.stack.routes.map(({ name, params }) => [name, params?.["threadId"]])).toEqual([
-      ["Home", undefined],
-      ["Tabs", taskA],
+    expect(w.stack.routes.map(({ name, params }) => [name, params])).toEqual([
+      ["Home", { deploymentId }],
+      ["Tabs", { deploymentId }],
     ]);
     w.record("J1 from task A");
   });
@@ -1259,39 +1275,48 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
   });
 });
 
-describe("J2: the page's conversation is the one Tabs was opened from", () => {
-  it("talks to Chat from Chat, keeps Chat's draft across tabs and Back, and never the tab's task", async () => {
+describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
+  /** The exact tab, alone: its page and no conversation over, under or beside it. */
+  function expectAlone(scope: HTMLElement) {
+    expect(scope.querySelector("[data-page]")).not.toBeNull();
+    expect(scope.querySelector('textarea[aria-label="Message"]')).toBeNull();
+    expect(scope.querySelector('[data-testid="conversation-slot"]')).toBeNull();
+    expect(sheetRecipient(scope)).toBeNull();
+    expect(harness.paneMounts.filter((mount) => mount.endsWith(":sheet"))).toEqual([]);
+  }
+
+  it("on a narrow cover screen, from Chat, shows the page alone and leaves Chat's draft where it was", async () => {
+    harness.frame = { height: 748, width: 344 };
+    harness.pair = { height: 700, width: 344 };
     const w = await world();
-    const snapshot = w.host.getSnapshot();
-    const homeId = snapshot.homeThreadId!;
     await typeDraft(front(w), "Ask about the reservation");
     await openSidebarTabs(w);
-    // Friday dinner is held by a task; the page still talks to Chat.
+    // Friday dinner is held by a task; neither that task nor Chat comes with it.
+    const place = placeList(w.host.getSnapshot()).find(({ title }) => title === "Friday dinner")!;
     await press(tile(front(w), "Friday dinner"));
     const opened = w.stack.top;
     expect(opened.name).toBe("WorkspaceBrowser");
-    expect(opened.params).toMatchObject({ deploymentId, scope: "workspace", threadId: homeId });
-    expect(sheetRecipient(front(w))).toBe(CHAT_THREAD_TITLE);
-    expect(draftShown(front(w))).toBe("Ask about the reservation");
-    expect(
-      front(w).querySelector('textarea[aria-label="Message"]')?.getAttribute("placeholder"),
-    ).toBe("Ask about this page…");
-    // Back to Tabs, then another tab: the same conversation and draft.
+    expect(opened.params).toEqual(aloneRoute(place));
+    expectAlone(front(w));
+    // Back to Tabs, then another tab: alone too.
     await act(async () => w.stack.navigation(opened.key).goBack());
     await settle();
     expect(w.stack.top.name).toBe("Tabs");
     await press(tile(front(w), "Q4 roadmap – Linear"));
-    expect(w.stack.top.params).toMatchObject({ scope: "workspace", threadId: homeId });
-    expect(sheetRecipient(front(w))).toBe(CHAT_THREAD_TITLE);
+    expectAlone(front(w));
+    // Back to Chat: its own draft, untouched.
+    await act(async () => w.stack.navigation(w.stack.top.key).goBack());
+    await act(async () => w.stack.navigation(w.stack.top.key).goBack());
+    await settle();
+    expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home"]);
     expect(draftShown(front(w))).toBe("Ask about the reservation");
     expect(w.calls.creates).toEqual([]);
-    w.record("J2 from Chat");
+    w.record("J2 from Chat on a cover screen");
   });
 
-  it("from task A keeps A and its draft through tabs, switching and returning to A", async () => {
+  it("from task A shows the tab alone, and A keeps its draft when chosen again from the sidebar", async () => {
     const snapshot = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
     const taskA = threadTitled(snapshot, "Switch Slack to Opensteer");
-    const titleA = "Switch Slack to Opensteer";
     const w = await world({
       routes: [
         { name: "Home", params: { deploymentId } },
@@ -1300,55 +1325,38 @@ describe("J2: the page's conversation is the one Tabs was opened from", () => {
     });
     await typeDraft(front(w), "Compare this with the last one");
     await openSidebarTabs(w);
-    // A tab another task holds: still A.
     await press(tile(front(w), "Friday dinner"));
-    expect(w.stack.top.params).toMatchObject({ scope: "workspace", threadId: taskA });
-    expect(sheetRecipient(front(w))).toBe(titleA);
-    expect(draftShown(front(w))).toBe("Compare this with the last one");
-    // Switch to another tab from Tabs.
-    await act(async () => w.stack.navigation(w.stack.top.key).goBack());
-    await settle();
-    await press(tile(front(w), "Weekend ideas"));
-    expect(w.stack.top.params).toMatchObject({ threadId: taskA });
-    expect(draftShown(front(w))).toBe("Compare this with the last one");
-    // Back to A from the sidebar: A's own screen, with the same draft.
+    expect(w.stack.top.params?.["threadId"]).toBeUndefined();
+    expectAlone(front(w));
     await act(async () => harness.drawer.onState?.("idle", true));
     await settle();
-    await press(tile(sidebar(w), titleA));
+    await press(tile(sidebar(w), "Switch Slack to Opensteer"));
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Thread"]);
     expect(w.stack.top.params).toMatchObject({ threadId: taskA });
     expect(draftShown(front(w))).toBe("Compare this with the last one");
     w.record("J2 from task A");
   });
 
-  it("before Chat exists, opens Tabs with no conversation, shows a tab alone and creates nothing", async () => {
+  it("before Chat exists, opens Tabs and a tab alone and creates nothing", async () => {
     // The mock's world before Chat has no computer to browse on, so the page
-    // itself is opened from a Tabs that carries no conversation in the seeded
-    // world, as it is from Specialists.
+    // itself is opened in the seeded world.
     const first = await world({ host: { initialHome: "absent" } });
     expect(first.host.getSnapshot().homeThreadId).toBeNull();
     await openSidebarTabs(first);
-    expect(first.stack.top).toMatchObject({
-      name: "Tabs",
-      params: { deploymentId, threadId: null },
-    });
+    expect(first.stack.top).toMatchObject({ name: "Tabs", params: { deploymentId } });
     expect(tiles(front(first))).toHaveLength(placeList(first.host.getSnapshot()).length);
     expect(first.calls.creates).toEqual([]);
-    first.record("J2 before Chat: Tabs carries no conversation");
+    first.record("J2 before Chat: Tabs");
 
     const w = await world({
       routes: [
         { name: "Home", params: { deploymentId } },
-        { name: "Tabs", params: { deploymentId, threadId: null } },
+        { name: "Tabs", params: { deploymentId } },
       ],
     });
     await press(tile(front(w), "Q4 roadmap – Linear"));
-    expect(w.stack.top.params).toMatchObject({ scope: "workspace", threadId: null });
-    expect(front(w).querySelector("[data-page]")).not.toBeNull();
-    expect(front(w).querySelector('textarea[aria-label="Message"]')).toBeNull();
-    expect(front(w).querySelector('[data-testid="conversation-slot"]')).toBeNull();
-    expect(sheetRecipient(front(w))).toBeNull();
-    expect(harness.paneMounts.filter((mount) => mount.endsWith(":sheet"))).toEqual([]);
+    expect(w.stack.top.params).toMatchObject({ scope: "workspace" });
+    expectAlone(front(w));
     expect(w.calls.creates).toEqual([]);
     w.record("J2 tab with no conversation");
   });
@@ -1768,31 +1776,118 @@ describe("J6: native views keep their own authority", () => {
   });
 });
 
-describe("J7: a page from Tabs keeps its page and conversation through layouts", () => {
+describe("J7: a task's page keeps its page and conversation through layouts", () => {
   it("stays mounted through side by side, tabletop and the keyboard", async () => {
-    const w = await world();
-    await openSidebarTabs(w);
-    await press(tile(front(w), "Q4 roadmap – Linear"));
-    const page = front(w);
-    expect(page.querySelector('[data-testid="pair-stacked"]')).not.toBeNull();
+    const snapshot = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
+    const owner = snapshot.threads.find((thread) =>
+      conversationSurfaces(snapshot, thread.id).some((item) => item.kind === "browser"),
+    )!;
+    const page = conversationSurfaces(snapshot, owner.id).find((item) => item.kind === "browser")!;
+    const w = await world({
+      routes: [
+        { name: "Home", params: { deploymentId } },
+        { name: "Thread", params: { deploymentId, threadId: owner.id } },
+        { name: "WorkspaceBrowser", params: { deploymentId, threadId: owner.id } },
+      ],
+    });
+    await press(tile(front(w), page.title));
+    const screen = front(w);
+    expect(screen.querySelector('[data-testid="pair-stacked"]')).not.toBeNull();
     harness.pair = { height: 1000, width: 744 };
     await w.render();
-    expect(page.querySelector('[data-testid="pair-side"]')).not.toBeNull();
+    expect(screen.querySelector('[data-testid="pair-side"]')).not.toBeNull();
     harness.pair = { height: 900, width: 900 };
     harness.regions = [
       { frame: { height: 20, width: 900, x: 0, y: 420 }, kind: "division", occludesContent: false },
     ];
     await w.render();
-    expect(page.querySelector('[data-testid="pair-tabletop"]')).not.toBeNull();
+    expect(screen.querySelector('[data-testid="pair-tabletop"]')).not.toBeNull();
     harness.keyboard = true;
     await w.render();
     harness.keyboard = false;
     harness.regions = [];
     harness.pair = { height: 760, width: 390 };
     await w.render();
-    expect(page.querySelector('[data-testid="pair-stacked"]')).not.toBeNull();
-    expect(harness.paneMounts.filter((mount) => mount.endsWith(":sheet"))).toHaveLength(1);
+    expect(screen.querySelector('[data-testid="pair-stacked"]')).not.toBeNull();
+    expect(harness.paneMounts.filter((mount) => mount.endsWith(":sheet"))).toEqual([
+      `${owner.id}:sheet`,
+    ]);
     expect(harness.pageMounts).toHaveLength(1);
     w.record("J7 layouts");
+  });
+});
+
+describe("J8: one sidebar switches between tasks and tabs", () => {
+  it("docks beside a tab chosen from it, switches straight to a task and back, and keeps the page through a fold", async () => {
+    harness.frame = { height: 1133, width: 744 };
+    harness.pair = { height: 1133, width: 424 };
+    const w = await world();
+    const home = w.stack.routes[0]!;
+    const snapshot = w.host.getSnapshot();
+    const places = placeList(snapshot);
+    // Two live pages among the few the sidebar lists before All tabs.
+    const [roadmap, dinner] = places
+      .slice(0, 5)
+      .filter(
+        (place) =>
+          place.kind === "browser" &&
+          place.availability === "ready" &&
+          place.workspaceTab?.state !== "suspended",
+      );
+    if (roadmap === undefined || dinner === undefined) throw new Error("Too few live tabs.");
+    const later = places.slice(5).find((place) => place.kind === "browser")!;
+    const taskA = threadTitled(snapshot, "Switch Slack to Opensteer");
+
+    // The tab, exactly, beside the sidebar; nothing else comes with it.
+    await press(tile(dockedSidebar(w), roadmap.title));
+    expect(w.stack.routes.map(({ name, params }) => [name, params])).toEqual([
+      ["Home", { deploymentId }],
+      ["WorkspaceBrowser", aloneRoute(roadmap)],
+    ]);
+    expect(front(w).querySelector("[data-page]")).not.toBeNull();
+    expect(front(w).querySelector('[data-testid="conversation-slot"]')).toBeNull();
+    expect(tile(dockedSidebar(w), roadmap.title).getAttribute("aria-selected")).toBe("true");
+    expect(tile(dockedSidebar(w), dinner.title).getAttribute("aria-selected")).toBe("false");
+
+    // Straight to a task, and straight to another tab: each in place of the last.
+    await press(tile(dockedSidebar(w), "Switch Slack to Opensteer"));
+    expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Thread"]);
+    expect(w.stack.top.params).toMatchObject({ threadId: taskA });
+    await press(tile(dockedSidebar(w), dinner.title));
+    expect(w.stack.routes.map(({ name, params }) => [name, params])).toEqual([
+      ["Home", { deploymentId }],
+      ["WorkspaceBrowser", aloneRoute(dinner)],
+    ]);
+    expect(w.stack.routes[0]!.key).toBe(home.key);
+    expect(tile(dockedSidebar(w), dinner.title).getAttribute("aria-selected")).toBe("true");
+
+    // Folded to the cover screen: the same page, in front, with the sidebar a drawer.
+    const pages = [...harness.pageMounts];
+    harness.frame = { height: 748, width: 344 };
+    await w.render();
+    expect(w.container.querySelector('[data-testid="sidebar-column"]')).toBeNull();
+    expect(w.stack.top.params).toEqual(aloneRoute(dinner));
+    expect(harness.pageMounts).toEqual(pages);
+    expect(front(w).querySelector("[data-page]")).not.toBeNull();
+    expect(front(w).querySelector('[data-testid="conversation-slot"]')).toBeNull();
+
+    // The overview is still there, as the group's last row.
+    harness.frame = { height: 1133, width: 744 };
+    await w.render();
+    await press(control(dockedSidebar(w), "All tabs"));
+    expect(w.stack.routes.map(({ name, params }) => [name, params])).toEqual([
+      ["Home", { deploymentId }],
+      ["Tabs", { deploymentId }],
+    ]);
+    // A tab past the few listed, opened from there, is listed while it is open.
+    const listed = (title: string) =>
+      buttons(dockedSidebar(w)).some((button) =>
+        button.getAttribute("aria-label")?.startsWith(`${title}, `),
+      );
+    expect(listed(later.title)).toBe(false);
+    await press(tile(front(w), later.title));
+    expect(tile(dockedSidebar(w), later.title).getAttribute("aria-selected")).toBe("true");
+    expect(w.calls.creates).toEqual([]);
+    w.record("J8 docked switching");
   });
 });

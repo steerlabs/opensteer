@@ -88,9 +88,9 @@ import { useAppForeground } from "../ui/foreground.js";
  *
  * A focused tab fills the screen above the conversation, folded to its latest
  * reply and its composer, which can be opened over the page to read the rest.
- * Talking to the agent never means leaving the page. A tab opened from the
- * sidebar's Tabs talks to the conversation Tabs was opened from, and stands
- * alone when there was none.
+ * Talking to the agent never means leaving the page. A tab opened from Tabs
+ * or the sidebar belongs to no conversation and stands alone, so it is
+ * exactly the page that was chosen, with nothing folded over it.
  */
 export function WorkspaceBrowserScreen({ route }: StaticScreenProps<SurfacesRoute>): ReactNode {
   const { selection } = useMobileState();
@@ -109,7 +109,11 @@ export function WorkspaceBrowserScreen({ route }: StaticScreenProps<SurfacesRout
     <Surfaces
       // The conversation is part of what this screen is; the tab is not, so a
       // saved tab moving to its restored session keeps the conversation mounted.
-      key={`${route.params.deploymentId}:${route.params.scope ?? "task"}:${route.params.threadId ?? ""}`}
+      key={
+        route.params.scope === "workspace"
+          ? `${route.params.deploymentId}:workspace`
+          : `${route.params.deploymentId}:task:${route.params.threadId}`
+      }
       hostClient={selection.hostClient}
       route={route.params}
     />
@@ -253,7 +257,10 @@ function ConversationTabs(
   );
 }
 
-/** A tab opened from the sidebar's Tabs, over the conversation Tabs was opened from. */
+/**
+ * A tab opened from Tabs or the sidebar, alone. A conversation a previous
+ * release's route still names is not shown with it.
+ */
 function WorkspaceTab(
   props: ForUserProps & { readonly connected: boolean; readonly notices: ReactNode },
 ): ReactNode {
@@ -277,7 +284,7 @@ function WorkspaceTab(
       remaining={() => true}
       route={route}
       snapshot={snapshot}
-      threadId={route.threadId}
+      threadId={null}
     />
   );
 }
@@ -370,7 +377,7 @@ function Focused(props: {
   readonly remaining: () => boolean;
   readonly route: SurfacesRoute;
   readonly snapshot: HostSnapshot;
-  /** The conversation the sheet talks to; none before Chat exists. */
+  /** The conversation the sheet talks to; none for a tab shown alone. */
   readonly threadId: string | null;
 }): ReactNode {
   const { destination, hostClient, route, snapshot, threadId } = props;
@@ -388,10 +395,7 @@ function Focused(props: {
     const below = state?.routes[state.index - 1];
     if (workspace) {
       if (below?.name === "Tabs") navigation.goBack();
-      else
-        navigation.dispatch(
-          StackActions.popTo("Tabs", { deploymentId: route.deploymentId, threadId }),
-        );
+      else navigation.dispatch(StackActions.popTo("Tabs", { deploymentId: route.deploymentId }));
       return;
     }
     if (
@@ -430,7 +434,7 @@ function Focused(props: {
       navigation.dispatch(
         StackActions.replace("WorkspaceBrowser", {
           ...(route.scope === "workspace"
-            ? workspaceRoute(route.deploymentId, route.threadId, next)
+            ? workspaceRoute(route.deploymentId, next)
             : surfaceRoute(route.deploymentId, route.threadId, next)),
           editAddress: true,
         }),
