@@ -142,7 +142,7 @@ export function DictationLive({
           <Elapsed since={view.startedAt ?? Date.now()} />
           <button
             ref={stopRef}
-            className="icon-btn"
+            className="dictation-keep"
             type="button"
             aria-label={dictationLabels.stop}
             aria-busy={view.phase === "finishing"}
@@ -188,6 +188,9 @@ function Elapsed({ since }: { since: number }) {
     </span>
   );
 }
+/** Enough bars to fill the widest composer; the oldest fade out at the left. */
+const waveBars = 64;
+
 function LevelMeter({ controller, active }: { controller: DictationController; active: boolean }) {
   const bars = useRef<HTMLSpanElement | null>(null);
   useEffect(() => {
@@ -195,7 +198,7 @@ function LevelMeter({ controller, active }: { controller: DictationController; a
     performance.mark("dictation-listening");
     let first = true;
     let last = 0;
-    const history = Array<number>(24).fill(0);
+    const history = Array<number>(waveBars).fill(0);
     return controller.subscribeLevel((level) => {
       if (first) {
         performance.mark("dictation-first-level");
@@ -213,7 +216,7 @@ function LevelMeter({ controller, active }: { controller: DictationController; a
   }, [active, controller]);
   return (
     <span ref={bars} className="dictation-level" aria-hidden="true">
-      {Array.from({ length: 24 }, (_, index) => (
+      {Array.from({ length: waveBars }, (_, index) => (
         <i key={index} />
       ))}
     </span>

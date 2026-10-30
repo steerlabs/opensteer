@@ -1,7 +1,8 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   executionMenu,
   executionAccounts,
+  findRoute,
   placementForSelection,
   placementAccountTitle,
   accessModeOptions,
@@ -66,13 +67,7 @@ export function ModelPicker({
     setView("conversation");
   }
   const anchorRef = useRef<HTMLButtonElement | null>(null);
-  const menu = executionMenu({
-    placements,
-    history,
-    selection: selection ?? blocked,
-    browsing: null,
-  });
-  const route = menu.current;
+  const route = findRoute(placements, selection ?? blocked);
   const placement =
     route?.placement ?? (blocked ? placementForSelection(placements, blocked) : null);
   const label = route?.model.displayName ?? blocked?.modelSelection.modelId ?? "Choose AI";
@@ -125,6 +120,7 @@ export function ModelPicker({
       </button>
       {open && anchorRef.current ? (
         <Popover
+          align="end"
           anchor={anchorRef.current}
           className="popover--execution"
           label="Choose an engine and model"
@@ -206,14 +202,16 @@ export function EnginePickerPanel({
 }: PanelProps) {
   const [browsing, setBrowsing] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const menu = executionMenu({
-    placements,
-    history,
-    selection: selection ?? blocked,
-    browsing,
-    query,
-  });
-  const accounts = executionAccounts(placements, selection ?? blocked);
+  const inForce = selection ?? blocked;
+  const menu = useMemo(
+    () => executionMenu({ placements, history, selection: inForce, browsing, query }),
+    [browsing, history, inForce, placements, query],
+  );
+  const accounts = useMemo(() => executionAccounts(placements, inForce), [inForce, placements]);
+  // A keyboard goes straight to search; a touch screen keeps its keyboard
+  // down until the person asks for it.
+  const finePointer =
+    typeof window !== "undefined" && window.matchMedia?.("(pointer: fine)").matches === true;
   const account = accounts.find((item) => item.selected);
   const access = settings?.access;
   const paneRef = useRef<HTMLDivElement | null>(null);
@@ -282,11 +280,12 @@ export function EnginePickerPanel({
           <>
             <button
               data-view-back
-              className="picker__row"
+              className="execution-menu__back"
               type="button"
               onClick={() => onView(null)}
             >
-              ‹ This conversation
+              <Icon name="chevron-left" />
+              This conversation
             </button>
             <div className="execution-menu__scroll">
               {access ? (
@@ -343,7 +342,7 @@ export function EnginePickerPanel({
               <label className="picker__search">
                 <Icon name="search" />
                 <input
-                  autoFocus
+                  autoFocus={finePointer || query !== ""}
                   aria-label="Search models"
                   type="search"
                   value={query}
@@ -357,14 +356,7 @@ export function EnginePickerPanel({
                 <p className="picker__empty">{menu.blocked.detail}</p>
                 <AccountFix
                   placement={menu.blocked}
-                  onAuthenticate={
-                    onAuthenticate
-                      ? (account) => {
-                          close();
-                          onAuthenticate(account);
-                        }
-                      : undefined
-                  }
+                  onAuthenticate={onAuthenticate}
                   onRefresh={onRefresh}
                 />
                 <ManageAccountsLink environmentId={menu.blocked.environmentId} />
@@ -412,18 +404,24 @@ export function EnginePickerPanel({
             )}
           </>
         )}
-        <button
-          type="button"
-          className="execution-menu__bottom"
-          onClick={() => onView("conversation")}
-        >
-          <Icon name={access ? accessModeGlyph[access.mode] : "unlock"} />
-          <span>
-            {accessModeOptions.find((option) => option.mode === access?.mode)?.label ??
-              "Full access"}{" "}
-            · {account?.title ?? (menu.account ? placementAccountTitle(menu.account) : "Account")} ›
-          </span>
-        </button>
+        {view === "conversation" ? null : (
+          <button
+            type="button"
+            className="execution-menu__bottom"
+            onClick={() => onView("conversation")}
+          >
+            <Icon name={access ? accessModeGlyph[access.mode] : "unlock"} />
+            <span className="execution-menu__bottom-words">
+              {accessModeOptions.find((option) => option.mode === access?.mode)?.label ??
+                "Full access"}
+              <span className="execution-menu__bottom-account">
+                {" · "}
+                {account?.title ?? (menu.account ? placementAccountTitle(menu.account) : "Account")}
+              </span>
+            </span>
+            <Icon name="chevron-right" />
+          </button>
+        )}
       </div>
     </div>
   );

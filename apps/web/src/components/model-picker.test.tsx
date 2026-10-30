@@ -199,6 +199,50 @@ describe("EnginePickerPanel", () => {
     );
     expect(unsupportedHtml).not.toContain(">Sign in</button>");
   });
+
+  it("signs a blocked AI in through its own fix, leaving the window alone", async () => {
+    const managed: ThreadPlacementOption = {
+      ...placement("Codex", "hin-codex", []),
+      availability: "authentication-required",
+      available: false,
+      detail: "Sign in to Codex",
+      harnessAuthenticationAllowed: true,
+      setupAvailable: true,
+    };
+    const onAuthenticate = vi.fn();
+    // A fix that closed "the menu" with a bare close() would close the window.
+    const closeWindow = vi.spyOn(window, "close").mockImplementation(() => undefined);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    try {
+      await act(async () =>
+        root.render(
+          <MemoryRouter>
+            <EnginePickerPanel
+              blocked={null}
+              history={[]}
+              onAuthenticate={onAuthenticate}
+              onSelect={vi.fn()}
+              placements={[managed]}
+              selection={null}
+            />
+          </MemoryRouter>,
+        ),
+      );
+      const signIn = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Sign in",
+      )!;
+      await act(async () => signIn.click());
+      expect(onAuthenticate).toHaveBeenCalledExactlyOnceWith(managed);
+      expect(closeWindow).not.toHaveBeenCalled();
+    } finally {
+      closeWindow.mockRestore();
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
 });
 
 describe("ModelPicker", () => {
@@ -359,7 +403,8 @@ it("opens usage recovery directly at accounts, applies access and routes the cho
     )!;
     await act(async () => switchAccount.click());
     const dialog = document.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain("‹ This conversation");
+    // "Switch account" lands on the conversation's view, ready to go back from.
+    expect(dialog.querySelector("[data-view-back]")?.textContent).toBe("This conversation");
     const access = [...dialog.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
       (item) => item.textContent?.includes("Supervised"),
     )!;
@@ -430,6 +475,81 @@ it("reviews a session-ending account switch before applying it", async () => {
     expect(onApply).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ harnessInstanceId: codexWork.harnessInstanceId }),
       { continuation: { expectedProviderSessionId: "session", fresh: false } },
+    );
+  } finally {
+    await act(async () => root.unmount());
+    node.remove();
+    spy.mockRestore();
+  }
+});
+
+it("keeps everything on Keep, and asks for an access mode rather than choosing one", async () => {
+  const onApply = vi.fn();
+  const node = document.createElement("div");
+  document.body.append(node);
+  const root = createRoot(node);
+  const rect = new DOMRect(10, 100, 100, 30);
+  const spy = vi
+    .spyOn(HTMLElement.prototype, "getClientRects")
+    .mockReturnValue(Object.assign([rect], { item: () => rect }));
+  const pickWork = async () => {
+    await act(async () => node.querySelector("button")!.click());
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>(".execution-menu__bottom")!.click(),
+    );
+    const account = [...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(
+      (item) => item.textContent?.includes("alex@work.test"),
+    )!;
+    await act(async () => account.click());
+  };
+  const reviewButton = (label: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>(".switch-review button")].find(
+      (item) => item.textContent === label,
+    )!;
+  try {
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <ExecutionControls
+            placements={[codexPersonal, codexWork]}
+            preferences={emptyExecutionPreferences}
+            selection={{
+              environmentId: codexPersonal.environmentId,
+              harnessInstanceId: codexPersonal.harnessInstanceId,
+              modelSelection: selectionForModel(gptOnCodex),
+            }}
+            onApply={onApply}
+            review={() => ({
+              kind: "incompatible",
+              access: { current: "full-access", offered: ["approval-required", "auto"] },
+              engineName: "Codex",
+              accountName: "Work",
+              expectedProviderSessionId: "session",
+              currentEngineName: "Codex",
+            })}
+          />
+        </MemoryRouter>,
+      ),
+    );
+    await pickWork();
+    await act(async () => reviewButton("Keep Codex").click());
+    expect(document.querySelector(".switch-review")).toBeNull();
+    expect(onApply).not.toHaveBeenCalled();
+
+    await pickWork();
+    // Nothing is chosen for the reader: confirming waits until they pick a mode.
+    expect(reviewButton("Use Codex").disabled).toBe(true);
+    const supervised = [
+      ...document.querySelectorAll<HTMLButtonElement>('.switch-review [role="radio"]'),
+    ].find((item) => item.textContent?.includes("Supervised"))!;
+    await act(async () => supervised.click());
+    await act(async () => reviewButton("Use Codex").click());
+    expect(onApply).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ harnessInstanceId: codexWork.harnessInstanceId }),
+      {
+        accessMode: "approval-required",
+        continuation: { expectedProviderSessionId: "session", fresh: false },
+      },
     );
   } finally {
     await act(async () => root.unmount());

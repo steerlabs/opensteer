@@ -86,28 +86,50 @@
 }
 .dictation-live {
   flex: 1;
-  min-width: 0;
   width: auto;
+  min-width: 0;
 }
-.dictation-level {
+/* In the bar the meter is a waveform: it fills the row, the newest level at
+   the right and the oldest fading out at the left. */
+.dictation-live .dictation-level {
   flex: 1;
   justify-content: flex-end;
+  gap: var(--space-2);
+  width: auto;
+  min-width: var(--space-20);
   overflow: hidden;
-  min-width: 20px;
+  color: var(--text-soft);
+  mask-image: linear-gradient(to right, transparent, black var(--space-48));
 }
-.dictation-level i {
+.dictation-live .dictation-level i {
+  flex: 0 0 2.5px;
   height: 3px;
-  flex: 0 0 2px;
 }
 .dictation-recording-dot {
-  width: 5px;
-  height: 5px;
+  flex: none;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--red);
-  flex: none;
+  box-shadow: var(--ring-red);
 }
-.dictation-live button[aria-busy="true"] {
-  opacity: 0.4;
+.dictation-keep {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--bg);
+}
+.dictation-keep:disabled {
+  opacity: 0.45;
+}
+.dictation-keep svg {
+  width: 15px;
+  height: 15px;
 }
 @media (prefers-reduced-motion: reduce) {
   .dictation-level i {

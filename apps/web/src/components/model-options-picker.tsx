@@ -1,5 +1,6 @@
 import type { HarnessModelDescriptor } from "@opensteer/protocol";
 import { modelSettings, withSetting, type OptionValues } from "@opensteer/client/host";
+import { Icon } from "./icon.js";
 
 export function ModelSettingsPanel({
   model,
@@ -23,10 +24,11 @@ export function ModelSettingsPanel({
           <button
             data-view-back
             type="button"
-            className="picker__row"
+            className="execution-menu__back"
             onClick={() => onChoice(null)}
           >
-            ‹ {selected.label}
+            <Icon name="chevron-left" />
+            {selected.label}
           </button>
           <div role="radiogroup" aria-label={selected.label}>
             {selected.choices.map((item) => (
@@ -40,7 +42,15 @@ export function ModelSettingsPanel({
                   onChange(withSetting(model, values, { id: selected.id, value: item.value }))
                 }
               >
-                {item.label}
+                <span className="picker__label-stack">
+                  <span className="picker__label">{item.label}</span>
+                  {item.description ? (
+                    <span className="picker__detail">{item.description}</span>
+                  ) : null}
+                </span>
+                <span className="picker__check">
+                  {selected.value === item.value ? <Icon name="check" /> : null}
+                </span>
               </button>
             ))}
           </div>
@@ -52,10 +62,31 @@ export function ModelSettingsPanel({
               <>
                 <div className="execution-setting__label">
                   <span>{setting.label}</span>
-                  <span>{setting.valueLabel}</span>
+                  {/* The engine choosing for itself is no step on the ladder,
+                      so it sits beside the name as the way back to it. */}
+                  {setting.automatic ? (
+                    <button
+                      type="button"
+                      className="execution-setting__automatic"
+                      aria-pressed={setting.step === null}
+                      title={setting.automatic.description ?? undefined}
+                      onClick={() =>
+                        onChange(
+                          withSetting(model, values, {
+                            id: setting.id,
+                            value: setting.automatic!.value,
+                          }),
+                        )
+                      }
+                    >
+                      {setting.automatic.label}
+                    </button>
+                  ) : null}
+                  <span className="execution-setting__value">{setting.valueLabel}</span>
                 </div>
                 <input
                   type="range"
+                  data-idle={setting.step === null ? "" : undefined}
                   onKeyDown={(event) => event.stopPropagation()}
                   aria-label={setting.label}
                   aria-valuetext={setting.valueLabel}
@@ -69,26 +100,8 @@ export function ModelSettingsPanel({
                       onChange(withSetting(model, values, { id: setting.id, value: step.value }));
                   }}
                 />
-                <div className="execution-setting__ends">
+                <div className="execution-setting__ends" aria-hidden>
                   <span>Quicker</span>
-                  {setting.automatic ? (
-                    <button
-                      type="button"
-                      aria-pressed={
-                        setting.step === null && setting.valueLabel === setting.automatic.label
-                      }
-                      onClick={() =>
-                        onChange(
-                          withSetting(model, values, {
-                            id: setting.id,
-                            value: setting.automatic!.value,
-                          }),
-                        )
-                      }
-                    >
-                      {setting.automatic.label}
-                    </button>
-                  ) : null}
                   <span>Deeper</span>
                 </div>
               </>
@@ -116,12 +129,13 @@ export function ModelSettingsPanel({
             ) : (
               <button
                 type="button"
-                className="picker__row"
+                className="execution-setting__choice"
                 data-choice={setting.id}
                 onClick={() => onChoice(setting.id)}
               >
-                {setting.label}
-                <span className="picker__state">{setting.valueLabel} ›</span>
+                <span>{setting.label}</span>
+                <span className="execution-setting__value">{setting.valueLabel}</span>
+                <Icon name="chevron-right" />
               </button>
             )}
           </div>

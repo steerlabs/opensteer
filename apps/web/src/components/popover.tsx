@@ -57,6 +57,8 @@ interface PopoverProps {
   parent?: HTMLElement | null;
   /** Open under the anchor, flipping above only without room: a control at the top of a page. */
   below?: boolean;
+  /** Line the panel's trailing edge up with the anchor's: a control at the end of a row. */
+  align?: "end" | "start";
 }
 
 /**
@@ -89,6 +91,7 @@ function PopoverContent({
   role = "menu",
   parent = null,
   below = false,
+  align = "start",
 }: PopoverProps) {
   const native = useNativeBrowserLayer().live;
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -136,7 +139,7 @@ function PopoverContent({
         return;
       }
       const left = Math.min(
-        Math.max(anchorRect.left, margin),
+        Math.max(align === "end" ? anchorRect.right - panelRect.width : anchorRect.left, margin),
         Math.max(margin, window.innerWidth - panelRect.width - margin),
       );
       const above = anchorRect.top - panelRect.height - gap;
@@ -161,7 +164,7 @@ function PopoverContent({
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", position, true);
     };
-  }, [anchor, atX, atY, below, parent]);
+  }, [align, anchor, atX, atY, below, parent]);
 
   useLayoutEffect(() => {
     const panel = panelRef.current;

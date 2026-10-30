@@ -89,7 +89,7 @@ try {
         "Switch did not apply",
       );
       await menu.getByRole("button", { name: /Full access ·/ }).click();
-      await menu.getByRole("button", { name: "‹ This conversation" }).waitFor();
+      await menu.getByRole("button", { name: "This conversation" }).waitFor();
       await page.screenshot({ path: path.join(directory, `${width}-conversation.png`) });
       await menu.getByRole("menuitemradio", { name: /Supervised/ }).click();
       await menu.getByRole("radio", { name: /alex@work.example/ }).click();
@@ -141,7 +141,7 @@ try {
       );
       await page.screenshot({ path: path.join(directory, `${width}-usage.png`) });
       await notice.getByRole("button", { name: "Switch account", exact: true }).click();
-      await page.getByRole("button", { name: "‹ This conversation" }).waitFor();
+      await page.getByRole("button", { name: "This conversation" }).waitFor();
       return { width };
     });
     await page.close();
