@@ -98,7 +98,8 @@ export type VoicePhase =
   /** The voice is talking. */
   | "speaking";
 
-export type VoiceNoticeKind = VoiceStartFailure | "ended" | "idle" | "connection-lost";
+export type VoiceNoticeKind =
+  VoiceStartFailure | "choose-ai" | "ended" | "idle" | "connection-lost";
 
 export interface VoiceNotice {
   readonly kind: VoiceNoticeKind;

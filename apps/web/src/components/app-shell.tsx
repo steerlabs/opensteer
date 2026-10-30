@@ -1,3 +1,6 @@
+import { autoPlacePart } from "./workspace/composer-context.js";
+import { destinationPlaceKey } from "./workspace/navigation.js";
+import { useBrowserTabStrip } from "@opensteer/client/react";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext, VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { useDictation } from "./dictation.js";
@@ -300,6 +303,7 @@ export function AppShell({
   );
   const routerNavigate = useNavigate();
   const { controller: dictation } = useDictation();
+  const voicePlaces = useBrowserTabStrip(hostClient).ordered;
   const voice = useVoiceRuntime(
     hostClient,
     (target) => {
@@ -308,6 +312,15 @@ export function AppShell({
       else nav.openConversation(target.kind === "chat" ? "/" : nav.threadPath(target.threadId));
     },
     dictation,
+    async () => {
+      const selection = placeSelection(new URLSearchParams(location.search));
+      const key = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
+      const part = await autoPlacePart(
+        hostClient,
+        voicePlaces.find((place) => place.key === key) ?? null,
+      );
+      return part ? [part] : [];
+    },
   );
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;

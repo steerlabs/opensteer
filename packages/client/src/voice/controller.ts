@@ -1,3 +1,6 @@
+import type { PlaceContentPart } from "@opensteer/core";
+import { lastExecutionSelection } from "../host/execution-preferences.js";
+import { composerExecutionSelection } from "../host/model-catalog.js";
 import { VoiceSessionIdSchema } from "@opensteer/protocol/voice";
 import { classifyClientFailure } from "../connections/operation-error.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
@@ -62,11 +65,23 @@ export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
   );
 }
 
+function chatSelection(snapshot: HostSnapshot) {
+  const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
+  const runnable = placements.filter((placement) => placement.available);
+  return composerExecutionSelection({
+    chosen: null,
+    remembered: lastExecutionSelection(snapshot.executionPreferences),
+    defaultPlacement: runnable.length === 1 ? runnable[0] : null,
+    placements,
+  });
+}
+
 const noticeCopy: Record<VoiceNoticeKind, string> = {
   "permission-denied": "Allow microphone access to talk to Opensteer.",
   "microphone-unavailable": "No microphone is available.",
   "insecure-context":
     "Voice needs a secure connection. Open Opensteer over https or on this computer.",
+  "choose-ai": "Choose an AI for Chat, then talk to Opensteer.",
   "no-account": "Voice needs a ChatGPT account signed in to Codex on one of your computers.",
   "update-computer": "Update Opensteer on that computer to use voice.",
   "update-codex": "Update Codex to use voice.",
@@ -89,6 +104,7 @@ export interface VoiceControllerInput extends VoiceTimers {
   readonly media: VoiceMediaPort | null;
   readonly navigate: (target: VoiceTarget) => void;
   readonly createId: () => string;
+  readonly places?: () => Promise<readonly PlaceContentPart[]>;
   readonly onStart?: () => void | Promise<void>;
   /** Semantic provider seam, also usable by offline implementations and tests. */
   readonly createProvider?: (input: CodexVoiceProviderInput) => VoiceProvider;
@@ -97,7 +113,6 @@ export interface VoiceControllerInput extends VoiceTimers {
 interface VoiceSession {
   readonly id: string;
   readonly abort: AbortController;
-  readonly account: VoiceAccount;
   readonly baseline: HostSnapshot;
   readonly turns: Set<string>;
   readonly pending: Map<string, { messageId: string | null; runId: string | null }>;
@@ -158,12 +173,15 @@ export class VoiceController {
       this.#publish({ notice: notice("no-account") });
       return;
     }
+    if (!baseline.homeThreadId && !chatSelection(baseline)) {
+      this.#publish({ notice: notice("choose-ai") });
+      return;
+    }
     const media = this.#input.media;
     if (!media || !baseline.voiceAvailable) return;
     const session: VoiceSession = {
       id: VoiceSessionIdSchema.parse(this.#input.createId()),
       abort: new AbortController(),
-      account,
       baseline,
       turns: new Set(),
       pending: new Map(),
@@ -391,22 +409,13 @@ export class VoiceController {
     const snapshot = host.getSnapshot();
     let threadId = snapshot.homeThreadId;
     if (!threadId) {
-      const owner = snapshot.workspaces.find(
-        (workspace) => workspace.id === snapshot.homeWorkspaceId,
-      )?.environmentId;
-      const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
-      const placement =
-        placements.find(
-          (option) =>
-            option.available &&
-            option.environmentId === (owner ?? session.account.environmentId) &&
-            option.harnessInstanceId === session.account.harnessInstanceId,
-        ) ??
-        placements.find(
-          (option) => option.available && option.environmentId === owner && option.defaultAccount,
-        );
+      const placement = chatSelection(snapshot);
+      if (!placement) {
+        await this.#end(session, "choose-ai");
+        return;
+      }
       const workspaceId = snapshot.homeWorkspaceId;
-      if (!workspaceId || !placement) throw new Error("Chat is unavailable.");
+      if (!workspaceId) throw new Error("Chat is unavailable.");
       const home = await this.#attempt(session, () =>
         host.createHome({
           environmentId: placement.environmentId,
@@ -420,11 +429,13 @@ export class VoiceController {
       threadId = home.id;
     }
     if (this.#session !== session) return;
+    const places = await this.#places();
+    if (this.#session !== session) return;
     const command: PendingSendCommand = {
       type: "thread.sendMessage",
       threadId,
       delivery: "queue",
-      content: [{ type: "text", text }],
+      content: [{ type: "text", text }, ...places],
       idempotencyKey: `voice:${session.id}:${turnId}`,
     };
     const result = await this.#attempt(session, () => host.dispatch(command));
@@ -435,6 +446,22 @@ export class VoiceController {
       pending.runId = result.run?.id ?? result.input.runId;
     }
     this.#hostChanged();
+  }
+  async #places(): Promise<readonly PlaceContentPart[]> {
+    if (!this.#input.places) return [];
+    let timer: VoiceTimer | null = null;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => this.#input.places!()),
+        new Promise<readonly PlaceContentPart[]>((resolve) => {
+          timer = this.#timers.set(() => resolve([]), 1_500);
+        }),
+      ]);
+    } catch {
+      return [];
+    } finally {
+      this.#timers.clear(timer);
+    }
   }
   async #attempt<T>(session: VoiceSession, action: () => Promise<T>): Promise<T> {
     try {
