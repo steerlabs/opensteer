@@ -24,6 +24,10 @@ document.querySelector('#note').addEventListener('input', () => {
     document.querySelector('#latency').style.background = window.latencyChanges % 2 ? '#0f0' : '#f00';
   }
 });
+for (const [name, types] of [['mousedown', [1, 3, 25]], ['mouseup', [2, 4, 26]]]) {
+  addEventListener(name, event => ipcRenderer.send('native-input', {
+    type: types[event.button], trusted: event.isTrusted, x: event.clientX, y: event.clientY}));
+}
 for (const [name, type] of [['keydown', 10], ['keyup', 11]]) {
   addEventListener(name, event => ipcRenderer.send('native-input', {type, code: event.code,
     key: event.key, trusted: event.isTrusted, shift: event.shiftKey}));
