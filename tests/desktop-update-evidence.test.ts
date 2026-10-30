@@ -3,9 +3,11 @@ import {
   advertisedVersion,
   rejectionEvidence,
   shutdownEvidence,
+  updateFailures,
+  journeyInput,
 } from "../scripts/public-download/evidence.js";
 
-test("negative proof requires complete delivery and the expected native refusal", () => {
+test("negative proof requires complete delivery followed by the matching classified refusal", () => {
   const delivery = {
     at: 12,
     transferComplete: "/fixture.zip",
@@ -14,24 +16,16 @@ test("negative proof requires complete delivery and the expected native refusal"
     start: 0,
     end: 41,
   };
-  const input = {
-    kind: "signature",
-    delivery,
-    expectedBytes: 42,
-    messages: ["Squirrel: code signature did not pass validation"],
-  };
+  const failure = { at: 13, event: "desktop.update.failed", reason: "signature" };
+  const input = { kind: "signature", delivery, expectedBytes: 42, failure };
   expect(rejectionEvidence.parse(input).kind).toBe("signature");
-  for (const messages of [
-    ["desktop.update.failed"],
-    ["checksum mismatch"],
-    ["code signature loaded successfully"],
-    [
-      "Bundle: <private>, key: Code signature at URL %@ did not pass validation, value: , table: Localizable, localizationNames: (null), result: <same as key>",
-    ],
-    ["truncated transfer"],
-    ["ElectronSquirrelPreventDowngrades: appears to be a downgrade"],
-  ])
-    expect(rejectionEvidence.safeParse({ ...input, messages }).success).toBe(false);
+  for (const reason of ["other", "downgrade", undefined, "checksum mismatch"])
+    expect(rejectionEvidence.safeParse({ ...input, failure: { ...failure, reason } }).success).toBe(
+      false,
+    );
+  expect(rejectionEvidence.safeParse({ ...input, failure: { ...failure, at: 11 } }).success).toBe(
+    false,
+  );
   expect(
     rejectionEvidence.safeParse({ ...input, delivery: { ...delivery, bytes: 41 } }).success,
   ).toBe(false);
@@ -39,9 +33,37 @@ test("negative proof requires complete delivery and the expected native refusal"
     rejectionEvidence.safeParse({
       ...input,
       kind: "downgrade",
-      messages: ["ElectronSquirrelPreventDowngrades: update appears to be a downgrade"],
+      failure: { ...failure, reason: "downgrade" },
     }).success,
   ).toBe(true);
+});
+
+test("desktop failure parsing requires the classified hook and preserves its event time", () => {
+  expect(
+    updateFailures(
+      '2026-10-30T01:00:00.000Z stdout {"event":"desktop.update.failed","reason":"signature"}',
+    ),
+  ).toEqual([
+    {
+      at: Date.parse("2026-10-30T01:00:00.000Z"),
+      event: "desktop.update.failed",
+      reason: "signature",
+    },
+  ]);
+  expect(() =>
+    updateFailures('2026-10-30T01:00:00.000Z stdout {"event":"desktop.update.failed"}'),
+  ).toThrow();
+  expect(
+    updateFailures('2026-10-30T01:00:00.000Z stdout {"event":"desktop.update.checking"}'),
+  ).toEqual([]);
+});
+
+test("fixtures must be genuinely older than N and recovery must advance N", () => {
+  const release = (version: string) => ({ version, revision: "a".repeat(40) });
+  const input = { older: release("0.1.219"), n: release("0.1.252"), next: release("0.1.253") };
+  expect(journeyInput.safeParse(input).success).toBe(true);
+  expect(journeyInput.safeParse({ ...input, older: input.n }).success).toBe(false);
+  expect(journeyInput.safeParse({ ...input, next: input.n }).success).toBe(false);
 });
 
 test("downgrade metadata is derived above any numeric N+1", () => {

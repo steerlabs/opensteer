@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { journeyInput } from "./evidence.js";
 import { journeySigning } from "./signing.js";
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -7,14 +8,14 @@ import { journeyWorkDirectory } from "./work-directory.js";
 import path from "node:path";
 import { z } from "zod";
 const inputs = z.string().refine(path.isAbsolute).parse(process.argv[2]);
-const release = z.object({ version: z.string(), revision: z.string().regex(/^[a-f0-9]{40}$/u) });
-const input = z
-  .object({ n: release, next: release })
-  .parse(JSON.parse(readFileSync(path.join(inputs, "input.json"), "utf8")));
+const input = journeyInput.parse(JSON.parse(readFileSync(path.join(inputs, "input.json"), "utf8")));
 const names = ["stable:menu", "beta:menu", "stable:tray", "stable:quit", "beta:quit"] as const;
 const selected = process.argv[3]
   ? z.array(z.enum(names)).parse(process.argv[3].split(","))
   : [...names];
+if (process.argv[4] !== undefined && process.argv[4] !== "--rehearsal")
+  throw Error("Expected --rehearsal or no final argument");
+const evidenceKind = process.argv[4] === "--rehearsal" ? "rehearsal" : "certification";
 const metadata = journeySigning().metadata;
 const work = journeyWorkDirectory();
 const out = path.join(work, "e2e", new Date().toISOString().replaceAll(":", "-"));
@@ -28,19 +29,25 @@ const builds: {
   sha256: string;
   directory: string;
 }[] = [];
-for (const item of [input.n, input.next])
+const fixtures: typeof builds = [];
+for (const item of [input.older, input.n, input.next])
   for (const channel of ["stable", "beta"]) {
     const directory = path.join(buildRoot, item.revision, channel),
       build = z
         .object({ zip: z.string() })
         .parse(JSON.parse(readFileSync(path.join(directory, "build.json"), "utf8")));
     const sha256 = createHash("sha256").update(readFileSync(build.zip)).digest("hex");
-    builds.push({ channel, ...item, sha256, directory });
+    (item === input.older ? fixtures : builds).push({ channel, ...item, sha256, directory });
     cpSync(
       path.join(directory, "build.json"),
       path.join(out, `${channel}-${item.version}-build.json`),
     );
-    for (const file of ["notary.json", "archive-check.json"])
+    for (const file of [
+      "notary.json",
+      "archive-check.json",
+      "build-verification.json",
+      "prepare-verification.json",
+    ])
       if (existsSync(path.join(directory, file)))
         cpSync(path.join(directory, file), path.join(out, `${channel}-${item.version}-${file}`));
   }
@@ -55,9 +62,11 @@ const save = () =>
     JSON.stringify(
       {
         scope: "electron-updater-github-two-channels",
+        evidenceKind,
         input,
         metadata,
         builds,
+        fixtures,
         selected,
         results,
         passed: results.length === selected.length && results.every((x) => x.passed),

@@ -31,6 +31,7 @@ const localZip = z.string().refine(path.isAbsolute).parse(values.local);
 const out = z.string().refine(path.isAbsolute).parse(values.out);
 const certification = z
   .object({
+    evidenceKind: z.literal("certification"),
     metadata: journeyMetadata,
     passed: z.literal(true),
     builds: z.array(

@@ -3,6 +3,18 @@ import { compareStableVersions } from "../engines.js";
 
 export const journeyMetadata = z.object({ expectedTeamId: z.string().regex(/^[A-Z0-9]{10}$/u) });
 export const numericVersion = z.string().regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u);
+const release = z.object({
+  version: numericVersion,
+  revision: z.string().regex(/^[a-f0-9]{40}$/u),
+});
+export const journeyInput = z
+  .object({ older: release, n: release, next: release })
+  .refine(
+    (x) =>
+      compareStableVersions(x.older.version, x.n.version) < 0 &&
+      compareStableVersions(x.n.version, x.next.version) < 0,
+    "Require older fixture < N < N+1",
+  );
 export function advertisedVersion(n: string, next: string): string {
   numericVersion.parse(n);
   numericVersion.parse(next);
@@ -22,26 +34,43 @@ export const deliveryEvidence = z
     end: z.number().int().nonnegative(),
   })
   .refine((x) => x.bytes === x.size && x.end === x.size - 1, "Full ZIP delivery required");
+export const updateFailure = z.object({
+  at: z.number(),
+  event: z.literal("desktop.update.failed"),
+  reason: z.enum(["signature", "downgrade", "other"]),
+});
+export function updateFailures(log: string) {
+  return log.split("\n").flatMap((line) => {
+    const start = line.indexOf("{");
+    if (start < 0) return [];
+    let value: unknown;
+    try {
+      value = JSON.parse(line.slice(start));
+    } catch {
+      return [];
+    }
+    if (!z.object({ event: z.literal("desktop.update.failed") }).safeParse(value).success)
+      return [];
+    const timestamp = z.string().datetime().parse(line.split(" ")[0]);
+    return [
+      updateFailure.parse({
+        ...z.record(z.string(), z.unknown()).parse(value),
+        at: Date.parse(timestamp),
+      }),
+    ];
+  });
+}
 export const rejectionEvidence = z
   .object({
     kind: z.enum(["signature", "downgrade"]),
     delivery: deliveryEvidence,
     expectedBytes: z.number().int().positive(),
-    messages: z.array(z.string()).nonempty(),
+    failure: updateFailure,
   })
   .refine((x) => x.delivery.bytes === x.expectedBytes, "Delivered ZIP size differs from fixture")
   .refine(
-    (x) =>
-      x.messages.some(
-        (message) =>
-          !/localizationNames:|table: Localizable|result: <same as key>/u.test(message) &&
-          (x.kind === "signature"
-            ? /(?:did not pass validation|code signature[^\n]*(?:invalid|fail|does not|not valid)|(?:invalid|fail)[^\n]*code signature|does not satisfy[^\n]*requirement|designated requirement[^\n]*(?:fail|not|mismatch))/iu.test(
-                message,
-              )
-            : /ElectronSquirrelPreventDowngrades[\s\S]*appears to be a downgrade/iu.test(message)),
-      ),
-    "Expected native refusal cause is not observable",
+    (x) => x.failure.reason === x.kind && x.failure.at > x.delivery.at,
+    "Expected classified native refusal must follow completed delivery",
   );
 export const shutdownEvidence = z
   .object({

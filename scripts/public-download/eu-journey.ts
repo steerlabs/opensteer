@@ -5,8 +5,6 @@ import {
   cpSync,
   existsSync,
   mkdtempSync,
-  openSync,
-  closeSync,
   symlinkSync,
   readFileSync,
   rmSync,
@@ -19,13 +17,14 @@ import {
   deliveryEvidence,
   rejectionEvidence,
   shutdownEvidence,
+  updateFailures,
 } from "./evidence.js";
 
 type Release = { version: string; revision: string };
 export async function githubJourney(c: {
   channel: "stable" | "beta";
   scenario: string;
-  input: { n: Release; next: Release };
+  input: { older: Release; n: Release; next: Release };
   root: string;
   share: string;
   out: string;
@@ -63,17 +62,27 @@ export async function githubJourney(c: {
     writeFileSync(path.join(root, "atom.json"), JSON.stringify([...new Set(tags)]));
   };
   feed(input.n.version);
-  const zip = path.join(c.share, tag(input.n.version), asset);
-  const expected = readFileSync(path.join(c.share, tag(input.n.version), "SHA256SUMS"), "utf8")
-    .split("\n")
-    .find((x) => x.trim().split(/\s+/u)[1] === asset)
-    ?.split(/\s+/u)[0];
-  const hash = createHash("sha256").update(readFileSync(zip)).digest("hex");
-  assert.equal(hash, expected);
-  c.record("verified direct archive installation", hash);
+  const verifiedArchive = (release: Release) => {
+    const zip = path.join(c.share, tag(release.version), asset);
+    const expected = readFileSync(path.join(c.share, tag(release.version), "SHA256SUMS"), "utf8")
+      .split("\n")
+      .find((x) => x.trim().split(/\s+/u)[1] === asset)
+      ?.split(/\s+/u)[0];
+    const hash = createHash("sha256").update(readFileSync(zip)).digest("hex");
+    assert.equal(
+      hash,
+      z
+        .string()
+        .regex(/^[a-f0-9]{64}$/u)
+        .parse(expected),
+    );
+    c.record(`verified archive ${release.version}`, hash);
+    return zip;
+  };
+  const zip = verifiedArchive(input.n);
   c.run("ditto", ["-x", "-k", zip, "/Applications"]);
   assert(!c.run("xattr", ["-r", app]).output.includes("com.apple.quarantine"));
-  c.run("open", [app]);
+  c.run("open", ["-n", app]);
   await c.verify(input.n.version);
   const marker = path.join(c.data, "public-download-marker");
   writeFileSync(marker, input.n.revision);
@@ -89,7 +98,7 @@ export async function githubJourney(c: {
   const restart = async () => {
     c.script(`tell application "${product}" to quit`);
     await c.wait("app quit", () => !c.running());
-    c.run("open", [app]);
+    c.run("open", ["-n", app]);
     await c.wait("Personal healthy after launch", c.health);
   };
   const requests = () =>
@@ -129,15 +138,15 @@ export async function githubJourney(c: {
       "Provider checked mixed Atom/Latest metadata; no zip download and no restart action",
     );
   };
-  const positive = async (method: string) => {
+  const positive = async (method: string, label = c.scenario) => {
     feed(input.next.version);
     await restart();
     await c.wait("real restart menu available", () => menu().includes("Restart to Update"), 180);
     c.record(
       "restart action available; native event-source contract is covered by the updater unit test",
     );
-    c.screenshot("native-update-ready");
-    const observerPath = path.join(out, "shutdown-observer.json");
+    c.screenshot(`${label}-update-ready`);
+    const observerPath = path.join(out, `${label}-shutdown-observer.json`);
     const child = spawn(
       process.execPath,
       [
@@ -171,7 +180,7 @@ export async function githubJourney(c: {
         "ordinary quit installed N+1",
         () => existsSync(app) && c.plist("CFBundleShortVersionString") === input.next.version,
       );
-      c.run("open", [app]);
+      c.run("open", ["-n", app]);
     } else if (method === "tray") {
       c.script(
         `tell application "System Events" to tell process "${product}" to perform action "AXShowMenu" of menu bar item 1 of menu bar 2`,
@@ -234,69 +243,21 @@ export async function githubJourney(c: {
     deliveredPath: string,
     bytes: number,
   ) => {
-    const capture = path.join(out, `native-${kind}.jsonl`);
-    const fd = openSync(capture, "w");
-    const child = spawn(
-      "sudo",
-      [
-        "-n",
-        "/usr/bin/log",
-        "stream",
-        "--style",
-        "ndjson",
-        "--level",
-        "debug",
-        "--predicate",
-        `process == "${product}"`,
-      ],
-      { stdio: ["ignore", fd, fd] },
-    );
-    closeSync(fd);
-    const ended = new Promise<void>((resolve) => child.once("close", () => resolve()));
     const started = Date.now();
     const before = c.readLog().length;
-    try {
-      await restart();
-      await c.wait(
-        `native rejects ${kind}`,
-        () => c.readLog().slice(before).includes("desktop.update.failed"),
-        180,
-      );
-    } finally {
-      c.run("sudo", ["pkill", "-TERM", "-P", String(child.pid)], true);
-      child.kill("SIGTERM");
-      await ended;
-    }
+    await restart();
+    await c.wait(
+      `native rejects ${kind}`,
+      () => updateFailures(c.readLog().slice(before)).some((f) => f.reason === kind),
+      180,
+    );
     const delivery = requests()
       .filter((x) => x.at >= started && x.transferComplete === deliveredPath)
       .findLast((x) => deliveryEvidence.safeParse(x).success);
-    const historyPath = path.join(out, `native-${kind}-history.jsonl`);
-    const historyFd = openSync(historyPath, "w");
-    try {
-      const result = spawnSync(
-        "/usr/bin/log",
-        ["show", "--last", "4m", "--style", "ndjson", "--info", "--debug", "--process", product],
-        { stdio: ["ignore", historyFd, historyFd], timeout: 120_000 },
-      );
-      writeFileSync(
-        path.join(out, `native-${kind}-history-status.json`),
-        JSON.stringify({ status: result.status, error: result.error?.message }),
-      );
-    } finally {
-      closeSync(historyFd);
-    }
-    const history = readFileSync(historyPath, "utf8");
-    const messages = (readFileSync(capture, "utf8") + "\n" + history)
-      .split("\n")
-      .flatMap((line) => {
-        try {
-          const parsed = z.object({ eventMessage: z.string() }).safeParse(JSON.parse(line));
-          return parsed.success ? [parsed.data.eventMessage] : [];
-        } catch {
-          return [];
-        }
-      });
-    const evidence = rejectionEvidence.parse({ kind, delivery, expectedBytes: bytes, messages });
+    const failure = updateFailures(c.readLog().slice(before)).find(
+      (f) => f.reason === kind && delivery && f.at >= delivery.at,
+    );
+    const evidence = rejectionEvidence.parse({ kind, delivery, expectedBytes: bytes, failure });
     writeFileSync(path.join(out, `rejection-${kind}.json`), JSON.stringify(evidence, null, 2));
     return before;
   };
@@ -312,11 +273,11 @@ export async function githubJourney(c: {
   c.record("wrong signer refused; N healthy");
   cpSync(path.join(c.share, tag(input.next.version), asset), targetZip);
   writeFileSync(path.join(targetDir, yml), originalYml);
-  await positive("menu");
+  assert.equal(readFileSync(marker, "utf8"), input.n.revision);
   const misleading = advertisedVersion(input.n.version, input.next.version),
     directory = mkdtempSync(path.join(root, "downgrade-"));
   symlinkSync(directory, path.join(root, tag(misleading)), "dir");
-  cpSync(path.join(c.share, tag(input.n.version), asset), path.join(directory, asset));
+  cpSync(verifiedArchive(input.older), path.join(directory, asset));
   metadata(directory, misleading);
   feed(misleading);
   before = await rejection(
@@ -326,8 +287,9 @@ export async function githubJourney(c: {
   );
   assert(!c.readLog().slice(before).includes("desktop.update.downloaded"));
   assert(!menu().includes("Restart to Update"));
-  assert.equal(c.plist("CFBundleShortVersionString"), input.next.version);
+  assert.equal(c.plist("CFBundleShortVersionString"), input.n.version);
   assert(c.health());
   assert.equal(readFileSync(marker, "utf8"), input.n.revision);
-  c.record("higher YAML version carrying lower signed bundle refused; N+1 healthy");
+  c.record("higher YAML version carrying older signed bundle refused; N healthy and marker intact");
+  await positive("menu", "after-both-refusals");
 }

@@ -54,7 +54,7 @@ const mac = {
   ...config.mac,
   signingIdentity: signing.identity,
   keychainProfile: signing.notarizationProfile,
-  keychain: signing.keychain ?? config.mac.keychain,
+  keychain: signing.keychain,
 };
 const stop = new AbortController();
 const interrupt = () => stop.abort(new Error("Build interrupted"));

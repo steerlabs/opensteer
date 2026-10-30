@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { captureFilter, captureScope, captureCounters } from "./traffic-policy.js";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -7,7 +8,11 @@ import { setTimeout as delay } from "node:timers/promises";
 export async function captureTraffic(out: string) {
   assert(existsSync("/Volumes/My Shared Files/inputs"), "Guest only");
   const run = (exe: string, args: string[]) => {
-    const r = spawnSync(exe, args, { encoding: "utf8", timeout: 600_000 });
+    const r = spawnSync(exe, args, {
+      encoding: "utf8",
+      timeout: 600_000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
     assert.equal(r.status, 0, r.stderr);
     return r.stdout;
   };
@@ -22,10 +27,10 @@ export async function captureTraffic(out: string) {
   run("sudo", ["dscacheutil", "-flushcache"]);
   run("sudo", ["killall", "-HUP", "mDNSResponder"]);
   const children: ChildProcess[] = [];
-  const captureLogs: string[] = [];
+  const captureLogs = { en0: "", lo0: "" };
   // Parse only after clean shutdown, so buffered pcap writes retain every packet
   // without forcing a disk flush for each packet during local ZIP transfers.
-  for (const iface of ["en0", "lo0"]) {
+  for (const iface of ["en0", "lo0"] as const) {
     const child = spawn(
       "sudo",
       [
@@ -34,17 +39,17 @@ export async function captureTraffic(out: string) {
         "-i",
         iface,
         "-B",
-        "32768",
+        "65536",
         "-s",
         "8192",
         "-w",
         path.join(out, `${iface}.pcap`),
-        "port 53 or port 80 or port 443 or port 853 or host 127.0.0.2",
+        captureFilter,
       ],
       { stdio: ["ignore", "ignore", "pipe"] },
     );
     child.stderr.on("data", (b) => {
-      captureLogs.push(String(b));
+      captureLogs[iface] += String(b);
       process.stderr.write(b);
     });
     children.push(child);
@@ -62,17 +67,33 @@ export async function captureTraffic(out: string) {
       child.kill("SIGINT");
       await ended;
     }
-    const captureLog = captureLogs.join("");
+    const captureLog = Object.values(captureLogs).join("");
     writeFileSync(path.join(out, "capture.log"), captureLog);
-    const dropCounts = [...captureLog.matchAll(/(\d+) packets dropped by kernel/gu)].map((x) =>
-      Number(x[1]),
+    const counters = Object.fromEntries(
+      Object.entries(captureLogs).map(([iface, log]) => [iface, captureCounters(log)]),
+    );
+    for (const [iface, text] of Object.entries(captureLogs))
+      writeFileSync(path.join(out, `${iface}-capture.log`), text);
+    writeFileSync(
+      path.join(out, "capture-counters.json"),
+      JSON.stringify(
+        {
+          scope: captureScope,
+          filter: captureFilter,
+          bufferKiB: 65536,
+          snapLength: 8192,
+          counters,
+        },
+        null,
+        2,
+      ),
     );
     assert(
-      dropCounts.length === 2 && dropCounts.every((x) => x === 0),
-      "Both packet captures must stop with zero packet loss",
+      Object.keys(counters).length === 2 && Object.values(counters).every((c) => c.dropped === 0),
+      "Both metadata captures must stop with zero packet loss",
     );
     const records = [];
-    for (const iface of ["en0", "lo0"]) {
+    for (const iface of ["en0", "lo0"] as const) {
       const text = run("tshark", [
         "-r",
         path.join(out, `${iface}.pcap`),
@@ -116,7 +137,15 @@ export async function captureTraffic(out: string) {
     writeFileSync(
       path.join(out, "traffic.json"),
       JSON.stringify(
-        { records, forbidden, positiveControl, passed: forbidden.length === 0 },
+        {
+          scope: captureScope,
+          filter: captureFilter,
+          counters,
+          records,
+          forbidden,
+          positiveControl,
+          passed: forbidden.length === 0,
+        },
         null,
         2,
       ),

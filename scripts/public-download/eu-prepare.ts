@@ -2,11 +2,16 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { journeyWorkDirectory } from "./work-directory.js";
+import { journeyInput } from "./evidence.js";
 import { journeySigning } from "./signing.js";
 import path from "node:path";
 import { z } from "zod";
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
-const revisions = [sha.parse(process.argv[2]), sha.parse(process.argv[3])];
+const revisions = [
+  sha.parse(process.argv[2]),
+  sha.parse(process.argv[3]),
+  sha.parse(process.argv[4]),
+];
 const builds = path.join(journeyWorkDirectory(), "builds");
 const out = path.join(builds, `github-inputs-${Date.now()}`);
 mkdirSync(out, { mode: 0o700 });
@@ -78,6 +83,13 @@ for (const revision of revisions) {
 }
 writeFileSync(
   path.join(out, "input.json"),
-  JSON.stringify({ n: input[0], next: input[1], metadata: journeySigning().metadata }, null, 2),
+  JSON.stringify(
+    {
+      ...journeyInput.parse({ n: input[0], next: input[1], older: input[2] }),
+      metadata: journeySigning().metadata,
+    },
+    null,
+    2,
+  ),
 );
 console.log(out);

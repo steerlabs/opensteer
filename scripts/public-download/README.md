@@ -4,7 +4,11 @@ These on-demand journeys exercise electron-updater's GitHub provider for stable
 and Beta: app-menu restart, stable tray restart, ordinary quit, channel isolation,
 signer and downgrade refusal, health and data preservation.
 The mirror includes opposite-channel releases and a legacy stable decoy. Captures
-cover DNS, HTTP Host and TLS SNI with positive controls through relaunch and idle.
+retain DNS plus client-to-server TCP HTTP/TLS flights, including fragmented
+ClientHello and SYN attempts, with positive controls through relaunch and idle.
+Bulk ZIP response traffic is excluded. Each interface records captured/received/
+dropped counts; missing counters or any drop fail the case. UDP/QUIC and encrypted
+DNS are not certified.
 Stable forbids Account traffic; Beta records it without signing in or enabling
 Connect. Both check for named public GitHub/Opensteer update hosts in guest-wide captures.
 This is not process-attributed destination enforcement: arbitrary external hosts
@@ -55,7 +59,7 @@ cleans the extraction. The real release tool verifies identity, signature, stapl
 and Gatekeeper; its verification output and archive hashes are retained:
 
 ```sh
-pnpm exec tsx scripts/public-download/eu-prepare.ts FULL_N_SHA FULL_NEXT_SHA
+pnpm exec tsx scripts/public-download/eu-prepare.ts FULL_N_SHA FULL_NEXT_SHA FULL_OLDER_FIXTURE_SHA
 ```
 
 ## Run and inspect
@@ -68,7 +72,11 @@ pnpm exec tsx scripts/public-download/eu-run.ts /absolute/prepared-inputs
 
 An optional comma-separated selection follows it, such as
 `stable:menu,beta:menu`. Menu cases include equal/channel isolation, wrong-signer
-refusal, successful recovery update, and misleading-metadata downgrade refusal.
+refusal and misleading-metadata downgrade refusal while N stays healthy, then
+one genuine N→N+1 recovery. The downgrade fixture is an older, genuinely signed
+bundle of the same channel, with its archive hash verified. Preparation requires
+`older < N < N+1`; reuse an existing signed older build rather than resetting a
+newer app or its Personal runtime backward.
 The default set has five clones: both menu cases, stable tray, and both quit cases.
 Each case uses a fresh clone and a short-lived guest-trusted CA. Archives are checksum-verified and extracted directly
 into the guest's Applications directory without removing quarantine or disabling
@@ -84,10 +92,21 @@ also retains its evidence.
 
 The journey waits for the real restart menu but does not claim to distinguish a
 finished download from native staging. The updater unit test owns the event-source
-contract. Negative cases require a fully delivered fixture plus cause-specific
-Squirrel messages from the guest unified log. If macOS does not expose the cause,
-certification fails; a generic product failure event or localization lookup is
-insufficient.
+contract. Negative cases require a fully delivered fixture followed by a validated
+`desktop.update.failed` event whose classified `reason` matches `signature` or
+`downgrade`. Generic failures, `other`, missing reasons and earlier events fail.
+These fixed classifications are the product contract for native Squirrel causes;
+no raw URL-bearing native error text is required.
+
+For a pre-merge rehearsal, append the complete selection and `--rehearsal`:
+
+```sh
+pnpm exec tsx scripts/public-download/eu-run.ts /absolute/prepared-inputs \
+  stable:menu,beta:menu,stable:tray,stable:quit,beta:quit --rehearsal
+```
+
+The receipt is marked `rehearsal` and the CI bridge refuses it. Release gate
+evidence must be rebuilt and rerun from the merged main source commit.
 
 ## Bridge to a CI archive
 

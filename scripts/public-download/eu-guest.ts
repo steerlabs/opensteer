@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { journeyMetadata } from "./evidence.js";
+import { journeyMetadata, journeyInput } from "./evidence.js";
 import { forbiddenPublicUpdateHosts } from "./update-traffic.js";
 import { githubJourney } from "./eu-journey.js";
 import { personalEndpoint } from "./personal-endpoint.js";
@@ -22,13 +22,7 @@ const bundleId =
   githubChannel === "beta" ? "com.steerlabs.opensteer.beta" : "com.opensteer.opensteer";
 process.env.OPENSTEER_JOURNEY_BUNDLE_ID = bundleId;
 const scenario = z.enum(["eu-menu", "eu-tray", "eu-quit"]).parse(process.argv[2]);
-const release = z.object({
-  version: z.string().regex(/^\d+\.\d+\.\d+$/u),
-  revision: z.string().regex(/^[a-f0-9]{40}$/u),
-});
-const input = z
-  .object({ n: release, next: release })
-  .parse(JSON.parse(readFileSync(path.join(share, "input.json"), "utf8")));
+const input = journeyInput.parse(JSON.parse(readFileSync(path.join(share, "input.json"), "utf8")));
 const out = path.join(homedir(), "opensteer-job/artifacts/public-download");
 const root = path.join(homedir(), "public-download-mirror");
 mkdirSync(out, { recursive: true });
@@ -314,6 +308,7 @@ try {
   let packetPassed = false;
   let publicUpdateHostsAbsent = false;
   let accountHostRequests: string[] = [];
+  let trafficError: string | undefined;
   try {
     const result = await finishCapture?.(trafficSince);
     packetPassed = !!result && (githubChannel === "beta" || result.forbidden.length === 0);
@@ -355,7 +350,8 @@ try {
       );
     }
   } catch (e) {
-    error ??= String(e);
+    trafficError = String(e);
+    error ??= trafficError;
   }
   const noAccountTraffic =
     packetPassed &&
@@ -372,6 +368,7 @@ try {
         scenario,
         channel: githubChannel,
         publicUpdateHostsAbsent,
+        trafficError,
         accountHostRequests,
         noAccountTrafficRequired: githubChannel !== "beta",
         scope: "desktop-update",
