@@ -2,7 +2,7 @@
 
 ## How to test
 
-Follow [AGENTS.md](../AGENTS.md#testing) for test design and landing rules.
+Follow [AGENTS.md](../AGENTS.md#verifying) for test design and landing rules.
 Import-based selection misses IPC, subprocess entry points, SQL and copied assets;
 choose a focused journey across any boundary you change. Empty selections and
 skipped, blocked or `NOT-AUTOMATABLE` cases are not passing evidence.
@@ -112,7 +112,7 @@ output alone does not require artifacts for every change.
 
 ## GUI test VMs
 
-The host screen belongs to the founder. Follow [AGENTS.md](../AGENTS.md#testing)
+The host screen belongs to the founder. Follow [AGENTS.md](../AGENTS.md#verifying)
 for VM-only GUI execution and process ownership. Reuse one journey per native
 flow. VM runs are post-merge or on demand, never a pre-merge gate.
 See [VM constraints and operation](../scripts/test-vm/README.md).
