@@ -4672,6 +4672,33 @@ describe("HttpHostClient Home prefetch", () => {
     },
   );
 
+  it("reads Home again when a Workspace snapshot overtakes its prefetch", async () => {
+    const run = homeStartup();
+    try {
+      await run.client.load();
+      expect(run.history).toHaveLength(1);
+      const socket = run.sockets[0]!;
+      socket.open();
+      socket.receive({
+        snapshot: { ...workspaceSnapshot(run.workspace, "5"), threads: [run.home] },
+        type: "host.snapshot",
+      });
+      run.history[0]!.resolve(json(run.page("Read before the snapshot")));
+      await vi.waitFor(() => expect(run.history).toHaveLength(2));
+      run.history[1]!.resolve(json(run.page("Read after the snapshot")));
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().threads.find(({ id }) => id === run.home.id)?.title).toBe(
+          "Read after the snapshot",
+        ),
+      );
+      run.client.activateThread(run.home.id);
+      expect(run.history).toHaveLength(2);
+      expect(run.commands).not.toContain("thread.read.mark");
+    } finally {
+      run.close();
+    }
+  });
+
   it("retries a failed prefetch through the hydration owner on activation", async () => {
     const run = homeStartup();
     try {

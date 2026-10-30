@@ -4443,6 +4443,17 @@ export class HttpHostClient {
       }
       this.#ensureAssignments(threadId, true);
     }
+    // A read still in flight for a Thread nobody shows yet, such as Home's
+    // warm read, began before this snapshot: it reads again rather than
+    // install an older page over what the snapshot carried.
+    for (const threadId of this.#hydrationBuffers.keys()) {
+      if (this.#historicalThreads.has(threadId)) continue;
+      if (
+        this.#threadWorkspace.get(threadId) === workspace.id ||
+        workspace.homeThreadId === threadId
+      )
+        this.#invalidatedHydrations.add(threadId);
+    }
   }
 
   #applyLive(input: LiveProgressInput): void {
