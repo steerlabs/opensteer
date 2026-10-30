@@ -1,3 +1,4 @@
+import { SavedViewCache } from "./saved-view-cache.js";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import {
   AccountBrokeredHostSessions,
@@ -24,7 +25,11 @@ import {
   type DeploymentConnectionInput,
   type PrivateFilesystem,
 } from "@opensteer/client/connections";
-import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
+import {
+  mutationIdempotencyKey,
+  type HostClient,
+  type SavedViewStore,
+} from "@opensteer/client/host";
 import {
   parseNativeIntegrationAuthorizationCallback,
   IntegrationAuthorizationAttemptIdSchema,
@@ -80,6 +85,7 @@ export interface MobileClientState {
   readonly selection: MobileSelection;
   /** The last write to this device's own storage that did not land, in words. */
   readonly storageFailure: string | null;
+  readonly savedViewFailure: string | null;
 }
 
 export interface MobileDirectoryState {
@@ -89,6 +95,7 @@ export interface MobileDirectoryState {
 }
 
 export interface MobileClientOptions {
+  readonly savedViewStore?: SavedViewStore;
   readonly accountOrigin: string | null;
   readonly catalogFilePath: string;
   readonly doneShelfFilePath: string;
@@ -152,6 +159,10 @@ export class MobileClient {
   readonly sessionExchange: HostSessionExchange;
   readonly sessions: PersonalSessionStore;
 
+  readonly #savedViewCache: SavedViewCache;
+  readonly #changingLogins = new Set<string>();
+  readonly #loginInitializedClients = new WeakSet<HostClient>();
+  #attachedViewLoginId: string | undefined;
   readonly #authStore: ProtectedAuthStore;
   readonly #fence: HostAttachmentFence;
   readonly #host: MobileHostPort;
@@ -211,9 +222,20 @@ export class MobileClient {
     rows: [],
     selection: detachedSelection("loading"),
     storageFailure: null,
+    savedViewFailure: null,
   };
 
   constructor(options: MobileClientOptions) {
+    this.#savedViewCache = new SavedViewCache({
+      ...(options.savedViewStore ? { store: options.savedViewStore } : {}),
+      files: options.privateFiles,
+      directory: `${options.catalogFilePath.slice(0, options.catalogFilePath.lastIndexOf("/"))}/saved-view-denials`,
+    });
+    this.#detach.push(
+      this.#savedViewCache.subscribe(() => {
+        void this.#republish();
+      }),
+    );
     this.#seed = options.seed ?? [];
     this.#iphoneApps = options.iphoneApps ?? null;
     this.#openIntegrationAuthorization = options.openIntegrationAuthorization;
@@ -223,7 +245,18 @@ export class MobileClient {
       privateFiles: options.privateFiles,
     });
     this.#authStore = createSecureAuthStore(options.records);
-    this.sessions = createPersonalSessionStore(options.records);
+    this.sessions = createPersonalSessionStore(options.records, {
+      beforeChange: (id) => this.#invalidateSavedView(id),
+      changed: (session) => {
+        if (
+          this.#hostClient !== null &&
+          session.deploymentId === this.#attachedDeploymentId &&
+          session.viewLoginId !== this.#attachedViewLoginId
+        ) {
+          void this.#replaceCredentialAttachment(session.deploymentId);
+        }
+      },
+    });
     this.doneShelf = createDoneShelfFile({
       filePath: options.doneShelfFilePath,
       privateFiles: options.privateFiles,
@@ -251,6 +284,9 @@ export class MobileClient {
       },
     });
     this.oauth = new NativeOAuthManager({
+      beforeAccountChange: () => this.#invalidateAccountSavedViews(),
+      beforeHostChange: (connection) =>
+        this.#invalidateSavedView(connection.authority.document.deploymentId),
       accountOrigin: options.accountOrigin,
       accountSessions,
       catalog: this.catalog,
@@ -298,7 +334,19 @@ export class MobileClient {
         // sign-out taking its rows with it.
         void this.#reconcileAttachment();
       }),
-      this.oauth.subscribe(() => {
+      this.oauth.subscribe((state) => {
+        const id = this.#attachedDeploymentId;
+        if (
+          id !== null &&
+          state.account.status === "signed-in" &&
+          this.#changingLogins.has(id) &&
+          this.#state.catalog.deployments.some(
+            ({ authority, source }) =>
+              authority.document.deploymentId === id && source.kind === "account",
+          )
+        ) {
+          void this.#replaceCredentialAttachment(id);
+        }
         void this.#republish();
       }),
       this.oauth.subscribeHostCredentials((state) => {
@@ -482,10 +530,20 @@ export class MobileClient {
   signOut(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.#authorizationEpoch += 1;
+    const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
     return this.#operations.run(async () => {
-      if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
-      await this.#signOutNow(id);
+      try {
+        await invalidation;
+        if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
+        await this.#signOutNow(id);
+      } catch (error) {
+        // A sign-out or removal that did not happen leaves the login and its live
+        // attachment in place; the saved view it erased stays erased.
+        this.#changingLogins.delete(id);
+        await this.#republish();
+        throw error;
+      }
     });
   }
 
@@ -501,6 +559,7 @@ export class MobileClient {
    * app switch.
    */
   async foregrounded(): Promise<void> {
+    await this.#savedViewCache.retryInvalidation();
     await this.directoryRefresh.request("app-focus");
     const id = this.#state.selection.deploymentId;
     if (id !== null && this.#hostClient === null && this.#attachmentState === "offline") {
@@ -653,6 +712,7 @@ export class MobileClient {
 
   signOutAccount(): Promise<void> {
     this.#authorizationEpoch += 1;
+    const invalidation = this.#invalidateAccountSavedViews();
     // Decided before anything awaits: only a Deployment the Account lists
     // leaves with it, and this iPhone stops sharing with it at once.
     const enrolled = this.#iphoneApps?.enrolledDeploymentId() ?? null;
@@ -664,6 +724,7 @@ export class MobileClient {
       )?.authority.document.deploymentId ?? null;
     const iphone = leaving === null ? null : this.#stopIphoneApps(leaving);
     return this.#operations.run(async () => {
+      await invalidation;
       if (leaving !== null && iphone !== null) await this.#tellHostIphoneStopped(leaving, iphone);
       const selected = this.#attachedDeploymentId;
       await this.oauth.signOutAccount();
@@ -687,10 +748,20 @@ export class MobileClient {
   remove(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.#authorizationEpoch += 1;
+    const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
     return this.#operations.run(async () => {
-      if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
-      await this.#removeNow(id);
+      try {
+        await invalidation;
+        if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
+        await this.#removeNow(id);
+      } catch (error) {
+        // A sign-out or removal that did not happen leaves the login and its live
+        // attachment in place; the saved view it erased stays erased.
+        this.#changingLogins.delete(id);
+        await this.#republish();
+        throw error;
+      }
     });
   }
 
@@ -815,7 +886,12 @@ export class MobileClient {
           ? { kind: "unroutable" }
           : { kind: "verification-failed", verification };
       }
-      if (options.requireFreshHostCredential === true) {
+      if (
+        options.requireFreshHostCredential === true ||
+        (this.#changingLogins.has(id) &&
+          resolution.selected.connection.kind === "self-hosted" &&
+          this.oauth.hostCredentialState(resolution.selected.connection).status !== "signed-in")
+      ) {
         await this.#republish();
         return { attempt, generation, kind: "needs-credential" };
       }
@@ -890,6 +966,10 @@ export class MobileClient {
       // healthy poll cannot observe an upgrade; reconnects and refusals can.
       let evidence: typeof verification | null = verification;
       let verifying: Promise<readonly HostCapability[]> | null = null;
+      const viewLoginId = await this.#host.credentials
+        .viewLoginId?.(attachment.connection)
+        .catch(() => undefined);
+      if (!this.#isCurrentSelection(id, attempt) || generation !== this.#fence.generation) continue;
       const hostClient = this.#host.attach({
         authorization: {
           current: attachmentAuthorization.current,
@@ -924,6 +1004,8 @@ export class MobileClient {
         hostClient.dispose();
         continue;
       }
+      this.#attachedViewLoginId = viewLoginId;
+      this.#changingLogins.delete(id);
       this.#hostClient = hostClient;
       this.#hostOrigin = attachment.resolved.origin;
       this.#readAttachment(hostClient);
@@ -1088,26 +1170,54 @@ export class MobileClient {
    * ordinary redraw.
    */
   async #hostCredentialChanged(state: HostOAuthState): Promise<void> {
-    const deploymentId = state.connection.authority.document.deploymentId;
+    const id = state.connection.authority.document.deploymentId;
+    if (state.status === "authorizing") {
+      // The credential owner calls the invalidation hook before opening UI.
+      await this.#republish();
+      return;
+    }
     if (
       state.status !== "signed-in" ||
-      deploymentId !== this.#attachedDeploymentId ||
-      (!this.#attachmentRefused && this.#hostClient !== null)
+      id !== this.#attachedDeploymentId ||
+      (!this.#attachmentRefused &&
+        this.#hostClient !== null &&
+        !this.#changingLogins.has(id) &&
+        state.viewLoginId === this.#attachedViewLoginId)
     ) {
       await this.#republish();
       return;
     }
+    await this.#replaceCredentialAttachment(id);
+  }
+
+  async #replaceCredentialAttachment(id: DeploymentId): Promise<void> {
     try {
       const attempt = await this.#operations.run(async () => {
-        if (this.#disposed || deploymentId !== this.#attachedDeploymentId) return null;
-        return this.#selectLocallyNow(deploymentId, true);
+        if (this.#disposed || id !== this.#attachedDeploymentId) return null;
+        return this.#selectLocallyNow(id, true);
       });
-      if (attempt !== null) await this.#attachSelection(deploymentId, attempt);
+      if (attempt !== null) await this.#attachSelection(id, attempt);
     } catch {
-      // A re-attachment that cannot be made leaves the row saying what it
-      // already said; the action that led here is still there to try again.
       await this.#republish();
     }
+  }
+
+  /** Hides synchronously; key deletion precedes revocation and credential cleanup. */
+  #invalidateSavedView(id: string): Promise<void> {
+    this.#changingLogins.add(id);
+    if (this.#state.selection.deploymentId === id) {
+      this.#state = { ...this.#state, selection: { ...this.#state.selection, hostClient: null } };
+      for (const listener of this.#listeners) listener();
+    }
+    return this.#savedViewCache.invalidate(id);
+  }
+
+  #invalidateAccountSavedViews(): Promise<void> {
+    return Promise.all(
+      this.#state.catalog.deployments
+        .filter(({ source }) => source.kind === "account")
+        .map(({ authority }) => this.#invalidateSavedView(authority.document.deploymentId)),
+    ).then(() => undefined);
   }
 
   #clearSignOutSuppression(id: DeploymentId): Promise<void> {
@@ -1169,6 +1279,14 @@ export class MobileClient {
    */
   #readAttachment(hostClient: HostClient): boolean {
     const snapshot = hostClient.getSnapshot();
+    if (
+      snapshot.session === "authenticated" &&
+      snapshot.user !== null &&
+      !this.#loginInitializedClients.has(hostClient)
+    ) {
+      this.#loginInitializedClients.add(hostClient);
+      void this.#initializeViewLoginIds(hostClient).catch(noop);
+    }
     if (snapshot.connection === "connected") this.#attachmentConnected = true;
     const state: DeploymentAttachment =
       snapshot.connection === "connecting"
@@ -1177,10 +1295,31 @@ export class MobileClient {
           : "connecting"
         : snapshot.connection;
     const refused = snapshot.session === "authentication-required";
+    if (refused && !this.#attachmentRefused && this.#attachedDeploymentId !== null)
+      void this.#invalidateSavedView(this.#attachedDeploymentId);
     if (state === this.#attachmentState && refused === this.#attachmentRefused) return false;
     this.#attachmentState = state;
     this.#attachmentRefused = refused;
     return true;
+  }
+
+  async #initializeViewLoginIds(client: HostClient): Promise<void> {
+    const id = this.#attachedDeploymentId;
+    if (id === null) return;
+    const connection = this.#requireConnection(id);
+    const attempt = this.#attachmentAttempt,
+      epoch = this.#authorizationEpoch;
+    const isCurrent = () =>
+      this.#isCurrentSelection(id, attempt) &&
+      this.#hostClient === client &&
+      this.#authorizationEpoch === epoch &&
+      client.getSnapshot().session === "authenticated";
+    await this.oauth.initializeViewLoginIds(connection, isCurrent);
+    if (!isCurrent()) return;
+    if (connection.kind === "personal") await this.sessions.initializeViewLoginId?.(id, isCurrent);
+    if (!isCurrent()) return;
+    const loginId = await this.#host.credentials.viewLoginId?.(connection);
+    if (isCurrent()) this.#attachedViewLoginId = loginId;
   }
 
   /**
@@ -1410,6 +1549,8 @@ export class MobileClient {
       return "unreachable";
     }
     if (typeof agreement === "string") {
+      // Discovery refusal erases saved authority without starting a login change.
+      void this.#savedViewCache.invalidate(deploymentId);
       this.#verification.set(deploymentId, agreement);
       // Keep the selected Deployment and its repair, but revoke this attachment's
       // transports and authorization, including credential reads already awaiting storage.
@@ -1482,11 +1623,13 @@ export class MobileClient {
       selection: {
         connection,
         deploymentId: attachedId,
-        hostClient: this.#hostClient,
+        hostClient:
+          attachedId !== null && this.#changingLogins.has(attachedId) ? null : this.#hostClient,
         row: rows.find((row) => row.deploymentId === attachedId) ?? null,
         status: this.#selectionReady ? "ready" : "loading",
       },
       storageFailure: this.#storageFailure,
+      savedViewFailure: this.#savedViewCache.getFailure(),
     };
     for (const listener of this.#listeners) listener();
   }
