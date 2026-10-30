@@ -494,7 +494,7 @@ export function PlaceBrowserView({
         { kind: "profile", profileId: visitIdentity.profileId },
         url,
         pending.epoch,
-        { title: tab?.title ?? "", typed: pending.typed },
+        { title: tab?.title ?? "", typed: pending.typed, tab: { sessionId, tabId } },
       );
   }, [documentId, hostClient, loading, url, tab?.title, visitIdentity]);
   const navigateTo = (next: string, typed = true) => {

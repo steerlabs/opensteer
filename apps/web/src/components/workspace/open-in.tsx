@@ -65,7 +65,7 @@ export function useOpenPageIn(hostClient: HostClient) {
               },
             )
             .then((opened) => {
-              hostClient.recentSites.record(profile.identity, parsed.url, epoch);
+              hostClient.recentSites.record(profile.identity, parsed.url, epoch, { tab: opened });
               show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
               toast.success(`Opened in ${profile.presentation.name} · the original stays`);
             });

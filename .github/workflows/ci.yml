@@ -199,6 +199,8 @@ jobs:
           if-no-files-found: error
   native-mac:
     name: native-mac (${{ matrix.task }})
+    env:
+      DEVELOPER_DIR: ${{ matrix.xcode }}
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.native-mac != 'false' }}
     runs-on: macos-15
@@ -232,6 +234,7 @@ jobs:
         with:
           path: |
             packages/apple-data/.build
+            packages/apple-dictation/.build
             apps/mobile/modules/iphone-apps/ios/.build
             apps/desktop/native/computer-use/.build
             apps/desktop/native/passwords/.build
@@ -252,6 +255,10 @@ jobs:
         run: |
           swift test --package-path packages/apple-data
           swift test --package-path apps/mobile/modules/iphone-apps/ios
+      - name: Test dictation
+        if: matrix.task == 'dictation'
+        run: |
+          swift test --package-path packages/apple-dictation
       - name: Test computer use
         if: matrix.task == 'computer-tests'
         run: swift test --package-path apps/desktop/native/computer-use

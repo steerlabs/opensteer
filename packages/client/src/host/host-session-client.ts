@@ -1075,9 +1075,10 @@ export class HttpHostClient {
       typeof options.capabilities === "function" ? options.capabilities : null;
     this.#capabilities = Array.isArray(options.capabilities) ? [...options.capabilities] : null;
     this.browserPreferences = new BrowserPreferences(options.recentSitesStorage);
-    this.recentSites = new RecentSitesStore(
-      options.recentSitesStorage ? { storage: options.recentSitesStorage } : {},
-    );
+    this.recentSites = new RecentSitesStore({
+      ...(options.recentSitesStorage ? { storage: options.recentSitesStorage } : {}),
+      readIcon: (sessionId, iconRef) => this.readBrowserTabIcon(sessionId, iconRef),
+    });
     this.#baseUrl = new URL(options.baseUrl);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.rpc = createHttpHostApiClient({
@@ -3042,6 +3043,7 @@ export class HttpHostClient {
 
   dispose(): void {
     if (this.#disposed) return;
+    this.recentSites.dispose();
     this.#workspaceTabActivations.dispose();
     this.#snapshot = { ...this.#snapshot, activatingWorkspaceTabs: [] };
     this.#disposed = true;
@@ -5484,6 +5486,10 @@ export class HttpHostClient {
     if (workspaceTabsChanged)
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     reconcileBrowserTargets?.();
+    this.recentSites.observeTabs(
+      this.#snapshot.browserSessions,
+      this.#snapshot.connection === "connected",
+    );
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
   }

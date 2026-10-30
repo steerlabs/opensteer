@@ -1232,6 +1232,13 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
   .object({
+    /** Page-provider contract, available only after the engine Security probe. */
+    passkeys: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
     navigationVersion: z
       .number()
       .int()

@@ -38,7 +38,7 @@ import {
 } from "@opensteer/browser-core";
 import {
   browserPageDisabledBlinkFeatures,
-  browserPagePolicyScript,
+  browserPagePolicyScriptFor,
 } from "@opensteer/browser-runtime-core/page-policy";
 import {
   siteCookieReplacementBatch,
@@ -58,6 +58,13 @@ import {
 import { applyBrowserSessionPolicy } from "./browser-session-policy.js";
 import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 
+import {
+  PasskeyBridge,
+  createPasskeyProviderConfig,
+} from "@opensteer/browser-runtime-core/passkey-bridge";
+import type { BrowserPagePolicyConfig } from "@opensteer/browser-runtime-core/page-policy";
+import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
+
 const storageWorldId = 10_991;
 /**
  * Parallel helper loads for restoring and saving profile storage. Each site
@@ -68,6 +75,7 @@ const storageViewConcurrency = 3;
 const blankDocument = Buffer.from("<!doctype html><meta charset=utf-8>", "utf8").toString("base64");
 
 interface ElectronBrowserLauncherOptions {
+  readonly authenticator?: PasskeyAuthenticator;
   readonly clipboard?: EngineClipboard;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   readonly maxWebContents?: number;
@@ -87,6 +95,7 @@ export function electronBrowserPartition(partitionKey: BrowserPartitionKey): str
 
 /** Electron-native BrowserEngine used only by the connected desktop composition root. */
 export class ElectronBrowserLauncher implements BrowserLauncher {
+  readonly #authenticator: PasskeyAuthenticator | undefined;
   readonly #clipboard: EngineClipboard | undefined;
   readonly #downloads: Pick<DesktopDownloads, "accept">;
   readonly #configuredSessions = new WeakSet<Session>();
@@ -98,6 +107,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     if (!path.isAbsolute(options.pagePolicyPreloadPath)) {
       throw new TypeError("The browser page policy preload path must be absolute.");
     }
+    this.#authenticator = options.authenticator;
     this.#pagePolicyPreloadPath = options.pagePolicyPreloadPath;
     this.#clipboard = options.clipboard;
     this.#downloads = options.downloads;
@@ -145,6 +155,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       createView: (options, opener) => this.#views.create(options, opener, request.initialViewport),
       createHelper: (options) => this.#views.createHelper(options),
       profileSession,
+      ...(this.#authenticator ? { authenticator: this.#authenticator } : {}),
     });
     try {
       // The first page holds a blank document until launch returns, so it
@@ -162,6 +173,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     if (this.#configuredSessions.has(profileSession)) return;
     this.#configuredSessions.add(profileSession);
     applyBrowserSessionPolicy(profileSession, {
+      provider: this.#authenticator !== undefined,
       downloads: this.#downloads,
       pagePolicyPreloadPath: this.#pagePolicyPreloadPath,
     });
@@ -406,6 +418,7 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
 }
 
 interface ElectronBrowserContextOptions {
+  readonly authenticator?: PasskeyAuthenticator;
   readonly createView: (
     options: ElectronBrowserViewOptions,
     opener: WebContentsView | null,
@@ -418,6 +431,10 @@ class ElectronBrowserContext implements BrowserContext {
   isConnected(): boolean {
     return !this.#closed;
   }
+  readonly #authenticator: PasskeyAuthenticator | undefined;
+  // Popups inherit the session preload preferences before a page wrapper exists.
+  // A random name per isolated browser context covers that first-document race.
+  readonly #providerConfig: BrowserPagePolicyConfig;
   readonly #createView: ElectronBrowserContextOptions["createView"];
   readonly #createHelper: ElectronBrowserContextOptions["createHelper"];
   readonly #events = new EventEmitter();
@@ -430,6 +447,8 @@ class ElectronBrowserContext implements BrowserContext {
   };
 
   constructor(options: ElectronBrowserContextOptions) {
+    this.#authenticator = options.authenticator;
+    this.#providerConfig = options.authenticator ? createPasskeyProviderConfig() : undefined;
     this.#createView = options.createView;
     this.#createHelper = options.createHelper;
     this.#profileSession = options.profileSession;
@@ -591,7 +610,12 @@ class ElectronBrowserContext implements BrowserContext {
     options: ElectronBrowserViewOptions,
   ): ElectronBrowserPage {
     this.#assertOpen();
-    const page = new ElectronBrowserPage(this.#createView(options, opener?.view ?? null), opener);
+    const page = new ElectronBrowserPage(
+      this.#createView(options, opener?.view ?? null),
+      opener,
+      this.#authenticator,
+      this.#providerConfig,
+    );
     this.#pages.add(page);
     page.onClose(() => {
       this.#pages.delete(page);
@@ -638,6 +662,13 @@ class ElectronBrowserContext implements BrowserContext {
 
   #securePreferences(): WebPreferences {
     return {
+      ...(this.#providerConfig
+        ? {
+            additionalArguments: [
+              `--opensteer-passkey-provider=${JSON.stringify(this.#providerConfig)}`,
+            ],
+          }
+        : {}),
       allowRunningInsecureContent: false,
       backgroundThrottling: true,
       contextIsolation: true,
@@ -750,6 +781,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
    * and closing a page still needs it to remove listeners and report closed.
    */
   readonly #webContents: WebContents;
+  #passkeyBridge: PasskeyBridge | undefined;
   readonly #hub: ElectronDebuggerHub;
   readonly #opener: ElectronBrowserPage | null;
   readonly #cdpPromise: Promise<CdpSession>;
@@ -801,7 +833,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     dispose(): void;
   } | null = null;
 
-  constructor({ view, host }: ElectronBrowserView, opener: ElectronBrowserPage | null) {
+  constructor(
+    { view, host }: ElectronBrowserView,
+    opener: ElectronBrowserPage | null,
+    authenticator?: PasskeyAuthenticator,
+    providerConfig?: BrowserPagePolicyConfig,
+  ) {
     this.view = view;
     this.#restingHost = host;
     this.#webContents = view.webContents;
@@ -824,17 +861,19 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     // Electron starts a popup's document as soon as createWindow returns.
     // Own dialogs before that first script, ahead of the hub's renderer-dependent
     // Runtime initialization, and keep an opening until the ledger subscribes.
-    if (!inspector.isAttached()) inspector.attach("1.3");
-    const pageEnabled = inspector.sendCommand("Page.enable");
+    if (!authenticator && !inspector.isAttached()) inspector.attach("1.3");
+    const pageEnabled = authenticator ? undefined : inspector.sendCommand("Page.enable");
     // The passkey policy has two hooks, each where its timing holds. Electron
     // has no pause-on-start and answers this registration only from a
     // renderer, so a page's first document cannot wait for it: the session's
     // main-frame preload covers first documents, and this script every later
     // document and every frame, where that preload sometimes never runs.
-    const pagePolicy = inspector.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
-      source: browserPagePolicyScript,
-      runImmediately: true,
-    });
+    const dispatchPolicy = () =>
+      inspector.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
+        source: browserPagePolicyScriptFor(providerConfig),
+        runImmediately: true,
+      });
+    const pagePolicy = authenticator ? undefined : dispatchPolicy();
     this.#hub = new ElectronDebuggerHub(
       view.webContents,
       (demanded) => {
@@ -843,8 +882,32 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       },
       () => this.waitForPaint(),
       () => this.#displayScale(),
+      authenticator ? ["Network", "Security"] : [],
     );
-    this.#cdpPromise = this.#hub.open("platform").then((channel) => {
+    const installBridge = (channel: ElectronCdpChannel) => {
+      if (!authenticator || !providerConfig) return;
+      this.#passkeyBridge = new PasskeyBridge(channel, authenticator, {
+        config: providerConfig,
+        contexts: this.#hub.executionContexts,
+      });
+      view.webContents.once("destroyed", () => this.#passkeyBridge?.close());
+      inspector.once("detach", () => this.#passkeyBridge?.close());
+    };
+    // Reserve subscriptions before Runtime's first replay or a first commit.
+    // Dispatch is synchronous; renderer replies never gate navigation.
+    const platform = authenticator
+      ? Promise.resolve(this.#hub.bootstrapPlatform(installBridge))
+      : this.#hub.open("platform");
+    if (authenticator)
+      void dispatchPolicy()
+        .catch(() => this.close())
+        .catch(() => undefined);
+    if (this.#passkeyBridge)
+      void this.#passkeyBridge
+        .start()
+        .catch(() => this.close())
+        .catch(() => undefined);
+    this.#cdpPromise = platform.then((channel) => {
       const on = channel.on.bind(channel);
       channel.on = (event, listener) => {
         on(event, listener);
@@ -852,8 +915,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       };
       return channel;
     });
-    void pageEnabled.catch(() => this.close()).catch(() => undefined);
-    void pagePolicy.catch(() => this.close()).catch(() => undefined);
+    void pageEnabled?.catch(() => this.close()).catch(() => undefined);
+    void pagePolicy?.catch(() => this.close()).catch(() => undefined);
     void this.#cdpPromise.catch(() => this.close()).catch(() => undefined);
     view.webContents.on("will-navigate", (event, url) => {
       if (!isAllowedBrowserNavigation(url)) event.preventDefault();
@@ -1423,6 +1486,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
 
   async close(): Promise<void> {
     if (this.#webContents.isDestroyed()) return;
+    this.#passkeyBridge?.close();
     this.#webContents.stopFindInPage("clearSelection");
     this.unmount();
     this.#cancelPaint();
@@ -1567,6 +1631,7 @@ class ElectronDebuggerHub {
   readonly #debugger: Debugger;
   readonly #destroyed: Promise<void>;
   readonly #domainOwners = new Map<string, Set<ElectronCdpChannel>>();
+  readonly #persistentPlatformDomains: ReadonlySet<string>;
   readonly #events = new EventEmitter();
   /**
    * Chromium's own answers to input it has not answered yet. Callers can be
@@ -1604,7 +1669,9 @@ class ElectronDebuggerHub {
     setRenderingDemand: (demanded: boolean) => void,
     prepareInput: () => Promise<void>,
     displayScale: () => number,
+    persistentPlatformDomains: readonly string[] = [],
   ) {
+    this.#persistentPlatformDomains = new Set(persistentPlatformDomains);
     this.#webContents = webContents;
     this.#setRenderingDemand = setRenderingDemand;
     this.#prepareInput = prepareInput;
@@ -1652,6 +1719,10 @@ class ElectronDebuggerHub {
     });
   }
 
+  get executionContexts(): Pick<ExecutionContextInventory, "entries"> {
+    return this.#contexts;
+  }
+
   inputOutstanding(): boolean {
     return this.#outstandingInput.size > 0;
   }
@@ -1662,6 +1733,44 @@ class ElectronDebuggerHub {
 
   isCrashed(): boolean {
     return this.#crashed;
+  }
+
+  /** Only the fresh page's provider bootstrap may dispatch this initial batch. */
+  bootstrapPlatform(install: (channel: ElectronCdpChannel) => void): ElectronCdpChannel {
+    if (this.#channels.size || this.#attachment || this.#ownershipPending || this.#closed)
+      throw new Error("Electron platform bootstrap is already initialized.");
+    const channel = new ElectronCdpChannel(this, "platform");
+    this.#channels.add(channel);
+    const domains = ["Page", "Network", "Security"];
+    for (const domain of [...domains, "Runtime"]) {
+      this.#domainOwners.set(domain, new Set([channel]));
+      channel.enabledDomains.add(domain);
+    }
+    install(channel);
+    if (!this.#debugger.isAttached()) this.#debugger.attach("1.3");
+    // All owners and listeners exist before the first command can emit. This
+    // fresh-session exception dispatches independent initial enables together;
+    // their accounting and every later ownership change remain serialized.
+    const completions = domains.map((domain) => {
+      const owners = this.#domainOwners.get(domain)!;
+      const command = this.#dispatch(`${domain}.enable`).catch((error: unknown) => {
+        owners.delete(channel);
+        channel.enabledDomains.delete(domain);
+        if (owners.size === 0 && this.#domainOwners.get(domain) === owners)
+          this.#domainOwners.delete(domain);
+        void this.close().catch(() => undefined);
+        throw error;
+      });
+      void command.catch(() => undefined);
+      return { domain, command };
+    });
+    for (const { domain, command } of completions) {
+      void this.#changeDomain(channel, domain, () => command).catch(() => undefined);
+    }
+    void this.#attach()
+      .catch(() => this.close())
+      .catch(() => undefined);
+    return channel;
   }
 
   async open(role: ChannelRole): Promise<ElectronCdpChannel> {
@@ -1897,6 +2006,9 @@ class ElectronDebuggerHub {
       return this.#changeDomain(channel, domain, async () => {
         const owners = this.#domainOwners.get(domain);
         if (!owners?.has(channel)) return {};
+        // Provider TLS observations outlive short platform consumers such as
+        // favicon acquisition. The same channel releases them when it closes.
+        if (channel.role === "platform" && this.#persistentPlatformDomains.has(domain)) return {};
         // Page remains enabled for this page's lifetime so Electron never owns
         // JavaScript dialogs, even between ledger/channel subscriptions.
         if (owners.size === 1 && domain !== "Page") await this.#command(method, parameters);

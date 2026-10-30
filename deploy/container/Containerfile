@@ -109,6 +109,7 @@ COPY packages/agent-phone-setup/package.json ./packages/agent-phone-setup/packag
 COPY packages/agent-plugins/package.json ./packages/agent-plugins/package.json
 COPY packages/agent-tools/package.json ./packages/agent-tools/package.json
 COPY packages/apple-data/package.json ./packages/apple-data/package.json
+COPY packages/apple-dictation/package.json ./packages/apple-dictation/package.json
 COPY packages/browser-core/package.json ./packages/browser-core/package.json
 COPY packages/browser-profile/package.json ./packages/browser-profile/package.json
 COPY packages/browser-runtime-core/package.json ./packages/browser-runtime-core/package.json
@@ -233,6 +234,7 @@ COPY packages/agent-phone-setup/package.json ./packages/agent-phone-setup/packag
 COPY packages/agent-plugins/package.json ./packages/agent-plugins/package.json
 COPY packages/agent-tools/package.json ./packages/agent-tools/package.json
 COPY packages/apple-data/package.json ./packages/apple-data/package.json
+COPY packages/apple-dictation/package.json ./packages/apple-dictation/package.json
 COPY packages/browser-core/package.json ./packages/browser-core/package.json
 COPY packages/browser-profile/package.json ./packages/browser-profile/package.json
 COPY packages/browser-runtime-core/package.json ./packages/browser-runtime-core/package.json

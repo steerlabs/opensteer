@@ -120,6 +120,15 @@ jobs:
         with:
           node-version-file: package.json
           cache: pnpm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: apps/runner/native-fs-helper/go.mod
+          cache-dependency-path: |
+            apps/runner/native-fs-helper/go.mod
+            apps/runner/native-fs-helper/go.sum
+            apps/desktop/process-supervisor/go.mod
+            apps/desktop/process-supervisor/go.sum
+            apps/desktop/personal-runtime-launcher/go.mod
       - uses: actions/setup-java@816722acf8fd27c9d1e9ae6ee6085da07e0d44c1
         with:
           distribution: temurin

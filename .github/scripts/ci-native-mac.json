@@ -83,6 +83,13 @@
       "swift": ["apps/desktop/native/passwords", "packages/macos-signing"],
       "tests": ["apps/desktop/native/passwords", "packages/macos-signing"],
       "extra": ["apps/desktop/src/passwords/paths.ts", "packages/client/src/host/passwords.ts"]
+    },
+    {
+      "task": "dictation",
+      "timeout": 8,
+      "swift": ["packages/apple-dictation"],
+      "tests": ["packages/apple-dictation"],
+      "xcode": "/Applications/Xcode_26.3.app/Contents/Developer"
     }
   ]
 }

@@ -1141,6 +1141,7 @@ export class MockPlaceWorld {
       id,
       title: command.url ?? "New tab",
       site: command.url ? new URL(command.url).origin : "about:blank",
+      loading: command.url !== undefined,
       order: Math.max(-1, ...session.tabCatalog.tabs.map((tab) => tab.order)) + 1,
       openerId: null,
       occupants: [],
@@ -1165,7 +1166,7 @@ export class MockPlaceWorld {
                 ...value.tabs.map((surface) =>
                   activate ? { ...surface, active: false } : surface,
                 ),
-                { id, active: activate, title: tab.title, url },
+                { id, active: activate, title: tab.title, url, loading: tab.loading },
               ],
             }
           : value,
@@ -1186,6 +1187,7 @@ export class MockPlaceWorld {
     });
     this.#openedTabs.set(idempotencyKey, { fingerprint, result });
     this.#update(updated);
+    if (tab.loading) this.#loading(sessionId, id, true);
     this.latest.reconcile(updated);
     this.#frames();
     return result;

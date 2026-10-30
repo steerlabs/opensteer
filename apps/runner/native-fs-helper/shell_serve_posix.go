@@ -33,6 +33,7 @@ const (
 	maxShellChannels  = 64
 	defaultIdleTime   = 30 * time.Minute
 	processKillDelay  = 5 * time.Second
+	shellCleanupGrace = 2 * time.Second
 )
 
 type shellAuthority struct {
@@ -146,6 +147,9 @@ func runShellServe(input io.Reader, output io.Writer) error {
 	if closer, ok := input.(io.Closer); ok {
 		transport.closer = closer
 	}
+	if closer, ok := output.(io.Closer); ok {
+		transport.outputCloser = closer
+	}
 	session.setConnection(transport)
 	config := &ssh.ServerConfig{
 		NoClientAuth:  true,
@@ -190,8 +194,10 @@ func runShellServe(input io.Reader, output io.Writer) error {
 		session.channelWG.Add(1)
 		go func() {
 			defer session.channelWG.Done()
-			defer session.channels.Add(-1)
-			session.handleChannel(channelID, channel)
+			var once sync.Once
+			release := func() { once.Do(func() { session.channels.Add(-1) }) }
+			defer release()
+			session.handleChannel(channelID, channel, release)
 		}()
 	}
 	_ = serverConnection.Wait()
@@ -358,24 +364,25 @@ func (session *shellSession) handleGlobalRequests(requests <-chan *ssh.Request) 
 	}
 }
 
-func (session *shellSession) handleChannel(channelID uint32, incoming ssh.NewChannel) {
+func (session *shellSession) handleChannel(channelID uint32, incoming ssh.NewChannel, release func()) {
 	switch incoming.ChannelType() {
 	case "session":
-		session.handleSessionChannel(channelID, incoming)
+		session.handleSessionChannel(channelID, incoming, release)
 	case "direct-tcpip":
-		session.handleForwardChannel(channelID, incoming)
+		session.handleForwardChannel(channelID, incoming, release)
 	default:
 		session.denied(&channelID, "subsystem", incoming.ChannelType())
+		release()
 		_ = incoming.Reject(ssh.UnknownChannelType, "Opensteer does not support this SSH channel type.")
 	}
 }
 
-func (session *shellSession) handleSessionChannel(channelID uint32, incoming ssh.NewChannel) {
+func (session *shellSession) handleSessionChannel(channelID uint32, incoming ssh.NewChannel, release func()) {
 	channel, requests, err := incoming.Accept()
 	if err != nil {
 		return
 	}
-	defer channel.Close()
+	defer func() { release(); _ = channel.Close() }()
 	for request := range requests {
 		session.idle.touch()
 		switch request.Type {
@@ -406,7 +413,7 @@ func (session *shellSession) handleSessionChannel(channelID uint32, incoming ssh
 				return
 			}
 			session.emitter.audit(boundedShellExecAudit(channelID, payload.Command))
-			if err := session.runCommand(channelID, channel, requests, request, payload.Command); err != nil {
+			if err := session.runCommand(channelID, channel, requests, request, payload.Command, release); err != nil {
 				session.denied(&channelID, "exec", shortenShellDetail(err.Error()))
 				_ = request.Reply(true, nil)
 				session.writeRefusal(channel, err.Error())
@@ -460,7 +467,7 @@ func (session *shellSession) handleSessionChannel(channelID uint32, incoming ssh
 	}
 }
 
-func (session *shellSession) runCommand(channelID uint32, channel ssh.Channel, requests <-chan *ssh.Request, request *ssh.Request, command string) error {
+func (session *shellSession) runCommand(channelID uint32, channel ssh.Channel, requests <-chan *ssh.Request, request *ssh.Request, command string, release func()) error {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		return errors.New("Opensteer cannot run commands because SHELL is not set.")
@@ -479,12 +486,18 @@ func (session *shellSession) runCommand(channelID uint32, channel ssh.Channel, r
 	}
 	cmd.Stdout = shellActivityWriter{writer: channel, idle: session.idle}
 	cmd.Stderr = shellActivityWriter{writer: channel.Stderr(), idle: session.idle}
+	session.processMu.Lock()
+	if session.closing.Load() {
+		session.processMu.Unlock()
+		_ = stdin.Close()
+		return errors.New("Opensteer is closing this session.")
+	}
 	if err := cmd.Start(); err != nil {
+		session.processMu.Unlock()
 		_ = stdin.Close()
 		return fmt.Errorf("Opensteer could not start the command: %w", err)
 	}
 	process := &trackedShellProcess{channel: channelID, cmd: cmd, done: make(chan struct{}), sweepDone: make(chan struct{}), pgid: cmd.Process.Pid}
-	session.processMu.Lock()
 	session.processes[process.pgid] = process
 	session.processMu.Unlock()
 	_ = session.emitter.lifecycle(map[string]any{"kind": "process.started", "channel": channelID, "processGroupId": process.pgid})
@@ -496,6 +509,7 @@ func (session *shellSession) runCommand(channelID uint32, channel ssh.Channel, r
 			session.denied(&channelID, "exec", "Only one exec request is allowed per channel.")
 			_ = next.Reply(false, nil)
 		}
+		release()
 		process.channelClosed.Store(true)
 		if !processDone(process.done) {
 			terminateShellProcessGroup(process)
@@ -510,27 +524,32 @@ func (session *shellSession) runCommand(channelID uint32, channel ssh.Channel, r
 
 	waitErr := cmd.Wait()
 	close(process.done)
-	if process.channelClosed.Load() {
-		session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID})
-	} else {
-		if status, signalName := shellExitResult(waitErr); signalName != "" {
-			session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID, "exitSignal": signalName})
+	status, signalName := shellExitResult(waitErr)
+	if !process.channelClosed.Load() {
+		if signalName != "" {
 			session.sendExitSignal(channel, signalName)
 		} else {
-			session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID, "exitStatus": status})
 			session.sendExitStatus(channel, status)
 		}
 	}
-	go session.finishShellProcess(process)
+	// The channel must remain open until the lifecycle writer acknowledges exit.
+	session.finishShellProcess(process)
+	if process.channelClosed.Load() {
+		session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID})
+	} else if signalName != "" {
+		session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID, "exitSignal": signalName})
+	} else {
+		session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID, "exitStatus": status})
+	}
 	return nil
 }
 
 func (session *shellSession) finishShellProcess(process *trackedShellProcess) {
 	terminateRemainingShellGroup(process.pgid)
+	_ = session.emitter.lifecycle(map[string]any{"kind": "process.exited", "channel": process.channel, "processGroupId": process.pgid})
 	session.processMu.Lock()
 	delete(session.processes, process.pgid)
 	session.processMu.Unlock()
-	_ = session.emitter.lifecycle(map[string]any{"kind": "process.exited", "channel": process.channel, "processGroupId": process.pgid})
 	close(process.sweepDone)
 }
 
@@ -627,7 +646,7 @@ func filteredShellEnvironment() []string {
 	return environment
 }
 
-func (session *shellSession) handleForwardChannel(channelID uint32, incoming ssh.NewChannel) {
+func (session *shellSession) handleForwardChannel(channelID uint32, incoming ssh.NewChannel, release func()) {
 	var request struct {
 		Host       string
 		Port       uint32
@@ -636,28 +655,33 @@ func (session *shellSession) handleForwardChannel(channelID uint32, incoming ssh
 	}
 	if err := ssh.Unmarshal(incoming.ExtraData(), &request); err != nil || request.Host == "" || request.Port > 65535 {
 		session.denied(&channelID, "forward", "Invalid direct-tcpip request.")
+		release()
 		_ = incoming.Reject(ssh.Prohibited, "Opensteer refused an invalid port-forwarding request.")
 		return
 	}
 	if !session.policy.Forwarding {
 		message := fmt.Sprintf("%s does not allow port forwarding from other computers.", session.machine)
 		session.denied(&channelID, "forward", message)
+		release()
 		_ = incoming.Reject(ssh.Prohibited, message)
 		return
 	}
 	session.emitter.audit(map[string]any{"kind": "forward", "channel": channelID, "host": request.Host, "port": request.Port})
 	forward, dialContext, ok := session.beginForward()
 	if !ok {
+		release()
 		_ = incoming.Reject(ssh.ConnectionFailed, "Opensteer is closing this session.")
 		return
 	}
 	defer session.endForward(forward)
 	target, err := (&net.Dialer{}).DialContext(dialContext, "tcp", net.JoinHostPort(request.Host, fmt.Sprintf("%d", request.Port)))
 	if err != nil {
+		release()
 		_ = incoming.Reject(ssh.ConnectionFailed, shortenShellDetail(err.Error()))
 		return
 	}
 	if !session.attachForwardConnection(forward, target) {
+		release()
 		_ = incoming.Reject(ssh.ConnectionFailed, "Opensteer is closing this session.")
 		return
 	}
@@ -665,10 +689,11 @@ func (session *shellSession) handleForwardChannel(channelID uint32, incoming ssh
 	if err != nil {
 		return
 	}
-	defer channel.Close()
+	defer func() { release(); _ = channel.Close() }()
 	channelClosed := make(chan struct{})
 	go func() {
 		ssh.DiscardRequests(requests)
+		release()
 		close(channelClosed)
 	}()
 	done := make(chan struct{}, 2)
@@ -792,30 +817,25 @@ func (session *shellSession) watchIdle() {
 
 func (session *shellSession) cleanupSession() {
 	session.cleanup.Do(func() {
+		session.processMu.Lock()
 		session.closing.Store(true)
+		session.processMu.Unlock()
 		close(session.cleanupDone)
 		session.idle.stop()
 		session.closeForwards()
-		session.closeConnection()
+		// A stalled client must not prevent closing the transport indefinitely.
+		defer session.closeConnection()
 		processes := session.snapshotProcesses()
 		for _, process := range processes {
 			process.channelClosed.Store(true)
-			_ = syscall.Kill(-process.pgid, syscall.SIGTERM)
+			go terminateShellProcessGroup(process)
 		}
-		deadline := time.NewTimer(processKillDelay)
+		deadline := time.NewTimer(shellCleanupGrace)
 		defer deadline.Stop()
 		for _, process := range processes {
 			select {
 			case <-process.sweepDone:
 			case <-deadline.C:
-				for _, remaining := range processes {
-					if !processDone(remaining.sweepDone) {
-						_ = syscall.Kill(-remaining.pgid, syscall.SIGKILL)
-					}
-				}
-				for _, remaining := range processes {
-					<-remaining.sweepDone
-				}
 				return
 			}
 		}
@@ -833,10 +853,11 @@ func (session *shellSession) snapshotProcesses() []*trackedShellProcess {
 }
 
 type shellStdioConn struct {
-	closed atomic.Bool
-	closer io.Closer
-	reader io.Reader
-	writer io.Writer
+	closed       atomic.Bool
+	closer       io.Closer
+	outputCloser io.Closer
+	reader       io.Reader
+	writer       io.Writer
 }
 
 func (connection *shellStdioConn) Read(target []byte) (int, error) {
@@ -847,6 +868,9 @@ func (connection *shellStdioConn) Write(content []byte) (int, error) {
 }
 func (connection *shellStdioConn) Close() error {
 	connection.closed.Store(true)
+	if connection.outputCloser != nil {
+		_ = connection.outputCloser.Close()
+	}
 	if connection.closer != nil {
 		return connection.closer.Close()
 	}

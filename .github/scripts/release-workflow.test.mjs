@@ -82,6 +82,28 @@ test("read-only preflight, secret-free discovery and only stable publication app
     /always/,
   );
 });
+test("the macOS build installs the Go toolchain every bundled Go module needs before building", () => {
+  const steps = workflow.jobs.build.steps;
+  const setupGo = steps.findIndex((step) => step.uses?.startsWith("actions/setup-go@"));
+  assert.ok(setupGo >= 0, "the desktop build compiles Go helpers, so it must install Go");
+  const build = steps.findIndex((step) => step.name === "Sign, notarize and staple desktop");
+  assert.ok(setupGo < build);
+  const root = new URL("../../", import.meta.url);
+  const modules = execFileSync("git", ["ls-files", "*go.mod"], {
+    cwd: root,
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n");
+  assert.ok(modules.length > 0);
+  const { with: options } = steps[setupGo];
+  assert.ok(modules.includes(options["go-version-file"]));
+  const goVersion = (file) => readFileSync(new URL(file, root), "utf8").match(/^go (\S+)$/m)?.[1];
+  for (const module of modules) {
+    assert.equal(goVersion(module), goVersion(options["go-version-file"]), module);
+    assert.ok(options["cache-dependency-path"].split("\n").includes(module), module);
+  }
+});
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), "release-plan-"));
   const git = (...args) =>

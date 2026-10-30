@@ -109,3 +109,33 @@ controller or lifecycle listeners. A polite live region announces states and not
 reading partial words, levels or timer ticks. Reduced motion keeps the meter static.
 `dictation-visual.html?state=listening` is the fake-port visual fixture; its `state`
 parameter also accepts idle, downloading, starting, finishing and every notice kind.
+
+## Engine
+
+`packages/apple-dictation` shares capture and recognition between the Mac helper and
+iOS. Only its Apple Speech adapter needs OS 26; lifecycle and wire tests also run on
+older systems, where availability reports `os`. Admission checks permission, resolves
+the first supported preferred language and requires an installed model before capture.
+Availability reconciles reservations; download keeps one for that language and releases
+new reservations on unsuccessful installation. Inventory operations share a service-wide serial
+coordinator, including suspended reservation calls. Terminal events arrive promptly; the next
+session waits for native cleanup. Equivalent ICU and BCP-47 locale identifiers retain the same
+reservation. Input configuration notifications end capture only when its input identity or format
+changes, or a restart fails. Unchanged-input engine reconfiguration reinstalls the tap and
+restarts capture, serialized with teardown; output-only route changes do nothing. The level ticker
+samples capture independently of analyzer preparation and backpressure.
+
+Results replace overlapping audio ranges and promote at Apple's finalization watermark,
+including unchanged tentative results. Text coalesces every 100 ms, retaining every newly
+finalized segment. Stop removes capture, drains the bounded ten-second queue and converter,
+finishes input, finalizes and consumes results, then flushes text before ending. Cancellation
+supersedes admission and finalization. One five-second deadline from stop acceptance covers
+preparation, draining, converter flush, input completion, finalization and result consumption;
+a timeout flushes recognized text before ending with `recognition-failed`. Stopping a model
+download cancels it rather than reporting installation success. Overflow and
+wire limits (1,000 segments per array, 50,000 UTF-16 units per segment) fail explicitly.
+
+iOS uses `.record` / `.measurement` with Bluetooth HFP for minimally processed speech
+and headset microphones, deactivating with notification so other audio resumes. Audio
+stays in memory within the native process. Microphone tests require a disposable device;
+the opt-in live engine test uses a generated speech file instead.

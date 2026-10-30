@@ -1269,6 +1269,16 @@ Rows saved before icon persistence need one authorized visit to acquire an image
 Client caches are scoped to their Host connection and retain only
 successful reads, so a transient catalog miss or reconnect can recover.
 
+Local browsing history retains one of these rasters per origin and profile for the
+New tab tiles and history suggestions, including after its tab closes or the client
+restarts. Only a person's recorded navigation supplies an icon: the client follows
+that exact tab and document as its reference arrives or changes, and reads through
+the same authorized `browser.tabIcon.get` path. A later document, removed visit,
+cleared history or changed viewer fences pending results. Icon updates never add
+visits or change their counts or timestamps. Images share history's 1 MiB budget
+and expire with the last visit to their origin; clearing history removes both.
+Existing history migrates and gains icons on subsequent visits.
+
 ## Loading
 
 A tab is loading from its page's own `Page.frameStartedLoading` to its
