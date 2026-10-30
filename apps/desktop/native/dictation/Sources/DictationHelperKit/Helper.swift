@@ -44,6 +44,7 @@ extension DictationService: HelperEngine {}
 
 @MainActor
 public final class Helper: NSObject, NSApplicationDelegate, IPCServerDelegate {
+  private static let lockWait: TimeInterval = 5
   private var server: IPCServer?
   private var connections: [Int: IPCConnection] = [:]
   private var owner = SessionOwner()
@@ -97,10 +98,7 @@ public final class Helper: NSObject, NSApplicationDelegate, IPCServerDelegate {
       guard chmod(Self.root.path, 0o700) == 0, let rule = Self.rule(desktop: true) else {
         throw Failure.start
       }
-      instance = Darwin.open(
-        Self.root.appendingPathComponent("helper.lock").path,
-        O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
-      guard instance >= 0, flock(instance, LOCK_EX | LOCK_NB) == 0 else { throw Failure.start }
+      instance = try Self.acquireLock(at: Self.root.appendingPathComponent("helper.lock"), wait: Self.lockWait)
       let server = IPCServer(
         socketURL: Self.root.appendingPathComponent("ipc.sock"), verifier: PeerVerifier(rule: rule, subsystem: "com.opensteer.dictation"),
         delegate: self, subsystem: "com.opensteer.dictation")
@@ -212,6 +210,21 @@ public final class Helper: NSObject, NSApplicationDelegate, IPCServerDelegate {
       return
     }
     connection.send(data)
+  }
+  static func acquireLock(at url: URL, wait: TimeInterval) throws -> Int32 {
+    let fd = Darwin.open(url.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { throw Failure.start }
+    let deadline = ProcessInfo.processInfo.systemUptime + max(0, wait)
+    while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+      let code = errno
+      let remaining = deadline - ProcessInfo.processInfo.systemUptime
+      guard (code == EWOULDBLOCK || code == EINTR), remaining > 0 else {
+        Darwin.close(fd)
+        throw Failure.start
+      }
+      Thread.sleep(forTimeInterval: min(0.1, remaining))
+    }
+    return fd
   }
   enum Failure: Error { case start }
 }

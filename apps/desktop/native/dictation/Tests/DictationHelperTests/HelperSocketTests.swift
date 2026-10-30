@@ -78,6 +78,40 @@ final class HelperSocketTests: XCTestCase {
   let first = "00000000-0000-4000-8000-000000000001"
   let second = "00000000-0000-4000-8000-000000000002"
 
+  func testReplacementWaitsForLockAndServes() async throws {
+    let root = URL(fileURLWithPath: "/tmp/s4-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let lockURL = root.appendingPathComponent("helper.lock")
+    let old = try Helper.acquireLock(at: lockURL, wait: 0)
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { Darwin.close(old) }
+    let replacement = try Helper.acquireLock(at: lockURL, wait: 1)
+    defer { Darwin.close(replacement) }
+    let helper = Helper { emit in FakeEngine(emit: emit) }
+    let server = IPCServer(socketURL: root.appendingPathComponent("ipc"), verifier: PeerVerifier(rule: .sameUser), delegate: helper)
+    try server.start()
+    defer { server.stop() }
+    let client = try SocketClient(server.socketURL)
+    defer { client.close() }
+    try client.send("start", first)
+    let response = try await client.next()
+    XCTAssertNotNil(response["result"])
+  }
+
+  func testReplacementGivesUpWhenLockStaysHeld() throws {
+    let root = URL(fileURLWithPath: "/tmp/s4-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let lockURL = root.appendingPathComponent("helper.lock")
+    let old = try Helper.acquireLock(at: lockURL, wait: 0)
+    defer { Darwin.close(old) }
+    let start = ContinuousClock.now
+    XCTAssertThrowsError(try Helper.acquireLock(at: lockURL, wait: 0.3))
+    let elapsed = start.duration(to: .now)
+    XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(250))
+    XCTAssertLessThan(elapsed, .seconds(2))
+  }
+
   func testOwnershipDisconnectLateEventsAndReplay() async throws {
     for method in ["start", "download"] {
       var engine: FakeEngine!
