@@ -454,6 +454,9 @@ importers:
       '@opensteer/client':
         specifier: workspace:*
         version: link:../../packages/client
+      '@opensteer/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@opensteer/control-plane-protocol':
         specifier: workspace:*
         version: link:../../packages/control-plane-protocol

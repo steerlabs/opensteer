@@ -5,6 +5,7 @@ import { RunnerAuxiliaryWelcomeSchema, type RunnerAuxiliaryWelcome } from "@open
 export function runnerAuxiliaryWelcome(
   stream: Pick<RunnerAuxiliaryStream, "fence" | "identity" | "streamLeaseExpiresAt">,
   fields: Readonly<Record<string, unknown>> = {},
+  passkeys = false,
 ): RunnerAuxiliaryWelcome {
   const module = stream.fence.module;
   return RunnerAuxiliaryWelcomeSchema.parse({
@@ -16,9 +17,7 @@ export function runnerAuxiliaryWelcome(
     ...(module === "integrations" && stream.identity.modules.integrations?.passwordSignIn === 1
       ? { passwordSignIn: 1 }
       : {}),
-    ...(module === "browser" &&
-    stream.identity.modules.browser?.passkeys === 1 &&
-    process.env.OPENSTEER_PASSKEYS === "1"
+    ...(module === "browser" && stream.identity.modules.browser?.passkeys === 1 && passkeys
       ? { passkeys: 1 }
       : {}),
     heartbeatIntervalMs: 15_000,

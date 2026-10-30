@@ -15,6 +15,7 @@
     "./test-support/harness-actions": "./src/test-support/harness-actions-fixture.ts",
     "./passkeys": "./src/passkeys/index.ts",
     "./test-support/passkey-test-authenticator": "./src/test-support/passkey-test-authenticator.ts",
+    "./test-support/passkey-routing": "./src/test-support/passkey-routing-fixture.ts",
     "./test-support/passkey-provider": "./src/test-support/passkey-provider-scenario.ts",
     "./passkey-bridge": "./src/browser/passkey-bridge.ts",
     "./passkey-relay": "./src/passkeys/host-relay.ts"

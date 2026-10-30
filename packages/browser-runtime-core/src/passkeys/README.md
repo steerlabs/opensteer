@@ -1,7 +1,8 @@
 # Page provider and bridge
 
-Production launchers have no authenticator and keep the absent WebAuthn policy.
-An optional `PasskeyAuthenticator` enables the page provider for engine tests.
+The runtime injects a `PasskeyAuthenticator` only after Host negotiation.
+The [Host flag and viewer routing](../../../../docs/browser-sessions.md#passkeys)
+control production use; engine tests can inject a software authenticator.
 Native WebAuthn remains disabled in both modes, including uncovered frames.
 
 Each isolated browser context gets a random 256-bit binding name. Context scope
@@ -31,10 +32,10 @@ blank-derived documents remain ineligible after writing or history rewriting;
 writing an already eligible document preserves its eligibility.
 
 Hosted Chromium probes visible Security events once at startup when an
-authenticator is supplied. Full Chromium in new-headless mode supports the
+authenticator is supplied or the production launcher requests the probe. Full Chromium in new-headless mode supports the
 provider. Executable overrides to Headless Shell keep the absent policy and omit
 `modules.browser.passkeys`; one fixed diagnostic explains the unavailable engine
-capability without failing launch. Production still supplies no authenticator.
+capability without failing launch.
 
 Late-attached top-level main worlds require ordered frame, loader, history-entry
 and context-unique-ID snapshots around that session's first Security enable.
@@ -55,8 +56,8 @@ shared core and its tests.
 Only one ceremony can be pending per tab. Abort, context destruction, page close,
 session loss and bounded timeouts cancel its signal, including when an
 authenticator ignores cancellation. Errors carry fixed messages and never include
-credential material. There is no Host transport, production authenticator, user
-interface or rollout switch here.
+credential material. The Host relay implements the same authenticator port;
+desktop main holds the request and reaches the OS manager.
 
 The relying-party test independently verifies registration/assertion. Fixture TLS
 identity is public; trust exceptions must stay confined to pinned test launchers,

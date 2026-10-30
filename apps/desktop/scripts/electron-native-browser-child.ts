@@ -1,3 +1,6 @@
+import { DesktopPasskeyRequests } from "../src/passkeys/passkey-requests.js";
+import { createNativePasskeyJourney } from "./test-support/native-passkey-journey.js";
+import { passkeyProviderCertificate } from "@opensteer/browser-runtime-core/test-support/passkey-provider";
 import { serveDownloadFixture } from "./electron-native-browser-download-fixture.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -5,7 +8,14 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash, randomBytes, randomUUID, createCipheriv, createDecipheriv } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  createCipheriv,
+  createDecipheriv,
+  X509Certificate,
+} from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -43,7 +53,11 @@ import { configureDesktopApplicationPaths } from "../src/app/application-paths.j
 import { installDesktopAppProtocol, registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { createDesktopApplicationMenu } from "../src/app/application-menu.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
-import { configureDesktopSession, ElectronWindowFactory } from "../src/app/electron-window.js";
+import {
+  configureDesktopSession,
+  ElectronWindowFactory,
+  desktopWindowForContents,
+} from "../src/app/electron-window.js";
 import { DesktopAppOriginPolicy } from "../src/app/navigation-policy.js";
 import { readDesktopConfiguration } from "../src/config.js";
 import { registerDesktopBridge } from "../src/bridge/registration.js";
@@ -76,7 +90,19 @@ const inputHelper = z.string().min(1).parse(process.env.OPENSTEER_NATIVE_SMOKE_I
 const resources = path.resolve(
   z.string().min(1).parse(process.env.OPENSTEER_PERSONAL_E2E_RESOURCES),
 );
-const selection = { ids: new Set(Object.keys(journeySteps)), noSerial: false };
+const passkeyJourney = process.argv.includes("--passkeys");
+const passkeyNoticeOnly = process.argv.includes("--passkeys-notice");
+if (passkeyJourney)
+  app.commandLine.appendSwitch("host-resolver-rules", "MAP *.example.test 127.0.0.1");
+const selection = {
+  ids: new Set(
+    passkeyJourney
+      ? [passkeyNoticeOnly ? "passkeys-notice" : "passkeys"]
+      : Object.keys(journeySteps),
+  ),
+  noSerial: false,
+};
+let passkeyRequests: DesktopPasskeyRequests | undefined;
 const artifacts = new NativeSmokeArtifacts(run, selection.ids, true);
 const kit = createNativeBrowserE2EKit({ run, inputHelper, artifacts });
 const observedBoundsViews = new WeakSet<WebContentsView>();
@@ -336,6 +362,25 @@ void main().then(
 
 async function main(): Promise<void> {
   await app.whenReady();
+  const passkeyFixture = passkeyJourney
+    ? await createNativePasskeyJourney({ nativeAvailable: !passkeyNoticeOnly })
+    : undefined;
+  if (passkeyFixture) {
+    cleanup.push(() => passkeyFixture.close());
+    const pin = new X509Certificate(passkeyProviderCertificate).fingerprint256;
+    const configure = (_event: unknown, contents: Electron.WebContents) => {
+      contents.session.setCertificateVerifyProc((request, callback) => {
+        const trusted =
+          ["rp.example.test", "other.example.test"].includes(request.hostname) &&
+          new X509Certificate(request.certificate.data).fingerprint256 === pin;
+        callback(trusted ? 0 : -3);
+      });
+    };
+    app.on("web-contents-created", configure);
+    cleanup.push(() => {
+      app.off("web-contents-created", configure);
+    });
+  }
   artifacts.json("preflight.json", {
     input: JSON.parse((await runFile(inputHelper, ["status"])).stdout) as unknown,
     displays: screen.getAllDisplays(),
@@ -473,6 +518,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
   let manager: DesktopBrowserPresentationManager;
   const runtimeHandles: Awaited<ReturnType<typeof startLocalBrowserRuntime>>[] = [];
   const supervisor = new PersonalDeploymentSupervisor({
+    passkeys: passkeyJourney,
     catalog,
     files,
     credentials: new NativePersonalDeploymentCredentials({
@@ -758,6 +804,8 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
       closeSocketsForOwner: (id) => transport.closeSocketsForOwner(id),
       openBrowserSurface: (id, connection, url) =>
         transport.openBrowserSurface(id, connection, url),
+      passkeyConsumerToken: (ownerId, connectionId, surfaceId) =>
+        transport.passkeyConsumerToken(ownerId, connectionId, surfaceId),
       observeBrowserSockets: (listener) =>
         transport.observeBrowserSockets((event) => {
           const before = windowInventory();
@@ -779,6 +827,16 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
   cleanup.push(function disposePresentationManager() {
     manager.dispose();
   });
+  if (passkeyFixture) {
+    passkeyRequests = new DesktopPasskeyRequests({
+      native: passkeyFixture.native,
+      presentations: manager,
+      transport,
+      ownOrigins: () => [],
+      windowForContents: desktopWindowForContents,
+    });
+    cleanup.push(() => passkeyRequests?.dispose());
+  }
   const status = await supervisor.start();
   assert.equal(status.state, "ready", JSON.stringify(status));
   const manifest = await files.load();
@@ -897,6 +955,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
       onCreated: (window) => {
         kit.shell = window;
         manager.attachWindow(window);
+        passkeyRequests?.attachWindow(window);
         window.webContents.on("console-message", (event) => {
           if (event.level === "error") consoleErrors.push(event.message);
         });
@@ -1100,7 +1159,8 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     });
     assert(result.ok, "The owned fixture browser session must close before its transport stops");
   });
-  await runJourney(kit);
+  if (passkeyFixture) await passkeyFixture.run(kit);
+  else await runJourney(kit);
 }
 
 function registerSource(
@@ -1240,6 +1300,7 @@ function bridgeOptions(
   };
   const subscribe = () => () => undefined;
   return {
+    ...(passkeyRequests ? { passkeys: passkeyRequests } : {}),
     downloads: smokeDownloads,
     access,
     bridgeToken,

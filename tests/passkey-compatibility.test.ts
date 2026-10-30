@@ -55,7 +55,7 @@ it.each([
       },
     },
   } as unknown as Parameters<typeof runnerAuxiliaryWelcome>[0];
-  const welcome = runnerAuxiliaryWelcome(stream);
+  const welcome = runnerAuxiliaryWelcome(stream, {}, flag === "1");
   const enabled = flag === "1" && advertised;
   expect(welcome.passkeys).toBe(enabled ? 1 : undefined);
   const signer = new BrowserAttachTicketSigner({

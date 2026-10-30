@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./passkeys": "./src/passkeys.ts",
     "./build-inputs": "./src/build-inputs.ts"
   },
   "scripts": {
