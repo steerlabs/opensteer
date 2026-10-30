@@ -35,10 +35,10 @@ protect payloads being reused by a guest.
   last two release versions, held entry locks and unfinished jobs. Never remove
   lock files, `native-resources`, or other non-SHA entries. Unknown identity,
   age or ownership keeps the affected candidates.
-- Keep every directory for the latest four release versions, the latest four
-  completed releases if newer attempts exist, and the installed Beta's version.
+- `release-*` directories come from the retired local release pipeline (releases
+  now build on GitHub Actions). Keep only the installed Beta's version.
   Installed version comes only from `/Applications/Opensteer Beta.app`'s
-  `Contents/Info.plist`; the app is never altered. In older identified release
+  `Contents/Info.plist`; the app is never altered. In other identified release
   directories, remove only regular artifacts at least 1 MiB: known archive or
   binary formats and large files in the recorded build-output directories
   (`mac`, `mac-state`, `phone`, `agent-phone`, `infra`, and generated subtrees
@@ -47,9 +47,9 @@ protect payloads being reused by a guest.
   symbols stay at any size or age: R8 `mapping.txt`/`mapping.prt`, `seeds.txt`,
   `usage.txt` and other mapping-output text records; complete `.dSYM` bundles,
   source maps and native symbol sidecars. Bulk APK/zip outputs remain eligible.
-  `check-evidence` and `merge-queue` records protect referenced files and
-  directories, including symlinked records and JSON-escaped paths. An old release
-  with a held coordinator lock stays; retention holds those locks while pruning.
+  Records that pipeline left under `check-evidence` and `merge-queue` no longer
+  keep anything. An old release with a held coordinator lock stays; retention
+  holds those locks while pruning.
 - A proven-finished, unreferenced run may go after 24 hours once its clone is
   gone. References under the state tree still protect runs; retention's own
   receipts do not create references. Unknown job records, live processes,
