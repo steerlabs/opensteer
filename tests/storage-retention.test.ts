@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { tryKernelLock } from "@opensteer/shared/kernelLock";
-import { reclaimVmStorage } from "../scripts/test-vm/retention.js";
+import { reclaimVmStorage, referencedRunIds } from "../scripts/test-vm/retention.js";
 
 const roots: string[] = [];
 const sha = (n: number) => n.toString(16).padStart(40, "0");
@@ -436,5 +436,30 @@ describe("storage retention safety", () => {
       true,
       true,
     ]);
+  });
+
+  // Admission once kept every small file's whole text (21 GiB on a busy host) only to
+  // look for run IDs; the scan now keeps the IDs it finds and nothing else.
+  it("collects only the run IDs named in references, not their contents", () => {
+    const f = fixture();
+    const notes = path.join(f.state, "work", "notes");
+    mkdirSync(notes, { recursive: true });
+    writeFileSync(path.join(notes, "note.md"), "kept 20261020T000000Z-aaaaaaaa for review");
+    writeFileSync(
+      path.join(notes, "suite.log"),
+      Buffer.concat([Buffer.alloc(5 * 1024 ** 2, "x"), Buffer.from("20261020T000000Z-bbbbbbbb")]),
+    );
+    symlinkSync(path.join(notes, "20261020T000000Z-cccccccc"), path.join(notes, "latest"));
+    writeFileSync(
+      path.join(notes, "capture.pcap"),
+      Buffer.concat([Buffer.alloc(5 * 1024 ** 2), Buffer.from("20261020T000000Z-dddddddd")]),
+    );
+    expect(referencedRunIds(f.state)).toEqual({
+      runIds: new Set([
+        "20261020T000000Z-aaaaaaaa",
+        "20261020T000000Z-bbbbbbbb",
+        "20261020T000000Z-cccccccc",
+      ]),
+    });
   });
 });
