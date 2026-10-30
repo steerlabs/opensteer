@@ -66,6 +66,7 @@ export const assetNames = [
 ] as const;
 export const manifestSchema = z
   .strictObject({
+    launchCheck: z.literal("passed").optional(),
     channel: channelSchema,
     prerelease: z.boolean(),
     tag: tagSchema,
@@ -131,6 +132,7 @@ export function downloadBase(value: string): string {
 
 export async function prepare(
   input: {
+    launchCheckPassed?: boolean;
     channel: Channel;
     appZip: string;
     version: string;
@@ -277,6 +279,7 @@ export async function prepare(
       ["SHA256SUMS", await sha256File(path.join(out, "SHA256SUMS"))],
     ]);
     const manifest = manifestSchema.parse({
+      ...(input.launchCheckPassed ? { launchCheck: "passed" } : {}),
       tag,
       title: config.title(version),
       channel,
@@ -433,6 +436,7 @@ export async function publish(
   const release = await findRelease(repo, tag, run);
   if (!release) throw new Error(`No release is tagged ${tag}`);
   const { manifest, bytes } = await verifyDraftAssets(repo, tag, run);
+  if (manifest.launchCheck !== "passed") throw Error("Draft lacks passed launch-check evidence");
   releaseManifest(release, manifest);
   checkChannel(manifest, channel);
   publicGuard(repo, manifest);
@@ -502,6 +506,7 @@ export async function main(args = process.argv.slice(2)) {
   const { values } = parseArgs({
     args: rest,
     options: {
+      "launch-check-passed": { type: "boolean" },
       channel: { type: "string" },
       "app-zip": { type: "string" },
       version: { type: "string" },
@@ -520,6 +525,7 @@ export async function main(args = process.argv.slice(2)) {
   if (subcommand === "prepare")
     await prepare({
       channel: channelSchema.parse(required("channel")),
+      launchCheckPassed: values["launch-check-passed"] ?? false,
       appZip: required("app-zip"),
       version: required("version"),
       sourceSha: required("source-sha"),

@@ -142,7 +142,13 @@ function fixture() {
   const source = { sha, version: "1.2.4", channel: "beta", tag: "v1.2.4-insider" };
   const state = {
     releases: [],
-    manifest: { sourceSha: sha, version: source.version, channel: "beta", tag: source.tag },
+    manifest: {
+      launchCheck: "passed",
+      sourceSha: sha,
+      version: source.version,
+      channel: "beta",
+      tag: source.tag,
+    },
     runs: [
       {
         id: 42,
@@ -479,6 +485,7 @@ test("discovery skips unchanged published insiders and reuses only matching draf
     f.state.releases = [{ ...published(f.source), draft: true }];
     assert.deepEqual(discover(f.source, f.run, f.root), { skip: false, reuse: true });
     for (const mutation of [
+      { launchCheck: undefined },
       { sourceSha: "b".repeat(40) },
       { version: "1.2.5" },
       { channel: "stable" },
@@ -786,12 +793,27 @@ test("a cancelled source skips cleanly only after main advances and a newer push
 test("final release bytes launch before upload, for both channels, with failure evidence", () => {
   const steps = workflow.jobs.build.steps;
   const prepare = steps.findIndex((s) => s.name === "Verify and prepare exact release bytes");
-  const launch = steps[prepare + 1];
+  const launch = steps.find((s) => s.name === "Launch check");
+  assert.ok(steps.indexOf(launch) > prepare);
+  assert.ok(
+    steps.findIndex((s) => s.name === "Prepare checked release bytes") > steps.indexOf(launch),
+  );
   assert.equal(launch.name, "Launch check");
   assert.equal(launch["timeout-minutes"], 4);
   assert.match(launch.run, /smoke-desktop-release.ts/);
   assert.match(launch.run, /--install-in-applications/);
   assert.match(launch.run, /beta\/mac-arm64\/Opensteer Beta.app/);
   assert.match(launch.run, /release\/mac-arm64\/Opensteer.app/);
-  assert.equal(steps[prepare + 2].if, "failure()");
+  assert.equal(steps.find((s) => s.name === "Launch failure artifacts").if, "failure()");
+});
+
+test("launch tooling comes from the workflow commit", () => {
+  const steps = workflow.jobs.build.steps;
+  const checkout = steps.find((step) => step.name === "Checkout launch tooling");
+  assert.equal(checkout.with.ref, "${{ github.sha }}");
+  assert.equal(checkout.with["persist-credentials"], false);
+  assert.match(
+    steps.find((step) => step.name === "Launch check").run,
+    /cd "\$RUNNER_TEMP\/launch-tooling"/,
+  );
 });

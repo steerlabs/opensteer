@@ -189,6 +189,7 @@ async function releaseFixture(channel: "stable" | "beta" = "stable") {
     assets,
     feedURL:
       channel === "stable" ? publicFeedURL : "https://github.com/steerlabs/opensteer#insider",
+    launchCheck: "passed",
     privateFeed: false,
   });
   await writeFile(path.join(dir, "release.json"), JSON.stringify(manifest));
@@ -311,6 +312,13 @@ it("honors optional zip pinning and publishes stable without certification", asy
   await publish("steerlabs/opensteer", tag, provider(certified), expected);
   expect(patches).toBe(1);
   const stable = await releaseFixture("stable");
+  const unchecked = { ...stable.manifest };
+  delete unchecked.launchCheck;
+  await writeFile(path.join(stable.dir, "release.json"), JSON.stringify(unchecked));
+  await expect(
+    publish("steerlabs/opensteer", stable.manifest.tag, provider(stable)),
+  ).rejects.toThrow(/launch-check evidence/u);
+  await writeFile(path.join(stable.dir, "release.json"), JSON.stringify(stable.manifest));
   await publish("steerlabs/opensteer", stable.manifest.tag, provider(stable), {
     channel: "stable",
   });

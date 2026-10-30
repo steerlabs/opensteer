@@ -234,9 +234,17 @@ jobs:
           xcrun stapler validate "$app"
           spctl -a -vv -t exec "$app"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/Opensteer.zip"
-          pnpm desktop:public-release prepare --channel "$OPENSTEER_DESKTOP_RELEASE_CHANNEL" \
-            --app-zip "$RUNNER_TEMP/Opensteer.zip" --version "$OPENSTEER_RELEASE_VERSION" \
-            --source-sha "$OPENSTEER_SOURCE_REVISION" --out "$RUNNER_TEMP/prepared"
+      - name: Checkout launch tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: launch-tooling
+          persist-credentials: false
+      - name: Install launch tooling
+        run: |
+          mv "$GITHUB_WORKSPACE/launch-tooling" "$RUNNER_TEMP/launch-tooling"
+          cd "$RUNNER_TEMP/launch-tooling"
+          pnpm install --frozen-lockfile --prefer-offline
       - name: Launch check
         # The script enforces 180 seconds and owns process cleanup.
         timeout-minutes: 4
@@ -246,7 +254,14 @@ jobs:
             app="$GITHUB_WORKSPACE/apps/desktop/release/beta/mac-arm64/Opensteer Beta.app"
           fi
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
+          cd "$RUNNER_TEMP/launch-tooling"
           pnpm exec tsx scripts/smoke-desktop-release.ts --executable "$app/Contents/MacOS/$executable" --artifacts-dir "$RUNNER_TEMP/launch-check" --install-in-applications
+      - name: Prepare checked release bytes
+        run: |
+          cd "$RUNNER_TEMP/launch-tooling"
+          pnpm desktop:public-release prepare --channel "$OPENSTEER_DESKTOP_RELEASE_CHANNEL" \
+            --app-zip "$RUNNER_TEMP/Opensteer.zip" --version "$OPENSTEER_RELEASE_VERSION" \
+            --source-sha "$OPENSTEER_SOURCE_REVISION" --out "$RUNNER_TEMP/prepared" --launch-check-passed
       - name: Launch failure artifacts
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
