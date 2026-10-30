@@ -56,3 +56,50 @@ func TestShellCleanupUnblocksClientNotReadingOutput(t *testing.T) {
 	}
 	closeClient()
 }
+
+func TestShellClosedChannelReleasesSlotBeforeProcessSweep(t *testing.T) {
+	fixture := newShellSSHFixture(t, shellPolicy{Reach: "deployment", Commands: true})
+	client, closeClient := fixture.goSSHClient(t)
+	defer closeClient()
+	channel, requests, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := channel.SendRequest("exec", true, ssh.Marshal(struct{ Command string }{"trap '' TERM; sleep 30 </dev/null >/dev/null 2>&1 &"}))
+	if err != nil || !accepted {
+		t.Fatalf("exec accepted=%t error=%v", accepted, err)
+	}
+	request := <-requests
+	if request == nil || request.Type != "exit-status" {
+		t.Fatalf("expected exit status, got %v", request)
+	}
+	_ = channel.Close()
+	for range requests {
+	}
+	channels := make([]ssh.Channel, 0, maxShellChannels)
+	streams := make([]<-chan *ssh.Request, 0, maxShellChannels)
+	for index := 0; index < maxShellChannels; index++ {
+		opened, stream, err := client.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatalf("open channel %d after close: %v", index, err)
+		}
+		channels = append(channels, opened)
+		streams = append(streams, stream)
+	}
+	for _, opened := range channels {
+		_ = opened.Close()
+	}
+	for _, stream := range streams {
+		for range stream {
+		}
+	}
+	for index := 0; index < maxShellChannels+1; index++ {
+		opened, stream, err := client.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatalf("reopen channel %d: %v", index, err)
+		}
+		_ = opened.Close()
+		for range stream {
+		}
+	}
+}
