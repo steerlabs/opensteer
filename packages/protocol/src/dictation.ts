@@ -158,9 +158,10 @@ export type DictationSessionInput = z.infer<typeof DictationSessionInputSchema>;
  * What a platform provides. Command promises only acknowledge acceptance:
  * every outcome, including a start that cannot begin, arrives as exactly one
  * `ended` event for that session. A rejected promise means the transport
- * itself failed. `stop` and `cancel` for an unknown or finished session do
- * nothing; a `start` or `download` while another session is active ends the
- * new session `failed` with `busy`.
+ * itself failed. `start` and `download` each begin a session under a fresh
+ * id the caller generates; while another session is active, that new session
+ * ends `failed` with `busy`. `stop` and `cancel` for an unknown or finished
+ * session do nothing.
  */
 export interface DictationPort {
   /** Never prompts, downloads or opens the microphone. */

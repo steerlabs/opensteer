@@ -32,6 +32,10 @@ authority for the shapes every platform implements and the composer consumes:
   events and treats a gap as a failure, keeping the text it already has.
 - **Text arrives as segments.** A `text` event carries the segments finalized since the
   previous one and the whole current tentative tail, both in audio order. Native code
-  never joins text; the composer controller joins with one boundary rule.
+  sends each segment exactly as Apple produced it: it never adds, trims or joins
+  whitespace or punctuation. The composer controller alone decides whether one space
+  goes between two segments, and between the transcript and the draft around it, so
+  `["Hello.", "Next"]` reads `Hello. Next` while `["日本語", "です"]` reads `日本語です`
+  on every platform.
 - **Bounds** are in UTF-16 code units. Real dictation stays far below them, so exceeding
   one fails the session rather than truncating it.
