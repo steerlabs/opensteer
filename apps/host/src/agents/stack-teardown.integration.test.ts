@@ -25,7 +25,9 @@ integration("Vertical stack teardown", () => {
         sourceId: "missing",
         stateKind: "ambient",
       },
-      catalogTimeoutMs: 100,
+      // The missing driver's report ends startup; the deadline only bounds a hang and must not
+      // race that report on a loaded runner.
+      catalogTimeoutMs: 10_000,
       runTimeoutMs: 1_000,
       beforeHostClose: async (host) => {
         expect(engineClosed).toHaveBeenCalled();
