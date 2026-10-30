@@ -295,24 +295,16 @@ interface AuthAdmissionTable {
 }
 
 export interface AuthJwkTable {
-  alg: Generated<string | null>;
-  crv: Generated<string | null>;
   id: string;
   publicKey: string;
   privateKey: string;
   createdAt: Timestamp;
   expiresAt: NullableTimestamp;
+  alg: Generated<string | null>;
+  crv: Generated<string | null>;
 }
 
 interface HostOAuthClientTable {
-  clientDiscoveryId: Generated<string | null>;
-  clientCredentialsScopes: Generated<readonly string[] | null>;
-  backchannelLogoutUri: Generated<string | null>;
-  backchannelLogoutSessionRequired: Generated<boolean | null>;
-  applicationType: Generated<string | null>;
-  jwks: Generated<string | null>;
-  jwksUri: Generated<string | null>;
-  dpopBoundAccessTokens: Generated<boolean | null>;
   id: string;
   clientId: string;
   clientSecret: string | null;
@@ -357,16 +349,17 @@ interface HostOAuthClientTable {
   requirePkce: boolean | null;
   referenceId: string | null;
   metadata: JsonColumn<unknown> | null;
+  clientDiscoveryId: Generated<string | null>;
+  clientCredentialsScopes: Generated<readonly string[] | null>;
+  backchannelLogoutUri: Generated<string | null>;
+  backchannelLogoutSessionRequired: Generated<boolean | null>;
+  applicationType: Generated<string | null>;
+  jwks: Generated<string | null>;
+  jwksUri: Generated<string | null>;
+  dpopBoundAccessTokens: Generated<boolean | null>;
 }
 
 interface HostOAuthRefreshTokenTable {
-  authorizationCodeId: Generated<string | null>;
-  resources: Generated<readonly string[] | null>;
-  requestedUserInfoClaims: Generated<readonly string[] | null>;
-  rotatedAt: NullableTimestamp;
-  rotationReplayResponse: Generated<string | null>;
-  rotationReplayExpiresAt: NullableTimestamp;
-  confirmation: Generated<unknown>;
   id: string;
   token: string;
   clientId: string;
@@ -378,14 +371,16 @@ interface HostOAuthRefreshTokenTable {
   revoked: NullableTimestamp;
   authTime: NullableTimestamp;
   scopes: ColumnType<readonly string[], readonly string[], readonly string[]>;
-}
-
-interface HostOAuthAccessTokenTable {
   authorizationCodeId: Generated<string | null>;
   resources: Generated<readonly string[] | null>;
   requestedUserInfoClaims: Generated<readonly string[] | null>;
-  revoked: NullableTimestamp;
+  rotatedAt: NullableTimestamp;
+  rotationReplayResponse: Generated<string | null>;
+  rotationReplayExpiresAt: NullableTimestamp;
   confirmation: Generated<unknown>;
+}
+
+interface HostOAuthAccessTokenTable {
   id: string;
   token: string;
   clientId: string;
@@ -396,11 +391,14 @@ interface HostOAuthAccessTokenTable {
   expiresAt: Timestamp;
   createdAt: Timestamp;
   scopes: ColumnType<readonly string[], readonly string[], readonly string[]>;
+  authorizationCodeId: Generated<string | null>;
+  resources: Generated<readonly string[] | null>;
+  requestedUserInfoClaims: Generated<readonly string[] | null>;
+  revoked: NullableTimestamp;
+  confirmation: Generated<unknown>;
 }
 
 interface HostOAuthConsentTable {
-  resources: Generated<readonly string[] | null>;
-  requestedUserInfoClaims: Generated<readonly string[] | null>;
   id: string;
   clientId: string;
   userId: UserId | null;
@@ -408,6 +406,43 @@ interface HostOAuthConsentTable {
   scopes: ColumnType<readonly string[], readonly string[], readonly string[]>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
+  resources: Generated<readonly string[] | null>;
+  requestedUserInfoClaims: Generated<readonly string[] | null>;
+}
+
+interface HostOAuthResourceTable {
+  id: string;
+  identifier: string;
+  name: string;
+  accessTokenTtl: number | null;
+  refreshTokenTtl: number | null;
+  signingAlgorithm: string | null;
+  signingKeyId: string | null;
+  allowedScopes: ColumnType<
+    readonly string[] | null,
+    readonly string[] | null,
+    readonly string[] | null
+  >;
+  customClaims: JsonColumn<unknown> | null;
+  dpopBoundAccessTokensRequired: boolean | null;
+  disabled: boolean | null;
+  createdAt: NullableTimestamp;
+  updatedAt: NullableTimestamp;
+  policyVersion: number | null;
+  metadata: JsonColumn<unknown> | null;
+}
+
+interface HostOAuthClientResourceTable {
+  id: string;
+  clientId: string;
+  resourceId: string;
+  metadata: JsonColumn<unknown> | null;
+  createdAt: NullableTimestamp;
+}
+
+interface HostOAuthClientAssertionTable {
+  id: string;
+  expiresAt: Timestamp;
 }
 
 interface AccountDirectoryProjectionTable {
@@ -2094,38 +2129,3 @@ export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;
 };
 export type WorkspaceEventRow = Selectable<WorkspaceEventTable>;
-
-interface HostOAuthResourceTable {
-  id: string;
-  identifier: string;
-  name: string;
-  accessTokenTtl: number | null;
-  refreshTokenTtl: number | null;
-  signingAlgorithm: string | null;
-  signingKeyId: string | null;
-  allowedScopes: ColumnType<
-    readonly string[] | null,
-    readonly string[] | null,
-    readonly string[] | null
-  >;
-  customClaims: JsonColumn<unknown> | null;
-  dpopBoundAccessTokensRequired: boolean | null;
-  disabled: boolean | null;
-  createdAt: NullableTimestamp;
-  updatedAt: NullableTimestamp;
-  policyVersion: number | null;
-  metadata: JsonColumn<unknown> | null;
-}
-
-interface HostOAuthClientResourceTable {
-  id: string;
-  clientId: string;
-  resourceId: string;
-  metadata: JsonColumn<unknown> | null;
-  createdAt: NullableTimestamp;
-}
-
-interface HostOAuthClientAssertionTable {
-  id: string;
-  expiresAt: Timestamp;
-}

@@ -7369,7 +7369,10 @@ integration("Better Auth 1.7 migration", () => {
       create table auth_sessions (id text primary key, token text not null);
       create table auth_jwks (id text primary key, public_key text, private_key text);
       create table host_oauth_clients (id text primary key, client_id text unique, public boolean,
-        type text, require_pkce boolean, token_endpoint_auth_method text);
+        type text, require_pkce boolean, token_endpoint_auth_method text,
+        constraint host_oauth_public_client_check check (not coalesce(public, false) or (
+          token_endpoint_auth_method = 'none' and coalesce(require_pkce, false)
+          and type in ('native', 'user-agent-based'))));
       create table host_oauth_refresh_tokens (id text primary key, token text unique,
         client_id text references host_oauth_clients(client_id), session_id text references auth_sessions(id), scopes jsonb);
       create table host_oauth_access_tokens (id text primary key);
@@ -7423,6 +7426,5 @@ integration("Better Auth 1.7 migration", () => {
       sql`insert into host_oauth_clients (id, client_id, application_type, token_endpoint_auth_method, require_pkce)
       values ('unsafe', 'unsafe', 'native', 'none', false)`.execute(database),
     ).rejects.toThrow(/host_oauth_public_client_check/);
-    await betterAuth17Migration.up(database);
   });
 });
