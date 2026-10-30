@@ -13,7 +13,6 @@ import {
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { useShell } from "./app-shell.js";
-import { AssigneePicker } from "./assignee-picker.js";
 import { BrandMark } from "./brand.js";
 import { Composer, type ComposerQuote, type ComposerSubmission } from "./composer.js";
 import { ExecutionControls } from "./execution-controls.js";
@@ -265,13 +264,7 @@ export function HomeIntro({
             autoFocus
             onSend={startHome}
             pendingSends={stagedSends}
-            placeholder={`What should ${workspace.kind === "main" ? "Opensteer" : workspace.name} do?`}
-            leadingFooter={
-              <AssigneePicker
-                workspace={workspace}
-                specialists={snapshot.workspaces.filter((item) => item.kind === "specialized")}
-              />
-            }
+            placeholder="Ask Opensteer…"
             onDraftChange={setHomeDraft}
             onHoldingChange={onHolding}
             restore={restore}
