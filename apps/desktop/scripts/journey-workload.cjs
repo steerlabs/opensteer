@@ -3,13 +3,18 @@ const { spawn } = require("node:child_process");
 const { createConnection } = require("node:net");
 const { createInterface } = require("node:readline");
 let accepted = false;
-const stop = () => {
+let stoppingLegacy = false;
+const stop = (graceful = false) => {
   if (!accepted) process.exit(0);
+  if (graceful && process.env.OPENSTEER_LEGACY_GRACEFUL_STOP === "1") {
+    stoppingLegacy = true;
+    return;
+  }
   // A registered wrapper only signals its own, still-live process group.
   process.kill(-process.pid, "SIGKILL");
 };
-process.on("disconnect", stop);
-for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"]) process.on(signal, stop);
+process.on("disconnect", () => stop());
+for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"]) process.on(signal, () => stop(true));
 process.on("message", (message) => {
   if (accepted || message?.type !== "go") return;
   accepted = true;
@@ -41,6 +46,7 @@ process.on("message", (message) => {
   });
   child.on("exit", (code) => {
     process.send?.({ type: "result", code: code ?? 1 });
+    if (stoppingLegacy) process.exit(code ?? 1);
   });
 });
 process.send?.({ type: "waiting" });

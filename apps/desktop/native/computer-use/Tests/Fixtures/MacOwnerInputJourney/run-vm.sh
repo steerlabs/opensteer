@@ -6,7 +6,7 @@ export OPENSTEER_MAC_OWNER_INPUT_JOURNEY=1
 export OPENSTEER_WINDOW_GROUP_CASES=members
 base_out="$HOME/opensteer-job/artifacts/mac-owner"
 mkdir -p "$base_out" "$HOME/Applications"
-work=$(mktemp -d "$HOME/Applications/opensteer-owner-input.XXXXXX")
+work=$(mktemp -d "${OPENSTEER_LEGACY_TEMP_ROOT:-$HOME/Applications}/opensteer-owner-input.XXXXXX")
 cleanup() {
   status=$?
   pkill -TERM -f "$work/" 2>/dev/null || true
