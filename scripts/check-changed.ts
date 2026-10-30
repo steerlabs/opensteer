@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -8,6 +8,17 @@ import { localPlan } from "../.github/scripts/local-check.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+// Prettier refuses a symbolic link named on its command line, and the files a
+// link reaches are checked at their own paths.
+export function checkablePaths(directory: string, files: readonly string[]) {
+  return files.filter((file) => {
+    try {
+      return !lstatSync(resolve(directory, file)).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  });
+}
 // An unreadable diff or graph fails the command: there is no full local fallback
 // that could stand in for the changed-file checks.
 export function changedPlan(base: string) {
@@ -18,9 +29,10 @@ export function changedPlan(base: string) {
       ...parseDiff(git("ls-files", "--others", "--exclude-standard", "-z")),
     ]),
   ];
-  const present = parseDiff(
-    git("ls-files", "--cached", "--others", "--exclude-standard", "-z"),
-  ).filter((file: string) => existsSync(resolve(root, file)));
+  const present = checkablePaths(
+    root,
+    parseDiff(git("ls-files", "--cached", "--others", "--exclude-standard", "-z")),
+  );
   return localPlan(files, readGraph(root), present, readGraph(root, ancestor));
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
