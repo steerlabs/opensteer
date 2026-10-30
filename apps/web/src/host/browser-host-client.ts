@@ -12,6 +12,7 @@ export interface BrowserHostClientOptions {
    * origin that served this bundle. */
   readonly baseUrl?: string;
   readonly fetch?: typeof globalThis.fetch;
+  readonly bufferedResponses?: boolean;
   /** The Desktop renderer states how long its hidden sockets last; a browser tab cannot. */
   readonly lifecycle?: ClientLifecycle;
   readonly webSocketFactory?: (url: string) => WebSocketClient;
@@ -28,6 +29,9 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
     capabilities: options.capabilities ?? null,
     baseUrl: options.baseUrl ?? window.location.origin,
     ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.bufferedResponses === undefined
+      ? {}
+      : { bufferedResponses: options.bufferedResponses }),
     lifecycle: options.lifecycle ?? browserClientLifecycle(),
     recentSitesStorage: browserRecentSitesStorage,
     viewerPlatform: /Mac|iPhone|iPad|iPod/u.test(navigator.platform) ? "mac" : "pc",

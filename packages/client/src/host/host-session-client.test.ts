@@ -7105,7 +7105,7 @@ describe("HttpHostClient command projection", () => {
     client.dispose();
   });
 
-  it("carries a caller's abort signal into the Host request", async () => {
+  it("composes caller cancellation into the pending Host request", async () => {
     const workspace = makeWorkspace();
     const controller = new AbortController();
     const signals: (AbortSignal | null | undefined)[] = [];
@@ -7114,7 +7114,9 @@ describe("HttpHostClient command projection", () => {
       if (path !== "/v1/rpc/workspace.files.list") return json(bootstrap([workspace]));
       signals.push(init?.signal);
       init?.signal?.throwIfAborted();
-      return json({ cursor: null, entries: [], parentKey: "", revision: "directory_revision_1" });
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
     });
     const client = createHttpHostClient({
       fetch,
@@ -7123,13 +7125,19 @@ describe("HttpHostClient command projection", () => {
     });
     await client.load();
 
-    await client.listWorkspaceFiles(workspace.id, { parentKey: "" }, controller.signal);
-    expect(signals[0]).toBe(controller.signal);
-
-    controller.abort();
+    const pending = client.listWorkspaceFiles(workspace.id, { parentKey: "" }, controller.signal);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    expect(signals[0]?.aborted).toBe(false);
+    const reason = new DOMException("Left the folder", "AbortError");
+    const cancelled = expect(pending).rejects.toBe(reason);
+    controller.abort(reason);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[0]?.reason).toBe(reason);
+    await cancelled;
     await expect(
       client.listWorkspaceFiles(workspace.id, { parentKey: "" }, controller.signal),
-    ).rejects.toThrow();
+    ).rejects.toBe(reason);
+    expect(signals).toHaveLength(1);
     client.dispose();
   });
 

@@ -41,7 +41,15 @@ its durable Deployment target through the same resolver and fence key.
 
 Connection state follows bootstrap, authentication, platform network status and
 the subscribed realtime channel. A failed ordinary RPC reports an error for
-that operation; it does not mark the Deployment offline. The initial bootstrap
+that operation; it does not mark the Deployment offline. RPCs allow 45 seconds for
+response headers, above the Host's own 30-second waits on a Runner, and 20 seconds
+of body silence, renewed by each nonempty chunk;
+timeouts abort the fetch and return a retryable operation error without replay,
+while caller cancellation takes precedence. Binary uploads and buffered adapters
+allow an additional second per accepted KiB (desktop enforces headers and byte
+progress before buffering across IPC). A 401 asks for sign-in as soon as its
+headers arrive, and session recovery after a refusal runs on its own deadlines. Decoded JSON is limited to 16 MiB, with existing
+attachment and preview limits preserved. The initial bootstrap
 sets availability when no synchronized channel can establish a usable session.
 Cancellation and an attachment fence discard stale work without claiming that
 the Host was unreachable. After publishing bootstrap, the client starts realtime and

@@ -8,12 +8,15 @@ import {
   type LocalHostRuntimeSource,
 } from "./host-attachment-fence.js";
 import type { HostSessionRecovery, SelectedAttachment } from "../auth/host-session.js";
-import { unrefTimer } from "./operation-error.js";
+import {
+  HostResponseDeadline,
+  hostResponseHeadersTimeoutMs,
+  hostResponseStallTimeoutMs,
+} from "./host-response-deadline.js";
 import { HostTransportError } from "./host-transport-error.js";
 
 const maximumConcurrentRequests = 32;
 const maximumOpenSockets = 128;
-const defaultRequestTimeoutMs = 30_000;
 // A Host's refusal is a short error envelope; anything longer is not one.
 const maximumUnauthorizedBodyBytes = 64 * 1_024;
 // WHATWG WebSocket clients may send only normal closure or application codes.
@@ -34,6 +37,7 @@ export interface HostTransportRequest {
   /** Resolved against the attachment's origin, and refused if it leaves it. */
   readonly path: string;
   readonly signal?: AbortSignal | undefined;
+  /** Time allowed before response headers (for uploads or deliberately waiting operations). */
   readonly timeoutMs?: number | undefined;
 }
 
@@ -135,7 +139,10 @@ export class HostTransport {
    */
   async exchange<Result>(
     request: HostTransportRequest,
-    read: (response: Response) => Promise<Result>,
+    read: (
+      response: Response,
+      progress: { readonly signal: AbortSignal; readonly onProgress: () => void },
+    ) => Promise<Result>,
   ): Promise<Result> {
     if (this.#activeRequests >= maximumConcurrentRequests) {
       throw new Error("The Host request limit is full.");
@@ -145,21 +152,17 @@ export class HostTransport {
       const selected = await this.current();
       const { resolved } = selected;
       const selectionGeneration = this.#fence.generation;
-      const controller = new AbortController();
-      const abortFromCaller = () => controller.abort(request.signal?.reason);
-      request.signal?.addEventListener("abort", abortFromCaller, { once: true });
-      if (request.signal?.aborted) abortFromCaller();
+      const deadline = new HostResponseDeadline(request.signal);
+      const controller = deadline.controller;
       this.#requestControllers.add(controller);
       if (selectionGeneration !== this.#fence.generation) {
         controller.abort(new HostTransportError("deployment-changed"));
       }
-      const timeout = setTimeout(
-        () => controller.abort(new HostTransportError("timed-out")),
-        request.timeoutMs ?? defaultRequestTimeoutMs,
-      );
-      unrefTimer(timeout);
+      deadline.reset(request.timeoutMs ?? hostResponseHeadersTimeoutMs);
       try {
-        let response = await this.#send(resolved, request, controller.signal);
+        let response = await deadline.wait(this.#send(resolved, request, controller.signal));
+        const onProgress = () => deadline.reset(hostResponseStallTimeoutMs);
+        onProgress();
         if (response.status === 401 && this.#sessions) {
           response = await this.#retryAfterSessionRecovery(
             this.#sessions,
@@ -167,9 +170,10 @@ export class HostTransport {
             request,
             controller.signal,
             response,
+            deadline,
           );
         }
-        return await read(response);
+        return await deadline.wait(read(response, { signal: controller.signal, onProgress }));
       } catch (error) {
         if (request.signal?.aborted) throw request.signal.reason ?? error;
         if (controller.signal.aborted) {
@@ -181,9 +185,7 @@ export class HostTransport {
       } finally {
         // Electron fetch retains a cancelled response's socket until its request
         // is aborted. Classify the failure before this cleanup changes the signal.
-        controller.abort();
-        clearTimeout(timeout);
-        request.signal?.removeEventListener("abort", abortFromCaller);
+        deadline.dispose();
         this.#requestControllers.delete(controller);
       }
     } finally {
@@ -316,9 +318,11 @@ export class HostTransport {
     request: HostTransportRequest,
     signal: AbortSignal,
     unauthorized: Response,
+    deadline: HostResponseDeadline,
   ): Promise<Response> {
     const body = await readBoundedResponse(unauthorized, {
       maximumBytes: maximumUnauthorizedBodyBytes,
+      onProgress: () => deadline.reset(hostResponseStallTimeoutMs),
       signal,
       sizeError: () => new HostTransportError("response-too-large"),
     });
@@ -326,6 +330,9 @@ export class HostTransport {
       headers: unauthorized.headers,
       status: unauthorized.status,
     });
+    // Recovery carries its own deadlines (token refresh, session exchange); the
+    // refusal's body-stall clock must not cut it short.
+    deadline.pause();
     let abortRecovery: (() => void) | undefined;
     try {
       const abandoned = new Promise<never>((_resolve, reject) => {
@@ -339,7 +346,10 @@ export class HostTransport {
     } finally {
       if (abortRecovery) signal.removeEventListener("abort", abortRecovery);
     }
-    return this.#send(selected.resolved, request, signal);
+    deadline.reset(request.timeoutMs ?? hostResponseHeadersTimeoutMs);
+    const response = await deadline.wait(this.#send(selected.resolved, request, signal));
+    deadline.reset(hostResponseStallTimeoutMs);
+    return response;
   }
 
   /**

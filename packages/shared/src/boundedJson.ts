@@ -5,6 +5,7 @@ export interface BoundedResponseOptions {
   readonly emptyError?: () => Error;
   readonly invalidContentLengthError?: () => Error;
   readonly maximumBytes: number;
+  readonly onProgress?: () => void;
   readonly signal?: AbortSignal;
   readonly sizeError?: () => Error;
 }
@@ -58,7 +59,13 @@ export function createBoundedResponseReader() {
     const body = response.body;
     if (!body) {
       if (options.emptyError) throw options.emptyError();
-      return 0;
+      // Some native fetch implementations buffer without exposing a stream.
+      options.signal?.throwIfAborted();
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      options.signal?.throwIfAborted();
+      if (bytes.byteLength > options.maximumBytes) throw sizeError();
+      await consume(bytes);
+      return bytes.byteLength;
     }
     const reader = body.getReader();
     let total = 0;
@@ -66,15 +73,16 @@ export function createBoundedResponseReader() {
       while (true) {
         const result = await readChunk(reader, options.signal, options.abortError);
         if (result.done) break;
+        if (result.value.byteLength > 0) options.onProgress?.();
         total += result.value.byteLength;
         if (total > options.maximumBytes) {
-          await reader.cancel();
+          void reader.cancel().catch(() => undefined);
           throw sizeError();
         }
         await consume(result.value);
       }
     } catch (error) {
-      await reader.cancel().catch(() => undefined);
+      void reader.cancel().catch(() => undefined);
       throw error;
     } finally {
       reader.releaseLock();

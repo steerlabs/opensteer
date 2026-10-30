@@ -190,9 +190,10 @@ export class DesktopHostTransport extends HostTransport {
    */
   async request(input: unknown): Promise<DesktopHostHttpResponse> {
     const request = DesktopHostHttpRequestSchema.parse(input);
-    return this.exchange(request, async (response) =>
+    return this.exchange(request, async (response, progress) =>
       DesktopHostHttpResponseSchema.parse({
         body: await readBoundedText(response, {
+          ...progress,
           fatalUtf8: true,
           invalidContentLengthError: () =>
             new Error("The Host returned an invalid content length."),
@@ -281,9 +282,10 @@ export class DesktopHostTransport extends HostTransport {
           signal: transfer.controller.signal,
           ...(transfer.input.timeoutMs ? { timeoutMs: transfer.input.timeoutMs } : {}),
         },
-        async (response) =>
+        async (response, progress) =>
           DesktopHostHttpResponseSchema.parse({
             body: await readBoundedText(response, {
+              ...progress,
               fatalUtf8: true,
               invalidContentLengthError: () =>
                 new Error("The Host returned an invalid content length."),
@@ -369,13 +371,13 @@ export class DesktopHostTransport extends HostTransport {
         signal,
         ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
       },
-      async (response) => {
+      async (response, progress) => {
         if (this.currentKey() !== attachmentKey) throw new HostTransportError("deployment-changed");
         const size = await forEachBoundedResponseChunk(
           response,
           {
+            ...progress,
             maximumBytes: maximumBinaryBytes,
-            signal,
             sizeError: () => new HostTransportError("response-too-large"),
           },
           (chunk) => fs.appendFile(path, chunk),
