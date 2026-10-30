@@ -132,7 +132,12 @@ data class ActiveSession(val id: String, val runId: String, val title: String?)
  * its answer is interrupted: the interrupt is kept, never turned into a
  * gesture that was not made.
  */
-class PersonContactException : Exception("A person is touching the screen; try again.")
+class PersonContactException(message: String = TOUCHING) : Exception(message) {
+    companion object {
+        const val TOUCHING = "A person is touching the screen; try again."
+        const val KEY = "A person is holding a key; try again."
+    }
+}
 
 interface Device {
     /** A whole edit, including its reads and cursor updates, shares one lane with person IME edits. */

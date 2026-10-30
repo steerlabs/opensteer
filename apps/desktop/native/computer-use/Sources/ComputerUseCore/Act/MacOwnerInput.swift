@@ -280,6 +280,8 @@ final class MacOwnerInputWorker {
       var enteredFocus = false
       do {
         guard lease.active.current, lease.admission.isCurrent(batch.reservation) else { throw MacOwnerInput.Refusal("unavailable") }
+        // Checked while this batch holds the app's lane, where contacts change.
+        guard !lease.mutations.heldByOther(lease.id) else { throw MacOwnerInput.Refusal("contended") }
         try await lease.verifyPath()
         guard lease.active.current, lease.admission.isCurrent(batch.reservation) else { throw MacOwnerInput.Refusal("unavailable") }
         guard let map = lease.producer.inputMap,

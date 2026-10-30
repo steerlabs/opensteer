@@ -453,6 +453,52 @@ describe("phone display Host sockets", () => {
     expect(b.json().some((m) => m.reason === "contended")).toBe(false);
   });
 
+  it("spends replies owed while a Mac viewer had no approval, so they never use up its room", async () => {
+    const f = await fixture(true, { mac: true });
+    const viewer = await f.macViewer(true);
+    await f.state();
+    await viewer.roundTrip();
+    const projected = () =>
+      viewer
+        .json()
+        .filter((m) => m.type === "display.state")
+        .at(-1)?.sharedInput;
+    expect(projected()).toBe(1);
+    for (let sequence = 1; sequence <= 128; sequence++)
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "text", insert: "x" }],
+      });
+    await viewer.roundTrip();
+    f.inputAuthorization(false);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(() => projected() === undefined);
+    for (let sequence = 0; sequence < 128; sequence++)
+      await f.apps.handleMessage(f.peer, f.stream, {
+        ...f.fence,
+        type: "runner.integrations.mac-owner.event",
+        streamId: f.start().streamId,
+        source: f.macSource,
+        message: { type: "display.input.result", sequence, outcome: "dispatched" },
+      });
+    f.inputAuthorization(true);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(() => projected() === 1);
+    viewer.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 129,
+      events: [{ kind: "text", insert: "y" }],
+    });
+    await viewer.roundTrip();
+    expect(viewer.json().some((m) => m.reason === "too-large")).toBe(false);
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input")).toHaveLength(129);
+  });
+
   it("keeps room for a release when the lane's queue is full", async () => {
     const f = await fixture(true, { editing: true });
     const a = await f.viewer(true);

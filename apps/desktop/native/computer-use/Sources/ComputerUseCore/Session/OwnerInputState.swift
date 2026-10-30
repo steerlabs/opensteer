@@ -22,6 +22,11 @@ final class AppMutationCoordinator: @unchecked Sendable {
     contacts.withLock { if held { $0.insert(attachment) } else { $0.remove(attachment) } }
   }
   func notePersonEdit() { edits.withLock { $0 += 1 } }
+  /// Another view of this app (another window, or another viewer's lane) still
+  /// holds a button or key; only its holder may add to or release it.
+  func heldByOther(_ attachment: String) -> Bool {
+    contacts.withLock { !$0.subtracting([attachment]).isEmpty }
+  }
 }
 
 /// Reserves a complete batch before queueing it. Replays, overflow and expired

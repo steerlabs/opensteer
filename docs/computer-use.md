@@ -1688,6 +1688,8 @@ One per-app mutation coordinator serializes person batches and every mutating ag
 including AX mutations. A person press waits for the current agent effect. An agent effect
 while a person holds a button or key fails with “A person is pressing in this app; try again.”
 Two viewers share one person lane; another viewer’s batch receives `contended` while held.
+The coordinator spans the app, so while a view of one window holds a button or key, a batch
+from a view of another window of the same app also receives `contended`.
 Observations remain valid after person input. Text edits rotate context after intervening edits.
 Reset discards queued input and finishes physical cleanup before admitting the next batch.
 Blur, hide, F6, leaving, geometry changes, lock, target or approval loss, disconnect and Stop

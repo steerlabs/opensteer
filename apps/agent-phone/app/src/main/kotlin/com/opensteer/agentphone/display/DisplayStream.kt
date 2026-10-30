@@ -63,10 +63,13 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
         { gestures.scheduler.cancel(producer = GestureScheduler.Producer.PERSON) },
         { done -> gestures.scheduler.cancel(producer = GestureScheduler.Producer.PERSON) {
             executor.ownerInput {
-                ownerFocusEditor = null
-                device.personEdit { editing.reset(); device.clearOwnerText() }
-                publishEditing()
-                done()
+                // The lane waits on done(): a failed key release must never stall the person's next batch.
+                try {
+                    ownerFocusEditor = null
+                    runCatching { device.personEdit { editing.reset(); device.clearOwnerText() } }
+                        .onFailure { android.util.Log.w("OpensteerDisplay", "Person input reset could not release keys: ${it.javaClass.simpleName}") }
+                    publishEditing()
+                } finally { done() }
             }
         } })
     private val receiver = object : BroadcastReceiver() {
@@ -77,6 +80,7 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
     }
     init {
         device.textChanged = ::editingChanged
+        device.personKeysHeld = editing::holdsKeys
         context.registerReceiver(receiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_USER_PRESENT)
         })

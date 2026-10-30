@@ -1068,15 +1068,18 @@ export class DisplayStreamHub {
     )
       this.#resetInput(stream);
     const pending = stream.pending.get(message.sequence);
+    if (!pending || pending.geometry !== stream.generation) return;
+    if (source && !this.#sameSource(source, pending.viewer.source)) return;
     if (
-      !pending ||
-      pending.geometry !== stream.generation ||
       !stream.viewers.has(pending.viewer) ||
       !this.#inputAvailable(stream, pending.viewer) ||
       !this.#viewerLive(stream, pending.viewer)
-    )
+    ) {
+      // Its viewer left or lost input: the reply is spent here, so the
+      // stream's receipt allowance never counts work that is no longer owed.
+      stream.pending.delete(message.sequence);
       return;
-    if (source && !this.#sameSource(source, pending.viewer.source)) return;
+    }
     if (message.type === "display.input.result") {
       if (!pending.result) return;
       pending.result = false;

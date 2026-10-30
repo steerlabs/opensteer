@@ -31,14 +31,20 @@ class OwnerEditing(private val service: AccessibilityService, private val device
     private var selection: Pair<Int, Int>? = null
     private val heldKeys = java.util.concurrent.ConcurrentHashMap<Int, () -> Unit>()
 
+    fun holdsKeys(): Boolean = heldKeys.isNotEmpty()
+
+    /** Releases held keys; if their editor is gone or the main thread is stuck, they are forgotten all the same. */
     fun reset() {
         if (heldKeys.isEmpty()) { invalidate(); return }
-        onMain { valid ->
-            check(valid())
-            heldKeys.values.forEach { it() }
+        try {
+            onMain { valid ->
+                check(valid())
+                heldKeys.values.forEach { it() }
+            }
+        } finally {
             heldKeys.clear()
+            invalidate()
         }
-        invalidate()
     }
 
     @Synchronized fun invalidate() { contextId = UUID.randomUUID().toString() }

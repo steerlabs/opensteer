@@ -58,7 +58,8 @@ class GestureScheduler(private val clock: GestureClock, private val dispatch: (G
         if (active || inFlight) { done(if (producer == Producer.PERSON) Result.PERSON_CONTACT else Result.INTERRUPTED); return@post }
         try { admit() } catch (error: Exception) { refused(error); return@post }
         val first = segments.first()
-        begin(first.points.first(), { true }, clock.now(), Producer.AGENT)
+        // Each later stroke, such as a double tap's second, is admitted again before it is sent.
+        begin(first.points.first(), { runCatching(admit).isSuccess }, clock.now(), Producer.AGENT)
         completion = { done(if (it) Result.DONE else Result.INTERRUPTED) }
         agentSegments.addAll(segments.drop(1))
         emit(first)
@@ -160,7 +161,9 @@ class GestureScheduler(private val clock: GestureClock, private val dispatch: (G
                 if (segment.cancel) clock.after(1000) { pump() } else pump()
             } else if (cancelling && !segment.cancel) pump()
             else if (!segment.continuing) {
-                if (agentSegments.isNotEmpty()) emit(agentSegments.removeFirst()) else finish()
+                if (agentSegments.isEmpty()) finish()
+                else if (runCatching(authority).getOrDefault(false)) emit(agentSegments.removeFirst())
+                else { success = false; finish() }
             }
             else {
                 if (segment.first) { val callback = started; started = null; callback?.invoke(true) }

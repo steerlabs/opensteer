@@ -13,6 +13,16 @@ class GestureSchedulerTest {
         assertEquals(GestureScheduler.Result.INTERRUPTED, result)
         assertEquals(1, segments.count { !it.cancel })
     }
+    @Test fun aDoubleTapWithdrawnAfterItsFirstTapNeverSendsTheSecond() {
+        val clock = Clock(); val segments = ArrayList<GestureSegment>(); var result: GestureScheduler.Result? = null
+        var withdrawn = false
+        val scheduler = GestureScheduler(clock) { segment, done -> segments += segment; withdrawn = true; done(true) }
+        scheduler.agent(List(2) { GestureSegment(listOf(DisplayPoint(50, 50)), 50, false, true) },
+            { check(!withdrawn) { "Stopped" } }, { result = it })
+        clock.advance()
+        assertEquals(GestureScheduler.Result.INTERRUPTED, result)
+        assertEquals(1, segments.size)
+    }
     @Test fun personResetDropsFractionalScrollEvenWithoutAnActiveContact() {
         val clock = Clock(); val segments = ArrayList<GestureSegment>()
         val scheduler = GestureScheduler(clock) { segment, done -> segments += segment; done(true) }

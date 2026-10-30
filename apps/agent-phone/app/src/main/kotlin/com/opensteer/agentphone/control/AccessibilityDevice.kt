@@ -46,11 +46,19 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
     private val turns = ScreenshotTurns()
     private val textLane = java.util.concurrent.locks.ReentrantLock()
     @Volatile var textChanged: () -> Unit = {}
+    /** The person still holds a key in the focused field; agent effects wait for its release or a reset. */
+    @Volatile var personKeysHeld: () -> Boolean = { false }
+    private fun personAdmit(admit: () -> Unit): () -> Unit = {
+        if (personKeysHeld()) throw PersonContactException(PersonContactException.KEY)
+        admit()
+    }
     fun <T> readEditing(action: () -> T): T {
         textLane.lock()
         try { return action() } finally { textLane.unlock() }
     }
     override fun <T> edit(action: () -> T): T = personEdit {
+        // Checked inside the text lane, which the person's key presses also take.
+        if (personKeysHeld()) throw PersonContactException(PersonContactException.KEY)
         try { action() } finally { clearOwnerText() }
     }
     fun <T> personEdit(action: () -> T): T {
@@ -374,9 +382,9 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
     }
 
     override fun touchDown(point: DisplayPoint, holdMs: Int, budget: Budget, admit: () -> Unit): Contact? {
-        val held = Held(point, admit)
+        val held = Held(point, personAdmit(admit))
         val started = java.util.concurrent.CompletableFuture<Boolean>()
-        admit()
+        held.admit()
         gestures.scheduler.down(point, { !budget.halted && runCatching { held.admit() }.isSuccess }, watchdog = false,
             done = { held.finished.complete(it) }, onStarted = { started.complete(it) },
             producer = GestureScheduler.Producer.AGENT, contact = held,
@@ -530,7 +538,7 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
      */
     private fun dispatch(segments: List<GestureSegment>, durationMs: Long, budget: Budget, admit: () -> Unit): Effect {
         val answer = java.util.concurrent.CompletableFuture<GestureScheduler.Result>()
-        gestures.scheduler.agent(segments, admit, { answer.complete(it) }, { answer.completeExceptionally(it) })
+        gestures.scheduler.agent(segments, personAdmit(admit), { answer.complete(it) }, { answer.completeExceptionally(it) })
         val result = try { answer.get(minOf(durationMs + GESTURE_GRACE_MS, budget.remainingMs()).coerceAtLeast(1), TimeUnit.MILLISECONDS) }
             catch (error: java.util.concurrent.ExecutionException) { throw requireNotNull(error.cause) }
             catch (_: java.util.concurrent.TimeoutException) { return Effect.UNKNOWN }

@@ -43,6 +43,19 @@ final class OwnerInputStateTests: XCTestCase {
     lane.endAgent()
   }
 
+  func testAnotherViewOfTheAppCannotPressWhileOneHoldsButTheHolderCanRelease() async {
+    let lane = AppMutationCoordinator()
+    await lane.beginPerson()
+    lane.setHeld(true, attachment: "window-a")
+    lane.endPerson()
+    XCTAssertTrue(lane.heldByOther("window-b"))
+    XCTAssertFalse(lane.heldByOther("window-a"))
+    await lane.beginPerson()
+    lane.setHeld(false, attachment: "window-a")
+    lane.endPerson()
+    XCTAssertFalse(lane.heldByOther("window-b"))
+  }
+
   func testPersonBatchWaitsForAgentAXMutation() async throws {
     let lane = AppMutationCoordinator()
     try await lane.beginAgent()

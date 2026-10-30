@@ -176,6 +176,12 @@ class PhoneDeskTest {
         var afterSelect: () -> Unit = {}
         var duringLaunchable: () -> Unit = {}
         var duringPrepare: (String) -> Unit = {}
+        /** Thrown from the edit lane, as the device does while a person holds a key. */
+        var editRefusal: Exception? = null
+        override fun <T> edit(action: () -> T): T {
+            editRefusal?.let { throw it }
+            return action()
+        }
         /** Runs once Android has taken a drag's move, before its answer: an interrupt then. */
         var afterMoveTaken: () -> Unit = {}
         var segmentMove = false
@@ -1024,6 +1030,16 @@ class PhoneDeskTest {
         val error = result.fields.getValue("error") as JsonObject
         assertEquals("A person is touching the screen; try again.", error.string("message"))
         assertTrue(device.did.isEmpty())
+    }
+
+    @Test fun agentTypingWhileThePersonHoldsAKeyReportsTheRetryMessage() {
+        val id = observe().observation().string("observationId")
+        device.editRefusal = PersonContactException(PersonContactException.KEY)
+        val result = actValue(id, PhoneAction.Type(PhoneTarget.Element(1), com.opensteer.agentphone.wire.PhoneText.Literal("hi"), false))
+        assertEquals("failed", result.errorCode())
+        val error = result.fields.getValue("error") as JsonObject
+        assertEquals("A person is holding a key; try again.", error.string("message"))
+        assertTrue(device.did.none { it.startsWith("setText") || it.startsWith("type") })
     }
 
     @Test fun interruptedTapAndSwipeReportFailureWithoutClaimingProgress() {
