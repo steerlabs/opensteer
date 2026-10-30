@@ -479,12 +479,18 @@ func (session *shellSession) runCommand(channelID uint32, channel ssh.Channel, r
 	}
 	cmd.Stdout = shellActivityWriter{writer: channel, idle: session.idle}
 	cmd.Stderr = shellActivityWriter{writer: channel.Stderr(), idle: session.idle}
+	session.processMu.Lock()
+	if session.closing.Load() {
+		session.processMu.Unlock()
+		_ = stdin.Close()
+		return errors.New("Opensteer is closing this session.")
+	}
 	if err := cmd.Start(); err != nil {
+		session.processMu.Unlock()
 		_ = stdin.Close()
 		return fmt.Errorf("Opensteer could not start the command: %w", err)
 	}
 	process := &trackedShellProcess{channel: channelID, cmd: cmd, done: make(chan struct{}), sweepDone: make(chan struct{}), pgid: cmd.Process.Pid}
-	session.processMu.Lock()
 	session.processes[process.pgid] = process
 	session.processMu.Unlock()
 	_ = session.emitter.lifecycle(map[string]any{"kind": "process.started", "channel": channelID, "processGroupId": process.pgid})
@@ -521,16 +527,17 @@ func (session *shellSession) runCommand(channelID uint32, channel ssh.Channel, r
 			session.sendExitStatus(channel, status)
 		}
 	}
-	go session.finishShellProcess(process)
+	// The channel must remain open until the lifecycle writer acknowledges exit.
+	session.finishShellProcess(process)
 	return nil
 }
 
 func (session *shellSession) finishShellProcess(process *trackedShellProcess) {
 	terminateRemainingShellGroup(process.pgid)
+	_ = session.emitter.lifecycle(map[string]any{"kind": "process.exited", "channel": process.channel, "processGroupId": process.pgid})
 	session.processMu.Lock()
 	delete(session.processes, process.pgid)
 	session.processMu.Unlock()
-	_ = session.emitter.lifecycle(map[string]any{"kind": "process.exited", "channel": process.channel, "processGroupId": process.pgid})
 	close(process.sweepDone)
 }
 
@@ -792,11 +799,14 @@ func (session *shellSession) watchIdle() {
 
 func (session *shellSession) cleanupSession() {
 	session.cleanup.Do(func() {
+		session.processMu.Lock()
 		session.closing.Store(true)
+		session.processMu.Unlock()
 		close(session.cleanupDone)
 		session.idle.stop()
 		session.closeForwards()
-		session.closeConnection()
+		// Keep the transport open until tracked processes finish writing their exits.
+		defer session.closeConnection()
 		processes := session.snapshotProcesses()
 		for _, process := range processes {
 			process.channelClosed.Store(true)

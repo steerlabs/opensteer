@@ -113,6 +113,12 @@ func TestShellProxyProcess(t *testing.T) {
 	_, _ = io.Copy(os.Stdout, stdout)
 	_ = command.Wait()
 	<-recordDone
+	if address := os.Getenv("OPENSTEER_SHELL_TEST_DONE"); address != "" {
+		connection, err := net.Dial("unix", address)
+		if err == nil {
+			_ = connection.Close()
+		}
+	}
 	os.Exit(0)
 }
 
@@ -216,12 +222,32 @@ func TestSSHProxyUsesStandardBytesReader(t *testing.T) {
 func TestOpenSSHExecLifecycleAndPolicy(t *testing.T) {
 	requireOpenSSH(t, "ssh")
 	fixture := newShellSSHFixture(t, shellPolicy{Reach: "deployment", Commands: true, Shares: []shellSharePolicy{}})
+	doneDir, err := os.MkdirTemp("/tmp", "ssh-done-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(doneDir) })
+	donePath := filepath.Join(doneDir, "done.sock")
+	done, err := net.ListenUnix("unix", &net.UnixAddr{Name: donePath, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done.Close()
 	command := fixture.sshCommand("cat; echo done")
+	command.Env = append(command.Env, "OPENSTEER_SHELL_TEST_DONE="+donePath)
 	command.Stdin = strings.NewReader("input\n")
 	output, err := command.CombinedOutput()
 	if err != nil || string(output) != "input\ndone\n" {
 		t.Fatalf("exec failed: %v output=%q", err, output)
 	}
+	if err := done.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := done.Accept()
+	if err != nil {
+		t.Fatalf("proxy did not finish copying records: %v", err)
+	}
+	_ = completed.Close()
 	records := fixture.records(t)
 	for _, kind := range []string{"ready", "exec", "process.started", "process.exited", "channel.closed"} {
 		if !recordsContain(records, kind) {
