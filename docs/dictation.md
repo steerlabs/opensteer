@@ -60,7 +60,7 @@ resolves a null port. Availability refreshes on launch and foreground. Only a
 microphone usage description is required: no speech authorization or background
 audio mode is requested.
 
-The mic beside Attach downloads the preferred language when needed; tap again
+The mic beside Send downloads the preferred language when needed; tap again
 when ready to dictate. Live words replace the selected range without changing the
 saved draft until completion. Stop keeps words, Cancel restores the draft, and
 Send waits for the final words before rechecking the normal send gates. Typing

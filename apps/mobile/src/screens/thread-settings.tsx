@@ -1641,20 +1641,34 @@ function ReasoningLadder({
           last.current = option.step;
           setDragged(undefined);
         }}
-        style={{ minHeight: 44, justifyContent: "center" }}
+        style={styles.track}
       >
-        <View style={{ height: 3, backgroundColor: color.lineStrong }} />
-        <View
-          style={{
-            position: "absolute",
-            left: `${((step ?? 0) / (option.steps.length - 1)) * 100}%`,
-            marginLeft: -10,
-            width: 20,
-            height: 20,
-            borderRadius: 10,
-            backgroundColor: color.ember,
-          }}
-        />
+        {/* Decoration never takes the touch: a press on the thumb would report
+            its position inside the thumb, not along the track. */}
+        <View pointerEvents="none" style={styles.rail} />
+        {step === null ? null : (
+          <View
+            pointerEvents="none"
+            style={[styles.fill, { width: `${(step / (option.steps.length - 1)) * 100}%` }]}
+          />
+        )}
+        {option.steps.map((choice, index) => (
+          <View
+            key={choice.value}
+            pointerEvents="none"
+            style={[
+              styles.tick,
+              { left: `${(index / (option.steps.length - 1)) * 100}%` },
+              step !== null && index <= step && styles.tickFilled,
+            ]}
+          />
+        ))}
+        {step === null ? null : (
+          <View
+            pointerEvents="none"
+            style={[styles.thumb, { left: `${(step / (option.steps.length - 1)) * 100}%` }]}
+          />
+        )}
       </View>
       <View style={styles.control}>
         <AppText role="caption" tone="muted" style={styles.rowCopy}>
@@ -1683,6 +1697,36 @@ function ReasoningLadder({
 }
 
 const styles = StyleSheet.create({
+  fill: {
+    backgroundColor: color.textSoft,
+    borderRadius: 2,
+    height: 4,
+    left: 0,
+    position: "absolute",
+  },
+  rail: { backgroundColor: color.lineStrong, borderRadius: 2, height: 4 },
+  thumb: {
+    backgroundColor: color.text,
+    borderRadius: 11,
+    height: 22,
+    marginLeft: -11,
+    position: "absolute",
+    shadowColor: "#000",
+    shadowOffset: { height: 1, width: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 3,
+    width: 22,
+  },
+  tick: {
+    backgroundColor: color.muted,
+    borderRadius: 2,
+    height: 4,
+    marginLeft: -2,
+    position: "absolute",
+    width: 4,
+  },
+  tickFilled: { backgroundColor: color.surface },
+  track: { justifyContent: "center", minHeight: 44 },
   chip: {
     flexDirection: "row",
     alignItems: "center",

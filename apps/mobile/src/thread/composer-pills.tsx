@@ -47,12 +47,12 @@ export function ComposerPills(props: {
   const blocked = blockedReason !== null;
   const summary =
     [reasoningLabel, blocked ? "Unavailable" : null].filter(Boolean).join(" · ") || null;
-  // Most said first; each next form gives up the next words in the web
-  // composer's order — the reasoning level, then the engine's name, which its
-  // mark still says — and only the last, the model alone, is ever shortened.
+  // The model and its effort read as one phrase, "GPT-6.1 Terra Extra high".
+  // Short of room the effort gives way to its bars first; only the model alone
+  // is ever shortened.
   const fit = useFittedForm(
     [[props.modelLabel, summary], [props.modelLabel]].map((words) =>
-      words.filter(Boolean).join(" · "),
+      words.filter(Boolean).join(" "),
     ),
   );
   return (
@@ -90,22 +90,20 @@ export function ComposerPills(props: {
           >
             {props.modelLabel}
             {fit.form !== props.modelLabel && summary ? (
-              <Text style={{ color: color.muted }}> · {summary}</Text>
+              <Text style={styles.summary}> {summary}</Text>
             ) : null}
           </Text>
           {fit.form === props.modelLabel && level ? (
-            <View
-              accessible={false}
-              style={{ flexDirection: "row", alignItems: "flex-end", gap: 2 }}
-            >
+            <View accessible={false} style={styles.level}>
               {Array.from({ length: level.steps }, (_, index) => (
                 <View
                   key={index}
-                  style={{
-                    width: 2,
-                    height: 3 + index * 3,
-                    backgroundColor: index < level.level ? color.muted : color.lineStrong,
-                  }}
+                  style={[
+                    styles.levelBar,
+                    // Rising from 40% to the full 12 points, like the web meter.
+                    { height: 12 * (0.4 + (0.6 * index) / Math.max(1, level.steps - 1)) },
+                    index < level.level && styles.levelBarOn,
+                  ]}
                 />
               ))}
             </View>
@@ -198,6 +196,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[10],
   },
   blocked: { color: color.red },
+  level: { alignItems: "flex-end", flexDirection: "row", gap: 1.5, height: 12 },
+  levelBar: { backgroundColor: color.lineStrong, borderRadius: 1, width: 2 },
+  levelBarOn: { backgroundColor: color.muted },
+  summary: { color: color.muted, fontWeight: "400" },
   // Wide enough that no form wraps or shortens while it is measured.
   gauge: {
     alignItems: "flex-start",

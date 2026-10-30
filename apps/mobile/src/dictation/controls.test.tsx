@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { DictationController } from "@opensteer/client/dictation";
 import type { DictationPort } from "@opensteer/protocol/dictation";
 import "../screens/thread-settings.test-support.js";
-import { DictationStatus } from "./controls.js";
+import { DictationBar } from "./controls.js";
 
 vi.mock("react-native-reanimated", () => ({ useReducedMotion: () => false }));
 let cleanup: (() => void) | undefined;
@@ -47,7 +47,7 @@ it("shows cancel, waveform, elapsed, keep and send immediately while starting", 
   function Recording() {
     const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
     return (
-      <DictationStatus
+      <DictationBar
         controller={controller}
         snapshot={snapshot}
         owner="draft"

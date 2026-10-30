@@ -400,7 +400,7 @@ describe("Expo engine/account/model journeys", () => {
       ),
     );
     const capsule = document.querySelector('[aria-label="AI: Cursor · Composer 2.5 · High"]');
-    expect(capsule?.textContent).toBe("Composer 2.5 · High · Unavailable");
+    expect(capsule?.textContent).toBe("Composer 2.5 High · Unavailable");
     expect(document.querySelectorAll("button")).toHaveLength(1);
     expect(capsule?.getAttribute("aria-description")).toContain("Access: Auto");
     expect(capsule?.getAttribute("aria-description")).toContain("Cursor cannot enforce this mode");

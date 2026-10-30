@@ -191,7 +191,7 @@ vi.mock("../ui/composer-action.js", () => ({
     label: string;
     onPress: () => void;
   }) => (
-    <button disabled={disabled} onClick={onPress}>
+    <button aria-label={label} disabled={disabled} onClick={onPress}>
       {label}
     </button>
   ),

@@ -2,7 +2,7 @@ import { UsageNotice } from "./usage-notice.js";
 import { useFocusEffect } from "@react-navigation/native";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
-import { DictationMic, DictationStatus } from "../dictation/controls.js";
+import { DictationBar, DictationMic, DictationStatus } from "../dictation/controls.js";
 import { dictationLabels, dictationView } from "@opensteer/client/dictation";
 import { threadPlacementOptions } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
@@ -174,6 +174,23 @@ export function Composer(props: {
   const usageHarnesses = useHostSelector(hostClient, (snapshot) => snapshot.harnesses);
   const usageThread = useHostSelector(hostClient, (snapshot) =>
     snapshot.threads.find((thread) => thread.id === threadId),
+  );
+  // Typing re-renders the composer on every keystroke; the notice's inputs
+  // change only with the Host's snapshot.
+  const usagePlacements = useMemo(
+    () => threadPlacementOptions(usageEnvironments, usageHarnesses),
+    [usageEnvironments, usageHarnesses],
+  );
+  const usageSelection = useMemo(
+    () =>
+      usageThread
+        ? {
+            environmentId: usageThread.environmentId,
+            harnessInstanceId: usageThread.harnessInstanceId,
+            modelSelection: usageThread.modelSelection,
+          }
+        : null,
+    [usageThread],
   );
   const dictation = useDictation();
   const dictationState = useSyncExternalStore(dictation.subscribe, dictation.getSnapshot);
@@ -823,25 +840,11 @@ export function Composer(props: {
         />
       )}
       <UsageNotice
-        placements={threadPlacementOptions(usageEnvironments, usageHarnesses)}
-        selection={
-          usageThread
-            ? {
-                environmentId: usageThread.environmentId,
-                harnessInstanceId: usageThread.harnessInstanceId,
-                modelSelection: usageThread.modelSelection,
-              }
-            : null
-        }
+        placements={usagePlacements}
+        selection={usageSelection}
         onSwitch={() => props.onChangeModel(true)}
       />
-      <DictationStatus
-        controller={dictation}
-        snapshot={dictationState}
-        owner={owner}
-        canSend={canSend}
-        onSend={() => void send()}
-      />
+      <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <ComposerBar
         // Two lines from the start: the page above the field is part of the box.
         shape={includedPage === null || view.readOnly ? view.shape : "rounded"}
@@ -962,27 +965,39 @@ export function Composer(props: {
                 </View>
               ),
             })}
-        {...(view.showPills
+        {...(dictating
           ? {
               accessory: (
-                <View>
-                  <ComposerPills
-                    accessMode={props.accessMode}
-                    accessModes={props.accessModes}
-                    disabledReason={props.settingsDisabledReason}
-                    blockedReason={props.executionBlockedReason}
-                    driverKind={props.driverKind}
-                    engineName={props.engineName}
-                    modelLabel={props.modelLabel}
-                    model={props.model}
-                    modelOptions={props.modelOptions}
-                    onOpenModel={() => props.onChangeModel()}
-                    onPresent={hold}
-                  />
-                </View>
+                <DictationBar
+                  canSend={canSend}
+                  controller={dictation}
+                  onSend={() => void send()}
+                  owner={owner}
+                  snapshot={dictationState}
+                />
               ),
             }
-          : {})}
+          : view.showPills
+            ? {
+                accessory: (
+                  <View>
+                    <ComposerPills
+                      accessMode={props.accessMode}
+                      accessModes={props.accessModes}
+                      disabledReason={props.settingsDisabledReason}
+                      blockedReason={props.executionBlockedReason}
+                      driverKind={props.driverKind}
+                      engineName={props.engineName}
+                      modelLabel={props.modelLabel}
+                      model={props.model}
+                      modelOptions={props.modelOptions}
+                      onOpenModel={() => props.onChangeModel()}
+                      onPresent={hold}
+                    />
+                  </View>
+                ),
+              }
+            : {})}
       />
     </View>
   );
