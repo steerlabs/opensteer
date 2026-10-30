@@ -1,4 +1,5 @@
 import { createExpoSavedViews } from "./platform/expo-saved-views.js";
+import { VoiceOverlay } from "./voice/controls.js";
 
 import { DictationProvider } from "./dictation/context.js";
 import * as Application from "expo-application";
@@ -614,6 +615,7 @@ export function App(): ReactNode {
                   ref={navigationRef}
                   theme={navigationTheme}
                 />
+                <VoiceOverlay />
                 <IphoneAppsPrompt controller={iphone} />
               </SafeAreaProvider>
             </MobileNotificationsProvider>

@@ -1086,6 +1086,7 @@ function ThreadView({
         ) : null}
         <InputSurface
           autoContext={home}
+          voice={home}
           variant={conversational ? "conversation" : "work"}
           key={composerKey}
           composerHidden={dock.composerHidden}

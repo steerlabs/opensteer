@@ -1,4 +1,5 @@
 import { useFocusEffect } from "@react-navigation/native";
+import { VoiceDock, VoiceMic } from "../voice/controls.js";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationMic, DictationStatus } from "../dictation/controls.js";
@@ -155,6 +156,8 @@ export function Composer(props: {
   readonly subagentTitles: ReadonlyMap<string, string>;
   readonly threadId: string;
   readonly user: AuthenticatedUser;
+  /** Chat's composer: the voice button beside the microphone, and the voice bar above. */
+  readonly voice?: boolean;
   /** Where this Thread's attached files are uploaded; null until the Thread is known. */
   readonly workspaceId: string | null;
 }): ReactNode {
@@ -815,6 +818,7 @@ export function Composer(props: {
         />
       )}
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
+      {props.voice === true ? <VoiceDock /> : null}
       <ComposerBar
         // Two lines from the start: the page above the field is part of the box.
         shape={includedPage === null || view.readOnly ? view.shape : "rounded"}
@@ -850,6 +854,7 @@ export function Composer(props: {
                     disabled={readOnly || textHidden}
                     onStart={startDictation}
                   />
+                  {props.voice === true ? <VoiceMic disabled={readOnly || textHidden} /> : null}
                 </View>
               ),
             })}

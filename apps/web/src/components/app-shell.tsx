@@ -1,4 +1,5 @@
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
+import { VoiceIsland } from "./voice.js";
 import {
   desktopWebLinksReady,
   openDesktopWebLink,
@@ -1071,6 +1072,7 @@ export function AppShell({
               it, because it outlives navigation and every mutating control on
               those pages is disabled while it runs. */}
               <DeploymentOperationBanner bridge={localBridge} snapshot={deploymentAccess} />
+              <VoiceIsland />
               <SidebarChromeProvider
                 onRestore={toggleSidebar}
                 restoreVisible={!settingsMode && !mobileNavigation && sidebarCollapsed}
