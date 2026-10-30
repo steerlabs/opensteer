@@ -37,9 +37,6 @@ on:
         description: Publish the draft (false stops at draft; stable also needs approval)
         type: boolean
         default: false
-      certified_zip_sha256:
-        description: The update journey's certified zip sha256 (required when publish=true)
-        type: string
 permissions:
   contents: read
 concurrency:
@@ -63,10 +60,6 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       superseded: ${{ steps.resolve.outputs.superseded }}
     steps:
-      - if: ${{ inputs.publish && inputs.certified_zip_sha256 == '' }}
-        run: |
-          echo "::error::certified_zip_sha256 is required when publish=true"
-          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: main
@@ -241,9 +234,41 @@ jobs:
           xcrun stapler validate "$app"
           spctl -a -vv -t exec "$app"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/Opensteer.zip"
+      - name: Checkout launch tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: launch-tooling
+          persist-credentials: false
+      - name: Install launch tooling
+        run: |
+          mv "$GITHUB_WORKSPACE/launch-tooling" "$RUNNER_TEMP/launch-tooling"
+          cd "$RUNNER_TEMP/launch-tooling"
+          pnpm install --frozen-lockfile --prefer-offline
+      - name: Launch check
+        # The script enforces 180 seconds and owns process cleanup.
+        timeout-minutes: 4
+        run: |
+          app="$GITHUB_WORKSPACE/apps/desktop/release/mac-arm64/Opensteer.app"
+          if [[ "$OPENSTEER_DESKTOP_RELEASE_CHANNEL" == beta ]]; then
+            app="$GITHUB_WORKSPACE/apps/desktop/release/beta/mac-arm64/Opensteer Beta.app"
+          fi
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
+          cd "$RUNNER_TEMP/launch-tooling"
+          pnpm exec tsx scripts/smoke-desktop-release.ts --executable "$app/Contents/MacOS/$executable" --artifacts-dir "$RUNNER_TEMP/launch-check" --install-in-applications
+      - name: Prepare checked release bytes
+        run: |
+          cd "$RUNNER_TEMP/launch-tooling"
           pnpm desktop:public-release prepare --channel "$OPENSTEER_DESKTOP_RELEASE_CHANNEL" \
             --app-zip "$RUNNER_TEMP/Opensteer.zip" --version "$OPENSTEER_RELEASE_VERSION" \
-            --source-sha "$OPENSTEER_SOURCE_REVISION" --out "$RUNNER_TEMP/prepared"
+            --source-sha "$OPENSTEER_SOURCE_REVISION" --out "$RUNNER_TEMP/prepared" --launch-check-passed
+      - name: Launch failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-launch-${{ needs.preflight.outputs.channel }}
+          path: ${{ runner.temp }}/launch-check/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: desktop-${{ needs.preflight.outputs.channel }}
@@ -263,9 +288,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Drafting tooling comes from this run's commit, like publishing: an older source's
+      # stricter manifest schema must not refuse fields newer checks record. The tag still
+      # targets the manifest's source commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ needs.preflight.outputs.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -304,8 +332,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
           SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
-          CERTIFIED_ZIP_SHA256: ${{ inputs.certified_zip_sha256 }}
-        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA" --certified-zip-sha256="$CERTIFIED_ZIP_SHA256"
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"
   publish-stable:
     needs: [preflight, discover, draft]
     if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'stable' && inputs.publish && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
@@ -331,5 +358,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
           SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
-          CERTIFIED_ZIP_SHA256: ${{ inputs.certified_zip_sha256 }}
-        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA" --certified-zip-sha256="$CERTIFIED_ZIP_SHA256"
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"

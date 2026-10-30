@@ -214,7 +214,10 @@ export function discover(source, run = execute, root = process.cwd()) {
   if (!existing) return { skip: false, reuse: false };
   if (existing.draft !== true || existing.target_commitish !== source.sha)
     throw Error("Existing release is published or targets another source");
-  sameManifest(manifest(source.tag), source);
+  const checkedManifest = manifest(source.tag);
+  sameManifest(checkedManifest, source);
+  if (checkedManifest.launchCheck !== "passed")
+    throw Error("Draft lacks passed launch-check evidence");
   return { skip: false, reuse: true };
 }
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {

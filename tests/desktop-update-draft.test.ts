@@ -150,7 +150,7 @@ test("PASS publication output binds the downloaded draft ZIP, never the local N+
   const lines = publicationLines(draft, downloaded, true);
   expect(lines).toEqual([
     `certified_zip_sha256=${downloaded}`,
-    `gh workflow run release.yml --repo steerlabs/opensteer --ref main -f channel=insider -f publish=true -f certified_zip_sha256=${downloaded}`,
+    `gh workflow run release.yml --repo steerlabs/opensteer --ref main -f channel=insider -f publish=true`,
   ]);
   expect(lines.join("\n")).not.toContain(next);
   expect(() => publicationLines(draft, next, true)).toThrow();

@@ -142,7 +142,13 @@ function fixture() {
   const source = { sha, version: "1.2.4", channel: "beta", tag: "v1.2.4-insider" };
   const state = {
     releases: [],
-    manifest: { sourceSha: sha, version: source.version, channel: "beta", tag: source.tag },
+    manifest: {
+      launchCheck: "passed",
+      sourceSha: sha,
+      version: source.version,
+      channel: "beta",
+      tag: source.tag,
+    },
     runs: [
       {
         id: 42,
@@ -479,6 +485,7 @@ test("discovery skips unchanged published insiders and reuses only matching draf
     f.state.releases = [{ ...published(f.source), draft: true }];
     assert.deepEqual(discover(f.source, f.run, f.root), { skip: false, reuse: true });
     for (const mutation of [
+      { launchCheck: undefined },
       { sourceSha: "b".repeat(40) },
       { version: "1.2.5" },
       { channel: "stable" },
@@ -529,18 +536,8 @@ test("insiders auto-publish on push, dispatch stops at draft unless publish, sta
   assert.equal(workflow.jobs["publish-stable"].environment, "publish");
 });
 
-// Publication ships exactly the zip the update journey certified. A dispatch without
-// a certified hash fails before building; automatic insiders on push stay unbound.
-test("publish=true requires the certified zip sha256; this run's publisher checks it against the source", () => {
-  assert.equal(workflow.on.workflow_dispatch.inputs.certified_zip_sha256.type, "string");
-  const guard = workflow.jobs.preflight.steps.find((s) => s.if?.includes("certified_zip_sha256"));
-  const refused = (inputs) =>
-    Boolean(runInNewContext(guard.if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), { inputs }));
-  assert.equal(refused({ publish: true, certified_zip_sha256: "" }), true);
-  assert.equal(refused({ publish: true, certified_zip_sha256: "a".repeat(64) }), false);
-  assert.equal(refused({ publish: false, certified_zip_sha256: "" }), false);
-  assert.equal(refused({}), false);
-  assert.throws(() => execFileSync("bash", ["-c", guard.run], { stdio: "pipe" }));
+test("publication needs no certificate and verifies the resolved source", () => {
+  assert.equal(workflow.on.workflow_dispatch.inputs.certified_zip_sha256, undefined);
   const dir = mkdtempSync(path.join(tmpdir(), "opensteer-publish-step-"));
   try {
     const calls = path.join(dir, "calls");
@@ -554,6 +551,13 @@ test("publish=true requires the certified zip sha256; this run's publisher check
       github: { sha: "2".repeat(40) },
       needs: { preflight: { outputs: { sha: source } } },
     };
+    const draftCheckout = workflow.jobs.draft.steps.find((s) =>
+      s.uses?.startsWith("actions/checkout@"),
+    );
+    assert.equal(
+      runInNewContext(draftCheckout.with.ref.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), context),
+      context.github.sha,
+    );
     for (const job of ["publish-insider", "publish-stable"]) {
       const { steps } = workflow.jobs[job];
       const checkout = steps.find((s) => s.uses?.startsWith("actions/checkout@"));
@@ -562,7 +566,7 @@ test("publish=true requires the certified zip sha256; this run's publisher check
         context.github.sha,
       );
       const step = steps.find((s) => s.run?.includes("publish --repo"));
-      assert.equal(step.env.CERTIFIED_ZIP_SHA256, "${{ inputs.certified_zip_sha256 }}");
+      assert.equal(step.env.CERTIFIED_ZIP_SHA256, undefined);
       assert.equal(step.env.SOURCE_SHA, "${{ needs.preflight.outputs.sha }}");
       for (const hash of ["a".repeat(64), ""]) {
         execFileSync("bash", ["-c", step.run], {
@@ -575,7 +579,7 @@ test("publish=true requires the certified zip sha256; this run's publisher check
         });
         assert.equal(
           readFileSync(calls, "utf8").trim(),
-          `desktop:public-release publish --repo steerlabs/opensteer --tag t --source-sha ${source} --certified-zip-sha256=${hash}`,
+          `desktop:public-release publish --repo steerlabs/opensteer --tag t --source-sha ${source}`,
         );
       }
     }
@@ -791,4 +795,32 @@ test("a cancelled source skips cleanly only after main advances and a newer push
   } finally {
     f.close();
   }
+});
+
+test("final release bytes launch before upload, for both channels, with failure evidence", () => {
+  const steps = workflow.jobs.build.steps;
+  const prepare = steps.findIndex((s) => s.name === "Verify and prepare exact release bytes");
+  const launch = steps.find((s) => s.name === "Launch check");
+  assert.ok(steps.indexOf(launch) > prepare);
+  assert.ok(
+    steps.findIndex((s) => s.name === "Prepare checked release bytes") > steps.indexOf(launch),
+  );
+  assert.equal(launch.name, "Launch check");
+  assert.equal(launch["timeout-minutes"], 4);
+  assert.match(launch.run, /smoke-desktop-release.ts/);
+  assert.match(launch.run, /--install-in-applications/);
+  assert.match(launch.run, /beta\/mac-arm64\/Opensteer Beta.app/);
+  assert.match(launch.run, /release\/mac-arm64\/Opensteer.app/);
+  assert.equal(steps.find((s) => s.name === "Launch failure artifacts").if, "failure()");
+});
+
+test("launch tooling comes from the workflow commit", () => {
+  const steps = workflow.jobs.build.steps;
+  const checkout = steps.find((step) => step.name === "Checkout launch tooling");
+  assert.equal(checkout.with.ref, "${{ github.sha }}");
+  assert.equal(checkout.with["persist-credentials"], false);
+  assert.match(
+    steps.find((step) => step.name === "Launch check").run,
+    /cd "\$RUNNER_TEMP\/launch-tooling"/,
+  );
 });

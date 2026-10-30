@@ -220,6 +220,6 @@ export function publicationLines(
   return [
     `certified_zip_sha256=${downloadedZipSha256}`,
     // Stable rebuilds the published insider of the same version, which insider_tag names.
-    `gh workflow run release.yml --repo steerlabs/opensteer --ref main -f channel=${channel}${channel === "stable" ? ` -f insider_tag=${draftExpectation.shape.tag.parse(draft.tag).replace(/^desktop-v(.+)$/u, "v$1-insider")}` : ""} -f publish=true -f certified_zip_sha256=${downloadedZipSha256}`,
+    `gh workflow run release.yml --repo steerlabs/opensteer --ref main -f channel=${channel}${channel === "stable" ? ` -f insider_tag=${draftExpectation.shape.tag.parse(draft.tag).replace(/^desktop-v(.+)$/u, "v$1-insider")}` : ""} -f publish=true`,
   ];
 }
