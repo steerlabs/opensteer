@@ -36,5 +36,9 @@ catalog:
   nanostores: 1.4.2
   opencode-ai: 1.18.32
 
+# Vitest pins its own Vite; keep every copy on the patched release.
+overrides:
+  "vite@<8.2.4": 8.2.4
+
 patchedDependencies:
   playwright-core@1.62.1: patches/playwright-core@1.62.1.patch
