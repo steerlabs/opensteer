@@ -193,7 +193,7 @@ extension WireJourney {
     let fixtureEngine = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_ELECTRON_APP"] == nil ? "appkit" : "electron"
     var cases: [String: String] = [:]
     var active: String?
-    let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-contact", "another-app-agent-unaffected",
+    let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-button", "another-app-agent-unaffected",
       "native-text-key", "IME-commit", "verified-replacement", "stale-replacement", "rich-paste-refusal",
       "multiline-paste", "AX-copy", "save-chord", "undo-chord", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
       "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "reset-preserves-agent-observation", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "disconnect-cleanup"]
@@ -370,9 +370,10 @@ extension WireJourney {
       "geometry": firstGeometry, "sequence": 0, "events": [["kind": "copy"]]])
     try require(second["outcome"] as? String == "dispatched", "Idle attachment excluded another viewer")
     passed()
-    start("agent-refused-held-contact")
-    let heldContact = try await input(shiftDown)
-    try require(heldContact["outcome"] as? String == "dispatched", "Person key did not go down")
+    start("agent-refused-held-button")
+    let heldContact = try await input([["kind": "mouse", "phase": "down", "button": "left",
+      "clickCount": 1, "modifiers": [], "x": 0.5, "y": 0.5]])
+    try require(heldContact["outcome"] as? String == "dispatched", "Person button did not go down")
     let heldResult = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
       "actions": [["type": "key", "keys": "x"]]])
     let heldError = heldResult["error"] as? [String: Any]
@@ -422,7 +423,20 @@ extension WireJourney {
       _ = try await independent.request("session.close", ["sessionId": otherSession])
     }
     passed()
+    let beforeResetUps = try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+      let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+      return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
+    }.count
     try await reset(self, streamA, viewA)
+    let releaseBy = Date().addingTimeInterval(2)
+    func mouseUps() throws -> Int {
+      try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+        let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
+      }.count
+    }
+    while try mouseUps() == beforeResetUps, Date() < releaseBy { try await Task.sleep(nanoseconds: 10_000_000) }
+    try require(try mouseUps() == beforeResetUps + 1, "Reset did not release exactly one held person button")
     func context(sensitive: Bool? = nil, excluding: String? = nil) async throws -> String {
       for _ in 0..<30 {
         _ = try await request("permissions.get", [:])
