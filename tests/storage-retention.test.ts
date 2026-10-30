@@ -16,7 +16,12 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { tryKernelLock } from "@opensteer/shared/kernelLock";
-import { addRunIds, reclaimVmStorage, referencedRunIds } from "../scripts/test-vm/retention.js";
+import {
+  addRunIds,
+  addRunIdsFromReads,
+  reclaimVmStorage,
+  referencedRunIds,
+} from "../scripts/test-vm/retention.js";
 
 const roots: string[] = [];
 const sha = (n: number) => n.toString(16).padStart(40, "0");
@@ -447,7 +452,7 @@ describe("storage retention safety", () => {
     writeFileSync(path.join(notes, "note.md"), "kept 20261020T000000Z-aaaaaaaa for review");
     // The digits of the second ID are hex, so a non-overlapping match would swallow them.
     writeFileSync(path.join(notes, "pair.txt"), "20261019T120000Z-20261020T000000Z-eeeeeeee");
-    // The ID straddles the scan's 1 MiB read boundary, so only the carry finds it.
+    // A large text file is read in several pieces; splits at every offset are tested below.
     writeFileSync(
       path.join(notes, "suite.log"),
       Buffer.concat([
@@ -503,5 +508,33 @@ describe("storage retention safety", () => {
       addRunIds(Buffer.from(text, "latin1"), text.length, found);
       expect(found, text).toEqual(new Set([...text.matchAll(pattern)].map((match) => match[1])));
     }
+  });
+
+  // Read boundaries depend on the buffer size, so a small buffer puts an ID across a
+  // boundary at every offset; each must survive the carry between reads.
+  it("finds IDs split across reads at every offset", () => {
+    const ids = ["20261020T000000Z-aaaaaaaa", "20261021T235959Z-0123abcd"];
+    const text = `x${ids[0]}yy${ids[1]}z`.repeat(3);
+    for (const size of [25, 26, 31, 40, 64])
+      for (let shift = 0; shift < size; shift += 1) {
+        const source = Buffer.from("-".repeat(shift) + text, "latin1");
+        let position = 0;
+        const found = new Set<string>();
+        addRunIdsFromReads(
+          (into, offset, length) => {
+            const count = source.copy(
+              into,
+              offset,
+              position,
+              Math.min(source.length, position + length),
+            );
+            position += count;
+            return count;
+          },
+          Buffer.alloc(size),
+          found,
+        );
+        expect(found, `buffer ${size}, shift ${shift}`).toEqual(new Set(ids));
+      }
   });
 });

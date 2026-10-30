@@ -546,6 +546,26 @@ export function addRunIds(bytes: Buffer, end: number, into: Set<string>): void {
   }
 }
 
+/**
+ * Adds the run IDs in successive reads through `buffer`. The last bytes of each read lead
+ * the next, so an ID split across two reads is whole.
+ */
+export function addRunIdsFromReads(
+  read: (into: Buffer, offset: number, length: number) => number,
+  buffer: Buffer,
+  into: Set<string>,
+): void {
+  let carried = 0;
+  while (true) {
+    const count = read(buffer, carried, buffer.length - carried);
+    if (!count) return;
+    const end = carried + count;
+    addRunIds(buffer, end, into);
+    carried = Math.min(runIdLength - 1, end);
+    buffer.copy(buffer, 0, end - carried, end);
+  }
+}
+
 function isRunIdAt(bytes: Buffer, start: number): boolean {
   for (let offset = 0; offset < 15; offset += 1) {
     const byte = bytes[start + offset]!;
@@ -591,16 +611,11 @@ export function referencedRunIds(state: string): { runIds: Set<string>; unreadab
       return;
     const descriptor = openSync(filename, "r");
     try {
-      // The last bytes of each read lead the next, so an ID split across two reads is whole.
-      let carried = 0;
-      while (true) {
-        const count = readSync(descriptor, buffer, carried, buffer.length - carried, null);
-        if (!count) break;
-        const end = carried + count;
-        addRunIds(buffer, end, runIds);
-        carried = Math.min(runIdLength - 1, end);
-        buffer.copy(buffer, 0, end - carried, end);
-      }
+      addRunIdsFromReads(
+        (into, offset, length) => readSync(descriptor, into, offset, length, null),
+        buffer,
+        runIds,
+      );
     } finally {
       closeSync(descriptor);
     }
