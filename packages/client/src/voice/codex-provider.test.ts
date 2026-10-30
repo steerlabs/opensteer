@@ -153,7 +153,6 @@ describe("Codex voice provider", () => {
       { type: "hearing", text: "Show" },
       { type: "hearing", text: "Show Gmail" },
       { type: "heard", text: "Show Gmail", turnId: "turn:1" },
-      { type: "speaking", text: "" },
       { type: "speaking", text: "Sure" },
       { type: "speaking", text: "Sure, checking" },
       { type: "spoke" },
@@ -294,6 +293,37 @@ describe("Codex voice provider", () => {
     await Promise.resolve();
     expect(f.track.stop).toHaveBeenCalledTimes(1);
     expect(f.rpc["voice.start"]).not.toHaveBeenCalled();
+  });
+
+  it("keeps one caption per turn when V3 sends a turn's words before announcing it", async () => {
+    const f = setup();
+    const call = await f.open();
+    // The order the live backend uses: words, then the turn that holds them.
+    f.peer.receive({ type: "turn.created", turn: { role: "user", transcript: "What is" } });
+    f.peer.receive({
+      type: "turn.done",
+      turn: { id: "u1", role: "user", transcript: "What is two plus two?" },
+    });
+    f.peer.receive({ type: "output_transcript.added", item: { text: " Yep," } });
+    f.peer.receive({
+      type: "turn.created",
+      turn: { id: "a1", role: "assistant", transcript: " Yep," },
+    });
+    f.peer.receive({ type: "output_transcript.added", item: { text: " still four." } });
+    f.peer.receive({
+      type: "turn.done",
+      turn: { id: "a1", role: "assistant", transcript: " Yep, still four." },
+    });
+    expect(f.events.filter((event) => event.type !== "level")).toEqual([
+      { type: "hearing", text: "What is" },
+      { type: "heard", text: "What is two plus two?", turnId: "turn:1" },
+      { type: "speaking", text: "Yep," },
+      { type: "speaking", text: "Yep," },
+      { type: "speaking", text: "Yep, still four." },
+      { type: "speaking", text: "Yep, still four." },
+      { type: "spoke" },
+    ]);
+    await call.close();
   });
 
   it.each(["failed", "closed"])("ends exactly once on peer %s", async (state) => {

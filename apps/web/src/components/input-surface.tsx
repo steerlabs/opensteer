@@ -87,7 +87,7 @@ export function InputSurface({
   /** See `Composer`'s `stopping`. */
   stopping?: boolean;
   threadId: string;
-  /** Chat's composer: the voice button beside Send, and the voice bar above it. */
+  /** Chat's composer, which offers the voice button beside Send. */
   voice?: boolean;
 }) {
   const { hostClient, snapshot, reportActionError } = useShell();
@@ -157,7 +157,7 @@ export function InputSurface({
           threadId={threadId}
         />
       ) : null}
-      {voice ? <VoiceDock /> : null}
+      {composerHidden || (docked && dock.composerHidden) ? null : <VoiceDock />}
       <div hidden={composerHidden || (docked && dock.composerHidden)}>
         <Composer
           dictationScope={`${deploymentId}/${userId}/${threadId}`}

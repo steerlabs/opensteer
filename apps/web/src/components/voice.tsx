@@ -123,9 +123,8 @@ export function VoiceButton() {
 }
 
 /**
- * Where the voice bar sits while Chat's composer is on screen: just above it,
- * so your words and Chat's replies stay in view. With no dock mounted, the bar
- * floats at the bottom of the window instead.
+ * Where the voice bar sits while a composer is on screen: just above it, never
+ * over it. With no dock mounted, the bar floats at the bottom of the main area.
  */
 const docks: HTMLElement[] = [];
 const dockListeners = new Set<() => void>();

@@ -153,21 +153,26 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         if (chunk.success) {
           if (chunk.data.type === "input_transcript.added") {
             hearing += chunk.data.item.text;
-            onEvent({ type: "hearing", text: hearing });
+            onEvent({ type: "hearing", text: hearing.trimStart() });
           } else {
             speaking += chunk.data.item.text;
-            onEvent({ type: "speaking", text: speaking });
+            onEvent({ type: "speaking", text: speaking.trimStart() });
           }
           return;
         }
         const parsed = turnEvent.safeParse(value);
         if (!parsed.success) return;
         const { type, turn } = parsed.data;
+        // Frameless V3 streams a turn's words before announcing the turn, so
+        // only its end starts a new caption; the turn's own transcript wins.
         if (type === "turn.created") {
-          if (turn.role === "user") hearing = "";
-          else {
-            speaking = "";
-            onEvent({ type: "speaking", text: "" });
+          if (!turn.transcript) return;
+          if (turn.role === "user") {
+            hearing = turn.transcript;
+            onEvent({ type: "hearing", text: hearing.trimStart() });
+          } else {
+            speaking = turn.transcript;
+            onEvent({ type: "speaking", text: speaking.trimStart() });
           }
           return;
         }
@@ -179,11 +184,11 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
           onEvent({
             type: "heard",
             turnId: `turn:${++nextTurn}`,
-            text: turn.transcript ?? hearing,
+            text: (turn.transcript ?? hearing).trim(),
           });
           hearing = "";
         } else {
-          if (turn.transcript) onEvent({ type: "speaking", text: turn.transcript });
+          if (turn.transcript) onEvent({ type: "speaking", text: turn.transcript.trim() });
           onEvent({ type: "spoke" });
           speaking = "";
         }

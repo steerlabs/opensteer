@@ -394,7 +394,7 @@ export function FirstMessageComposer(props: {
   readonly text: string;
   /** Set where a transparent navigation bar lies over the top of the screen. */
   readonly underHeader: boolean;
-  /** Chat's first message: voice can say it, and creates Chat. */
+  /** Chat's first message: voice can say it, and it creates Chat. */
   readonly voice?: boolean;
 }): ReactNode {
   const gutter = useGutter();
@@ -611,7 +611,7 @@ export function FirstMessageComposer(props: {
             {blocker.reason}
           </AppText>
         )}
-        {props.voice === true ? <VoiceDock /> : null}
+        <VoiceDock />
         <ComposerBar
           accessory={
             <ComposerPills

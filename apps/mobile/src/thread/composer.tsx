@@ -156,7 +156,7 @@ export function Composer(props: {
   readonly subagentTitles: ReadonlyMap<string, string>;
   readonly threadId: string;
   readonly user: AuthenticatedUser;
-  /** Chat's composer: the voice button beside the microphone, and the voice bar above. */
+  /** Chat's composer, which offers the voice button beside the microphone. */
   readonly voice?: boolean;
   /** Where this Thread's attached files are uploaded; null until the Thread is known. */
   readonly workspaceId: string | null;
@@ -822,7 +822,7 @@ export function Composer(props: {
         />
       )}
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
-      {props.voice === true ? <VoiceDock /> : null}
+      <VoiceDock />
       <ComposerBar
         // Two lines from the start: the page above the field is part of the box.
         shape={includedPage === null || view.readOnly ? view.shape : "rounded"}

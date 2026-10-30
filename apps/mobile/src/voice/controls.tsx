@@ -101,9 +101,9 @@ export function VoiceMic(props: { readonly disabled: boolean }): ReactNode {
 }
 
 /**
- * Screens with Chat's composer dock the bar above it while they are on top;
- * everywhere else it floats near the bottom. React Navigation keeps a pushed
- * screen's parent mounted, so a dock counts only while its screen is focused.
+ * A screen with a composer docks the bar above it while it is on top, never
+ * over it; elsewhere the bar floats near the bottom. React Navigation keeps a
+ * pushed screen's parent mounted, so a dock counts only while focused.
  */
 let focusedDocks = 0;
 const dockListeners = new Set<() => void>();
