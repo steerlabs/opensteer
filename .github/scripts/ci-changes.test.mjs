@@ -347,6 +347,7 @@ test("Swift sources, node manifests and the CI definition select their tasks", (
     "computer-helper",
     "passwords-helper",
     "computer-tests",
+    "dictation-helper",
   ]);
   assert.deepEqual(decide([".github/workflows/ci.yml"], realGraph).nativeMac, allNativeMacTasks);
   assert.deepEqual(decide([], realGraph, realGraph, true).nativeMac, allNativeMacTasks);
@@ -369,7 +370,11 @@ test("required-but-dynamic and directory-boundary inputs select exactly", () => 
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/scripts/macos-release-identity.cjs",
   ])
-    assert.deepEqual(swiftOnly(decide([file], realGraph)), ["computer-helper", "passwords-helper"]);
+    assert.deepEqual(swiftOnly(decide([file], realGraph)), [
+      "computer-helper",
+      "passwords-helper",
+      "dictation-helper",
+    ]);
   // A script beside them that no build loads runs neither helper.
   assert.deepEqual(swiftOnly(decide(["apps/desktop/scripts/after-pack.cjs"], realGraph)), []);
   // tsx compiles a task's node scripts with the tsconfig files above them and what
@@ -377,11 +382,13 @@ test("required-but-dynamic and directory-boundary inputs select exactly", () => 
   assert.deepEqual(swiftOnly(decide(["apps/desktop/tsconfig.json"], realGraph)), [
     "computer-helper",
     "passwords-helper",
+    "dictation-helper",
   ]);
   assert.deepEqual(swiftOnly(decide(["tsconfig.base.json"], realGraph)), [
     "computer-helper",
     "passwords-helper",
     "computer-tests",
+    "dictation-helper",
   ]);
   assert.deepEqual(
     swiftOnly(decide(["apps/desktop/native/computer-use-x/a.swift"], realGraph)),

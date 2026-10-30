@@ -11,7 +11,10 @@ import { randomBytes } from "node:crypto";
 import { ComputerAppApprovalService } from "./computer-app-approval-service.js";
 import { ComputerAppSetupGuide, dataGrantSettingsUrls } from "./computer-app-setup-guide.js";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
-import { homedir } from "node:os";
+import { homedir, release } from "node:os";
+import { DictationService } from "./dictation/dictation-service.js";
+import { NativeDictationHelperClient } from "./dictation/helper-client.js";
+import { bundledDictationBrokerPath } from "./dictation/paths.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -323,6 +326,32 @@ async function runDesktop(
   });
   // One Opensteer Passwords connection for this desktop. A development build
   // talks only to the development broker, whose vault holds test data.
+  const dictation = new DictationService({
+    platform: process.platform,
+    arch: process.arch,
+    osMajor: Number(release().split(".")[0]),
+    translated: app.runningUnderARM64Translation,
+    openSettings: () =>
+      shell.openExternal(
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+      ),
+    client: new NativeDictationHelperClient({
+      development: !app.isPackaged,
+      bundledAppPath: bundledDictationBrokerPath({
+        developmentRoot: path.resolve(import.meta.dirname, "..", "..", ".."),
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+      }),
+    }),
+  });
+  const interruptDictation = () => dictation.interrupt();
+  powerMonitor.on("suspend", interruptDictation);
+  powerMonitor.on("lock-screen", interruptDictation);
+  app.once("before-quit", () => {
+    dictation.close();
+    powerMonitor.removeListener("suspend", interruptDictation);
+    powerMonitor.removeListener("lock-screen", interruptDictation);
+  });
   const passwords = new PasswordsService({
     appVersion: app.getVersion(),
     bundledBrokerPath: () =>
@@ -960,6 +989,7 @@ async function runDesktop(
     log: reportEvent,
     ipcMain,
     downloads,
+    dictation,
     passwords: {
       open: () => passwords.open(),
       signIns: passwordsSignIns,

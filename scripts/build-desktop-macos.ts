@@ -186,6 +186,7 @@ if (unsigned) {
   });
   await desktop("exec", "tsx", "scripts/build-personal-runtime.ts");
   await desktop("build:passwords-broker");
+  await desktop("build:dictation-helper");
   await desktop("package:mac");
 }
 await writeFile(

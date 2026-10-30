@@ -15,7 +15,8 @@
     "./display-stream": "./src/display-stream.ts",
     "./editing": "./src/editing.ts",
     "./passwords-broker": "./src/passwords-broker.ts",
-    "./passkeys": "./src/passkeys.ts"
+    "./passkeys": "./src/passkeys.ts",
+    "./dictation-helper": "./src/dictation-helper.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -40,6 +40,7 @@ export interface DesktopBridgeOptions {
     sender: Pick<WebContents, "send" | "once" | "removeListener" | "isDestroyed">,
   ) => boolean;
   readonly passkeys?: Pick<DesktopPasskeyRequests, "available" | "present">;
+  readonly dictation?: import("../dictation/dictation-service.js").DictationService;
   readonly downloads: Pick<DesktopDownloads, "snapshot" | "subscribe" | "open" | "show" | "cancel">;
   readonly log?: (
     event: string,
