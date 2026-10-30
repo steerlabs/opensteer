@@ -67,6 +67,14 @@ describe("NativeOAuthManager", () => {
       accountOrigin: null,
       accountSessions: fixture.accountSessions,
       catalog: fixture.catalog,
+      now: () => fixture.clock.now,
+      fetch: async () =>
+        Response.json({
+          access_token: "refreshed-access-token-0123456789",
+          refresh_token: "refreshed-refresh-token-0123456789",
+          expires_in: 3600,
+          token_type: "Bearer",
+        }),
       oauth: {
         application: "desktop",
         clientId: "opensteer-desktop",
@@ -93,8 +101,15 @@ describe("NativeOAuthManager", () => {
     release.resolve();
     await initializing;
     expect(owner.hostViewLoginId(fixture.connection)).toBeUndefined();
+    fixture.clock.now = new Date("2026-08-11T20:00:02.000Z");
+    vi.spyOn(fixture.store, "setHost").mockRejectedValueOnce(new Error("Keychain locked"));
+    await owner.authorizationHeader(fixture.connection);
+    // Bootstrap can succeed with the rotated token while its first write is pending.
     await owner.initializeViewLoginIds(fixture.connection, () => true);
     expect(owner.hostViewLoginId(fixture.connection)).toEqual(expect.any(String));
+    const loginId = owner.hostViewLoginId(fixture.connection);
+    await owner.authorizationHeader(fixture.connection);
+    expect((await fixture.store.load()).hosts[0]?.viewLoginId).toBe(loginId);
     const write = vi.spyOn(fixture.store, "setHost").mockClear();
     await owner.initializeViewLoginIds(fixture.connection, () => true);
     expect(write).not.toHaveBeenCalled();

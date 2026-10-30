@@ -918,6 +918,16 @@ async function world(
     drafts,
     getSnapshot: () => state,
     openDeployment: async () => undefined,
+    // No saved view on this phone: every surface is waiting for the live Host.
+    savedViews: {
+      getDeploymentId: () => null,
+      getSnapshot: () => ({
+        home: { source: "pending" },
+        tasks: { source: "pending" },
+        failure: null,
+      }),
+      subscribe: () => () => undefined,
+    },
     sidebar: { read: async () => false, write: async () => undefined },
     subscribe: () => () => undefined,
   } as unknown as MobileClient;
