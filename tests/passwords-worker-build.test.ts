@@ -17,6 +17,7 @@ it("keeps sandbox worker identity independent of the outer release version", asy
     );
     for (const name of [
       "build-passwords-broker.ts",
+      "build-swift-products.ts",
       "macos-release-identity.cjs",
       "signing-input.cjs",
     ])
