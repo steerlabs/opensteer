@@ -1371,12 +1371,15 @@ export const RunnerIntegrationsModuleSchema = z.object({
    * Absent on an older Runner, which is never sent a frame it cannot parse.
    */
   computerAppApprovals: z.literal(true).optional(),
-  /** Exact-window video through the canonical helper and authenticated binary attachment. */
+  /**
+   * The person's input into exact Mac app windows, shared with the agent's
+   * actions. Only version 2 is understood; the exclusive version 1 is disabled.
+   */
   macOwnerInputVersion: z
     .number()
     .int()
     .positive()
-    .transform((version) => (version === 1 ? version : undefined))
+    .transform((version) => (version === 2 ? version : undefined))
     .optional(),
   macWindowVideoVersion: z
     .number()
@@ -1393,6 +1396,16 @@ export const RunnerIntegrationsModuleSchema = z.object({
     .optional(),
   /** Android display editing. A Host confirms support on display.start before new frames flow. */
   editing: z
+    .number()
+    .int()
+    .positive()
+    .transform((version) => (version === 1 ? version : undefined))
+    .optional(),
+  /**
+   * Android accepts the person's display input alongside the agent's acts,
+   * with no Take over. A Host confirms it on display.start before sending input.
+   */
+  sharedInput: z
     .number()
     .int()
     .positive()
