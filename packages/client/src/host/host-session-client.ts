@@ -3540,16 +3540,9 @@ export class HttpHostClient {
       if (!retainedBrowserSessionIds.has(sessionId))
         this.#setBrowserFrame(sessionId, null, "watch");
     }
-    for (const id of this.#retainedWorkspaceTabLineages.keys()) {
-      if (payload.browser.workspaceTabs?.some((group) => group.id === id)) continue;
-      await this.readWorkspaceTabs(id);
-      if (
-        this.#disposed ||
-        this.#snapshot.user?.id !== payload.user.id ||
-        this.#snapshot.deploymentId !== payload.deploymentId
-      )
-        return;
-    }
+    const retainedCatalogIds = [...this.#retainedWorkspaceTabLineages.keys()].filter(
+      (id) => !payload.browser.workspaceTabs?.some((group) => group.id === id),
+    );
     this.#update({
       ...this.#snapshot,
       browserProfileGrants: payload.browser.profileGrants.map((grant) => ({ ...grant })),
@@ -3608,38 +3601,6 @@ export class HttpHostClient {
       workspaceWindow: payload.workspaceWindow,
       workspaces,
     });
-    // Catalogs omitted by the bootstrap byte budget are read explicitly. Realtime
-    // starts after this response, so a best-effort notice cannot fill this gap.
-    for (const group of payload.browser.workspaceTabs ?? []) {
-      if (group.tabs) continue;
-      const recovered = unwrapRpcResult(
-        await this.rpc["workspace.tabs.get"]({ groupId: group.id }),
-      );
-      if (
-        this.#disposed ||
-        this.#snapshot.user?.id !== payload.user.id ||
-        this.#snapshot.deploymentId !== payload.deploymentId
-      )
-        return;
-      this.#update({
-        ...this.#snapshot,
-        workspaceTabs: this.#snapshot.workspaceTabs?.map((held) =>
-          held.id === recovered.id && recovered.revision >= held.revision ? recovered : held,
-        ),
-      });
-    }
-    for (const session of payload.browser.sessions) {
-      if (session.tabCatalog) continue;
-      const result = unwrapRpcResult(await this.rpc["browser.tabs.get"]({ sessionId: session.id }));
-      if (
-        this.#disposed ||
-        this.#snapshot.user?.id !== payload.user.id ||
-        this.#snapshot.deploymentId !== payload.deploymentId
-      )
-        return;
-      const catalog = this.#acceptCatalog(session.id, result);
-      if (catalog) this.#patchBrowserSession(session.id, { tabCatalog: catalog });
-    }
     // A patch older than this read is already in what it answered.
     for (const [sessionId, mark] of this.#presenceMarks) {
       if (mark > presenceMark) continue;
@@ -3661,6 +3622,51 @@ export class HttpHostClient {
     if (this.#activeThreadId) this.#ensureBrowserUsage(this.#activeThreadId, "missing");
     for (const threadId of this.#observedThreads.keys())
       this.#ensureBrowserUsage(threadId, "missing");
+
+    // Catalog omission is explicit: recover every gap, after primary startup,
+    // even if one sibling read fails. Realtime may deliver newer revisions first.
+    const recoveryGeneration = this.#viewerGeneration;
+    const current = () =>
+      this.#viewerStillCurrent(recoveryGeneration, payload.user.id) &&
+      this.#snapshot.deploymentId === payload.deploymentId;
+    const catalogReads: (() => Promise<void>)[] = retainedCatalogIds.map((id) => async () => {
+      await this.readWorkspaceTabs(id);
+    });
+    for (const group of payload.browser.workspaceTabs ?? []) {
+      if (group.tabs) continue;
+      catalogReads.push(async () => {
+        const recovered = unwrapRpcResult(
+          await this.rpc["workspace.tabs.get"]({ groupId: group.id }),
+        );
+        if (!current()) return;
+        this.#update({
+          ...this.#snapshot,
+          workspaceTabs: this.#snapshot.workspaceTabs?.map((held) =>
+            held.id === recovered.id && recovered.revision >= held.revision ? recovered : held,
+          ),
+        });
+      });
+    }
+    for (const session of payload.browser.sessions) {
+      if (session.tabCatalog) continue;
+      catalogReads.push(async () => {
+        const result = unwrapRpcResult(
+          await this.rpc["browser.tabs.get"]({ sessionId: session.id }),
+        );
+        if (!current()) return;
+        const catalog = this.#acceptCatalog(session.id, result);
+        if (catalog) this.#patchBrowserSession(session.id, { tabCatalog: catalog });
+      });
+    }
+    const failures: unknown[] = [];
+    for (let offset = 0; offset < catalogReads.length; offset += 3) {
+      if (!current()) return;
+      const results = await Promise.allSettled(
+        catalogReads.slice(offset, offset + 3).map((read) => read()),
+      );
+      for (const result of results) if (result.status === "rejected") failures.push(result.reason);
+    }
+    if (failures.length) throw failures[0];
   }
 
   #startRefresh(): void {
