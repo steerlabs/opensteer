@@ -308,6 +308,8 @@ existing journey unless a new native flow needs its own. Each VM run costs minut
 pnpm test:vm -- --mobile bash scripts/test-macos-journeys.sh
 ```
 
+Signed desktop update proof for stable and Beta: `pnpm exec tsx scripts/public-download/eu-run.ts /absolute/prepared-inputs` runs the GitHub-provider journeys in fresh clones. Set `OPENSTEER_UPDATE_JOURNEY_DIR` to an absolute work directory; see [build preparation and evidence](../scripts/public-download/README.md).
+
 See [VM operation, payloads and goldens](../scripts/test-vm/README.md).
 
 ### Shared streamed editing

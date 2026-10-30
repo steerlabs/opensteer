@@ -319,6 +319,7 @@ const cases: [string, string[], string, boolean][] = [
   ),
   ["bootstrap", ["--mobile-golden", "--tooling-inputs", "INPUT"], "normal", true],
   ["job", ["--mobile", "--revision", sha, "true"], "job", true],
+  ["inputs", ["--mobile", "--inputs", "INPUT", "--revision", sha, "true"], "job", true],
   ["dirty-job", ["--mobile", "--revision", sha, "true"], "dirty", false],
   ["retention", ["--mobile", "--revision", sha, "true"], "retention", true],
 ];
@@ -331,6 +332,13 @@ for (const [name, args, scenario, success] of cases.filter(
   try {
     const r = await journey(name, args, scenario);
     assert.equal(r.code === 0, success, r.log);
+    if (name === "inputs") {
+      const boot = r.observed.calls.find((c) => c[0] === "tart" && c[1] === "run");
+      assert.ok(
+        boot?.some((arg) => arg.startsWith("--dir=inputs:") && arg.endsWith(":ro")),
+        "input share must be read only",
+      );
+    }
     const cloned = r.observed.calls.find((c) => c[0] === "tart" && c[1] === "clone");
     if (["partial", "provision", "verify", "floor", "cancel"].includes(name)) {
       assert.ok(cloned, "failure must reach lifecycle");
