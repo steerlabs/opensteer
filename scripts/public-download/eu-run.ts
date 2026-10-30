@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { journeySigning } from "./signing.js";
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -10,18 +11,11 @@ const release = z.object({ version: z.string(), revision: z.string().regex(/^[a-
 const input = z
   .object({ n: release, next: release })
   .parse(JSON.parse(readFileSync(path.join(inputs, "input.json"), "utf8")));
-const names = [
-  "stable:menu",
-  "beta:menu",
-  "stable:tray",
-  "stable:quit",
-  "beta:quit",
-  "stable:negative",
-  "beta:negative",
-] as const;
+const names = ["stable:menu", "beta:menu", "stable:tray", "stable:quit", "beta:quit"] as const;
 const selected = process.argv[3]
   ? z.array(z.enum(names)).parse(process.argv[3].split(","))
   : [...names];
+const metadata = journeySigning().metadata;
 const work = journeyWorkDirectory();
 const out = path.join(work, "e2e", new Date().toISOString().replaceAll(":", "-"));
 mkdirSync(out, { recursive: true });
@@ -62,6 +56,7 @@ const save = () =>
       {
         scope: "electron-updater-github-two-channels",
         input,
+        metadata,
         builds,
         selected,
         results,
@@ -88,6 +83,7 @@ const one = async (name: (typeof names)[number]) => {
       "../../scripts/public-download/eu-guest.ts",
       `eu-${scenario}`,
       channel!,
+      JSON.stringify(metadata),
     ],
     { signal: stop.signal, stdio: ["ignore", "pipe", "pipe"] },
   );

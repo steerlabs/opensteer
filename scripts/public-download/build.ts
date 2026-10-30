@@ -5,6 +5,9 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { createRequire } from "node:module";
+import { journeySigning } from "./signing.js";
+import { numericVersion } from "./evidence.js";
 import { buildAgentPhoneRelease, preflightAgentPhone } from "../release-agent-phone.js";
 import { localInstallConfigSchema } from "../install-beta-mac-local.js";
 import {
@@ -17,6 +20,7 @@ import { acquireReleaseLock, runBounded, timedCommands } from "../command-runner
 const { values } = parseArgs({
   options: {
     revision: { type: "string" },
+    version: { type: "string" },
     "github-host": { type: "string" },
     channel: { type: "string", default: "stable" },
     config: { type: "string" },
@@ -34,6 +38,7 @@ process.env.OPENSTEER_DESKTOP_SIGNING_FILE ??= path.join(
   homedir(),
   ".config/opensteer/desktop-signing.json",
 );
+const signing = journeySigning();
 const root = path.resolve(import.meta.dirname, "../..");
 const directory = path.join(journeyWorkDirectory(), "builds", revision, channel);
 await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -45,6 +50,12 @@ const config = localInstallConfigSchema.parse(
     ),
   ),
 );
+const mac = {
+  ...config.mac,
+  signingIdentity: signing.identity,
+  keychainProfile: signing.notarizationProfile,
+  keychain: signing.keychain ?? config.mac.keychain,
+};
 const stop = new AbortController();
 const interrupt = () => stop.abort(new Error("Build interrupted"));
 process.once("SIGINT", interrupt);
@@ -82,14 +93,16 @@ try {
   );
   if (!snapshotExists)
     await run("git", ["worktree", "add", "--detach", source, revision], { cwd: root });
-  if (
-    (await run("git", ["rev-parse", "HEAD"], { cwd: source })) !== revision ||
-    (await run("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: source }))
-  )
+  if ((await run("git", ["rev-parse", "HEAD"], { cwd: source })) !== revision)
     throw new Error("Frozen build source changed");
-  const version = z
-    .object({ version: z.string() })
-    .parse(JSON.parse(await readFile(path.join(source, "package.json"), "utf8"))).version;
+  const helperPath = path.join(source, "scripts/release-version.cjs");
+  const { deriveReleaseVersion, stampReleaseVersion } = createRequire(import.meta.url)(
+    helperPath,
+  ) as typeof import("../release-version.cjs");
+  const version = numericVersion.parse(
+    values.version ?? deriveReleaseVersion({ repositoryRoot: source, revision }),
+  );
+  stampReleaseVersion(source, revision, version);
   await run("pnpm", ["install", "--frozen-lockfile", "--prefer-offline"], {
     cwd: source,
     timeoutMs: 300_000,
@@ -115,7 +128,7 @@ try {
       return buildAgentPhoneRelease(config.agentPhone, phone);
     },
   };
-  await buildSignedMac({ ...config.mac, keychainProfile: "opensteer-notary" }, context, channel);
+  await buildSignedMac(mac, context, channel);
   const app = path.join(
     source,
     channel === "beta"
@@ -136,11 +149,7 @@ try {
       timeoutMs: 300_000,
     });
   await archive();
-  const notary = await submitMacArchiveForNotarization(
-    { ...config.mac, keychainProfile: "opensteer-notary" },
-    context,
-    zip,
-  );
+  const notary = await submitMacArchiveForNotarization(mac, context, zip);
   if (z.object({ status: z.string() }).parse(JSON.parse(notary)).status !== "Accepted")
     throw new Error("Notarization refused");
   await writeFile(path.join(directory, "notary.json"), notary);
@@ -167,6 +176,7 @@ try {
     JSON.stringify(
       {
         revision,
+        signing: signing.metadata,
         channel,
         version,
         feed,

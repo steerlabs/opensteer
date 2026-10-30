@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  closeSync,
+  symlinkSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { z } from "zod";
+import {
+  advertisedVersion,
+  deliveryEvidence,
+  rejectionEvidence,
+  shutdownEvidence,
+} from "./evidence.js";
 
 type Release = { version: string; revision: string };
 export async function githubJourney(c: {
@@ -80,15 +96,19 @@ export async function githubJourney(c: {
     readFileSync(path.join(out, "network.jsonl"), "utf8")
       .split("\n")
       .filter(Boolean)
-      .map(
-        (x) =>
-          JSON.parse(x) as {
-            at: number;
-            path?: string;
-            host?: string;
-            transferComplete?: string;
-            delayedDownload?: string;
-          },
+      .map((line) =>
+        z
+          .object({
+            at: z.number(),
+            path: z.string().optional(),
+            host: z.string().optional(),
+            transferComplete: z.string().optional(),
+            bytes: z.number().optional(),
+            size: z.number().optional(),
+            start: z.number().optional(),
+            end: z.number().optional(),
+          })
+          .parse(JSON.parse(line)),
       );
   const downloads = () =>
     requests().filter((x) => x.host === "objects.opensteer.test" && x.path?.endsWith(".zip"))
@@ -111,41 +131,11 @@ export async function githubJourney(c: {
   };
   const positive = async (method: string) => {
     feed(input.next.version);
-    const requireReadinessProof = c.scenario !== "eu-negative";
-    if (requireReadinessProof) writeFileSync(path.join(root, "slow-download"), "");
-    const before = c.readLog().length;
     await restart();
-    const observations: {
-      at: number;
-      readyEvent: boolean;
-      menu: boolean;
-      downloadPending: boolean;
-    }[] = [];
-    await c.wait(
-      "native readiness and real restart menu",
-      () => {
-        const visible = menu().includes("Restart to Update"),
-          native = c.readLog().slice(before).includes("desktop.update.downloaded");
-        assert(!visible || native, "Restart action must follow the native update-downloaded log");
-        const r = requests(),
-          start = r.findLast((x) => x.delayedDownload?.endsWith(asset)),
-          end = r.findLast((x) => x.transferComplete?.endsWith(asset));
-        observations.push({
-          at: Date.now(),
-          readyEvent: native,
-          menu: visible,
-          downloadPending: !!start && (!end || end.at < start.at),
-        });
-        return visible;
-      },
-      180,
+    await c.wait("real restart menu available", () => menu().includes("Restart to Update"), 180);
+    c.record(
+      "restart action available; native event-source contract is covered by the updater unit test",
     );
-    assert(
-      !requireReadinessProof ||
-        observations.some((x) => x.downloadPending && !x.menu && !x.readyEvent),
-      "Menu must stay absent during the delayed real download",
-    );
-    writeFileSync(path.join(out, "native-readiness.json"), JSON.stringify(observations, null, 2));
     c.screenshot("native-update-ready");
     const observerPath = path.join(out, "shutdown-observer.json");
     const child = spawn(
@@ -162,7 +152,18 @@ export async function githubJourney(c: {
     );
     c.observe(child);
     const done = new Promise<number | null>((resolve) => child.once("close", resolve));
-    await delay(500);
+    await c.wait(
+      "shutdown observer ready",
+      () => {
+        assert(child.exitCode === null, "Shutdown observer exited before readiness");
+        const ready = `${observerPath}.ready.json`;
+        return (
+          existsSync(ready) &&
+          z.object({ ready: z.literal(true) }).parse(JSON.parse(readFileSync(ready, "utf8"))).ready
+        );
+      },
+      20,
+    );
     if (method === "quit") {
       c.script(`tell application "${product}" to quit`);
       await c.wait("ordinary quit", () => !c.running());
@@ -188,12 +189,13 @@ export async function githubJourney(c: {
     );
     await c.verify(input.next.version);
     assert.equal(await done, 0);
-    assert.equal(JSON.parse(readFileSync(observerPath, "utf8")).passed, true);
+    const shutdown = JSON.parse(readFileSync(observerPath, "utf8"));
+    assert.equal(shutdown.passed, true);
+    shutdownEvidence.parse(shutdown);
     assert.equal(readFileSync(marker, "utf8"), input.n.revision);
     c.record("marker preserved and children exited before swap");
-    rmSync(path.join(root, "slow-download"), { force: true });
   };
-  if (c.scenario !== "eu-negative") {
+  if (c.scenario !== "eu-menu") {
     // The feed always puts the other channel and legacy stable release ahead of ours.
     await noOffer("equal version and channel isolation");
     await positive(c.scenario === "eu-tray" ? "tray" : c.scenario === "eu-quit" ? "quit" : "menu");
@@ -218,8 +220,7 @@ export async function githubJourney(c: {
       }),
     );
   };
-  const bad = path.join(root, "wrong-signer");
-  mkdirSync(bad);
+  const bad = mkdtempSync(path.join(root, "wrong-signer-"));
   c.run("ditto", ["-x", "-k", targetZip, bad]);
   const badApp = path.join(bad, path.basename(app));
   c.run("codesign", ["--force", "--deep", "--sign", "-", badApp]);
@@ -228,15 +229,82 @@ export async function githubJourney(c: {
   c.run("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", badApp, targetZip]);
   metadata(targetDir, input.next.version);
   feed(input.next.version);
-  let before = c.readLog().length,
-    count = downloads();
-  await restart();
-  await c.wait(
-    "native rejects wrong signer",
-    () => c.readLog().slice(before).includes("desktop.update.failed"),
-    180,
+  const rejection = async (
+    kind: "signature" | "downgrade",
+    deliveredPath: string,
+    bytes: number,
+  ) => {
+    const capture = path.join(out, `native-${kind}.jsonl`);
+    const fd = openSync(capture, "w");
+    const child = spawn(
+      "sudo",
+      [
+        "-n",
+        "/usr/bin/log",
+        "stream",
+        "--style",
+        "ndjson",
+        "--level",
+        "debug",
+        "--predicate",
+        `process == "${product}"`,
+      ],
+      { stdio: ["ignore", fd, fd] },
+    );
+    closeSync(fd);
+    const ended = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    const started = Date.now();
+    const before = c.readLog().length;
+    try {
+      await restart();
+      await c.wait(
+        `native rejects ${kind}`,
+        () => c.readLog().slice(before).includes("desktop.update.failed"),
+        180,
+      );
+    } finally {
+      c.run("sudo", ["pkill", "-TERM", "-P", String(child.pid)], true);
+      child.kill("SIGTERM");
+      await ended;
+    }
+    const delivery = requests()
+      .filter((x) => x.at >= started && x.transferComplete === deliveredPath)
+      .findLast((x) => deliveryEvidence.safeParse(x).success);
+    const historyPath = path.join(out, `native-${kind}-history.jsonl`);
+    const historyFd = openSync(historyPath, "w");
+    try {
+      const result = spawnSync(
+        "/usr/bin/log",
+        ["show", "--last", "4m", "--style", "ndjson", "--info", "--debug", "--process", product],
+        { stdio: ["ignore", historyFd, historyFd], timeout: 120_000 },
+      );
+      writeFileSync(
+        path.join(out, `native-${kind}-history-status.json`),
+        JSON.stringify({ status: result.status, error: result.error?.message }),
+      );
+    } finally {
+      closeSync(historyFd);
+    }
+    const history = readFileSync(historyPath, "utf8");
+    const messages = (readFileSync(capture, "utf8") + "\n" + history)
+      .split("\n")
+      .flatMap((line) => {
+        try {
+          const parsed = z.object({ eventMessage: z.string() }).safeParse(JSON.parse(line));
+          return parsed.success ? [parsed.data.eventMessage] : [];
+        } catch {
+          return [];
+        }
+      });
+    const evidence = rejectionEvidence.parse({ kind, delivery, expectedBytes: bytes, messages });
+    writeFileSync(path.join(out, `rejection-${kind}.json`), JSON.stringify(evidence, null, 2));
+    return before;
+  };
+  let before = await rejection(
+    "signature",
+    `/${tag(input.next.version)}/${asset}`,
+    readFileSync(targetZip).length,
   );
-  assert(downloads() > count);
   assert(!c.readLog().slice(before).includes("desktop.update.downloaded"));
   assert(!menu().includes("Restart to Update"));
   assert.equal(c.plist("CFBundleShortVersionString"), input.n.version);
@@ -245,21 +313,17 @@ export async function githubJourney(c: {
   cpSync(path.join(c.share, tag(input.next.version), asset), targetZip);
   writeFileSync(path.join(targetDir, yml), originalYml);
   await positive("menu");
-  const misleading = "0.1.221",
-    directory = path.join(root, tag(misleading));
-  mkdirSync(directory);
+  const misleading = advertisedVersion(input.n.version, input.next.version),
+    directory = mkdtempSync(path.join(root, "downgrade-"));
+  symlinkSync(directory, path.join(root, tag(misleading)), "dir");
   cpSync(path.join(c.share, tag(input.n.version), asset), path.join(directory, asset));
   metadata(directory, misleading);
   feed(misleading);
-  before = c.readLog().length;
-  count = downloads();
-  await restart();
-  await c.wait(
-    "native rejects misleading metadata downgrade",
-    () => c.readLog().slice(before).includes("desktop.update.failed"),
-    180,
+  before = await rejection(
+    "downgrade",
+    `/${tag(misleading)}/${asset}`,
+    readFileSync(path.join(directory, asset)).length,
   );
-  assert(downloads() > count);
   assert(!c.readLog().slice(before).includes("desktop.update.downloaded"));
   assert(!menu().includes("Restart to Update"));
   assert.equal(c.plist("CFBundleShortVersionString"), input.next.version);

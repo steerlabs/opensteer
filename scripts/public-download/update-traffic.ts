@@ -1,5 +1,5 @@
-/** Packet fields contain DNS, HTTP Host and TLS SNI, including unsuccessful attempts. */
-export function forbiddenUpdateHosts(
+/** Detect named public update hosts in guest-wide DNS/HTTP/TLS capture, without process attribution or an arbitrary-host allowlist claim. */
+export function forbiddenPublicUpdateHosts(
   records: readonly string[],
   since: number,
   beta: boolean,

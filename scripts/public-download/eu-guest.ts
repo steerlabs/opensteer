@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { forbiddenUpdateHosts } from "./update-traffic.js";
+import { journeyMetadata } from "./evidence.js";
+import { forbiddenPublicUpdateHosts } from "./update-traffic.js";
 import { githubJourney } from "./eu-journey.js";
 import { personalEndpoint } from "./personal-endpoint.js";
 import { captureTraffic } from "./traffic.js";
@@ -12,6 +13,7 @@ import { z } from "zod";
 
 const share = "/Volumes/My Shared Files/inputs";
 assert(existsSync(share), "Run only through pnpm test:vm -- --inputs DIR");
+const metadata = journeyMetadata.parse(JSON.parse(process.argv[4]!));
 const githubChannel = z.enum(["stable", "beta"]).parse(process.argv[3]);
 const product = githubChannel === "beta" ? "Opensteer Beta" : "Opensteer";
 // Electron keeps the durable runtime name used by existing profiles.
@@ -19,7 +21,7 @@ const runtimeName = product.replace(/^Opensteer/u, `Open${"S"}teer`);
 const bundleId =
   githubChannel === "beta" ? "com.steerlabs.opensteer.beta" : "com.opensteer.opensteer";
 process.env.OPENSTEER_JOURNEY_BUNDLE_ID = bundleId;
-const scenario = z.enum(["eu-menu", "eu-tray", "eu-quit", "eu-negative"]).parse(process.argv[2]);
+const scenario = z.enum(["eu-menu", "eu-tray", "eu-quit"]).parse(process.argv[2]);
 const release = z.object({
   version: z.string().regex(/^\d+\.\d+\.\d+$/u),
   revision: z.string().regex(/^[a-f0-9]{40}$/u),
@@ -123,7 +125,7 @@ const verify = async (version: string, target = app) => {
     "--verify",
     "--deep",
     "--strict",
-    `-R=anchor apple generic and identifier "${bundleId}" and certificate leaf[subject.OU] = "B47U2LLKHW"`,
+    `-R=anchor apple generic and identifier "${bundleId}" and certificate leaf[subject.OU] = "${metadata.expectedTeamId}"`,
     target,
   ]);
   run("xcrun", ["stapler", "validate", target]);
@@ -310,25 +312,32 @@ try {
   }
   const network = readFileSync(log, "utf8");
   let packetPassed = false;
-  let updateTrafficPassed = false;
+  let publicUpdateHostsAbsent = false;
   let accountHostRequests: string[] = [];
   try {
     const result = await finishCapture?.(trafficSince);
     packetPassed = !!result && (githubChannel === "beta" || result.forbidden.length === 0);
     accountHostRequests = result?.forbidden ?? [];
     if (result) {
-      const outside = forbiddenUpdateHosts(result.records, trafficSince, githubChannel === "beta");
+      const outside = forbiddenPublicUpdateHosts(
+        result.records,
+        trafficSince,
+        githubChannel === "beta",
+      );
       const updatePolicy = readFileSync(
         path.join(app, "Contents/Resources/app-update.yml"),
         "utf8",
       );
-      updateTrafficPassed = outside.length === 0 && updatePolicy.includes("github.opensteer.test");
+      publicUpdateHostsAbsent =
+        outside.length === 0 && updatePolicy.includes("github.opensteer.test");
       writeFileSync(
         path.join(out, "update-traffic.json"),
         JSON.stringify(
           {
-            passed: updateTrafficPassed,
+            passed: publicUpdateHostsAbsent,
             forbiddenPublicUpdateHosts: outside,
+            claim:
+              "Guest-wide capture excludes named public GitHub/Opensteer update hosts; it does not attribute arbitrary destinations to the updater or enforce a destination allowlist.",
             permittedBetaAccountHosts:
               githubChannel === "beta"
                 ? ["accounts.beta.opensteer.com", "beta.opensteer.com", "portal.beta.opensteer.com"]
@@ -353,7 +362,8 @@ try {
     !network.includes('"forbiddenDns":') &&
     !network.includes('"sinkholeConnection":true') &&
     !/"(?:httpHost|tlsSni)":"[^" ]*opensteer\.com"/iu.test(network);
-  if ((githubChannel !== "beta" && !noAccountTraffic) || !updateTrafficPassed) process.exitCode = 1;
+  if ((githubChannel !== "beta" && !noAccountTraffic) || !publicUpdateHostsAbsent)
+    process.exitCode = 1;
   writeFileSync(path.join(out, "desktop.log"), readLog());
   writeFileSync(
     path.join(out, "journey.json"),
@@ -361,15 +371,16 @@ try {
       {
         scenario,
         channel: githubChannel,
-        updateTrafficPassed,
+        publicUpdateHostsAbsent,
         accountHostRequests,
         noAccountTrafficRequired: githubChannel !== "beta",
         scope: "desktop-update",
         input,
+        metadata,
         steps,
         error,
         noAccountTraffic,
-        passed: !error && (githubChannel === "beta" || noAccountTraffic) && updateTrafficPassed,
+        passed: !error && (githubChannel === "beta" || noAccountTraffic) && publicUpdateHostsAbsent,
         updaterEvents: readLog()
           .split("\n")
           .filter((x) => /updat|ShipIt/iu.test(x)),

@@ -80,17 +80,24 @@ const server = createServer({ cert: readFileSync(cert), key: readFileSync(key) }
       res.statusCode = 404;
       res.end();
     });
-    const send = () => stream.pipe(res);
-    stream.on("end", () =>
+    let bytes = 0;
+    stream.on("data", (chunk) => {
+      bytes += chunk.length;
+    });
+    res.on("finish", () =>
       appendFileSync(
         log,
-        JSON.stringify({ at: Date.now(), transferComplete: url.pathname }) + "\n",
+        JSON.stringify({
+          at: Date.now(),
+          transferComplete: url.pathname,
+          bytes,
+          size,
+          start,
+          end,
+        }) + "\n",
       ),
     );
-    if (!range && match[2]!.endsWith(".zip") && existsSync(path.join(root, "slow-download"))) {
-      appendFileSync(log, JSON.stringify({ at: Date.now(), delayedDownload: url.pathname }) + "\n");
-      setTimeout(send, 8000);
-    } else send();
+    stream.pipe(res);
     return;
   }
   res.writeHead(404);

@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { journeyWorkDirectory } from "./work-directory.js";
+import { journeySigning } from "./signing.js";
 import path from "node:path";
 import { z } from "zod";
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -19,33 +20,30 @@ for (const revision of revisions) {
       .parse(JSON.parse(readFileSync(path.join(directory, "build.json"), "utf8")));
     version = build.version;
     const extracted = mkdtempSync(path.join(directory, "archive-verification-"));
-    execFileSync("ditto", ["-x", "-k", build.zip, extracted]);
-    const app = path.join(extracted, channel === "stable" ? "Opensteer.app" : "Opensteer Beta.app");
-    const missing = execFileSync("find", [app, "!", "-perm", "-u+w"], { encoding: "utf8" });
-    if (missing) throw new Error(`Archive contains non-owner-writable entries: ${missing}`);
-    const codesign = execFileSync("codesign", ["--verify", "--deep", "--strict", app], {
-      encoding: "utf8",
-    });
-    const staple = execFileSync("xcrun", ["stapler", "validate", app], { encoding: "utf8" });
-    writeFileSync(
-      path.join(directory, "archive-check.json"),
-      JSON.stringify(
-        {
-          sha256: createHash("sha256").update(readFileSync(build.zip)).digest("hex"),
-          ownerWriteCheck: {
-            command: "find Opensteer.app ! -perm -u+w",
-            stdout: missing,
-            passed: true,
+    try {
+      execFileSync("ditto", ["-x", "-k", build.zip, extracted]);
+      const app = path.join(
+        extracted,
+        channel === "stable" ? "Opensteer.app" : "Opensteer Beta.app",
+      );
+      const missing = execFileSync("find", [app, "!", "-perm", "-u+w"], { encoding: "utf8" });
+      if (missing) throw Error(`Archive contains non-owner-writable entries: ${missing}`);
+      writeFileSync(
+        path.join(directory, "archive-check.json"),
+        JSON.stringify(
+          {
+            sha256: createHash("sha256").update(readFileSync(build.zip)).digest("hex"),
+            ownerWriteCheck: { stdout: missing, passed: true },
           },
-          codesign,
-          staple,
-          extracted,
-        },
-        null,
-        2,
-      ),
-    );
-    execFileSync(
+          null,
+          2,
+        ),
+      );
+    } finally {
+      rmSync(extracted, { recursive: true, force: true });
+    }
+    // The real prepare owns signature, identity, staple and Gatekeeper verification.
+    const prepared = spawnSync(
       "pnpm",
       [
         "desktop:public-release",
@@ -64,13 +62,22 @@ for (const revision of revisions) {
         "https://github.opensteer.test/steerlabs/opensteer/releases/download",
         "--allow-private-feed",
       ],
-      { cwd: path.join(directory, "source"), stdio: "inherit" },
+      { cwd: path.join(directory, "source"), encoding: "utf8" },
     );
+    writeFileSync(
+      path.join(directory, "prepare-verification.json"),
+      JSON.stringify(
+        { status: prepared.status, stdout: prepared.stdout, stderr: prepared.stderr },
+        null,
+        2,
+      ),
+    );
+    if (prepared.status !== 0) throw Error(prepared.stderr || "Release prepare failed");
   }
   input.push({ version, revision });
 }
 writeFileSync(
   path.join(out, "input.json"),
-  JSON.stringify({ n: input[0], next: input[1] }, null, 2),
+  JSON.stringify({ n: input[0], next: input[1], metadata: journeySigning().metadata }, null, 2),
 );
 console.log(out);

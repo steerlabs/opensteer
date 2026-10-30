@@ -1,4 +1,4 @@
-import { forbiddenUpdateHosts } from "../scripts/public-download/update-traffic.js";
+import { forbiddenPublicUpdateHosts } from "../scripts/public-download/update-traffic.js";
 import { personalEndpoint } from "../scripts/public-download/personal-endpoint.js";
 import { test, expect } from "vitest";
 import { spawn, execFileSync } from "node:child_process";
@@ -189,7 +189,7 @@ test("public update hosts are forbidden on both channels while staging Account i
     packet("release-assets.githubusercontent.com"),
     packet("downloads.opensteer.com"),
   ];
-  expect(forbiddenUpdateHosts(records, 99, false)).toHaveLength(4);
-  expect(forbiddenUpdateHosts(records, 99, true)).toHaveLength(3);
-  expect(forbiddenUpdateHosts(records, 101, true)).toHaveLength(0);
+  expect(forbiddenPublicUpdateHosts(records, 99, false)).toHaveLength(4);
+  expect(forbiddenPublicUpdateHosts(records, 99, true)).toHaveLength(3);
+  expect(forbiddenPublicUpdateHosts(records, 101, true)).toHaveLength(0);
 });
