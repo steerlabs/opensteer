@@ -403,6 +403,7 @@ async function reclaimUnlocked(options: VmRetention): Promise<number> {
         await attempt("release", release.target, async () => {
           canonical(options.state, release.target);
           const files = assertTree(options.state, release.target);
+          const isReferenced = releaseReferenceCheck(references.texts, release.target, files);
           const identities = releaseIdentities(release.target, release.version);
           if (!identities) throw new Error("release identity unknown");
           const coordinators: number[] = [];
@@ -446,7 +447,7 @@ async function reclaimUnlocked(options: VmRetention): Promise<number> {
                 !/(?:^|\/)(?:source|mac|mac-state|phone|agent-phone|infra)\//u.test(relative)
               )
                 continue;
-              if (referenced(filename, release.target, references.texts)) continue;
+              if (isReferenced(filename)) continue;
               canonical(options.state, filename);
               const count = stats.nlink === 1 ? stats.blocks * 512 : 0;
               if (!options.dryRun) rmSync(filename);
@@ -813,9 +814,11 @@ function releaseReferences(state: string): { texts: string[]; unreadable?: strin
             if (!count) break;
             const text = carry + decoder.write(buffer.subarray(0, count));
             // JSON permits escaped slashes and Unicode in path values. Keep the
-            // original too: free-form notes can contain literal backslashes.
+            // original too: free-form notes can contain literal backslashes. Only
+            // JSON's own escapes are decoded; "\T" in a binary record would throw
+            // and leave every release artifact unreclaimed.
             const decoded = text.replace(
-              /\\(?:["\\/bfnrt]|u[0-9a-f]{4})/giu,
+              /\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/gu,
               (escape) => JSON.parse(`"${escape}"`) as string,
             );
             if (text.includes("release-")) texts.push(text);
@@ -834,30 +837,60 @@ function releaseReferences(state: string): { texts: string[]; unreadable?: strin
   return { texts };
 }
 
-function referenced(filename: string, releaseRoot: string, texts: readonly string[]): boolean {
-  const relative = path.relative(path.dirname(releaseRoot), filename);
-  if (texts.some((text) => text.includes(filename) || text.includes(relative))) return true;
-  for (
-    let directory = path.dirname(filename);
-    directory.startsWith(releaseRoot);
-    directory = path.dirname(directory)
-  ) {
-    const relativeDirectory = path.relative(path.dirname(releaseRoot), directory);
-    if (
-      texts.some((text) =>
-        [directory, relativeDirectory].some(
-          (value) =>
-            ['"', "'", "\n", " ", ")", ",", "} "].some(
-              (end) => text.includes(value + end) || text.includes(value + path.sep + end),
-            ) ||
-            text.endsWith(value) ||
-            text.endsWith(value + path.sep),
-        ),
-      )
-    )
-      return true;
-  }
-  return false;
+/**
+ * Whether reference records name a release file, or a directory above it followed by a
+ * terminator or the end of a record. A file's absolute path contains its path relative to
+ * the release's parent, so only that relative form is looked up. What follows each mention
+ * of the release directory is sorted once, so each file costs a few binary searches instead
+ * of a scan of every record at every ancestor (minutes per release).
+ */
+export function releaseReferenceCheck(
+  texts: readonly string[],
+  releaseRoot: string,
+  files: readonly string[],
+): (filename: string) => boolean {
+  const parent = path.dirname(releaseRoot);
+  const name = path.basename(releaseRoot);
+  // The longest lookup is a relative directory, a separator and a two-character terminator.
+  // A loop, not a spread: a release holds more files than one call takes arguments.
+  let longest = name.length;
+  for (const file of files) longest = Math.max(longest, path.relative(parent, file).length);
+  const length = longest + 3;
+  const mentions: string[] = [];
+  const endings = new Set<string>();
+  for (const text of texts)
+    for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
+      mentions.push(text.slice(at, at + length));
+      if (at + length >= text.length) endings.add(text.slice(at));
+    }
+  mentions.sort();
+  const mentioned = (prefix: string) => {
+    let low = 0;
+    let high = mentions.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (mentions[middle]! < prefix) low = middle + 1;
+      else high = middle;
+    }
+    return low < mentions.length && mentions[low]!.startsWith(prefix);
+  };
+  return (filename) => {
+    if (mentioned(path.relative(parent, filename))) return true;
+    for (
+      let directory = path.dirname(filename);
+      directory.startsWith(releaseRoot);
+      directory = path.dirname(directory)
+    ) {
+      const relative = path.relative(parent, directory);
+      for (const value of [relative, relative + path.sep])
+        if (
+          endings.has(value) ||
+          ['"', "'", "\n", " ", ")", ",", "} "].some((end) => mentioned(value + end))
+        )
+          return true;
+    }
+    return false;
+  };
 }
 
 function completedRelease(directory: string): boolean {
