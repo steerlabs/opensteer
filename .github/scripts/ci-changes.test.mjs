@@ -22,6 +22,16 @@ test("ordinary docs skip heavy lanes but shipped skill markdown does not", () =>
   assert.equal(decide(["docs/a.md", "README.md"], graph).lanes.tests, false);
   assert.equal(decide(["apps/runner/agent-skills/skills/a.md"], graph).lanes.tests, true);
 });
+test("contributor skills and agent settings select only lint", () => {
+  const plan = decide([".agents/skills/a/SKILL.md", ".claude/skills", "docs/a.md"], graph);
+  assert.equal(plan.full, false);
+  assert.deepEqual(
+    Object.entries(plan.lanes)
+      .filter(([, selected]) => selected)
+      .map(([lane]) => lane),
+    ["lint"],
+  );
+});
 test("unknown/root/config/lock/toolchain and malformed diff fail open", () => {
   for (const file of [
     "unknown",

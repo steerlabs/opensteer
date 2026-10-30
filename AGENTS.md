@@ -167,9 +167,14 @@ as `.claude/skills/`.
 
 ## Pull requests
 
-- Work in your own worktree on a small branch. Open one PR per change on
-  [steerlabs/opensteer](https://github.com/steerlabs/opensteer) with a
+- Work in your own worktree. **One request is one PR** on
+  [steerlabs/opensteer](https://github.com/steerlabs/opensteer), with a
   conventional title (`fix:`, `feat:`, `docs:`, `refactor:`, `test:`, `chore:`).
+  Split it only where part needs Tim's approval or a reviewer couldn't follow it
+  as one change. A bug you find along the way is its own PR.
+- When you split a request across agents, they commit to one branch and you
+  open one PR. Every PR runs CI on one shared queue, so a dozen small PRs block
+  everyone's checks for hours.
 - The body says what changed and why, the evidence, and any checks you couldn't
   run.
 - After pushing, call `watch_pull_request` and end your turn; you're woken on

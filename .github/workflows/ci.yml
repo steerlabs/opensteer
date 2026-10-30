@@ -71,6 +71,8 @@ jobs:
           {
             pnpm format:check
             pnpm lint
+            # Prose guards: docs-only changes run no test lane, so lint carries them.
+            pnpm exec vitest run tests/product-name-spelling.test.ts
             node --test .github/scripts/*.test.mjs
             node .github/scripts/fork-safety.mjs .github/workflows/ci.yml
           } 2>&1 | tee "$RUNNER_TEMP/evidence/lint.log"

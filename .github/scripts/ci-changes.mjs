@@ -91,6 +91,9 @@ const docs = (p) =>
   (p.startsWith("docs/") ||
     /^[^/]+\.md$/.test(p) ||
     /^(LICENSE|NOTICE|THIRD_PARTY_NOTICES)(\.[^/]*)?$/.test(p));
+// Contributor guidance: agent instructions and skills for working on this repo.
+// Nothing builds, ships or tests them, so they select no lane beyond lint.
+const guidance = (p) => /^\.(agents|claude)\//.test(p);
 const global = (p) =>
   /(^|\/)(package\.json|tsconfig[^/]*|vitest[^/]*|.*config\.[^/]+)$/.test(p) ||
   /^(\.github\/|scripts\/|tests\/|patches\/|pnpm-|\.npmrc|\.pnpmfile|go\.(work|mod|sum)|Cargo\.)/.test(
@@ -175,7 +178,7 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
   let androidSource = false;
   if (full) reasons.push("main/manual full run");
   for (const file of files) {
-    if (docs(file)) continue;
+    if (docs(file) || guidance(file)) continue;
     if (rootTest(file)) {
       rootTests.any = true;
       if (/\.integration\.test\./.test(file)) rootTests.integration = true;
