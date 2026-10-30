@@ -1704,16 +1704,21 @@ func TestSSHSessionRequestRefusalsAndChannelLimit(t *testing.T) {
 	if _, _, err := client.OpenChannel("unknown-opensteer-test", nil); err == nil {
 		t.Fatal("unknown channel type was accepted")
 	}
+	// The server frees a command channel's slot after its close reply has gone
+	// out, so the session above may still count the exec channel. A fresh
+	// session counts only the channels opened here.
+	limitClient, closeLimitClient := fixture.goSSHClient(t)
+	defer closeLimitClient()
 	channels := make([]ssh.Channel, 0, maxShellChannels)
 	for index := 0; index < maxShellChannels; index++ {
-		opened, requestStream, err := client.OpenChannel("session", nil)
+		opened, requestStream, err := limitClient.OpenChannel("session", nil)
 		if err != nil {
 			t.Fatalf("open channel %d: %v", index, err)
 		}
 		channels = append(channels, opened)
 		go ssh.DiscardRequests(requestStream)
 	}
-	if overflow, _, err := client.OpenChannel("session", nil); err == nil {
+	if overflow, _, err := limitClient.OpenChannel("session", nil); err == nil {
 		_ = overflow.Close()
 		t.Fatal("65th channel was accepted")
 	}
