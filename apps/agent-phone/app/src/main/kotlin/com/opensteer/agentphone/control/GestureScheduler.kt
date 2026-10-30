@@ -53,13 +53,17 @@ class GestureScheduler(private val clock: GestureClock, private val dispatch: (G
         if (producer == Producer.PERSON && active && this.producer == Producer.AGENT) cancel { start() }
         else start()
     }
-    /** Whole agent gestures share the continued-contact coordinator, including taps and swipes. */
-    fun agent(segments: List<GestureSegment>, admit: () -> Unit, done: (Result) -> Unit, refused: (Exception) -> Unit = { throw it }) = clock.post {
+    /**
+     * Whole agent gestures share the continued-contact coordinator, including taps and swipes.
+     * `admit` decides the whole gesture once; `authority` is asked again before each later stroke,
+     * such as a double tap's second, and needs no time beyond what is left of the gesture.
+     */
+    fun agent(segments: List<GestureSegment>, admit: () -> Unit, done: (Result) -> Unit, refused: (Exception) -> Unit = { throw it },
+        authority: () -> Boolean = { true }) = clock.post {
         if (active || inFlight) { done(if (producer == Producer.PERSON) Result.PERSON_CONTACT else Result.INTERRUPTED); return@post }
         try { admit() } catch (error: Exception) { refused(error); return@post }
         val first = segments.first()
-        // Each later stroke, such as a double tap's second, is admitted again before it is sent.
-        begin(first.points.first(), { runCatching(admit).isSuccess }, clock.now(), Producer.AGENT)
+        begin(first.points.first(), authority, clock.now(), Producer.AGENT)
         completion = { done(if (it) Result.DONE else Result.INTERRUPTED) }
         agentSegments.addAll(segments.drop(1))
         emit(first)

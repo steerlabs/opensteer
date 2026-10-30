@@ -18,10 +18,22 @@ class GestureSchedulerTest {
         var withdrawn = false
         val scheduler = GestureScheduler(clock) { segment, done -> segments += segment; withdrawn = true; done(true) }
         scheduler.agent(List(2) { GestureSegment(listOf(DisplayPoint(50, 50)), 50, false, true) },
-            { check(!withdrawn) { "Stopped" } }, { result = it })
+            {}, { result = it }, authority = { !withdrawn })
         clock.advance()
         assertEquals(GestureScheduler.Result.INTERRUPTED, result)
         assertEquals(1, segments.size)
+    }
+    @Test fun aDoubleTapIsNotAdmittedAgainForTimeItHasAlreadySpent() {
+        val clock = Clock(); val segments = ArrayList<GestureSegment>(); var result: GestureScheduler.Result? = null
+        var admissions = 0
+        val scheduler = GestureScheduler(clock) { segment, done -> segments += segment; done(true) }
+        // Admission wants the whole gesture's time: once the first tap is spent it would refuse.
+        scheduler.agent(List(2) { GestureSegment(listOf(DisplayPoint(50, 50)), 50, false, true) },
+            { check(admissions++ == 0) { "Not enough time for the whole double tap" } }, { result = it }, authority = { true })
+        clock.advance()
+        assertEquals(GestureScheduler.Result.DONE, result)
+        assertEquals(2, segments.size)
+        assertEquals(1, admissions)
     }
     @Test fun personResetDropsFractionalScrollEvenWithoutAnActiveContact() {
         val clock = Clock(); val segments = ArrayList<GestureSegment>()
