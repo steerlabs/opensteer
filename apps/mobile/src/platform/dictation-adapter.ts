@@ -17,20 +17,31 @@ export interface NativeDictation {
 
 export function createDictationPort(native: NativeDictation): DictationPort {
   let active: { session: string; seq: number } | null = null;
+  // Expo async functions can enter Swift out of order. Acceptance must precede cancellation.
+  let accepted: Promise<void> = Promise.resolve();
+  const dispatch = (work: () => Promise<void>): Promise<void> => {
+    const result = accepted.then(work);
+    accepted = result.catch(() => {});
+    return result;
+  };
   const command = async (kind: "start" | "download", session: string): Promise<void> => {
     DictationSessionIdSchema.parse(session);
     active = { session, seq: 0 };
-    await native[kind](session);
+    await dispatch(() => native[kind](session));
   };
   return {
     availability: async () =>
       DictationAvailabilitySchema.parse(JSON.parse(await native.availability())),
     start: (session) => command("start", session),
     download: (session) => command("download", session),
-    stop: async (session) => native.stop(DictationSessionIdSchema.parse(session)),
+    stop: async (session) => {
+      const id = DictationSessionIdSchema.parse(session);
+      await dispatch(() => native.stop(id));
+    },
     cancel: async (session) => {
       if (active?.session === session) active = null;
-      await native.cancel(DictationSessionIdSchema.parse(session));
+      const id = DictationSessionIdSchema.parse(session);
+      await dispatch(() => native.cancel(id));
     },
     openMicrophoneSettings: () => native.openMicrophoneSettings(),
     subscribe: (listener) => {
@@ -62,7 +73,7 @@ export function createDictationPort(native: NativeDictation): DictationPort {
           const session = active;
           active = null;
           if (!session) return;
-          void native.cancel(session.session).catch(() => {});
+          void dispatch(() => native.cancel(session.session)).catch(() => {});
           listener({
             type: "ended",
             session: session.session,

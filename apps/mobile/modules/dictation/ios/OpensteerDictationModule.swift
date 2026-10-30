@@ -24,13 +24,11 @@ public final class OpensteerDictationModule: Module {
     }
     AsyncFunction("start") { (session: String) async throws in
       let runtime = await self.getRuntime()
-      await runtime.begin(session)
-      try await runtime.service.start(session: session)
+      try await runtime.start(session, download: false)
     }
     AsyncFunction("download") { (session: String) async throws in
       let runtime = await self.getRuntime()
-      await runtime.begin(session)
-      try await runtime.service.download(session: session)
+      try await runtime.start(session, download: true)
     }
     AsyncFunction("stop") { (session: String) async in
       let runtime = await MainActor.run { self.runtime }
@@ -48,6 +46,7 @@ public final class OpensteerDictationModule: Module {
 
 @MainActor private final class DictationRuntime {
   private var state = DictationLifecycle()
+  private var destroyed = false
   private var observer: NSObjectProtocol?
   private var background: UIBackgroundTaskIdentifier = .invalid
   private let emit: (String) -> Void
@@ -63,7 +62,12 @@ public final class OpensteerDictationModule: Module {
       Task { @MainActor [weak self] in self?.interrupt() }
     }
   }
-  func begin(_ session: String) { state.begin(session) }
+  func start(_ session: String, download: Bool) async throws {
+    guard !destroyed else { throw DictationError.serviceUnavailable }
+    state.begin(session)
+    if download { try await service.download(session: session) }
+    else { try await service.start(session: session) }
+  }
   func stop(_ session: String) async {
     if state.session == session { restoreIdleTimer() }
     await service.stop(session: session)
@@ -100,6 +104,7 @@ public final class OpensteerDictationModule: Module {
     if background != .invalid { UIApplication.shared.endBackgroundTask(background); background = .invalid }
   }
   func destroy() async {
+    destroyed = true
     if let observer { NotificationCenter.default.removeObserver(observer) }
     if let session = state.session {
       if let previous = state.ended(session) { UIApplication.shared.isIdleTimerDisabled = previous }

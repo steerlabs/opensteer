@@ -67,9 +67,27 @@ describe("mobile dictation boundary", () => {
     b.emit(bad);
     await expect(finish).resolves.toEqual({ kind: "failed" });
     expect(text).toBe("hello");
-    expect(b.native.cancel).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(b.native.cancel).toHaveBeenCalledOnce());
     expect(controller.getSnapshot().notice?.kind).toBe("service-unavailable");
     controller.dispose();
+  });
+  it("accepts start before sending an immediate cancel to Swift", async () => {
+    const b = bridge();
+    let acknowledge!: () => void;
+    b.native.start = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+    const started = b.port.start(id);
+    const cancelled = b.port.cancel(id);
+    await Promise.resolve();
+    expect(b.native.start).toHaveBeenCalledWith(id);
+    expect(b.native.cancel).not.toHaveBeenCalled();
+    acknowledge();
+    await Promise.all([started, cancelled]);
+    expect(b.native.cancel).toHaveBeenCalledWith(id);
   });
   it("retains delivered tentative words if the iOS background task expires", async () => {
     const b = bridge();
