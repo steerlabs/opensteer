@@ -4,3 +4,4 @@ export * from "./use-thread-input-queue.js";
 export * from "./use-conversation-surfaces.js";
 export * from "./use-places.js";
 export * from "./use-action-review.js";
+export * from "./use-voice-snapshot.js";

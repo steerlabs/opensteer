@@ -459,9 +459,15 @@ export function ThreadIntegrationAction({
       ? plan.requirement.provider
       : null;
   const availability = provider ? connectAvailability(loaded.dashboard, provider) : null;
-  // Registering a sign-in app is part of connecting, so only a surface that may
-  // not launch authorization at all takes the connect action away.
-  const connectPossible = availability === null || availability.kind !== "other-surface";
+  // An MCP server's sign-in returns to the Host's own callback, which only a
+  // browser on that computer reaches; the Host refuses to begin one from here.
+  const mcpElsewhere =
+    plan.requirement.kind === "mcp-oauth" &&
+    loaded.platform.authorizationSurface === "personal-remote";
+  // Registering a sign-in app is part of connecting, so only a device that can
+  // finish no sign-in takes the connect action away.
+  const connectPossible =
+    !mcpElsewhere && (availability === null || availability.kind !== "other-surface");
   const canConnectAccount = connectPossible && accountConnectable(plan);
   const hasAccount = plan.accounts.length > 0;
   const apiKeyMethod = plan.apiKeyMethod;
@@ -786,6 +792,11 @@ export function ThreadIntegrationAction({
           {plan.writeCount > 0
             ? `This task requires read-write access, including ${changingOperationCount(plan.writeCount)}.`
             : "This task requires read-write access. It allows changes when operations become available."}
+        </ActionNote>
+      ) : null}
+      {mcpElsewhere ? (
+        <ActionNote>
+          This sign-in returns to the computer running Opensteer, so finish it there.
         </ActionNote>
       ) : null}
       {availability && availability.kind !== "ready" ? (

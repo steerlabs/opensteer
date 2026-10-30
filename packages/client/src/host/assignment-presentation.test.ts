@@ -5,8 +5,8 @@ import type { DelegationEntry } from "./client.js";
 import {
   assignmentPresentation,
   delegationPresentation,
-  taskGroupSummary,
   taskRowNote,
+  tasksUnderWay,
   type AssignmentPresentation,
 } from "./assignment-presentation.js";
 
@@ -100,35 +100,29 @@ describe("taskRowNote", () => {
   });
 });
 
-// Failure modes: a group hides that one of its tasks needs the reader or
-// failed behind the ones that finished, counts a word its rows never say, or
-// pulses for work that is not moving.
-describe("taskGroupSummary", () => {
-  it("counts each word, what asks for the reader first", () => {
-    const summary = taskGroupSummary([
-      presented("Finished", "completed"),
-      presented("Working", "working", true),
-      presented("Finished", "completed"),
+// Failure modes: a conversation's menu lists another conversation's tasks or
+// finished ones, or its lines swap places as their states change.
+describe("tasksUnderWay", () => {
+  it("lists only this conversation's open tasks, in the order it handed them out", () => {
+    const parentThreadId = open.parentThreadId;
+    const at = (minute: number) => new Date(Date.UTC(2026, 9, 30, 15, minute)).toISOString();
+    const task = (id: string, createdAt: string, change: Partial<AssignmentSummary> = {}) => ({
+      ...open,
+      createdAt,
+      id: id as AssignmentSummary["id"],
+      ...change,
+    });
+    const assignments = {
+      later: task("later", at(5)),
+      earlier: task("earlier", at(1)),
+      finished: task("finished", at(2), { finishedAt: at(3), status: "completed" }),
+      elsewhere: task("elsewhere", at(0), {
+        parentThreadId: "thr_elsewhere" as AssignmentSummary["parentThreadId"],
+      }),
+    };
+    expect(tasksUnderWay(parentThreadId, assignments).map(({ id }) => id)).toEqual([
+      "earlier",
+      "later",
     ]);
-    expect(summary.label).toBe("3 tasks");
-    expect(summary.parts).toEqual([
-      { moving: false, text: "2 finished", tone: "completed" },
-      { moving: true, text: "1 working", tone: "working" },
-    ]);
-  });
-
-  it("puts a question and a failure before the rest, in words that agree", () => {
-    const summary = taskGroupSummary([
-      presented("Working", "working"),
-      presented("Couldn’t finish", "failed"),
-      presented("Needs you", "waiting"),
-      presented("Needs you", "waiting"),
-    ]);
-    expect(summary.parts.map(({ text }) => text)).toEqual([
-      "2 need you",
-      "1 couldn’t finish",
-      "1 working",
-    ]);
-    expect(summary.parts.find(({ tone }) => tone === "working")?.moving).toBe(false);
   });
 });

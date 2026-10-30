@@ -1,5 +1,6 @@
 export * from "./access-request.js";
 export * from "./account-identity.js";
+export * from "./account-status.js";
 export * from "./authorization-outcome.js";
 export * from "./bundled-icons.js";
 export * from "./connect-selection.js";
@@ -15,6 +16,8 @@ export type {
   // these through the one integrations surface they already import.
   IntegrationAccess,
   IntegrationConnectionSummary,
+  IntegrationDashboard,
+  IntegrationPlatformDashboardView,
   IntegrationDefinitionSummary,
   IntegrationDefinitionSummaryView,
   IntegrationAuthorizationStatus,
@@ -31,3 +34,4 @@ export {
 export { apiKeyDisclosure, connectableApiKeyMethod } from "./api-key.js";
 export * from "./phone-display-stream.js";
 export * from "./display-editing.js";
+export * from "./display-input.js";

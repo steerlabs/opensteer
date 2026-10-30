@@ -119,7 +119,11 @@ test("provisioned release entitlements admit only the verified app identity", ()
       identity?: { bundleId: string; teamId: string },
     ): void;
   };
-  const entitlements = { "com.apple.security.cs.allow-jit": true, ...profile().Entitlements };
+  const entitlements = {
+    "com.apple.security.cs.allow-jit": true,
+    "com.apple.security.device.audio-input": true,
+    ...profile().Entitlements,
+  };
   expect(() => validateReleaseEntitlements(entitlements)).toThrow();
   expect(() => validateReleaseEntitlements(entitlements, identity)).not.toThrow();
   expect(() =>

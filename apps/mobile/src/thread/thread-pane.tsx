@@ -18,6 +18,7 @@ import {
   threadRequester,
   threadStopTarget,
   turnFolds,
+  turnWords,
   visibleTranscript,
   withoutOwnAssignment,
   type HostClient,
@@ -71,7 +72,7 @@ import { AppText, Notice, TypingDots } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
-import { TaskScopeContext, type TaskScope } from "./task-line.js";
+import { TaskScopeContext, ThreadMark, type TaskScope } from "./task-line.js";
 import {
   sameTaskHeading,
   sameTaskOutcomes,
@@ -1427,6 +1428,7 @@ function ThreadPaneForUser(
               )}
               <Composer
                 variant={conversational ? "conversation" : "work"}
+                voice={isHome}
                 accessMode={thread.accessMode}
                 accessModes={placement?.accessModes ?? null}
                 canRespond={canRespond}
@@ -1562,6 +1564,7 @@ function ThreadHeader(props: {
           style={({ pressed }) => [styles.requester, pressed && styles.requesterPressed]}
         >
           <Symbol name="chevron.left" size={11} tint={color.muted} />
+          <ThreadMark threadId={requester.threadId} />
           <AppText numberOfLines={1} role="caption" style={styles.requesterTitle} tone="muted">
             {requester.title}
           </AppText>
@@ -1645,8 +1648,8 @@ function linkedPlace(
     group?.kind === "message" ||
     (!view.conversational &&
       group?.kind === "turn" &&
-      group.turn.reply?.id !== entryId &&
-      turnFolds(group.turn))
+      turnFolds(group.turn) &&
+      !turnWords(group.turn).some(({ id }) => id === entryId))
       ? group.key
       : null;
   return { activityKey, index, openKey };

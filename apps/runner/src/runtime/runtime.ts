@@ -1,3 +1,5 @@
+import { VoiceCalls } from "../voice/voice-calls.js";
+import { isCodexVoiceAdapter } from "@opensteer/harness-codex";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
@@ -25,6 +27,7 @@ import {
   utf8HeadAndTail,
   utf8Prefix,
   type ContentPart,
+  type UserId,
   type RequestPresentation,
   type HarnessId,
   type HarnessInstanceId,
@@ -70,6 +73,8 @@ import {
   type RunnerHarnessDriver,
   type RunnerCommand,
   type RunnerOperationalReport,
+  type RunnerVoiceCommand,
+  type RunnerVoiceResult,
 } from "@opensteer/protocol";
 import type { TriggerExecutionOutput } from "@opensteer/triggers";
 import type { ProviderContinuationIdentityProjector } from "@opensteer/runner-client";
@@ -342,6 +347,7 @@ export class RunnerRuntime {
   readonly #machineAccess: RunnerRuntimeOptions["machineAccess"];
   readonly #mode: RuntimeMode;
   readonly #privateStateDirectory: string;
+  readonly #voice: VoiceCalls;
   readonly #modelServerHome: string | undefined;
   readonly #projectContinuationIdentity: ProviderContinuationIdentityProjector;
   readonly #programExecutor: Pick<TriggerProgramExecutor, "execute">;
@@ -427,6 +433,35 @@ export class RunnerRuntime {
     this.#machineAccess = options.machineAccess;
     this.#mode = options.mode ?? "development";
     this.#privateStateDirectory = resolve(options.privateStateDirectory);
+    this.#voice = new VoiceCalls(
+      join(this.#privateStateDirectory, "voice"),
+      async ({ harnessInstanceId, offer, signal, directory }) => {
+        const definition = this.#harnesses.state(harnessInstanceId)?.definition;
+        if (!definition || definition.driverKind !== "codex")
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "voice-account-unavailable",
+            message: "Voice requires a Codex account.",
+          });
+        const adapter = await this.#harnesses.adapter(harnessInstanceId);
+        if (!isCodexVoiceAdapter(adapter))
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "voice-engine-unsupported",
+            message: "This Codex driver does not support voice.",
+          });
+        const options = await this.#providerStateOptions(definition.driverKind);
+        const { providerState } = await prepareHarnessProviderState(definition, options);
+        return adapter.startVoiceCall({
+          offer,
+          signal,
+          environment: options.environment,
+          providerState,
+          runtimeBoundary: this.#harnessRuntimeBoundary,
+          workingDirectory: directory,
+        });
+      },
+    );
     this.#modelServerHome = options.modelServerHome;
     this.#projectContinuationIdentity = options.projectContinuationIdentity;
     this.#programExecutor =
@@ -449,6 +484,10 @@ export class RunnerRuntime {
       options.containment ??
       new ExecutionContainment({ bootId: options.bootId, dataDirectory: options.dataDirectory });
     this.#warm = new WarmEnginePool({ retire: (engine) => this.#retireWarmEngine(engine) });
+  }
+
+  voice(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
+    return this.#voice.handle(userId, command);
   }
 
   activeRunIds(): readonly RunId[] {
@@ -1362,6 +1401,7 @@ export class RunnerRuntime {
 
   async close(): Promise<void> {
     this.#draining = true;
+    const voiceClosed = this.#voice.close();
     this.#stopLeaseWatchdog?.();
     this.#stopLeaseWatchdog = undefined;
     this.#harnessAuthenticationLifetime.abort(new Error("Runner is shutting down"));
@@ -1373,11 +1413,12 @@ export class RunnerRuntime {
     for (const active of this.#triggerPrograms.values()) {
       active.abort.abort(new Error("Runner is shutting down"));
     }
-    await Promise.allSettled(
-      [...this.#runs.values(), ...this.#triggerPrograms.values()].flatMap((active) =>
+    await Promise.allSettled([
+      voiceClosed,
+      ...[...this.#runs.values(), ...this.#triggerPrograms.values()].flatMap((active) =>
         active.task ? [active.task] : [],
       ),
-    );
+    ]);
     await this.#watchSupervisor.close();
     await settlesWithin([...this.#harnessAuthenticationStartups], runtimeTaskStopWaitMs);
     await settlesWithin([this.#warm.close()], runtimeTaskStopWaitMs);

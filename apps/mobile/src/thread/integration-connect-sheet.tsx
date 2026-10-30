@@ -231,7 +231,13 @@ export function IntegrationConnectSheet(props: {
   const reconnect =
     plan !== null && plan.requestedAccountMissing ? plan.requestedAccountReconnect : null;
   const unavailable = plan !== null && plan.requestedAccountMissing && reconnect === null;
+  // An MCP server's sign-in returns to the Host's own callback, which only a
+  // browser on that computer reaches; the Host refuses to begin one from here.
+  const mcpElsewhere =
+    plan?.requirement.kind === "mcp-oauth" &&
+    loaded?.platform.authorizationSurface === "personal-remote";
   const connectable =
+    !mcpElsewhere &&
     plan !== null &&
     accountConnectable(plan) &&
     (plan.requestedConnectionId === null || reconnect !== null) &&
@@ -906,9 +912,13 @@ export function IntegrationConnectSheet(props: {
             computerAvailable={(computerChoices?.available.length ?? 0) > 0}
             computerUpgrade={computerUpgrade}
             availabilityDetail={
-              availability !== undefined && availability !== null && availability.kind !== "ready"
-                ? availability.detail
-                : null
+              mcpElsewhere
+                ? mcpSignInElsewhere
+                : availability !== undefined &&
+                    availability !== null &&
+                    availability.kind !== "ready"
+                  ? availability.detail
+                  : null
             }
             agentProposed={props.request.presentation.agentProposed === true}
             onAccount={setAccountId}
@@ -1472,6 +1482,9 @@ function OwnAppStep(props: {
     </>
   );
 }
+
+const mcpSignInElsewhere =
+  "This sign-in returns to the computer running Opensteer, so finish it there.";
 
 function RepositoryAccessStep({
   access,

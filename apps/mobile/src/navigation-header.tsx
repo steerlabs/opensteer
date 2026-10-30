@@ -8,7 +8,7 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, Text, View, type HostInstance } from "react-native";
 import { BrowserButton } from "./browser/browser-button.js";
 import { agentWorkingLabel } from "./browser/acting-dot.js";
-import { useSidebarControl, useSidebarDock } from "./sidebar/sidebar-context.js";
+import { useSidebarControl, useSidebarDocked } from "./sidebar/sidebar-context.js";
 import { color, headerFontScaleLimit, radius, space, touchTarget } from "./theme.js";
 import { useHostValue } from "./ui/mobile-client-context.js";
 import { AppText } from "./ui/primitives.js";
@@ -32,7 +32,6 @@ export type HeaderActionSpec = {
     | "line.3.horizontal"
     | "plus"
     | "rectangle.on.rectangle"
-    | "sidebar.left"
     | "square.and.pencil"
     | "xmark";
   readonly label: string;
@@ -124,7 +123,8 @@ const selectAttention = (snapshot: HostSnapshot): number =>
   attentionCount(snapshot.waitingRequests);
 
 /**
- * Puts the Menu in the leading slot of a sidebar destination's bar.
+ * Puts the Menu in the leading slot of a sidebar destination's bar, where the
+ * sidebar is a drawer.
  *
  * iOS draws it as a native bar item; Android draws the same symbol as a
  * 48-point React control, which is also a view the sidebar can hand
@@ -133,25 +133,30 @@ const selectAttention = (snapshot: HostSnapshot): number =>
  * It carries the number of questions waiting on the reader, in the amber the
  * sidebar marks each of their tasks with: a question asked in some task is
  * otherwise invisible from Chat until the sidebar happens to be opened.
+ * Docked, the sidebar is in view with those marks on its rows, so the slot is
+ * empty: there is nothing to open, and the destination has no Back.
  */
 export function useSidebarMenu(hostClient: HostClient | null): void {
   const navigation = useNavigation();
   const sidebar = useSidebarControl();
-  const dock = useSidebarDock();
+  const docked = useSidebarDocked();
   const attention = useHostValue(hostClient, selectAttention, 0);
   useLayoutEffect(() => {
     if (sidebar === null) return;
-    // Where the sidebar docks, the same control shows or hides the column, and
-    // its name says which; the questions waiting are in the column's rows then.
-    const label = dock === "shown" ? "Hide sidebar" : dock === "hidden" ? "Show sidebar" : "Menu";
+    if (docked) {
+      navigation.setOptions({
+        headerBackVisible: false,
+        headerLeft: () => null,
+        unstable_headerLeftItems: () => [],
+      });
+      return;
+    }
     const menu: HeaderActionSpec = {
-      ...(dock === "unavailable"
-        ? { accessibilityHint: "Shows Chat, your tasks, Specialists, Tabs and Settings" }
-        : {}),
-      accessibilityLabel: attention === 0 ? label : `${label}, ${attentionPhrase(attention)}`,
+      accessibilityHint: "Shows Chat, your tasks, Specialists, Tabs and Settings",
+      accessibilityLabel: attention === 0 ? "Menu" : `Menu, ${attentionPhrase(attention)}`,
       ...(attention === 0 ? {} : { badge: attentionBadge(attention) }),
-      icon: dock === "unavailable" ? "line.3.horizontal" : "sidebar.left",
-      label,
+      icon: "line.3.horizontal",
+      label: "Menu",
       onPress: () => sidebar.open(),
     };
     navigation.setOptions({
@@ -159,46 +164,7 @@ export function useSidebarMenu(hostClient: HostClient | null): void {
       headerLeft: () => <MenuHeaderButton {...menu} onOpen={sidebar.open} />,
       unstable_headerLeftItems: () => [nativeHeaderItem(menu)],
     });
-  }, [attention, dock, navigation, sidebar]);
-}
-
-/**
- * The docked sidebar's control over a task, search or specialist: Show or Hide
- * sidebar beside Back, where the window has room to dock it.
- *
- * Back stays: the control supplements it rather than replacing it, so the
- * screen is left the platform's way. On iOS it is a native bar item, so UIKit
- * can move it into the vertical bar with a label VoiceOver reads and a target
- * a keyboard reaches; Android draws the same symbol as a 48-point control.
- * Where the sidebar cannot dock there is nothing for it to do, and only Back
- * remains.
- */
-export function useSidebarToggle(): void {
-  const navigation = useNavigation();
-  const sidebar = useSidebarControl();
-  const dock = useSidebarDock();
-  useLayoutEffect(() => {
-    if (sidebar === null || dock === "unavailable") {
-      navigation.setOptions({
-        headerBackVisible: true,
-        headerLeft: undefined,
-        unstable_headerLeftItems: undefined,
-      });
-      return;
-    }
-    const label = dock === "shown" ? "Hide sidebar" : "Show sidebar";
-    const toggle: HeaderActionSpec = {
-      accessibilityLabel: label,
-      icon: "sidebar.left",
-      label,
-      onPress: () => sidebar.open(),
-    };
-    navigation.setOptions({
-      headerBackVisible: true,
-      headerLeft: () => <MenuHeaderButton {...toggle} onOpen={sidebar.open} />,
-      unstable_headerLeftItems: () => [nativeHeaderItem(toggle)],
-    });
-  }, [dock, navigation, sidebar]);
+  }, [attention, docked, navigation, sidebar]);
 }
 
 /** The count in words, for a screen reader: what the badge says by its number. */
@@ -224,11 +190,7 @@ function MenuHeaderButton(
       ref={button}
       style={styles.menu}
     >
-      <Symbol
-        name={props.icon === "sidebar.left" ? "sidebar.left" : "line.3.horizontal"}
-        size={22}
-        tint={color.text}
-      />
+      <Symbol name="line.3.horizontal" size={22} tint={color.text} />
       {props.badge === undefined ? null : (
         <View style={styles.menuBadge}>
           <Text allowFontScaling={false} style={styles.menuBadgeText}>

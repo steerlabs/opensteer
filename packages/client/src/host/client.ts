@@ -809,6 +809,8 @@ export interface HostSnapshot {
   searchSuggestionsAvailable?: boolean;
   iphoneAppsAvailable: boolean;
   ownerViewWindowsAvailable?: boolean;
+  /** The Host advertises voice-v1; absent on older Hosts. */
+  voiceAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;

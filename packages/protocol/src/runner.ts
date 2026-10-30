@@ -59,6 +59,12 @@ import {
 } from "@opensteer/triggers";
 import { WorkspaceExecutionAccessPlanSchema } from "@opensteer/workspace";
 import { z } from "zod";
+import {
+  VoiceSessionIdSchema,
+  VoiceSdpSchema,
+  VoiceSayTextSchema,
+  VoiceRefusalReasonSchema,
+} from "./voice.js";
 import { CorrelationIdSchema, ProtocolErrorSchema } from "./common.js";
 import {
   RunnerAuxiliaryModuleSchema,
@@ -1641,6 +1647,41 @@ const watchLogTailSchema = z
   .max(16 * 1_024)
   .refine((value) => utf8ByteLength(value) <= 16 * 1_024, "Watch log tail exceeds 16 KiB");
 
+export const RunnerVoiceCommandSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("start"),
+    sessionId: VoiceSessionIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+    offer: VoiceSdpSchema,
+  }),
+  z.strictObject({
+    action: z.literal("renew"),
+    sessionId: VoiceSessionIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+  }),
+  z.strictObject({
+    harnessInstanceId: HarnessInstanceIdSchema,
+    action: z.literal("say"),
+    sessionId: VoiceSessionIdSchema,
+    text: VoiceSayTextSchema,
+  }),
+  z.strictObject({
+    action: z.literal("stop"),
+    sessionId: VoiceSessionIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+  }),
+]);
+export type RunnerVoiceCommand = z.infer<typeof RunnerVoiceCommandSchema>;
+export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), answer: VoiceSdpSchema.optional() }),
+  z.strictObject({
+    ok: z.literal(false),
+    reason: VoiceRefusalReasonSchema,
+    message: z.string().min(1).max(500),
+  }),
+]);
+export type RunnerVoiceResult = z.infer<typeof RunnerVoiceResultSchema>;
+
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   ...RunnerWorkspaceLocalResultSchema.options,
   z.strictObject({
@@ -1826,6 +1867,12 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     requestId: CorrelationIdSchema,
     servers: z.array(ModelServerSchema).max(maxModelServers),
     type: z.literal("runner.model-servers"),
+  }),
+  z.strictObject({
+    ...fencedMessageBase,
+    type: z.literal("runner.voice"),
+    requestId: CorrelationIdSchema,
+    result: RunnerVoiceResultSchema,
   }),
 ]);
 export type RunnerOperationalMessage = z.infer<typeof RunnerOperationalMessageSchema>;
@@ -2047,6 +2094,13 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     address: z.string().trim().min(1).max(2_048).optional(),
     requestId: CorrelationIdSchema,
     type: z.literal("host.discover-model-servers"),
+  }),
+  z.strictObject({
+    ...fencedMessageBase,
+    type: z.literal("host.voice"),
+    requestId: CorrelationIdSchema,
+    userId: UserIdSchema,
+    command: RunnerVoiceCommandSchema,
   }),
   z.strictObject({
     type: z.literal("host.error"),

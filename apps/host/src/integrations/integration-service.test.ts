@@ -394,7 +394,8 @@ describe("IntegrationService fixed OAuth presets", () => {
           token_type: "Bearer",
         }),
       ),
-      publicUrl: new URL("https://opensteer.example.test"),
+      // A Personal Host's own callback is loopback, which a remote browser cannot reach.
+      publicUrl: new URL("http://127.0.0.1:4310"),
       repository,
       vault: {
         open: vi.fn(async () => ({ clientSecret: "client-secret" })),
@@ -871,10 +872,10 @@ describe("IntegrationService OAuth source authority", () => {
   it.each([
     {
       expectedAvailableKinds: ["hosted-oauth"],
-      expectedCode: "CANONICAL_SURFACE_REQUIRED",
+      expectedCode: "READY",
       expectedKind: "hosted-oauth",
       hosted: true,
-      name: "hands hosted OAuth authorization back to the owner computer",
+      name: "lets a Personal remote surface sign in through the Account service",
       posture: "account-linked-personal" as const,
       providerApplications: [],
       saved: {},
@@ -916,10 +917,10 @@ describe("IntegrationService OAuth source authority", () => {
       const authorization = dashboard.providerAuthorizations.example;
 
       expect(dashboard.authorizationSurface).toBe("personal-remote");
-      expect(authorization).toMatchObject({
-        code: expectedCode,
-        detail: canonicalAuthorizationRepair,
-      });
+      expect(authorization?.code).toBe(expectedCode);
+      if (expectedCode === "CANONICAL_SURFACE_REQUIRED") {
+        expect(authorization?.detail).toBe(canonicalAuthorizationRepair);
+      }
       // The administrator picker renders from these, so the surface must not blank them.
       expect(authorization?.availableSources.map(({ kind }) => kind)).toEqual(
         expectedAvailableKinds,
@@ -930,25 +931,6 @@ describe("IntegrationService OAuth source authority", () => {
       );
     },
   );
-
-  it("rejects hosted provider authorization from a Personal remote surface", async () => {
-    const service = oauthAuthorityService({
-      hosted: true,
-      posture: "account-linked-personal",
-      providerApplications: [],
-      saved: {},
-    });
-
-    await expect(
-      service.beginAuthorization({
-        definitionId: "example",
-        ownerUserId: createId("user"),
-        requestSurface: "personal-remote",
-        returnPath: "/integrations",
-        surface: "web",
-      }),
-    ).rejects.toMatchObject({ code: "canonical_surface_required" });
-  });
 
   it("projects stale pinned OAuth sources as needing attention before execution", async () => {
     const connection = IntegrationConnectionSummarySchema.parse({
@@ -1339,15 +1321,35 @@ describe("IntegrationService hosted OAuth failures", () => {
   });
 
   it.each([
-    { identity: "userinfo", ackFails: false, persists: true, pullFailure: null },
-    { identity: "token-response", ackFails: false, persists: true, pullFailure: null },
-    { identity: "userinfo", ackFails: true, persists: true, pullFailure: null },
-    { identity: "userinfo", ackFails: false, persists: false, pullFailure: null },
-    { identity: "userinfo", ackFails: false, persists: false, pullFailure: "expired" },
-    { identity: "userinfo", ackFails: false, persists: false, pullFailure: "client-rejected" },
+    { identity: "userinfo", ackFails: false, persists: true, pullFailure: null, remote: false },
+    {
+      identity: "token-response",
+      ackFails: false,
+      persists: true,
+      pullFailure: null,
+      remote: false,
+    },
+    { identity: "userinfo", ackFails: true, persists: true, pullFailure: null, remote: false },
+    { identity: "userinfo", ackFails: false, persists: false, pullFailure: null, remote: false },
+    {
+      identity: "userinfo",
+      ackFails: false,
+      persists: false,
+      pullFailure: "expired",
+      remote: false,
+    },
+    {
+      identity: "userinfo",
+      ackFails: false,
+      persists: false,
+      pullFailure: "client-rejected",
+      remote: false,
+    },
+    // A phone or another computer: the same sign-in, finished by its status poll.
+    { identity: "userinfo", ackFails: false, persists: true, pullFailure: null, remote: true },
   ] as const)(
-    "finishes from durable state: $identity, ACK failure=$ackFails, persisted=$persists, pull=$pullFailure",
-    async ({ identity, ackFails, persists, pullFailure }) => {
+    "finishes from durable state: $identity, ACK failure=$ackFails, persisted=$persists, pull=$pullFailure, remote=$remote",
+    async ({ identity, ackFails, persists, pullFailure, remote }) => {
       const ownerUserId = createId("user");
       const original = refreshDefinition();
       const definition =
@@ -1500,10 +1502,13 @@ describe("IntegrationService hosted OAuth failures", () => {
         applicationSource: "hosted-oauth",
         definitionId: definition.id,
         ownerUserId,
-        requestSurface: "canonical",
+        requestSurface: remote ? "personal-remote" : "canonical",
         returnPath: "/integrations",
         surface: "web",
       });
+      // A remote browser cannot open the loopback canonical origin, so the
+      // Account service ends that sign-in on its own page.
+      expect(brokerRequest.returnPath).toBe(remote ? undefined : "/integrations");
       broker.pull.mockRejectedValueOnce(new Error("lost broker response"));
       await expect(service.authorizationStatus({ attemptId, ownerUserId })).rejects.toThrow(
         "lost broker response",
@@ -2405,7 +2410,8 @@ function oauthAuthorityService(input: {
           }),
         }
       : {}),
-    publicUrl: new URL("https://host.example.test"),
+    // A Personal Host's canonical origin, which own apps return to.
+    publicUrl: new URL("http://127.0.0.1:4310"),
     repository: {
       listApplicationSourceDefaults: vi.fn(async () => input.saved),
       listConnections: vi.fn(async () => input.connections ?? []),

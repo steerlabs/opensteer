@@ -25,6 +25,8 @@ export interface SettingsFormActionHandlers {
   readonly onAccountAction: () => void;
   /** Absent while no Deployment is open: Chrome belongs to one. */
   readonly onChromeAction?: (() => void) | undefined;
+  /** Absent while no Deployment is open: its accounts belong to one. */
+  readonly onConnectedAppsAction?: (() => void) | undefined;
   readonly onComputerAction: (destination: ComputerSettingsDestination) => void;
   readonly onDeploymentAction: () => void;
   readonly onNotificationAction: () => void;

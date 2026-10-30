@@ -1,8 +1,10 @@
+import { configureDesktopPermissions } from "./media-permissions.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import {
   BaseWindow,
   BrowserWindow,
   WebContentsView,
+  systemPreferences,
   type BaseWindowConstructorOptions,
   type Event,
   type OnBeforeRequestListenerDetails,
@@ -50,21 +52,17 @@ export function desktopQuitShortcut(
   return input.type === "keyDown" && modifier && input.key.toLowerCase() === "q";
 }
 
-/**
- * The app session's permissions: WebUSB is the only one any page is given, and
- * `usbDevices` answers it; without it, every permission is refused.
- */
 export function configureDesktopSession(
   session: Session,
   policy: DesktopAppOriginPolicy,
   usbDevices: Pick<DesktopUsbDeviceAccess, "permitsRequest"> | null,
   downloads: Pick<DesktopDownloads, "accept">,
 ): void {
-  session.setPermissionCheckHandler(
-    (_webContents, permission, requestingOrigin) =>
-      permission === "usb" && usbDevices !== null && usbDevices.permitsRequest(requestingOrigin),
+  configureDesktopPermissions(session, policy, usbDevices, () =>
+    process.platform === "darwin"
+      ? systemPreferences.askForMediaAccess("microphone")
+      : Promise.resolve(true),
   );
-  session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   for (const preload of session.getPreloadScripts()) session.unregisterPreloadScript(preload.id);
   downloads.accept(session);
   session.webRequest.onBeforeRequest(

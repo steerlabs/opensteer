@@ -1,4 +1,4 @@
-import type { HostClient } from "@opensteer/client/host";
+import type { WorkspaceSurfaceDestination } from "@opensteer/client/host";
 import { CommonActions, StackActions, type NavigationAction } from "@react-navigation/native";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
@@ -37,22 +37,18 @@ import {
   useReservedRegionsReady,
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { paramsDestination, sameDestination, workspaceRoute } from "../browser/surface-route.js";
 import { deriveShell, edgesAround, type SidebarArrangement, type Size } from "../layout.js";
 import { color } from "../theme.js";
-import {
-  useHostUserId,
-  useMobileClient,
-  useSelectedHostClient,
-} from "../ui/mobile-client-context.js";
+import { useHostUserId, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { appear, exit } from "../ui/motion.js";
 import { Pane } from "../ui/pane.js";
 import type { ScrollMemory } from "../ui/retained-scroll.js";
 import {
   SidebarControlContext,
-  SidebarDockContext,
+  SidebarDockedContext,
   SidebarVisibleContext,
   type SidebarControl,
-  type SidebarDock,
 } from "./sidebar-context.js";
 import { SidebarPanel, type SidebarActions, type SidebarDestination } from "./sidebar-panel.js";
 
@@ -64,13 +60,15 @@ import { SidebarPanel, type SidebarActions, type SidebarDestination } from "./si
  * destination the sidebar offers is an ordinary route pushed over Chat. Native
  * sheets present above it, because UIKit presents them from the stack itself.
  *
- * Where the window has room, the sidebar docks as a column beside the stack;
- * elsewhere it is Gesture Handler's Reanimated drawer, whose drag and settle
- * run on the UI thread and honour the system's Reduce Motion setting. The
- * shell measures its own surface and the regions the system reserves in it —
- * a fold, a camera — and decides which. Deciding never navigates and never
- * moves the stack in the tree, so folding and unfolding keep every screen,
- * draft, scroll position and stream exactly where it was.
+ * Where the window has room, the sidebar docks as a column beside the stack,
+ * whatever the stack shows, so a task, Chat or a tab is always one press from
+ * another; there is no hiding it. Elsewhere it is Gesture Handler's Reanimated
+ * drawer, whose drag and settle run on the UI thread and honour the system's
+ * Reduce Motion setting. The shell measures its own surface and the regions
+ * the system reserves in it — a fold, a camera — and decides which. Deciding
+ * never navigates and never moves the stack in the tree, so folding and
+ * unfolding keep every screen, draft, scroll position and stream exactly
+ * where it was.
  *
  * The drawer can be dragged open only from Chat, Specialists and Tabs — the
  * screens that carry the Menu and have no Back of their own — so it never
@@ -132,7 +130,6 @@ export function SidebarShell(props: ShellProps): ReactNode {
 
 function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode {
   const drawer = useRef<DrawerLayoutMethods>(null);
-  const client = useMobileClient();
   const regions = useReservedRegions();
   const ready = useReservedRegionsReady();
   const window = useWindowDimensions();
@@ -154,23 +151,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     latest.current = props.state;
   });
 
-  // Null until this phone's choice has been read: until then the sidebar is
-  // the drawer, so a reader who hid it never sees it flash in.
-  const [hidden, setHidden] = useState<boolean | null>(null);
-  const touched = useRef(false);
-  useEffect(() => {
-    let live = true;
-    void client.sidebar
-      .read()
-      .catch(() => false)
-      .then((stored) => {
-        if (live && !touched.current) setHidden(stored);
-      });
-    return () => {
-      live = false;
-    };
-  }, [client]);
-
   const base = props.state.routes[0];
   const deploymentId =
     base?.name === "Home" &&
@@ -188,29 +168,32 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     focused?.name === "Thread" && typeof focusedParams?.["threadId"] === "string"
       ? focusedParams["threadId"]
       : null;
-  // One page or app in front: the page and its conversation take the room.
-  const watching =
-    focused?.name === "WorkspaceBrowser" &&
-    (typeof focusedParams?.["sessionId"] === "string" ||
-      typeof focusedParams?.["machineId"] === "string");
+  // The exact tab, app or phone in front, as its route names it; held while
+  // the route's params are, so the panel is not redrawn for the same one.
+  const pageParams = focused?.name === "WorkspaceBrowser" ? focused.params : undefined;
+  const selectedPlace = useMemo(() => paramsDestination(pageParams), [pageParams]);
+  // One page or app in front with its own conversation: the pair arranges
+  // itself around the folds it can use. A tab from Tabs stands alone.
+  const aroundFolds =
+    selectedPlace !== null &&
+    focusedParams?.["scope"] === undefined &&
+    typeof focusedParams?.["threadId"] === "string";
 
-  // Whether the window could dock the sidebar at all, held across renders so a
-  // width hovering on the threshold does not flip it.
+  // The arrangement last drawn, held across renders so a width hovering on
+  // the threshold does not flip it.
   const previous = useRef<SidebarArrangement>({ mode: "drawer" });
-  const input = {
+  const shell = deriveShell({
+    aroundFolds,
     bounds: props.bounds,
     fontScale,
     insets,
     previous: previous.current,
-    ready: ready && hidden !== null,
+    ready,
     regions,
     rtl,
-    watching,
-  };
-  const room = deriveShell({ ...input, shown: true });
-  const shell = hidden === false ? room : deriveShell({ ...input, shown: false });
+  });
   useLayoutEffect(() => {
-    previous.current = room.sidebar;
+    previous.current = shell.sidebar;
   });
   const column = shell.sidebar.mode === "column" ? shell.sidebar : null;
   const measured = props.bounds.width > 0 && props.bounds.height > 0;
@@ -232,43 +215,22 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       }
     : styles.fill;
   const geometry = `${shell.sidebar.mode}:${shell.content.x},${shell.content.y},${shell.content.width},${shell.content.height}`;
-  const dock: SidebarDock =
-    room.sidebar.mode === "column" ? (hidden === false ? "shown" : "hidden") : "unavailable";
   const docked = column !== null;
   const dockedRef = useRef(docked);
   dockedRef.current = docked;
-  const canDockRef = useRef(dock !== "unavailable");
-  canDockRef.current = dock !== "unavailable";
-
-  const setDockHidden = useCallback(
-    (next: boolean) => {
-      touched.current = true;
-      setHidden(next);
-      // A preference that did not save costs one tap next launch.
-      void client.sidebar.write(next).catch(() => undefined);
-    },
-    [client],
-  );
 
   const close = useCallback(() => drawer.current?.closeDrawer(), []);
-  const open = useCallback(
-    (from?: HostInstance | null) => {
-      // Where the sidebar can dock, the Menu shows or hides the column. It is
-      // beside the conversation, not over it, so the keyboard and the draft's
-      // focus stay where they are.
-      if (canDockRef.current) {
-        setDockHidden(dockedRef.current);
-        return;
-      }
-      // The keyboard would otherwise stay up over the drawer. The draft is the
-      // composer's and is untouched; only the field loses focus.
-      Keyboard.dismiss();
-      trigger.current = from ?? null;
-      restoreFocus.current = true;
-      drawer.current?.openDrawer();
-    },
-    [setDockHidden],
-  );
+  const open = useCallback((from?: HostInstance | null) => {
+    // Docked, the sidebar is already beside the screen: the keyboard and the
+    // draft's focus stay where they are.
+    if (dockedRef.current) return;
+    // The keyboard would otherwise stay up over the drawer. The draft is the
+    // composer's and is untouched; only the field loses focus.
+    Keyboard.dismiss();
+    trigger.current = from ?? null;
+    restoreFocus.current = true;
+    drawer.current?.openDrawer();
+  }, []);
   const control = useMemo<SidebarControl>(() => ({ close, open }), [close, open]);
 
   const onDrawerStateChanged = useCallback((state: DrawerState, willShow: boolean) => {
@@ -292,8 +254,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // the window docking the sidebar: the column replaces the drawer.
   const focusedKey = focused?.key ?? null;
   const hostClient = useSelectedHostClient();
-  const hostClientRef = useRef(hostClient);
-  hostClientRef.current = hostClient;
   const readerId = useHostUserId(hostClient);
   useEffect(() => {
     if (visibleRef.current) drawer.current?.closeDrawer();
@@ -320,12 +280,13 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const actions = useMemo<SidebarActions>(() => {
     const navigation = props.navigation;
     /**
-     * Goes to a place the sidebar offers. From Chat or Specialists — the only
-     * screens the drawer opens over — a task is pushed, as it always was. A
-     * docked sidebar is beside every screen, so from anywhere else the choice
-     * returns to Chat's level first: Chat's own route stays, so the mounted
-     * Chat keeps its draft and scroll, and the stack never grows by moving
-     * around the sidebar. The rule does not depend on the window's shape.
+     * Goes to a place the sidebar offers. From Chat, Specialists or Tabs — the
+     * only screens the drawer opens over — a task or tab is pushed, so Back
+     * returns there. A docked sidebar is beside every screen, so from anywhere
+     * else the choice returns to Chat's level first: Chat's own route stays,
+     * so the mounted Chat keeps its draft and scroll, and the stack never
+     * grows by moving around the sidebar. The rule does not depend on the
+     * window's shape.
      */
     const go = (name: string, params: object, replaceDestination: boolean): void => {
       const state = latest.current;
@@ -358,19 +319,9 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       if (current?.name === target) return;
       // Chat stays mounted underneath, untouched, so its transcript, scroll
       // position and draft are exactly where they were. One destination
-      // replaces another in place. Tabs carries the conversation it was opened
-      // from, so a tab opened there talks to it, even when the stack returns
-      // to Chat's level first.
-      go(
-        target,
-        target === "Tabs"
-          ? {
-              deploymentId: home.params["deploymentId"],
-              threadId: conversationIn(current, hostClientRef.current),
-            }
-          : { deploymentId: home.params["deploymentId"] },
-        true,
-      );
+      // replaces another in place. Tabs is the Deployment's, never the
+      // conversation that happened to be in front.
+      go(target, { deploymentId: home.params["deploymentId"] }, true);
     };
     return {
       close,
@@ -379,6 +330,26 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         navigation.dispatch(StackActions.push("AddDeployment"));
       },
       onChat: () => show("Home"),
+      onOpenPlace: (destination: WorkspaceSurfaceDestination) => {
+        leave();
+        const state = latest.current;
+        const home = state.routes[0];
+        const current = state.routes[state.index];
+        if (home === undefined || !isRecord(home.params)) return;
+        const targetDeploymentId = home.params["deploymentId"];
+        if (typeof targetDeploymentId !== "string") return;
+        if (
+          current?.name === "WorkspaceBrowser" &&
+          isRecord(current.params) &&
+          current.params["scope"] === "workspace" &&
+          current.params["deploymentId"] === targetDeploymentId &&
+          sameDestination(paramsDestination(current.params), destination)
+        )
+          return;
+        // Exactly the tab, alone: who opened it, or who is in front, is not
+        // whom it talks to.
+        go("WorkspaceBrowser", workspaceRoute(targetDeploymentId, destination), false);
+      },
       onNewTask: (targetDeploymentId, workspaceId) => {
         leave();
         go("NewTask", { deploymentId: targetDeploymentId, workspaceId }, false);
@@ -414,11 +385,9 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     };
   }, [close, leave, props.navigation]);
 
-  const hide = useCallback(() => setDockHidden(true), [setDockHidden]);
-
   return (
     <SidebarControlContext.Provider value={control}>
-      <SidebarDockContext.Provider value={dock}>
+      <SidebarDockedContext.Provider value={docked}>
         <SidebarVisibleContext.Provider value={visible}>
           <ReanimatedDrawerLayout
             drawerBackgroundColor="transparent"
@@ -452,6 +421,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   destination={destination}
                   docked={false}
                   scroll={scrollMemory}
+                  selectedPlace={selectedPlace}
                   selectedThreadId={selectedThreadId}
                   visible={visible}
                 />
@@ -475,14 +445,18 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                     },
                   ]}
                 >
-                  <Pane clearance={shell.sidebarClearance} style={styles.fill}>
+                  <Pane
+                    clearance={shell.sidebarClearance}
+                    style={styles.fill}
+                    testID="sidebar-column"
+                  >
                     <SidebarPanel
                       actions={actions}
                       deploymentId={deploymentId}
                       destination={destination}
                       docked
-                      onHide={hide}
                       scroll={scrollMemory}
+                      selectedPlace={selectedPlace}
                       selectedThreadId={selectedThreadId}
                       visible
                     />
@@ -500,31 +474,9 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
             </View>
           </ReanimatedDrawerLayout>
         </SidebarVisibleContext.Provider>
-      </SidebarDockContext.Provider>
+      </SidebarDockedContext.Provider>
     </SidebarControlContext.Provider>
   );
-}
-
-/**
- * The conversation a screen in front belongs to, as Tabs carries it: a task's,
- * the conversation under a tab, or Chat once it exists. None for a screen with
- * no conversation, and never one guessed from who is in a tab.
- */
-function conversationIn(
-  route: StackView["routes"][number] | undefined,
-  hostClient: HostClient | null,
-): string | null {
-  const params = isRecord(route?.params) ? route.params : null;
-  const threadId = typeof params?.["threadId"] === "string" ? params["threadId"] : null;
-  switch (route?.name) {
-    case "Home":
-      return hostClient?.getSnapshot().homeThreadId ?? null;
-    case "Thread":
-    case "WorkspaceBrowser":
-      return threadId;
-    default:
-      return null;
-  }
 }
 
 const styles = StyleSheet.create({

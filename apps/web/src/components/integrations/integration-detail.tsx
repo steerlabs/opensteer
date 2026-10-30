@@ -1,15 +1,14 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { requestAgentProposedDetail } from "@opensteer/core";
 import type {
   IntegrationAccess,
   IntegrationConnectionSummary,
   IntegrationDashboard,
   IntegrationPlatformDashboardView,
-  IntegrationTool,
 } from "@opensteer/integration-core";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
-  apiKeyDisclosure,
+  canSetUpOwnApp,
   computerAppAccessLabel,
   computerAppPlatformRequirementLabel,
   computerAppStateDotClass,
@@ -18,18 +17,22 @@ import {
   computerUseNoMac,
   computerUseStatusLine,
   computerUseView,
+  connectAvailability,
+  connectSignInOptions,
+  connectableApiKeyMethod,
   integrationAccountDetail,
-  operationCount,
+  integrationAccountIdentity,
+  integrationAccountStatus,
+  integrationAccountTitle,
   phoneUseNoPhone,
   phoneUseStatusLine,
   phoneUseView,
+  type IntegrationAccountStatus,
 } from "@opensteer/client/integrations";
 import { Link } from "react-router";
 import { Icon } from "../icon.js";
-import { ExternalLink } from "../external-link.js";
 import { AgentProposedChip } from "./agent-proposed-chip.js";
 import { ApiKeyForm } from "./api-key-form.js";
-import { connectAvailability, connectableApiKeyMethod } from "@opensteer/client/integrations";
 import { ComputerAppPicker } from "../computer-apps/computer-app-picker.js";
 import {
   accountRepair,
@@ -38,25 +41,25 @@ import {
   inactiveInstallation,
   isComputerApp,
   mcpAccountsFor,
-  statusChipClass,
-  statusLabel,
   type DefinedIntegration,
 } from "./helpers.js";
 import { IntegrationIcon } from "./integration-icon.js";
 
 /**
- * One integration, in full: the user's accounts on it, every way to connect a
- * new one (all derived from the definition's auth methods), and what agents
- * can do with it once granted.
+ * One integration, in full: the person's accounts on it, the way to add one,
+ * and where its Workspace access is decided. What a sign-in grants is shown by
+ * the provider when it asks, and what an agent wants by the agent's request.
  */
 export function IntegrationDetail({
   dashboard,
   error,
   hostConnected,
+  hostName,
   integration,
   localMachineId = null,
   machines,
   onBack,
+  onChooseSignIn,
   onConnectApiKey,
   onConnectOauth,
   onDisconnect,
@@ -66,6 +69,7 @@ export function IntegrationDetail({
   onRepositoryAccess,
   onTurnOnComputer,
   onUninstall,
+  onWorkspaceAccess,
   pending,
   platform,
   reconnectConnectionId,
@@ -73,12 +77,16 @@ export function IntegrationDetail({
   readonly dashboard: IntegrationDashboard;
   readonly error: string | null;
   readonly hostConnected: boolean;
+  /** The computer this deployment runs on, where a sign-in that returns to it is finished. */
+  readonly hostName: string;
   readonly integration: DefinedIntegration;
   /** The computer the desktop app showing this page runs on; null in a browser. */
   readonly localMachineId?: string | null;
   /** Every computer this viewer can see, for an app that runs on one. */
   readonly machines: readonly MachineSummary[];
   readonly onBack: () => void;
+  /** Opens the sign-in sheet on its choice of app rather than going straight to sign-in. */
+  readonly onChooseSignIn: () => void;
   readonly onConnectApiKey: (input: {
     readonly authMethodId: string;
     readonly connectionId?: string | undefined;
@@ -100,6 +108,7 @@ export function IntegrationDetail({
     readonly runnerId: string;
   }) => void;
   readonly onUninstall: (installationId: string) => void;
+  readonly onWorkspaceAccess: () => void;
   readonly pending: boolean;
   readonly platform: IntegrationPlatformDashboardView | null;
   /** A connection made with a key that this page replaces the key of. */
@@ -137,7 +146,7 @@ export function IntegrationDetail({
   const mcpAccounts = entry ? mcpAccountsFor(platform, entry) : [];
   const disconnectButton = (connectionId: string, disconnect: (connectionId: string) => void) => (
     <button
-      className={`btn btn--small ${confirming === connectionId ? "btn--danger" : ""}`}
+      className={`btn btn--small ${confirming === connectionId ? "btn--danger" : "btn--ghost"}`}
       disabled={pending}
       onClick={() => {
         if (confirming === connectionId) disconnect(connectionId);
@@ -160,7 +169,6 @@ export function IntegrationDetail({
     active &&
     apiKeyMethod !== null &&
     (accounts.length === 0 || reconnecting !== null || addingKey);
-  const keyFormLinksSetup = keyFormOpen && Boolean(apiKeyDisclosure(definition)?.setupUrl);
   const applicationRequired =
     entry?.servers.some(
       ({ connectionRequirement }) =>
@@ -169,16 +177,15 @@ export function IntegrationDetail({
     ) ?? false;
   const availability = connectAvailability(dashboard, definition.provider);
   // Setting up a sign-in app is part of connecting now, so the Connect sheet is
-  // the single way in; only a surface that may not launch authorization at all
-  // stops it here.
+  // the single way in; only a device that cannot finish any sign-in stops it here.
   const connectable = !applicationRequired || availability.kind !== "other-surface";
-  const activeTools = entry?.tools.filter(({ status }) => status === "active") ?? [];
-  const activeSkills = entry?.skills.filter(({ status }) => status === "active") ?? [];
-  // A computer app materializes the same catalog operations once per computer
-  // connection, so listing the rows would repeat "Read messages" per computer
-  // and overstate what the app does. The rows stay the authorization inventory;
-  // this overview describes the contract, which is one list per app.
-  const overviewTools = computerApp ? distinctOperations(activeTools) : activeTools;
+  const addsAccounts = active && oauthMethod !== undefined;
+  // Choosing another app, or bringing one's own, is the one reason to see the sheet first.
+  const signInChoices =
+    active && oauthMethod && connectable && applicationRequired
+      ? connectSignInOptions(dashboard, definition.provider).length > 1 ||
+        canSetUpOwnApp(dashboard, definition.provider)
+      : false;
 
   return (
     <>
@@ -208,12 +215,6 @@ export function IntegrationDetail({
             </>
           ) : null}
         </div>
-        {/* An open key form says where to create the key, so the page does not say it again. */}
-        {definition.setupUrl && !keyFormLinksSetup ? (
-          <ExternalLink className="btn btn--small intg-hero__setup" href={definition.setupUrl}>
-            {new URL(definition.setupUrl).hostname} <Icon name="external-link" />
-          </ExternalLink>
-        ) : null}
       </header>
 
       {error ? (
@@ -290,67 +291,73 @@ export function IntegrationDetail({
         </section>
       ) : null}
 
-      {entry && accounts.length + mcpAccounts.length > 0 ? (
+      {entry && (accounts.length + mcpAccounts.length > 0 || addsAccounts) ? (
         <section className="section">
           <div className="section__head">
-            <h2 className="section__title">Connected accounts</h2>
-            <span className="section__hint">Permissions apply to the account you choose.</span>
+            <h2 className="section__title">Accounts</h2>
           </div>
           <div className="card">
             {accounts.map((connection) => {
               const computer = connection.computer;
-              const state = computer
-                ? computerConnectionState({ connection, definition, machines })
-                : null;
+              const repair = accountRepair(integration, connection);
+              if (!computer) {
+                const identity = integrationAccountIdentity(connection);
+                return (
+                  <AccountRow
+                    actions={
+                      <>
+                        {repair === "replace-key" && connection.id !== reconnecting?.id ? (
+                          <button
+                            className="btn btn--primary btn--small"
+                            disabled={pending}
+                            onClick={() => onReconnectKey(connection.id)}
+                            type="button"
+                          >
+                            Reconnect
+                          </button>
+                        ) : null}
+                        {repair === "sign-in" ? (
+                          <button
+                            className="btn btn--primary btn--small"
+                            disabled={!connectable || pending}
+                            onClick={() => onConnectOauth(connection)}
+                            type="button"
+                          >
+                            Reconnect
+                          </button>
+                        ) : null}
+                        {repair === "choose-repositories" && onRepositoryAccess ? (
+                          <button
+                            className="btn btn--primary btn--small"
+                            disabled={pending}
+                            onClick={() => onRepositoryAccess(connection.id)}
+                            type="button"
+                          >
+                            Set up repositories
+                          </button>
+                        ) : null}
+                        {disconnectButton(connection.id, onDisconnect)}
+                      </>
+                    }
+                    key={connection.id}
+                    note={[
+                      connection.connectionMethod === "api-key" ? "API key" : null,
+                      // A name repeats; when the provider named no account, when it was added tells it apart.
+                      identity === null && !connection.accountIdentifier
+                        ? integrationAccountDetail(connection, accounts)
+                        : null,
+                    ]}
+                    status={integrationAccountStatus(connection, repair)}
+                    title={integrationAccountTitle(connection)}
+                  />
+                );
+              }
+              const state = computerConnectionState({ connection, definition, machines });
               // Blocking is the owner's decision, undone on that Mac; it is
               // neither ready nor something to disconnect from here.
-              const blocked = Boolean(computer?.blockedAt);
+              const blocked = Boolean(computer.blockedAt);
               const machineName =
-                machines.find(({ id }) => id === computer?.runnerId)?.name ?? "that Mac";
-              const repair = accountRepair(integration, connection);
-              const disconnect = (
-                <div className="card__row-actions">
-                  {repair === "replace-key" && connection.id !== reconnecting?.id ? (
-                    <button
-                      className="btn btn--primary btn--small"
-                      disabled={pending}
-                      onClick={() => onReconnectKey(connection.id)}
-                      type="button"
-                    >
-                      Reconnect
-                    </button>
-                  ) : null}
-                  {repair === "sign-in" ? (
-                    <button
-                      className="btn btn--primary btn--small"
-                      disabled={!connectable || pending}
-                      onClick={() => onConnectOauth(connection)}
-                      type="button"
-                    >
-                      Reconnect
-                    </button>
-                  ) : null}
-                  {repair === "choose-repositories" && onRepositoryAccess ? (
-                    <button
-                      className="btn btn--primary btn--small"
-                      disabled={pending}
-                      onClick={() => onRepositoryAccess(connection.id)}
-                      type="button"
-                    >
-                      Set up repositories
-                    </button>
-                  ) : null}
-                  {computer ? (
-                    <Link
-                      className="btn btn--small"
-                      to={`/settings/computers/${encodeURIComponent(computer.runnerId)}`}
-                    >
-                      Manage
-                    </Link>
-                  ) : null}
-                  {blocked ? null : disconnectButton(connection.id, onDisconnect)}
-                </div>
-              );
+                machines.find(({ id }) => id === computer.runnerId)?.name ?? "that Mac";
               return (
                 <div className="card__row" key={connection.id}>
                   <div className="card__row-body">
@@ -358,22 +365,18 @@ export function IntegrationDetail({
                       {connection.displayName}
                       {blocked ? (
                         <span className="chip chip--bad">Blocked</span>
-                      ) : computer && definition.computerApp ? (
+                      ) : definition.computerApp ? (
                         <span className="chip">
                           {computerAppAccessLabel(definition.computerApp, computer.access)}
                         </span>
-                      ) : (
-                        <span className={`chip ${statusChipClass(connection.status)}`}>
-                          {statusLabel(connection.status)}
-                        </span>
-                      )}
+                      ) : null}
                     </span>
                     {blocked ? (
                       <span className="card__row-detail computer-apps__status">
                         <span aria-hidden className="status-dot status-dot--idle" />
                         {`${definition.name} · Unblock on ${machineName}`}
                       </span>
-                    ) : computer && state ? (
+                    ) : state ? (
                       <span className="card__row-detail computer-apps__status">
                         <span
                           aria-hidden
@@ -381,41 +384,62 @@ export function IntegrationDetail({
                         />
                         {`${definition.name} · ${computerAppStateLabel(state)}`}
                       </span>
-                    ) : (
-                      <span className="card__row-detail">
-                        {`${integrationAccountDetail(connection, accounts)} · ${
-                          connection.connectionMethod === "api-key" ? "API key" : "OAuth"
-                        }`}
-                        {connection.statusDetail ? ` · ${connection.statusDetail}` : ""}
-                      </span>
-                    )}
+                    ) : null}
                   </div>
-                  {disconnect}
+                  <div className="card__row-actions">
+                    <Link
+                      className="btn btn--small"
+                      to={`/settings/computers/${encodeURIComponent(computer.runnerId)}`}
+                    >
+                      Manage
+                    </Link>
+                    {blocked ? null : disconnectButton(connection.id, onDisconnect)}
+                  </div>
                 </div>
               );
             })}
             {mcpAccounts.map((connection) => (
-              <div className="card__row" key={connection.connectionId}>
-                <div className="card__row-body">
-                  <span className="card__row-title">
-                    {connection.displayName}
-                    <span className={`chip ${statusChipClass(connection.status)}`}>
-                      {statusLabel(connection.status)}
-                    </span>
-                  </span>
-                  <span className="card__row-detail">
-                    {`${integrationAccountDetail(
-                      { ...connection, id: connection.connectionId },
-                      mcpAccounts.map((peer) => ({ ...peer, id: peer.connectionId })),
-                    )} · OAuth`}
-                  </span>
-                </div>
-                <div className="card__row-actions">
-                  {disconnectButton(connection.connectionId, onDisconnectMcp)}
-                </div>
-              </div>
+              <AccountRow
+                actions={disconnectButton(connection.connectionId, onDisconnectMcp)}
+                key={connection.connectionId}
+                note={[
+                  connection.accountIdentifier
+                    ? null
+                    : integrationAccountDetail(
+                        { ...connection, id: connection.connectionId },
+                        mcpAccounts.map((peer) => ({ ...peer, id: peer.connectionId })),
+                      ),
+                ]}
+                status={integrationAccountStatus(connection, null)}
+                title={integrationAccountTitle(connection)}
+              />
             ))}
+            {addsAccounts ? (
+              <button
+                className="card__row intg-account intg-account--add"
+                disabled={!connectable || pending}
+                onClick={() => onConnectOauth(null)}
+                type="button"
+              >
+                <span aria-hidden className="intg-account__mark intg-account__mark--add">
+                  <Icon name="plus" />
+                </span>
+                <span className="card__row-title">
+                  {accounts.length > 0
+                    ? `Add another ${definition.name} account`
+                    : `Connect your ${definition.name} account`}
+                </span>
+              </button>
+            ) : null}
           </div>
+          {addsAccounts && !connectable ? (
+            <p className="intg-account__elsewhere">
+              <Icon name="laptop" />
+              <span>
+                {`Signing in to ${definition.name} here returns to ${hostName}, so connect or reconnect accounts there.`}
+              </span>
+            </p>
+          ) : null}
         </section>
       ) : null}
 
@@ -458,46 +482,6 @@ export function IntegrationDetail({
               onTurnOnComputer({ access, definitionId: definition.id, runnerId })
             }
           />
-        </section>
-      ) : null}
-
-      {active && oauthMethod ? (
-        <section className="section">
-          <div className="section__head">
-            <h2 className="section__title">
-              {accounts.length > 0 ? "Connect another account" : "Connect your account"}
-            </h2>
-            <span className="section__hint">
-              Connect this {definition.name} service account, then choose the exact tools and skills
-              a Workspace may use.
-            </span>
-          </div>
-          {applicationRequired && availability.kind !== "ready" ? (
-            <div className="notice notice--warn">
-              <Icon name="alert-circle" />
-              <div>
-                <strong>
-                  {availability.kind === "other-surface"
-                    ? "Connect this account on the computer running this deployment"
-                    : "No sign-in app is ready yet"}
-                </strong>
-                <p>{availability.detail}</p>
-                {availability.kind !== "other-surface" && availability.canSetUpOwnApp ? (
-                  <p>Connecting walks through registering your own app.</p>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-          <div className="form-actions">
-            <button
-              className="btn btn--primary"
-              disabled={!connectable || pending}
-              onClick={() => onConnectOauth(null)}
-              type="button"
-            >
-              {pending ? "Opening…" : `Connect ${definition.name}`}
-            </button>
-          </div>
         </section>
       ) : null}
 
@@ -600,31 +584,33 @@ export function IntegrationDetail({
         </section>
       ) : null}
 
-      {active && overviewTools.length + activeSkills.length > 0 ? (
+      {active ? (
         <section className="section">
-          <div className="section__head">
-            <h2 className="section__title">What agents can do</h2>
-            <span className="section__hint">
-              {operationCount(overviewTools.length)}
-              {activeSkills.length > 0
-                ? ` · ${activeSkills.length} skill${activeSkills.length === 1 ? "" : "s"}`
-                : ""}
-              {computerApp ? ", granted on the computer you pick." : ""}
-            </span>
-          </div>
-          <div className="intg-tool-cloud">
-            {activeSkills.map((skill) => (
-              <span className="chip chip--scope" key={skill.id} title={skill.description}>
-                <Icon name="sparkles" /> {skill.name}
+          <div className="card">
+            <button className="card__row intg-link" onClick={onWorkspaceAccess} type="button">
+              <span className="card__row-body">
+                <span className="card__row-title">Workspace access</span>
+                <span className="card__row-detail">
+                  {`Choose which Workspaces’ agents can use ${definition.name}.`}
+                </span>
               </span>
-            ))}
-            {overviewTools.slice(0, 24).map((tool) => (
-              <span className="chip chip--scope" key={tool.id} title={tool.description}>
-                {tool.title}
-              </span>
-            ))}
-            {overviewTools.length > 24 ? (
-              <span className="chip chip--scope">+{overviewTools.length - 24} more</span>
+              <Icon name="chevron-right" />
+            </button>
+            {signInChoices ? (
+              <button
+                className="card__row intg-link"
+                disabled={pending}
+                onClick={onChooseSignIn}
+                type="button"
+              >
+                <span className="card__row-body">
+                  <span className="card__row-title">Sign-in app</span>
+                  <span className="card__row-detail">
+                    Choose the app accounts sign in through, or bring your own.
+                  </span>
+                </span>
+                <Icon name="chevron-right" />
+              </button>
             ) : null}
           </div>
         </section>
@@ -659,19 +645,46 @@ export function IntegrationDetail({
 }
 
 /**
- * One row per operation the app's servers offer. Two computers connected to the
- * same app hold identical operation rows, because the catalog — not the
- * computer — defines them.
+ * One account a person connected, named the way they know it, with one short
+ * line for its state. The Host's own words for a repair stay on hover.
  */
-function distinctOperations(tools: readonly IntegrationTool[]): readonly IntegrationTool[] {
-  const seen = new Set<string>();
-  return tools.filter((tool) => {
-    const operation = `${tool.serverId}:${tool.name}`;
-    if (seen.has(operation)) return false;
-    seen.add(operation);
-    return true;
-  });
+function AccountRow({
+  actions,
+  note,
+  status,
+  title,
+}: {
+  readonly actions: ReactNode;
+  readonly note: readonly (string | null)[];
+  readonly status: IntegrationAccountStatus;
+  readonly title: string;
+}) {
+  const notes = note.filter((value): value is string => value !== null);
+  return (
+    <div className="card__row intg-account">
+      <span aria-hidden className="intg-account__mark">
+        {title.trim().charAt(0).toLocaleUpperCase() || "?"}
+      </span>
+      <div className="card__row-body">
+        <span className="card__row-title intg-account__title">{title}</span>
+        <span
+          className={`card__row-detail intg-account__status intg-account__status--${status.tone}`}
+          title={status.detail ?? undefined}
+        >
+          <span aria-hidden className={`status-dot ${statusDotClass[status.tone]}`} />
+          {[status.text, ...notes].join(" · ")}
+        </span>
+      </div>
+      <div className="card__row-actions">{actions}</div>
+    </div>
+  );
 }
+
+const statusDotClass: Readonly<Record<IntegrationAccountStatus["tone"], string>> = {
+  attention: "status-dot--warn",
+  off: "status-dot--muted",
+  ok: "status-dot--ok",
+};
 
 /** Each Mac that can run Computer use, its state in a line, and the way to its page. */
 function ComputerUseMacs({

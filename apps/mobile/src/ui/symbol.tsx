@@ -58,6 +58,7 @@ export type SFSymbolName =
   | "lock"
   | "lock.open"
   | "mic"
+  | "mic.slash"
   | "macmini"
   | "magnifyingglass"
   | "pencil"
@@ -78,6 +79,7 @@ export type SFSymbolName =
   | "terminal"
   | "text.append"
   | "trash"
+  | "waveform"
   | "xmark";
 
 export type SymbolWeightName = "regular" | "medium" | "semibold" | "bold";
@@ -203,6 +205,7 @@ const glyph: Record<SFSymbolName, string> = {
   lock: "⚿",
   "lock.open": "🔓\uFE0E",
   mic: "♩",
+  "mic.slash": "⊘",
   macmini: "▬",
   magnifyingglass: "⌕",
   pencil: "✎",
@@ -223,6 +226,7 @@ const glyph: Record<SFSymbolName, string> = {
   terminal: "›",
   "text.append": "≡",
   trash: "⌫",
+  waveform: "⦀",
   xmark: "✕",
 };
 

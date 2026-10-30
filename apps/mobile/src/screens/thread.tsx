@@ -8,7 +8,6 @@ import {
 } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useEffect, type ReactNode } from "react";
-import { useSidebarToggle } from "../navigation-header.js";
 import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -29,8 +28,6 @@ export type ThreadScreenProps = StaticScreenProps<{
  * spinning.
  */
 export function ThreadScreen(props: ThreadScreenProps): ReactNode {
-  // Over a task, the docked sidebar's own Show and Hide stay beside Back.
-  useSidebarToggle();
   const { deploymentId, threadId } = props.route.params;
   const headerHeight = useHeaderHeight();
   const hostClient = useAttachedHost(deploymentId);

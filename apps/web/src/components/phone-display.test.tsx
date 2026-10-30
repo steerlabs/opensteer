@@ -1048,6 +1048,15 @@ describe("Mac owner viewer", () => {
     // happy-dom's WheelEvent inherits UIEvent and omits MouseEvent coordinates.
     Object.defineProperties(wheel, { clientX: { value: 270 }, clientY: { value: 390 } });
     act(() => canvas().dispatchEvent(wheel));
+    expect(remoteEvents().some((event) => event.kind === "scroll")).toBe(false);
+    act(() => {
+      for (const batch of inputs())
+        sockets[0]!.deliver({
+          type: "display.input.result",
+          sequence: batch.sequence,
+          outcome: "dispatched",
+        });
+    });
     await until(() => remoteEvents().some((event) => event.kind === "scroll"));
     expect(remoteEvents()).toEqual([
       { kind: "mouse", phase: "move", button: "none", modifiers: ["shift"], x: 0.25, y: 0.5 },

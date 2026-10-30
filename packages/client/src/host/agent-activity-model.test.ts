@@ -19,14 +19,15 @@ import {
   conversationTurnRevealing,
   activityStepHead,
   displayCommand,
-  formatElapsed,
   groupTranscriptEntries,
   toolBody,
   toolArgumentsText,
   toolPresentation,
   toolStatusLabel,
+  turnFolds,
   turnState,
   turnComputer,
+  turnWords,
   workRows,
   workSummary,
   type TranscriptGroup,
@@ -626,10 +627,9 @@ describe("workSummary", () => {
       label: "Stopping",
       state: "stopping",
     });
-    expect(workSummary(turn([]))?.startedAt).toBe(at(0));
   });
 
-  it("says how long the work took and what it was once settled", () => {
+  it("says only how long the work took once settled", () => {
     const summary = workSummary(
       turns([
         run(),
@@ -643,13 +643,7 @@ describe("workSummary", () => {
         message(),
       ])[0]!,
     );
-    expect(summary).toEqual({
-      errors: 1,
-      label: "Worked for 20s",
-      meta: "2 commands, 1 file read, 2 more",
-      startedAt: at(0),
-      state: "settled",
-    });
+    expect(summary).toEqual({ label: "Worked for 20s", state: "settled" });
   });
 
   // A turn that only answered once drew a bare "Thought" under its reply.
@@ -692,17 +686,61 @@ describe("workSummary", () => {
       )?.label,
     ).toBe("Worked for 7s");
   });
+});
 
-  it("counts an edited file once however many times it was edited", () => {
-    expect(
-      workSummary(
-        turns([
-          tool({ arguments: { file_path: "b.ts" }, tool: { name: "Edit", namespace: "claude" } }),
-          tool({ arguments: { file_path: "b.ts" }, tool: { name: "Edit", namespace: "claude" } }),
-          tool({ arguments: { file_path: "c.ts" }, tool: { name: "Edit", namespace: "claude" } }),
-        ])[0]!,
-      )?.meta,
-    ).toBe("2 files edited");
+describe("a task's turn", () => {
+  // The ways it could fail: a live turn showing every step as it streams; a
+  // turn split by a message keeping its steps open; folding hiding what the
+  // agent wrote along the way; a reply alone growing a "Worked" line.
+  it("folds every step behind its status line and keeps everything the agent wrote", () => {
+    const note = message({ body: "Checking tonight first.", id: "note" });
+    const reply = message({ body: "Dhamaka has 9:45.", id: "reply" });
+    const working = turns([
+      run({ status: "running" }),
+      note,
+      command("ls", { completedAt: null, state: "running" }),
+    ])[0]!;
+    expect(turnFolds(working)).toBe(true);
+    expect(turnWords(working)).toEqual([note]);
+    expect(workSummary(working)?.label).toBe("Running a command");
+
+    const answered = turns([run({ replyMessageId: "reply" }), note, command("ls"), reply])[0]!;
+    expect(turnWords(answered)).toEqual([note, reply]);
+    expect(workSummary(answered)?.label).toBe("Worked for 4s");
+
+    const joined = groupTranscriptEntries([
+      run({ status: "running" }),
+      command("ls"),
+      input({ body: "Check tonight first." }),
+    ]).find((group) => group.kind === "turn");
+    if (joined?.kind !== "turn") throw new Error("Missing turn");
+    expect(joined.turn.continued).toBe(true);
+    expect(turnFolds(joined.turn)).toBe(true);
+
+    // Words alone, however many, leave nothing to open.
+    const spoken = turns([run({ replyMessageId: "reply" }), note, reply])[0]!;
+    expect(turnFolds(spoken)).toBe(false);
+    expect(workSummary(spoken)).toBeNull();
+  });
+});
+
+describe("Opensteer's own steps", () => {
+  const opensteer = (name: string, args: Record<string, unknown> = {}) =>
+    toolPresentation(tool({ arguments: args, tool: { name, namespace: "opensteer" } }));
+
+  it("say what an action did, not which tool did it", () => {
+    expect(opensteer("browser_tab_write", { action: "restore", tabIds: ["t1"] })).toMatchObject({
+      activeLabel: "Restoring tabs",
+      hint: "",
+      label: "Restored tabs",
+    });
+    expect(opensteer("thread_write", { action: "rename", title: "Tonight" })).toMatchObject({
+      hint: "Tonight",
+      hintKind: "prose",
+      label: "Renamed a task",
+    });
+    expect(opensteer("trigger_write", { action: "pause_all" }).label).toBe("Changed an automation");
+    expect(opensteer("thread_message").label).toBe("Sent a message");
   });
 });
 
@@ -1201,17 +1239,6 @@ describe("activityStepHead", () => {
   });
 });
 
-describe("formatting", () => {
-  it("formats a live clock", () => {
-    expect(formatElapsed(0)).toBe("0:00");
-    expect(formatElapsed(42_900)).toBe("0:42");
-    expect(formatElapsed(725_000)).toBe("12:05");
-    expect(formatElapsed(3_723_000)).toBe("1:02:03");
-    expect(formatElapsed(-5)).toBe("0:00");
-    expect(formatElapsed(3 * 86_400_000 + 5 * 3_600_000 + 42_000)).toBe("3d 5h");
-  });
-});
-
 /* ---- Computer use and the integration gateway ---- */
 
 const agent: MessageEntry["author"] = { cause: "test", kind: "platform" };
@@ -1312,11 +1339,9 @@ describe("a Computer use turn", () => {
     expect(turn.reply).toBe(turn.work.at(-1));
   });
 
-  it("counts only real errors, and Computer use by where it happened", () => {
-    expect(workSummary(slackTurn("settled"))).toMatchObject({
-      errors: 2,
+  it("says only how long it worked, however many of its steps failed", () => {
+    expect(workSummary(slackTurn("settled"))).toEqual({
       label: "Worked for 1m 22s",
-      meta: "4 integration lookups, 9 steps in Slack",
       state: "settled",
     });
   });
@@ -1344,7 +1369,6 @@ describe("a Computer use turn", () => {
           ];
         }),
         workSummary(turn)?.label,
-        workSummary(turn)?.meta,
       ];
       for (const text of shown) {
         expect(text).not.toMatch(/igr_|itl_/u);
@@ -1468,11 +1492,6 @@ describe("a Computer use turn", () => {
       computerStep("act", { place: { ...mini, computer: mockComputerUseSlack.computer } }),
     ]);
     expect(sameName).toHaveLength(2);
-    expect(
-      workSummary(
-        turns([run(), computerStep("observe"), computerStep("observe", { place: notes })])[0]!,
-      )?.meta,
-    ).toBe("1 step in Slack, 1 step in Notes");
   });
 
   it("lets a thought with words in it stand between Computer use steps", () => {
@@ -1536,9 +1555,6 @@ describe("Computer use on a phone", () => {
     ]);
     expect(toolPresentation(lookup).kind).toBe("computer");
     expect(activityFeedPresentation(lookup).detail).toBe("Pixel 7");
-    expect(workSummary(phoneTurn(entries, false))?.meta).toBe(
-      "1 integration lookup, 6 steps on Pixel 7",
-    );
     const live = phoneStep("act", {
       arguments: { arguments: { actions: [{ type: "tap", target: { index: 1 } }] } },
       completedAt: null,
@@ -1629,9 +1645,6 @@ describe("Computer use on a phone", () => {
       { label: "Used Pixel 7", detail: "2 steps", steps: 2 },
       { label: "Used Slack", detail: "2 steps on Alex's MacBook Pro", steps: 2 },
     ]);
-    expect(workSummary(phoneTurn(entries, false))?.meta).toBe(
-      "4 steps on Pixel 7, 2 steps in Slack",
-    );
   });
 });
 

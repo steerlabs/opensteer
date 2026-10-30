@@ -16,6 +16,7 @@ import {
 import { ConnectedAppsLayout } from "../settings/connected-apps.js";
 import { installationRowId } from "./catalog-section.js";
 import { IntegrationsPage } from "./integrations-page.js";
+import { ToastProvider } from "../toast.js";
 
 const shellState = vi.hoisted(() => ({ current: null as unknown }));
 vi.mock("../app-shell.js", () => ({ useShell: () => shellState.current }));
@@ -85,7 +86,6 @@ describe("Settings manages an agent-proposed integration like any other", () => 
     expect(hero?.querySelector(".intg-hero__provenance")?.textContent).toBe(
       requestAgentProposedDetail,
     );
-    expect(container.textContent).toContain("Permissions apply to the account you choose.");
     expect(container.textContent).not.toContain("Grants are always scoped");
     expect(
       container.querySelector<HTMLInputElement>('input[placeholder="Vapi API account"]')?.value,
@@ -109,11 +109,8 @@ describe("Settings manages an agent-proposed integration like any other", () => 
     expect(
       container.querySelectorAll('a[href="https://dashboard.vapi.ai/org/api-keys"]'),
     ).toHaveLength(1);
-    // What agents can call is counted in the request card's word.
-    const capabilities = [...container.querySelectorAll(".section__head")].find((head) =>
-      head.textContent?.startsWith("What agents can do"),
-    );
-    expect(capabilities?.querySelector(".section__hint")?.textContent).toBe("1 operation");
+    // What agents can call is shown by the agent's request, not listed here.
+    expect(container.textContent).not.toContain("What agents can do");
     expect(container.textContent).toContain(
       "Your key is stored encrypted by your Opensteer and sent to api.vapi.ai when used.",
     );
@@ -155,25 +152,22 @@ describe("Settings manages an agent-proposed integration like any other", () => 
     // The accounts share a name, so each says when it was added; only the
     // rejected one is offered a new key, and nothing offers an empty one that
     // would become a third account until the person asks for another.
-    const rows = [...container.querySelectorAll<HTMLElement>(".card__row")].filter((row) =>
+    const rows = sectionRows(container, "Accounts").filter((row) =>
       row.textContent?.includes("Vapi API"),
     );
     expect(rows).toHaveLength(2);
     for (const row of rows) expect(row.textContent).toMatch(/Added Aug 9/u);
-    const rejected = rows.find((row) => row.textContent?.includes("rejected the saved key"));
+    const rejected = rows.find((row) => accountReason(row)?.includes("rejected the saved key"));
     expect(rows.filter((row) => buttonWithText(row, "Reconnect"))).toEqual([rejected]);
     expect(container.textContent).toContain("Add another key");
-    // Where the key is made is linked once: by the page while no key form is
-    // open, and by the form once one is.
+    // Where the key is made is linked by the key form, the one place it is needed.
     const setupLinks = () =>
       container.querySelectorAll('a[href="https://dashboard.vapi.ai/org/api-keys"]');
-    expect(setupLinks()).toHaveLength(1);
-    expect(container.querySelector(".intg-hero__setup")).toBe(setupLinks()[0]);
+    expect(setupLinks()).toHaveLength(0);
     await click(buttonWithText(rejected ?? container, "Reconnect"));
     expect(container.textContent).toContain("Replace the key for Vapi API");
     expect(buttonWithText(container, "Reconnect account")).not.toBeNull();
     expect(setupLinks()).toHaveLength(1);
-    expect(container.querySelector(".intg-hero__setup")).toBeNull();
 
     await click(buttonWithText(container, "Uninstall Vapi API"));
     await click(buttonWithText(container, "Confirm uninstall"));
@@ -288,12 +282,12 @@ describe("Settings manages a proposed MCP server's accounts", () => {
     expect(container.querySelector(".intg-hero")?.textContent).toContain("Proposed by an agent");
     expect(container.textContent).not.toContain("No account yet");
     expect(container.textContent).not.toContain(`Authorize ${trellis} again`);
-    const rows = sectionRows(container, "Connected accounts");
+    const rows = sectionRows(container, "Accounts");
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.textContent).toContain(`${trellis} account`);
-    expect(rows[0]?.querySelector(".chip")?.textContent).toBe("Connected");
-    expect(rows[0]?.textContent).toContain("alex@example.com · OAuth");
-    expect(container.textContent).toContain("List boards");
+    // Named by who it is at the provider, with one word for its state.
+    expect(rows[0]?.querySelector(".intg-account__title")?.textContent).toBe("alex@example.com");
+    expect(accountStatus(rows[0])).toBe("Connected");
+    expect(container.textContent).not.toContain("List boards");
 
     await click(buttonWithText(rows[0] ?? container, "Disconnect"));
     await click(buttonWithText(rows[0] ?? container, "Confirm disconnect"));
@@ -304,7 +298,7 @@ describe("Settings manages a proposed MCP server's accounts", () => {
       "When an agent first needs this integration, you’ll review the tools it wants to use and sign in.",
     );
     expect(container.textContent).not.toContain("OAuth flow");
-    expect(container.textContent).not.toContain("Connected accounts");
+    expect(() => sectionRows(container, "Accounts")).toThrow();
     const platform = await client.rpc["integration.platform.get"]({});
     if (!platform.ok) throw new Error("The mock Host lists installations.");
     expect(
@@ -331,9 +325,9 @@ describe("Settings manages a proposed MCP server's accounts", () => {
     expect(cardBefore?.textContent).not.toContain("Connected");
     await click(cardBefore);
 
-    const rows = sectionRows(container, "Connected accounts");
+    const rows = sectionRows(container, "Accounts");
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.querySelector(".chip")?.textContent).toBe("Needs attention");
+    expect(accountStatus(rows[0])).toBe("Needs attention");
     expect(buttonWithText(rows[0] ?? container, "Disconnect")).not.toBeNull();
     expect(buttonWithText(container, "Reconnect")).toBeNull();
     expect(container.textContent).not.toContain("No account yet");
@@ -459,11 +453,12 @@ describe("Settings reconnects an OAuth account by signing in again", () => {
     expect(before.map(({ status }) => status)).toEqual(["needs-attention", "needs-attention"]);
 
     await click(card(container, "Google Calendar"));
-    const rows = sectionRows(container, "Connected accounts");
+    const rows = sectionRows(container, "Accounts");
     expect(rows).toHaveLength(2);
     for (const row of rows) {
-      expect(row.querySelector(".chip")?.textContent).toBe("Needs attention");
-      expect(row.textContent).toContain(
+      // What to do, in one line; the Host's reason stays on hover.
+      expect(accountStatus(row)).toBe("Sign in again to keep using it");
+      expect(row.querySelector(".intg-account__status")?.getAttribute("title")).toBe(
         "Opensteer changed how this service connects. Reconnect this account to keep using it.",
       );
       expect(buttonWithText(row, "Disconnect")).not.toBeNull();
@@ -471,13 +466,13 @@ describe("Settings reconnects an OAuth account by signing in again", () => {
     const broken = rows.find((row) => row.textContent?.includes("alex@example.com"));
     await click(buttonWithText(broken ?? container, "Reconnect"));
 
-    expect(document.body.textContent).toContain(
-      "Sign in to Google Calendar as alex@example.com to reconnect it.",
-    );
-    await click(buttonWithText(document.body, "Continue to Google Calendar"));
+    // The Host has an app selected, so the tap goes straight to sign-in.
+    expect(window.open).toHaveBeenCalledOnce();
+    expect(buttonWithText(document.body, "Continue to Google Calendar")).toBeNull();
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain("Google Calendar connected"),
+      expect(document.body.textContent).toContain("alex@example.com is connected"),
     );
+    expect(document.body.querySelector("[role=dialog]")).toBeNull();
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         input: expect.objectContaining({ definitionId: "google-calendar" }),
@@ -492,6 +487,7 @@ describe("Settings reconnects an OAuth account by signing in again", () => {
 
   it("starts the same sign-in from Your accounts, without leaving the overview", async () => {
     const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    vi.spyOn(window, "open").mockReturnValue(authorizationTab());
     const container = await mountSettings(client);
 
     const row = accountRows(container).find((candidate) =>
@@ -501,14 +497,98 @@ describe("Settings reconnects an OAuth account by signing in again", () => {
     expect(buttonWithText(row ?? container, "Manage")).not.toBeNull();
     await click(buttonWithText(row ?? container, "Reconnect"));
 
-    expect(document.body.textContent).toContain(
-      "Sign in to Google Calendar as alex@opensteer.example to reconnect it.",
+    expect(window.open).toHaveBeenCalledOnce();
+    // The provider names the account that comes back, and the toast says which.
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("alex@example.com is connected"),
     );
-    expect(buttonWithText(document.body, "Continue to Google Calendar")).not.toBeNull();
     expect(container.textContent).toContain("Installed services");
     expect(container.textContent).not.toContain("All integrations");
   });
 });
+
+describe("Settings signs in from another device", () => {
+  // The ways it could fail: a phone or another computer attached through
+  // Connect told to go back to the Mac for Opensteer's own sign-in, which
+  // returns to the Account service and finishes anywhere; or offered a Reconnect
+  // for an app whose sign-in returns to the Mac's loopback address, which it
+  // can only start and never finish.
+  it("reconnects through Opensteer's app from another device", async () => {
+    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    asRemoteSession(client, { loopbackOnly: false });
+    vi.spyOn(window, "open").mockReturnValue(authorizationTab());
+    const container = await mountSettings(client);
+    await click(card(container, "Google Calendar"));
+
+    const broken = sectionRows(container, "Accounts").find((row) =>
+      row.textContent?.includes("alex@example.com"),
+    );
+    await click(buttonWithText(broken ?? container, "Reconnect"));
+    expect(window.open).toHaveBeenCalledOnce();
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("alex@example.com is connected"),
+    );
+    expect(container.querySelector(".intg-account__elsewhere")).toBeNull();
+  });
+
+  it("says where a sign-in that returns to the Mac's loopback address finishes", async () => {
+    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    asRemoteSession(client, { loopbackOnly: true });
+    const container = await mountSettings(client);
+    await click(card(container, "Google Calendar"));
+
+    expect(container.querySelector<HTMLButtonElement>(".intg-account--add")?.disabled).toBe(true);
+    for (const row of sectionRows(container, "Accounts")) {
+      expect(buttonWithText(row, "Reconnect")?.disabled).toBe(true);
+    }
+    expect(container.querySelector(".intg-account__elsewhere")?.textContent).toContain(
+      "so connect or reconnect accounts there",
+    );
+  });
+});
+
+/**
+ * The Host's answer to a session attached from another device: Google's managed
+ * sign-in as the mock seeds it, or only an app whose sign-in returns to the
+ * Mac's loopback address, which the Host reports must be finished there.
+ */
+function asRemoteSession(client: MockHostClient, input: { readonly loopbackOnly: boolean }) {
+  const read = client.rpc["integrations.get"];
+  const loopback = {
+    callbackUrl: "http://127.0.0.1:4310/v1/integrations/oauth/callback/google",
+    kind: "deployment-oauth" as const,
+    providerApplicationId: "ipa_00000000-0000-4000-8000-000000000001",
+    providerApplicationRevision: 1,
+  };
+  withRpc(client, {
+    "integrations.get": async (request: unknown) => {
+      const answer = await read(request as Parameters<typeof read>[0]);
+      if (!answer.ok) return answer;
+      const google = answer.data.providerAuthorizations.google!;
+      return {
+        ...answer,
+        data: {
+          ...answer.data,
+          authorizationSurface: "personal-remote",
+          providerAuthorizations: {
+            ...answer.data.providerAuthorizations,
+            google: input.loopbackOnly
+              ? {
+                  ...google,
+                  availableSources: [loopback],
+                  code: "CANONICAL_SURFACE_REQUIRED",
+                  detail:
+                    "This sign-in returns to the computer running Opensteer, so finish it there.",
+                  selectedSource: loopback,
+                  selectedSourceKind: "deployment-oauth",
+                }
+              : google,
+          },
+        },
+      };
+    },
+  });
+}
 
 describe("Settings says which integration an agent proposed wherever one is chosen", () => {
   // The ways it could fail: an agent names its proposal "Google Calendar", and
@@ -618,11 +698,29 @@ describe("Settings repairs each GitHub account the way the Host says it needs", 
     expect(accountRows(container).find((row) => row.textContent?.includes(appGone))).toBeTruthy();
 
     await click(card(container, "GitHub REST"));
-    const rows = sectionRows(container, "Connected accounts");
-    expect(repairs(rows)).toEqual(expected);
-    expect(rows.find((row) => row.textContent?.includes(noRepositories))).toBeTruthy();
+    const rows = sectionRows(container, "Accounts");
+    // The integration's own page says what to do rather than why.
+    expect(
+      ["octocat", "opensteer-release-bot", "opensteer-docs"].map((name) => {
+        const row = rows.find(
+          (candidate) => candidate.querySelector(".intg-account__title")?.textContent === name,
+        );
+        return [
+          name,
+          accountStatus(row),
+          ["Reconnect", "Set up repositories"].filter((label) => buttonWithText(row!, label)),
+        ];
+      }),
+    ).toEqual([
+      ["octocat", "Connected", []],
+      ["opensteer-release-bot", "Sign in again to keep using it", ["Reconnect"]],
+      ["opensteer-docs", "Choose repositories to finish connecting", ["Set up repositories"]],
+    ]);
+    expect(rows.find((row) => accountReason(row)?.includes(noRepositories))).toBeTruthy();
 
-    const docs = rows.find((row) => row.textContent?.startsWith("opensteer-docs"));
+    const docs = rows.find(
+      (row) => row.querySelector(".intg-account__title")?.textContent === "opensteer-docs",
+    );
     await click(buttonWithText(docs ?? container, "Set up repositories"));
     await vi.waitFor(() =>
       expect(container.textContent).toContain("Repository access is still required"),
@@ -632,11 +730,10 @@ describe("Settings repairs each GitHub account the way the Host says it needs", 
     const bot = accountRows(container).find((row) =>
       row.textContent?.startsWith("opensteer-release-bot"),
     );
+    vi.spyOn(window, "open").mockReturnValue(authorizationTab());
     await click(buttonWithText(bot ?? container, "Reconnect"));
-    expect(document.body.textContent).toContain(
-      "Sign in to GitHub REST as opensteer-release-bot to reconnect it.",
-    );
-    expect(checked).toEqual([waiting.id]);
+    // Signing in again goes straight to GitHub; it is not a repository check.
+    expect(window.open).toHaveBeenCalledOnce();
   });
 
   // The ways it could fail: GitHub has revoked the token of an account waiting
@@ -666,10 +763,7 @@ describe("Settings repairs each GitHub account the way the Host says it needs", 
     expect(checked).toEqual([mockGitHubRevoked.connectionId]);
 
     await click(buttonWithText(revoked()!, "Reconnect"));
-    expect(document.body.textContent).toContain(
-      "Sign in to GitHub REST as opensteer-ci to reconnect it.",
-    );
-    expect(checked).toEqual([mockGitHubRevoked.connectionId]);
+    expect(window.open).toHaveBeenCalledOnce();
   });
 
   // The ways it could fail: the reload after a refused recheck left detached,
@@ -753,20 +847,28 @@ describe("Settings repairs each GitHub account the way the Host says it needs", 
           answerCheck = () => resolve(check(input as Parameters<typeof check>[0]));
         }),
     );
+    const returned = "ioa_00000000-0000-4000-8000-0000000000a1";
     withRpc(client, {
-      "integration.authorization.get": async () => ({
+      // The returned sign-in completed; the one started since is still at GitHub.
+      "integration.authorization.get": async (input: unknown) => ({
         data: {
-          connectionId: mockGitHubRevoked.connectionId,
-          expiresAt: "2026-10-17T20:00:00.000Z",
+          connectionId:
+            (input as { attemptId: string }).attemptId === returned
+              ? mockGitHubRevoked.connectionId
+              : null,
+          // Still inside its window, whenever the test runs.
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
           failureCode: null,
-          status: "completed",
+          status:
+            (input as { attemptId: string }).attemptId === returned ? "completed" : "launched",
         },
         ok: true,
       }),
       "integration.repositoryAccess.check": held,
     });
+    vi.spyOn(window, "open").mockReturnValue(authorizationTab());
     const container = await mountSettings(client, {
-      path: "/settings/apps/tools?integrationAttempt=ioa_00000000-0000-4000-8000-0000000000a1",
+      path: `/settings/apps/tools?integrationAttempt=${returned}`,
     });
     await vi.waitFor(() => expect(held).toHaveBeenCalledTimes(1));
     const bot = accountRows(container).find((row) =>
@@ -855,6 +957,7 @@ describe("Settings repairs each GitHub account the way the Host says it needs", 
     const bot = accountRows(container).find((row) =>
       row.textContent?.startsWith("opensteer-release-bot"),
     );
+    withPendingSignIns(client, returnedAttempt);
     await click(buttonWithText(bot ?? container, "Reconnect"));
     await click(document.querySelector<HTMLButtonElement>('button[aria-label="Close"]'));
 
@@ -1079,11 +1182,12 @@ describe("Settings retires only the page read failure that a newer read supersed
     const container = await mountSettings(client);
     await click(card(container, "Google Calendar"));
     const reconnect = () => {
-      const row = sectionRows(container, "Connected accounts").find((account) =>
+      const row = sectionRows(container, "Accounts").find((account) =>
         account.textContent?.includes("alex@example.com"),
       );
       return buttonWithText(row ?? container, "Reconnect");
     };
+    withPendingSignIns(client);
     await click(reconnect());
     const read = client.rpc["integrations.get"];
     const failed = "The integration account could not be refreshed";
@@ -1099,13 +1203,13 @@ describe("Settings retires only the page read failure that a newer read supersed
         [...container.querySelectorAll('[role="alert"]')].map((node) => node.textContent),
       ).toEqual([failed]),
     );
-    expect(sectionRows(container, "Connected accounts")).toHaveLength(2);
+    expect(sectionRows(container, "Accounts")).toHaveLength(2);
 
     withRpc(client, { "integrations.get": () => read({}) });
     await click(reconnect());
     await click(document.querySelector<HTMLButtonElement>('button[aria-label="Close"]'));
     await vi.waitFor(() => expect(container.querySelector('[role="alert"]')).toBeNull());
-    expect(sectionRows(container, "Connected accounts")).toHaveLength(2);
+    expect(sectionRows(container, "Accounts")).toHaveLength(2);
   });
 
   it.each([false, true])(
@@ -1272,9 +1376,7 @@ describe("Settings cancels key replacement without changing the account", () => 
       if (source !== "overview") await click(card(container, "Vapi API"));
       if (source === "adding") await click(buttonWithText(container, "Add another key"));
       const rejected = (
-        source === "overview"
-          ? accountRows(container)
-          : sectionRows(container, "Connected accounts")
+        source === "overview" ? accountRows(container) : sectionRows(container, "Accounts")
       ).find((row) => row.textContent?.includes("rejected the saved key"));
       await click(buttonWithText(rejected ?? container, "Reconnect"));
       expect(sectionTitles(container)).toContain("Replace the key for Vapi API");
@@ -1288,7 +1390,7 @@ describe("Settings cancels key replacement without changing the account", () => 
       expect(dispatch).not.toHaveBeenCalled();
       expect(await mockConnections(client)).toEqual(before);
       expect(client.getSnapshot().requests[mockVapi.threadId]).toEqual(requests);
-      const retained = sectionRows(container, "Connected accounts").find((row) =>
+      const retained = sectionRows(container, "Accounts").find((row) =>
         row.textContent?.includes("rejected the saved key"),
       );
       await click(buttonWithText(retained ?? container, "Reconnect"));
@@ -1321,7 +1423,7 @@ describe("Settings keeps a new key behind a button once an account exists", () =
     expect(container.querySelector('input[type="password"]')).toBeNull();
     expect(buttonWithText(container, "Add another key")).not.toBeNull();
 
-    const rejected = sectionRows(container, "Connected accounts").find((row) =>
+    const rejected = sectionRows(container, "Accounts").find((row) =>
       row.textContent?.includes("rejected the saved key"),
     );
     await click(buttonWithText(rejected ?? container, "Reconnect"));
@@ -1365,6 +1467,9 @@ async function mountSettings(
   client: MockHostClient,
   options: { readonly layout?: boolean; readonly path?: string } = {},
 ): Promise<HTMLElement> {
+  // Connect and Reconnect open the sign-in tab from the click; a test reads the
+  // durable attempt, never the tab, so no real page is navigated.
+  if (!vi.isMockFunction(window.open)) vi.spyOn(window, "open").mockReturnValue(authorizationTab());
   shellState.current = {
     desktopBridge: null,
     desktopDeployment: null,
@@ -1379,19 +1484,21 @@ async function mountSettings(
   mountedRoots.push(root);
   await act(async () => {
     root.render(
-      options.layout ? (
-        <MemoryRouter initialEntries={["/settings/apps/tools"]}>
-          <Routes>
-            <Route element={<ConnectedAppsLayout />} path="/settings/apps">
-              <Route element={<IntegrationsPage embedded />} path="tools" />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      ) : (
-        <MemoryRouter initialEntries={[options.path ?? "/"]}>
-          <IntegrationsPage embedded />
-        </MemoryRouter>
-      ),
+      <ToastProvider>
+        {options.layout ? (
+          <MemoryRouter initialEntries={["/settings/apps/tools"]}>
+            <Routes>
+              <Route element={<ConnectedAppsLayout />} path="/settings/apps">
+                <Route element={<IntegrationsPage embedded />} path="tools" />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        ) : (
+          <MemoryRouter initialEntries={[options.path ?? "/"]}>
+            <IntegrationsPage embedded />
+          </MemoryRouter>
+        )}
+      </ToastProvider>,
     );
   });
   await vi.waitFor(() => expect(container.textContent).toContain("Your accounts"));
@@ -1507,6 +1614,29 @@ function withRpc(
 }
 
 const returnedAttempt = "ioa_00000000-0000-4000-8000-0000000000a1";
+
+/**
+ * Every sign-in started from now on stays at the provider, so its sheet stays
+ * open until the person closes it. An attempt `except` names reads as before.
+ */
+function withPendingSignIns(client: MockHostClient, except?: string): void {
+  const read = client.rpc["integration.authorization.get"];
+  withRpc(client, {
+    "integration.authorization.get": async (input: unknown) =>
+      (input as { attemptId: string }).attemptId === except
+        ? read(input as Parameters<typeof read>[0])
+        : {
+            // Still inside its window, whenever the test runs.
+            data: {
+              connectionId: null,
+              expiresAt: new Date(Date.now() + 600_000).toISOString(),
+              failureCode: null,
+              status: "launched",
+            },
+            ok: true,
+          },
+  });
+}
 
 /**
  * The browser returns from signing in as `connectionId`: its first repository
@@ -1650,12 +1780,23 @@ function accountRows(container: HTMLElement): readonly HTMLElement[] {
   return sectionRows(container, "Your accounts");
 }
 
+/** The Host's own words for an account's repair, which its row keeps on hover. */
+function accountReason(row: HTMLElement): string | null {
+  return row.querySelector(".intg-account__status")?.getAttribute("title") ?? null;
+}
+
+/** The one line an account's row gives its state. */
+function accountStatus(row: HTMLElement | undefined): string | undefined {
+  return row?.querySelector(".intg-account__status")?.textContent ?? undefined;
+}
+
 function sectionRows(container: HTMLElement, title: string): readonly HTMLElement[] {
   const section = [...container.querySelectorAll<HTMLElement>("section.section")].find(
     (candidate) => candidate.querySelector(".section__title")?.textContent === title,
   );
   if (!section) throw new Error(`${title} is listed.`);
-  return [...section.querySelectorAll<HTMLElement>(".card__row")];
+  // The row that adds an account is not one.
+  return [...section.querySelectorAll<HTMLElement>(".card__row:not(.intg-account--add)")];
 }
 
 function workspaceSelect(container: HTMLElement): HTMLSelectElement | null {
