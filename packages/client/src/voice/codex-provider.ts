@@ -308,10 +308,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         const sdp = pc.localDescription?.sdp;
         if (!sdp) throw new VoiceStartError("connection-failed");
         hostMayHoldCall = true;
-        const starting = input.rpc["voice.start"](
-          { ...address, offer: sdp },
-          { signal },
-        );
+        const starting = input.rpc["voice.start"]({ ...address, offer: sdp }, { signal });
         // Stop once more after a late admission, in case the first stop overtook start.
         const stopLateStart = () => {
           if (ended) void input.rpc["voice.stop"](address).catch(() => {});
