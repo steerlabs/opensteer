@@ -7,6 +7,6 @@ extension SignedHelperReplacement {
   public static func prepare(development: Bool, rule: PeerRule) -> Bool {
     let paths = BrokerPaths.canonical(development: development)
     return prepare(bundleIdentifier: BrokerIdentity.bundleIdentifier(development: development),
-      canonicalBundle: paths.application, executableName: "Opensteer Passwords", rule: rule)
+      canonicalBundle: paths.application, executableName: BrokerIdentity.executableName, rule: rule)
   }
 }
