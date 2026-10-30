@@ -17,7 +17,7 @@ def visible_window(pid):
     cf.CFArrayGetValueAtIndex.restype = c.c_void_p
     cf.CFDictionaryGetValue.argtypes = [c.c_void_p, c.c_void_p]
     cf.CFDictionaryGetValue.restype = c.c_void_p
-    cf.CFNumberGetValue.argtypes = [c.c_void_p, c.c_int, c.c_void_p]
+    cf.CFNumberGetValue.argtypes = [c.c_void_p, c.c_long, c.c_void_p]
     cf.CFNumberGetValue.restype = c.c_bool
     cf.CFRelease.argtypes = [c.c_void_p]
     cf.CFRelease.restype = None
