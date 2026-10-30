@@ -673,6 +673,13 @@ describe("real Chromium runtime", () => {
       const frame = sink.frames.findLast((frame) => frame.header.surfaceId === id);
       if (frame) await writeFile(join(directory, `targeted-${name}.jpg`), frame.data);
     }
+    // The viewer already holds the inventories sent before this window, so a frame of
+    // a geometry they announced is in order whenever it lands.
+    const announcedBefore =
+      sink.messages
+        .flatMap((message) => (message.type === "browser.surfaces.changed" ? [message] : []))
+        .at(-1)
+        ?.surfaces.find((surface) => surface.id === y.surfaceId)?.geometryRevision ?? -1;
     const order: { type: string; revision: number }[] = [];
     let releaseList: (() => void) | undefined;
     let blockList = true;
@@ -695,6 +702,16 @@ describe("real Chromium runtime", () => {
       if (frame.header.surfaceId === y.surfaceId)
         order.push({ type: "frame", revision: frame.header.geometryRevision ?? 0 });
     };
+    const framesBeforePaint = sink.frames.length;
+    await request(
+      "Runtime.evaluate",
+      { expression: "document.body.style.background = 'rgb(1, 2, 3)'; true", returnByValue: true },
+      y.cdpSession,
+    );
+    await waitFor(() =>
+      sink.frames.slice(framesBeforePaint).some((frame) => frame.header.surfaceId === y.surfaceId),
+    );
+    expect(order).toContainEqual({ type: "frame", revision: announcedBefore });
     const resizeFirst = request(
       "Emulation.setDeviceMetricsOverride",
       { width: 900, height: 700, deviceScaleFactor: 1, mobile: false },
@@ -726,7 +743,7 @@ describe("real Chromium runtime", () => {
             frame.header.viewportWidth === 1280,
         ),
     );
-    let announced = -1;
+    let announced = announcedBefore;
     for (const event of order) {
       if (event.type === "inventory") announced = event.revision;
       else expect(event.revision).toBeLessThanOrEqual(announced);
