@@ -1,13 +1,31 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { DictationController } from "@opensteer/client/dictation";
 import type { DictationEvent, DictationPort, DictationError } from "@opensteer/protocol/dictation";
+import { MockHostClient } from "@opensteer/client/mock";
+import { emptyExecutionPreferences } from "@opensteer/core";
+import { ExecutionControls } from "./components/execution-controls.js";
+import { artifactPart } from "./components/attachments/attachment-parts.js";
 import { Composer } from "./components/composer.js";
 import { DictationContext } from "./components/dictation.js";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
 
+const client = new MockHostClient({ latencyMs: 0 });
+const workspaceId = client.getSnapshot().workspaces[0]!.id;
+const file = new File(["Design review"], "review-notes.txt", { type: "text/plain" });
+const reservation = await client.createAttachment({
+  idempotencyKey: `dictation-visual:${crypto.randomUUID()}`,
+  workspaceId,
+  name: file.name,
+  mediaType: file.type,
+  sizeBytes: file.size,
+});
+const attachment = artifactPart(
+  await client.uploadAttachment({ attachmentId: reservation.id, source: file }),
+);
+const layout = new URLSearchParams(location.search).get("layout") ?? "work";
 const scenario = new URLSearchParams(location.search).get("state") ?? "idle";
 const errors: readonly DictationError[] = [
   "permission-denied",
@@ -35,7 +53,10 @@ const port: DictationPort = {
     available: true,
     languageName: "English",
     locale: "en-US",
-    model: scenario === "downloading" || scenario === "downloaded" ? "download" : "installed",
+    model:
+      scenario === "downloading" || scenario === "downloaded" || scenario === "download-failed"
+        ? "download"
+        : "installed",
     microphone: scenario === "permission-denied" ? "denied" : "granted",
   }),
   subscribe: (listener) => {
@@ -62,6 +83,9 @@ const controller = new DictationController({
 });
 await controller.refresh();
 function Fixture() {
+  const [selection, setSelection] = useState<
+    import("@opensteer/client/host").ExecutionSelection | null
+  >(null);
   useEffect(() => {
     const drive = setTimeout(() => {
       const field = document.querySelector("textarea")!;
@@ -69,16 +93,26 @@ function Fixture() {
       if (scenario !== "idle")
         document.querySelector<HTMLButtonElement>('[title="Dictate"]')!.click();
       if (scenario === "downloading") emit({ type: "downloading", progress: 0.42 });
+      else if (scenario === "download-failed")
+        emit({ type: "ended", reason: "failed", error: "download-failed" });
       else if (scenario === "downloaded") emit({ type: "ended", reason: "completed", error: null });
       else if (scenario !== "idle" && scenario !== "starting" && scenario !== "permission-denied") {
         emit({ type: "listening" });
-        if (scenario !== "empty")
+        if (
+          ![
+            "empty",
+            "busy",
+            "microphone-unavailable",
+            "model-unavailable",
+            "service-unavailable",
+          ].includes(scenario)
+        )
           emit({
             type: "text",
             finalized: ["the latest design"],
             volatile: scenario === "listening" ? ["with Maya"] : [],
           });
-        if (scenario === "finishing") void controller.stop();
+        if (scenario === "finishing") void controller.stop(controller.getSnapshot().owner!);
         else if (scenario === "limit") {
           limit?.();
           emit({ type: "ended", reason: "completed", error: null });
@@ -88,7 +122,7 @@ function Fixture() {
         else if (errors.includes(scenario as DictationError))
           emit({ type: "ended", reason: "failed", error: scenario as DictationError });
       }
-      emit({ type: "level", level: 0.7 });
+      setTimeout(() => emit({ type: "level", level: 0.7 }), 100);
     }, 50);
     return () => clearTimeout(drive);
   }, []);
@@ -100,9 +134,25 @@ function Fixture() {
         <Composer
           onSend={async () => {}}
           placeholder="Ask Opensteer…"
-          restore={{ key: 1, text: "Please review before Friday." }}
+          variant={layout === "conversation" ? "conversation" : "work"}
+          attachments={{ client, scope: "dictation-visual", workspaceId }}
+          restore={{
+            key: 1,
+            text: "Please review before Friday.",
+            attachments: [attachment],
+            quote: {
+              messageId: "message-visual",
+              attribution: "Maya",
+              excerpt: "Could you review the design?",
+            },
+          }}
           footerExtras={
-            <span style={{ color: "var(--muted)", fontSize: 12 }}>Claude Opus 4.8</span>
+            <ExecutionControls
+              placements={[]}
+              preferences={emptyExecutionPreferences}
+              selection={selection}
+              onApply={setSelection}
+            />
           }
         />
       </DictationContext>

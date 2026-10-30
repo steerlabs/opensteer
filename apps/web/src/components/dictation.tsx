@@ -13,6 +13,8 @@ import {
   dictationDownloadStatus,
   dictationElapsed,
   dictationLabels,
+  dictationView,
+  type DictationView,
   type DictationSnapshot,
 } from "@opensteer/client/dictation";
 import { Icon } from "./icon.js";
@@ -20,6 +22,7 @@ import { Icon } from "./icon.js";
 export const DictationContext = createContext<DictationController | null>(null);
 const absent: DictationSnapshot = {
   availability: null,
+  language: null,
   phase: "idle",
   owner: null,
   preview: null,
@@ -42,93 +45,41 @@ export function DictationStatus({
   controller,
   snapshot,
   owner,
-  onCancel,
   returnFocusTo,
 }: {
   controller: DictationController;
   snapshot: DictationSnapshot;
   owner: string;
-  onCancel: () => void;
   returnFocusTo: { readonly current: HTMLTextAreaElement | null };
 }) {
-  const active = snapshot.owner === owner && snapshot.phase !== "idle";
-  const notice = snapshot.notice?.owner === owner ? snapshot.notice : null;
-  const language = snapshot.availability?.available ? snapshot.availability.languageName : "";
+  const view = dictationView(snapshot, owner);
+  const active = view.phase !== "idle";
+  const notice = view.notice;
+  const previousActive = useRef(active);
+  const [stopped, setStopped] = useState(false);
+  useEffect(() => {
+    if (previousActive.current && !active && !notice) setStopped(true);
+    else if (active || notice) setStopped(false);
+    previousActive.current = active;
+  }, [active, notice]);
   const announcement =
     notice?.message ??
     (active
-      ? snapshot.phase === "starting"
+      ? view.phase === "starting"
         ? dictationLabels.starting
-        : snapshot.phase === "finishing"
+        : view.phase === "finishing"
           ? dictationLabels.finishing
-          : snapshot.phase === "downloading"
-            ? dictationDownloadStatus(language, null)
+          : view.phase === "downloading"
+            ? dictationDownloadStatus(view.languageName ?? "", null)
             : dictationLabels.listening
-      : "");
+      : stopped
+        ? dictationLabels.stopped
+        : "");
   return (
     <>
       <span className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
         {announcement}
       </span>
-      {active ? (
-        <FocusRow key={snapshot.phase} returnFocusTo={returnFocusTo}>
-          {snapshot.phase === "starting" ||
-          snapshot.phase === "finishing" ||
-          snapshot.phase === "downloading" ? (
-            <span className="spinner" aria-hidden="true" />
-          ) : null}
-          {snapshot.phase === "listening" ? (
-            <>
-              <LevelMeter controller={controller} />
-              <Elapsed since={snapshot.listeningSince!} />
-            </>
-          ) : (
-            <span className="dictation-status__copy">
-              {snapshot.phase === "downloading"
-                ? dictationDownloadStatus(language, snapshot.progress)
-                : snapshot.phase === "starting"
-                  ? dictationLabels.starting
-                  : dictationLabels.finishing}
-            </span>
-          )}
-          {snapshot.phase === "listening" ? (
-            <button
-              className="btn btn--small"
-              type="button"
-              aria-label={dictationLabels.stop}
-              onClick={() => void controller.stop()}
-            >
-              <Icon name="stop" />
-              {dictationLabels.stopButton}
-            </button>
-          ) : null}
-          {snapshot.phase !== "finishing" ? (
-            <button
-              className={snapshot.phase === "listening" ? "icon-btn" : "btn btn--small"}
-              type="button"
-              aria-label={
-                snapshot.phase === "downloading"
-                  ? dictationLabels.cancelDownload
-                  : dictationLabels.cancel
-              }
-              title={
-                snapshot.phase === "downloading"
-                  ? dictationLabels.cancelDownload
-                  : dictationLabels.cancel
-              }
-              onClick={onCancel}
-            >
-              {snapshot.phase === "listening" ? (
-                <Icon name="close" />
-              ) : snapshot.phase === "downloading" ? (
-                dictationLabels.cancelDownload
-              ) : (
-                dictationLabels.cancelStarting
-              )}
-            </button>
-          ) : null}
-        </FocusRow>
-      ) : null}
       {notice ? (
         <FocusRow key={notice.kind} returnFocusTo={returnFocusTo}>
           <Icon name="alert-circle" />
@@ -153,6 +104,68 @@ export function DictationStatus({
         </FocusRow>
       ) : null}
     </>
+  );
+}
+export function DictationLive({
+  controller,
+  view,
+  onCancel,
+  returnFocusTo,
+}: {
+  controller: DictationController;
+  view: DictationView;
+  onCancel: () => void;
+  returnFocusTo: { readonly current: HTMLTextAreaElement | null };
+}) {
+  return (
+    <FocusRow returnFocusTo={returnFocusTo} live>
+      {view.phase === "listening" ? (
+        <>
+          <LevelMeter controller={controller} />
+          <Elapsed since={view.listeningSince!} />
+        </>
+      ) : (
+        <span
+          className="dictation-status__copy"
+          title={
+            view.phase === "downloading"
+              ? dictationDownloadStatus(view.languageName ?? "", view.progress)
+              : undefined
+          }
+        >
+          <span className="dictation-live__full">
+            {view.phase === "downloading"
+              ? `Downloading ${view.languageName ?? ""}…`
+              : view.phase === "starting"
+                ? dictationLabels.starting
+                : dictationLabels.finishing}
+          </span>
+          <span className="dictation-live__compact">
+            {view.phase === "downloading"
+              ? "↓"
+              : view.phase === "starting"
+                ? "Starting"
+                : "Finishing"}
+          </span>
+        </span>
+      )}
+      {view.phase === "downloading" && view.progress !== null ? (
+        <span className="dictation-progress">{Math.round(view.progress * 100)}%</span>
+      ) : null}
+      <button
+        className="icon-btn"
+        type="button"
+        aria-label={
+          view.phase === "downloading" ? dictationLabels.cancelDownload : dictationLabels.cancel
+        }
+        title={
+          view.phase === "downloading" ? dictationLabels.cancelDownload : dictationLabels.cancel
+        }
+        onClick={onCancel}
+      >
+        <Icon name="close" />
+      </button>
+    </FocusRow>
   );
 }
 function Elapsed({ since }: { since: number }) {
@@ -182,7 +195,9 @@ function LevelMeter({ controller }: { controller: DictationController }) {
 function FocusRow({
   children,
   returnFocusTo,
+  live = false,
 }: {
+  live?: boolean;
   children: ReactNode;
   returnFocusTo: { readonly current: HTMLTextAreaElement | null };
 }) {
@@ -190,7 +205,7 @@ function FocusRow({
   const fallback = useRef(() => returnFocusTo.current);
   useFocusRescue(ref, fallback);
   return (
-    <div ref={ref} className="dictation-status">
+    <div ref={ref} className={live ? "dictation-live" : "dictation-status"}>
       {children}
     </div>
   );

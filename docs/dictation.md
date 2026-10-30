@@ -99,8 +99,13 @@ restores the original words and selection; typing or starting IME composition
 adopts the displayed text and releases dictation. Escape keeps the words, while
 Enter and Send finalize before submitting through the existing send gates.
 
-The status row uses shared controller copy, a separately subscribed level meter
-and a one-second timer. A polite live region announces states and notices without
+The toolbar replaces its model slot with shared live-state copy, a separately
+subscribed level meter and a one-second timer. The mic becomes an accent Stop
+control while listening and a spinner while waiting; Cancel stays beside the live
+state. Narrow conversation composers keep a full-width draft above a permanent
+toolbar row; wider conversation composers retain their single-line layout.
+Persistent notices appear above the draft. Unsupported browsers create no
+controller or lifecycle listeners. A polite live region announces states and notices without
 reading partial words, levels or timer ticks. Reduced motion keeps the meter static.
 `dictation-visual.html?state=listening` is the fake-port visual fixture; its `state`
 parameter also accepts idle, downloading, starting, finishing and every notice kind.

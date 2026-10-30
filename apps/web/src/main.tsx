@@ -1,4 +1,4 @@
-import { DictationController } from "@opensteer/client/dictation";
+import { installDictation } from "./desktop/dictation-runtime.js";
 import { DictationContext } from "./components/dictation.js";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -21,25 +21,7 @@ if (!root) {
 }
 
 const appRoot = createRoot(root);
-const dictation = new DictationController({
-  port: desktopBridge()?.dictation ?? null,
-  createId: () => crypto.randomUUID(),
-});
-const refreshDictation = () => {
-  if (document.visibilityState !== "hidden") void dictation.refresh();
-};
-void dictation.refresh();
-window.addEventListener("focus", refreshDictation);
-document.addEventListener("visibilitychange", refreshDictation);
-window.addEventListener(
-  "pagehide",
-  () => {
-    dictation.dispose();
-    window.removeEventListener("focus", refreshDictation);
-    document.removeEventListener("visibilitychange", refreshDictation);
-  },
-  { once: true },
-);
+const dictation = installDictation(desktopBridge()?.dictation);
 const reactRoot = {
   render: (children: React.ReactNode) =>
     appRoot.render(<DictationContext value={dictation}>{children}</DictationContext>),

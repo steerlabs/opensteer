@@ -9,6 +9,7 @@ import type {
   DictationPort,
 } from "@opensteer/protocol/dictation";
 import { Composer } from "./composer.js";
+import * as dictationHooks from "./dictation.js";
 import { DictationContext } from "./dictation.js";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
@@ -81,7 +82,8 @@ async function setup(availability: DictationAvailability | null = ready) {
       | Omit<Extract<DictationEvent, { type: "text" }>, "session" | "seq">
       | Omit<Extract<DictationEvent, { type: "ended" }>, "session" | "seq">
       | { type: "listening" }
-      | { type: "downloading"; progress: number },
+      | { type: "downloading"; progress: number }
+      | { type: "level"; level: number },
   ) => act(async () => receive({ ...event, session, seq: ++seq } as DictationEvent));
   const start = async () => {
     field.setSelectionRange(2, 5);
@@ -271,4 +273,64 @@ it("consumes the committed caret even when final text matches the preview", asyn
   await t.edit("a good day!");
   expect(t.field.selectionStart).toBe(11);
   expect(t.field.selectionEnd).toBe(11);
+});
+
+it("returns keyboard mic activation to the field and handles Escape from toolbar focus", async () => {
+  const t = await setup();
+  const mic = t.node.querySelector<HTMLButtonElement>('[title="Dictate"]')!;
+  mic.focus();
+  await t.click("Start dictation (English)");
+  expect(document.activeElement).toBe(t.field);
+  const cancel = t.node.querySelector<HTMLButtonElement>('[aria-label="Cancel dictation"]')!;
+  cancel.focus();
+  await act(async () =>
+    cancel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+  );
+  expect(t.port.stop).toHaveBeenCalledOnce();
+  expect(document.activeElement).toBe(t.field);
+});
+it.each(["stop", "cancel"])(
+  "announces a quiet %s once and never announces ticks",
+  async (ending) => {
+    const t = await setup();
+    await t.start();
+    await t.text();
+    const status = t.node.querySelector('[aria-live="polite"]')!;
+    expect(status.textContent).toBe("Listening");
+    await t.click(ending === "stop" ? "Stop dictation" : "Cancel dictation");
+    if (ending === "stop") await t.end();
+    expect(status.textContent).toBe("Dictation stopped");
+    await t.edit(t.field.value + "!");
+    expect(status.textContent).toBe("Dictation stopped");
+  },
+);
+
+it("level and elapsed ticks never render the composer or change its announcement", async () => {
+  const render = vi.spyOn(dictationHooks, "useDictation");
+  const t = await setup();
+  vi.useFakeTimers();
+  await t.start();
+  const before = render.mock.calls.length;
+  try {
+    await t.emit({ type: "level", level: 0.8 });
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(t.node.querySelector('[aria-label="Dictation duration"]')!.textContent).toBe("0:03");
+    expect(render.mock.calls.length).toBe(before);
+    expect(t.node.querySelector('[aria-live="polite"]')!.textContent).toBe("Listening");
+  } finally {
+    vi.useRealTimers();
+    render.mockRestore();
+  }
+});
+it("rescues a focused Stop when finalization disables it", async () => {
+  const t = await setup();
+  await t.start();
+  const stop = t.node.querySelector<HTMLButtonElement>('[aria-label="Stop dictation"]')!;
+  stop.focus();
+  await t.key("Enter");
+  expect(stop.disabled).toBe(true);
+  expect(document.activeElement).toBe(t.field);
+  await t.end();
 });

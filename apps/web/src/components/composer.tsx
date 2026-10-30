@@ -1,9 +1,10 @@
 import {
   dictationLabels,
+  dictationView,
   dictationStartLabel,
   type DictationSelection,
 } from "@opensteer/client/dictation";
-import { DictationStatus, useDictation } from "./dictation.js";
+import { DictationStatus, DictationLive, useDictation } from "./dictation.js";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   useCallback,
@@ -242,9 +243,9 @@ export function Composer({
   const { controller: dictation, snapshot: speech } = useDictation();
   const instance = useId();
   const owner = `${dictationScope}/${instance}`;
-  const ownsSpeech = speech.owner === owner;
-  const dictating = ownsSpeech && speech.phase !== "idle" && speech.phase !== "downloading";
-  const preview = ownsSpeech ? speech.preview : null;
+  const view = dictationView(speech, owner);
+  const dictating = view.phase !== "idle" && view.phase !== "downloading";
+  const preview = view.preview;
   const latestDraft = useRef(draft);
   latestDraft.current = draft;
   const ownerDraft = useMemo(() => ({ text: "" }), [owner]);
@@ -293,12 +294,17 @@ export function Composer({
     };
   }, []);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const microphoneRef = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => {
+    const mic = microphoneRef.current;
+    if (mic?.disabled && document.activeElement === mic) textareaRef.current?.focus();
+  }, [view.phase, view.blocked, disabled, readOnly]);
   const displayedText = preview?.text ?? draft;
   const adoptEdit = (value: string) => {
     latestDraft.current = value;
     setDraft(value);
     if (dictating) dictation?.release(owner);
-    else if (speech.notice?.owner === owner) dictation?.dismissNotice();
+    else if (view.notice) dictation?.dismissNotice();
   };
   const startDictation = () => {
     if (!dictation) return;
@@ -307,6 +313,7 @@ export function Composer({
       start: field?.selectionStart ?? draft.length,
       end: field?.selectionEnd ?? draft.length,
     };
+    field?.focus();
     dictation.start({
       owner,
       read: () => ({
@@ -327,12 +334,13 @@ export function Composer({
     });
   };
   const cancelDictation = () => {
-    if (speech.phase === "downloading") {
-      dictation?.cancel();
+    textareaRef.current?.focus();
+    if (view.phase === "downloading") {
+      dictation?.cancel(owner);
       return;
     }
     pendingSelection.current = baseSelection.current;
-    dictation?.cancel();
+    dictation?.cancel(owner);
     setSelectionVersion((version) => version + 1);
   };
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -532,7 +540,7 @@ export function Composer({
         await latestSubmit.current();
         return;
       }
-      const finish = dictation ? await dictation.stop() : { kind: "idle" as const };
+      const finish = dictation ? await dictation.stop(owner) : { kind: "idle" as const };
       if (
         !mounted.current ||
         currentlyHidden.current ||
@@ -634,6 +642,7 @@ export function Composer({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (mention && mentionPlaces.length > 0 && !event.nativeEvent.isComposing) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -663,7 +672,7 @@ export function Composer({
     } else if (event.key === "Escape" && dictating && !event.nativeEvent.isComposing) {
       event.preventDefault();
       event.stopPropagation();
-      void dictation?.stop();
+      void dictation?.stop(owner);
     } else if (event.key === "Escape" && onEscape) {
       event.preventDefault();
       onEscape();
@@ -792,30 +801,33 @@ export function Composer({
       </>
     ) : null;
 
-  const microphone = speech.availability?.available ? (
+  const microphone = view.visible ? (
     <button
-      className="composer__attach"
+      ref={microphoneRef}
+      className={`composer__attach ${view.phase === "listening" ? "dictation-stop" : ""}`}
       type="button"
       aria-label={
-        ownsSpeech && (speech.phase === "listening" || speech.phase === "finishing")
+        view.phase === "listening" || view.phase === "finishing"
           ? dictationLabels.stop
-          : dictationStartLabel(speech.availability.languageName)
+          : dictationStartLabel(view.languageName ?? "")
       }
       title={dictationLabels.dictate}
       disabled={
         disabled ||
         readOnly ||
-        (speech.owner !== null && !ownsSpeech) ||
-        (ownsSpeech && speech.phase !== "idle" && speech.phase !== "listening")
+        view.blocked ||
+        (view.phase !== "idle" && view.phase !== "listening")
       }
-      onClick={() =>
-        ownsSpeech && speech.phase === "listening" ? void dictation?.stop() : startDictation()
-      }
+      onClick={() => {
+        textareaRef.current?.focus();
+        if (view.phase === "listening") void dictation?.stop(owner);
+        else startDictation();
+      }}
     >
-      {ownsSpeech && speech.phase === "finishing" ? (
+      {["starting", "finishing", "downloading"].includes(view.phase) ? (
         <span className="spinner" aria-hidden="true" />
       ) : (
-        <Icon name={ownsSpeech && speech.phase === "listening" ? "stop" : "microphone"} />
+        <Icon name={view.phase === "listening" ? "stop" : "microphone"} />
       )}
     </button>
   ) : null;
@@ -844,7 +856,9 @@ export function Composer({
       // the controls give up words and pills first. The "about this page"
       // form shows only where it fits; the attached page says the same.
       data-fold-text={
-        variant === "conversation" ? placeholderFloor(recipient, placeholder) : undefined
+        variant === "conversation" && !dictation
+          ? placeholderFloor(recipient, placeholder)
+          : undefined
       }
       data-composer-input=""
       readOnly={readOnly}
@@ -873,7 +887,22 @@ export function Composer({
           {microphone}
         </>
       ) : null}
-      <FoldRow className="composer__settings">{footerExtras}</FoldRow>
+      {dictation ? (
+        <div className="composer__dictation-slot">
+          {dictation && view.phase !== "idle" ? (
+            <DictationLive
+              controller={dictation}
+              view={view}
+              onCancel={cancelDictation}
+              returnFocusTo={textareaRef}
+            />
+          ) : (
+            <FoldRow className="composer__settings">{footerExtras}</FoldRow>
+          )}
+        </div>
+      ) : (
+        <FoldRow className="composer__settings">{footerExtras}</FoldRow>
+      )}
       {showStop ? (
         <StopButton
           disabled={stopping || disabled || readOnly}
@@ -907,11 +936,21 @@ export function Composer({
     <div
       className={[
         "composer",
+        dictation ? "composer--dictation" : "",
         variant === "conversation" ? "composer--conversation" : "",
         dropping ? "composer--dropping" : "",
       ]
         .filter(Boolean)
         .join(" ")}
+      onKeyDown={(event) => {
+        if (event.defaultPrevented || event.nativeEvent.isComposing || mention) return;
+        if (event.key === "Escape" && dictating) {
+          event.preventDefault();
+          event.stopPropagation();
+          textareaRef.current?.focus();
+          void dictation?.stop(owner);
+        }
+      }}
       onDragEnter={handleDragOver}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -922,7 +961,6 @@ export function Composer({
           controller={dictation}
           snapshot={speech}
           owner={owner}
-          onCancel={cancelDictation}
           returnFocusTo={textareaRef}
         />
       ) : null}
