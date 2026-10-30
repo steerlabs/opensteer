@@ -3,6 +3,7 @@
     "apps/desktop/scripts/build-computer-use-helper.ts",
     "apps/desktop/scripts/macos-release-identity.cjs",
     "apps/desktop/scripts/native-build-cache.ts",
+    "apps/desktop/scripts/passkeys-signing.cjs",
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/signed-helpers/metadata.ts",
     "apps/desktop/tsconfig.json",
@@ -29,6 +30,7 @@
     "apps/desktop/scripts/build-passwords-broker.ts",
     "apps/desktop/scripts/macos-release-identity.cjs",
     "apps/desktop/scripts/native-build-cache.ts",
+    "apps/desktop/scripts/passkeys-signing.cjs",
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/signed-helpers/metadata.ts",
     "apps/desktop/tsconfig.json",
@@ -156,6 +158,7 @@
   "dictation-helper": [
     "apps/desktop/scripts/build-dictation-helper.ts",
     "apps/desktop/scripts/macos-release-identity.cjs",
+    "apps/desktop/scripts/passkeys-signing.cjs",
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/signed-helpers/metadata.ts",
     "apps/desktop/tsconfig.json",
