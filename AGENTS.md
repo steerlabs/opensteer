@@ -172,7 +172,8 @@ as `.claude/skills/`.
   conventional title (`fix:`, `feat:`, `docs:`, `refactor:`, `test:`, `chore:`).
   Split it only where part needs Tim's approval or a reviewer couldn't follow it
   as one change. A bug you find along the way is its own PR.
-- When you split a request across agents, they commit to one branch and you
+- When you split a request across agents, each works on its own branch in its
+  own worktree and opens no PR. You merge their branches into one PR branch and
   open one PR. Every PR runs CI on one shared queue, so a dozen small PRs block
   everyone's checks for hours.
 - The body says what changed and why, the evidence, and any checks you couldn't
