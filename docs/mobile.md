@@ -782,9 +782,9 @@ until native decode and suppression/background-return qualification passes. Andr
 the shared native decoder path; exports alone do not establish native playback.
 
 The selected attachment supplies a capability reader to the shared Host client.
-Every bootstrap refreshes discovery through the same expected-identity and route/
-selection-generation checks as initial attachment. An unchanged origin or route
-therefore does not freeze capability evidence after a Host upgrade. When the
+Initial bootstrap and periodic refresh reuse discovery verified for that attachment only.
+Reconnects, explicit refresh and epoch or authentication refusals reverify through the same
+identity and attachment-generation checks, so a Host upgrade at the same route is observed. When the
 agreement changes, retained browser viewers resubscribe with the new capture
 agreement, including viewers that reconnected before discovery finished.
 

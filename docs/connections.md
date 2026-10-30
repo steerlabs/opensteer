@@ -39,6 +39,9 @@ so its owner reconnects through the new attachment instead of holding a socket
 it believes open. The local Runner resolves
 its durable Deployment target through the same resolver and fence key.
 
+Discovery evidence on the phone is held only within the verified attachment fence; healthy
+bootstrap polls reuse it, while reconnects and protocol or authentication refusals reverify it.
+
 Connection state follows bootstrap, authentication, platform network status and
 the subscribed realtime channel. A failed ordinary RPC reports an error for
 that operation; it does not mark the Deployment offline. RPCs allow 45 seconds for

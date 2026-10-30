@@ -5,7 +5,12 @@ import {
   type DeploymentConnection,
   type ResolvedConnection,
 } from "@opensteer/client/connections";
-import { HttpHostClient, type ClientLifecycle, type HostClient } from "@opensteer/client/host";
+import {
+  HttpHostClient,
+  type ClientLifecycle,
+  type HostClient,
+  type HostCapabilityReader,
+} from "@opensteer/client/host";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import { isSameHost } from "@opensteer/deployment-authority";
 import {
@@ -47,8 +52,7 @@ export interface MobileHostPort {
   readonly credentials: DeploymentCredentials;
   attach(input: {
     readonly authorization: HostAuthorization;
-    readonly capabilities:
-      readonly HostCapability[] | null | (() => Promise<readonly HostCapability[]>);
+    readonly capabilities: readonly HostCapability[] | null | HostCapabilityReader;
     readonly connection: DeploymentConnection;
     readonly origin: string;
   }): HostClient;

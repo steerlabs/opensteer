@@ -1,3 +1,4 @@
+import type { HostCapability } from "@opensteer/deployment-authority";
 import {
   AccountBrokeredHostSessions,
   HostSessionExchange,
@@ -885,6 +886,10 @@ export class MobileClient {
         assertCurrentAttachment();
         return value;
       });
+      // This evidence belongs only to this attempt and fence generation. A
+      // healthy poll cannot observe an upgrade; reconnects and refusals can.
+      let evidence: typeof verification | null = verification;
+      let verifying: Promise<readonly HostCapability[]> | null = null;
       const hostClient = this.#host.attach({
         authorization: {
           current: attachmentAuthorization.current,
@@ -893,12 +898,24 @@ export class MobileClient {
             return attachmentAuthorization.cached();
           },
         },
-        capabilities: async () => {
+        capabilities: async (options) => {
           assertCurrentAttachment();
-          const agreement = await this.#checkProtocolEpoch(attachment, generation, id, attempt);
-          if (typeof agreement === "string")
-            throw new Error(`Host capability verification failed: ${agreement}`);
-          return agreement.capabilities;
+          if (options?.revalidate) evidence = null;
+          if (!evidence && !verifying) {
+            verifying = (async () => {
+              const agreement = await this.#checkProtocolEpoch(attachment, generation, id, attempt);
+              if (typeof agreement === "string")
+                throw new Error(`Host capability verification failed: ${agreement}`);
+              assertCurrentAttachment();
+              evidence = agreement;
+              return agreement.capabilities;
+            })().finally(() => {
+              verifying = null;
+            });
+          }
+          const capabilities = verifying ? await verifying : evidence!.capabilities;
+          assertCurrentAttachment();
+          return capabilities;
         },
         connection: attachment.connection,
         origin: attachment.resolved.origin,
