@@ -13,6 +13,7 @@ import {
   DesktopHostHttpResponseSchema,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
@@ -100,6 +101,17 @@ interface BridgeFailures {
   };
   readonly httpOperations: Set<string>;
   readonly transportOperations: Set<string>;
+}
+
+/**
+ * Bounds a wait on a step this test controls. A missed precondition then fails
+ * in seconds with its name instead of timing out the whole test, which would
+ * contaminate every later test in the file.
+ */
+function within<T>(step: Promise<T>, what: string, timeoutMs = 15_000): Promise<T> {
+  return withTimeout(step, timeoutMs, {
+    timeoutError: () => new Error(`Timed out after ${timeoutMs} ms waiting for ${what}.`),
+  });
 }
 
 integration(
@@ -374,7 +386,7 @@ integration(
       // Activation may join history the client already holds; ask for the
       // latest page explicitly so it is the one held behind the race.
       const delayedPage = client.loadLatestTranscript(threadId);
-      await captured;
+      await within(captured, "the held thread.events.list request to start");
       const mark = await stack.api["commands.dispatch"]({
         idempotencyKey: `racing-mark-${randomUUID()}`,
         threadId,
@@ -401,7 +413,7 @@ integration(
       const newerUnread = client.getSnapshot().threadReadStates[threadId]?.unreadSequence;
       const revisionBeforePage = client.getSnapshot().revision;
       release();
-      await delayedPage;
+      await within(delayedPage, "the delayed thread.events.list page to settle");
       await vi.waitFor(
         () => {
           expect(client.getSnapshot().revision).toBeGreaterThan(revisionBeforePage);
@@ -1060,13 +1072,13 @@ integration(
       };
       // History read while the task is Done lands only after the other device reopens it.
       const staleHistory = reader.loadLatestTranscript(taskId);
-      await historyCaptured;
+      await within(historyCaptured, "the held thread.events.list request to start");
       await otherDevice.setTaskDone(taskId, false);
       await vi.waitFor(() => expect(entryOf(reader)?.thread.doneAt).toBeNull(), {
         timeout: 15_000,
       });
       release();
-      await staleHistory;
+      await within(staleHistory, "the stale history read to settle");
       expect(entryOf(reader)?.thread.doneAt).toBeNull();
       expect(reader.getSnapshot().threads.find(({ id }) => id === taskId)?.doneAt ?? null).toBe(
         null,
