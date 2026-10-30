@@ -525,9 +525,58 @@ function lastUsed(entry: string): number | undefined {
   }
 }
 
-// A lookahead captures overlapping IDs: one that starts inside another's hex
-// suffix must still count, or a referenced run would be deleted.
-const runIdReference = /(?=(\d{8}T\d{6}Z-[0-9a-f]{8}))/gu;
+/** `YYYYMMDDTHHMMSSZ-xxxxxxxx`: every run ID has this length. */
+const runIdLength = 25;
+
+/**
+ * Adds every run ID in `bytes[0, end)`. Each "Z-" is checked in place, so an ID
+ * that starts inside another's hex suffix still counts (missing one would delete
+ * a referenced run). A regex over decoded text cost minutes of CPU per admission.
+ */
+export function addRunIds(bytes: Buffer, end: number, into: Set<string>): void {
+  const view = bytes.subarray(0, end);
+  for (
+    let at = view.indexOf("Z-", 15, "latin1");
+    at !== -1;
+    at = view.indexOf("Z-", at + 1, "latin1")
+  ) {
+    const start = at - 15;
+    if (start + runIdLength > end) return;
+    if (isRunIdAt(view, start)) into.add(view.toString("latin1", start, start + runIdLength));
+  }
+}
+
+/**
+ * Adds the run IDs in successive reads through `buffer`. The last bytes of each read lead
+ * the next, so an ID split across two reads is whole.
+ */
+export function addRunIdsFromReads(
+  read: (into: Buffer, offset: number, length: number) => number,
+  buffer: Buffer,
+  into: Set<string>,
+): void {
+  let carried = 0;
+  while (true) {
+    const count = read(buffer, carried, buffer.length - carried);
+    if (!count) return;
+    const end = carried + count;
+    addRunIds(buffer, end, into);
+    carried = Math.min(runIdLength - 1, end);
+    buffer.copy(buffer, 0, end - carried, end);
+  }
+}
+
+function isRunIdAt(bytes: Buffer, start: number): boolean {
+  for (let offset = 0; offset < 15; offset += 1) {
+    const byte = bytes[start + offset]!;
+    if (offset === 8 ? byte !== 0x54 : byte < 0x30 || byte > 0x39) return false;
+  }
+  for (let offset = 17; offset < runIdLength; offset += 1) {
+    const byte = bytes[start + offset]!;
+    if ((byte < 0x30 || byte > 0x39) && (byte < 0x61 || byte > 0x66)) return false;
+  }
+  return true;
+}
 
 /**
  * Run IDs named by any file in the state tree that may name a run: notes,
@@ -553,9 +602,6 @@ export function referencedRunIds(state: string): { runIds: Set<string>; unreadab
   ]);
   // One read buffer for the whole scan: hundreds of thousands of mostly tiny files.
   const buffer = Buffer.allocUnsafe(1024 ** 2);
-  const collect = (text: string) => {
-    for (const match of text.matchAll(runIdReference)) runIds.add(match[1]!);
-  };
   const read = (filename: string) => {
     const stats = statSync(filename);
     if (
@@ -565,15 +611,11 @@ export function referencedRunIds(state: string): { runIds: Set<string>; unreadab
       return;
     const descriptor = openSync(filename, "r");
     try {
-      let carry = "";
-      while (true) {
-        const count = readSync(descriptor, buffer, 0, buffer.length, null);
-        if (!count) break;
-        const text = carry + buffer.subarray(0, count).toString("latin1");
-        collect(text);
-        // An ID split across two reads is matched in the next chunk.
-        carry = text.slice(-64);
-      }
+      addRunIdsFromReads(
+        (into, offset, length) => readSync(descriptor, into, offset, length, null),
+        buffer,
+        runIds,
+      );
     } finally {
       closeSync(descriptor);
     }
@@ -599,7 +641,8 @@ export function referencedRunIds(state: string): { runIds: Set<string>; unreadab
       }
       try {
         if (child.isSymbolicLink()) {
-          collect(readlinkSync(filename));
+          const link = readlinkSync(filename, { encoding: "buffer" });
+          addRunIds(link, link.length, runIds);
           try {
             read(filename);
           } catch (error) {

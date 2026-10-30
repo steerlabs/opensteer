@@ -16,7 +16,12 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { tryKernelLock } from "@opensteer/shared/kernelLock";
-import { reclaimVmStorage, referencedRunIds } from "../scripts/test-vm/retention.js";
+import {
+  addRunIds,
+  addRunIdsFromReads,
+  reclaimVmStorage,
+  referencedRunIds,
+} from "../scripts/test-vm/retention.js";
 
 const roots: string[] = [];
 const sha = (n: number) => n.toString(16).padStart(40, "0");
@@ -447,7 +452,7 @@ describe("storage retention safety", () => {
     writeFileSync(path.join(notes, "note.md"), "kept 20261020T000000Z-aaaaaaaa for review");
     // The digits of the second ID are hex, so a non-overlapping match would swallow them.
     writeFileSync(path.join(notes, "pair.txt"), "20261019T120000Z-20261020T000000Z-eeeeeeee");
-    // The ID straddles the scan's 1 MiB read boundary, so only the carry finds it.
+    // A large text file is read in several pieces; splits at every offset are tested below.
     writeFileSync(
       path.join(notes, "suite.log"),
       Buffer.concat([
@@ -469,5 +474,67 @@ describe("storage retention safety", () => {
         "20261020T000000Z-eeeeeeee",
       ]),
     });
+  });
+
+  // The scan checks bytes around each "Z-" instead of running a regex over decoded text,
+  // which cost minutes of CPU per admission; it must find exactly what the pattern does.
+  it("finds the same run IDs in bytes as the run-ID pattern, overlaps included", () => {
+    const pattern = /(?=(\d{8}T\d{6}Z-[0-9a-f]{8}))/gu;
+    const alphabet = "0123456789TZ-afgA x";
+    let seed = 7;
+    const random = () => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) / 2 ** 31;
+    const id = () =>
+      `2026${String(Math.floor(random() * 1e4)).padStart(4, "0")}T${String(Math.floor(random() * 1e6)).padStart(6, "0")}Z-${Math.floor(
+        random() * 2 ** 32,
+      )
+        .toString(16)
+        .padStart(8, "0")}`;
+    const samples = [
+      "",
+      "Z-",
+      "0000000T000000Z-aaaaaaaa",
+      "20261020T000000Z-AAAAAAAA",
+      "20261020T000000Z-aaaaaaa",
+      "20261019T120000Z-20261020T000000Z-eeeeeeee",
+    ];
+    for (let n = 0; n < 2_000; n += 1) {
+      let text = "";
+      while (text.length < 80)
+        text += random() < 0.3 ? id() : alphabet[Math.floor(random() * alphabet.length)];
+      samples.push(text.slice(Math.floor(random() * 30)));
+    }
+    for (const text of samples) {
+      const found = new Set<string>();
+      addRunIds(Buffer.from(text, "latin1"), text.length, found);
+      expect(found, text).toEqual(new Set([...text.matchAll(pattern)].map((match) => match[1])));
+    }
+  });
+
+  // Read boundaries depend on the buffer size, so a small buffer puts an ID across a
+  // boundary at every offset; each must survive the carry between reads.
+  it("finds IDs split across reads at every offset", () => {
+    const ids = ["20261020T000000Z-aaaaaaaa", "20261021T235959Z-0123abcd"];
+    const text = `x${ids[0]}yy${ids[1]}z`.repeat(3);
+    for (const size of [25, 26, 31, 40, 64])
+      for (let shift = 0; shift < size; shift += 1) {
+        const source = Buffer.from("-".repeat(shift) + text, "latin1");
+        let position = 0;
+        const found = new Set<string>();
+        addRunIdsFromReads(
+          (into, offset, length) => {
+            const count = source.copy(
+              into,
+              offset,
+              position,
+              Math.min(source.length, position + length),
+            );
+            position += count;
+            return count;
+          },
+          Buffer.alloc(size),
+          found,
+        );
+        expect(found, `buffer ${size}, shift ${shift}`).toEqual(new Set(ids));
+      }
   });
 });
