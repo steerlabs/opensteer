@@ -965,6 +965,22 @@ it.each([
     }
     const protectedOwner = await ownerView();
     await firstFrame(protectedOwner.view);
+    // A phone owner view idles out after three minutes unless its viewer renews
+    // it, as an open client does; the editing phases alone outlast that.
+    const renewProtectedOwner = setInterval(() => {
+      void testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "computer.view.renew",
+          viewId: protectedOwner.source.viewId,
+          generation: protectedOwner.source.generation,
+          idempotencyKey: randomUUID(),
+        },
+        owner,
+      ).catch((error: unknown) => cleanupFailures.push(`owner renewal: ${String(error)}`));
+    }, 60_000);
+    cleanup.push(() => clearInterval(renewProtectedOwner));
     let inputSequence = 0;
     function input(view: ComputerDisplayViewer, events: DisplayInputEvent[]) {
       view.send({
@@ -1740,6 +1756,7 @@ it.each([
           counts,
         };
       });
+      clearInterval(renewProtectedOwner);
       await closeOwner(protectedOwner.source);
       await closed(protectedOwner.view);
 
@@ -1825,7 +1842,7 @@ it.each([
         (await pointerSender(first))("down", await point("fixture_button"));
         await receipt("button_touch", beforeContact, "down");
         const released = await call("release");
-        expect(released.isError, resultText(released)).not.toBe(true);
+        expect(released.isError, JSON.stringify(released)).not.toBe(true);
         await Promise.all([
           closed(first),
           closed(second),
@@ -1874,7 +1891,7 @@ it.each([
         evidence.projectionAfterGrace = dump;
         expect(dump).toMatch(/Media Projection:\s*(?:null|\(null\))/iu);
         const released = await call("release");
-        expect(released.isError, resultText(released)).not.toBe(true);
+        expect(released.isError, JSON.stringify(released)).not.toBe(true);
       });
       await phase("zero-versus-eight-mixed-viewer-fairness-and-bounds", async () => {
         await openFixture();
@@ -2060,7 +2077,7 @@ it.each([
         resetInput(recovered);
         await recovered.close();
         const released = await call("release");
-        expect(released.isError, resultText(released)).not.toBe(true);
+        expect(released.isError, JSON.stringify(released)).not.toBe(true);
       });
       await phase("pause-ends-display-and-agent-session", async () => {
         await openFixture();
