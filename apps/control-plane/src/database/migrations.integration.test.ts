@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createLocalJWKSet, decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
+import { createControlPlaneAuth, ControlPlaneAuthenticator } from "../auth/auth.js";
 import { sql } from "kysely";
 import type { Kysely } from "kysely";
 import { Pool } from "pg";
@@ -7,6 +9,7 @@ import { createControlPlaneDatabase } from "./database.js";
 import type { ControlPlaneDatabaseSchema } from "./schema.js";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import {
+  betterAuth17Migration,
   directoryVisibilityMigration,
   hostIdentityMigration,
   migrateControlPlaneToLatest,
@@ -198,5 +201,156 @@ integration("control-plane baseline", () => {
     ]) {
       expect(tables).not.toContain(table);
     }
+  });
+});
+
+integration("Better Auth 1.7 Account migration", () => {
+  const databaseName = `opensteer_auth_upgrade_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const issuer = new URL("https://accounts.example.test");
+  const secret = "test-control-plane-secret-with-at-least-32-bytes";
+  const userId = "acct_11111111-1111-4111-8111-111111111111";
+  const token = "abcdefghijklmnopqrstuvwxyzABCDEF";
+  const sessionToken = "legacy-account-session-token";
+  let maintenance: Pool;
+  let database: Kysely<ControlPlaneDatabaseSchema>;
+  const urlForDatabase = (name: string) => {
+    const url = new URL(databaseUrl ?? "postgres://unconfigured");
+    url.pathname = `/${name}`;
+    return url.toString();
+  };
+
+  beforeAll(async () => {
+    maintenance = new Pool({ connectionString: urlForDatabase("postgres") });
+    await maintenance.query(`create database ${databaseName}`);
+    database = createControlPlaneDatabase({ connectionString: urlForDatabase(databaseName) });
+    await sql.raw(CONTROL_PLANE_BASELINE_SCHEMA_SQL).execute(database);
+    const hash = createHash("sha256").update(token).digest("base64url");
+    await sql`
+      insert into public.users (id, display_name, email, email_verified)
+      values (${userId}, 'Owner', 'owner@example.test', true)
+    `.execute(database);
+    await sql`
+      insert into public.auth_sessions (id, user_id, token, expires_at, created_at, updated_at)
+      values ('legacy-session', ${userId}, ${sessionToken}, now() + interval '30 days', now(), now())
+    `.execute(database);
+    await sql`
+      insert into public.oauth_clients
+        (id, client_id, disabled, redirect_uris, token_endpoint_auth_method, grant_types,
+         response_types, public, type, require_pkce, scopes)
+      values ('legacy-client', 'legacy-native', false, '["opensteer://callback"]', 'none',
+        '["authorization_code", "refresh_token"]', '["code"]', true, 'native', true,
+        '["openid", "email", "offline_access", "deployments:read"]')
+    `.execute(database);
+    await sql`
+      insert into public.oauth_refresh_token
+        (id, token, client_id, session_id, user_id, expires_at, created_at, auth_time, scopes)
+      values ('legacy-refresh', ${hash}, 'legacy-native', 'legacy-session', ${userId},
+        now() + interval '30 days', now(), now(),
+        '["openid", "email", "offline_access", "deployments:read"]');
+    `.execute(database);
+    await betterAuth17Migration.up(database);
+  });
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${databaseName}`);
+    await maintenance?.end();
+  });
+
+  it("retains a 1.6 registration, session and hashed refresh credential", async () => {
+    const auth = createControlPlaneAuth(database, { authSecret: secret, publicOrigin: issuer });
+    const signature = createHmac("sha256", secret).update(sessionToken).digest("base64");
+    const cookie = `__Secure-__Host-opensteer.account=${encodeURIComponent(`${sessionToken}.${signature}`)}`;
+    const authenticator = new ControlPlaneAuthenticator(auth, database, issuer);
+    await expect(authenticator.authenticate(new Headers({ cookie }))).resolves.toMatchObject({
+      accountId: userId,
+      kind: "session",
+    });
+    const response = await auth.handler(
+      new Request(new URL("/api/auth/oauth2/token", issuer), {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: "legacy-native",
+          grant_type: "refresh_token",
+          refresh_token: token,
+          resource: issuer.origin,
+        }),
+      }),
+    );
+    const body = (await response.json()) as {
+      access_token: string;
+      refresh_token: string;
+      id_token: string;
+    };
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    const originalKey = decodeProtectedHeader(body.access_token).kid;
+    await database.updateTable("authJwks").set({ alg: null, crv: null }).execute();
+    const { token: nextSignedToken } = await auth.api.signJWT({
+      body: { payload: { iss: issuer.origin, sub: userId } },
+    });
+    expect(decodeProtectedHeader(nextSignedToken).kid).toBe(originalKey);
+    const keys = createLocalJWKSet(await auth.api.getJwks());
+    await expect(
+      jwtVerify(body.access_token, keys, { issuer: issuer.origin }),
+    ).resolves.toBeDefined();
+    await expect(
+      jwtVerify(nextSignedToken, keys, { issuer: issuer.origin }),
+    ).resolves.toBeDefined();
+    const claims = decodeJwt(body.access_token);
+    expect(claims).toMatchObject({
+      iss: issuer.origin,
+      sub: userId,
+      sid: "legacy-session",
+      azp: "legacy-native",
+    });
+    expect([claims.aud].flat()).toContain(issuer.origin);
+    await expect(
+      authenticator.authenticate(new Headers({ authorization: `Bearer ${body.access_token}` }), {
+        scope: "deployments:read",
+      }),
+    ).resolves.toMatchObject({ accountId: userId });
+    const userInfo = await auth.handler(
+      new Request(new URL("/api/auth/oauth2/userinfo", issuer), {
+        headers: { authorization: `Bearer ${body.access_token}` },
+      }),
+    );
+    expect(userInfo.status).toBe(200);
+    expect(await userInfo.json()).toMatchObject({
+      sub: userId,
+      email: "owner@example.test",
+      email_verified: true,
+    });
+    const idClaims = decodeJwt(body.id_token);
+    expect(idClaims).toMatchObject({
+      sub: userId,
+      email: "owner@example.test",
+      email_verified: true,
+    });
+    const accessRevoke = await auth.handler(
+      new Request(new URL("/api/auth/oauth2/revoke", issuer), {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: "legacy-native",
+          token: body.access_token,
+          token_type_hint: "access_token",
+        }),
+      }),
+    );
+    expect(accessRevoke.status).toBe(400);
+    expect(await accessRevoke.json()).toMatchObject({ error: "unsupported_token_type" });
+    const revoke = await auth.handler(
+      new Request(new URL("/api/auth/oauth2/revoke", issuer), {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: "legacy-native",
+          token: body.refresh_token,
+          token_type_hint: "refresh_token",
+          resource: issuer.origin,
+        }),
+      }),
+    );
+    expect(revoke.status).toBe(200);
   });
 });

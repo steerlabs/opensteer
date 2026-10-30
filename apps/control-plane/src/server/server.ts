@@ -335,13 +335,13 @@ function registerAccountPages(
     if (!payload.success) {
       throw new ControlPlaneError("internal", "Authorization service response is invalid");
     }
-    return reply.redirect(payload.data.url);
+    return reply.redirect(new URL(payload.data.url, publicOrigin).toString());
   });
 }
 
 const AuthRedirectResponseSchema = z.object({ url: z.url().optional() }).passthrough();
 const ConsentRedirectResponseSchema = z
-  .object({ redirect: z.literal(true), url: z.url() })
+  .object({ redirect: z.literal(true), url: z.string().min(1) })
   .passthrough();
 
 async function callAuth(

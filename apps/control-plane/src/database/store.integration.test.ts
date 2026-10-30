@@ -188,11 +188,10 @@ integration("control-plane PostgreSQL boundary", () => {
           "clientId",
           "clientSecret",
           "id",
-          "public",
           "redirectUris",
           "referenceId",
           "requirePkce",
-          "type",
+          "applicationType",
         ])
         .where((expression) =>
           expression.or([
@@ -210,14 +209,13 @@ integration("control-plane PostgreSQL boundary", () => {
               clientId: client.clientId,
               clientSecret: null,
               id: client.clientId === betaBefore.clientId ? betaBefore.id : expect.any(String),
-              public: true,
               referenceId:
                 client.clientId === betaBefore.clientId
                   ? "official-native"
                   : `official-native:${client.clientId}`,
               redirectUris: client.redirectUris,
               requirePkce: true,
-              type: "native",
+              applicationType: "native",
             }),
           ),
       );
@@ -1484,8 +1482,7 @@ async function registerFixture(
         tokenEndpointAuthMethod: oidc.tokenEndpointAuthMethod,
         grantTypes: JSON.stringify(["authorization_code"]),
         responseTypes: JSON.stringify(["code"]),
-        public: false,
-        type: "web",
+        applicationType: "web",
         requirePkce: true,
         referenceId: `deployment:${deploymentId}`,
         metadata: { managedBy: "test-fixture", deploymentId },
