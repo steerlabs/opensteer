@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { copyFile, mkdir, readFile, writeFile, lstat } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile, lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
+import { releasePasskeyInputs } from "./passkeys-signing.cjs";
 const desktop = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const toolchainSchema = z.object({
   xcode: z.string(),
@@ -111,7 +112,8 @@ export async function buildPasskeysAddon(
 export async function stagePasskeysAddon(): Promise<void> {
   if ((process.env.OPENSTEER_DESKTOP_TARGET_OS ?? process.platform) !== "darwin") return;
   if (process.env.OPENSTEER_DESKTOP_RELEASE === "1") {
-    await buildPasskeysAddon();
+    if (releasePasskeyInputs(process.env)) await buildPasskeysAddon();
+    else await rm(path.join(desktop, "dist/passkeys/opensteer-passkeys.node"), { force: true });
     return;
   }
   const source = path.join(desktop, "generated-native/passkeys/opensteer-passkeys.node");

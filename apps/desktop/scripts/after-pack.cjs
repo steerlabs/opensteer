@@ -69,11 +69,13 @@ async function verifyPackagedDesktopContents(context) {
   verifyPortableFs(resources, desktop.capabilities.portableFs);
   verifyAgentPhone(resources, isDesktopRelease());
   if (context.electronPlatformName === "darwin") {
-    require("./passkeys-signing.cjs").verifyPasskeyAddon(
+    const passkeys = require("./passkeys-signing.cjs");
+    passkeys.verifyPasskeyAddon(
       join(resources, "../.."),
       false,
       undefined,
-      isDesktopRelease(),
+      isDesktopRelease() && Boolean(passkeys.releasePasskeyInputs(process.env)),
+      isDesktopRelease() && !passkeys.releasePasskeyInputs(process.env),
     );
     verifyHelperBundleRelease(resources, "computer-use", "Opensteer Computer Use.app", {
       executableSha256: join("Contents", "MacOS", "Opensteer Computer Use"),

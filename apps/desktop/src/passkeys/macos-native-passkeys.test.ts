@@ -311,6 +311,13 @@ test("checks deadline again when callback beats the timer, rejects malformed rep
   expect(vi.getTimerCount()).toBe(0);
 });
 
+test("a missing addon is unavailable without attempting to load native code", () => {
+  const load = vi.fn();
+  const adapter = createMacosNativePasskeys({ platform: "darwin", addonExists: () => false, load });
+  expect(adapter.available()).toBe(false);
+  expect(load).not.toHaveBeenCalled();
+});
+
 test("availability fails closed off macOS, on load failure, malformed ABI or missing entitlement", async () => {
   const load = vi.fn(() => {
     throw Error("missing");

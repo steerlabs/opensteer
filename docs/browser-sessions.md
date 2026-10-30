@@ -363,8 +363,9 @@ bytes return unchanged; Opensteer never stores a passkey private key.
 
 macOS requires 13.5 or later and Apple's browser passkey entitlement; security keys
 require 14.4 or later. The OS manager handles local passkeys, installed credential
-providers and nearby-phone options. Current builds lack the entitlement and opt in
-as notice viewers, as do web, iPhone, Linux and Windows viewers. A person using a
+providers and nearby-phone options. Releases without the channel-specific passkey
+signing inputs omit the native addon and entitlement and opt in as notice viewers,
+as do web, iPhone, Linux and Windows viewers. A person using a
 notice viewer gets an immediate refusal and a message to open the tab on a Mac.
 Cross-origin frames are refused, even when the site's Permissions Policy permits
 them. Headless Shell lacks the browser security evidence the provider needs, so it

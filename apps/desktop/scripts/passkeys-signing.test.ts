@@ -229,3 +229,54 @@ test("after-sign certificate extraction uses the signed leaf and removes tempora
     /certificate/u,
   );
 });
+
+test("after-sign rejects a stray addon in an unprovisioned release", async () => {
+  const { mkdirSync } = await import("node:fs");
+  const { vi } = await import("vitest");
+  const directory = mkdtempSync(join(tmpdir(), "passkey-unprovisioned-"));
+  const addon = join(
+    directory,
+    "Test.app/Contents/Resources/app.asar.unpacked/dist/passkeys/opensteer-passkeys.node",
+  );
+  mkdirSync(join(addon, ".."), { recursive: true });
+  writeFileSync(addon, "stray");
+  vi.stubEnv("OPENSTEER_DESKTOP_RELEASE", "1");
+  vi.stubEnv("OPENSTEER_DESKTOP_RELEASE_CHANNEL", "stable");
+  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_PROFILE", "");
+  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_ENTITLEMENTS", "");
+  try {
+    const afterSign = require("./after-sign.cjs") as (context: unknown) => Promise<void>;
+    await expect(
+      afterSign({
+        electronPlatformName: "darwin",
+        appOutDir: directory,
+        packager: { appInfo: { productFilename: "Test" } },
+      }),
+    ).rejects.toThrow(/must not.*addon/i);
+  } finally {
+    vi.unstubAllEnvs();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("after-sign requires an addon when release passkey inputs are supplied", async () => {
+  const { vi } = await import("vitest");
+  const directory = mkdtempSync(join(tmpdir(), "passkey-provisioned-"));
+  vi.stubEnv("OPENSTEER_DESKTOP_RELEASE", "1");
+  vi.stubEnv("OPENSTEER_DESKTOP_RELEASE_CHANNEL", "beta");
+  vi.stubEnv("OPENSTEER_PASSKEYS_BETA_PROFILE", "/profile");
+  vi.stubEnv("OPENSTEER_PASSKEYS_BETA_ENTITLEMENTS", "/entitlements");
+  try {
+    const afterSign = require("./after-sign.cjs") as (context: unknown) => Promise<void>;
+    await expect(
+      afterSign({
+        electronPlatformName: "darwin",
+        appOutDir: directory,
+        packager: { appInfo: { productFilename: "Test" } },
+      }),
+    ).rejects.toThrow(/ENOENT/);
+  } finally {
+    vi.unstubAllEnvs();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
