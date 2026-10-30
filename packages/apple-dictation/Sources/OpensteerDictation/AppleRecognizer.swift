@@ -1,6 +1,6 @@
 import AVFoundation
-import Speech
 import Foundation
+import Speech
 
 @available(iOS 26, macOS 26, *)
 actor AppleRecognizer: Recognizer {
@@ -10,41 +10,86 @@ actor AppleRecognizer: Recognizer {
   private var converter: AVAudioConverter?
   private var inputs: AnalyzerInputs?
   private var cancelled = false
+  private let reservations: ReservationCoordinator
+  private let languages: [String]
   private var reservation: Locale?
+
+  init(
+    reservations: ReservationCoordinator = ReservationCoordinator(),
+    languages: [String] = Locale.preferredLanguages
+  ) {
+    self.reservations = reservations
+    self.languages = languages
+  }
   private var installation: AssetInstallationRequest?
 
   private func resolve() async -> Locale? {
     guard SpeechTranscriber.isAvailable else { return nil }
-    for language in Locale.preferredLanguages {
-      if let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: language)) { return locale }
+    for language in languages {
+      if let locale = await SpeechTranscriber.supportedLocale(
+        equivalentTo: Locale(identifier: language))
+      {
+        return locale
+      }
     }
     return nil
   }
   private func module(_ locale: Locale) -> SpeechTranscriber {
-    SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [])
+    SpeechTranscriber(
+      locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults],
+      attributeOptions: [])
   }
   private func reconcile(_ locale: Locale?) async {
-    for reserved in await AssetInventory.reservedLocales where reserved != locale {
+    for reserved in await AssetInventory.reservedLocales
+    where locale.map({ localeIdentity(reserved) != localeIdentity($0) }) ?? true {
       await AssetInventory.release(reservedLocale: reserved)
     }
   }
   func availability(microphone: DictationMicrophone) async -> DictationAvailability {
+    await reservations.run { await self.inventoryAvailability(microphone: microphone) }
+  }
+  private func inventoryAvailability(microphone: DictationMicrophone) async -> DictationAvailability
+  {
     guard SpeechTranscriber.isAvailable else { return .unavailable(.hardware) }
-    let resolved = await resolve(); await reconcile(resolved)
+    let resolved = await resolve()
+    await reconcile(resolved)
     guard let locale = resolved else { return .unavailable(.language) }
     let status = await AssetInventory.status(forModules: [module(locale)])
     guard status != .unsupported else { return .unavailable(.language) }
     let identifier = locale.identifier(.bcp47)
-    let name = Locale.current.localizedString(forLanguageCode: locale.language.languageCode?.identifier ?? identifier) ?? identifier
-    return .available(locale: identifier, languageName: name, model: status == .installed ? .installed : .download, microphone: microphone)
+    let name =
+      Locale.current.localizedString(
+        forLanguageCode: locale.language.languageCode?.identifier ?? identifier) ?? identifier
+    return .available(
+      locale: identifier, languageName: name, model: status == .installed ? .installed : .download,
+      microphone: microphone)
   }
   func download(progress: @escaping @Sendable (Double?) -> Void) async throws {
-    let resolved = await resolve(); await reconcile(resolved)
+    let result = await reservations.run {
+      do {
+        try await self.install(progress: progress)
+        return Result<Void, Error>.success(())
+      } catch { return Result<Void, Error>.failure(error) }
+    }
+    try result.get()
+  }
+  private func install(progress: @escaping @Sendable (Double?) -> Void) async throws {
+    let resolved = await resolve()
+    await reconcile(resolved)
     guard !cancelled, let locale = resolved else { throw DictationError.downloadFailed }
-    let existed = await AssetInventory.reservedLocales.contains(locale)
-    try await AssetInventory.reserve(locale: locale)
+    let existed = await AssetInventory.reservedLocales.contains {
+      localeIdentity($0) == localeIdentity(locale)
+    }
+    guard !cancelled else { throw CancellationError() }
     if !existed { reservation = locale }
-    guard !cancelled else { await releaseUninstalled(); throw CancellationError() }
+    do { try await AssetInventory.reserve(locale: locale) } catch {
+      await releaseUninstalled()
+      throw error
+    }
+    guard !cancelled else {
+      await releaseUninstalled()
+      throw CancellationError()
+    }
     let modules = [module(locale)]
     do {
       installation = try await AssetInventory.assetInstallationRequest(supporting: modules)
@@ -61,22 +106,32 @@ actor AppleRecognizer: Recognizer {
         try await installation.downloadAndInstall()
       }
       guard !cancelled else { throw CancellationError() }
-      reservation = nil; installation = nil
-    } catch { await releaseUninstalled(); throw error }
+      reservation = nil
+      installation = nil
+    } catch {
+      await releaseUninstalled()
+      throw error
+    }
   }
   private func releaseUninstalled() async {
     if let locale = reservation {
       reservation = nil
-      if await AssetInventory.status(forModules: [module(locale)]) != .installed { await AssetInventory.release(reservedLocale: locale) }
+      if await AssetInventory.status(forModules: [module(locale)]) != .installed {
+        await AssetInventory.release(reservedLocale: locale)
+      }
     }
   }
   func admit() async throws {
     guard let locale = await resolve(), !cancelled else { throw DictationError.modelUnavailable }
     let transcriber = module(locale)
     guard await AssetInventory.status(forModules: [transcriber]) == .installed, !cancelled,
-          let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]), !cancelled else { throw DictationError.modelUnavailable }
-    self.transcriber = transcriber; self.format = format
-    analyzer = SpeechAnalyzer(modules: [transcriber], options: .init(priority: .userInitiated, modelRetention: .lingering))
+      let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]),
+      !cancelled
+    else { throw DictationError.modelUnavailable }
+    self.transcriber = transcriber
+    self.format = format
+    analyzer = SpeechAnalyzer(
+      modules: [transcriber], options: .init(priority: .userInitiated, modelRetention: .lingering))
   }
   func prepare() async throws {
     guard !cancelled, let analyzer, let format else { throw DictationError.recognitionFailed }
@@ -93,23 +148,13 @@ actor AppleRecognizer: Recognizer {
     try await convert(converter, buffer: buffer)
   }
   private func convert(_ converter: AVAudioConverter, buffer: AVAudioPCMBuffer?) async throws {
-    var supplied = false
-    while true {
-      guard let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: 4096) else { throw DictationError.recognitionFailed }
-      var error: NSError?
-      let status = converter.convert(to: output, error: &error) { _, state in
-        if let buffer, !supplied { supplied = true; state.pointee = .haveData; return buffer }
-        state.pointee = buffer == nil ? .endOfStream : .noDataNow; return nil
-      }
-      if error != nil || status == .error { throw DictationError.recognitionFailed }
-      if output.frameLength > 0 {
-        guard let inputs else { throw DictationError.recognitionFailed }
-        await inputs.send(AnalyzerInput(buffer: output))
-        guard !cancelled else { throw CancellationError() }
-      }
-      if status == .endOfStream || status == .inputRanDry { return }
+    try await convertAudio(converter, buffer: buffer) { output in
+      guard let inputs = self.inputs else { throw DictationError.recognitionFailed }
+      await inputs.send(AnalyzerInput(buffer: output))
+      guard !self.cancelled else { throw CancellationError() }
     }
   }
+
   func finishInput() async throws {
     if let converter { try await convert(converter, buffer: nil) }
     inputs?.finish()
@@ -119,13 +164,23 @@ actor AppleRecognizer: Recognizer {
     guard let transcriber else { throw DictationError.recognitionFailed }
     for try await result in transcriber.results {
       try Task.checkCancellation()
-      await receive(RecognitionResult(start: result.range.start.seconds, end: result.range.end.seconds, finalization: result.resultsFinalizationTime.seconds, text: String(result.text.characters)))
+      await receive(
+        RecognitionResult(
+          start: result.range.start.seconds, end: result.range.end.seconds,
+          finalization: result.resultsFinalizationTime.seconds, text: String(result.text.characters)
+        ))
     }
   }
   func cancel() async {
-    cancelled = true; installation?.progress.cancel(); inputs?.finish()
-    await analyzer?.cancelAndFinishNow(); await releaseUninstalled()
-    installation = nil; converter = nil; analyzer = nil; transcriber = nil
+    cancelled = true
+    installation?.progress.cancel()
+    inputs?.finish()
+    await analyzer?.cancelAndFinishNow()
+    await reservations.run { await self.releaseUninstalled() }
+    installation = nil
+    converter = nil
+    analyzer = nil
+    transcriber = nil
   }
 }
 
@@ -142,24 +197,42 @@ private final class AnalyzerInputs: AsyncSequence, @unchecked Sendable {
   init() { (stream, continuation) = AsyncStream.makeStream() }
   func send(_ input: AnalyzerInput) async {
     await withCheckedContinuation { ack in
-      lock.lock(); defer { lock.unlock() }
-      guard !closed else { ack.resume(); return }
-      pending = ack; continuation.yield(input)
+      lock.lock()
+      defer { lock.unlock() }
+      guard !closed else {
+        ack.resume()
+        return
+      }
+      pending = ack
+      continuation.yield(input)
     }
   }
   func acknowledge() {
-    lock.lock(); let ack = pending; pending = nil; lock.unlock(); ack?.resume()
+    lock.lock()
+    let ack = pending
+    pending = nil
+    lock.unlock()
+    ack?.resume()
   }
   func finish() {
-    lock.lock(); closed = true; let ack = pending; pending = nil; lock.unlock()
-    continuation.finish(); ack?.resume()
+    lock.lock()
+    closed = true
+    let ack = pending
+    pending = nil
+    lock.unlock()
+    continuation.finish()
+    ack?.resume()
   }
   struct AsyncIterator: AsyncIteratorProtocol {
     var base: AsyncStream<AnalyzerInput>.Iterator
     let owner: AnalyzerInputs
     mutating func next() async -> AnalyzerInput? {
-      let input = await base.next(); owner.acknowledge(); return input
+      let input = await base.next()
+      owner.acknowledge()
+      return input
     }
   }
-  func makeAsyncIterator() -> AsyncIterator { AsyncIterator(base: stream.makeAsyncIterator(), owner: self) }
+  func makeAsyncIterator() -> AsyncIterator {
+    AsyncIterator(base: stream.makeAsyncIterator(), owner: self)
+  }
 }

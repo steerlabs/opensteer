@@ -2,7 +2,30 @@
   "availability" : [
     {
       "available" : false,
+      "reason" : "platform"
+    },
+    {
+      "available" : false,
       "reason" : "os"
+    },
+    {
+      "available" : false,
+      "reason" : "hardware"
+    },
+    {
+      "available" : false,
+      "reason" : "language"
+    },
+    {
+      "available" : false,
+      "reason" : "restricted"
+    },
+    {
+      "available" : true,
+      "languageName" : "English",
+      "locale" : "en-US",
+      "microphone" : "undetermined",
+      "model" : "installed"
     },
     {
       "available" : true,
@@ -10,6 +33,34 @@
       "locale" : "en-US",
       "microphone" : "granted",
       "model" : "installed"
+    },
+    {
+      "available" : true,
+      "languageName" : "English",
+      "locale" : "en-US",
+      "microphone" : "denied",
+      "model" : "installed"
+    },
+    {
+      "available" : true,
+      "languageName" : "English",
+      "locale" : "en-US",
+      "microphone" : "undetermined",
+      "model" : "download"
+    },
+    {
+      "available" : true,
+      "languageName" : "English",
+      "locale" : "en-US",
+      "microphone" : "granted",
+      "model" : "download"
+    },
+    {
+      "available" : true,
+      "languageName" : "English",
+      "locale" : "en-US",
+      "microphone" : "denied",
+      "model" : "download"
     }
   ],
   "events" : [
@@ -59,6 +110,83 @@
       "error" : "recognition-failed",
       "reason" : "failed",
       "seq" : 7,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : null,
+      "reason" : "completed",
+      "seq" : 8,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : null,
+      "reason" : "cancelled",
+      "seq" : 9,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : null,
+      "reason" : "interrupted",
+      "seq" : 10,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : null,
+      "reason" : "device-changed",
+      "seq" : 11,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : "permission-denied",
+      "reason" : "failed",
+      "seq" : 12,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : "busy",
+      "reason" : "failed",
+      "seq" : 13,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : "microphone-unavailable",
+      "reason" : "failed",
+      "seq" : 14,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : "model-unavailable",
+      "reason" : "failed",
+      "seq" : 15,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : "download-failed",
+      "reason" : "failed",
+      "seq" : 16,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : "recognition-failed",
+      "reason" : "failed",
+      "seq" : 17,
+      "session" : "00000000-0000-4000-8000-000000000001",
+      "type" : "ended"
+    },
+    {
+      "error" : "service-unavailable",
+      "reason" : "failed",
+      "seq" : 18,
       "session" : "00000000-0000-4000-8000-000000000001",
       "type" : "ended"
     }
