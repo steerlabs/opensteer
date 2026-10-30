@@ -1014,7 +1014,9 @@ looked at later.
 Browser details always accept the person's input alongside the agent. A page takes the size of
 the page area the person views it in, as a window does, unless an agent set its own size.
 Previews never resize a page, a phone resizes one only when the person fits it, and opening or
-switching a view never redirects the agent's target. There is no takeover or turn-taking mode. Run details remain in the
+switching a view never redirects the agent's target. Phone displays and authorized Mac app owner pictures also accept the person’s input alongside
+the agent. See [shared display input](computer-use.md#negotiated-mac-owner-input) and
+[phone input](agent-phone.md#live-display). Run details remain in the
 conversation, while finished files arrive as attachments; Files and Activity are no longer
 top-level stage destinations. See [Browser sessions](browser-sessions.md) and
 [Computer use](computer-use.md) for transport and access boundaries.
