@@ -39,7 +39,13 @@ an older insider after a newer one: the updater selects the first eligible feed 
 Each final signed and notarized build must launch in an isolated fresh profile,
 start its bundled Personal Host, render the first screen and stop its children
 before publication. The release-only launch check has a three-minute deadline;
-failures retain logs and a screenshot. Database upgrade coverage belongs to the
+failures retain logs and a screenshot. The explicit smoke launch mode accepts only
+Playwright's ephemeral debugger ports with a fresh private HOME, userData and
+workspace; normal packaged launches still reject debugging switches. Smoke mode
+keeps the login-shell and engine environment in that HOME and skips the move-to-
+Applications prompt. It is an instrumentation exception for release checks, not
+a sandbox against a same-user process that deliberately enables it.
+Database upgrade coverage belongs to the
 migration compatibility tests. VM update journeys remain optional on-demand tools.
 
 A dispatch of either channel stops at the draft unless `publish=true`. Publication

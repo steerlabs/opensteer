@@ -238,7 +238,8 @@ jobs:
             --app-zip "$RUNNER_TEMP/Opensteer.zip" --version "$OPENSTEER_RELEASE_VERSION" \
             --source-sha "$OPENSTEER_SOURCE_REVISION" --out "$RUNNER_TEMP/prepared"
       - name: Launch check
-        timeout-minutes: 3
+        # The script enforces 180 seconds and owns process cleanup.
+        timeout-minutes: 4
         run: |
           app="$GITHUB_WORKSPACE/apps/desktop/release/mac-arm64/Opensteer.app"
           if [[ "$OPENSTEER_DESKTOP_RELEASE_CHANNEL" == beta ]]; then

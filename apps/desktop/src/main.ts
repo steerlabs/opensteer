@@ -101,7 +101,10 @@ import {
   defaultPersonalDeploymentName,
 } from "./secrets/personal-deployment-store.js";
 import { PersonalDeploymentSupervisor } from "./supervisor/personal-deployment-supervisor.js";
-import { NativePersonalUserEnvironment } from "./supervisor/personal-user-environment.js";
+import {
+  FixedPersonalUserEnvironment,
+  NativePersonalUserEnvironment,
+} from "./supervisor/personal-user-environment.js";
 import {
   NodePersonalProcessPort,
   readPersonalProcessSupervisorRelease,
@@ -185,6 +188,8 @@ app.on("second-instance", (_event, argv) => {
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
 });
 
+const releaseSmoke = process.env.OPENSTEER_DESKTOP_RELEASE_SMOKE === "1";
+
 if (acceptLaunch()) {
   app.setName(desktopApplicationName(app.isPackaged, embeddedRelease.application.name));
   app.enableSandbox();
@@ -227,7 +232,8 @@ async function startDesktop(): Promise<void> {
     });
   }
   // Only a build that updates itself needs to live in Applications.
-  if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
+  if (!releaseSmoke && loaded.config.updates && (await offerMoveToApplications(reportEvent)))
+    return;
   shutdown.signal.throwIfAborted();
   for (const url of process.argv) routeDesktopUrl(url, oauthDeepLinks, webLinks);
   await runDesktop(loaded, privateFiles);
@@ -299,7 +305,9 @@ async function runDesktop(
       ),
   });
   const resourcesDirectory = path.dirname(loaded.config.personal.releaseDirectory);
-  const personalUserEnvironment = new NativePersonalUserEnvironment();
+  const personalUserEnvironment = releaseSmoke
+    ? new FixedPersonalUserEnvironment(process.env)
+    : new NativePersonalUserEnvironment();
   const hostControl = new NativePersonalHostControl({
     fetch: (deploymentId, input, init) => hostNetwork.partitionFetch(deploymentId, input, init),
   });

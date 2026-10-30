@@ -266,7 +266,7 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
   await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("Asset differs");
 });
 
-// Publication must ship exactly the zip the gate certified, even when a later swap
+// Optional pinning must ship exactly the selected zip, even when a later swap
 // rewrote release.json and SHA256SUMS to match the new bytes.
 it("honors optional zip pinning and publishes stable without certification", async () => {
   const certified = await releaseFixture("beta");

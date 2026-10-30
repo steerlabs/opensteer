@@ -19,6 +19,13 @@ const artifacts = path.resolve(
   values["artifacts-dir"] ?? path.join(tmpdir(), "desktop-launch-artifacts"),
 );
 await mkdir(artifacts, { recursive: true });
+// Playwright can reject additional launch-output promises when an executable
+// exits before opening its debugging ports. Preserve those diagnostics too.
+const asyncFailure = (error: unknown) => {
+  process.exitCode = 1;
+  appendFileSync(path.join(artifacts, "failure.txt"), `${String(error)}\n`);
+};
+process.on("unhandledRejection", asyncFailure);
 const home = await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "opensteer-launch-"));
 const data = path.join(home, "userdata");
 let app: ElectronApplication | undefined;
@@ -69,6 +76,7 @@ try {
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: home,
+      OPENSTEER_DESKTOP_RELEASE_SMOKE: "1",
       TMPDIR: home,
       OPENSTEER_DESKTOP_DATA_DIR: data,
       OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT: path.join(home, "workspace"),
@@ -81,13 +89,12 @@ try {
   launched.stderr?.on("data", (chunk: Buffer) =>
     appendFileSync(path.join(artifacts, "stderr.log"), chunk),
   );
-  // Decline the first-run move prompt without touching the installed application.
-  await bounded(
-    app.evaluate(({ dialog }) => {
-      dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
-    }),
+  step = "isolated profile was not applied";
+  const actualData = await bounded(
+    app.evaluate(({ app }) => app.getPath("userData")),
     5_000,
   );
+  if (actualData !== data) throw Error("Packaged app ignored isolated userData");
   step = "desktop window never opened";
   page = await app.firstWindow({ timeout: 30_000 });
   const fatal: string[] = [];
@@ -169,5 +176,6 @@ try {
     if (pid && alive(pid)) process.kill(pid, "SIGKILL");
   }
   clearTimeout(deadline);
+  process.off("unhandledRejection", asyncFailure);
   await rm(home, { recursive: true, force: true });
 }
