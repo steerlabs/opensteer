@@ -89,7 +89,6 @@
       "timeout": 8,
       "swift": ["packages/apple-dictation"],
       "tests": ["packages/apple-dictation"],
-      "vitest": ["packages/protocol/src/dictation-wire.test.ts"],
       "xcode": "/Applications/Xcode_26.3.app/Contents/Developer"
     }
   ]

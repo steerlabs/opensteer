@@ -259,7 +259,6 @@ jobs:
         if: matrix.task == 'dictation'
         run: |
           swift test --package-path packages/apple-dictation
-          pnpm exec vitest run packages/protocol/src/dictation-wire.test.ts
       - name: Test computer use
         if: matrix.task == 'computer-tests'
         run: swift test --package-path apps/desktop/native/computer-use

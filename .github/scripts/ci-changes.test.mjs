@@ -342,12 +342,11 @@ test("Swift sources, node manifests and the CI definition select their tasks", (
     "passwords-helper",
     "passwords-tests",
   ]);
-  // passwords-tests runs only `swift test`: installed packages cannot change it.
+  // Swift-only tests do not depend on installed Node packages.
   assert.deepEqual(swiftOnly(decide(["pnpm-lock.yaml"], realGraph)), [
     "computer-helper",
     "passwords-helper",
     "computer-tests",
-    "dictation",
   ]);
   assert.deepEqual(decide([".github/workflows/ci.yml"], realGraph).nativeMac, allNativeMacTasks);
   assert.deepEqual(decide([], realGraph, realGraph, true).nativeMac, allNativeMacTasks);
