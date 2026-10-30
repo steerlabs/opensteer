@@ -243,12 +243,14 @@ async function reclaimUnlocked(options: VmRetention): Promise<number> {
       finished(record) &&
       options.now - (record.endedAt ?? record.startedAt) * 1000 >= day,
   );
-  const references = old.length ? referenceTexts(options.state) : { texts: [] };
+  const references: ReturnType<typeof referencedRunIds> = old.length
+    ? referencedRunIds(options.state)
+    : { runIds: new Set() };
   if (references.unreadable)
     options.log(`kept every old run: cannot read ${references.unreadable}`);
   else
     for (const [runId] of old) {
-      if (references.texts.some((text) => text.includes(runId))) continue;
+      if (references.runIds.has(runId)) continue;
       const target = path.join(runs, runId);
       await attempt("run", target, async () => {
         canonical(options.state, target);
@@ -523,14 +525,20 @@ function lastUsed(entry: string): number | undefined {
   }
 }
 
+// A lookahead captures overlapping IDs: one that starts inside another's hex
+// suffix must still count, or a referenced run would be deleted.
+const runIdReference = /(?=(\d{8}T\d{6}Z-[0-9a-f]{8}))/gu;
+
 /**
- * Every file in the state tree that may name a run: notes, receipts, release
- * state and logs up to `referenceBytes`, a symlink's target file and the link
- * itself. Not read: the runner's own outputs, checkouts (anything holding
- * `.git`), dependencies, app bundles and Xcode build products.
+ * Run IDs named by any file in the state tree that may name a run: notes,
+ * receipts, release state and logs up to `referenceBytes`, larger text records,
+ * a symlink's target file and the link itself. Not read: the runner's own
+ * outputs, checkouts (anything holding `.git`), dependencies, app bundles and
+ * Xcode build products. Only the IDs are kept; a busy host holds tens of GiB of
+ * such files, far more than admission can hold in memory.
  */
-function referenceTexts(state: string): { texts: string[]; unreadable?: string } {
-  const texts: string[] = [];
+export function referencedRunIds(state: string): { runIds: Set<string>; unreadable?: string } {
+  const runIds = new Set<string>();
   const pending = [state];
   const skipped = new Set([
     "vm-runs",
@@ -543,28 +551,31 @@ function referenceTexts(state: string): { texts: string[]; unreadable?: string }
     // of the small files it validated, so those jobs' large output can go.
     "sweep",
   ]);
+  // One read buffer for the whole scan: hundreds of thousands of mostly tiny files.
+  const buffer = Buffer.allocUnsafe(1024 ** 2);
+  const collect = (text: string) => {
+    for (const match of text.matchAll(runIdReference)) runIds.add(match[1]!);
+  };
   const read = (filename: string) => {
     const stats = statSync(filename);
-    if (stats.isFile() && stats.size <= referenceBytes)
-      texts.push(readFileSync(filename, "latin1"));
-    else if (
-      stats.isFile() &&
-      (stats.size <= referenceBytes || /\.(?:json|jsonl|md|txt|log)$/iu.test(filename))
-    ) {
-      const descriptor = openSync(filename, "r");
-      try {
-        const buffer = Buffer.alloc(1024 ** 2);
-        let carry = "";
-        while (true) {
-          const count = readSync(descriptor, buffer, 0, buffer.length, null);
-          if (!count) break;
-          const text = carry + buffer.subarray(0, count).toString("latin1");
-          for (const match of text.matchAll(/\d{8}T\d{6}Z-[0-9a-f]{8}/gu)) texts.push(match[0]);
-          carry = text.slice(-64);
-        }
-      } finally {
-        closeSync(descriptor);
+    if (
+      !stats.isFile() ||
+      (stats.size > referenceBytes && !/\.(?:json|jsonl|md|txt|log)$/iu.test(filename))
+    )
+      return;
+    const descriptor = openSync(filename, "r");
+    try {
+      let carry = "";
+      while (true) {
+        const count = readSync(descriptor, buffer, 0, buffer.length, null);
+        if (!count) break;
+        const text = carry + buffer.subarray(0, count).toString("latin1");
+        collect(text);
+        // An ID split across two reads is matched in the next chunk.
+        carry = text.slice(-64);
       }
+    } finally {
+      closeSync(descriptor);
     }
   };
   while (pending.length) {
@@ -574,7 +585,7 @@ function referenceTexts(state: string): { texts: string[]; unreadable?: string }
       children = readdirSync(directory, { withFileTypes: true });
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") continue;
-      return { texts, unreadable: directory };
+      return { runIds, unreadable: directory };
     }
     if (directory !== state && children.some((child) => child.name === ".git")) continue;
     for (const child of children) {
@@ -588,7 +599,7 @@ function referenceTexts(state: string): { texts: string[]; unreadable?: string }
       }
       try {
         if (child.isSymbolicLink()) {
-          texts.push(readlinkSync(filename));
+          collect(readlinkSync(filename));
           try {
             read(filename);
           } catch (error) {
@@ -598,11 +609,11 @@ function referenceTexts(state: string): { texts: string[]; unreadable?: string }
         } else if (child.isFile()) read(filename);
       } catch (error) {
         if (isNodeError(error) && error.code === "ENOENT") continue;
-        return { texts, unreadable: filename };
+        return { runIds, unreadable: filename };
       }
     }
   }
-  return { texts };
+  return { runIds };
 }
 
 /** Allocated bytes, like du(1): sparse disks count only what they use. */
