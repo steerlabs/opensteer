@@ -100,6 +100,7 @@ mac:
   # this app's own Runner, and without them the prompt would be unattributed.
   extendInfo:
     ElectronSquirrelPreventDowngrades: true
+    NSMicrophoneUsageDescription: Opensteer uses the microphone while you talk to it by voice.
     NSDesktopFolderUsageDescription: Opensteer reads your Desktop only for folders you share with agents on your other computers.
     NSDocumentsFolderUsageDescription: Opensteer reads your Documents only for folders you share with agents on your other computers.
     NSDownloadsFolderUsageDescription: Opensteer reads your Downloads only for folders you share with agents on your other computers. Opensteer saves files you download there.
