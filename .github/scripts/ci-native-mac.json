@@ -40,8 +40,18 @@
     {
       "task": "iphone",
       "timeout": 6,
-      "swift": ["packages/apple-data", "apps/mobile/modules/iphone-apps/ios"],
-      "tests": ["packages/apple-data", "apps/mobile/modules/iphone-apps/ios"],
+      "swift": [
+        "packages/apple-data",
+        "apps/mobile/modules/iphone-apps/ios",
+        "apps/mobile/modules/dictation/ios/Package.swift",
+        "apps/mobile/modules/dictation/ios/Sources",
+        "apps/mobile/modules/dictation/ios/Tests"
+      ],
+      "tests": [
+        "packages/apple-data",
+        "apps/mobile/modules/iphone-apps/ios",
+        "apps/mobile/modules/dictation/ios"
+      ],
       "scripts": [
         "scripts/generate-apple-data-contracts.ts",
         "apps/desktop/src/computer-use/lifecycle-lock-holder.fixture.ts"

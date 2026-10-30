@@ -261,6 +261,7 @@ jobs:
         run: |
           swift test --package-path packages/apple-data
           swift test --package-path apps/mobile/modules/iphone-apps/ios
+          swift test --package-path apps/mobile/modules/dictation/ios
       - name: Test dictation
         if: matrix.task == 'dictation'
         run: |

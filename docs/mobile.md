@@ -87,6 +87,14 @@ Integration OAuth browser return is only a wake-up: read the durable attempt bac
 with the same Host credential. Transcript links use
 `packages/shared/src/transcriptLinks.ts` so generated content cannot switch Deployments.
 
+### Message dictation
+
+On supported iOS 26+ hardware, the composer offers on-device dictation beside
+Attach; Android and unsupported iOS devices hide the mic. Audio stays in native
+memory. Send finishes recognition before delivering, typing keeps the displayed
+edit, and leaving saves the words into the original draft. See
+[Dictation](dictation.md#iphone).
+
 ## Saved views
 
 Saved views contain private Chat/task text and are presentation only. They must
