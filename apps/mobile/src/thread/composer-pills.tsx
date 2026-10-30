@@ -1,4 +1,9 @@
-import { accessModeOptions, accessModeUnavailableReason } from "@opensteer/client/host";
+import {
+  optionsSummary,
+  reasoningLevel,
+  accessModeOptions,
+  accessModeUnavailableReason,
+} from "@opensteer/client/host";
 import type { ModelSelection, ThreadAccessMode } from "@opensteer/core";
 import type { HarnessModelDescriptor } from "@opensteer/protocol";
 import { useState, type ReactNode } from "react";
@@ -31,20 +36,8 @@ export function ComposerPills(props: {
 }): ReactNode {
   const accessLabel =
     accessModeOptions.find((option) => option.mode === props.accessMode)?.label ?? props.accessMode;
-  const reasoning = props.model?.options.find(
-    (option) =>
-      option.type === "select" &&
-      (option.id === "effort" ||
-        option.id === "thinking" ||
-        option.label.toLocaleLowerCase() === "reasoning"),
-  );
-  const reasoningLabel =
-    reasoning?.type === "select"
-      ? ((
-          reasoning.values.find((value) => value.value === props.modelOptions[reasoning.id]) ??
-          reasoning.values.find((value) => value.value === reasoning.defaultValue)
-        )?.label ?? null)
-      : null;
+  const reasoningLabel = props.model ? optionsSummary(props.model, props.modelOptions) : null;
+  const level = props.model ? reasoningLevel(props.model, props.modelOptions) : null;
   const label = `${props.engineName} · ${props.modelLabel}`;
   const fullLabel = `AI: ${label}${reasoningLabel === null ? "" : ` · ${reasoningLabel}`}`;
   const blockedReason =
@@ -58,11 +51,9 @@ export function ComposerPills(props: {
   // composer's order — the reasoning level, then the engine's name, which its
   // mark still says — and only the last, the model alone, is ever shortened.
   const fit = useFittedForm(
-    [
-      [props.engineName, props.modelLabel, summary],
-      [props.engineName, props.modelLabel],
-      [props.modelLabel],
-    ].map((words) => words.filter(Boolean).join(" · ")),
+    [[props.modelLabel, summary], [props.modelLabel]].map((words) =>
+      words.filter(Boolean).join(" · "),
+    ),
   );
   return (
     <View onLayout={fit.onLane}>
@@ -97,8 +88,28 @@ export function ComposerPills(props: {
             onLayout={fit.onText}
             style={[styles.name, blocked && styles.blocked]}
           >
-            {fit.form}
+            {props.modelLabel}
+            {fit.form !== props.modelLabel && summary ? (
+              <Text style={{ color: color.muted }}> · {summary}</Text>
+            ) : null}
           </Text>
+          {fit.form === props.modelLabel && level ? (
+            <View
+              accessible={false}
+              style={{ flexDirection: "row", alignItems: "flex-end", gap: 2 }}
+            >
+              {Array.from({ length: level.steps }, (_, index) => (
+                <View
+                  key={index}
+                  style={{
+                    width: 2,
+                    height: 3 + index * 3,
+                    backgroundColor: index < level.level ? color.muted : color.lineStrong,
+                  }}
+                />
+              ))}
+            </View>
+          ) : null}
           <Symbol
             name={blocked ? "exclamationmark.circle" : "chevron.down"}
             size={12}

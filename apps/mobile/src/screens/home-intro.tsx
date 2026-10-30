@@ -336,10 +336,11 @@ export function HomeIntro(props: {
     ],
   );
 
-  const chooseAI = (pickerAttemptId?: string): void =>
+  const chooseAI = (pickerAttemptId?: string, conversation?: boolean): void =>
     navigation.navigate("NewThread", {
       deploymentId,
       home: true,
+      ...(conversation ? { conversation: true } : {}),
       ...(pickerAttemptId === undefined ? {} : { pickerAttemptId }),
     });
   const empty = text.trim() === "" && held === null && quote === null && staged.items.length === 0;
