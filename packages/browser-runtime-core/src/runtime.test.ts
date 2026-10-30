@@ -1,3 +1,5 @@
+import { gate } from "@opensteer/shared/test-support/observation";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { describe, expect, it, vi } from "vitest";
 import { defaultBrowserViewport } from "@opensteer/browser-core";
 import { BrowserSessionIdSchema, browserStateImportRuntimeTimeoutMs } from "@opensteer/protocol";
@@ -81,6 +83,100 @@ describe("BrowserRuntime", () => {
     await attachment.close();
     await runtime.shutdown();
   });
+
+  it("queues the next attachment behind an in-flight final commit", async () => {
+    const held = gate({ label: "final host commit", deadlineMs: 2_000 });
+    const state = new FakeProfileStateClient();
+    const verifier = new FakeTicketVerifier();
+    verifier.setClaims(
+      "next",
+      validClaims({
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+      }),
+    );
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+      profileStateClient: {
+        load: () => state.load(),
+        commit: async (...args) => {
+          await held.enter();
+          return state.commit(...args);
+        },
+      },
+    });
+    let stopping: Promise<void> | undefined;
+    let next: ReturnType<typeof runtime.attach> | undefined;
+    try {
+      const first = await runtime.attach("signed-ticket", new FakeSink());
+      stopping = first.close();
+      await held.entered;
+      next = runtime.attach("next", new FakeSink());
+      held.release();
+      await withTimeout(stopping, 2_000, { timeoutError: () => new Error("final close stalled") });
+      const attachment = await withTimeout(next, 2_000, {
+        timeoutError: () => new Error("next attach stalled"),
+      });
+      expect(runtime.health().sessionCount).toBe(1);
+      expect(state.revision).toBe(1);
+      await attachment.close();
+    } finally {
+      held.release();
+      await stopping?.catch(() => undefined);
+      await next?.catch(() => undefined);
+      await runtime.shutdown();
+    }
+  });
+
+  it.each(["profile-state.lease-rejected", "profile-state.transport-failed"])(
+    "disposes a failed final save (%s) and admits a new session",
+    async (reason) => {
+      const launcher = new FakeLauncher();
+      const state = new FakeProfileStateClient();
+      const transport = reason === "profile-state.transport-failed";
+      const failure = new BrowserRuntimeError(transport ? "internal" : "forbidden", "save failed", {
+        reason,
+        retryable: transport,
+      });
+      let fail = true;
+      const verifier = new FakeTicketVerifier();
+      verifier.setClaims(
+        "next",
+        validClaims({
+          sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+        }),
+      );
+      const runtime = new BrowserRuntime({
+        launcher,
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: verifier,
+        profileStateClient: {
+          load: () => state.load(),
+          commit: (...args) => {
+            if (fail) {
+              fail = false;
+              throw failure;
+            }
+            return state.commit(...args);
+          },
+        },
+      });
+      try {
+        const first = await runtime.attach("signed-ticket", new FakeSink());
+        await expect(first.close()).rejects.toMatchObject({ errors: [failure] });
+        expect(runtime.health().profileHostCount).toBe(0);
+        const next = await runtime.attach("next", new FakeSink());
+        expect(launcher.launchCount).toBe(2);
+        expect(launcher.lastRequest?.snapshot).toEqual(state.snapshot);
+        await next.close();
+      } finally {
+        await runtime.shutdown();
+      }
+    },
+  );
 
   it("restores the Host-owned profile once and checkpoints it when the Profile Host closes", async () => {
     const launcher = new FakeLauncher();

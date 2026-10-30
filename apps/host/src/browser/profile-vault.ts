@@ -22,6 +22,7 @@ export interface BrowserProfileRevisionRepository {
     readonly ciphertext: Uint8Array;
     readonly ciphertextSha256: string;
     readonly expectedRevision: number;
+    readonly periodic?: boolean;
     readonly profileId: BrowserProfileId;
   }): Promise<EncryptedBrowserProfileRevision>;
   readBrowserProfileRevision(
@@ -61,6 +62,7 @@ export class BrowserProfileVault {
 
   async commit(input: {
     readonly expectedRevision: number;
+    readonly periodic?: boolean;
     readonly profileId: BrowserProfileId;
     readonly snapshot: BrowserProfileSnapshot;
   }): Promise<LoadedBrowserProfile> {
@@ -69,6 +71,7 @@ export class BrowserProfileVault {
       ciphertext: prepared.ciphertext,
       ciphertextSha256: prepared.ciphertextSha256,
       expectedRevision: input.expectedRevision,
+      periodic: input.periodic ?? false,
       profileId: input.profileId,
     });
     return { revision: stored.revision, snapshot: input.snapshot };

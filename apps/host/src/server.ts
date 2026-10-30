@@ -1,3 +1,4 @@
+import { browserProfileCheckpointHeader } from "@opensteer/protocol";
 import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
 import { searchSuggestions } from "./browser/search-suggestions.js";
 import type { BrowserTabGroupService } from "./browser/browser-tab-group-service.js";
@@ -879,6 +880,7 @@ export async function createHostServer(
         .parse(request.body);
       const committed = await dependencies.browser.commitProfileState({
         expectedRevision: body.expectedRevision,
+        periodic: request.headers[browserProfileCheckpointHeader] === "periodic",
         leaseToken: requireBearerToken(request),
         profileId: BrowserProfileIdSchema.parse(request.params.profileId),
         sessionId: BrowserSessionIdSchema.parse(request.params.sessionId),
