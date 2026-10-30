@@ -507,6 +507,30 @@ describe("Home conversation", () => {
     );
   });
 
+  it("offers voice before the first Chat message", async () => {
+    stubLayoutApis();
+    const client = new MockHostClient({ latencyMs: 0 });
+    clients.push(client);
+    const base = client.getSnapshot();
+    vi.spyOn(client, "getSnapshot").mockReturnValue({ ...base, homeThreadId: null });
+    const { node, root } = setup();
+    await act(async () =>
+      root.render(
+        <ToastProvider>
+          <MemoryRouter initialEntries={["/"]}>
+            <Routes>
+              <Route element={<AppShell hostClient={client} loadError={null} />}>
+                <Route index element={<HomeRoute />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>,
+      ),
+    );
+    expect(node.querySelector('[aria-label="Talk to Opensteer"]')).not.toBeNull();
+    expect(node.querySelector(".voice-dock")).not.toBeNull();
+  });
+
   it("uses the routed Home's real settings and opens a task as its own conversation", async () => {
     stubLayoutApis();
     const client = new MockHostClient({ latencyMs: 0 });

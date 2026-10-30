@@ -14,6 +14,7 @@ import {
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { useShell } from "./app-shell.js";
+import { VoiceButton, VoiceDock } from "./voice.js";
 import { BrandMark } from "./brand.js";
 import { Composer, type ComposerQuote, type ComposerSubmission } from "./composer.js";
 import { ExecutionControls } from "./execution-controls.js";
