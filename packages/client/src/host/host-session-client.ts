@@ -633,6 +633,7 @@ export class HttpHostClient {
       this.browserPasskeys.disconnect(sessionId, surfaceId);
     },
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
+    () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
   );
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
@@ -642,6 +643,7 @@ export class HttpHostClient {
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
     undefined,
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
+    () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
   );
   #targetedBrowserSocket(
     sessionId: string,
@@ -1219,6 +1221,8 @@ export class HttpHostClient {
       surfaceId
         ? this.#targetedControl.get(sessionId, surfaceId).frame
         : (this.#browserFrameValues.get(sessionId) ?? null),
+    rasterDemand: (sessionId, surfaceId) =>
+      this.#targetedControl.rasterDemand(sessionId, surfaceId),
     subscribe: (sessionId, listener, surfaceId) => {
       if (surfaceId) return this.#targetedControl.subscribe(sessionId, surfaceId, listener);
       if (this.#disposed) return () => undefined;
@@ -1239,6 +1243,7 @@ export class HttpHostClient {
       surfaceId
         ? this.#targetedWatch.get(sessionId, surfaceId).frame
         : (this.#browserWatchFrameValues.get(sessionId) ?? null),
+    rasterDemand: (sessionId, surfaceId) => this.#targetedWatch.rasterDemand(sessionId, surfaceId),
     subscribe: (sessionId, listener, surfaceId) => {
       if (surfaceId) return this.#targetedWatch.subscribe(sessionId, surfaceId, listener);
       const listeners = this.#browserWatchFrameListeners.get(sessionId) ?? new Set<() => void>();
@@ -2476,6 +2481,7 @@ export class HttpHostClient {
       readonly picture?: boolean;
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
+      readonly rasterDemand?: boolean;
     },
   ): (() => void) => {
     if (options?.picture === false && !this.#capabilities?.includes("browser-target-control-v1"))
@@ -2490,7 +2496,11 @@ export class HttpHostClient {
   readonly retainBrowserWatch = (
     sessionId: string,
     surfaceId?: string,
-    options?: { readonly captureRegion?: boolean; readonly frameWindow?: boolean },
+    options?: {
+      readonly captureRegion?: boolean;
+      readonly frameWindow?: boolean;
+      readonly rasterDemand?: boolean;
+    },
   ): (() => void) =>
     surfaceId
       ? this.#targetedWatch.retain(sessionId, surfaceId, options)

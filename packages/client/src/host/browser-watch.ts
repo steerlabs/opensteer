@@ -1,10 +1,11 @@
 import {
+  type BrowserRasterDensity,
   type BrowserServerMessage,
   BrowserServerMessageSchema,
   TargetedBrowserClientMessageSchema,
   decodeBrowserFrameEnvelope,
 } from "@opensteer/protocol";
-import type { BrowserFrameView, BrowserCommand } from "./client.js";
+import type { BrowserFrameView, BrowserCommand, BrowserRasterDemand } from "./client.js";
 import type { WebSocketClient } from "./host-session-client.js";
 export interface BrowserWatchState {
   /** The current socket has received its first authorized snapshot. */
@@ -24,6 +25,9 @@ interface Watch {
   pictureHolds: number;
   captureRegionHolds: number;
   frameWindowHolds: number;
+  rasterDemandHolds: number;
+  /** The density this socket last asked for since its latest subscription. */
+  demanded: BrowserRasterDensity | null;
   synchronized: boolean;
   socket: WebSocketClient | null;
   state: BrowserWatchState;
@@ -53,6 +57,9 @@ export class BrowserWatchStore {
   #keepControlOnly = false;
   #allowed: (sessionId: string, surfaceId: string) => boolean = () => true;
   readonly #targets = new Map<string, Watch>();
+  /** Presenter leases by exact target; a lease may exist before or after its target. */
+  readonly #demands = new Map<string, Map<object, BrowserRasterDensity>>();
+  readonly #demandPending = new Set<string>();
   readonly #listeners = new Map<string, Set<() => void>>();
   readonly #statusListeners = new Map<string, Set<() => void>>();
   readonly #statuses = new Map<string, BrowserWatchState>();
@@ -73,6 +80,7 @@ export class BrowserWatchStore {
   readonly retryDelay: (attempt: number) => number;
   readonly captureRegions: () => boolean;
   readonly frameWindows: () => boolean;
+  readonly rasterDemands: () => boolean;
   readonly onMessage:
     ((sessionId: string, message: BrowserServerMessage, surfaceId: string) => void) | undefined;
   readonly onDisconnect: ((sessionId: string, surfaceId: string) => void) | undefined;
@@ -85,7 +93,9 @@ export class BrowserWatchStore {
     captureRegions: () => boolean = () => false,
     onDisconnect?: (sessionId: string, surfaceId: string) => void,
     frameWindows: () => boolean = () => false,
+    rasterDemands: () => boolean = () => false,
   ) {
+    this.rasterDemands = rasterDemands;
     this.onDisconnect = onDisconnect;
     this.captureRegions = captureRegions;
     this.frameWindows = frameWindows;
@@ -150,6 +160,8 @@ export class BrowserWatchStore {
       readonly picture?: boolean;
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
+      /** This holder's presenter states its raster density through `rasterDemand`. */
+      readonly rasterDemand?: boolean;
     } = {},
   ): () => void {
     const picture = options.picture !== false;
@@ -165,6 +177,8 @@ export class BrowserWatchStore {
         pictureHolds: 0,
         captureRegionHolds: 0,
         frameWindowHolds: 0,
+        rasterDemandHolds: 0,
+        demanded: null,
         synchronized: false,
         socket: null,
         state: empty,
@@ -182,10 +196,12 @@ export class BrowserWatchStore {
     const previouslyWindowed = target.frameWindowHolds === target.pictureHolds;
     const captureRegion = picture && options.captureRegion === true;
     const frameWindow = picture && options.frameWindow === true;
+    const rasterDemand = picture && options.rasterDemand === true;
     target.holds++;
     if (picture) target.pictureHolds++;
     if (captureRegion) target.captureRegionHolds++;
     if (frameWindow) target.frameWindowHolds++;
+    if (rasterDemand) target.rasterDemandHolds++;
     if (
       target.synchronized &&
       (hadPictures !== target.pictureHolds > 0 ||
@@ -194,6 +210,7 @@ export class BrowserWatchStore {
     )
       this.#subscribeTarget(target);
     this.#diagnose({ stage: "retain", holds: target.holds });
+    if (picture) this.#scheduleDemand(key);
     if (
       !this.#paused(target) &&
       this.#allowed(sessionId, surfaceId) &&
@@ -212,7 +229,9 @@ export class BrowserWatchStore {
       if (picture) current.pictureHolds--;
       if (captureRegion) current.captureRegionHolds--;
       if (frameWindow) current.frameWindowHolds--;
+      if (rasterDemand) current.rasterDemandHolds--;
       if (--current.holds > 0) {
+        if (picture) this.#scheduleDemand(key);
         if (
           (picture && current.pictureHolds === 0) ||
           previouslyOptedIn !== (current.captureRegionHolds === current.pictureHolds) ||
@@ -227,6 +246,72 @@ export class BrowserWatchStore {
       for (const listener of this.#statusListeners.get(key) ?? []) listener();
       this.#notify(current);
     };
+  }
+  /**
+   * One presenter's raster need for an exact target. It asks for the densest
+   * raster until it has measured; the target asks for its leases' maximum.
+   */
+  rasterDemand(sessionId: string, surfaceId: string): BrowserRasterDemand {
+    const key = this.#key(sessionId, surfaceId);
+    const lease = {};
+    let leases = this.#demands.get(key);
+    if (!leases) {
+      leases = new Map();
+      this.#demands.set(key, leases);
+    }
+    leases.set(lease, 2);
+    this.#scheduleDemand(key);
+    let released = false;
+    return {
+      update: (density) => {
+        if (released || leases.get(lease) === density) return;
+        leases.set(lease, density);
+        this.#scheduleDemand(key);
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        leases.delete(lease);
+        if (!leases.size && this.#demands.get(key) === leases) this.#demands.delete(key);
+        this.#scheduleDemand(key);
+      },
+    };
+  }
+  /** React remounts and resize bursts settle within one turn; only the result is sent. */
+  #scheduleDemand(key: string): void {
+    if (this.#demandPending.has(key)) return;
+    this.#demandPending.add(key);
+    queueMicrotask(() => {
+      this.#demandPending.delete(key);
+      const target = this.#targets.get(key);
+      if (target) this.#sendDemand(target);
+    });
+  }
+  #sendDemand(target: Watch): void {
+    if (
+      !this.rasterDemands() ||
+      !target.synchronized ||
+      target.socket?.readyState !== 1 ||
+      target.pictureHolds === 0
+    )
+      return;
+    const leases = this.#demands.get(this.#key(target.sessionId, target.surfaceId));
+    // A holder that never states its need, such as an older presenter, keeps the densest raster.
+    const density: BrowserRasterDensity =
+      target.rasterDemandHolds === target.pictureHolds && leases?.size
+        ? [...leases.values()].reduce((max, value) => (value > max ? value : max))
+        : 2;
+    if (density === target.demanded) return;
+    target.demanded = density;
+    target.socket.send(
+      JSON.stringify(
+        TargetedBrowserClientMessageSchema.parse({
+          type: "stream.demand",
+          surfaceId: target.surfaceId,
+          density,
+        }),
+      ),
+    );
   }
   accept(sessionId: string, surfaceId: string, token: string): void {
     const target = this.#targets.get(this.#key(sessionId, surfaceId));
@@ -300,6 +385,7 @@ export class BrowserWatchStore {
     this.#listeners.clear();
     this.#statuses.clear();
     this.#statusListeners.clear();
+    this.#demands.clear();
   }
   #open(target: Watch): void {
     if (this.#paused(target) || !this.#allowed(target.sessionId, target.surfaceId)) return;
@@ -496,6 +582,9 @@ export class BrowserWatchStore {
         }),
       ),
     );
+    // Each subscription states its demand afresh rather than trusting what the Host kept.
+    target.demanded = null;
+    this.#scheduleDemand(this.#key(target.sessionId, target.surfaceId));
   }
   #close(target: Watch): void {
     this.onDisconnect?.(target.sessionId, target.surfaceId);
