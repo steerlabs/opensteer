@@ -797,3 +797,16 @@ HTTP/socket authorization, including pending credential reads. Selection and the
 repair verdict remain visible. Reattachment verifies again before credentials may
 flow. Unreachable discovery preserves the attachment, and a late result cannot
 revoke a newer selection, route or attachment.
+
+### Saved-view deletion
+
+Saved views have one deletion owner shared by credential lifecycle and presentation.
+Before deleting a Deployment's encryption key, it exclusively creates an empty
+`.deny` file in the app's private document storage, independent of SecureStore and
+the evictable ciphertext cache. A marker always means a cache miss and a deletion
+retry, including after restart. Only successful key deletion permits removing it.
+Memory hides refused content immediately and fences pending reads and writes.
+If marker creation fails, key erasure is still attempted, memory remains blocked,
+and cleanup reports failure and retries the marker on foreground. Content can
+resurface after restart only if both the private-file marker write and the secure
+key deletion fail and the app is terminated before a retry succeeds.

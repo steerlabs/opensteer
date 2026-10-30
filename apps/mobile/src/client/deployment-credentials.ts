@@ -14,6 +14,7 @@ import type { PersonalSessionStore } from "./personal-session-store.js";
 export interface DeploymentCredentials {
   authorization(connection: DeploymentConnection): Promise<string | null>;
   held(connection: DeploymentConnection): Promise<boolean>;
+  viewLoginId?(connection: DeploymentConnection): Promise<string | undefined>;
 }
 
 /**
@@ -25,10 +26,15 @@ export interface DeploymentCredentials {
  */
 export function createDeploymentCredentials(options: {
   readonly now: () => Date;
-  readonly oauth: Pick<NativeOAuthManager, "authorizationHeader" | "hostCredentialState">;
+  readonly oauth: Pick<NativeOAuthManager, "authorizationHeader" | "hostCredentialState"> &
+    Partial<Pick<NativeOAuthManager, "hostViewLoginId">>;
   readonly sessions: PersonalSessionStore;
 }): DeploymentCredentials {
   return {
+    async viewLoginId(connection) {
+      if (connection.kind === "self-hosted") return options.oauth.hostViewLoginId?.(connection);
+      return (await options.sessions.load(connection.authority.document.deploymentId))?.viewLoginId;
+    },
     async authorization(connection): Promise<string | null> {
       if (connection.kind === "self-hosted") return options.oauth.authorizationHeader(connection);
       return options.sessions.authorization(
