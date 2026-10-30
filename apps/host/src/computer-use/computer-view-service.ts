@@ -418,7 +418,7 @@ export class ComputerViewService {
       throw this.#refusal("computer-view-ended", "That phone view has ended.");
     return held.record.machineId;
   }
-  async authorizeControl(
+  async authorizeInput(
     source: Extract<DisplaySource, { kind: "owner-view" }>,
     owner: UserId,
   ): Promise<RunnerId> {
@@ -439,7 +439,7 @@ export class ComputerViewService {
     )
       throw new OpensteerError({
         code: "forbidden",
-        message: "Take over requires a current read-write app approval.",
+        message: "Input requires a current read-write app approval.",
       });
     return held.record.machineId;
   }

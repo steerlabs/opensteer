@@ -135,6 +135,8 @@ export function registerComputerUseDisplayRoutes(
       attachment = await options.hub.attachViewer(source, login.user.id, socket, {
         displayCut:
           new URL(request.url ?? "", "http://host.invalid").searchParams.get("displayCut") === "1",
+        sharedInput:
+          new URL(request.url ?? "", "http://host.invalid").searchParams.get("sharedInput") === "1",
         editing:
           new URL(request.url ?? "", "http://host.invalid").searchParams.get("editing") === "1",
       });
