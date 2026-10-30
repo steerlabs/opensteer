@@ -1,3 +1,4 @@
+import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
 import {
   executablePath,
   addCleanup,
@@ -5,7 +6,6 @@ import {
   profileRevision,
   waitFor,
 } from "./browser-deployment.test-support.js";
-import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -808,30 +808,22 @@ export async function startBrowserService(
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const owner = ownChild(child);
   const output: string[] = [];
   child.stdout.on("data", (chunk: Buffer) => output.push(chunk.toString()));
   child.stderr.on("data", (chunk: Buffer) => output.push(chunk.toString()));
   // A container stop is a SIGTERM: the service saves its profiles and exits.
-  addCleanup("browser service process", async () => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    const exited = once(child, "exit");
-    child.kill("SIGTERM");
-    try {
-      const [code] = await withTimeout(exited, 20_000, {
-        timeoutError: () => new Error(`The browser service did not stop: ${output.join("")}`),
-      });
-      if (code !== 0) {
-        throw new Error(
-          `The browser service did not stop cleanly (${String(code)}): ${output.join("")}`,
-        );
-      }
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-        await exited;
-      }
-    }
-  });
+  addCleanup(
+    "browser service process",
+    async () => {
+      await owner.close(() => {
+        child.kill("SIGTERM");
+      }, 20_000);
+      if (child.exitCode !== 0)
+        throw new Error(`The browser service did not stop cleanly: ${output.join("")}`);
+    },
+    0,
+  );
   await waitFor(async () => {
     if (child.exitCode !== null) throw new Error(`The browser service exited: ${output.join("")}`);
     return output.join("").includes("browser-runtime.ready");

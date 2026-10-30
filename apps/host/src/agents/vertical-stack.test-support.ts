@@ -124,6 +124,8 @@ export interface VerticalStackOptions {
    */
   readonly browserServiceEnrollmentToken?: string;
   readonly cleanupTimeoutMs?: number;
+  /** Final browser saves run after engines stop, while Host and storage remain alive. */
+  readonly beforeHostClose?: (host: HostRuntime) => Promise<void>;
   readonly databaseUrl: string;
   /**
    * The Runner's engines. A factory gives each Runner boot its own registry,
@@ -340,7 +342,10 @@ export async function startVerticalStack(options: VerticalStackOptions): Promise
             label: "stack startup/operations",
             run: async () => {
               await starting.catch(() => undefined);
-              await Promise.allSettled(operations);
+              const results = await Promise.allSettled(operations);
+              const failures = results.filter((result) => result.status === "rejected");
+              if (failures.length)
+                throw new AggregateError(failures.map((result) => result.reason));
             },
           },
           options.cleanupTimeoutMs ?? cleanupTimeoutMs,
@@ -562,6 +567,8 @@ async function startWithin(
   // A journey may restart the Host, so cleanup always closes the current one.
   let host = await bootHost();
   cleanups.push({ label: "Host", run: () => host.close(), pending: () => host.closingStep() });
+  if (options.beforeHostClose)
+    cleanups.push({ label: "Browser final save", run: () => options.beforeHostClose!(host) });
   await host.listen();
   const requestOrigin = options.personal ? hostOrigin : publicOrigin;
   const personalOwner = options.personal
