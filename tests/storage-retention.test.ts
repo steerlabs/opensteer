@@ -447,9 +447,13 @@ describe("storage retention safety", () => {
     writeFileSync(path.join(notes, "note.md"), "kept 20261020T000000Z-aaaaaaaa for review");
     // The digits of the second ID are hex, so a non-overlapping match would swallow them.
     writeFileSync(path.join(notes, "pair.txt"), "20261019T120000Z-20261020T000000Z-eeeeeeee");
+    // The ID straddles the scan's 1 MiB read boundary, so only the carry finds it.
     writeFileSync(
       path.join(notes, "suite.log"),
-      Buffer.concat([Buffer.alloc(5 * 1024 ** 2, "x"), Buffer.from("20261020T000000Z-bbbbbbbb")]),
+      Buffer.concat([
+        Buffer.alloc(5 * 1024 ** 2 - 10, "x"),
+        Buffer.from("20261020T000000Z-bbbbbbbb"),
+      ]),
     );
     symlinkSync(path.join(notes, "20261020T000000Z-cccccccc"), path.join(notes, "latest"));
     writeFileSync(

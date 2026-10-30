@@ -551,6 +551,8 @@ export function referencedRunIds(state: string): { runIds: Set<string>; unreadab
     // of the small files it validated, so those jobs' large output can go.
     "sweep",
   ]);
+  // One read buffer for the whole scan: hundreds of thousands of mostly tiny files.
+  const buffer = Buffer.allocUnsafe(1024 ** 2);
   const collect = (text: string) => {
     for (const match of text.matchAll(runIdReference)) runIds.add(match[1]!);
   };
@@ -563,7 +565,6 @@ export function referencedRunIds(state: string): { runIds: Set<string>; unreadab
       return;
     const descriptor = openSync(filename, "r");
     try {
-      const buffer = Buffer.alloc(1024 ** 2);
       let carry = "";
       while (true) {
         const count = readSync(descriptor, buffer, 0, buffer.length, null);
