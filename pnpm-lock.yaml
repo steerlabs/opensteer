@@ -49,8 +49,8 @@ catalogs:
       specifier: 1.4.0
       version: 1.4.0
     fastify:
-      specifier: 5.12.2
-      version: 5.12.2
+      specifier: 5.12.6
+      version: 5.12.6
     jose:
       specifier: 6.2.8
       version: 6.2.8
@@ -309,7 +309,7 @@ importers:
         version: link:../../packages/shared
       fastify:
         specifier: 'catalog:'
-        version: 5.12.2
+        version: 5.12.6
       ws:
         specifier: 'catalog:'
         version: 8.21.3
@@ -388,7 +388,7 @@ importers:
         version: 1.4.0(zod@4.6.6)
       fastify:
         specifier: 'catalog:'
-        version: 5.12.2
+        version: 5.12.6
       jose:
         specifier: 'catalog:'
         version: 6.2.8
@@ -645,7 +645,7 @@ importers:
         version: link:../../packages/workspace-portablefs
       fastify:
         specifier: 'catalog:'
-        version: 5.12.2
+        version: 5.12.6
       jose:
         specifier: 'catalog:'
         version: 6.2.8
@@ -5941,8 +5941,8 @@ packages:
   fastify-plugin@6.0.0:
     resolution: {integrity: sha512-fZOty7z3O7vOliF6d8bHE3wiEh1KcNnKEQensSgTk9C1DvN6nRLS++XVd86v33Hw/8u9Un8A1zDrQ8ujcQDHEg==}
 
-  fastify@5.12.2:
-    resolution: {integrity: sha512-npAgfhAigNiLOhCZEg7uFWThMrYoiDX/7/VyzicXSrVSXz6K/KYekW+QpOk7WOnZER0U7MmjvoDHV6qO5x4wKg==}
+  fastify@5.12.6:
+    resolution: {integrity: sha512-XeErl1DDsxdbhE9RPRJ05iNnfMhHRHHewVNNAJXaGTOaCY4wHb6rEizphhgzBq5YQe4JyqQWPpGd+hLh2PXXJA==}
 
   fastq@1.20.1:
     resolution: {integrity: sha512-GGToxJ/w1x32s/D2EKND7kTil4n8OVk/9mycTc4VDza13lOvpUZTGX3mFSCtV9ksdGBVzvsyAVLM6mHFThxXxw==}
@@ -12579,7 +12579,7 @@ snapshots:
 
   fastify-plugin@6.0.0: {}
 
-  fastify@5.12.2:
+  fastify@5.12.6:
     dependencies:
       '@fastify/ajv-compiler': 4.0.6
       '@fastify/error': 4.2.0
