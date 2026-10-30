@@ -16,9 +16,15 @@ export const MacOwnerSourceSchema = DisplaySourceSchema.options[1];
 /**
  * Owner input version 2 is shared input: the person's batches go into an app
  * alongside the agent's actions. Version 1 was an exclusive Take over lease and
- * is no longer offered or accepted.
+ * is read as unsupported.
  */
 export const macOwnerInputVersion = 2;
+export const MacOwnerInputVersionSchema = z
+  .number()
+  .int()
+  .positive()
+  .transform((value) => (value === macOwnerInputVersion ? macOwnerInputVersion : undefined))
+  .optional();
 /** The person's input for one owner view, in the Host's single person lane for its stream. */
 export const MacOwnerInputParamsSchema = z.strictObject({
   streamId: DisplayStreamIdSchema,
@@ -46,7 +52,7 @@ export const macWindowVideoParams = {
   "display.input-reset": MacOwnerInputResetParamsSchema,
   "display.resolve": z.strictObject({
     source: DisplaySourceSchema,
-    ownerInputVersion: z.literal(macOwnerInputVersion).optional(),
+    ownerInputVersion: MacOwnerInputVersionSchema,
   }),
   "display.start": z.strictObject({
     streamId: DisplayStreamIdSchema,

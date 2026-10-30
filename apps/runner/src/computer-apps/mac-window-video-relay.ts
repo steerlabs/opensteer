@@ -7,30 +7,26 @@ import {
   type IntegrationsModuleEvent,
   type DisplayStreamId,
   type DisplaySource,
-  type DisplayControlReason,
   type DisplayInputRefusal,
 } from "@opensteer/protocol";
 import { runnerWebSocketTransport, type RunnerTransportPolicy } from "@opensteer/runner-client";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { WebSocket } from "ws";
 import type { ComputerUseHandler } from "./computer-use-handler.js";
-import {
-  ComputerUseBridgeError,
-  ComputerUseBridgeDeadlineError,
-} from "./computer-use-bridge-client.js";
+import { ComputerUseBridgeError } from "./computer-use-bridge-client.js";
 
 type VideoOperation = Extract<
   HostIntegrationsOperation,
   {
     type:
-      | "host.integrations.mac-owner.control"
+      | "host.integrations.mac-owner.input-reset"
       | "host.integrations.mac-owner.input"
       | "host.integrations.display.resolve"
       | "host.integrations.display.start"
       | "host.integrations.display.demand"
       | "host.integrations.display.refresh"
       | "host.integrations.display.stop"
-      | "host.integrations.display.control"
+      | "host.integrations.display.input-reset"
       | "host.integrations.display.input";
   }
 >;
@@ -137,7 +133,7 @@ export class MacWindowVideoRelay {
           "display.resolve",
           {
             source: message.source,
-            ...(message.ownerInputVersion === 1 ? { ownerInputVersion: 1 } : {}),
+            ...(message.ownerInputVersion === 2 ? { ownerInputVersion: 2 } : {}),
           },
           Date.now() + message.timeoutMs,
         )
@@ -193,43 +189,31 @@ export class MacWindowVideoRelay {
       return;
     }
     if (
-      message.type === "host.integrations.mac-owner.control" ||
+      message.type === "host.integrations.mac-owner.input-reset" ||
       message.type === "host.integrations.mac-owner.input"
     ) {
       const entry = this.#streams.get(message.streamId);
       if (!entry || entry.closed || entry.terminal) return;
-      if (message.type === "host.integrations.mac-owner.control") {
+      if (
+        !entry.sources.some(
+          (source) =>
+            source.kind === "owner-view" &&
+            source.viewId === message.source.viewId &&
+            source.generation === message.source.generation,
+        )
+      )
+        return;
+      if (message.type === "host.integrations.mac-owner.input-reset") {
         void this.#computerUse
           .videoRequest(
-            "display.control",
+            "display.input-reset",
             {
               streamId: message.streamId,
               source: message.source,
-              controlId: message.controlId,
-              action: message.action,
-              access: message.access,
             },
             Date.now() + 5_000,
           )
-          .then((result) =>
-            this.#emit({
-              type: "runner.integrations.mac-owner.event",
-              streamId: message.streamId,
-              source: message.source,
-              controlId: message.controlId,
-              message: { type: "display.control", ...result },
-            }),
-          )
-          .catch((error: unknown) =>
-            this.#emit({
-              type: "runner.integrations.mac-owner.event",
-              streamId: message.streamId,
-              source: message.source,
-              controlId: message.controlId,
-              message: { type: "display.control", state: "refused", reason: controlFailure(error) },
-            }),
-          )
-          .catch(() => this.#close(entry, "owner-control-failed"));
+          .catch(() => this.#close(entry, "owner-input-reset-failed"));
       } else {
         void this.#computerUse
           .videoRequest(
@@ -237,7 +221,6 @@ export class MacWindowVideoRelay {
             {
               streamId: message.streamId,
               source: message.source,
-              controlId: message.controlId,
               geometry: message.geometry,
               sequence: message.sequence,
               events: message.events,
@@ -249,7 +232,6 @@ export class MacWindowVideoRelay {
               type: "runner.integrations.mac-owner.event",
               streamId: message.streamId,
               source: message.source,
-              controlId: message.controlId,
               message: { type: "display.input.result", ...result },
             }),
           )
@@ -258,7 +240,6 @@ export class MacWindowVideoRelay {
               type: "runner.integrations.mac-owner.event",
               streamId: message.streamId,
               source: message.source,
-              controlId: message.controlId,
               message: {
                 type: "display.input.result",
                 sequence: message.sequence,
@@ -272,7 +253,7 @@ export class MacWindowVideoRelay {
       return;
     }
     if (
-      message.type === "host.integrations.display.control" ||
+      message.type === "host.integrations.display.input-reset" ||
       message.type === "host.integrations.display.input"
     )
       return;
@@ -481,19 +462,10 @@ export class MacWindowVideoRelay {
   }
 }
 
-function controlFailure(error: unknown): DisplayControlReason {
-  if (error instanceof ComputerUseBridgeDeadlineError) return "timed-out";
-  if (error instanceof ComputerUseBridgeError) {
-    if (error.code === "busy" || error.code === "owner-in-control") return "busy";
-    if (error.code === "no-session" || error.code === "stopped-by-user") return "session-ended";
-    // Unsupported means this stream lost its negotiated Desktop/helper input capability.
-  }
-  return "stream-lost";
-}
 function inputFailure(error: unknown): DisplayInputRefusal {
   if (error instanceof ComputerUseBridgeError) {
     if (error.code === "unsupported" || error.code === "incompatible-version") return "unsupported";
     if (error.code === "stale-observation") return "stale";
   }
-  return "not-held";
+  return "unavailable";
 }

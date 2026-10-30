@@ -1,6 +1,6 @@
 import {
   MacOwnerInputResetParamsSchema,
-  macOwnerInputVersion,
+  MacOwnerInputVersionSchema,
   MacOwnerInputParamsSchema,
   MacOwnerInputEventSchema,
 } from "./mac-window-video.js";
@@ -601,7 +601,7 @@ export const HostIntegrationsDisplayResolveSchema = z.strictObject({
   type: z.literal("host.integrations.display.resolve"),
   requestId: RunnerAuxiliaryRequestIdSchema,
   source: MacVideoSourceSchema,
-  ownerInputVersion: z.literal(macOwnerInputVersion).optional(),
+  ownerInputVersion: MacOwnerInputVersionSchema,
   timeoutMs: z.number().int().positive().max(30_000),
 });
 export const RunnerIntegrationsDisplayResolvedSchema = z.strictObject({

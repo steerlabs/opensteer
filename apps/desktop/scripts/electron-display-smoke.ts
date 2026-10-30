@@ -150,12 +150,12 @@ function verify(outcome: DisplaySmokeResult): void {
     button: true,
     line: true,
   });
-  assert.equal(preview.checks.controlInputSent, true);
+  assert.equal(preview.checks.sharedInputSent, true);
   assert.deepEqual(
     preview.timeline.filter(
       (entry) => entry.startsWith("display.") && !entry.startsWith("display.ack"),
     ),
-    ["display.control", "display.input 0", "display.control"],
+    ["display.input 0", "display.input-reset"],
   );
 
   const owner = scenario(outcome, "owner-authority");

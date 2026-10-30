@@ -16,7 +16,6 @@ import {
   DisplayStreamIdSchema,
   encodeDisplayMediaFrame,
   macWindowVideoParams,
-  HostIntegrationsMacOwnerControlSchema,
   HostIntegrationsMacOwnerInputSchema,
   type ComputerUseBridgeRequest,
 } from "@opensteer/protocol";
@@ -118,8 +117,8 @@ it.each([
               ownerViewVersion: 3,
               ...(supported &&
               !["previous-desktop", "previous-helper"].includes(peer) &&
-              request.headers["x-opensteer-mac-owner-input"] === "1"
-                ? { ownerInputVersion: 1 }
+              request.headers["x-opensteer-mac-owner-input"] === "2"
+                ? { ownerInputVersion: 2 }
                 : {}),
               permissions: { accessibility: "granted", screenRecording: "granted" },
             });
@@ -147,7 +146,7 @@ it.each([
               },
             });
           } else if (frame.method === "display.start") answer({ attachmentToken });
-          else if (frame.method === "display.control" || frame.method === "display.input") {
+          else if (frame.method === "display.input") {
             if (peer === "lost") socket.terminate();
             else
               socket.send(
@@ -189,7 +188,7 @@ it.each([
           type: "host.integrations.display.resolve",
           requestId: "resolve",
           source,
-          ownerInputVersion: 1,
+          ownerInputVersion: 2,
           timeoutMs: 5_000,
         }),
       );
@@ -213,7 +212,7 @@ it.each([
       expect(requests.find((r) => r.method === "display.resolve")?.params).toEqual({
         source,
         ...(supported && !["previous-desktop", "previous-helper"].includes(peer)
-          ? { ownerInputVersion: 1 }
+          ? { ownerInputVersion: 2 }
           : {}),
       });
       relay.handle(
@@ -235,22 +234,6 @@ it.each([
       expect(received[0]).toEqual(Buffer.from(media));
       await expect.poll(() => credits).toEqual([{ type: "display.ack", sequence: 0 }]);
       if (["unsupported", "lost", "timeout"].includes(peer)) {
-        const controlId = "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        if (peer === "timeout")
-          vi.spyOn(handler, "videoRequest").mockRejectedValueOnce(
-            new ComputerUseBridgeDeadlineError("display.control", true),
-          );
-        relay.handle(
-          HostIntegrationsMacOwnerControlSchema.parse({
-            ...fence,
-            type: "host.integrations.mac-owner.control",
-            streamId,
-            source,
-            controlId,
-            access: "read-write",
-            action: "acquire",
-          }),
-        );
         if (peer === "timeout")
           vi.spyOn(handler, "videoRequest").mockRejectedValueOnce(
             new ComputerUseBridgeDeadlineError("display.input", true),
@@ -261,31 +244,11 @@ it.each([
             type: "host.integrations.mac-owner.input",
             streamId,
             source,
-            controlId,
             sequence: 0,
             geometry: 1,
             events: [{ kind: "copy" }],
           }),
         );
-        await expect
-          .poll(() =>
-            events.find(
-              (event) =>
-                event.type === "runner.integrations.mac-owner.event" &&
-                event.message.type === "display.control",
-            ),
-          )
-          .toMatchObject({
-            message: {
-              state: "refused",
-              reason:
-                peer === "unsupported"
-                  ? "stream-lost"
-                  : peer === "timeout"
-                    ? "timed-out"
-                    : "stream-lost",
-            },
-          });
         await expect
           .poll(() =>
             events.find(
@@ -297,7 +260,7 @@ it.each([
           .toMatchObject({
             message: {
               outcome: "refused",
-              reason: peer === "unsupported" ? "unsupported" : "not-held",
+              reason: peer === "unsupported" ? "unsupported" : "unavailable",
             },
           });
       }
@@ -330,7 +293,7 @@ it.each([
             type: "host.integrations.display.resolve",
             requestId: "after-readiness-loss",
             source,
-            ownerInputVersion: 1,
+            ownerInputVersion: 2,
             timeoutMs: 5_000,
           }),
         );

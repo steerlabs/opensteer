@@ -1,8 +1,4 @@
-import {
-  MacOwnerSourceSchema,
-  DisplayControlIdSchema,
-  DisplayStreamIdSchema,
-} from "@opensteer/protocol";
+import { MacOwnerSourceSchema, DisplayStreamIdSchema } from "@opensteer/protocol";
 import type {
   ComputerUseHelperEvent,
   ComputerUseHelperMethod,
@@ -45,10 +41,10 @@ afterEach(async () => {
 });
 
 describe("ComputerUseBridgeServer", () => {
-  it.each(["display.control", "display.input"] as const)(
+  it.each(["display.input-reset", "display.input"] as const)(
     "refuses %s before the helper when the connection did not opt in",
     async (method) => {
-      const h = await bridgeHarness({ ownerInputVersion: 1 });
+      const h = await bridgeHarness({ ownerInputVersion: 2 });
       const socket = await h.connect(h.token);
       const response = await socket.call(1, method, {
         streamId: "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -57,9 +53,8 @@ describe("ComputerUseBridgeServer", () => {
           viewId: "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           generation: 1,
         },
-        controlId: "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        ...(method === "display.control"
-          ? { action: "acquire", access: "read-write" }
+        ...(method === "display.input-reset"
+          ? {}
           : { sequence: 0, geometry: 1, events: [{ kind: "copy" }] }),
       });
       expect(response).toMatchObject({ error: { code: "unsupported" } });
@@ -67,10 +62,10 @@ describe("ComputerUseBridgeServer", () => {
     },
   );
 
-  it.each([undefined, 1] as const)(
+  it.each([undefined, 2] as const)(
     "forwards owner input events only to opted-in video owners (%s)",
     async (offer) => {
-      const h = await bridgeHarness({ ownerInputVersion: 1 });
+      const h = await bridgeHarness({ ownerInputVersion: 2 });
       const socket = await h.connect(h.token, offer);
       const source = MacOwnerSourceSchema.parse({
         kind: "owner-view",
@@ -103,7 +98,7 @@ describe("ComputerUseBridgeServer", () => {
         params: {
           streamId,
           source,
-          controlId: DisplayControlIdSchema.parse("dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+
           message: {
             type: "display.input.result" as const,
             sequence: 0,
@@ -114,7 +109,7 @@ describe("ComputerUseBridgeServer", () => {
       };
       h.emit(event);
       await socket.call(3, "permissions.get", {});
-      expect(socket.events).toEqual(offer === 1 ? [{ ...event, kind: "event" }] : []);
+      expect(socket.events).toEqual(offer === 2 ? [{ ...event, kind: "event" }] : []);
     },
   );
 
@@ -217,7 +212,6 @@ describe("ComputerUseBridgeServer", () => {
         params: {
           streamId: streamId as never,
           source: source(firstView),
-          controlId: "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" as never,
           message: {
             type: "display.clipboard",
             sequence: 0,
@@ -330,26 +324,26 @@ describe("ComputerUseBridgeServer", () => {
     expect(harness.calls).toHaveLength(0);
   });
 
-  it.each([undefined, 1] as const)(
+  it.each([undefined, 2] as const)(
     "advertises only the helper's negotiated owner input version (%s)",
     async (ownerInputVersion) => {
       const harness = await bridgeHarness({ ownerInputVersion });
-      const socket = await harness.connect(harness.token, 1);
+      const socket = await harness.connect(harness.token, 2);
       const response = await socket.call(1, "permissions.get", {}, 5_000);
       expect(response).toEqual({
         id: 1,
         kind: "response",
         result: {
           permissions: { accessibility: "denied", screenRecording: "denied" },
-          ...(ownerInputVersion === 1 ? { ownerInputVersion: 1 } : {}),
+          ...(ownerInputVersion === 2 ? { ownerInputVersion: 2 } : {}),
         },
       });
       expect(harness.calls).toHaveLength(0);
     },
   );
 
-  it.each([undefined, 2])("keeps baseline readiness for a Runner offering %s", async (offer) => {
-    const harness = await bridgeHarness({ ownerInputVersion: 1 });
+  it.each([undefined, 1])("keeps baseline readiness for a Runner offering %s", async (offer) => {
+    const harness = await bridgeHarness({ ownerInputVersion: 2 });
     const socket = await harness.connect(harness.token, offer);
     const response = await socket.call(1, "permissions.get", {}, 5_000);
     expect(response).toEqual({
@@ -1001,7 +995,7 @@ function openAnswer(params: unknown): unknown {
 }
 
 async function bridgeHarness(
-  options: { readonly graceMs?: number; readonly ownerInputVersion?: 1 | undefined } = {},
+  options: { readonly graceMs?: number; readonly ownerInputVersion?: 2 | undefined } = {},
 ) {
   const calls: [string, unknown][] = [];
   const requestOptions = new Map<string, ComputerUseHelperRequestOptions | undefined>();
@@ -1025,7 +1019,7 @@ async function bridgeHarness(
     })),
   };
   const helper: ComputerUseBridgeHelperPort = {
-    ...(options.ownerInputVersion === 1 ? { ownerInputVersion: () => 1 as const } : {}),
+    ...(options.ownerInputVersion === 2 ? { ownerInputVersion: () => 2 as const } : {}),
     onDisconnect: (listener) => {
       disconnectListeners.add(listener);
       return () => disconnectListeners.delete(listener);
