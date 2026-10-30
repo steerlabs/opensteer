@@ -183,22 +183,10 @@ export function createControlPlaneAuth(
         resources: [config.publicOrigin.origin],
         // Existing clients have no resource links, and all use the Account API.
         enforcePerClientResources: false,
-        customIdTokenClaims: ({ user, scopes }) => {
-          const name = user.name.split(" ").filter(Boolean);
-          return {
-            ...(scopes.includes("email")
-              ? { email: user.email, email_verified: user.emailVerified }
-              : {}),
-            ...(scopes.includes("profile")
-              ? {
-                  name: user.name,
-                  picture: user.image ?? undefined,
-                  given_name: name.length > 1 ? name.slice(0, -1).join(" ") : undefined,
-                  family_name: name.length > 1 ? name.at(-1) : undefined,
-                }
-              : {}),
-          };
-        },
+        // 1.7 moved profile and email claims to userinfo, but released desktop
+        // and mobile clients read the Account email from the ID token.
+        customIdTokenClaims: ({ user, scopes }) =>
+          scopes.includes("email") ? { email: user.email } : {},
       }),
     ],
     rateLimit: {

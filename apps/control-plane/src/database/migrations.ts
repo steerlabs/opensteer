@@ -348,25 +348,38 @@ export const notificationDeviceEnvironmentMigration: Migration = {
   },
 };
 
+/**
+ * Columns and tables Better Auth 1.7's JWT and OAuth provider plugins read and
+ * write. The provider replaced a client's `public`/`type` pair with
+ * `application_type`; a public client still has to use PKCE.
+ */
 export const betterAuth17Migration: Migration = {
   async up(database: Kysely<unknown>): Promise<void> {
     await sql`
       alter table public.auth_jwks add column alg text, add column crv text;
+
       alter table public.oauth_clients
         add column client_discovery_id text,
-        add column client_credentials_scopes jsonb,
+        add column client_credentials_scopes jsonb default '[]'::jsonb,
         add column backchannel_logout_uri text,
         add column backchannel_logout_session_required boolean,
         add column application_type text,
         add column jwks text,
         add column jwks_uri text,
-        add column dpop_bound_access_tokens boolean;
-      update public.oauth_clients set
-        application_type = case when type in ('web', 'native') then type end,
-        client_credentials_scopes = '[]'::jsonb;
+        add column dpop_bound_access_tokens boolean default false,
+        drop constraint control_plane_oauth_clients_public_pkce_check;
+      update public.oauth_clients set application_type = case
+        when type = 'native' then 'native'
+        when type in ('web', 'user-agent-based') then 'web'
+      end;
       alter table public.oauth_clients
-        drop constraint control_plane_oauth_clients_public_pkce_check,
-        drop column public, drop column type;
+        drop column public,
+        drop column type,
+        add constraint control_plane_oauth_clients_public_pkce_check check (
+          token_endpoint_auth_method is distinct from 'none'
+          or (coalesce(require_pkce, false) and application_type in ('native', 'web'))
+        );
+
       alter table public.oauth_refresh_token
         add column authorization_code_id text,
         add column resources jsonb,
@@ -375,34 +388,55 @@ export const betterAuth17Migration: Migration = {
         add column rotation_replay_response text,
         add column rotation_replay_expires_at timestamptz,
         add column confirmation jsonb;
+      create index oauth_refresh_token_authorization_code_id
+        on public.oauth_refresh_token (authorization_code_id);
+
       alter table public.oauth_access_tokens
         add column authorization_code_id text,
         add column resources jsonb,
         add column requested_user_info_claims jsonb,
         add column revoked timestamptz,
         add column confirmation jsonb;
+      create index oauth_access_tokens_authorization_code_id
+        on public.oauth_access_tokens (authorization_code_id);
+
       alter table public.oauth_consents
         add column resources jsonb,
         add column requested_user_info_claims jsonb;
-      create index oauth_refresh_token_authorization_code on public.oauth_refresh_token (authorization_code_id);
-      create index oauth_access_tokens_authorization_code on public.oauth_access_tokens (authorization_code_id);
+
       create table public.oauth_resource (
-        id text primary key, identifier text not null unique, name text not null,
-        access_token_ttl integer, refresh_token_ttl integer, signing_algorithm text,
-        signing_key_id text, allowed_scopes jsonb, custom_claims jsonb,
-        dpop_bound_access_tokens_required boolean, disabled boolean,
-        created_at timestamptz, updated_at timestamptz, policy_version integer, metadata jsonb
+        id text primary key,
+        identifier text not null unique,
+        name text not null,
+        access_token_ttl integer,
+        refresh_token_ttl integer,
+        signing_algorithm text,
+        signing_key_id text,
+        allowed_scopes jsonb,
+        custom_claims jsonb,
+        dpop_bound_access_tokens_required boolean default false,
+        disabled boolean default false,
+        created_at timestamptz,
+        updated_at timestamptz,
+        policy_version integer default 1,
+        metadata jsonb
       );
       create table public.oauth_client_resource (
         id text primary key,
-        client_id text not null references public.oauth_clients(client_id) on delete cascade,
-        resource_id text not null references public.oauth_resource(identifier) on delete cascade,
-        metadata jsonb, created_at timestamptz,
+        client_id text not null
+          references public.oauth_clients (client_id) on delete cascade,
+        resource_id text not null
+          references public.oauth_resource (identifier) on delete cascade,
+        metadata jsonb,
+        created_at timestamptz,
         unique (client_id, resource_id)
       );
-      create index oauth_client_resource_client on public.oauth_client_resource (client_id);
-      create index oauth_client_resource_resource on public.oauth_client_resource (resource_id);
-      create table public.oauth_client_assertion (id text primary key, expires_at timestamptz not null);
+      create index oauth_client_resource_resource_id
+        on public.oauth_client_resource (resource_id);
+      create table public.oauth_client_assertion (
+        id text primary key,
+        expires_at timestamptz not null
+      );
     `.execute(database);
   },
 };

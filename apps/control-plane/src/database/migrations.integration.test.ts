@@ -321,11 +321,7 @@ integration("Better Auth 1.7 Account migration", () => {
       email_verified: true,
     });
     const idClaims = decodeJwt(body.id_token);
-    expect(idClaims).toMatchObject({
-      sub: userId,
-      email: "owner@example.test",
-      email_verified: true,
-    });
+    expect(idClaims).toMatchObject({ sub: userId, email: "owner@example.test" });
     const accessRevoke = await auth.handler(
       new Request(new URL("/api/auth/oauth2/revoke", issuer), {
         method: "POST",
