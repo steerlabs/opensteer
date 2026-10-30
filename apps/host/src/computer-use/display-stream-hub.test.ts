@@ -420,6 +420,69 @@ async function fixture(
 }
 
 describe("phone display Host sockets", () => {
+  it("frees the lane when the phone refuses a press from a viewer without editing", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(false);
+    const b = await f.viewer(false);
+    await f.state();
+    const down = (viewer: typeof a, sequence: number) =>
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: sequence }],
+      });
+    down(a, 1);
+    await a.roundTrip();
+    await f.apps.handleMessage(f.peer, f.stream, {
+      ...f.fence,
+      type: "runner.integrations.display.input-result",
+      streamId: f.start().streamId,
+      sessionId: f.sessionId,
+      geometry: 1,
+      sequence: 0,
+      outcome: "refused",
+      reason: "unavailable",
+    });
+    await a.roundTrip();
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.input-reset")).toHaveLength(
+      1,
+    );
+    down(b, 1);
+    await b.roundTrip();
+    expect(b.json().some((m) => m.reason === "contended")).toBe(false);
+  });
+
+  it("keeps room for a release when the lane's queue is full", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    await f.state();
+    const send = (sequence: number, phase: string) =>
+      a.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "pointer", phase, x: 0.5, y: 0.5, t: sequence }],
+      });
+    send(1, "down");
+    for (let sequence = 2; sequence <= 128; sequence++) send(sequence, "move");
+    await a.roundTrip();
+    send(129, "move");
+    send(130, "up");
+    await a.roundTrip();
+    expect(a.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 129,
+      outcome: "refused",
+      reason: "too-large",
+    });
+    expect(a.json().some((m) => m.sequence === 130 && m.outcome === "refused")).toBe(false);
+    const relayed = f.sent.filter((m) => m.type === "host.integrations.display.input");
+    expect(relayed.at(-1)?.events).toEqual([
+      { kind: "pointer", phase: "up", x: 0.5, y: 0.5, t: 130 },
+    ]);
+  });
+
   it("frees the lane when the phone refuses the press holding it, never a later one", async () => {
     const f = await fixture(true, { editing: true });
     const a = await f.viewer(true);

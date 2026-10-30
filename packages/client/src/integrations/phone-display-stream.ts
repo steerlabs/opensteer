@@ -178,6 +178,8 @@ interface Entry {
    */
   readonly held: Set<string>;
   holder: LeaseState | null;
+  /** The sequence of the holder's latest batch; its refusal means nothing is held. */
+  holderSequence: number;
   /** Increases for every batch this client sends the session, across sockets. */
   inputSequence: number;
   disposed: boolean;
@@ -261,6 +263,7 @@ export class DisplayStreams {
         snapshot: this.#terminal.get(key) ?? emptySnapshot,
         held: new Set(),
         holder: null,
+        holderSequence: -1,
         inputSequence: 0,
         disposed: false,
       };
@@ -303,6 +306,7 @@ export class DisplayStreams {
         if (!sent) return false;
         for (const event of events) trackHeldDisplayInput(current.held, event);
         current.holder = current.held.size > 0 ? lease : null;
+        current.holderSequence = current.inputSequence - 1;
         return true;
       },
       viewport: (maxLongSide) => {
@@ -493,13 +497,23 @@ export class DisplayStreams {
         )
           this.#forgetHeld(entry);
         this.#set(entry, { display: received.message });
-      } else if (
-        entry.target.editing === 1 &&
-        entry.snapshot.display?.editingVersion === 1 &&
-        entry.snapshot.input === "available"
-      )
-        for (const lease of entry.leases)
-          for (const listener of lease.editingMessages) listener(received.message);
+      } else {
+        // As at the Host: a refused latest batch from the holder leaves no press.
+        if (
+          received.message.type === "display.input.result" &&
+          received.message.outcome !== "dispatched" &&
+          entry.holder !== null &&
+          received.message.sequence === entry.holderSequence
+        )
+          this.#forgetHeld(entry);
+        if (
+          entry.target.editing === 1 &&
+          entry.snapshot.display?.editingVersion === 1 &&
+          entry.snapshot.input === "available"
+        )
+          for (const lease of entry.leases)
+            for (const listener of lease.editingMessages) listener(received.message);
+      }
     });
     socket.addEventListener("close", ({ code, reason }) => {
       const parsed = DisplayClientDiagnosticSchema.shape.socketReason.safeParse(reason);

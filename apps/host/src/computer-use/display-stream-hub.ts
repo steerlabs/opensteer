@@ -27,6 +27,7 @@ import {
   type DisplayViewerClientMessage,
   type DisplayViewerState,
   trackHeldDisplayInput,
+  type DisplayInputEvent,
   type DisplayInputResult,
   type DisplayClipboard,
   type DisplayEditing,
@@ -179,6 +180,13 @@ export interface DisplayStreamHubOptions {
 }
 
 /** One projection per authenticated phone/display; authorities spend decoder credit independently. */
+/** A release always has room in the person lane, so a press is never stranded by a full queue. */
+function releasesHeldInput(event: DisplayInputEvent): boolean {
+  return event.kind === "pointer" || event.kind === "mouse"
+    ? event.phase === "up" || event.phase === "cancel"
+    : event.kind === "key" && event.action === "up";
+}
+
 export class DisplayStreamHub {
   readonly #options: DisplayStreamHubOptions;
   readonly #streams = new Map<DisplayStreamId, Stream>();
@@ -929,7 +937,7 @@ export class DisplayStreamHub {
                 (message.events.some((event) => event.kind === "cut") &&
                   (!viewer.displayCut || stream.displayCut !== 1))
               ? "unsupported"
-              : stream.pending.size >= 128
+              : stream.pending.size >= 128 && !message.events.some(releasesHeldInput)
                 ? "too-large"
                 : null;
     if (reason) {
@@ -1047,6 +1055,18 @@ export class DisplayStreamHub {
         }
       return;
     }
+    // Every producer answers every batch. A refusal of the latest batch from
+    // the lane's holder means it holds nothing there, whether or not that
+    // viewer receives receipts, and no later batch of its is cut short.
+    const holder = stream.holder;
+    if (
+      message.type === "display.input.result" &&
+      message.outcome !== "dispatched" &&
+      holder &&
+      stream.holderSequence === message.sequence &&
+      (!source || this.#sameSource(source, holder.source))
+    )
+      this.#resetInput(stream);
     const pending = stream.pending.get(message.sequence);
     if (
       !pending ||
@@ -1056,14 +1076,7 @@ export class DisplayStreamHub {
       !this.#viewerLive(stream, pending.viewer)
     )
       return;
-    if (
-      source &&
-      (source.kind === "task-session"
-        ? pending.viewer.source.kind !== "task-session" ||
-          source.sessionId !== pending.viewer.source.sessionId
-        : displaySourceKey(source) !== displaySourceKey(pending.viewer.source))
-    )
-      return;
+    if (source && !this.#sameSource(source, pending.viewer.source)) return;
     if (message.type === "display.input.result") {
       if (!pending.result) return;
       pending.result = false;
@@ -1074,15 +1087,12 @@ export class DisplayStreamHub {
     }
     this.#json(pending.viewer.socket, { ...message, sequence: pending.sequence });
     if (!pending.result && !pending.copy) stream.pending.delete(message.sequence);
-    // The producer refused the press the lane is held by. With no later batch
-    // from the holder to cut short, the lane ends so other viewers can type.
-    if (
-      message.type === "display.input.result" &&
-      message.outcome !== "dispatched" &&
-      stream.holder === pending.viewer &&
-      stream.holderSequence === message.sequence
-    )
-      this.#resetInput(stream);
+  }
+
+  #sameSource(source: DisplaySource, viewer: DisplaySource): boolean {
+    return source.kind === "task-session"
+      ? viewer.kind === "task-session" && source.sessionId === viewer.sessionId
+      : displaySourceKey(source) === displaySourceKey(viewer);
   }
 
   #clearCache(stream: Stream): void {

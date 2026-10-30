@@ -852,6 +852,33 @@ describe("shared input", () => {
     expect(socket.messages("display.input").map((m) => m.sequence)).toEqual([0, 1, 2, 3]);
   });
 
+  it("forgets a press only when the holder's latest batch is refused", () => {
+    const first = streams.retain(target);
+    const second = streams.retain(target);
+    const socket = opened();
+    hold(socket);
+    const at = (phase: "down" | "move", x: number): DisplayInputEvent => ({
+      kind: "pointer",
+      phase,
+      x,
+      y: 0.5,
+      t: 1,
+    });
+    const refuse = (sequence: number) =>
+      socket.json({
+        type: "display.input.result",
+        sequence,
+        outcome: "refused",
+        reason: "unavailable",
+      });
+    expect(first.input(1, [at("down", 0.2)])).toBe(true);
+    expect(first.input(1, [at("move", 0.3)])).toBe(true);
+    refuse(0);
+    expect(second.input(1, [at("down", 0.4)])).toBe(false);
+    refuse(1);
+    expect(second.input(1, [at("down", 0.4)])).toBe(true);
+  });
+
   it("forgets a press the Host already ended with a new picture", () => {
     const first = streams.retain(target);
     const second = streams.retain(target);
