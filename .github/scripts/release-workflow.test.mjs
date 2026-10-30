@@ -88,7 +88,9 @@ test("signing puts its ephemeral keychain on the user search list before buildin
   ).run;
   const added = run.indexOf('security list-keychains -d user -s "$keychain"');
   assert.ok(added >= 0, "codesign --keychain needs the keychain on the search list on macOS 15");
-  assert.ok(run.indexOf("security import") < added);
+  const imported = run.indexOf("security import");
+  assert.ok(imported >= 0);
+  assert.ok(imported < added);
   assert.ok(added < run.indexOf("pnpm desktop:build-release"));
   assert.match(
     workflow.jobs.build.steps.find((step) => step.name === "Delete signing material").run,
