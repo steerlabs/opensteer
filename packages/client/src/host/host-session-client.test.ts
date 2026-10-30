@@ -1512,6 +1512,44 @@ describe("HttpHostClient durable realtime", () => {
     },
   );
 
+  it("refreshes the engine catalog after an older bootstrap has finished", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let reads = 0;
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+      fetch: async () => {
+        reads += 1;
+        if (reads !== 2) return json(bootstrap([]));
+        // A read taken after catalog discard but before inspection commits.
+        const stale = bootstrap([]);
+        stale.environments[0]!.harnessCatalogs = [];
+        return new Promise<Response>((resolve) => {
+          release = () => resolve(json(stale));
+          entered();
+        });
+      },
+    });
+    try {
+      await client.load();
+      const olderRead = client.load();
+      await reading;
+      // The CLI inspection has now committed. Its caller needs a new read,
+      // even though the earlier bootstrap has not delivered its answer yet.
+      const refreshed = client.refresh();
+      release();
+      await Promise.all([olderRead, refreshed]);
+      expect(client.getSnapshot().environments[0]?.harnessCatalogs[0]?.status).toBe("ready");
+      expect(reads).toBe(3);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("answers a notice that lands mid-read with exactly one more read", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();
