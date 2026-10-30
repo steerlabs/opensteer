@@ -5,6 +5,10 @@ Use the [GUI journey skill](../../.agents/skills/run-gui-journeys/SKILL.md) for
 invocation, cache recovery and diagnostics. [test-vm.ts](../test-vm.ts) and
 its modules own arguments, payloads and guest lifecycle.
 
+`--inputs /absolute/directory` before `--revision` adds a read-only share at
+`/Volumes/My Shared Files/inputs`. The directory must be real, with no symlink
+components or `:` share separator; copy files to guest APFS before modifying them.
+
 ## Ownership and capacity
 
 The host screen belongs to the founder. Jobs boot private clones of stopped

@@ -49,3 +49,31 @@ iOS uses record/measurement with Bluetooth HFP for headset microphones and
 deactivates with notification so other audio resumes. Microphone tests need a
 disposable device; a generated-speech engine test does not qualify live capture.
 Use [test-mobile-dictation](../.agents/skills/test-mobile-dictation/SKILL.md).
+
+## Mac
+
+The Mac helper, `Opensteer Dictation.app`, runs only on Apple silicon with
+macOS 26 or newer. Electron main installs and starts it lazily through the
+signed-helper lifecycle; release and ad-hoc development builds have separate
+bundle identities, install roots and sockets.
+
+- Microphone consent belongs to the helper, launched through LaunchServices.
+  Opensteer itself holds no microphone grant.
+- Both socket peers authenticate with audit tokens and code requirements.
+  Frames are bounded length-prefixed JSON
+  ([`@opensteer/protocol/dictation-helper`](../packages/protocol/src/dictation-helper.ts)); a
+  malformed frame closes the connection and a sequence gap fails recognition.
+- A connection owns its session, and losing it cancels capture or download.
+  Main also checks the owning WebContents on every stop and cancel and delivers
+  events only there; destroying, crashing or reloading that renderer cancels its
+  work.
+- Sleep and screen lock finalize with an interrupt; quit closes the connection
+  at once. After a helper exit, the next availability request reconnects.
+- Start and download use the same eligibility gate as availability. Main and
+  helper both reject a used session ID before taking ownership, so a replay
+  cannot produce another terminal event or block a later session.
+
+Host-safe tests cover wire encoding and ownership. First microphone consent,
+live transcription, stop, cancel, window destruction, sleep and lock, and helper
+relaunch belong to the post-merge VM dictation journey. Build the helper without
+launching it with `pnpm --filter @opensteer/desktop build:dictation-helper`.

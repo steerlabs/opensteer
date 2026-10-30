@@ -17,6 +17,7 @@ import {
   createId,
   zeroSequence,
   type MessageId,
+  type EnvironmentId,
   type WorkspaceIconName,
   EnvironmentIdSchema,
 } from "@opensteer/core";
@@ -2316,8 +2317,7 @@ integration("Host vertical slice", () => {
       name: "Rejected dispatch workspace",
       status: "ready",
     });
-    const harness = (await runtime.store.listHarnessInstances())[0];
-    if (!harness) throw new Error("Default harness is missing");
+    const harness = await seededHarness(runtime.store, environmentId);
     const { thread } = await runtime.store.createThread({
       createdBy: ownerId,
       environmentId,
@@ -2487,8 +2487,7 @@ integration("Host vertical slice", () => {
       name: "Disconnect workspace",
       status: "ready",
     });
-    const harness = (await runtime.store.listHarnessInstances())[0];
-    if (!harness) throw new Error("Default harness is missing");
+    const harness = await seededHarness(runtime.store, environmentId);
     const { thread } = await runtime.store.createThread({
       createdBy: ownerId,
       environmentId,
@@ -5140,6 +5139,17 @@ async function waitForCondition(
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("timed out waiting for durable state");
+}
+
+// The Host seeds an Environment's default harness in its post-registration work,
+// which can finish after enrollment has already answered the Runner.
+async function seededHarness(store: HostRuntime["store"], environmentId: EnvironmentId) {
+  await waitForCondition(
+    async () => (await store.listHarnessInstances({ environmentIds: [environmentId] })).length > 0,
+  );
+  const [harness] = await store.listHarnessInstances({ environmentIds: [environmentId] });
+  if (!harness) throw new Error("Default harness is missing");
+  return harness;
 }
 
 function authorization(token: string): Record<string, string> {

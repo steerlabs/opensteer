@@ -141,6 +141,33 @@ async function verifySignedDesktopContents(context) {
   }
   // The broker's worker must stay in its sandbox: that entitlement and
   // nothing else, in every build.
+  const dictationApp = join(
+    appPath,
+    "Contents",
+    "Resources",
+    "dictation",
+    "Opensteer Dictation.app",
+  );
+  run("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", dictationApp]);
+  const dictationEntitlements = signedEntitlements(dictationApp);
+  if (
+    JSON.stringify(dictationEntitlements) !==
+    JSON.stringify({ "com.apple.security.device.audio-input": true })
+  ) {
+    throw new Error("Opensteer Dictation must carry only the audio-input entitlement.");
+  }
+  if (isDesktopRelease()) {
+    const detail = run("/usr/bin/codesign", ["-dv", "--verbose=4", dictationApp], true);
+    const lines = detail.split(/\r?\n/u);
+    if (
+      !lines.includes("Identifier=com.opensteer.dictation") ||
+      !lines.includes(`TeamIdentifier=${required("OPENSTEER_APPLE_TEAM_ID")}`) ||
+      !/^Authority=Developer ID Application:/mu.test(detail) ||
+      !detail.includes("runtime")
+    ) {
+      throw new Error("Opensteer Dictation has an invalid release identity or runtime.");
+    }
+  }
   const workerEntitlements = signedEntitlements(passwordsWorkerPath);
   if (
     JSON.stringify(Object.keys(workerEntitlements)) !==
