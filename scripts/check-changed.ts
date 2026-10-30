@@ -8,24 +8,20 @@ import { localPlan } from "../.github/scripts/local-check.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+// An unreadable diff or graph fails the command: there is no full local fallback
+// that could stand in for the changed-file checks.
 export function changedPlan(base: string) {
-  try {
-    const ancestor = git("merge-base", "HEAD", base).trim();
-    const files = [
-      ...new Set([
-        ...parseDiff(git("diff", "--name-only", "--no-renames", "-z", ancestor)),
-        ...parseDiff(git("ls-files", "--others", "--exclude-standard", "-z")),
-      ]),
-    ];
-    const present = parseDiff(
-      git("ls-files", "--cached", "--others", "--exclude-standard", "-z"),
-    ).filter((file: string) => existsSync(resolve(root, file)));
-    return localPlan(files, readGraph(root), present, readGraph(root, ancestor));
-  } catch (error) {
-    const plan = localPlan(["unknown"], [], []);
-    plan.reasons.push(String(error));
-    return plan;
-  }
+  const ancestor = git("merge-base", "HEAD", base).trim();
+  const files = [
+    ...new Set([
+      ...parseDiff(git("diff", "--name-only", "--no-renames", "-z", ancestor)),
+      ...parseDiff(git("ls-files", "--others", "--exclude-standard", "-z")),
+    ]),
+  ];
+  const present = parseDiff(
+    git("ls-files", "--cached", "--others", "--exclude-standard", "-z"),
+  ).filter((file: string) => existsSync(resolve(root, file)));
+  return localPlan(files, readGraph(root), present, readGraph(root, ancestor));
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const { values } = parseArgs({
@@ -33,6 +29,8 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   });
   const plan = changedPlan(values.base!);
   console.log(JSON.stringify(plan, null, 2));
+  if (plan.full)
+    console.log("CI runs the full suite for these inputs; this runs the changed-file checks.");
   if (!plan.tests.length)
     console.log(
       "No changed or sibling tests selected; provide a focused journey for behavior changes.",

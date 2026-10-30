@@ -1,9 +1,10 @@
 # Repository scripts
 
 Run `pnpm check:changed --base origin/main` before opening a pull request.
-The manifest graph shared with CI selects checks and fails open to full checks
-when ownership is unknown. `pnpm check` runs the full local recipe; the required
-GitHub `Check` determines whether a pull request can merge.
+The manifest graph shared with CI selects the changed-file checks; a global or
+unknown input widens only typecheck locally, and CI runs the full suite. `pnpm check`
+runs the full local recipe when asked; the required GitHub `Check` determines
+whether a pull request can merge.
 
 ## Integration databases
 
