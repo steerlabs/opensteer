@@ -1861,6 +1861,13 @@ function mockRefusal(error: unknown) {
   };
 }
 
+function mockVoiceEnded(message: string, reason: "voice-ended" | "voice-refused") {
+  return {
+    error: HostApiErrorSchema.parse({ code: "conflict", message, reason, retryable: false }),
+    ok: false as const,
+  };
+}
+
 /**
  * Every member is written out. The map carries no fallback, so adding an rpc
  * member without teaching the preview about it is a compile error rather than a
@@ -2010,6 +2017,11 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "harness.catalog.refresh": async () => rpcSuccess({}),
     "harness.modelServers.discover": async (input) =>
       rpcSuccess({ servers: mockModelServers(input.address) }),
+    // The preview has no Runner to create a call, so voice never starts here.
+    "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
+    "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.stop": async () => rpcSuccess({}),
     "integration.authorization.get": async (input) =>
       rpcSuccess(await client.getIntegrationAuthorization(input.attemptId)),
     "integration.grants.list": async (input) =>
@@ -11754,6 +11766,7 @@ function createInitialSnapshot(): HostSnapshot {
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
     ownerViewWindowsAvailable: true,
+    voiceAvailable: true,
     workspaceSharingAvailable: true,
     threads: withMockThreadMarks([
       {

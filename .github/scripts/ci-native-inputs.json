@@ -50,6 +50,7 @@
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/app/app-protocol.ts",
     "apps/desktop/src/app/electron-window.ts",
+    "apps/desktop/src/app/media-permissions.ts",
     "apps/desktop/src/app/navigation-policy.ts",
     "apps/desktop/src/bridge/context.ts",
     "apps/desktop/src/bridge/methods/computer-apps.ts",

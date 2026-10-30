@@ -28,6 +28,8 @@ describe("Host static Web distribution", () => {
     expect(asset.statusCode).toBe(200);
     expect(asset.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
     expect(asset.headers["content-security-policy"]).toContain("default-src 'self'");
+    expect(asset.headers["permissions-policy"]).toContain("microphone=(self)");
+    expect(asset.headers["permissions-policy"]).toContain("camera=()");
     expect(asset.headers["referrer-policy"]).toBe("no-referrer");
 
     const index = await app.inject({ method: "GET", url: "/" });
@@ -40,6 +42,16 @@ describe("Host static Web distribution", () => {
     expect((await app.inject({ method: "GET", url: "/assets/missing.js" })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/..%2fsecret" })).statusCode).toBe(404);
     await app.close();
+  });
+
+  it("keeps the gateway microphone policy aligned", async () => {
+    const gateway = await readFile(
+      new URL("../../../../deploy/gateway/Caddyfile", import.meta.url),
+      "utf8",
+    );
+    expect(gateway).toContain(
+      'Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=()"',
+    );
   });
 
   it("fails closed with a named error when the bundle version is stale", async () => {

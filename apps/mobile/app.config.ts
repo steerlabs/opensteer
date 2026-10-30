@@ -91,7 +91,7 @@ const config: ExpoConfig = {
     // Resizing shares one navigation history and draft owner across device poses.
     infoPlist: {
       NSMicrophoneUsageDescription:
-        "Opensteer uses the microphone only while you dictate a message.",
+        "Opensteer uses the microphone while you dictate a message or talk to Opensteer.",
       NSCalendarsFullAccessUsageDescription:
         "Agents you allow can read your calendar, and change it if you let them, while Opensteer is open.",
       NSRemindersFullAccessUsageDescription:
@@ -122,6 +122,15 @@ const config: ExpoConfig = {
   extra: { androidPushConfigured },
   android: {
     package: applicationId,
+    // WebRTC's plugin requests video/overlay/Bluetooth permissions indiscriminately.
+    // Audio uses OS media routing and never discovers or selects Bluetooth devices.
+    blockedPermissions: [
+      "android.permission.CAMERA",
+      "android.permission.BLUETOOTH",
+      "android.permission.BLUETOOTH_ADMIN",
+      "android.permission.BLUETOOTH_CONNECT",
+      "android.permission.SYSTEM_ALERT_WINDOW",
+    ],
     ...(androidPushConfigured ? { googleServicesFile } : {}),
     adaptiveIcon: {
       foregroundImage: "./assets/adaptive-icon.png",
@@ -132,13 +141,17 @@ const config: ExpoConfig = {
     },
   },
   plugins: [
+    // Plist mods compose in reverse order: remove the upstream camera key last.
+    "./plugins/with-voice.cjs",
     "expo-secure-store",
+    "@config-plugins/react-native-webrtc",
     "./plugins/with-apple-data.cjs",
     "./plugins/with-dictation.cjs",
     "expo-web-browser",
     [
       "expo-image-picker",
       {
+        cameraPermission: false,
         photosPermission: "Allow Opensteer to attach photos you choose to a conversation.",
       },
     ],

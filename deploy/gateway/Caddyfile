@@ -28,7 +28,7 @@
 		# is inert for local serving and effective once the edge terminates TLS.
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		Content-Security-Policy "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=()"
 		Referrer-Policy "no-referrer"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"

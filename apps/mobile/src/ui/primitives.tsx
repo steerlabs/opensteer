@@ -52,6 +52,8 @@ export function AppText(props: {
   readonly accessibilityHint?: string;
   readonly accessibilityLabel?: string;
   readonly children: ReactNode;
+  /** Which end a one-line text gives up; `head` keeps the newest words of a live caption. */
+  readonly ellipsizeMode?: "head" | "tail";
   /** Set only where a fixed-height control would clip the text it holds. */
   readonly maxFontSizeMultiplier?: number;
   readonly numberOfLines?: number;
@@ -65,6 +67,7 @@ export function AppText(props: {
     <Text
       accessibilityHint={props.accessibilityHint}
       accessibilityLabel={props.accessibilityLabel}
+      ellipsizeMode={props.ellipsizeMode}
       maxFontSizeMultiplier={props.maxFontSizeMultiplier}
       numberOfLines={props.numberOfLines}
       selectable={props.selectable}
