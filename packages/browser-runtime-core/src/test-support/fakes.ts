@@ -524,6 +524,7 @@ export class FakeProfileStateClient implements BrowserProfileStateClient {
     _claims: BrowserProfileAttachTicketClaims,
     expectedRevision: number,
     snapshot: BrowserProfileSnapshot,
+    _periodic?: boolean,
   ): Promise<number> {
     if (expectedRevision !== this.revision) throw new Error("stale profile revision");
     this.commits.push({ expectedRevision, snapshot });

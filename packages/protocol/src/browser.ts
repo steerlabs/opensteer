@@ -118,6 +118,9 @@ export type BrowserAttachPublicKey = z.infer<typeof BrowserAttachPublicKeySchema
 
 export const BrowserAttachPublicKeysSchema = z.array(BrowserAttachPublicKeySchema).min(1).max(4);
 
+/** Periodic checkpoints preserve, but never extend, final-save lease grace. */
+export const browserProfileCheckpointHeader = "x-opensteer-profile-checkpoint";
+
 /**
  * A Browser Session's identity, chosen when it opens and immutable for its
  * life. A fresh session carries no profile, so it has no state lease and no

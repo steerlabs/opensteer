@@ -3986,11 +3986,37 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
 
+    const graceBefore = await database
+      .selectFrom("browserSessions")
+      .select("profileLeaseExpiresAt")
+      .where("id", "=", sessionId)
+      .executeTakeFirstOrThrow();
+    await store.commitBrowserProfileRevision({
+      ciphertext: Buffer.alloc(30, 3),
+      ciphertextSha256: createHash("sha256").update(Buffer.alloc(30, 3)).digest("hex"),
+      expectedRevision: 0,
+      profileId: profile.id,
+      periodic: true,
+    });
+    expect(
+      await store.authorizeBrowserProfileLease({
+        leaseTokenHash: "sha256:lease",
+        profileId: profile.id,
+        sessionId,
+      }),
+    ).toBe(true);
+    expect(
+      await database
+        .selectFrom("browserSessions")
+        .select("profileLeaseExpiresAt")
+        .where("id", "=", sessionId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(graceBefore);
     const encryptedRevision = Buffer.alloc(30, 1);
     await store.commitBrowserProfileRevision({
       ciphertext: encryptedRevision,
       ciphertextSha256: createHash("sha256").update(encryptedRevision).digest("hex"),
-      expectedRevision: 0,
+      expectedRevision: 1,
       profileId: profile.id,
     });
     // A profile in use saves repeatedly; only the newest ciphertext is kept.
@@ -3998,16 +4024,16 @@ describeStore("PostgreSQL store", (it) => {
     await store.commitBrowserProfileRevision({
       ciphertext: laterRevision,
       ciphertextSha256: createHash("sha256").update(laterRevision).digest("hex"),
-      expectedRevision: 1,
+      expectedRevision: 2,
       profileId: profile.id,
     });
     expect(
       await sql<{ revision: number }>`
         select revision from browser_profile_revisions where profile_id = ${profile.id}
       `.execute(database),
-    ).toMatchObject({ rows: [{ revision: 2 }] });
+    ).toMatchObject({ rows: [{ revision: 3 }] });
     await expect(store.readBrowserProfileRevision(profile.id)).resolves.toMatchObject({
-      revision: 2,
+      revision: 3,
     });
     expect(
       await store.authorizeBrowserProfileLease({

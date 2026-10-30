@@ -695,6 +695,7 @@ export class OpensteerStore {
     readonly ciphertext: Uint8Array;
     readonly ciphertextSha256: string;
     readonly expectedRevision: number;
+    readonly periodic?: boolean;
     readonly profileId: BrowserProfileId;
   }): Promise<BrowserProfileRevisionRecord> {
     return browserSessionStore.commitBrowserProfileRevision(this.#database, input);

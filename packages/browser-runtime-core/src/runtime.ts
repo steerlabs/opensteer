@@ -814,6 +814,7 @@ export class BrowserRuntime implements NativePresentationSource {
           identity.profileStateClaims,
           identity.profileRevision,
           snapshot,
+          true,
         );
         identity.profileDigest = digest;
         this.reportOriginFailures(host, "periodic", started, failures);
@@ -959,11 +960,24 @@ export class BrowserRuntime implements NativePresentationSource {
         const { snapshot, failures } = await this.exportCheckpointSnapshot(host, signal);
         signal.throwIfAborted();
         stage("host-commit");
-        identity.profileRevision = await this.profileStateClient.commit(
-          identity.profileStateClaims,
-          identity.profileRevision,
-          snapshot,
-        );
+        try {
+          identity.profileRevision = await this.profileStateClient.commit(
+            identity.profileStateClaims,
+            identity.profileRevision,
+            snapshot,
+          );
+        } catch (error) {
+          if (error instanceof BrowserRuntimeError && error.reason?.startsWith("profile-state.")) {
+            // A refused or lost commit cannot be replayed safely. Release the
+            // quiesced browser so the next attachment restores durable state.
+            // The commit stays the caller's error: it is why state went unsaved.
+            await this.cleanupHostOnce(host, false, signal, () => undefined).catch(
+              (disposal: unknown) =>
+                this.checkpointFailure(host, "final", "browser-close", started, disposal),
+            );
+          }
+          throw error;
+        }
         identity.profileDigest = snapshotDigest(snapshot);
         // A successful final commit retires this lease. A later close failure
         // must retry disposal without attempting another commit on that lease.
