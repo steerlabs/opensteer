@@ -72,6 +72,9 @@ async function verifyPackagedDesktopContents(context) {
     verifyHelperBundleRelease(resources, "computer-use", "Opensteer Computer Use.app", {
       executableSha256: join("Contents", "MacOS", "Opensteer Computer Use"),
     });
+    verifyHelperBundleRelease(resources, "dictation", "Opensteer Dictation.app", {
+      executableSha256: join("Contents", "MacOS", "Opensteer Dictation"),
+    });
     verifyHelperBundleRelease(resources, "passwords", "Opensteer Passwords.app", {
       executableSha256: join("Contents", "MacOS", "Opensteer Passwords"),
       workerSha256: join("Contents", "Helpers", "Opensteer Passwords Import"),

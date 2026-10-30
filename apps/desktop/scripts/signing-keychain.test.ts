@@ -196,6 +196,6 @@ describe("explicit signing keychain boundary", () => {
         /"notarytool",\s*"(?:history|submit|info)",[\s\S]*?\.\.\.credentials\(config\)/gu,
       ),
     ];
-    expect(notary).toHaveLength(3);
+    expect(notary).toHaveLength(4);
   });
 });
