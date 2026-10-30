@@ -60,8 +60,9 @@ supported by the pinned runtime. Only a cold boot with actual simulator proof
 certifies the golden; simulator proof does not qualify the app. Tool versions,
 manifest validation and host bootstrap live in [test-vm.ts](../test-vm.ts);
 [provision-mobile.sh](provision-mobile.sh) runs inside the guest. Bootstrap with
-`pnpm test:vm -- --mobile-golden --tooling-inputs /absolute/inputs`. Mobile app
-procedures belong to [mobile guidance](../../docs/mobile.md).
+`pnpm test:vm -- --mobile-golden --tooling-inputs /absolute/inputs`; preparing
+those inputs is the [mobile golden skill](../../.agents/skills/prepare-mobile-golden/SKILL.md).
+Mobile app procedures belong to [mobile guidance](../../docs/mobile.md).
 
 ## Persistent guest journey protocol
 
