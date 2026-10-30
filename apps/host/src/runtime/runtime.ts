@@ -55,6 +55,7 @@ import {
   WorkspaceTabStore,
   BrowserTabGroupStore,
   createDatabase,
+  databaseShutdownDetails,
   isTransactionConflict,
   IntegrationAuthAttemptStore,
   IntegrationStore,
@@ -2738,7 +2739,11 @@ export async function createHostRuntime(
         await step("database", () => database.destroy());
         closingStep = undefined;
       },
-      closingStep: () => closingStep,
+      closingStep: () => {
+        if (closingStep !== "database") return closingStep;
+        const holders = databaseShutdownDetails(database);
+        return holders ? `database (${holders})` : closingStep;
+      },
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
     };
   } catch (error) {

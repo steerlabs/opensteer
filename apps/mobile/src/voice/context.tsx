@@ -64,6 +64,6 @@ function show(deploymentId: string | null, target: VoiceTarget): void {
     );
   else
     navigationRef.dispatch(
-      StackActions.push("WorkspaceBrowser", workspaceRoute(deploymentId, null, target.destination)),
+      StackActions.push("WorkspaceBrowser", workspaceRoute(deploymentId, target.destination)),
     );
 }
