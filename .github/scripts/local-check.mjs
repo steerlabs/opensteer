@@ -44,6 +44,9 @@ export function localPlan(files, graph, present, baseGraph = graph) {
         [...plan.affected.flatMap((n) => ["--filter", n]), "--if-present", "typecheck"],
         ["typecheck:tests"],
       );
+    // Root test files belong to no workspace package; only typecheck:tests covers them.
+    else if (files.some((p) => /^tests\/.*\.test\.tsx?$/.test(p)))
+      commands.push(["typecheck:tests"]);
     const ordinary = tests.filter(
       (p) =>
         !/\.(integration|gui|engine|device|soak)\.test\./.test(p) && !/\.test\.[cm]js$/.test(p),

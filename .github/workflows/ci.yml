@@ -22,6 +22,7 @@ jobs:
     outputs:
       tests-shards: ${{ steps.changes.outputs.tests-shards }}
       integration-shards: ${{ steps.changes.outputs.integration-shards }}
+      native-mac-tasks: ${{ steps.changes.outputs.native-mac-tasks }}
       lint: ${{ steps.changes.outputs.lint }}
       build-types: ${{ steps.changes.outputs.build-types }}
       tests: ${{ steps.changes.outputs.tests }}
@@ -197,23 +198,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # swift: what the task's SwiftPM build reads, so unrelated changes keep its cache.
-          - task: computer-helper
-            timeout: 6
-            swift: apps/desktop/native/computer-use packages/apple-data packages/macos-signing apps/desktop/scripts/build-computer-use-helper.ts
-          - task: passwords-helper
-            timeout: 8
-            swift: apps/desktop/native/passwords packages/macos-signing apps/desktop/scripts/build-passwords-broker.ts
-          - task: iphone
-            timeout: 6
-            swift: packages/apple-data apps/mobile/modules/iphone-apps/ios
-          - task: computer-tests
-            timeout: 6
-            swift: apps/desktop/native/computer-use packages/apple-data packages/macos-signing
-          - task: passwords-tests
-            timeout: 14
-            swift: apps/desktop/native/passwords packages/macos-signing
+        # Tasks, timeouts and Swift cache inputs live in .github/scripts/ci-native-mac.json;
+        # `changes` selects the tasks whose inputs this change touches.
+        include: ${{ fromJSON(needs.changes.outputs.native-mac-tasks) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -264,7 +251,7 @@ jobs:
         if: matrix.task == 'passwords-tests'
         run: swift test --package-path apps/desktop/native/passwords
       - name: Test native contracts and Darwin-only files
-        if: matrix.task == 'iphone'
+        if: matrix.darwin
         shell: bash
         env:
           CI_LANE: darwin
@@ -284,7 +271,7 @@ jobs:
         with:
           name: native-mac-${{ matrix.task }}-${{ github.sha }}
           path: ${{ runner.temp }}/evidence
-          if-no-files-found: ${{ matrix.task == 'iphone' && 'error' || 'ignore' }}
+          if-no-files-found: ${{ matrix.darwin && 'error' || 'ignore' }}
   android:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.android != 'false' }}
