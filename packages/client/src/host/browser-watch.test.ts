@@ -51,13 +51,13 @@ class TargetSocket implements WebSocketClient {
       surfaces: [{ id: surfaceId, active: true, title: "Page", url: "about:blank" }],
     });
   }
-  picture() {
+  picture(sequence = 1) {
     const header = new TextEncoder().encode(
       JSON.stringify({
         encoding: "jpeg",
-        frameId: 1,
+        frameId: sequence,
         geometryRevision: 1,
-        watchToken: "00000000-0000-4000-8000-000000000001",
+        watchToken: `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`,
         surfaceId,
         viewportWidth: 800,
         viewportHeight: 600,
@@ -82,6 +82,71 @@ class TargetSocket implements WebSocketClient {
 }
 
 describe("BrowserWatchStore", () => {
+  it.each([false, true])(
+    "negotiates pipelining only when the Host supports it (%s)",
+    (supported) => {
+      const socket = new TargetSocket();
+      const store = new BrowserWatchStore(
+        () => socket,
+        "watch",
+        undefined,
+        () => 100,
+        () => false,
+        undefined,
+        () => supported,
+      );
+      const release = store.retain(sessionId, surfaceId, { frameWindow: true });
+      socket.open();
+      socket.admit();
+      expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+        type: "stream.subscribe",
+        surfaceId,
+        ...(supported ? { frameWindow: 1 } : {}),
+      });
+      release();
+      store.dispose();
+    },
+  );
+
+  it("requires every picture holder to support pipelining and returns replaced receipts once", () => {
+    const socket = new TargetSocket();
+    const store = new BrowserWatchStore(
+      () => socket,
+      "control",
+      undefined,
+      () => 100,
+      () => false,
+      undefined,
+      () => true,
+    );
+    const release = store.retain(sessionId, surfaceId, { frameWindow: true });
+    socket.open();
+    socket.admit();
+    socket.picture(1);
+    socket.picture(2);
+    const acknowledgements = () =>
+      socket.sent
+        .map((message) => JSON.parse(message))
+        .filter((message) => message.type === "stream.ack");
+    expect(acknowledgements().map((message) => message.token)).toEqual([
+      "00000000-0000-4000-8000-000000000001",
+    ]);
+    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000001");
+    const legacy = store.retain(sessionId, surfaceId);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ type: "stream.subscribe", surfaceId });
+    expect(acknowledgements()).toHaveLength(2);
+    legacy();
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({ frameWindow: 1 });
+    socket.picture(3);
+    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000002");
+    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000003");
+    release();
+    expect(acknowledgements().map((message) => message.token)).toEqual(
+      [1, 2, 3].map((sequence) => `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`),
+    );
+    store.dispose();
+  });
+
   it("ignores another surface's events until the Host answers its subscription", () => {
     const sessionId = `bsn_${crypto.randomUUID()}`;
     const socket = new TargetSocket();

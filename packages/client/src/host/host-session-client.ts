@@ -632,6 +632,7 @@ export class HttpHostClient {
       this.#browserEditing.disconnect(sessionId, surfaceId);
       this.browserPasskeys.disconnect(sessionId, surfaceId);
     },
+    () => this.#capabilities?.includes("browser-frame-window-v1") === true,
   );
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
@@ -639,6 +640,8 @@ export class HttpHostClient {
     undefined,
     (attempt) => this.#reconnectDelay(attempt),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
+    undefined,
+    () => this.#capabilities?.includes("browser-frame-window-v1") === true,
   );
   #targetedBrowserSocket(
     sessionId: string,
@@ -2469,7 +2472,11 @@ export class HttpHostClient {
   readonly retainBrowserViewer = (
     sessionId: string,
     surfaceId?: string,
-    options?: { readonly picture?: boolean; readonly captureRegion?: boolean },
+    options?: {
+      readonly picture?: boolean;
+      readonly captureRegion?: boolean;
+      readonly frameWindow?: boolean;
+    },
   ): (() => void) => {
     if (options?.picture === false && !this.#capabilities?.includes("browser-target-control-v1"))
       throw new Error("This Host does not advertise browser-target-control-v1.");
@@ -2483,7 +2490,7 @@ export class HttpHostClient {
   readonly retainBrowserWatch = (
     sessionId: string,
     surfaceId?: string,
-    options?: { readonly captureRegion?: boolean },
+    options?: { readonly captureRegion?: boolean; readonly frameWindow?: boolean },
   ): (() => void) =>
     surfaceId
       ? this.#targetedWatch.retain(sessionId, surfaceId, options)
@@ -2492,7 +2499,7 @@ export class HttpHostClient {
   #retainBrowser(
     sessionId: string,
     mode: "control" | "watch",
-    options?: { readonly captureRegion?: boolean },
+    options?: { readonly captureRegion?: boolean; readonly frameWindow?: boolean },
   ): () => void {
     if (this.#disposed) return () => undefined;
     const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
@@ -2573,6 +2580,13 @@ export class HttpHostClient {
   }
 
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void {
+    if (
+      command.type === "stream.subscribe" &&
+      !this.#capabilities?.includes("browser-frame-window-v1")
+    ) {
+      const { frameWindow: _frameWindow, ...legacy } = command;
+      command = legacy;
+    }
     if (
       command.type === "navigation.reload" &&
       command.ignoreCache !== undefined &&

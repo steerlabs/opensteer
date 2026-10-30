@@ -175,7 +175,10 @@ function BrowserFinder({
   useEffect(
     () =>
       enabled && surfaceId
-        ? hostClient.retainBrowserWatch(sessionId, tabId, { captureRegion: true })
+        ? hostClient.retainBrowserWatch(sessionId, tabId, {
+            captureRegion: true,
+            frameWindow: true,
+          })
         : undefined,
     [hostClient, sessionId, tabId, surfaceId, enabled],
   );

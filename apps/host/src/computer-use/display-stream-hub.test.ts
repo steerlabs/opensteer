@@ -2057,6 +2057,30 @@ describe("phone display Host sockets", () => {
     f.hub.sweep();
     expect(refreshes()).toHaveLength(2);
   });
+  it("expires a slow delivery estimate instead of retaining it across network changes", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 5; sequence++)
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(100_000)));
+    await phone.received(() => phone.json().length === 5);
+    await viewer.roundTrip();
+    f.advance(800);
+    viewer.send({ type: "display.ack", sequence: 4 });
+    await viewer.roundTrip();
+    expect(viewer.media()).toHaveLength(4);
+    f.advance(5_001);
+    viewer.send({ type: "display.keyframe" });
+    await viewer.received(() => viewer.media().length === 9);
+    expect(
+      viewer
+        .media()
+        .slice(4)
+        .map((frame) => frame.header.sequence),
+    ).toEqual([1, 2, 3, 4, 5]);
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(1);
+  });
   it("enforces byte credit and ignores unknown or duplicate acknowledgements", async () => {
     const f = await fixture();
     const viewer = await f.viewer();

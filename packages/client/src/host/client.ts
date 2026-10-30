@@ -1095,14 +1095,18 @@ export interface HostClient {
   readonly retainBrowserViewer: (
     sessionId: string,
     surfaceId?: string,
-    options?: { readonly picture?: boolean; readonly captureRegion?: boolean },
+    options?: {
+      readonly picture?: boolean;
+      readonly captureRegion?: boolean;
+      readonly frameWindow?: boolean;
+    },
   ) => () => void;
   /** Reads the verified Host descriptor's optional target-control capability. */
   readonly browserTargetControlAvailable?: () => Promise<boolean | null>;
   readonly retainBrowserWatch: (
     sessionId: string,
     surfaceId?: string,
-    options?: { readonly captureRegion?: boolean },
+    options?: { readonly captureRegion?: boolean; readonly frameWindow?: boolean },
   ) => () => void;
   /**
    * Opens the owner's live display socket for one phone session, under this

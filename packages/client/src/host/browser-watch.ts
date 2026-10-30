@@ -23,16 +23,16 @@ interface Watch {
   holds: number;
   pictureHolds: number;
   captureRegionHolds: number;
+  frameWindowHolds: number;
   synchronized: boolean;
   socket: WebSocketClient | null;
   state: BrowserWatchState;
-  awaiting: string | null;
+  readonly awaiting: Map<string, number>;
   timer: ReturnType<typeof setTimeout> | null;
   attempt: number;
   terminal: boolean;
   sequence: number;
   generation: number;
-  receivedAt: number;
 }
 /** One producer per exact target, with newest-frame storage and Watch credit. */
 export class BrowserWatchStore {
@@ -72,6 +72,7 @@ export class BrowserWatchStore {
   readonly mode: "watch" | "control";
   readonly retryDelay: (attempt: number) => number;
   readonly captureRegions: () => boolean;
+  readonly frameWindows: () => boolean;
   readonly onMessage:
     ((sessionId: string, message: BrowserServerMessage, surfaceId: string) => void) | undefined;
   readonly onDisconnect: ((sessionId: string, surfaceId: string) => void) | undefined;
@@ -83,9 +84,11 @@ export class BrowserWatchStore {
     retryDelay: (attempt: number) => number,
     captureRegions: () => boolean = () => false,
     onDisconnect?: (sessionId: string, surfaceId: string) => void,
+    frameWindows: () => boolean = () => false,
   ) {
     this.onDisconnect = onDisconnect;
     this.captureRegions = captureRegions;
+    this.frameWindows = frameWindows;
     this.connect = connect;
     this.mode = mode;
     this.onMessage = onMessage;
@@ -143,7 +146,11 @@ export class BrowserWatchStore {
   retain(
     sessionId: string,
     surfaceId: string,
-    options: { readonly picture?: boolean; readonly captureRegion?: boolean } = {},
+    options: {
+      readonly picture?: boolean;
+      readonly captureRegion?: boolean;
+      readonly frameWindow?: boolean;
+    } = {},
   ): () => void {
     const picture = options.picture !== false;
     const key = this.#key(sessionId, surfaceId);
@@ -157,29 +164,33 @@ export class BrowserWatchStore {
         holds: 0,
         pictureHolds: 0,
         captureRegionHolds: 0,
+        frameWindowHolds: 0,
         synchronized: false,
         socket: null,
         state: empty,
-        awaiting: null,
+        awaiting: new Map(),
         timer: null,
         attempt: 0,
         terminal: false,
         sequence: 0,
         generation: 0,
-        receivedAt: 0,
       };
       this.#targets.set(key, target);
     }
     const hadPictures = target.pictureHolds > 0;
     const previouslyOptedIn = target.captureRegionHolds === target.pictureHolds;
+    const previouslyWindowed = target.frameWindowHolds === target.pictureHolds;
     const captureRegion = picture && options.captureRegion === true;
+    const frameWindow = picture && options.frameWindow === true;
     target.holds++;
     if (picture) target.pictureHolds++;
     if (captureRegion) target.captureRegionHolds++;
+    if (frameWindow) target.frameWindowHolds++;
     if (
       target.synchronized &&
       (hadPictures !== target.pictureHolds > 0 ||
-        previouslyOptedIn !== (target.captureRegionHolds === target.pictureHolds))
+        previouslyOptedIn !== (target.captureRegionHolds === target.pictureHolds) ||
+        previouslyWindowed !== (target.frameWindowHolds === target.pictureHolds))
     )
       this.#subscribeTarget(target);
     this.#diagnose({ stage: "retain", holds: target.holds });
@@ -197,12 +208,15 @@ export class BrowserWatchStore {
       released = true;
       this.#diagnose({ stage: "release", holds: current.holds - 1 });
       const previouslyOptedIn = current.captureRegionHolds === current.pictureHolds;
+      const previouslyWindowed = current.frameWindowHolds === current.pictureHolds;
       if (picture) current.pictureHolds--;
       if (captureRegion) current.captureRegionHolds--;
+      if (frameWindow) current.frameWindowHolds--;
       if (--current.holds > 0) {
         if (
           (picture && current.pictureHolds === 0) ||
-          previouslyOptedIn !== (current.captureRegionHolds === current.pictureHolds)
+          previouslyOptedIn !== (current.captureRegionHolds === current.pictureHolds) ||
+          previouslyWindowed !== (current.frameWindowHolds === current.pictureHolds)
         )
           this.#subscribeTarget(current);
         return;
@@ -216,9 +230,10 @@ export class BrowserWatchStore {
   }
   accept(sessionId: string, surfaceId: string, token: string): void {
     const target = this.#targets.get(this.#key(sessionId, surfaceId));
-    if (target?.awaiting !== token) return;
-    this.#diagnose({ stage: "credit", durationMs: performance.now() - target.receivedAt });
-    target.awaiting = null;
+    const receivedAt = target?.awaiting.get(token);
+    if (!target || receivedAt === undefined) return;
+    this.#diagnose({ stage: "credit", durationMs: performance.now() - receivedAt });
+    target.awaiting.delete(token);
     if (target.socket?.readyState === 1)
       target.socket.send(
         JSON.stringify(
@@ -311,7 +326,7 @@ export class BrowserWatchStore {
       this.onDisconnect?.(target.sessionId, target.surfaceId);
       target.socket = null;
       target.synchronized = false;
-      target.awaiting = null;
+      target.awaiting.clear();
       target.terminal = true;
       socket.close(4002, "Targeted browser protocol required");
       this.#set(target, {
@@ -407,9 +422,9 @@ export class BrowserWatchStore {
           !frame.header.watchToken
         )
           throw new Error("The browser frame does not match the subscribed target and geometry.");
-        if (target.awaiting) this.accept(target.sessionId, target.surfaceId, target.awaiting);
-        target.awaiting = frame.header.watchToken ?? null;
-        target.receivedAt = performance.now();
+        if (target.awaiting.has(frame.header.watchToken) || target.awaiting.size >= 8)
+          throw new Error("Browser frame receipts exceeded the negotiated window.");
+        target.awaiting.set(frame.header.watchToken, performance.now());
         this.#diagnose({
           stage: "receipt",
           frameId: frame.header.frameId,
@@ -441,7 +456,7 @@ export class BrowserWatchStore {
       this.onDisconnect?.(target.sessionId, target.surfaceId);
       target.socket = null;
       target.synchronized = false;
-      target.awaiting = null;
+      target.awaiting.clear();
       target.terminal = event.code === 4002 || event.code === 4003;
       // A login that ended takes its picture with it, though the next may see it again.
       this.#set(
@@ -460,6 +475,8 @@ export class BrowserWatchStore {
     });
   }
   #subscribeTarget(target: Watch): void {
+    for (const token of target.awaiting.keys())
+      this.accept(target.sessionId, target.surfaceId, token);
     target.socket?.send(
       JSON.stringify(
         TargetedBrowserClientMessageSchema.parse({
@@ -468,6 +485,11 @@ export class BrowserWatchStore {
           target.captureRegionHolds === target.pictureHolds &&
           this.captureRegions()
             ? { captureRegion: true }
+            : {}),
+          ...(target.pictureHolds > 0 &&
+          target.frameWindowHolds === target.pictureHolds &&
+          this.frameWindows()
+            ? { frameWindow: 1 }
             : {}),
           surfaceId: target.surfaceId,
           ...(target.pictureHolds ? {} : { frames: false }),
@@ -480,9 +502,10 @@ export class BrowserWatchStore {
     if (target.timer) clearTimeout(target.timer);
     target.timer = null;
     const socket = target.socket;
-    if (target.awaiting) this.accept(target.sessionId, target.surfaceId, target.awaiting);
+    for (const token of target.awaiting.keys())
+      this.accept(target.sessionId, target.surfaceId, token);
     target.socket = null;
-    target.awaiting = null;
+    target.awaiting.clear();
     target.synchronized = false;
     this.#diagnose({ stage: "local-close", code: 1000, reason: "target-released" });
     socket?.close(1000, "Target released");
@@ -497,6 +520,8 @@ export class BrowserWatchStore {
   #set(target: Watch, state: BrowserWatchState): void {
     const before = target.state;
     target.state = state;
+    if (before.frame !== state.frame && before.frame?.header.watchToken)
+      this.accept(target.sessionId, target.surfaceId, before.frame.header.watchToken);
     if (
       before.admitted !== state.admitted ||
       before.admissionId !== state.admissionId ||

@@ -5225,6 +5225,7 @@ class HostedBrowserBroker {
         subscription: outlet.subscription,
         surfaceId: outlet.surfaceId,
         captureRegion: outlet.captureRegion,
+        frameWindow: outlet.frameWindow,
       };
       outlet.surfaceId = surfaceId;
       outlet.subscription = subscription;
@@ -5259,6 +5260,7 @@ class HostedBrowserBroker {
           outlet.resetSubscription();
           outlet.subscription = previous.subscription;
           outlet.captureRegion = previous.captureRegion;
+          outlet.frameWindow = previous.frameWindow;
           outlet.surfaceId = previous.surfaceId;
         }
         throw error;
@@ -5726,18 +5728,26 @@ export class BrowserConsumerAttachment {
 const consumerAccessRecheckMs = 5_000;
 /** How long a Watch viewer may hold a picture before it is let go as stalled. */
 const watchAcknowledgementTimeoutMs = 15_000;
+const browserFrameCreditBytes = 1_024 * 1_024;
+const browserFrameCreditMax = 4;
+// Beyond this receipt delay, sending more pictures only risks a long stale queue.
+const browserFramePipelineDelayMs = 500;
+const browserFrameQueueBudgetMs = 32;
+const browserFrameRateEstimateMs = 10_000;
 
 /**
- * One viewer's end of a session. Frames are sent one at a time; a newer one
- * waiting replaces an older one, so a slow viewer sees the latest picture
- * rather than a queue. Every viewer also returns each frame's token when it
- * is done with the picture, which is its credit for the next: a token that is
- * not the outstanding one is simply late and changes nothing.
+ * Each viewer has independent credit and one replaceable pending picture.
+ * Negotiated viewers pipeline only while receipt timing permits, pacing writes
+ * to avoid converting a frame-rate improvement into older pictures on screen.
  */
 export class BrowserConsumerOutlet {
   frameWindow = false;
   #window = 1;
-  #rtts: number[] = [];
+  #baselineDelay = Infinity;
+  #deliveryRate: { bytesPerMs: number; at: number } | null = null;
+  #lastReceipt: { sentAt: number; acknowledgedAt: number } | null = null;
+  #paceAt = 0;
+  #paceTimer: NodeJS.Timeout | null = null;
   userId: UserId | null = null;
   passkeys: PasskeyMode | undefined;
   authorized: () => Promise<boolean> = async () => false;
@@ -5864,11 +5874,25 @@ export class BrowserConsumerOutlet {
       this.#outstanding.size >= this.#window ||
       (this.#outstanding.size > 0 &&
         [...this.#outstanding.values()].reduce((sum, item) => sum + item.bytes, 0) +
-          watchFrameEnvelope(frame, header, "00000000-0000-0000-0000-000000000000").byteLength >
-          1024 * 1024)
+          frame.byteLength -
+          frame.readUInt32BE(0) +
+          Buffer.byteLength(
+            JSON.stringify({ ...header, watchToken: "00000000-0000-0000-0000-000000000000" }),
+          ) >
+          browserFrameCreditBytes)
     ) {
       if (this.#pending) this.#diagnose({ stage: "drop", frameId: this.#pending.header.frameId });
       this.#pending = { frame, header };
+      return;
+    }
+    if (this.frameWindow && performance.now() < this.#paceAt) {
+      if (this.#pending) this.#diagnose({ stage: "drop", frameId: this.#pending.header.frameId });
+      this.#pending = { frame, header };
+      this.#paceTimer ??= setTimeout(() => {
+        this.#paceTimer = null;
+        this.#flushPending();
+      }, this.#paceAt - performance.now());
+      this.#paceTimer.unref();
       return;
     }
     this.#lastFrameId = header.frameId;
@@ -5895,6 +5919,13 @@ export class BrowserConsumerOutlet {
       });
     }
     const started = performance.now();
+    if (this.frameWindow && this.#window > 1)
+      this.#paceAt =
+        started +
+        Math.max(
+          this.#baselineDelay / this.#window,
+          this.#deliveryRate ? outbound.byteLength / this.#deliveryRate.bytesPerMs : 0,
+        );
     void this.peer.send(outbound, true).then(
       () => {
         this.#diagnose({
@@ -5917,13 +5948,41 @@ export class BrowserConsumerOutlet {
     this.#diagnose({ stage: "credit", durationMs: delay });
     clearTimeout(receipt.timer);
     this.#outstanding.delete(token);
-    this.#rtts.push(delay);
-    if (this.#rtts.length > 32) this.#rtts.shift();
-    const baseline = Math.min(...this.#rtts);
+    this.#baselineDelay = Math.min(this.#baselineDelay, delay);
+    const now = performance.now();
     if (this.frameWindow) {
-      if (delay > 2 * baseline + 30) this.#window = Math.max(1, Math.floor(this.#window / 2));
-      else if (receipt.saturated && delay <= 1.25 * baseline + 10)
-        this.#window = Math.min(4, this.#window + 1);
+      const previous = this.#lastReceipt;
+      const spacing = previous ? now - previous.acknowledgedAt : 0;
+      // Concurrent writes whose receipts spread farther apart than their sends
+      // expose serialization or decoder pressure. Pace at that delivery rate
+      // rather than filling the link's queue with already-outdated pictures.
+      if (
+        previous &&
+        receipt.sentAt < previous.acknowledgedAt &&
+        spacing > receipt.sentAt - previous.sentAt + 5
+      )
+        this.#deliveryRate = { bytesPerMs: receipt.bytes / spacing, at: now };
+      else if (this.#deliveryRate && now - this.#deliveryRate.at > browserFrameRateEstimateMs)
+        this.#deliveryRate = null;
+      const ceiling = this.#deliveryRate
+        ? Math.max(
+            1,
+            Math.min(
+              browserFrameCreditMax,
+              Math.floor(
+                ((this.#baselineDelay + browserFrameQueueBudgetMs) *
+                  this.#deliveryRate.bytesPerMs) /
+                  receipt.bytes,
+              ),
+            ),
+          )
+        : browserFrameCreditMax;
+      this.#window = Math.min(this.#window, ceiling);
+      if (delay > 1.25 * this.#baselineDelay + 10)
+        this.#window = Math.max(1, Math.floor(this.#window / 2));
+      else if (receipt.saturated && delay <= browserFramePipelineDelayMs)
+        this.#window = Math.min(ceiling, this.#window + 1);
+      this.#lastReceipt = { sentAt: receipt.sentAt, acknowledgedAt: now };
     }
     if (!this.#frameInFlight) this.#flushPending();
     return Promise.resolve();
@@ -5939,7 +5998,12 @@ export class BrowserConsumerOutlet {
     for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
     this.#outstanding.clear();
     this.#window = 1;
-    this.#rtts = [];
+    this.#baselineDelay = Infinity;
+    this.#deliveryRate = null;
+    this.#lastReceipt = null;
+    this.#paceAt = 0;
+    if (this.#paceTimer) clearTimeout(this.#paceTimer);
+    this.#paceTimer = null;
     this.#pending = null;
     this.#lastFrameId = -1;
   }
@@ -5966,7 +6030,12 @@ export class BrowserConsumerOutlet {
     for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
     this.#outstanding.clear();
     this.#window = 1;
-    this.#rtts = [];
+    this.#baselineDelay = Infinity;
+    this.#deliveryRate = null;
+    this.#lastReceipt = null;
+    this.#paceAt = 0;
+    if (this.#paceTimer) clearTimeout(this.#paceTimer);
+    this.#paceTimer = null;
     clearInterval(this.#accessTimer);
     this.#onClose();
   }
