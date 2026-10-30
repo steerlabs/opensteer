@@ -176,3 +176,18 @@ it("recovers useful frame credit after moving to a higher-latency connection", a
   expect(windowed.fps).toBeGreaterThan(legacy.fps * 2);
   expect(windowed.p95).toBeLessThanOrEqual(legacy.p95 + 40);
 });
+
+it.each([
+  { before: 10_000_000, after: 1_000_000, bytes: 8_000 },
+  { before: 10_000_000, after: 1_000_000, bytes: 100_000 },
+  { before: 1_000_000, after: 10_000_000, bytes: 100_000 },
+])(
+  "bounds picture age after bandwidth changes from $before to $after bps",
+  async ({ before, after, bytes }) => {
+    const path = (at: number) => (at < 4_000 ? before : after);
+    const legacy = await simulatedLink(false, 100, path, bytes, 8_000);
+    const windowed = await simulatedLink(true, 100, path, bytes, 8_000);
+    expect(windowed.fps).toBeGreaterThanOrEqual(legacy.fps * 0.95);
+    expect(windowed.p95).toBeLessThanOrEqual(legacy.p95 + Math.max(40, legacy.p95 * 0.25));
+  },
+);

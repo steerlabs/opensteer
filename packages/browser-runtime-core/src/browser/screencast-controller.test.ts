@@ -4,7 +4,10 @@ import { screencastRaster } from "./screencast-controller.js";
 describe("screencastRaster", () => {
   it.each([0.75, 1, 1.25, 1.5, 2])("uses density %s without resizing CSS geometry", (density) => {
     const size = { width: 800, height: 600 };
-    expect(screencastRaster(size, density)).toEqual({ width: 800 * density, height: 600 * density });
+    expect(screencastRaster(size, density)).toEqual({
+      width: 800 * density,
+      height: 600 * density,
+    });
     expect(size).toEqual({ width: 800, height: 600 });
   });
   it("keeps the released default and caps native density", () => {
