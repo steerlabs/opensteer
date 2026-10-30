@@ -41,5 +41,6 @@ patchedDependencies:
 
 overrides:
   "@earendil-works/pi-coding-agent>undici": 8.12.2
+  "postcss>source-map-js": 1.2.2
   # Vitest pins its own Vite; keep every copy on the patched release.
   "vite@<8.2.4": 8.2.4
