@@ -83,13 +83,24 @@ describe("EnginePickerPanel", () => {
       const search = container.querySelector<HTMLInputElement>(
         'input[aria-label="Search models"]',
       )!;
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
-          search,
-          "work.test",
-        );
-        search.dispatchEvent(new Event("input", { bubbles: true }));
-      });
+      const typeSearch = async (value: string) =>
+        act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+            search,
+            value,
+          );
+          search.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      // The same model on two accounts must not sound the same: each result is
+      // described by where it runs.
+      await typeSearch("GPT");
+      const described = [
+        ...container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'),
+      ].map(
+        (item) => document.getElementById(item.getAttribute("aria-describedby") ?? "")?.textContent,
+      );
+      expect(described).toEqual(["Codex · alex@personal.test", "Codex · alex@work.test"]);
+      await typeSearch("work.test");
       const results = container.querySelector('[role="menu"][aria-label="Models"]')!;
       const rows = results.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]');
       expect(rows).toHaveLength(1);

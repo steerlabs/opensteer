@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   executionMenu,
   executionAccounts,
@@ -214,6 +214,7 @@ export function EnginePickerPanel({
     typeof window !== "undefined" && window.matchMedia?.("(pointer: fine)").matches === true;
   const account = accounts.find((item) => item.selected);
   const access = settings?.access;
+  const describedBy = useId();
   const paneRef = useRef<HTMLDivElement | null>(null);
   const previousView = useRef(view);
   useLayoutEffect(() => {
@@ -338,19 +339,19 @@ export function EnginePickerPanel({
           </>
         ) : (
           <>
-            {query || menu.models.length > 8 ? (
-              <label className="picker__search">
-                <Icon name="search" />
-                <input
-                  autoFocus={finePointer || query !== ""}
-                  aria-label="Search models"
-                  type="search"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search every AI…"
-                />
-              </label>
-            ) : null}
+            {/* Always in reach: a touch screen has no key to type a hidden search
+                into, and the model wanted may be on another account. */}
+            <label className="picker__search">
+              <Icon name="search" />
+              <input
+                autoFocus={finePointer || query !== ""}
+                aria-label="Search models"
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search every AI…"
+              />
+            </label>
             {menu.blocked && !query ? (
               <div className="execution-menu__scroll">
                 <p className="picker__empty">{menu.blocked.detail}</p>
@@ -365,12 +366,15 @@ export function EnginePickerPanel({
               <>
                 {view === null ? (
                   <div role="menu" aria-label="Models" className="execution-menu__scroll">
-                    {(menu.results ?? menu.models).map((model) => (
+                    {(menu.results ?? menu.models).map((model, index) => (
                       <button
                         type="button"
                         role="menuitemradio"
                         aria-checked={model.checked}
                         aria-label={model.name}
+                        // The description says where a search result runs, which
+                        // is all that tells one account's copy from another's.
+                        aria-describedby={model.description ? `${describedBy}-${index}` : undefined}
                         className="picker__row"
                         key={model.key}
                         onClick={() => onSelect(model.route)}
@@ -378,7 +382,9 @@ export function EnginePickerPanel({
                         <span className="picker__label-stack">
                           <span className="picker__label">{model.name}</span>
                           {model.description ? (
-                            <span className="picker__detail">{model.description}</span>
+                            <span className="picker__detail" id={`${describedBy}-${index}`}>
+                              {model.description}
+                            </span>
                           ) : null}
                         </span>
                         <span className="picker__check">

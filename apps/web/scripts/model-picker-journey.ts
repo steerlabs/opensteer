@@ -5,6 +5,7 @@
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { MockHostClient } from "@opensteer/client/mock";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
 const directory = path.join(tmpdir(), `composer-menu-${Date.now()}`);
 await mkdir(directory, { recursive: true });
@@ -144,6 +145,71 @@ try {
       await page.getByRole("button", { name: "This conversation" }).waitFor();
       return { width };
     });
+    if (width === 1280) {
+      // The fixtures above apply choices to local state. This one starts a real
+      // task, so a menu that looks right but never reaches the Host fails here.
+      await check(`${width}: real task carries the chosen settings`, async () => {
+        await page.goto(`${web.origin}/new`);
+        const button = page.getByRole("button", { name: /^Engine and model:/ });
+        const menu = page.getByRole("dialog", { name: "Choose an engine and model" });
+        await button.click();
+        await menu.getByRole("button", { name: /Full access ·/ }).click();
+        await menu.getByRole("radio", { name: /alex@opensteer\.test/ }).click();
+        await menu.waitFor({ state: "hidden" });
+        await button.click();
+        await menu.getByRole("menuitemradio", { name: "GPT-5.6-Sol", exact: true }).waitFor();
+        await menu.getByRole("slider", { name: "Reasoning" }).fill("3");
+        await menu.getByRole("switch", { name: "Fast", exact: true }).click();
+        await menu.getByRole("button", { name: /Full access ·/ }).click();
+        await menu.getByRole("menuitemradio", { name: /Supervised/ }).click();
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("Escape");
+        await menu.waitFor({ state: "hidden" });
+        const message = "Carry the chosen AI settings.";
+        await page.getByRole("textbox", { name: "Message", exact: true }).fill(message);
+        await page.getByRole("button", { name: "Start task", exact: true }).click();
+        await page.waitForFunction((sent) => {
+          const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
+          return snapshot.threads.some((thread) =>
+            snapshot.transcripts[thread.id]?.some(
+              (entry) => entry.kind === "message" && entry.body === sent,
+            ),
+          );
+        }, message);
+        const stored = await page.evaluate((sent) => {
+          const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
+          const account = snapshot.environments
+            .flatMap((environment) => environment.harnessCatalogs)
+            .find((catalog) =>
+              catalog.connections.some(
+                (connection) => connection.accountLabel === "alex@opensteer.test",
+              ),
+            )?.harnessInstanceId;
+          const thread = snapshot.threads.find((candidate) =>
+            snapshot.transcripts[candidate.id]?.some(
+              (entry) => entry.kind === "message" && entry.body === sent,
+            ),
+          );
+          return { account, preferences: snapshot.executionPreferences, thread };
+        }, message);
+        const remembered = stored.preferences.history[0];
+        expectThat(
+          stored,
+          !!stored.account &&
+            stored.thread?.harnessInstanceId === stored.account &&
+            stored.thread.modelSelection.modelId === "gpt-5.6-sol" &&
+            stored.thread.modelSelection.options.effort === "high" &&
+            stored.thread.modelSelection.options.speed === "priority" &&
+            stored.thread.accessMode === "approval-required" &&
+            remembered?.harnessInstanceId === stored.account &&
+            remembered.modelSelection.options.effort === "high" &&
+            remembered.modelSelection.options.speed === "priority" &&
+            stored.preferences.accessMode === "approval-required",
+          "The sent task or saved preferences lost the chosen account, model, options or access",
+        );
+        return { thread: stored.thread?.id };
+      });
+    }
     await page.close();
   }
 } finally {
