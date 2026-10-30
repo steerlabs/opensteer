@@ -4,7 +4,7 @@ import XCTest
 
 @testable import PasswordsBrokerKit
 
-/// Real socket journeys for the protocol-5 failure inventory in FAILURES.md.
+/// Real socket journeys for the protocol-5 consent contract in ../../README.md.
 @MainActor
 final class PasswordsAnywhereTests: BrokerTestCase {
   private func client(_ version: Int64) async throws -> TestClient {

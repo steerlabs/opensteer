@@ -4,7 +4,7 @@ import XCTest
 
 @testable import PasswordsBrokerKit
 
-/// Section 11 of FAILURES.md: setup, needs-reset, the key policy, the Mac
+/// Vault lifecycle: setup, needs-reset, the key policy, the Mac
 /// not yet unlocked since restart, settings and status.
 @MainActor
 final class VaultStateTests: BrokerTestCase {
