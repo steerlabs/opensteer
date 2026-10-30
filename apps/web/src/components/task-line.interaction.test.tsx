@@ -40,6 +40,7 @@ async function chatWith(
   client: MockHostClient;
   node: HTMLElement;
   tasks: readonly AssignmentSummary[];
+  update: (changed: AssignmentSummary) => void;
 }> {
   stubLayoutApis();
   const client = new MockHostClient({ latencyMs: 0 });
@@ -50,9 +51,25 @@ async function chatWith(
   const seeded = base.transcripts[home]!.find(
     (entry): entry is AssignmentEntry => entry.kind === "assignment",
   )!;
-  const made = tasks(seeded.assignment);
+  let made = tasks(seeded.assignment);
   const questions = waiting(made);
-  const cache = new WeakMap<HostSnapshot, HostSnapshot>();
+  let cache = new WeakMap<HostSnapshot, HostSnapshot>();
+  // The Host moving a task on: the next summary, told to whoever reads it.
+  const listeners = new Set<() => void>();
+  const subscribe = client.subscribe.bind(client);
+  vi.spyOn(client, "subscribe").mockImplementation((listener) => {
+    listeners.add(listener);
+    const unsubscribe = subscribe(listener);
+    return () => {
+      listeners.delete(listener);
+      unsubscribe();
+    };
+  });
+  const update = (changed: AssignmentSummary) => {
+    made = made.map((assignment) => (assignment.id === changed.id ? changed : assignment));
+    cache = new WeakMap();
+    for (const listener of listeners) listener();
+  };
   vi.spyOn(client, "getSnapshot").mockImplementation(() => {
     const snapshot = read();
     let held = cache.get(snapshot);
@@ -103,7 +120,7 @@ async function chatWith(
       </ToastProvider>,
     ),
   );
-  return { client, node, tasks: made };
+  return { client, node, tasks: made, update };
 }
 
 function variant(
@@ -239,6 +256,22 @@ describe("tasks one turn handed out together", () => {
     await act(async () => group.click());
     expect(group.getAttribute("aria-expanded")).toBe("false");
     expect(node.querySelector('[role="group"][aria-label="3 tasks"]')).toBeNull();
+  });
+
+  it("still says when a task in a closed group ends, once, and not again when opened", async () => {
+    const { node, tasks, update } = await chatWith((seeded) => [
+      variant(seeded, 0, { currentRunStatus: "running" }),
+      variant(seeded, 1, { currentRunStatus: "running" }),
+    ]);
+    const said = () =>
+      [...node.querySelectorAll<HTMLElement>('.task-line-group [role="status"]')]
+        .map(({ textContent }) => textContent)
+        .filter(Boolean);
+    expect(said()).toEqual([]);
+    await act(async () => update({ ...tasks[0]!, ...settled("failed") }));
+    expect(said()).toEqual([expect.stringMatching(/: Couldn’t finish$/)]);
+    await act(async () => node.querySelector<HTMLButtonElement>("button.task-line__open")!.click());
+    expect(said()).toEqual([expect.stringMatching(/: Couldn’t finish$/)]);
   });
 
   it("says first that one of them needs the reader", async () => {

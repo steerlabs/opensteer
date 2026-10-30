@@ -39,7 +39,10 @@ export function TaskLines({ entries }: { entries: readonly AssignmentEntry[] }) 
   return (
     <div className="task-lines">
       {entries.length === 1 ? (
-        <AssignmentLine entry={entries[0]!} />
+        <>
+          <ObservedWorker entry={entries[0]!} />
+          <AssignmentLine entry={entries[0]!} />
+        </>
       ) : (
         <TaskLineGroup entries={entries} />
       )}
@@ -70,9 +73,19 @@ function useObservedWorker(entry: AssignmentEntry): void {
   );
 }
 
+/**
+ * What a task keeps doing whether or not its line is drawn: its worker stays
+ * observed, and a change in where it stands is said to a screen reader. One
+ * per task, so a closed group still speaks and an opened one never twice.
+ */
 function ObservedWorker({ entry }: { entry: AssignmentEntry }) {
+  const { snapshot } = useShell();
   useObservedWorker(entry);
-  return null;
+  const presentation = assignmentPresentation(
+    currentAssignment(entry, snapshot.assignments),
+    snapshot,
+  );
+  return <LifecycleNews text={presentation.announcement} />;
 }
 
 /**
@@ -96,7 +109,6 @@ function taskOwner(assignment: AssignmentSummary, snapshot: HostSnapshot): strin
 function AssignmentLine({ entry }: { entry: AssignmentEntry }) {
   const { snapshot } = useShell();
   const workspace = useOptionalWorkspace();
-  useObservedWorker(entry);
   const assignment = currentAssignment(entry, snapshot.assignments);
   const presentation = assignmentPresentation(assignment, snapshot);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -140,7 +152,6 @@ function AssignmentLine({ entry }: { entry: AssignmentEntry }) {
           presentation={presentation}
         />
       ) : null}
-      <LifecycleNews text={presentation.announcement} />
     </TaskLine>
   );
 }

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act, type ReactNode } from "react";
+import { AccessibilityInfo } from "react-native";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -116,7 +117,24 @@ async function linesFor(
     connection: "connected",
     waitingRequests: waiting(client, made),
   };
-  vi.spyOn(client, "getSnapshot").mockReturnValue(snapshot);
+  const read = vi.spyOn(client, "getSnapshot").mockReturnValue(snapshot);
+  // The Host moving a task on: the next summary, told to whoever reads it.
+  const listeners = new Set<() => void>();
+  const subscribe = client.subscribe.bind(client);
+  vi.spyOn(client, "subscribe").mockImplementation((listener) => {
+    listeners.add(listener);
+    const unsubscribe = subscribe(listener);
+    return () => {
+      listeners.delete(listener);
+      unsubscribe();
+    };
+  });
+  let current = snapshot;
+  const update = (changed: AssignmentSummary) => {
+    current = { ...current, assignments: { ...current.assignments, [changed.id]: changed } };
+    read.mockReturnValue(current);
+    for (const listener of listeners) listener();
+  };
   const onViewWork = vi.fn();
   const node = document.createElement("div");
   document.body.append(node);
@@ -136,7 +154,7 @@ async function linesFor(
       </TaskScopeContext>,
     ),
   );
-  return { client, node, onViewWork, tasks: made };
+  return { client, node, onViewWork, tasks: made, update };
 }
 
 function variant(
@@ -254,6 +272,19 @@ describe("tasks one turn handed out together, on a phone", () => {
     expect(node.querySelectorAll('[data-menu-action="open"]')).toHaveLength(3);
     await act(async () => group.click());
     expect(node.querySelectorAll('[data-menu-action="open"]')).toHaveLength(0);
+  });
+
+  it("still says when a task in a closed group ends, once, and not again when opened", async () => {
+    const { node, tasks, update } = await linesFor((seeded) => [
+      variant(seeded, 0, { currentRunStatus: "running" }),
+      variant(seeded, 1, { currentRunStatus: "running" }),
+    ]);
+    const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+    announce.mockClear();
+    await act(async () => update({ ...tasks[0]!, ...settled("failed") }));
+    expect(announce.mock.calls).toEqual([[expect.stringMatching(/: Couldn’t finish$/)]]);
+    await act(async () => node.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click());
+    expect(announce).toHaveBeenCalledTimes(1);
   });
 
   it("says first that one of them needs the reader", async () => {

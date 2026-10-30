@@ -1344,3 +1344,15 @@ div.trace-step__head .trace-step__detail {
   width: 14px;
   height: 14px;
 }
+
+/* A narrow pane wraps a group's counts between parts, keeping its label and chevron in view. */
+.task-line[data-group] .task-line__title {
+  flex: none;
+}
+
+.task-line[data-group] .task-line__state {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  row-gap: var(--space-2);
+}

@@ -60,7 +60,10 @@ export function AssignmentLines(props: {
   const scope = useContext(TaskScopeContext);
   if (scope === null || props.entries.length === 0) return null;
   return props.entries.length === 1 ? (
-    <AssignmentLine entry={props.entries[0]!} scope={scope} />
+    <>
+      <ObservedWorker entry={props.entries[0]!} scope={scope} />
+      <AssignmentLine entry={props.entries[0]!} scope={scope} />
+    </>
   ) : (
     <LineGroup entries={props.entries} scope={scope} />
   );
@@ -82,9 +85,16 @@ function useObservedWorker(
   );
 }
 
+/**
+ * What a task keeps doing whether or not its line is drawn: its worker stays
+ * observed, and a change in where it stands is said aloud. One per task, so a
+ * closed group still speaks and an opened one never twice.
+ */
 function ObservedWorker(props: { readonly entry: AssignmentEntry; readonly scope: TaskScope }) {
   const snapshot = useHostSelector(props.scope.hostClient, selectSnapshot);
-  useObservedWorker(props.scope.hostClient, currentAssignment(props.entry, snapshot.assignments));
+  const assignment = currentAssignment(props.entry, snapshot.assignments);
+  useObservedWorker(props.scope.hostClient, assignment);
+  useLifecycleNews(assignmentPresentation(assignment, snapshot).announcement);
   return null;
 }
 
@@ -115,8 +125,6 @@ function AssignmentLine(props: {
     props.entry,
     props.scope.dockedRequestId,
   );
-  useObservedWorker(hostClient, assignment);
-  useLifecycleNews(presentation.announcement);
   const workerThreadId = assignment.workerThread.id;
   const { open } = presentation;
   const title = assignmentTitle(assignment, snapshot);
@@ -301,10 +309,10 @@ function LineGroup(props: {
               </View>
             ))}
           </View>
-          <AppText numberOfLines={1} role="secondaryMedium" style={styles.title} tone="soft">
+          <AppText numberOfLines={1} role="secondaryMedium" tone="soft">
             {summary.label}
           </AppText>
-          <View style={styles.state}>
+          <View style={styles.groupCounts}>
             {summary.parts.map((part, index) => (
               <View key={part.text} style={styles.state}>
                 {index > 0 ? (
@@ -435,6 +443,16 @@ export function useLifecycleNews(text: string): void {
 
 const styles = StyleSheet.create({
   chevron: { marginLeft: "auto" },
+  // A narrow pane wraps a group's counts between parts, keeping its label and chevron in view.
+  groupCounts: {
+    alignItems: "center",
+    columnGap: space[6],
+    flexDirection: "row",
+    flexShrink: 1,
+    flexWrap: "wrap",
+    minWidth: 0,
+    rowGap: space[2],
+  },
   groupLines: { paddingLeft: space[28] },
   line: {
     borderRadius: radius.sm,
