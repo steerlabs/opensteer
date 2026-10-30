@@ -1,7 +1,7 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1907,19 +1907,7 @@ export async function followWorkspace(
   };
 }
 
-export async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createNetServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        return reject(new Error("failed to allocate port"));
-      }
-      server.close((error) => (error ? reject(error) : resolve(address.port)));
-    });
-  });
-}
+export { freePort };
 
 export { executeFile };
 

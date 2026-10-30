@@ -1,5 +1,5 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId } from "@opensteer/core";
@@ -677,19 +677,4 @@ async function jsonFetch(url: string, init?: RequestInit): Promise<any> {
 
 function authorization(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` };
-}
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createNetServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        reject(new Error("Failed to allocate a port."));
-        return;
-      }
-      server.close((error) => (error ? reject(error) : resolve(address.port)));
-    });
-  });
 }

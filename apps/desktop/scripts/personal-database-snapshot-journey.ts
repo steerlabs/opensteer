@@ -1,3 +1,4 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 /**
  * Personal pre-update database snapshot journey, on a disposable deployment.
  *
@@ -14,7 +15,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createId } from "@opensteer/core";
@@ -273,13 +273,4 @@ async function applied(database: ReturnType<typeof createDatabase>): Promise<str
     .orderBy("name")
     .execute();
   return rows.map(({ name }) => name);
-}
-
-async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  assert(address && typeof address !== "string");
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return address.port;
 }

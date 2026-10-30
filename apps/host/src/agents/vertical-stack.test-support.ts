@@ -1,10 +1,10 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { runnerCatalogReadiness } from "./runner-readiness.test-support.js";
 import { EventEmitter } from "node:events";
 import { forkRunnerChild } from "./runner-child.test-support.js";
 import { RunnerWire, type RunnerWireOptions } from "./runner-wire.test-support.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
-import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
@@ -1749,22 +1749,6 @@ async function setupInitialAdministrator(dial: URL, origin: URL, token: string):
     password: "vertical-test-password-strong",
   });
   return [...cookies.values()].join("; ");
-}
-
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createNetServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close();
-        reject(new Error("Could not allocate a loopback port"));
-        return;
-      }
-      server.close((error) => (error ? reject(error) : resolve(address.port)));
-    });
-  });
 }
 
 /** One teardown step, named so a step that hangs says which it is. */
