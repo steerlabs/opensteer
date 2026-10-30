@@ -35,6 +35,26 @@ const profile = () => ({
   Platform: ["OSX"],
 });
 
+test.each(["stable", "beta"] as const)(
+  "no passkey inputs leave %s release builder arguments unchanged",
+  (channel) => {
+    const { preparePasskeySigning } = require("./passkeys-signing.cjs") as {
+      preparePasskeySigning(
+        desktop: string,
+        env: NodeJS.ProcessEnv,
+        identity: { bundleId: string; teamId: string; channel: "stable" | "beta" },
+      ): string[];
+    };
+    expect(
+      preparePasskeySigning(
+        "/unused",
+        { OPENSTEER_DESKTOP_RELEASE: "1" },
+        { ...identity, channel },
+      ),
+    ).toEqual([]);
+  },
+);
+
 test("each channel requires its own pair of release-only inputs", () => {
   expect(passkeyInputPaths({}, "stable")).toBeUndefined();
   const env = {
