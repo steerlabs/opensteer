@@ -14,7 +14,9 @@
     "./test-support/harness-transport": "./src/test-support/harness-transport.ts",
     "./test-support/harness-actions": "./src/test-support/harness-actions-fixture.ts",
     "./passkeys": "./src/passkeys/index.ts",
-    "./test-support/passkey-test-authenticator": "./src/test-support/passkey-test-authenticator.ts"
+    "./test-support/passkey-test-authenticator": "./src/test-support/passkey-test-authenticator.ts",
+    "./test-support/passkey-provider": "./src/test-support/passkey-provider-scenario.ts",
+    "./passkey-bridge": "./src/browser/passkey-bridge.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

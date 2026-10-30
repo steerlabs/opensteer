@@ -62,3 +62,44 @@ it("denies device permissions and external protocols for every browser session (
     expect(answer).toHaveBeenCalledWith({ cancel: true });
   }
 });
+
+it("keeps site policy readable for provider frames and denies foreign ancestors", async () => {
+  const { applyBrowserSessionPolicy } = await import("./browser-session-policy.js");
+  const { vi } = await import("vitest");
+  const session = {
+    setPermissionCheckHandler: vi.fn(),
+    setPermissionRequestHandler: vi.fn(),
+    getPreloadScripts: () => [],
+    registerPreloadScript: vi.fn(),
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    setUserAgent: vi.fn(),
+    getUserAgent: () => "Chrome/151",
+  };
+  applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+    provider: true,
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+  });
+  const headers = session.webRequest.onHeadersReceived.mock.calls[0]![1];
+  const original = { "Permissions-Policy": ["publickey-credentials-get=()"] };
+  for (const [resourceType, parent, denied] of [
+    ["mainFrame", null, false],
+    ["subFrame", { url: "https://rp.test/", parent: null }, false],
+    ["subFrame", { url: "https://other.test/", parent: null }, true],
+    [
+      "subFrame",
+      { url: "https://rp.test/", parent: { url: "https://other.test/", parent: null } },
+      true,
+    ],
+    ["subFrame", null, true],
+  ] as const) {
+    const callback = vi.fn();
+    headers(
+      { resourceType, url: "https://rp.test/frame", frame: { parent }, responseHeaders: original },
+      callback,
+    );
+    const result = callback.mock.calls[0]![0].responseHeaders as Record<string, string[]>;
+    expect(result["Permissions-Policy"]).toHaveLength(denied ? 2 : 1);
+    expect(result["Permissions-Policy"]![0]).toBe("publickey-credentials-get=()");
+  }
+});

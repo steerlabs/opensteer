@@ -1,4 +1,4 @@
-import { AuthSessionIdSchema, DeploymentIdSchema, UserIdSchema } from "@opensteer/core";
+import { createId, AuthSessionIdSchema, DeploymentIdSchema, UserIdSchema } from "@opensteer/core";
 import type { AuthenticatedSession } from "@opensteer/core";
 import type { SessionExchangeResponse } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
@@ -91,5 +91,57 @@ describe("personalSessionFrom", () => {
     };
 
     expect(() => personalSessionFrom(deploymentId, response)).toThrow(/cannot hold/u);
+  });
+});
+
+describe("Personal saved-view login lifetime", () => {
+  it("allocates new IDs for replacements and deletes the key before changing the session", async () => {
+    const records = createSecureRecordStore({
+      keyPrefix: "test",
+      secureStore: new MemorySecureStore(),
+    });
+    const id = createId("deployment"),
+      changes: string[] = [];
+    const store = createPersonalSessionStore(records, {
+      beforeChange: async () => {
+        changes.push((await records.read(`personal.${id}`)) ?? "absent");
+      },
+    });
+    const session = {
+      deploymentId: id,
+      absoluteExpiresAt: "2027-01-01T00:00:00.000Z",
+      expiresAt: "2027-01-01T00:00:00.000Z",
+      token: "a".repeat(43) + "." + "b".repeat(43) + "=",
+    };
+    await store.save(session);
+    const first = (await store.load(id))!.viewLoginId;
+    expect(first).toEqual(expect.any(String));
+    expect(changes).toEqual(["absent"]);
+    await store.save(session);
+    expect((await store.load(id))!.viewLoginId).not.toBe(first);
+    expect(changes[1]).toContain(first);
+    await store.clear(id);
+    expect(await store.load(id)).toBeNull();
+  });
+  it("initializes legacy records only after current bootstrap and cannot resurrect a cleared record", async () => {
+    const records = createSecureRecordStore({
+      keyPrefix: "test",
+      secureStore: new MemorySecureStore(),
+    });
+    const id = createId("deployment");
+    await records.write(
+      `personal.${id}`,
+      JSON.stringify({
+        deploymentId: id,
+        absoluteExpiresAt: "2027-01-01T00:00:00.000Z",
+        expiresAt: "2027-01-01T00:00:00.000Z",
+        token: "a".repeat(43) + "." + "b".repeat(43) + "=",
+      }),
+    );
+    const store = createPersonalSessionStore(records);
+    await store.initializeViewLoginId!(id, () => false);
+    expect((await store.load(id))!.viewLoginId).toBeUndefined();
+    await Promise.all([store.clear(id), store.initializeViewLoginId!(id, () => false)]);
+    expect(await store.load(id)).toBeNull();
   });
 });

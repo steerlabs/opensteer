@@ -1,0 +1,144 @@
+{
+  "capture": {
+    "chromium": "151.0.7922.34",
+    "scenario": "Same-origin HTTPS speculationrules prerender, followed by location.href navigation.",
+    "attachment": "Flattened tab target with source and prerender page-child sessions; no pause on start.",
+    "setup": {
+      "method": "Page.setPrerenderingAllowed",
+      "parameters": {
+        "isAllowed": true
+      }
+    },
+    "verified": {
+      "prerenderedAtStart": true,
+      "prerenderingAfterActivation": false
+    },
+    "sanitization": "Stable synthetic IDs and example.test origin; timestamps and unrelated fields omitted."
+  },
+  "initial": {
+    "frame": {
+      "id": "top",
+      "loaderId": "loader-top",
+      "url": "https://example.test/start",
+      "securityOrigin": "https://example.test"
+    },
+    "context": {
+      "id": 1,
+      "uniqueId": "unique-1",
+      "origin": "https://example.test",
+      "auxData": {
+        "frameId": "top",
+        "isDefault": true,
+        "type": "default"
+      }
+    }
+  },
+  "events": [
+    {
+      "method": "Page.domContentEventFired",
+      "parameters": {},
+      "session": "prerender"
+    },
+    {
+      "method": "Page.lifecycleEvent",
+      "parameters": {
+        "frameId": "prerender-top",
+        "loaderId": "loader-prerender",
+        "name": "DOMContentLoaded"
+      },
+      "session": "prerender"
+    },
+    {
+      "method": "Page.loadEventFired",
+      "parameters": {},
+      "session": "prerender"
+    },
+    {
+      "method": "Page.lifecycleEvent",
+      "parameters": {
+        "frameId": "prerender-top",
+        "loaderId": "loader-prerender",
+        "name": "load"
+      },
+      "session": "prerender"
+    },
+    {
+      "method": "Page.frameStoppedLoading",
+      "parameters": {
+        "frameId": "prerender-top"
+      },
+      "session": "prerender"
+    },
+    {
+      "method": "Page.frameScheduledNavigation",
+      "parameters": {
+        "frameId": "top",
+        "delay": 0,
+        "reason": "scriptInitiated",
+        "url": "https://example.test/prerender"
+      },
+      "session": "source"
+    },
+    {
+      "method": "Page.frameRequestedNavigation",
+      "parameters": {
+        "frameId": "top",
+        "reason": "scriptInitiated",
+        "url": "https://example.test/prerender",
+        "disposition": "currentTab"
+      },
+      "session": "source"
+    },
+    {
+      "method": "Page.frameClearedScheduledNavigation",
+      "parameters": {
+        "frameId": "top"
+      },
+      "session": "source"
+    },
+    {
+      "method": "Page.frameStartedNavigating",
+      "parameters": {
+        "frameId": "top",
+        "url": "https://example.test/prerender",
+        "loaderId": "loader-activation",
+        "navigationType": "differentDocument"
+      },
+      "session": "source"
+    },
+    {
+      "method": "Page.frameStartedLoading",
+      "parameters": {
+        "frameId": "top"
+      },
+      "session": "source"
+    },
+    {
+      "method": "Target.detachedFromTarget",
+      "parameters": {
+        "sessionId": "source-session",
+        "targetId": "top"
+      },
+      "session": "tab"
+    },
+    {
+      "method": "Target.targetInfoChanged",
+      "parameters": {
+        "targetInfo": {
+          "targetId": "prerender-top",
+          "type": "page",
+          "url": "https://example.test/prerender",
+          "attached": true
+        }
+      },
+      "session": "tab"
+    },
+    {
+      "method": "Page.frameStoppedLoading",
+      "parameters": {
+        "frameId": "prerender-top"
+      },
+      "session": "prerender"
+    }
+  ]
+}

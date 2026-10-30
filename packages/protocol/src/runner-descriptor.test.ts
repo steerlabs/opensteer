@@ -350,3 +350,14 @@ describe("the owning Runner descriptor reader", () => {
     ).toBe(false);
   });
 });
+
+it("preserves supported passkey module readiness and ignores future versions", () => {
+  const wire = descriptor();
+  const withVersion = (passkeys: number) =>
+    RunnerDescriptorSchema.parse({
+      ...wire,
+      modules: { ...wire.modules, browser: { ...wire.modules.browser, passkeys } },
+    });
+  expect(withVersion(1).modules.browser).toHaveProperty("passkeys", 1);
+  expect(withVersion(9).modules.browser).not.toHaveProperty("passkeys", 9);
+});
