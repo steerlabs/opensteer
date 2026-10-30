@@ -2,10 +2,15 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { copyFile, mkdir, readFile, writeFile, lstat, rm } from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
-import { releasePasskeyInputs } from "./passkeys-signing.cjs";
+// tsup bundles its config, and this module, as ESM; a static import would inline
+// the CommonJS signing helper, whose require() of Node built-ins fails there.
+const { releasePasskeyInputs } = createRequire(import.meta.url)(
+  "./passkeys-signing.cjs",
+) as typeof import("./passkeys-signing.cjs");
 const desktop = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const toolchainSchema = z.object({
   xcode: z.string(),
