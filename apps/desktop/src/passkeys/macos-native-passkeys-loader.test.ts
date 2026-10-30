@@ -7,7 +7,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return {
     ...actual,
     existsSync: (filename: import("node:fs").PathLike) => {
-      if (String(filename).endsWith("/passkeys/opensteer-passkeys.node")) {
+      if (String(filename).replace(/\\/gu, "/").endsWith("/passkeys/opensteer-passkeys.node")) {
         mocks.exists(filename);
         return false;
       }
