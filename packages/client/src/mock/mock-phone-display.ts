@@ -1,5 +1,4 @@
 import {
-  DisplayControlIdSchema,
   DisplayViewerClientMessageSchema,
   displayViewerCloseCodes,
   encodeDisplayViewerFrame,
@@ -18,7 +17,6 @@ const mockPhoneDisplayKeyframe =
 export const mockPhoneDisplayPicture = { codec: "avc1.42C01E", width: 360, height: 780 } as const;
 
 type SocketListener = (event: never) => void;
-let controls = 0;
 
 /**
  * The Host's owner viewer socket for one preview phone session: the state a
@@ -31,7 +29,6 @@ export class MockPhoneDisplaySocket implements WebSocketClient {
   binaryType: "arraybuffer" | "blob" = "blob";
   readyState = 0;
   readonly #listeners = new Map<string, Set<SocketListener>>();
-  #held = false;
 
   constructor(availability: "live" | "unsupported" | "ended") {
     this.#later(() => {
@@ -86,23 +83,6 @@ export class MockPhoneDisplaySocket implements WebSocketClient {
       this.#later(() => this.#replay());
       return;
     }
-    if (message.type !== "display.control") return;
-    if (message.action === "release") {
-      if (!this.#held) return;
-      this.#held = false;
-      this.#later(() => this.#json({ type: "display.control", state: "released" }));
-      return;
-    }
-    if (this.#held) {
-      this.#later(() => this.#json({ type: "display.control", state: "busy" }));
-      return;
-    }
-    this.#held = true;
-    controls += 1;
-    const controlId = DisplayControlIdSchema.parse(
-      `dcl_00000000-0000-4000-8000-${String(controls).padStart(12, "0")}`,
-    );
-    this.#later(() => this.#json({ type: "display.control", state: "held", controlId }));
   }
 
   /**
@@ -115,6 +95,7 @@ export class MockPhoneDisplaySocket implements WebSocketClient {
     this.#json({
       type: "display.state",
       state: "live",
+      sharedInput: 1,
       generation: 1,
       width,
       height,
