@@ -21,6 +21,12 @@ import { createServer } from "node:net";
 import { isNodeError } from "./nodeError.js";
 
 const claims = new Set<Socket>();
+// Fetch rejects these ports before connecting, even on loopback. Only ports at
+// or above the allocator's minimum are relevant.
+const fetchBlockedPorts = new Set([
+  1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
+  6679, 6697, 10080,
+]);
 let ephemeralRange: readonly [number, number] | undefined;
 
 function readEphemeralRange(): readonly [number, number] {
@@ -66,7 +72,7 @@ export async function freePort(): Promise<number> {
   const start = randomInt(count);
   for (let offset = 0; offset < count; offset++) {
     const port = minimum + ((start + offset) % count);
-    if (port >= first && port <= last) continue;
+    if ((port >= first && port <= last) || fetchBlockedPorts.has(port)) continue;
     const claim = createSocket("udp4");
     const probe = createServer();
     let retained = false;
