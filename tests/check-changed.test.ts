@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { localPlan } from "../.github/scripts/local-check.mjs";
-import { changedPlan } from "../scripts/check-changed.ts";
+import { changedPlan } from "../scripts/check-changed.js";
 it("selects sibling tests and reverse workspace consumers", () => {
   const plan = localPlan(
     ["packages/a/value.ts"],
