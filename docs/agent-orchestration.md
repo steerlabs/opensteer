@@ -813,10 +813,12 @@ before Assignments read in the same words; their task, result and pages are in t
 opens. A task's result draws nothing more: the line shows how the task ended, and the reply it
 starts says what came back. There is no separate task panel: every client opens the Thread itself.
 
-A Thread that works for another conversation leads back to it from the top of its page: the
-conversation that handed it its task, else the one it was started from, named Chat for the reader's
-Chat, and only when the reader can open it. A Thread with no row of its own marks its nearest listed
-ancestor in the sidebar (`listedRowThreadId`), Chat for work under Chat.
+A Thread that works for another conversation leads back from the top of its page to the Thread it
+lives under, the same one the sidebar marks for it (`listedRowThreadId`), even when an automation
+anchored elsewhere handed it its current task; only when the reader does not hold the Thread does
+its task's requester stand in. Chat is named Chat, and the link appears only when the reader can
+open it. A Thread with no row of its own marks its nearest listed ancestor in the sidebar, Chat for
+work under Chat.
 
 A result is copied into the assigning conversation only while its requester can still read the
 worker's Workspace; otherwise the return is undeliverable. A handoff from someone's Chat is
