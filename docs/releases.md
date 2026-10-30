@@ -1,8 +1,8 @@
 # Builds and releases
 
-Changes land through pull requests after the required `Check` succeeds. Every push
-to main runs all public CI lanes. Release builders consume a green main commit
-and supply their own signing, publication and deployment configuration.
+Changes land through pull requests after the required `Check` succeeds. Release
+builders consume a green main commit and supply their own signing, publication
+and deployment configuration.
 
 ## Release evidence
 
@@ -127,7 +127,11 @@ gh workflow run release.yml --repo steerlabs/opensteer --ref main \
 ```
 
 Preflight requires its tag, release target and release.json to agree on source
-and derived version, and checks that exact main SHA's CI. It rebuilds **Opensteer**
+and derived version, checks that exact main SHA's push CI, and requires the latest
+completed full CI run on main to be green and include that source on first-parent main.
+Before promoting, run `gh workflow run ci.yml --repo steerlabs/opensteer --ref main`
+and wait for its `Check` to pass, or wait for the scheduled full run.
+It rebuilds **Opensteer**
 (`com.opensteer.opensteer`) from that commit with the same numeric version,
 prepares `desktop-vX.Y.Z` and creates a draft. Tim then approves the separate
 `publish` environment job to undraft those verified bytes and mark Latest.

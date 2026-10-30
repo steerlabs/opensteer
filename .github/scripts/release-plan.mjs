@@ -76,7 +76,7 @@ export function preflight(
   if (git("tag", "--list", tag) && git("rev-parse", `${tag}^{commit}`) !== sha)
     throw Error("Existing tag points to another source");
   const source = { sha, version, channel, tag };
-  requireSourceChecks(source, pages);
+  requireSourceChecks(source, pages, git);
   return source;
 }
 
@@ -86,7 +86,7 @@ class SourceChecksPending extends Error {
     this.source = source;
   }
 }
-function requireSourceChecks(source, pages) {
+function requireSourceChecks(source, pages, git) {
   // A PR run is not main qualification, and an older success cannot hide a newer failure.
   const sha = source.sha;
   const runs = pages(
@@ -105,6 +105,37 @@ function requireSourceChecks(source, pages) {
     )
   )
     throw Error("Check must succeed for the exact release source");
+  if (source.channel === "stable") requireFullChecks(source, pages, git);
+}
+function requireFullChecks(source, pages, git) {
+  // Full scheduled/manual runs cover native tasks that push CI may select out.
+  const latest = pages(
+    "actions/workflows/ci.yml/runs?branch=main&status=completed&per_page=100",
+    "workflow_runs",
+  )
+    .filter(
+      (item) =>
+        item.head_branch === "main" &&
+        item.status === "completed" &&
+        ["schedule", "workflow_dispatch"].includes(item.event),
+    )
+    .sort((a, b) => b.run_number - a.run_number)[0];
+  const refuse = () => {
+    throw Error(
+      `stable needs a green full CI run that includes ${source.sha}; dispatch CI on main or wait for the scheduled run`,
+    );
+  };
+  if (!latest || latest.conclusion !== "success" || !Number.isSafeInteger(latest.id)) refuse();
+  const main = git("rev-list", "--first-parent", "refs/remotes/origin/main").split("\n");
+  const sourceIndex = main.indexOf(source.sha);
+  const fullIndex = main.indexOf(latest.head_sha);
+  if (sourceIndex < 0 || fullIndex < 0 || fullIndex > sourceIndex) refuse();
+  if (
+    !pages(`actions/runs/${latest.id}/jobs?filter=latest&per_page=100`, "jobs").some(
+      (job) => job.name === "Check" && job.status === "completed" && job.conclusion === "success",
+    )
+  )
+    refuse();
 }
 /** Push starts alongside main CI. Keep the selected SHA fixed while it qualifies. */
 export async function qualifiedPreflight(
@@ -120,11 +151,11 @@ export async function qualifiedPreflight(
     source = error.source;
   }
   const deadline = now() + timeoutMs;
-  const { pages } = client(options.root ?? process.cwd(), run);
+  const { pages, git } = client(options.root ?? process.cwd(), run);
   while (now() < deadline) {
     await sleep(Math.min(15_000, deadline - now()));
     try {
-      requireSourceChecks(source, pages);
+      requireSourceChecks(source, pages, git);
       return source;
     } catch (error) {
       if (!(error instanceof SourceChecksPending)) throw error;
