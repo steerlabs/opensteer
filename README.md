@@ -3,20 +3,23 @@
 Opensteer turns your computer into an AI agent workstation you can steer from
 your phone.
 
-> **Early alpha.** Expect rough edges, and please don't rely on it for anything
-> critical yet. See [Security](#security).
+> **Early alpha.** Expect rough edges, and be careful when you run agents in
+> Full access mode. See [Security](#security).
 
 - **Bring your own agents.** Claude Code, Codex, Cursor, OpenCode and Pi, signed
   in with the subscriptions you already have, or models running on your own
   machine. No API bills required.
+- **Skip the setup.** Agents use the sites you're already signed into in Chrome
+  and your saved logins, so you don't spend your time signing in and connecting
+  things by hand.
 - **Runs on your computer.** Your files, accounts and data stay with you.
 - **Work from anywhere.** Your phone and your other computers connect to it.
 - **Agents work alongside you,** in your browser, your apps and your computer.
 
 ## Getting started
 
-Our goal is simple: install it, connect your devices, and go. We're not there
-yet. For now you build it from source, and a one-click download is coming.
+Our goal is simple: install it, connect your devices, and do real computer work
+on the go, from any device. For now, you build it from source.
 
 Install the Node and pnpm versions declared in [package.json](package.json), Go,
 and Docker. Then run:
@@ -40,14 +43,15 @@ configure credentials and public origins before starting services.
 
 We think you should be able to do real work from anywhere: from your phone today,
 and eventually from new kinds of devices like AR/VR glasses, using your voice or
-gestures. Agents do the heavy lifting while everything keeps running on your
-computer. Your work and your data stay yours.
+gestures. We plan to add a real-time voice mode, so you can talk to your agents
+from whatever device you have on you. Agents do the heavy lifting while
+everything keeps running on your computer. Your work and your data stay yours.
 
 I strongly believe that, for most things, the future is running your own stuff
 locally. So we don't plan to offer a cloud-hosted version, even though you'll
 find bits of the code that suggest one. That was our original plan, and we
-changed our minds. For genuinely compute-heavy work a cloud machine still makes
-sense, and it should be easy to connect one or host your own.
+changed our minds. For genuinely compute-heavy or parallel work, a cloud machine
+still makes sense, and it should be easy to connect one or host your own.
 
 ## Security
 
