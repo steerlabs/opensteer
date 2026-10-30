@@ -10,6 +10,10 @@ import { headerActions } from "./navigation-header.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
 import { AddServerScreen } from "./screens/add-server.js";
+import {
+  BrowserProfilesScreen,
+  type BrowserProfilesDestination,
+} from "./screens/browser-profiles.js";
 import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
 import type { SurfacesRoute } from "./browser/surface-route.js";
 import { AddIphoneScreen } from "./iphone-apps/add-iphone.js";
@@ -243,6 +247,16 @@ const RootStack = createNativeStackNavigator({
         title: "Chrome",
       }),
     },
+    BrowserProfiles: {
+      screen: BrowserProfilesScreen,
+      options: ({ navigation }) => ({
+        ...headerActions({
+          right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
+        }),
+        presentation: "modal",
+        title: "Browser profiles",
+      }),
+    },
     Computer: {
       screen: ComputerScreen,
       options: ({ navigation }) => ({
@@ -335,6 +349,7 @@ type OpensteerRootParamList = {
   readonly AddPersonal: undefined;
   readonly AddServer: undefined;
   readonly Chrome: ChromeDestination;
+  readonly BrowserProfiles: BrowserProfilesDestination;
   readonly Computer: { readonly deploymentId: string; readonly machineId: string };
   readonly ConversationActivity: {
     readonly deploymentId: string;

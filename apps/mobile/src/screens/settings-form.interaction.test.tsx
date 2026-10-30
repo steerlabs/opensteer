@@ -64,12 +64,14 @@ describe("Settings → Browser on a phone", () => {
   it("lists Passwords beside Chrome, says where they are kept, and opens it", async () => {
     const onChromeAction = vi.fn();
     const onPasswordsAction = vi.fn();
-    await render({ onChromeAction, onPasswordsAction });
+    const onBrowserProfilesAction = vi.fn();
+    await render({ onChromeAction, onPasswordsAction, onBrowserProfilesAction });
     const rows = [...document.querySelectorAll("button[aria-label]")].map((row) =>
       row.getAttribute("aria-label"),
     );
     expect(rows).toEqual([
       "Chrome, Your Chrome and the sites agents can sign in to",
+      "Browser profiles, Separate browsers with their own sign-ins",
       "Passwords, Kept on Mac mini",
     ]);
     await act(async () => {
@@ -79,6 +81,14 @@ describe("Settings → Browser on a phone", () => {
     });
     expect(onPasswordsAction).toHaveBeenCalledOnce();
     expect(onChromeAction).not.toHaveBeenCalled();
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Browser profiles, Separate browsers with their own sign-ins"]',
+        )
+        ?.click(),
+    );
+    expect(onBrowserProfilesAction).toHaveBeenCalledOnce();
   });
 
   it("shows no Browser settings while no Deployment is open", async () => {
