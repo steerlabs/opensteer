@@ -50,6 +50,29 @@
       "timeout": 6,
       "swift": ["packages/apple-data", "apps/mobile/modules/iphone-apps/ios"],
       "tests": ["packages/apple-data", "apps/mobile/modules/iphone-apps/ios"],
+      "scripts": [
+        "scripts/generate-apple-data-contracts.ts",
+        "apps/desktop/src/computer-use/lifecycle-lock-holder.fixture.ts"
+      ],
+      "vitest": [
+        "tests/helper-data-contracts.test.ts",
+        "packages/protocol/src/computer-use-helper-wire.test.ts",
+        "packages/protocol/src/passwords-broker-wire.test.ts",
+        "apps/desktop/src/computer-use",
+        "apps/desktop/src/passwords"
+      ],
+      "extra": [
+        ".github/scripts/ci-access-trace.mjs",
+        ".github/scripts/ci-native-access.mjs",
+        ".github/scripts/ci-test-files.mjs",
+        "scripts/ci-inventory-reporter.ts",
+        "scripts/mac-app-tree.py",
+        "apps/desktop/native/computer-use/Tests/Fixtures/helper-wire.json",
+        "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
+        "tsconfig.json",
+        "tsconfig.base.json",
+        "apps/desktop/tsconfig.json"
+      ],
       "lane": true
     },
     {

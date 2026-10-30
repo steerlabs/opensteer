@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { allNativeMacTasks, decide, parseDiff, readGraph, detect } from "./ci-changes.mjs";
+import {
+  allNativeMacTasks,
+  decide,
+  detect,
+  lastFullRunSha,
+  parseDiff,
+  readGraph,
+} from "./ci-changes.mjs";
 const graph = [
   { name: "leaf", dir: "packages/leaf", deps: [], coverage: [] },
   { name: "host", dir: "apps/host", deps: ["leaf"], coverage: ["integration"] },
@@ -23,7 +30,13 @@ test("unknown/root/config/lock/toolchain and malformed diff fail open", () => {
     "packages/leaf/tsconfig.json",
     "go.work",
   ])
-    assert.ok(Object.values(decide([file], graph).lanes).every(Boolean), file);
+    // Every lane but native-mac, whose tasks run for their own inputs.
+    assert.ok(
+      Object.entries(decide([file], graph).lanes).every(
+        ([lane, on]) => on || lane === "native-mac",
+      ),
+      file,
+    );
   assert.throws(() => parseDiff("a.ts"));
   assert.deepEqual(parseDiff("a b.ts\0old.ts\0"), ["a b.ts", "old.ts"]);
 });
@@ -50,13 +63,125 @@ test("Android source gates Android; native Mac source gates Mac", () => {
   assert.equal(a.lanes.android, true);
   assert.equal(a.lanes["native-mac"], false);
   assert.equal(a.lanes.tests, false);
-  const n = decide(["apps/desktop/native/Foo.swift"], mac);
+  const n = decide(["apps/desktop/native/computer-use/Sources/Foo.swift"], mac);
   assert.equal(n.lanes["native-mac"], true);
   assert.equal(n.lanes.android, false);
 });
-test("any workspace edit runs the root darwin-only tests in the Mac lane", () => {
+test("the iphone task runs for what its tests import, read or launch, not for any edit", () => {
   const web = [{ name: "web", dir: "apps/web", deps: [], coverage: ["tests"] }];
-  assert.equal(decide(["apps/web/src/page.ts"], web).lanes["native-mac"], true);
+  assert.equal(decide(["apps/web/src/page.ts"], web).lanes["native-mac"], false);
+  for (const file of [
+    "tests/vm-slot-queue.test.ts",
+    "apps/desktop/src/computer-use/computer-use-service.ts",
+    "packages/protocol/src/browser.ts",
+    "scripts/mac-app-tree.py",
+    "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
+    "vitest.config.ts",
+  ])
+    assert.ok(decide([file], web).nativeMac.includes("iphone"), file);
+});
+test("git fixture: a main push picks macOS tasks from its one commit", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { execFileSync } = await import("node:child_process");
+  const root = mkdtempSync(join(tmpdir(), "ci-push-"));
+  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  const write = (p, s) => {
+    mkdirSync(join(root, p, ".."), { recursive: true });
+    writeFileSync(join(root, p), s);
+  };
+  const commit = () => {
+    git("add", "-A");
+    git(
+      "-c",
+      "user.name=F",
+      "-c",
+      "user.email=f@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      "f",
+    );
+    return git("rev-parse", "HEAD");
+  };
+  try {
+    git("init", "-q");
+    write("pnpm-workspace.yaml", "packages:\n  - packages/*\n");
+    write("packages/a/package.json", JSON.stringify({ name: "a" }));
+    const first = commit();
+    write("apps/desktop/native/passwords/Sources/Broker.swift", "// changed");
+    const second = commit();
+    const push = detect({ root, event: "push", before: first });
+    assert.ok(Object.entries(push.lanes).every(([lane, on]) => on || lane === "native-mac"));
+    assert.deepEqual(push.nativeMac, ["passwords-helper", "passwords-tests"]);
+    // Several commits in one push, or a new branch, run every task.
+    write("docs/a.md", "x");
+    commit();
+    assert.deepEqual(detect({ root, event: "push", before: first }).nativeMac, allNativeMacTasks);
+    assert.deepEqual(
+      detect({ root, event: "push", before: "0".repeat(40) }).nativeMac,
+      allNativeMacTasks,
+    );
+    // A docs-only merge runs every Linux lane on main and no macOS task.
+    const docs = detect({ root, event: "push", before: git("rev-parse", "HEAD^1") });
+    assert.deepEqual(docs.nativeMac, []);
+    assert.equal(docs.lanes.tests, true);
+    assert.equal(second.length, 40);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("scheduled and manual runs take every task unless main has not changed", () => {
+  for (const event of ["schedule", "workflow_dispatch"]) {
+    const plan = detect({ event });
+    assert.deepEqual(plan.nativeMac, allNativeMacTasks);
+    assert.ok(Object.values(plan.lanes).every(Boolean));
+  }
+  const unchanged = detect({ event: "schedule", unchangedSince: "a".repeat(40) });
+  assert.deepEqual(unchanged.nativeMac, []);
+  assert.ok(Object.values(unchanged.lanes).every((on) => on === false));
+  // Only a scheduled run consults the last full run.
+  assert.deepEqual(
+    detect({ event: "workflow_dispatch", unchangedSince: "a".repeat(40) }).nativeMac,
+    allNativeMacTasks,
+  );
+});
+test("the last full run is the newest uncancelled scheduled or manual main run but this one", async () => {
+  const pages = {
+    schedule: [
+      { id: 9, run_number: 9, head_branch: "main", conclusion: null, head_sha: "this-run" },
+      { id: 8, run_number: 8, head_branch: "main", conclusion: "cancelled", head_sha: "cancelled" },
+      { id: 5, run_number: 5, head_branch: "main", conclusion: "failure", head_sha: "older" },
+    ],
+    workflow_dispatch: [
+      { id: 7, run_number: 7, head_branch: "feature", conclusion: "success", head_sha: "branch" },
+      { id: 6, run_number: 6, head_branch: "main", conclusion: "success", head_sha: "manual" },
+    ],
+  };
+  const urls = [];
+  const request = async (url) => {
+    urls.push(url);
+    const event = new URL(url).searchParams.get("event");
+    return { ok: true, json: async () => ({ workflow_runs: pages[event] }) };
+  };
+  assert.equal(
+    await lastFullRunSha({ repository: "o/r", runId: "9", token: "t", request }),
+    "manual",
+  );
+  assert.ok(
+    urls.every((url) => url.includes("/repos/o/r/actions/workflows/ci.yml/runs?branch=main")),
+  );
+  await assert.rejects(
+    lastFullRunSha({
+      repository: "o/r",
+      runId: "9",
+      token: "t",
+      request: async () => ({ ok: false, status: 403 }),
+    }),
+    /HTTP 403/u,
+  );
 });
 test("source-bearing markdown and fixtures never count as documentation", () => {
   for (const p of ["SKILL.md", "docs/fixtures/prompt.md"])
@@ -190,13 +315,13 @@ test("a file a Swift task's node script imports selects that task, and only task
   assert.ok(nativeInputs["passwords-helper"].includes(signing));
   assert.ok(swiftOnly(decide([signing], realGraph)).includes("passwords-helper"));
 });
-test("an unrelated edit, even a global one, runs no Swift task", () => {
+test("an unrelated edit, even a global one, runs no macOS task", () => {
   const web = decide(["apps/web/src/app-model.ts"], realGraph);
-  assert.deepEqual(web.nativeMac, ["iphone"]);
-  assert.equal(web.lanes["native-mac"], true);
+  assert.deepEqual(web.nativeMac, []);
+  assert.equal(web.lanes["native-mac"], false);
   const launcher = decide(["scripts/test-integration.ts"], realGraph);
   assert.equal(launcher.full, true);
-  assert.deepEqual(launcher.nativeMac, ["iphone"]);
+  assert.deepEqual(launcher.nativeMac, []);
   assert.deepEqual(decide(["docs/testing.md"], realGraph).nativeMac, []);
 });
 test("Swift sources, node manifests and the CI definition select their tasks", () => {
@@ -256,6 +381,7 @@ test("workflow steps name exactly the configured native-mac tasks and their Swif
   const steps = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs["native-mac"].steps;
   const named = new Set();
   const swiftTests = new Map(config.tasks.map(({ task }) => [task, new Set()]));
+  const vitestRuns = new Map(config.tasks.map(({ task }) => [task, []]));
   for (const step of steps) {
     const tasks = [...String(step.if ?? "").matchAll(/matrix\.task == '([^']+)'/gu)].map(
       (m) => m[1],
@@ -267,11 +393,18 @@ test("workflow steps name exactly the configured native-mac tasks and their Swif
       named.add(task);
       for (const [, path] of String(step.run ?? "").matchAll(/swift test --package-path (\S+)/gu))
         swiftTests.get(task).add(path);
+      // Explicit Vitest paths; the Darwin-only list comes from ci-test-files.mjs.
+      for (const [, paths] of String(step.run ?? "").matchAll(
+        /^\s*pnpm exec vitest run ([^$\n]+)$/gmu,
+      ))
+        vitestRuns.get(task).push(...paths.trim().split(/\s+/u));
     }
   }
   assert.deepEqual([...named].sort(), allNativeMacTasks.toSorted());
-  for (const { task, tests = [] } of config.tasks)
+  for (const { task, tests = [], vitest = [] } of config.tasks) {
     assert.deepEqual([...swiftTests.get(task)].sort(), tests.toSorted(), task);
+    assert.deepEqual(vitestRuns.get(task).toSorted(), vitest.toSorted(), task);
+  }
 });
 test("a root test edit selects its own lane, the test guards and typecheck, not everything", () => {
   const lanesOf = (file) =>
@@ -300,8 +433,8 @@ test("a root test edit selects its own lane, the test guards and typecheck, not 
   assert.equal(darwin.lanes.integration, false);
   // Support modules and fixtures under tests/ can feed any suite.
   assert.ok(
-    Object.values(decide(["tests/browser-deployment.test-support.ts"], realGraph).lanes).every(
-      Boolean,
+    Object.entries(decide(["tests/browser-deployment.test-support.ts"], realGraph).lanes).every(
+      ([lane, on]) => on || lane === "native-mac",
     ),
   );
 });

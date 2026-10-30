@@ -28,4 +28,6 @@ runs:
       shell: bash
       env:
         EVENT_NAME: ${{ github.event_name }}
+        BEFORE_SHA: ${{ github.event.before }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: node .github/scripts/ci-changes.mjs
