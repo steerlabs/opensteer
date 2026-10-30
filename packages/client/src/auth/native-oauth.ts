@@ -103,6 +103,7 @@ export interface HostOAuthState {
   /** The attachment key this state belongs to, so no observer re-resolves it. */
   readonly key: string;
   readonly status: HostOAuthStatus;
+  readonly viewLoginId?: string;
 }
 
 /**
@@ -142,6 +143,8 @@ const OAuthTokenResponseSchema = z
   .passthrough();
 
 export class NativeOAuthManager implements HostCredentialProvider {
+  readonly #beforeAccountChange: () => Promise<void>;
+  readonly #beforeHostChange: (connection: DeploymentConnection) => Promise<void>;
   readonly #accountOrigin: string | null;
   readonly #accountSessions: {
     removeAllAccountIdentities(): Promise<void>;
@@ -175,6 +178,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
   #storageError: string | null = null;
 
   constructor(options: {
+    readonly beforeAccountChange?: () => Promise<void>;
+    readonly beforeHostChange?: (connection: DeploymentConnection) => Promise<void>;
     readonly accountOrigin: URL | string | null;
     readonly accountSessions: {
       removeAllAccountIdentities(): Promise<void>;
@@ -190,6 +195,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
     readonly scheduleExpiry?: (callback: () => void, delayMilliseconds: number) => () => void;
     readonly store: ProtectedAuthStore;
   }) {
+    this.#beforeAccountChange = options.beforeAccountChange ?? (async () => undefined);
+    this.#beforeHostChange = options.beforeHostChange ?? (async () => undefined);
     this.#accountOrigin =
       options.accountOrigin === null
         ? null
@@ -294,6 +301,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
         : null);
     return {
       connection: structuredClone(connection),
+      ...(credential?.viewLoginId ? { viewLoginId: credential.viewLoginId } : {}),
       detail: pending ? "Complete authorization in your browser." : detail,
       key,
       status: this.#storageError
@@ -306,6 +314,57 @@ export class NativeOAuthManager implements HostCredentialProvider {
               ? "error"
               : "signed-out",
     };
+  }
+
+  /** Local continuity only; never returns a credential or refreshes one. */
+  hostViewLoginId(connection: DeploymentConnection): string | undefined {
+    const credential = this.#hostCredential(connection.authority.document.deploymentId);
+    return credential && credentialMatchesConnection(credential, connection)
+      ? credential.viewLoginId
+      : undefined;
+  }
+
+  accountViewLoginId(): string | undefined {
+    return this.#accountSession?.credential.viewLoginId;
+  }
+
+  /** Called only after a current authenticated bootstrap, inside the credential owner's queue. */
+  async initializeViewLoginIds(
+    connection: DeploymentConnection,
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    const host = this.#hostCredential(connection.authority.document.deploymentId);
+    const account = this.#accountSession;
+    await this.#mutateCredentials(async () => {
+      if (this.#disposed || !isCurrent()) return;
+      if (
+        host &&
+        !host.viewLoginId &&
+        this.#hostCredential(host.deploymentId) === host &&
+        credentialMatchesConnection(host, connection)
+      ) {
+        const next = { ...host, viewLoginId: globalThis.crypto.randomUUID() };
+        const state = await this.#store.setHost(next);
+        if (!this.#disposed && isCurrent() && this.#hostCredential(host.deploymentId) === host) {
+          this.#adoptHostCredentials(state.hosts);
+        }
+      }
+      if (!isCurrent() || this.#disposed) return;
+      if (
+        connection.source.kind === "account" &&
+        account &&
+        !account.credential.viewLoginId &&
+        this.#accountSession === account &&
+        account.credential.issuerOrigin === connection.source.issuer &&
+        account.credential.subject === connection.source.subject
+      ) {
+        const next = { ...account.credential, viewLoginId: globalThis.crypto.randomUUID() };
+        await this.#store.setAccount(next);
+        if (!this.#disposed && isCurrent() && this.#accountSession === account) {
+          this.#replaceAccountSession({ ...account, credential: next });
+        }
+      }
+    });
   }
 
   async beginAccountSignIn(): Promise<DesktopAccountAuthState> {
@@ -331,6 +390,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   async #beginAccountAuthorization(
     reauthorization: { readonly subject: ControlPlaneAccountId } | null,
   ): Promise<DesktopAccountAuthState> {
+    await this.#beforeAccountChange();
     await this.#ensureStorageReady();
     if (this.#accountOrigin === null) {
       throw new Error("Opensteer Account sign-in isn't available yet.");
@@ -364,6 +424,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     // Claimed before the first await. Protected storage can take long enough
     // for a person to leave the flow, and only this fence sees that boundary.
     const generation = this.#advanceHostGeneration(deploymentId);
+    await this.#beforeHostChange(connection);
     await this.#ensureStorageReady();
     if (this.#hostGeneration(deploymentId) !== generation) {
       return this.hostCredentialState(connection);
@@ -472,6 +533,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
         }
         const credential = AccountCredentialSchema.parse({
           ...credentialTokens,
+          viewLoginId: globalThis.crypto.randomUUID(),
           ...(identity.email ? { email: identity.email } : {}),
           issuerOrigin: flow.issuerOrigin,
           subject: identity.subject,
@@ -520,6 +582,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
         const { idToken: _idToken, ...credentialTokens } = tokens;
         const credential = HostCredentialSchema.parse({
           ...credentialTokens,
+          viewLoginId: globalThis.crypto.randomUUID(),
           canonicalOrigin: origin,
           deploymentId: flow.connection.authority.document.deploymentId,
           hostInstanceId: flow.connection.authority.document.hostInstanceId,
@@ -623,6 +686,12 @@ export class NativeOAuthManager implements HostCredentialProvider {
           ) {
             return false;
           }
+          await this.#beforeHostChange(connection);
+          if (
+            this.#hostGeneration(deploymentId) !== generation ||
+            this.#hostCredential(deploymentId)?.refreshToken !== credential.refreshToken
+          )
+            return false;
           const state = await this.#store.clearHost(deploymentId);
           this.#pendingHostWrites.delete(deploymentId);
           this.#adoptHostCredentials(state.hosts);
@@ -826,8 +895,10 @@ export class NativeOAuthManager implements HostCredentialProvider {
     const credential = this.#accountSession?.credential ?? null;
     // The capability dies before any cleanup awaits, so nothing issued during
     // sign-out can outlive the identity it was issued for.
+    const invalidation = this.#beforeAccountChange();
     this.#replaceAccountSession(null);
     this.#accountDetail = null;
+    await invalidation;
     await this.#emitAccount();
     let detail: string | null = null;
     try {
@@ -881,6 +952,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     );
     this.#pendingHostWrites.delete(deploymentId);
     this.#hostDetails.delete(key);
+    await this.#beforeHostChange(connection);
     await this.#mutateCredentials(async () => {
       this.#adoptHostCredentials((await this.#store.clearHost(deploymentId)).hosts);
     });
@@ -1230,7 +1302,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
   /** Ends one Account session locally after its authorization stopped working. */
   async #expireAccountSession(session: AccountSession, detail: string): Promise<void> {
     if (this.#accountSession !== session) return;
+    const invalidation = this.#beforeAccountChange();
     this.#replaceAccountSession(null);
+    await invalidation;
     await this.#clearPersistedAccount();
     if (this.#accountSession === null) this.#accountDetail = detail;
     await this.#emitAccount();
