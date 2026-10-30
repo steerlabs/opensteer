@@ -1043,8 +1043,12 @@ it.each([
           },
         ]);
         expect(refused.isError).toBe(true);
-        expect(resultText(refused)).toContain("A person is touching the screen; try again.");
-        evidence.personContactRefusal = resultText(refused);
+        // The refusal follows the fresh observation an act result carries.
+        const refusal = refused.content
+          .flatMap((block) => (block.type === "text" ? [block.text] : []))
+          .join("\n");
+        expect(refusal).toContain("A person is touching the screen; try again.");
+        evidence.personContactRefusal = refusal;
         const cursor = second.trace.events.length;
         input(second, [{ kind: "nav", to: "home" }]);
         await second.wait("another viewer is contended while contact is held", () =>
@@ -1561,7 +1565,11 @@ it.each([
 
       resetInput(editing);
       await editing.close();
-      await phone.shell(`am start -W -n ${fixtureActivities.display}`);
+      // The editing fixtures share the display fixture's task; without clearing
+      // them, bringing the task forward leaves the last editing case on top.
+      await phone.shell(
+        `am start -W --activity-clear-top --activity-single-top -n ${fixtureActivities.display}`,
+      );
       await inputReady(first);
       if (failures.length) throw new AggregateError(failures, "Native editing cases failed");
     });
