@@ -432,6 +432,15 @@ state copies once into a new profile and never links subsequent Guest activity.
 The previous-release profile-save tool remains compatibility-only. Saved-state
 site inspection cannot prove a currently valid website sign-in.
 
+Only the person renames or deletes a profile, behind `browser-profile-manage-v1`;
+agents get no destructive tool. Deletion archives the row, because sessions keep
+naming the identity they were created with, then erases its vault revisions and
+revokes its grants. It holds the profile's session lock, which session creation
+and revision commits also take, and grant creation waits on the row, so no
+session, grant, late save or creation replay can follow. The Host then stops the
+profile's live sessions and closes its tab lineages. A repeated delete stops
+whatever is left, so a failed stop is retried rather than stranded.
+
 ## Profile state
 
 The Profile Vault is the only durable state; Runtime disk profiles are disposable.

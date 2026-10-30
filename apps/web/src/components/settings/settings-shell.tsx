@@ -25,6 +25,7 @@ import { computerIcon } from "../computers/device-art.js";
 import { SectionHeader, type SettingsView } from "./primitives.js";
 import { AccountSection } from "./sections/account.js";
 import { AiEnginesSection } from "./sections/ai-engines.js";
+import { BrowserProfilesSection } from "./sections/browser-profiles.js";
 import { ChromeSection } from "./sections/chrome.js";
 import { DevicesSettings } from "./sections/devices.js";
 import { GeneralSection } from "./sections/general.js";
@@ -259,6 +260,9 @@ export function SettingsSectionRoute({
       break;
     case "chrome":
       content = <ChromeSection />;
+      break;
+    case "browser-profiles":
+      content = <BrowserProfilesSection />;
       break;
     case "passwords":
       content = <PasswordsSection view={view} />;
