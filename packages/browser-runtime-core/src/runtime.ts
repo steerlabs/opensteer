@@ -970,7 +970,11 @@ export class BrowserRuntime implements NativePresentationSource {
           if (error instanceof BrowserRuntimeError && error.reason?.startsWith("profile-state.")) {
             // A refused or lost commit cannot be replayed safely. Release the
             // quiesced browser so the next attachment restores durable state.
-            await this.cleanupHostOnce(host, false, signal, () => undefined);
+            // The commit stays the caller's error: it is why state went unsaved.
+            await this.cleanupHostOnce(host, false, signal, () => undefined).catch(
+              (disposal: unknown) =>
+                this.checkpointFailure(host, "final", "browser-close", started, disposal),
+            );
           }
           throw error;
         }

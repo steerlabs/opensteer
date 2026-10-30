@@ -178,6 +178,45 @@ describe("BrowserRuntime", () => {
     },
   );
 
+  it("keeps a refused final save as the error when releasing its browser also fails", async () => {
+    const closeError = new Error("browser close failed");
+    const launcher = new FakeLauncher(
+      new FakeLaunchedBrowser(new FakeContext([new FakePage()]), closeError),
+    );
+    const refused = new BrowserRuntimeError("forbidden", "save refused", {
+      reason: "profile-state.lease-rejected",
+      retryable: false,
+    });
+    const diagnostics: { stage: string; error: BrowserRuntimeError }[] = [];
+    const runtime = new BrowserRuntime({
+      launcher,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+      onCheckpointFailure: ({ stage, error }) => diagnostics.push({ stage, error }),
+      profileStateClient: {
+        load: () => new FakeProfileStateClient().load(),
+        commit: () => Promise.reject(refused),
+      },
+    });
+    try {
+      const session = await runtime.attach("signed-ticket", new FakeSink());
+      await expect(session.close()).rejects.toMatchObject({ errors: [refused] });
+      expect(diagnostics).toEqual([
+        {
+          stage: "browser-close",
+          error: expect.objectContaining({
+            reason: "profile-checkpoint.browser-close-failed",
+            cause: expect.objectContaining({ errors: [closeError] }),
+          }),
+        },
+        { stage: "host-commit", error: refused },
+      ]);
+    } finally {
+      await runtime.shutdown().catch(() => undefined);
+    }
+  });
+
   it("restores the Host-owned profile once and checkpoints it when the Profile Host closes", async () => {
     const launcher = new FakeLauncher();
     const profileStateClient = new FakeProfileStateClient();
