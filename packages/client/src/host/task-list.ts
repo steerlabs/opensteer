@@ -168,15 +168,17 @@ export interface RequesterLink {
 }
 
 /**
- * The conversation a Thread works for, as a way back: the one that handed it
- * its task, else the one it was started from. Only what this client holds is
- * offered, so a link never leads to a Thread the reader cannot open.
+ * The way back from a Thread: the one it lives under, where the sidebar shows
+ * it, even when another conversation (an automation's, say) handed it its
+ * current task. Only when this client does not hold the Thread does its task's
+ * requester stand in. A link never leads to a Thread the reader cannot open.
  */
 export function threadRequester(snapshot: TaskListSource, threadId: string): RequesterLink | null {
+  const held = heldThread(snapshot, threadId);
   const parent =
-    workerAssignment(snapshot.assignments, threadId)?.parentThreadId ??
-    heldThread(snapshot, threadId)?.parentThreadId ??
-    null;
+    held === null
+      ? (workerAssignment(snapshot.assignments, threadId)?.parentThreadId ?? null)
+      : held.parentThreadId;
   return parent === null || parent === threadId ? null : requesterLink(snapshot, parent);
 }
 

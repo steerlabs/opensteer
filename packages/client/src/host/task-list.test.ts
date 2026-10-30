@@ -444,9 +444,10 @@ describe("listedRowThreadId", () => {
   });
 });
 
-// Failure modes: a task's way back names the Thread it was started from when
-// another conversation handed it its work, calls the reader's own Chat by its
-// Thread title, or links a conversation this reader cannot open.
+// Failure modes: a helper's way back names whoever handed it its latest task
+// instead of the task it lives under (so the header and the sidebar disagree),
+// calls the reader's own Chat by its Thread title, or links a conversation this
+// reader cannot open.
 describe("threadRequester", () => {
   const chat = threadId(80);
   const task = threadId(81);
@@ -472,12 +473,28 @@ describe("threadRequester", () => {
   });
   const assignment = Object.values(base.assignments)[0]!;
 
-  it("leads back to whoever handed it its task, by the name the reader knows", () => {
-    const tasks = [thread(task, "Plan Tokyo trip", chat), thread(helper, "Check fares", chat)];
+  it("leads back to where it lives, by the name the reader knows, as the sidebar does", () => {
+    const tasks = [
+      { ...thread(task, "Plan Tokyo trip", chat), listed: true },
+      { ...thread(helper, "Check fares", task), listed: false },
+    ];
     expect(threadRequester(snapshot(tasks), task)).toEqual({ threadId: chat, title: "Chat" });
+    // An automation anchored on Chat hands the helper its current task; it still lives under the trip.
+    const retasked = snapshot(tasks, {
+      [assignment.id]: {
+        ...assignment,
+        parentThreadId: ThreadIdSchema.parse(chat),
+        workerThread: { ...assignment.workerThread, id: ThreadIdSchema.parse(helper) },
+      },
+    });
+    expect(threadRequester(retasked, helper)).toEqual({ threadId: task, title: "Plan Tokyo trip" });
+    expect(listedRowThreadId(retasked, helper)).toBe(task);
+  });
+
+  it("names its task's requester only when the Thread itself is not held", () => {
     expect(
       threadRequester(
-        snapshot(tasks, {
+        snapshot([thread(task, "Plan Tokyo trip", chat)], {
           [assignment.id]: {
             ...assignment,
             parentThreadId: ThreadIdSchema.parse(task),
