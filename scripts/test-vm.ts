@@ -40,7 +40,7 @@ const vitestCache = path.join(homedir(), ".cache/opensteer/vitest");
 const locks = path.join(state, "vm/locks");
 const gib = 1024 ** 3;
 const usage =
-  "Usage: pnpm test:vm -- [--mobile] [--revision SHA] COMMAND [ARGS...] | --golden | --mobile-golden --tooling-inputs DIR";
+  "Usage: pnpm test:vm -- [--mobile] [--inputs DIR] [--revision SHA] COMMAND [ARGS...] | --golden | --mobile-golden --tooling-inputs DIR";
 const guiGolden = "opensteer-gui-golden";
 const mobileGolden = "opensteer-mobile-golden";
 const mobileReceipt = path.join(state, "vm-mobile-golden.json");
@@ -200,6 +200,20 @@ async function main(): Promise<void> {
   }
   const mobileJob = args[0] === "--mobile";
   if (mobileJob) args.shift();
+  let inputShare: string | undefined;
+  if (args[0] === "--inputs") {
+    if (!args[1]) throw new Error(usage);
+    inputShare = expand(args[1]!);
+    if (
+      realpathSync(inputShare) !== inputShare ||
+      !lstatSync(inputShare).isDirectory() ||
+      inputShare.includes(":")
+    )
+      throw new Error(
+        "Inputs must be a real directory without symlink components or share separators",
+      );
+    args.splice(0, 2);
+  }
   const baseGolden = mobileJob ? mobileGolden : guiGolden;
   let revision = "HEAD";
   if (!goldenMode && args[0] === "--revision") {
@@ -851,6 +865,7 @@ async function main(): Promise<void> {
           );
           await launch([
             `--dir=payload:${payloadDir}:ro`,
+            ...(inputShare ? [`--dir=inputs:${inputShare}:ro`] : []),
             `--dir=git:${common}:ro`,
             ...(existsSync(vitestCache) ? [`--dir=vitest-cache:${vitestCache}:ro`] : []),
             `--dir=artifacts:${out}`,

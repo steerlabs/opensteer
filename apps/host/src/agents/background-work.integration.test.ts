@@ -27,6 +27,7 @@ import {
   type ClaudeQueryHandle,
 } from "@opensteer/harness-claude";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   codexThreadOf,
@@ -37,6 +38,7 @@ import {
   usageRecord,
   type UsageRecord,
 } from "./codex-usage.test-support.js";
+import { waitForBackgroundWork as waitFor } from "./background-work.test-support.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 /*
@@ -472,15 +474,34 @@ integration("Background work", () => {
   );
 
   it("keeps background work through a Host restart", { timeout: 180_000 }, async () => {
-    const { active, release, runId } = await start();
-    const deadline = (await runRow(active, runId)).backgroundDeadlineAt;
-    await active.restartHost();
-    expect((await runRow(active, runId)).backgroundDeadlineAt).toEqual(deadline);
-    await release();
-    await settled(active, runId);
-    const journey = await record("host restart", active, runId);
-    expect(journey.run).toMatchObject({ status: "completed" });
-    expect(journey.nodes).toMatchObject([{ status: "completed" }]);
+    const within = <T>(operation: Promise<T>, label: string, timeoutMs = 10_000) =>
+      withTimeout(operation, timeoutMs, {
+        timeoutError: () =>
+          new Error(
+            `Timed out waiting for ${label} (Host closing step: ${stack?.host.closingStep() ?? "none"})`,
+          ),
+      });
+    const { active, release, runId } = await within(start(), "background stack startup", 30_000);
+    try {
+      const deadline = (await within(runRow(active, runId), "background deadline read"))
+        .backgroundDeadlineAt;
+      await within(active.restartHost(), "Host restart");
+      expect(
+        (await within(runRow(active, runId), "restarted Run read")).backgroundDeadlineAt,
+      ).toEqual(deadline);
+      await within(release(), "background child release");
+      await settled(active, runId);
+      const journey = await within(
+        record("host restart", active, runId),
+        "restart journey recording",
+      );
+      expect(journey.run).toMatchObject({ status: "completed" });
+      expect(journey.nodes).toMatchObject([{ status: "completed" }]);
+    } finally {
+      // A failed restart must not leave the fake child waiting for the test
+      // while teardown drains that same restart operation.
+      await within(release(), "background child release during cleanup");
+    }
   });
 });
 
@@ -728,15 +749,6 @@ async function settled(active: VerticalStack, runId: RunId) {
     "the Run to end",
     60_000,
   );
-}
-
-async function waitFor(check: () => Promise<boolean>, label: string, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await check()) return;
-    await delay(100);
-  }
-  throw new Error(`Timed out waiting for ${label}`);
 }
 
 function runRow(active: VerticalStack, runId: RunId) {

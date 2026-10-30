@@ -137,6 +137,7 @@ describe("desktop bridge", () => {
       Object.values(desktopBridgeChannels).filter((channel) => channel.includes(".access.")),
     ).toHaveLength(16);
     const notificationChannels = new Set<string>([
+      desktopBridgeChannels.dictationEvent,
       desktopBridgeChannels.downloadsChanged,
       desktopBridgeChannels.workspaceTabCommand,
       desktopBridgeChannels.deploymentAccessSnapshotChanged,

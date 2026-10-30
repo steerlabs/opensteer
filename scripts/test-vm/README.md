@@ -15,6 +15,9 @@ set `OPENSTEER_CHROME_R0_REPEAT=5` to repeat the live person-keys check five tim
 `PersonKeyOrderTests` remain the deterministic guard. The journey script lists what each case proves.
 
 Commands execute in the guest's `apps/desktop`, matching the desktop scripts.
+`--inputs /absolute/directory` before `--revision` adds a read-only share at
+`/Volumes/My Shared Files/inputs`. The directory must be real, with no symlink
+components or `:` share separator; copy files to guest APFS before modifying them.
 Arguments retain their boundaries; use `bash -c '...'` explicitly for shell
 syntax. The command requires a clean checkout (including untracked files), Apple
 silicon macOS, Tart, and the repository's Node/pnpm and Go tools.

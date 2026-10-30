@@ -89,3 +89,13 @@ test("native sources, package scripts and extensionless build scripts cannot hid
   ])
     expect(auditSigningInvocations([fixture])).toHaveLength(1);
 });
+
+test("only the update journey's exact ad-hoc fixture signer is credential-free", () => {
+  const file = "scripts/public-download/eu-journey.ts";
+  const source = 'run("codesign", ["--force", "--deep", "--sign", "-", badApp]);';
+  expect(auditSigningInvocations([{ file, source }])).toEqual([]);
+  expect(
+    auditSigningInvocations([{ file, source: source.replace('"-"', "identity") }]),
+  ).toHaveLength(1);
+  expect(auditSigningInvocations([{ file: "scripts/other.ts", source }])).toHaveLength(1);
+});

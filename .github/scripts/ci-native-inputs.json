@@ -152,5 +152,17 @@
     "tsconfig.base.json",
     "tsconfig.json",
     "tsconfig.package.json"
+  ],
+  "dictation-helper": [
+    "apps/desktop/scripts/build-dictation-helper.ts",
+    "apps/desktop/scripts/macos-release-identity.cjs",
+    "apps/desktop/scripts/signing-input.cjs",
+    "apps/desktop/src/signed-helpers/metadata.ts",
+    "apps/desktop/tsconfig.json",
+    "packages/protocol",
+    "packages/shared",
+    "tsconfig.base.json",
+    "tsconfig.json",
+    "tsconfig.package.json"
   ]
 }
