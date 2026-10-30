@@ -40,7 +40,7 @@ Installation URLs belong to their registration revision. Broker metadata version
 
 Only the Host's committed durable result establishes success. Installation, popup closure or a sealed broker response does not. Closing setup is not cancellation. Keep recovery state to opaque attempt IDs; launch tickets, provider codes and tokens must not enter return URLs or router state.
 
-Direct provider and MCP callbacks must match the launch browser binding and claim state exactly once before processing the response or exchanging tokens. The launch accepts any origin that reaches the Host, since its single-use ticket is the authority; a launch from another origin cannot complete a direct callback, whose binding cookie must be set on the callback's own origin.
+Direct provider and MCP callbacks must match the launch browser binding and claim state exactly once before processing the response or exchanging tokens. A sign-in through the Account service launches from any origin that reaches the Host, since its single-use ticket is the authority; one returning to the Host's own callback launches only on that callback's origin, where its binding cookie is set. Launch tickets travel only in that request: the Host logs request paths without queries.
 
 Return only to the initiating Deployment's verified canonical origin and stored relative path. Native completion uses the fixed application callback with stored Deployment/attempt IDs, never a caller-supplied native URL. Unclaimed callbacks cannot acquire redirect destinations from browser input. Desktop shows a completion page because the external browser lacks its Personal Host session. Broker acknowledgment releases temporary material and cannot undo a committed connection.
 

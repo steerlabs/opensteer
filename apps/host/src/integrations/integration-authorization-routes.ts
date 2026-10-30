@@ -92,14 +92,20 @@ export function registerIntegrationAuthorizationRoutes(
 ): void {
   app.get<{ Params: { attemptId: string } }>(
     "/v1/integration-authorizations/:attemptId/launch",
-    // Any origin that reaches the Host may launch: the ticket is the authority. A
-    // sign-in returning to this Host's own callback needs the binding cookie set
-    // here on that callback's origin, and begin refuses one from a remote session.
     async (request, reply) => {
       const { attemptId } = AttemptParamsSchema.parse(request.params);
       const { ticket } = LaunchQuerySchema.parse(request.query);
       const launched = await options.attempts.launch({ id: attemptId, launchTicket: ticket });
       if (!launched) throw unavailableAttempt();
+      // A sign-in through the Account service launches from any origin that
+      // reaches this Host; its ticket is the authority. One the provider returns
+      // to this Host's own callback is finished only by the browser holding the
+      // binding cookie set here, so it launches on that callback's origin and is
+      // refused before the provider elsewhere. Its ticket is spent either way: a
+      // launch from another origin could never have completed it.
+      if (returnsToHost(launched.authorizationUrl, options.authenticator.publicOrigin)) {
+        options.authenticator.requireCanonicalSurface(request.headers);
+      }
       return reply
         .header("cache-control", "no-store")
         .header("pragma", "no-cache")
@@ -285,6 +291,17 @@ export function failIntegrationAuthorizationBrowser(
     .header("referrer-policy", "no-referrer")
     .header("x-content-type-options", "nosniff")
     .send(resultPage(false, failureCode));
+}
+
+/** Whether the stored authorization sends the browser back to this Host's own origin. */
+function returnsToHost(authorizationUrl: string, publicOrigin: string): boolean {
+  const redirect = new URL(authorizationUrl).searchParams.get("redirect_uri");
+  if (redirect === null) return false;
+  try {
+    return new URL(redirect).origin === new URL(publicOrigin).origin;
+  } catch {
+    return true;
+  }
 }
 
 function authorizationBindingCookie(
