@@ -28,13 +28,13 @@ export const voiceRenewIntervalMs = 20_000;
 export const voiceMaxCallMs = 2 * 60 * 60_000;
 
 const voiceCall = {
+  harnessInstanceId: HarnessInstanceIdSchema,
   environmentId: EnvironmentIdSchema,
   sessionId: VoiceSessionIdSchema,
 };
 
 export const VoiceStartInputSchema = z.strictObject({
   ...voiceCall,
-  harnessInstanceId: HarnessInstanceIdSchema,
   offer: VoiceSdpSchema,
 });
 export const VoiceStartResultSchema = z.object({ answer: VoiceSdpSchema });

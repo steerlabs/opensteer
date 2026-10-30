@@ -15,9 +15,12 @@ import type {
   TriggerOccurrenceId,
   TriggerWatchActivationId,
   WorkspaceId,
+  UserId,
 } from "@opensteer/core";
 import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
 import {
+  type RunnerVoiceCommand,
+  type RunnerVoiceResult,
   CorrelationIdSchema,
   RunnerCommandSchema,
   sameRunnerConnectionFence,
@@ -344,6 +347,10 @@ interface RunnerConnection {
   readonly pendingAcks: Map<string, PendingAck>;
   readonly pendingCatalogs: Map<string, PendingCatalog>;
   readonly pendingHarnessAuthentications: Map<string, PendingHarnessAuthentication>;
+  readonly pendingVoice: Map<
+    string,
+    { resolve: (result: RunnerVoiceResult) => void; reject: (error: unknown) => void }
+  >;
   readonly pendingModelServers: Map<string, PendingModelServers>;
   readonly pendingTriggerPrograms: Map<TriggerOccurrenceId, PendingTriggerProgram>;
   readonly pendingWorkspaceLocal: Map<string, PendingWorkspaceLocal>;
@@ -556,6 +563,7 @@ export class RunnerRegistry {
       pendingCatalogs: new Map(),
       pendingHarnessAuthentications: new Map(),
       pendingModelServers: new Map(),
+      pendingVoice: new Map(),
       pendingTriggerPrograms: new Map(),
       pendingWorkspaceLocal: new Map(),
       ownedRunIds: new Set(),
@@ -1286,6 +1294,49 @@ export class RunnerRegistry {
     }
   }
 
+  async voice(
+    environmentId: EnvironmentId,
+    userId: UserId,
+    command: RunnerVoiceCommand,
+    signal: AbortSignal,
+  ): Promise<RunnerVoiceResult> {
+    const connection = this.#byEnvironment.get(environmentId);
+    if (!connection)
+      throw new OpensteerError({
+        code: "runner_offline",
+        message: "This computer is not connected",
+        retryable: true,
+      });
+    if (!connection.identity.capabilities.includes("voice-v1"))
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "voice-runner-unsupported",
+        message: "Update Opensteer on this computer to use voice.",
+      });
+    const requestId = CorrelationIdSchema.parse(`voice:${randomUUID()}`);
+    const pending = deferred<RunnerVoiceResult>();
+    connection.pendingVoice.set(requestId, pending);
+    try {
+      return await withDeadline(
+        Promise.all([
+          connection.peer.send({
+            ...connection.identity.fence,
+            type: "host.voice",
+            requestId,
+            userId,
+            command,
+          }),
+          pending.promise,
+        ]).then(([, result]) => result),
+        command.action === "start" ? 30_000 : 10_000,
+        signal,
+        "This computer didn't answer the voice request in time.",
+      );
+    } finally {
+      connection.pendingVoice.delete(requestId);
+    }
+  }
+
   /**
    * Asks the computer behind an environment which model servers it has, or
    * what the one at `address` is. The computer answers from its own settings
@@ -1964,6 +2015,10 @@ export class RunnerRegistry {
         pending.resolve(message.state);
         break;
       }
+      case "runner.voice": {
+        connection.pendingVoice.get(message.requestId)?.resolve(message.result);
+        break;
+      }
       case "runner.model-servers": {
         const pending = connection.pendingModelServers.get(message.requestId);
         // A late answer to a request the Host gave up on, as for sign-in above.
@@ -2241,12 +2296,14 @@ export class RunnerRegistry {
     for (const pending of connection.pendingCatalogs.values()) pending.reject(error);
     for (const pending of connection.pendingHarnessAuthentications.values()) pending.reject(error);
     for (const pending of connection.pendingModelServers.values()) pending.reject(error);
+    for (const pending of connection.pendingVoice.values()) pending.reject(error);
     for (const pending of connection.pendingTriggerPrograms.values()) pending.reject(error);
     for (const pending of connection.pendingWorkspaceLocal.values()) pending.reject(error);
     connection.pendingAcks.clear();
     connection.pendingCatalogs.clear();
     connection.pendingHarnessAuthentications.clear();
     connection.pendingModelServers.clear();
+    connection.pendingVoice.clear();
     connection.pendingTriggerPrograms.clear();
     connection.pendingWorkspaceLocal.clear();
     connection.ownedRunIds.clear();
