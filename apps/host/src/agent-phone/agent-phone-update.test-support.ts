@@ -291,7 +291,7 @@ public final class IdentityProbe extends Instrumentation {
   const manifest = `<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.opensteer.agentphone.identityprobe"><uses-sdk android:minSdkVersion="30" android:targetSdkVersion="36"/><application android:hasCode="true"/><instrumentation android:name="com.opensteer.agentphone.identityprobe.IdentityProbe" android:targetPackage="com.opensteer.agentphone"/></manifest>`;
   await writeFile(join(source, "IdentityProbe.java"), javaSource);
   await writeFile(join(source, "AndroidManifest.xml"), manifest);
-  const androidJar = join(paths.sdk, "platforms/android-36/android.jar");
+  const androidJar = join(paths.sdk, "platforms/android-37.0/android.jar");
   await runCommand(join(paths.java, "bin/javac"), [
     "-source",
     "17",

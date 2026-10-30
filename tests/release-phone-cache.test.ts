@@ -36,7 +36,7 @@ async function fixture() {
   await write("source/package.json", '{"version":"1.2.3"}');
   await write("source/app.kt");
   for (const name of [
-    "platforms/android-36/android.jar",
+    "platforms/android-37.0/android.jar",
     "build-tools/36.0.0/aapt2",
     "build-tools/36.0.0/apksigner",
     "build-tools/36.0.0/lib/apksigner.jar",
@@ -135,7 +135,7 @@ describe("signed phone cache provider journey", () => {
   });
 
   const changedFiles = [
-    "sdk/platforms/android-36/android.jar",
+    "sdk/platforms/android-37.0/android.jar",
     "sdk/build-tools/36.0.0/aapt2",
     "sdk/build-tools/36.0.0/lib/d8.jar",
     "sdk/build-tools/36.0.0/lib/apksigner.jar",

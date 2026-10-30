@@ -1063,8 +1063,8 @@ process.exit(${scenario.exitCode ?? 0});
     const sdk = path.join(inputs, "android");
     const tools = path.join(sdk, "build-tools/36.0.0");
     await mkdir(tools, { recursive: true });
-    await mkdir(path.join(sdk, "platforms/android-36"), { recursive: true });
-    await writeFile(path.join(sdk, "platforms/android-36/android.jar"), "fixture");
+    await mkdir(path.join(sdk, "platforms/android-37.0"), { recursive: true });
+    await writeFile(path.join(sdk, "platforms/android-37.0/android.jar"), "fixture");
     await writeFile(path.join(inputs, "phone.p12"), "fixture keystore");
     for (const name of ["aapt2", "apksigner"]) {
       await writeFile(

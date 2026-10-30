@@ -48,7 +48,7 @@ val releaseSigning = listOf(
 
 android {
     namespace = "com.opensteer.agentphone"
-    compileSdk = 36
+    compileSdk = 37
 
     buildFeatures { buildConfig = true }
     defaultConfig {

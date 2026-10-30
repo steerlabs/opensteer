@@ -12,7 +12,7 @@ only for manual acceptance or release checks; scripts may emit their own diagnos
 ## Build and verify
 
 Run these commands from the repository root, using its Node/pnpm pins. Install JDK 17 or newer,
-Android SDK platform 36 and build tools 36.0.0. The build script uses `ANDROID_HOME`, falling
+Android SDK platform 37 and build tools 36.0.0. The build script uses `ANDROID_HOME`, falling
 back to `~/Library/Android/sdk`. Gradle and Android/Kotlin dependency versions are pinned in
 this project.
 
@@ -80,8 +80,7 @@ the debug fixture APK and writes `opensteer-agent-phone.apk`, `agent-phone.json`
 artifacts untouched. Normal debug and release builds do not build the fixture. Combining
 `--release` and `--e2e-ca` fails.
 
-[libs.versions.toml](gradle/libs.versions.toml) pins OkHttp 5.4.0 because 5.5.0 requires
-compileSdk 37 while this app compiles against 36. Bouncy Castle supplies Ed25519 on API levels
+[libs.versions.toml](gradle/libs.versions.toml) pins OkHttp 5.5.1. Bouncy Castle supplies Ed25519 on API levels
 before Android's platform implementation. Runtime dependency notices live in
 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
 
