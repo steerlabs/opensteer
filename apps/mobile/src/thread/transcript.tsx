@@ -228,10 +228,13 @@ function WorkStatus(props: {
   const unsettled = summary.state !== "settled";
   const live = props.live !== false && unsettled;
   const label = summary.state === "live" && restarting(turn.run) ? restartingLabel : summary.label;
+  // On the reader's Mac the line says where the agent is, and still opens its steps.
+  const toggle =
+    props.onToggle === undefined ? null : { onToggle: props.onToggle, open: props.open === true };
   if (line?.kind === "now")
-    return <ComputerUseLine key={line.now.session.sessionId} now={line.now} />;
+    return <ComputerUseLine key={line.now.session.sessionId} now={line.now} toggle={toggle} />;
   if (line?.kind === "kept")
-    return <KeptComputerStopLine key={line.stop.sessionId} stop={line.stop} />;
+    return <KeptComputerStopLine key={line.stop.sessionId} stop={line.stop} toggle={toggle} />;
   const content = (
     <>
       {unsettled ? (

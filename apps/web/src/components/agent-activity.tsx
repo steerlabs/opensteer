@@ -502,8 +502,10 @@ function WorkStatus({
   const now = useComputerUseNow(turn);
   const kept = useKeptComputerStop(turn, now);
   const live = connected && summary.state !== "settled";
-  if (now) return <ComputerUseLine key={now.session.sessionId} now={now} />;
-  if (kept) return <KeptComputerStopLine key={kept.sessionId} stop={kept} />;
+  // On the reader's Mac the line says where the agent is, and still opens its steps.
+  const toggle = onToggle ? { onToggle, open: open === true } : null;
+  if (now) return <ComputerUseLine key={now.session.sessionId} now={now} toggle={toggle} />;
+  if (kept) return <KeptComputerStopLine key={kept.sessionId} stop={kept} toggle={toggle} />;
   if (summary.state === "waiting" && requestShown && !onToggle) return null;
   const head = (
     <span className="work__label">
@@ -547,13 +549,50 @@ function useComputerUseNow(turn: Turn): ComputerUseNow | null {
   );
 }
 
+/** A task turn's folded steps, which its status line opens and closes. */
+interface StepsToggle {
+  readonly onToggle: () => void;
+  readonly open: boolean;
+}
+
+/** Where a turn on the reader's Mac is, and — for a task's turn — the way into its steps. */
+function ComputerUseWhere({
+  children,
+  toggle,
+}: {
+  children: ReactNode;
+  toggle: StepsToggle | null;
+}) {
+  return toggle ? (
+    <button
+      aria-expanded={toggle.open}
+      className="computer-now__where"
+      onClick={toggle.onToggle}
+      type="button"
+    >
+      {children}
+      <span aria-hidden className="work__chevron">
+        <Icon name="chevron-right" />
+      </span>
+    </button>
+  ) : (
+    <span className="computer-now__where">{children}</span>
+  );
+}
+
 /**
  * The turn's status while it works on the reader's Mac: what it is doing,
  * then where, and the Stop. The app's chip under the reply is the one way to
  * the app itself. Screen readers hear the Mac once, when the line arrives, not
  * every step it takes there.
  */
-function ComputerUseLine({ now }: { now: ComputerUseNow }) {
+function ComputerUseLine({
+  now,
+  toggle = null,
+}: {
+  now: ComputerUseNow;
+  toggle?: StepsToggle | null;
+}) {
   const computers = useContext(ReaderComputers);
   const hostClient = computers?.hostClient ?? null;
   // The outcome belongs to the session, not to this line: the line leaves
@@ -571,19 +610,21 @@ function ComputerUseLine({ now }: { now: ComputerUseNow }) {
   };
   return (
     <div className="computer-now">
-      <span aria-hidden className="computer-now__glyph">
-        <Icon name={now.kind === "phone" ? "phone" : "laptop"} />
-      </span>
-      <span className="computer-now__text">
-        <span className="computer-now__action">{now.action}</span>
-        {failure ? (
-          <span className="computer-now__failure" role="alert">
-            {failure.message ?? computerUseStopSentence(failure)}
-          </span>
-        ) : (
-          <span className="computer-now__place">{now.place}</span>
-        )}
-      </span>
+      <ComputerUseWhere toggle={toggle}>
+        <span aria-hidden className="computer-now__glyph">
+          <Icon name={now.kind === "phone" ? "phone" : "laptop"} />
+        </span>
+        <span className="computer-now__text">
+          <span className="computer-now__action">{now.action}</span>
+          {failure ? (
+            <span className="computer-now__failure" role="alert">
+              {failure.message ?? computerUseStopSentence(failure)}
+            </span>
+          ) : (
+            <span className="computer-now__place">{now.place}</span>
+          )}
+        </span>
+      </ComputerUseWhere>
       <span className="visually-hidden" role="status">
         {computerUseNowSummary(now)}
       </span>
@@ -660,18 +701,26 @@ function useKeptComputerStop(
 }
 
 /** The line a Stop leaves behind while its answer is on the way or just in. */
-function KeptComputerStopLine({ stop }: { stop: ComputerUseStop }) {
+function KeptComputerStopLine({
+  stop,
+  toggle = null,
+}: {
+  stop: ComputerUseStop;
+  toggle?: StepsToggle | null;
+}) {
   return (
     <div className="computer-now">
-      <span aria-hidden className="computer-now__glyph">
-        <Icon name="laptop" />
-      </span>
-      <span aria-atomic="true" className="computer-now__text" role="status">
-        <span className="computer-now__action">{computerUseStopSentence(stop)}</span>
-        {stop.phase === "stopping" ? (
-          <span className="computer-now__place">On {stop.machineName}</span>
-        ) : null}
-      </span>
+      <ComputerUseWhere toggle={toggle}>
+        <span aria-hidden className="computer-now__glyph">
+          <Icon name="laptop" />
+        </span>
+        <span aria-atomic="true" className="computer-now__text" role="status">
+          <span className="computer-now__action">{computerUseStopSentence(stop)}</span>
+          {stop.phase === "stopping" ? (
+            <span className="computer-now__place">On {stop.machineName}</span>
+          ) : null}
+        </span>
+      </ComputerUseWhere>
     </div>
   );
 }

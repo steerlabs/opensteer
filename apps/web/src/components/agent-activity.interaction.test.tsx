@@ -419,7 +419,7 @@ describe("a Computer use row", () => {
   });
 });
 
-it("opens the exact phone from its conversation chip and keeps only Stop on the activity line", () => {
+it("opens the exact phone from its conversation chip and keeps Stop and the steps on the activity line", () => {
   const client = new MockHostClient({ latencyMs: 0 });
   const machine = client.getSnapshot().machines.find((machine) => machine.device?.form === "phone");
   const session = machine?.computerUse?.sessions[0];
@@ -472,6 +472,14 @@ it("opens the exact phone from its conversation chip and keeps only Stop on the 
     container.querySelector(`button[aria-label="Stop using phone, ${machine.name}"]`)?.textContent,
   ).toBe("Stop using phone");
   expect(container.querySelector('[aria-label^="Watch "]')).toBeNull();
+  // A task's steps fold behind this line, so it still opens them while the
+  // agent is on the phone, beside Stop rather than in its place.
+  const steps = container.querySelector<HTMLButtonElement>("button.computer-now__where");
+  expect(steps?.getAttribute("aria-expanded")).toBe("false");
+  expect(container.querySelector(".trace-step")).toBeNull();
+  click(steps);
+  expect(steps?.getAttribute("aria-expanded")).toBe("true");
+  expect(container.querySelector(".trace-step")).not.toBeNull();
   const chip = container.querySelector<HTMLAnchorElement>(
     `a[aria-label="Open ${machine.name}, agent working"]`,
   );

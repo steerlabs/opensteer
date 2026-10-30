@@ -784,6 +784,32 @@ div.trace-step__head .trace-step__detail {
   animation: rise-in var(--duration-med) var(--ease-out);
 }
 
+/* Where the agent is; in a task, also the way into the turn's folded steps. */
+.computer-now__where {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-12);
+  min-width: 0;
+  text-align: left;
+}
+
+button.computer-now__where {
+  margin: calc(-1 * var(--space-2)) 0;
+  padding: var(--space-2) var(--space-6) var(--space-2) 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+button.computer-now__where:hover .work__chevron,
+button.computer-now__where:focus-visible .work__chevron {
+  color: var(--text-soft);
+}
+
+.computer-now__where[aria-expanded="true"] .work__chevron {
+  transform: rotate(90deg);
+}
+
 .computer-now__glyph {
   display: grid;
   flex: none;
