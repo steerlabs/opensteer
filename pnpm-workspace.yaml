@@ -38,3 +38,6 @@ catalog:
 
 patchedDependencies:
   playwright-core@1.62.1: patches/playwright-core@1.62.1.patch
+
+overrides:
+  "@earendil-works/pi-coding-agent>undici": 8.12.2
