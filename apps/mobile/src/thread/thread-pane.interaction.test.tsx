@@ -89,6 +89,7 @@ const harness = vi.hoisted(() => ({
   },
 }));
 
+const selectionCalls: { text: string | undefined; start: number; end: number }[] = [];
 let dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 
@@ -187,7 +188,8 @@ vi.mock("react-native", async () => {
       harness.select = props.onSelectionChange ?? null;
       React.useImperativeHandle(props.ref, () => ({
         focus: () => undefined,
-        setNativeProps: () => undefined,
+        setSelection: (start: number, end: number) =>
+          selectionCalls.push({ text: props.value, start, end }),
       }));
       return (
         <textarea
@@ -2895,6 +2897,13 @@ it("dictates at the caret, cancels preview, adopts edits and sends finalized wor
   await speech.emit({ type: "listening" });
   await speech.emit({ type: "text", finalized: [], volatile: ["my"] });
   expect(field.value).toBe("Hi my");
+  expect(selectionCalls.at(-1)).toEqual({ text: "Hi my", start: 5, end: 5 });
+  const calls = selectionCalls.length;
+  await act(async () => harness.select?.({ nativeEvent: { selection: { start: 0, end: 0 } } }));
+  await speech.emit({ type: "text", finalized: [], volatile: ["my"] });
+  expect(selectionCalls).toHaveLength(calls);
+  await speech.emit({ type: "text", finalized: [], volatile: ["my friend"] });
+  expect(selectionCalls.at(-1)).toEqual({ text: "Hi my friend", start: 12, end: 12 });
   await type(container, "Message", "Hi my there!");
   expect(speech.port.cancel).toHaveBeenCalled();
   expect(field.value).toBe("Hi my there!");
@@ -2905,7 +2914,12 @@ it("dictates at the caret, cancels preview, adopts edits and sends finalized wor
   await press(container, "Send message");
   expect(speech.port.stop).toHaveBeenCalledTimes(1);
   await speech.emit({ type: "ended", reason: "completed", error: null });
+  expect(host.dispatch.mock.calls[0]?.[0]).toMatchObject({
+    type: "thread.sendMessage",
+    content: [{ type: "text", text: "Hi my there! friend" }],
+  });
   expect(sent(host.dispatch)).toHaveLength(1);
+  expect(selectionCalls.at(-1)).toEqual({ text: "Hi my there! friend", start: 19, end: 19 });
 });
 
 it("keeps denied permission actionable and downloads without starting the microphone", async () => {
@@ -2926,26 +2940,38 @@ it("keeps denied permission actionable and downloads without starting the microp
   expect(speech.port.start).not.toHaveBeenCalled();
 });
 
-it.each(["failed", "unmount", "blur"])("does not send after dictation %s", async (outcome) => {
-  const speech = await enableDictation();
-  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
-  const { container } = await mount(host, workId);
-  await press(container, "Start dictation (English)");
-  await speech.emit({ type: "listening" });
-  await speech.emit({ type: "text", finalized: ["hello"], volatile: [] });
-  await press(container, "Send message");
-  if (outcome === "unmount") await act(async () => roots.pop()?.unmount());
-  if (outcome === "blur")
-    await act(async () => {
-      for (const cleanup of harness.focusCleanups) cleanup();
+it.each(["failed", "aborted", "unmount", "blur", "read-only"])(
+  "does not send after dictation %s",
+  async (outcome) => {
+    const speech = await enableDictation();
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container } = await mount(host, workId);
+    await press(container, "Start dictation (English)");
+    await speech.emit({ type: "listening" });
+    await speech.emit({ type: "text", finalized: ["hello"], volatile: [] });
+    await press(container, "Send message");
+    if (outcome === "aborted") await type(container, "Message", "edited while finishing");
+    if (outcome === "read-only") {
+      const next = snapshotFor({ entries: [], run: null, threadId: workId });
+      host.move({
+        ...next,
+        threads: next.threads.map((t) => (t.id === workId ? { ...t, status: "archived" } : t)),
+      });
+      await settle();
+    }
+    if (outcome === "unmount") await act(async () => roots.pop()?.unmount());
+    if (outcome === "blur")
+      await act(async () => {
+        for (const cleanup of harness.focusCleanups) cleanup();
+      });
+    await speech.emit({
+      type: "ended",
+      reason: outcome === "failed" ? "failed" : "completed",
+      error: outcome === "failed" ? "recognition-failed" : null,
     });
-  await speech.emit({
-    type: "ended",
-    reason: outcome === "failed" ? "failed" : "completed",
-    error: outcome === "failed" ? "recognition-failed" : null,
-  });
-  expect(sent(host.dispatch)).toHaveLength(0);
-});
+    expect(sent(host.dispatch)).toHaveLength(0);
+  },
+);
 
 it("hides an unsupported mic and disables it while another composer owns dictation", async () => {
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
@@ -2963,7 +2989,7 @@ it("hides an unsupported mic and disables it while another composer owns dictati
     }),
   );
   expect(button(container, "Start dictation (English)").disabled).toBe(true);
-  await act(async () => dictation.cancel());
+  await act(async () => dictation.cancel("another"));
 });
 
 it("does not send an empty message when Send finishes a microphone with no speech", async () => {

@@ -62,7 +62,7 @@ describe("mobile dictation boundary", () => {
     });
     b.event({ seq: 1, type: "listening" });
     b.event({ seq: 2, type: "text", finalized: [], volatile: ["hello"] });
-    const finish = controller.stop();
+    const finish = controller.stop("one");
     b.emit(bad);
     b.emit(bad);
     await expect(finish).resolves.toEqual({ kind: "failed" });

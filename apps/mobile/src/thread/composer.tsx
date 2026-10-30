@@ -2,7 +2,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationMic, DictationStatus } from "../dictation/controls.js";
-import { dictationLabels } from "@opensteer/client/dictation";
+import { dictationLabels, dictationView } from "@opensteer/client/dictation";
 import { useHostSelector } from "@opensteer/client/react";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import {
@@ -175,10 +175,9 @@ export function Composer(props: {
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
   const selection = useRef({ start: text.length, end: text.length });
-  const preview = dictationState.owner === owner ? dictationState.preview : null;
-  const dictating =
-    dictationState.owner === owner &&
-    ["starting", "listening", "finishing"].includes(dictationState.phase);
+  const speechView = dictationView(dictationState, owner);
+  const preview = speechView.preview;
+  const dictating = ["starting", "listening", "finishing"].includes(speechView.phase);
   const displayedText = preview?.text ?? text;
   const visible = useRef(false);
   useFocusEffect(
@@ -315,17 +314,25 @@ export function Composer(props: {
     );
   };
 
+  const committedSelection = useRef<{ text: string; start: number; end: number } | null>(null);
+  useEffect(() => {
+    const caret = committedSelection.current;
+    if (caret && displayedText === caret.text) {
+      input.current?.setSelection(caret.start, caret.end);
+      committedSelection.current = null;
+    }
+  }, [displayedText, preview]);
   useEffect(() => {
     if (preview) {
       selection.current = preview.selection;
-      input.current?.setNativeProps({ selection: preview.selection });
+      input.current?.setSelection(preview.selection.start, preview.selection.end);
     }
   }, [preview?.text]);
   useEffect(() => {
     if (readOnly || textHidden) dictation.leave(owner);
   }, [readOnly, textHidden, dictation, owner]);
-  const phase = dictationState.owner === owner ? dictationState.phase : "idle";
-  const notice = dictationState.notice?.owner === owner ? dictationState.notice.message : null;
+  const phase = speechView.phase;
+  const notice = speechView.notice?.message ?? null;
   const previousPhase = useRef(phase);
   useEffect(() => {
     const previous = previousPhase.current;
@@ -335,7 +342,7 @@ export function Composer(props: {
       AccessibilityInfo.announceForAccessibility(dictationLabels.stopped);
     if (phase === "listening") {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      AccessibilityInfo.announceForAccessibility("Dictation started");
+      AccessibilityInfo.announceForAccessibility(dictationLabels.listening);
     } else if (phase === "starting")
       AccessibilityInfo.announceForAccessibility(dictationLabels.starting);
     else if (phase === "finishing")
@@ -355,13 +362,14 @@ export function Composer(props: {
       }),
       commit: (next, caret) => {
         selection.current = caret;
+        if (mounted.current && currentOwner.current === owner)
+          committedSelection.current = { text: next, ...caret };
         void drafts.writeDraft(deploymentId, userId, threadId, next).catch(() => {
           if (mounted.current && currentOwner.current === owner)
             setDraftFailure("This draft could not be saved on this phone.");
         });
         if (mounted.current) {
           draftText.current = next;
-          input.current?.setNativeProps({ selection: caret });
         }
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       },
@@ -586,7 +594,7 @@ export function Composer(props: {
     if (finishingSend.current) return;
     finishingSend.current = true;
     try {
-      const result = dictating ? await dictation.stop() : { kind: "idle" as const };
+      const result = dictating ? await dictation.stop(owner) : { kind: "idle" as const };
       if (
         result.kind === "failed" ||
         result.kind === "aborted" ||

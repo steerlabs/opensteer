@@ -1,4 +1,5 @@
 import {
+  dictationView,
   dictationDownloadStatus,
   dictationElapsed,
   dictationLabels,
@@ -20,23 +21,23 @@ export function DictationMic(props: {
   disabled: boolean;
   onStart(): void;
 }): ReactNode {
-  const { snapshot: s, controller: c } = props;
-  if (!s.availability?.available) return null;
-  const own = s.owner === props.owner;
-  const stopping = own && (s.phase === "listening" || s.phase === "finishing");
-  const disabled = props.disabled || (s.phase !== "idle" && !stopping);
+  const c = props.controller;
+  const s = dictationView(props.snapshot, props.owner);
+  if (!s.visible) return null;
+  const stopping = s.phase === "listening" || s.phase === "finishing";
+  const disabled = props.disabled || s.blocked || (s.phase !== "idle" && !stopping);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={
-        stopping ? dictationLabels.stop : dictationStartLabel(s.availability.languageName)
+        stopping ? dictationLabels.stop : dictationStartLabel(s.languageName ?? "")
       }
-      accessibilityState={{ disabled, busy: own && s.phase === "finishing" }}
+      accessibilityState={{ disabled, busy: s.phase === "finishing" }}
       disabled={disabled}
       style={[composerControlStyle, disabled && { opacity: 0.45 }]}
-      onPress={stopping ? () => void c.stop() : props.onStart}
+      onPress={stopping ? () => void c.stop(props.owner) : props.onStart}
     >
-      {own && s.phase === "finishing" ? (
+      {s.phase === "finishing" ? (
         <View style={styles.control}>
           <ActivityIndicator color={color.ember} />
         </View>
@@ -49,22 +50,18 @@ export function DictationMic(props: {
 
 export function DictationStatus({
   controller: c,
-  snapshot: s,
+  snapshot,
   owner,
 }: {
   controller: DictationController;
   snapshot: DictationSnapshot;
   owner: string;
 }): ReactNode {
-  const own = s.owner === owner;
-  const notice = s.notice?.owner === owner ? s.notice : null;
-  const status = !own
-    ? null
-    : s.phase === "downloading"
-      ? dictationDownloadStatus(
-          s.availability?.available ? s.availability.languageName : "",
-          s.progress,
-        )
+  const s = dictationView(snapshot, owner);
+  const notice = s.notice;
+  const status =
+    s.phase === "downloading"
+      ? dictationDownloadStatus(s.languageName ?? "", s.progress)
       : s.phase === "starting"
         ? dictationLabels.starting
         : s.phase === "finishing"
@@ -72,7 +69,7 @@ export function DictationStatus({
           : null;
   return (
     <>
-      {own && s.phase !== "idle" ? (
+      {s.phase !== "idle" ? (
         <View style={styles.row}>
           {s.phase === "listening" ? (
             <>
@@ -89,7 +86,7 @@ export function DictationStatus({
             accessibilityLabel={
               s.phase === "downloading" ? dictationLabels.cancelDownload : dictationLabels.cancel
             }
-            onPress={() => c.cancel()}
+            onPress={() => c.cancel(owner)}
             style={styles.control}
           >
             <AppText role="secondary" tone="muted">

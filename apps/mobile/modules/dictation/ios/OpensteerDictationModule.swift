@@ -36,7 +36,7 @@ public final class OpensteerDictationModule: Module {
     }
     AsyncFunction("cancel") { (session: String) async in
       let runtime = await MainActor.run { self.runtime }
-      await runtime?.service.cancel(session: session)
+      await runtime?.cancel(session)
     }
     AsyncFunction("openMicrophoneSettings") { () async in
       await MainActor.run { UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) }
@@ -47,6 +47,7 @@ public final class OpensteerDictationModule: Module {
 @MainActor private final class DictationRuntime {
   private var state = DictationLifecycle()
   private var destroyed = false
+  private let cancellation = DictationCancellation()
   private var observer: NSObjectProtocol?
   private var background: UIBackgroundTaskIdentifier = .invalid
   private let emit: (String) -> Void
@@ -63,11 +64,23 @@ public final class OpensteerDictationModule: Module {
     }
   }
   func start(_ session: String, download: Bool) async throws {
+    await cancellation.wait()
     guard !destroyed else { throw DictationError.serviceUnavailable }
     state.begin(session)
     if download { try await service.download(session: session) }
     else { try await service.start(session: session) }
   }
+  func cancel(_ session: String) async {
+    await cancellation.run { [self] in
+      if state.session == session { restoreIdleTimer() }
+      await service.cancel(session: session)
+      if state.session == session {
+        _ = state.cancelled(session)
+        endBackground()
+      }
+    }
+  }
+
   func stop(_ session: String) async {
     if state.session == session { restoreIdleTimer() }
     await service.stop(session: session)
@@ -76,15 +89,18 @@ public final class OpensteerDictationModule: Module {
     if let previous = state.stopListening() { UIApplication.shared.isIdleTimerDisabled = previous }
   }
   private func interrupt() {
-    guard state.session != nil, background == .invalid else { return }
+    guard let session = state.session, background == .invalid else { return }
     restoreIdleTimer()
     background = UIApplication.shared.beginBackgroundTask { [weak self] in
       Task { @MainActor [weak self] in
-        guard let self, let session = self.state.expire() else { return }
-        await self.service.cancel(session: session)
+        guard let self, let session = self.state.expire(session) else { return }
+        await self.cancel(session)
       }
     }
-    Task { await service.interrupt() }
+    Task {
+      guard state.session == session else { return }
+      await service.interrupt()
+    }
   }
   private func receive(_ event: DictationEvent) {
     var forwarded = event
@@ -92,7 +108,7 @@ public final class OpensteerDictationModule: Module {
     case .listening:
       if state.listening(event.session, previous: UIApplication.shared.isIdleTimerDisabled) { UIApplication.shared.isIdleTimerDisabled = true }
     case .ended:
-      if state.expiring == event.session { forwarded = DictationEvent(session: event.session, seq: event.seq, payload: .ended(.interrupted, nil)) }
+      if state.isExpiring(event.session) { forwarded = DictationEvent(session: event.session, seq: event.seq, payload: .ended(.interrupted, nil)) }
       let owns = state.session == event.session
       if let previous = state.ended(event.session) { UIApplication.shared.isIdleTimerDisabled = previous }
       if owns { endBackground() }
@@ -106,10 +122,8 @@ public final class OpensteerDictationModule: Module {
   func destroy() async {
     destroyed = true
     if let observer { NotificationCenter.default.removeObserver(observer) }
-    if let session = state.session {
-      if let previous = state.ended(session) { UIApplication.shared.isIdleTimerDisabled = previous }
-      await service.cancel(session: session)
-    }
+    await cancellation.wait()
+    if let session = state.session { await cancel(session) }
     endBackground()
     events.continuation.finish(); delivery?.cancel()
   }
