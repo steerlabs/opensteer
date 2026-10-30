@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  createId,
+  ThreadIdSchema,
   ThreadReadStateSchema,
   WaitingRequestSchema,
   type ThreadStatus,
@@ -100,6 +102,52 @@ function snapshot(
 const titles = (rows: readonly { readonly title: string }[]) => rows.map((row) => row.title);
 
 describe("taskList", () => {
+  it.each([false, true])(
+    "rolls an unlisted worker's question to its nearest listed ancestor (Chat: %s)",
+    (chat) => {
+      const ancestor = entry(1, chat ? "Chat" : "My task", "idle", 2, 1);
+      const worker = entry(2, "Hidden worker", "waiting", 1, 0);
+      const waiting = asking(2, "Choose an option");
+      const source = snapshot(
+        [
+          ancestor,
+          {
+            ...worker,
+            thread: { ...worker.thread, listed: false, parentThreadId: ancestor.thread.id },
+          },
+        ],
+        {
+          ...(chat ? { chat: 1 } : {}),
+          waiting: [
+            {
+              ...waiting,
+              assignments: [
+                {
+                  id: createId("delegation"),
+                  parentThreadId: ThreadIdSchema.parse(ancestor.thread.id),
+                  workerThread: {
+                    id: ThreadIdSchema.parse(worker.thread.id),
+                    title: worker.thread.title,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      );
+      const list = taskList(source);
+      const row = chat ? list.chat : [...list.working, ...list.ready][0];
+      expect(row).toMatchObject({
+        threadId: ancestor.thread.id,
+        tone: "needs-you",
+        line: "Choose an option",
+      });
+      expect(
+        [...list.working, ...list.ready].some(({ threadId }) => threadId === worker.thread.id),
+      ).toBe(false);
+    },
+  );
+
   it("redraws for a mark-only edit without moving the task or changing its state", () => {
     const original = entry(1, "Tokyo flights in May", "running", 2, 1);
     const row = taskList(snapshot([original])).working[0]!;

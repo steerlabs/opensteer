@@ -1054,7 +1054,6 @@ export async function createThread(
       });
     }
     let lineageRootThreadId = id;
-    let listed = true;
     if (input.parentThreadId) {
       const parent = await transaction
         .selectFrom("threads")
@@ -1077,7 +1076,6 @@ export async function createThread(
         });
       }
       lineageRootThreadId = parent.lineageRootThreadId;
-      listed = parent.role === "conversation";
     }
     const actorPrincipalId = await principalIdForUser(transaction, input.createdBy);
     const thread = await insertThread({
@@ -1090,7 +1088,7 @@ export async function createThread(
       createdByPrincipalId: actorPrincipalId,
       id,
       lineageRootThreadId,
-      listed,
+      listed: true,
       modelSelection: jsonValue(ModelSelectionSchema.parse(input.modelSelection)),
       parentThreadId: input.parentThreadId ?? null,
       role: input.role ?? (input.home ? "conversation" : "work"),

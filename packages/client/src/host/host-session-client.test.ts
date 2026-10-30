@@ -10993,13 +10993,17 @@ describe("task marks through the production client and mock transport", () => {
                 "1",
                 "thread.listed",
                 {
-                  thread: unwrapMock(await mock.rpc["thread.events.list"]({ threadId: task.id }))
-                    .thread,
+                  thread: {
+                    ...unwrapMock(await mock.rpc["thread.events.list"]({ threadId: task.id }))
+                      .thread,
+                    listed: false,
+                  },
                 },
               ),
             ) as AgentEvent,
           ],
         });
+        expect(client.getSnapshot().threads.find(({ id }) => id === task.id)?.listed).toBe(false);
         expect(threadMark(task.id, client.getSnapshot()).color).toBe(expected.color);
         client.activateThread(source.homeThreadId!);
         await vi.waitFor(() =>

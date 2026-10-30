@@ -4660,6 +4660,7 @@ export function migrationProvider() {
         "0110_iphone_device_profile": iphoneDeviceProfileMigration,
         "0111_environment_discovery": environmentDiscoveryMigration,
         "0112_task_done": taskDoneMigration,
+        "0113_person_asked_threads": personAskedThreadsMigration,
       };
     },
   };
@@ -6101,6 +6102,36 @@ export const taskDoneMigration: Migration = {
       ), case when (select status from runs where thread_id = thread.id order by run_ordinal desc limit 1) = 'failed' then 'failed' else 'idle' end)
       where thread.status = 'archived';
       alter table thread_read_markers drop column placement_done, drop column placement_sequence, drop column placement_revision;
+    `.execute(database);
+  },
+};
+
+export const personAskedThreadsMigration: Migration = {
+  async up(database: Kysely<unknown>): Promise<void> {
+    await sql`
+      with asked as (
+        select distinct delegation.child_thread_id as id
+        from public.delegations as delegation
+        join public.threads as parent on parent.id = delegation.parent_thread_id
+        join public.runs as run on run.id = delegation.parent_run_id
+        join public.messages as seed on seed.id = run.seed_input_id
+        where parent.role = 'conversation' and delegation.origin = 'run'
+          and seed.author ->> 'kind' = 'human'
+      ), listing as (
+        select thread.id, (thread.parent_thread_id is null or asked.id is not null) as listed
+        from public.threads as thread left join asked on asked.id = thread.id
+      )
+      update public.threads as thread set listed = listing.listed
+      from listing where thread.id = listing.id and thread.listed is distinct from listing.listed;
+
+      update public.workspace_events as event
+      set data = jsonb_set(event.data, '{thread,listed}', to_jsonb(thread.listed), true)
+      from public.threads as thread
+      where event.thread_id = thread.id
+        and event.type in ('thread.created', 'thread.listed')
+        and jsonb_typeof(event.data -> 'thread') = 'object'
+        and event.data #>> '{thread,id}' = thread.id
+        and event.data #> '{thread,listed}' is distinct from to_jsonb(thread.listed);
     `.execute(database);
   },
 };
