@@ -241,7 +241,7 @@ function setup(interactive = true) {
   const decode = async (outcome: PictureOutcome = "presented") => {
     if (native.presenter === "image")
       return act(() => {
-        const image = container.querySelector("img");
+        const image = [...container.querySelectorAll("img")].at(-1);
         if (!image) throw new Error("The subscribed stream did not deliver an image.");
         image.dispatchEvent(new Event(outcome === "presented" ? "load" : "error"));
       });
@@ -386,6 +386,36 @@ describe.each(["image", "picture"] as const)(
       });
       tapAt(200, 300);
       expect(send).toHaveBeenCalledTimes(2);
+    });
+
+    it("ends a gesture when the drawn geometry changes or a second contact joins", async () => {
+      const { decode, emit, render, send } = setup();
+      render("synchronized");
+      emit();
+      await decode();
+      const first = touch(200, 300);
+      act(() => native.gestures?.onPanResponderGrant?.(first.event, first.gesture));
+      emit(surfaceId, {
+        frameId: 2,
+        geometryRevision: 8,
+        watchToken: "00000000-0000-4000-8000-000000000002",
+      });
+      await decode();
+      act(() => native.gestures?.onPanResponderRelease?.(first.event, first.gesture));
+      expect(send).not.toHaveBeenCalled();
+      const multi = {
+        ...first.event,
+        nativeEvent: {
+          ...first.event.nativeEvent,
+          touches: [first.event.nativeEvent, { ...first.event.nativeEvent, identifier: 2 }],
+        },
+      } as GestureResponderEvent;
+      act(() => {
+        native.gestures?.onPanResponderGrant?.(first.event, first.gesture);
+        native.gestures?.onPanResponderMove?.(multi, touch(200, 330, 0, 30).gesture);
+        native.gestures?.onPanResponderRelease?.(first.event, first.gesture);
+      });
+      expect(send).not.toHaveBeenCalled();
     });
 
     it("scrolls the page under a drag without clicking it", async () => {

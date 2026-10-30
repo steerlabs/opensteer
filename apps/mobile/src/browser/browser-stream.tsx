@@ -35,7 +35,7 @@ import {
   type MobileBrowserFrame,
 } from "./browser-frame.js";
 import { nativePictureView } from "../computers/phone-display-native.js";
-import { useNativeBrowserPicture } from "./native-browser-picture.js";
+import { browserPictureFence, useNativeBrowserPicture } from "./native-browser-picture.js";
 
 export interface BrowserStreamProps {
   /** True only while this viewer is focused, visible, and in the foreground. */
@@ -295,9 +295,20 @@ export function BrowserStream({
   // The surface rearranging around the stage moves it on screen even where
   // its own frame is unchanged.
   const geometry = usePaneGeometry();
+  const drawnGeometry = displayed ? browserPictureFence(displayed.source) : null;
   useLayoutEffect(() => {
     held.current = null;
-  }, [geometry]);
+  }, [
+    geometry,
+    drawnGeometry,
+    active,
+    inputEnabled,
+    interactive,
+    feed.admissionId,
+    feedState,
+    session.id,
+    tabId,
+  ]);
   const gestures = useMemo(() => {
     const send = (command: BrowserCommand) => submitBrowserCommand(hostClient, session.id, command);
     const usable = () => {
@@ -315,6 +326,10 @@ export function BrowserStream({
       onStartShouldSetPanResponder: usable,
       onMoveShouldSetPanResponder: usable,
       onPanResponderGrant: (event) => {
+        if (event.nativeEvent.touches?.length > 1) {
+          held.current = null;
+          return;
+        }
         const current = input.current;
         const source = usable() ? (current.displayed?.source ?? null) : null;
         const point = mobileBrowserPoint({
@@ -343,7 +358,11 @@ export function BrowserStream({
               }
             : null;
       },
-      onPanResponderMove: (_event, state) => {
+      onPanResponderMove: (event, state) => {
+        if (event.nativeEvent.touches?.length > 1) {
+          held.current = null;
+          return;
+        }
         const gesture = held.current;
         if (
           !gesture ||

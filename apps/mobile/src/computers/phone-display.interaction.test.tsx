@@ -6,8 +6,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import type { HostClient, WebSocketClient } from "@opensteer/client/host";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
   os: "android",
+  geometry: "side:display@0",
   epoch: "",
   ready: null as
     null | ((event: { nativeEvent: { epoch: string; width: number; height: number } }) => void),
@@ -25,6 +27,7 @@ const state = vi.hoisted(() => ({
   /** Frames the native decoder received, as bytes or as base64 for an older binary. */
   decoded: [] as { epoch: string; bytes?: number[]; data?: string }[],
 }));
+vi.mock("../ui/pane.js", () => ({ usePaneGeometry: () => state.geometry }));
 vi.mock("react-native", () => ({
   Platform: {
     get OS() {
@@ -166,6 +169,7 @@ afterEach(async () => {
   root = null;
   container?.remove();
   state.copy.mockClear();
+  state.geometry = "side:display@0";
   state.proxy = null;
   state.decoded = [];
 });
@@ -650,4 +654,24 @@ it("sends standard padded base64 to a binary that predates byte frames", async (
     [{ ...metadata, data: "+/8=" }],
     [{ ...metadata, data: "+//+AQ==" }],
   ]);
+});
+
+it("cancels a held display stroke when its pane moves without resizing", async () => {
+  const { render } = await setup();
+  await act(async () => state.layout?.({ nativeEvent: { layout: { width: 400, height: 400 } } }));
+  const touch = { nativeEvent: { locationX: 200, locationY: 200, timestamp: 10, touches: [{}] } };
+  await act(async () => state.touch?.onTouchStart?.(touch));
+  state.geometry = "tabletop:display@1";
+  await render();
+  expect(input().at(-1)?.events).toEqual([
+    { kind: "pointer", phase: "cancel", x: 0.5, y: 0.5, t: 10 },
+  ]);
+  const count = input().length;
+  await act(async () =>
+    state.touch?.onTouchEnd?.({
+      ...touch,
+      nativeEvent: { ...touch.nativeEvent, timestamp: 20, touches: [] },
+    }),
+  );
+  expect(input()).toHaveLength(count);
 });
