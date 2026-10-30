@@ -197,6 +197,44 @@ it("labels a failed Home history read on the saved Chat only, until a read succe
   f.dispose();
 });
 
+it("never writes a partial view when tasks answer before the disk load and Home fails", async () => {
+  const f = await fixture(),
+    memory = createMemorySavedViews(),
+    gate = deferred<void>();
+  const threadId = ThreadIdSchema.parse(f.snapshot().homeThreadId);
+  const saved = {
+    ...f.saved,
+    home: {
+      ...f.saved.home!,
+      threadId,
+      messages: [{ voice: "agent" as const, text: "Saved reply" }],
+    },
+  };
+  await memory.write(saved, () => true);
+  const write = vi.spyOn(memory, "write");
+  const controller = presentation({
+    store: {
+      ...memory,
+      load: async (scope, lease) => {
+        await gate.promise;
+        return memory.load(scope, lease);
+      },
+    },
+  });
+  controller.select(f.s.hostIdentity.deploymentId, f.s, () => true);
+  controller.attach(f.client);
+  // Tasks answer first; the late disk read is then discarded, and Home's read fails.
+  f.publish({ savedViewReadiness: { tasksReady: true, home: pendingHome, workspaceRefusal: 0 } });
+  gate.resolve();
+  await gate.promise;
+  f.publish({ threadLookups: { ...f.snapshot().threadLookups, [threadId]: "failed" } });
+  await controller.flush();
+  expect(write).not.toHaveBeenCalled();
+  expect((await memory.load(f.s, () => true))?.home?.messages).toEqual(saved.home.messages);
+  controller.dispose();
+  f.dispose();
+});
+
 it("discards a late disk read wholesale even when only one fresh surface arrived", async () => {
   const f = await fixture(),
     gate = deferred<SavedHostView | null>();
@@ -332,7 +370,14 @@ it.each(["fresh-empty", "switch", "different-user", "logout", "refusal", "dispos
     });
     controller.select(f.s.hostIdentity.deploymentId, f.s, () => true);
     controller.attach(f.client);
-    f.publish({ savedViewReadiness: { tasksReady: true, home: pendingHome, workspaceRefusal: 0 } });
+    // Both surfaces answered, so a whole saved view may be written.
+    f.publish({
+      savedViewReadiness: {
+        tasksReady: true,
+        home: { status: "absent", workspaceId: f.snapshot().homeWorkspaceId! },
+        workspaceRefusal: 0,
+      },
+    });
     const writing = controller.flush();
     await started.promise;
     if (reason === "fresh-empty")
@@ -455,7 +500,14 @@ it("reconciles deferred successful deletion across same-Deployment reselection a
   release.resolve();
   await vi.waitFor(() => expect(controller.getSnapshot().failure).toBeNull());
   expect(controller.getSnapshot().home.source).not.toBe("saved");
-  f.publish({ savedViewReadiness: { tasksReady: true, home: pendingHome, workspaceRefusal: 1 } });
+  // Both surfaces answered, so a whole saved view may be written.
+  f.publish({
+    savedViewReadiness: {
+      tasksReady: true,
+      home: { status: "absent", workspaceId: f.snapshot().homeWorkspaceId! },
+      workspaceRefusal: 1,
+    },
+  });
   await vi.waitFor(async () => {
     await controller.flush();
     expect(write).toHaveBeenCalledTimes(1);

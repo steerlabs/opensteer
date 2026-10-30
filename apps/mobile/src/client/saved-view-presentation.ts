@@ -50,8 +50,6 @@ export class SavedViewPresentation {
   #detach: (() => void) | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #fresh = { home: false, tasks: false };
-  /** Surfaces shown from disk; each is rewritten only by its own fresh answer. */
-  #loaded = { home: false, tasks: false };
   #diskAllowed = true;
   #disposed = false;
   #blocked = false;
@@ -99,7 +97,6 @@ export class SavedViewPresentation {
     this.#userId = null;
     if (!same) {
       this.#fresh = { home: false, tasks: false };
-      this.#loaded = { home: false, tasks: false };
       this.#diskAllowed = true;
       this.#blocked = false;
       this.#home = undefined;
@@ -155,7 +152,6 @@ export class SavedViewPresentation {
           return;
         }
         this.#savedUserId = view.userId;
-        this.#loaded = { home: view.home !== undefined, tasks: view.tasks !== undefined };
         this.#publish({
           home: view.home
             ? {
@@ -208,7 +204,6 @@ export class SavedViewPresentation {
     this.#blocked = true;
     this.#scope = null;
     this.#diskAllowed = false;
-    this.#loaded = { home: false, tasks: false };
     this.#cancelTimer();
     this.#detach?.();
     this.#detach = null;
@@ -269,11 +264,11 @@ export class SavedViewPresentation {
       !this.#userId ||
       this.#blocked ||
       this.#invalidating() ||
-      (!this.#home && !this.#tasks) ||
-      // A surface still shown from disk keeps it until its own answer arrives:
-      // a tasks-only refresh must not write over the saved Chat.
-      (this.#loaded.home && !this.#fresh.home) ||
-      (this.#loaded.tasks && !this.#fresh.tasks)
+      // A write replaces the whole saved view, which may hold a surface this
+      // session never loaded, so it waits until both surfaces have answered.
+      // An empty or absent answer counts.
+      !this.#fresh.home ||
+      !this.#fresh.tasks
     )
       return;
     const snapshot = client.getSnapshot();
@@ -390,7 +385,6 @@ export class SavedViewPresentation {
     if (id === null) return;
     this.#generation += 1;
     this.#diskAllowed = false;
-    this.#loaded = { home: false, tasks: false };
     this.#taskSource = null;
     this.#cancelTimer();
     this.#home = undefined;
