@@ -1,3 +1,4 @@
+import { createVoiceHandlers } from "./voice/voice-handlers.js";
 import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
 import { searchSuggestions } from "./browser/search-suggestions.js";
 import type { BrowserTabGroupService } from "./browser/browser-tab-group-service.js";
@@ -1093,6 +1094,7 @@ export async function createHostServer(
   ) => projectMachines({ ...(await machineRegistryRows(session)), deploymentKind });
 
   const coreRpcHandlers = {
+    ...createVoiceHandlers(dependencies),
     "agentPhone.target.get": async (_input, context) => {
       requireRpcSession(context);
       return rpcSuccess(
@@ -1552,6 +1554,10 @@ export async function createHostServer(
     | "harness.authentication.get"
     | "harness.catalog.refresh"
     | "harness.modelServers.discover"
+    | "voice.start"
+    | "voice.renew"
+    | "voice.say"
+    | "voice.stop"
     | "machine.access.history"
     | "machines.list"
     | "requests.list"
@@ -3060,6 +3066,7 @@ export function advertisedCapabilities(
 ): readonly HostCapability[] {
   return [
     "chat-attachments",
+    "voice-v1",
     "thread-titles-v1",
     "task-marks-v1",
     "snapshot-messages-omit-v1",

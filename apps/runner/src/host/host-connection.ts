@@ -654,6 +654,9 @@ export class ReconnectingHostConnection {
       bootId: this.#bootId,
       capabilities: [
         ...runnerCapabilities(),
+        ...(agents?.runtime.harnessDrivers().some((driver) => driver.driverKind === "codex")
+          ? ["voice-v1" as const]
+          : []),
         ...(agents?.earlierBootsContained ? ["earlier-boots-contained-v1" as const] : []),
       ],
       ...(this.#device ? { device: this.#device } : {}),
@@ -1207,6 +1210,7 @@ class AgentsWorkSession implements RunnerWorkSession {
    * inspections, discovery and storage reads go on, and so does the reading
    * of the connection itself.
    */
+  readonly #voiceResponses = new Set<Promise<void>>();
   #ordered: Promise<void> = Promise.resolve();
   #orderedPending = 0;
 
@@ -1242,6 +1246,9 @@ class AgentsWorkSession implements RunnerWorkSession {
         return;
       case "host.harness-authentication":
         this.#answerAuthenticationRequest(message);
+        return;
+      case "host.voice":
+        this.#answerVoiceRequest(message);
         return;
       case "host.discover-model-servers":
         this.#answerModelServerRequest(message);
@@ -1311,6 +1318,7 @@ class AgentsWorkSession implements RunnerWorkSession {
         ...this.#catalogResponses,
         ...this.#authenticationResponses,
         ...this.#modelServerResponses,
+        ...this.#voiceResponses,
       ]),
       connectionOperationStopWaitMs,
       { timeoutError: () => new Error("Runner connection cleanup timed out") },
@@ -1381,6 +1389,24 @@ class AgentsWorkSession implements RunnerWorkSession {
       });
     this.#catalogResponses.add(response);
     void response.catch(() => this.#options.fail("Harness catalog response failed"));
+  }
+
+  #answerVoiceRequest(message: Extract<RunnerWorkMessage, { readonly type: "host.voice" }>): void {
+    if (this.#voiceResponses.size >= maximumQueuedInboundItems)
+      throw new Error("Too many voice requests");
+    const response = this.#options.agents.runtime
+      .voice(message.userId, message.command)
+      .then(async (result) => {
+        if (!this.#signal.aborted)
+          await this.#options.sink.send({
+            type: "runner.voice",
+            requestId: message.requestId,
+            result,
+          });
+      })
+      .finally(() => this.#voiceResponses.delete(response));
+    this.#voiceResponses.add(response);
+    void response.catch(() => this.#options.fail("Voice response failed"));
   }
 
   #answerModelServerRequest(
@@ -1504,6 +1530,13 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
             requestId: message.requestId,
             state: { detail: notRunningAgents, status: "failed" },
             type: "runner.harness-authentication",
+          });
+          return;
+        case "host.voice":
+          await sink.send({
+            type: "runner.voice",
+            requestId: message.requestId,
+            result: { ok: false, reason: "voice-runner-unsupported", message: notRunningAgents },
           });
           return;
         case "host.discover-model-servers":
