@@ -193,8 +193,10 @@ register's format; an entry never exempts a test by itself.
 `pnpm check:changed --base origin/main` uses the same manifest graph as CI.
 It includes committed, staged, unstaged and untracked changes, checks formatting
 and lint for changed files, typechecks owning workspaces and reverse dependents,
-and runs changed tests and basename siblings. Unknown inputs select full local
-commands and print why. `--dry-run` prints the plan without running checks.
+and runs changed tests and basename siblings. A global or unknown input makes CI
+run everything; locally it only widens typecheck to every workspace and prints
+why. Builds and full suites stay with GitHub `Check`. `--dry-run` prints the plan
+without running checks.
 Non-manifest generators and build consumers select conservative coverage.
 
 `pnpm check` always runs the full developer recipe without issuing qualification

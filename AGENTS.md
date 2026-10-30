@@ -6,8 +6,10 @@ Work in your own worktree on a small branch and open one PR per change on
 [steerlabs/opensteer](https://github.com/steerlabs/opensteer) with a
 conventional title (`fix:`, `feat:`, `docs:`, `refactor:`, `test:`, `chore:`).
 Before pushing, run `pnpm check:changed --base origin/main` and the focused
-journey that proves the behavior. Include what changed, why, evidence and any
-checks you could not run in the PR.
+journey that proves the behavior. **Do not run repo-wide checks**: no `pnpm check`,
+`pnpm test` or full `pnpm test:integration` unless Tim asks. CI owns the full
+suite. Include what changed, why, evidence and any checks you could not run in
+the PR.
 
 After pushing, use `watch_pull_request`. Fix failing checks on the branch; never
 weaken a test to land. No batching or up-to-date requirement. Main runs the full

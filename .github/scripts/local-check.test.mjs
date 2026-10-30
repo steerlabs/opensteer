@@ -14,11 +14,25 @@ test("changed and sibling tests, owning reverse dependents, without workspace bu
   assert.ok(p.commands.some((c) => c.includes("b")));
   assert.ok(!p.commands.some((c) => c.includes("build")));
 });
-test("unknown falls back with reason", () => {
+const fullSuite = ["format:check", "lint", "typecheck", "build", "test", "test:integration"];
+const runsFullSuite = (p) => p.commands.some((c) => c.length === 1 && fullSuite.includes(c[0]));
+test("unknown keeps CI's full flag and reason without full local commands", () => {
   const p = localPlan(["mystery"], [], []);
   assert.ok(p.full);
   assert.ok(p.reasons.length);
-  assert.ok(p.commands.some((c) => c.includes("test")));
+  assert.ok(!runsFullSuite(p));
+});
+test("a global input runs the changed-file checks and every workspace typecheck, not CI's full suite", () => {
+  const file = "tests/mobile-network/runner.test-support.ts";
+  const p = localPlan([file], [{ name: "a", dir: "packages/a", deps: [], coverage: [] }], [file]);
+  assert.ok(p.full);
+  assert.ok(p.reasons.includes(`global input: ${file}`));
+  assert.ok(!runsFullSuite(p));
+  assert.ok(p.commands.some((c) => c.includes("prettier") && c.includes(file)));
+  assert.ok(
+    p.commands.some((c) => c.includes("--filter") && c.includes("a") && c.at(-1) === "typecheck"),
+  );
+  assert.ok(p.commands.some((c) => c.length === 1 && c[0] === "typecheck:tests"));
 });
 test("routes integration and GUI siblings through their owned launchers", () => {
   const p = localPlan(
