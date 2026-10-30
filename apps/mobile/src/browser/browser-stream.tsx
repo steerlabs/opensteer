@@ -149,13 +149,15 @@ export function BrowserStream({
           ? hostClient.retainBrowserViewer(session.id, tabId, {
               captureRegion: true,
               rasterDemand: true,
+              frameWindow: native,
             })
           : hostClient.retainBrowserWatch(session.id, tabId, {
               captureRegion: true,
               rasterDemand: true,
+              frameWindow: native,
             })
         : undefined,
-    [active, attempt, hostClient, interactive, session.id, tabId],
+    [active, attempt, hostClient, interactive, native, session.id, tabId],
   );
 
   const finish = useCallback(

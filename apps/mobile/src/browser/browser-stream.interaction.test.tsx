@@ -540,7 +540,7 @@ describe.each(["image", "picture"] as const)(
       expect(hostClient.retainBrowserViewer).toHaveBeenCalledWith(
         session("synchronized").id,
         surfaceId,
-        { captureRegion: true, rasterDemand: true },
+        { captureRegion: true, rasterDemand: true, frameWindow: presenter === "picture" },
       );
       expect(hostClient.browserFrames.subscribe).toHaveBeenCalledWith(
         session("synchronized").id,
@@ -575,7 +575,7 @@ describe.each(["image", "picture"] as const)(
       expect(hostClient.retainBrowserWatch).toHaveBeenCalledWith(
         session("synchronized").id,
         surfaceId,
-        { captureRegion: true, rasterDemand: true },
+        { captureRegion: true, rasterDemand: true, frameWindow: presenter === "picture" },
       );
       expect(hostClient.retainBrowserViewer).not.toHaveBeenCalled();
       expect(send).not.toHaveBeenCalled();
