@@ -5,5 +5,5 @@ let package = Package(
   name: "MacOSSigning",
   platforms: [.macOS(.v14)],
   products: [.library(name: "MacOSSigning", targets: ["MacOSSigning"])],
-  targets: [.target(name: "MacOSSigning")]
+  targets: [.target(name: "MacOSSigning"), .testTarget(name: "MacOSSigningTests", dependencies: ["MacOSSigning"])]
 )

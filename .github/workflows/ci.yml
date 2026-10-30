@@ -257,7 +257,9 @@ jobs:
         run: swift test --package-path apps/desktop/native/computer-use
       - name: Test passwords
         if: matrix.task == 'passwords-tests'
-        run: swift test --package-path apps/desktop/native/passwords
+        run: |
+          swift test --package-path apps/desktop/native/passwords
+          swift test --package-path packages/macos-signing
       - name: Test native contracts and Darwin-only files
         if: matrix.darwin
         shell: bash
