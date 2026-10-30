@@ -590,3 +590,73 @@ describe("a Computer use row", () => {
     expect(onOpenStep).toHaveBeenCalledWith(`tool:${run.runId}:call_cu_7`);
   });
 });
+
+it("quiet Chat keeps automatic replies and lets silent human work open Activity", () => {
+  const { container, render, onOpenActivity, onOpenThread } = setup(true);
+  const author = {
+    kind: "agent" as const,
+    displayName: "Research",
+    threadId: createId("thread"),
+    runId: createId("run"),
+    workspaceId: createId("workspace"),
+    workspaceName: "Main",
+  };
+  render([{ ...run, startedBy: author, status: "running" }]);
+  expect(container.textContent).toBe("");
+  render([{ ...run, startedBy: author, status: "completed" }]);
+  expect(container.textContent).toBe("");
+  render(
+    [{ ...run, startedBy: author, replyMessageId: note.id, status: "completed" }, note],
+    [
+      {
+        id: author.workspaceId,
+        homeThreadId: null,
+        description: "",
+        fileCount: 0,
+        harnessLabel: "Codex",
+        kind: "specialized",
+        machineName: null,
+        name: "Research",
+        icon: null,
+        runnerLabel: "",
+        storageIssue: null,
+        color: null,
+        updatedAt: "2026-09-26T15:00:00.000Z",
+        status: "ready",
+      } satisfies WorkspaceSummary,
+    ],
+  );
+  expect(container.textContent).toContain(note.body);
+  press(container, "Research");
+  expect(onOpenThread).toHaveBeenCalledWith(author.threadId);
+  render([
+    {
+      ...run,
+      status: "completed",
+      endedAt: new Date(Date.parse(run.createdAt) + 120_000).toISOString(),
+    },
+  ]);
+  press(container, "Worked for 2m");
+  expect(onOpenActivity).toHaveBeenCalled();
+  const human = { kind: "human" as const, displayName: "You", principalId: "person" };
+  render([
+    {
+      ...run,
+      startedBy: human,
+      status: "failed",
+      error: { code: "failed", message: "Could not finish", retryable: false },
+    },
+  ]);
+  expect(container.textContent).toContain("Could not finish");
+  render([{ ...run, startedBy: human, status: "interrupted" }]);
+  expect(container.textContent).toContain("Stopped.");
+  const task = setup();
+  task.render([
+    {
+      ...run,
+      status: "completed",
+      endedAt: new Date(Date.parse(run.createdAt) + 120_000).toISOString(),
+    },
+  ]);
+  expect(task.container.textContent).toContain("Worked for 2m");
+});

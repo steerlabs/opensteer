@@ -7,7 +7,7 @@ import {
   type ThreadInput,
   requestOptionDeclines,
   requestTitleText,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type LiveStreamKey,
   type MessageKind,
   type MessageView,
@@ -78,6 +78,7 @@ export function foldTranscriptEvent(
       const prior =
         findEntry(entries, id, "run") ??
         findEntry(upsertRunEntry(entries, event, "running"), id, "run")!;
+      const startedBy = event.data.startedBy ?? prior.startedBy;
       const reply = event.data.phase === "background" ? event.data.replyMessageId : null;
       const turnReplies =
         reply && !prior.turnReplyMessageIds?.includes(reply)
@@ -85,13 +86,16 @@ export function foldTranscriptEvent(
           : prior.turnReplyMessageIds;
       // A turn's reply stands even when the Run's end arrived first.
       if (isTerminalRunEntryStatus(prior.status)) {
-        return !turnReplies || turnReplies === prior.turnReplyMessageIds
-          ? [...entries]
-          : upsertEntry(entries, { ...prior, turnReplyMessageIds: turnReplies });
+        return upsertEntry(entries, {
+          ...prior,
+          ...(startedBy ? { startedBy } : {}),
+          ...(turnReplies ? { turnReplyMessageIds: turnReplies } : {}),
+        });
       }
       const { background: _background, ...rest } = prior;
       return upsertEntry(entries, {
         ...rest,
+        ...(startedBy ? { startedBy } : {}),
         ...(event.data.phase === "background" ? { background: true } : {}),
         ...(turnReplies ? { turnReplyMessageIds: turnReplies } : {}),
       });
@@ -572,6 +576,7 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
   }
   if (previous.kind === "run" && next.kind === "run") {
     const usage = next.usage ?? previous.usage;
+    const startedBy = next.startedBy ?? previous.startedBy;
     const turnReplies = [
       ...new Set([...(previous.turnReplyMessageIds ?? []), ...(next.turnReplyMessageIds ?? [])]),
     ];
@@ -581,6 +586,7 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
       error: next.error ?? previous.error,
       replyMessageId: next.replyMessageId ?? previous.replyMessageId,
       ...(usage === undefined ? {} : { usage }),
+      ...(startedBy === undefined ? {} : { startedBy }),
       ...(turnReplies.length > 0 ? { turnReplyMessageIds: turnReplies } : {}),
     };
   }
@@ -945,6 +951,7 @@ function upsertRunEntry(
 ): TranscriptEntry[] {
   const id = event.runId ? `run:${event.runId}` : `event:${event.eventId}`;
   const prior = findEntry(entries, id, "run");
+  const startedBy = "startedBy" in event.data ? event.data.startedBy : prior?.startedBy;
   return upsertEntry(entries, {
     createdAt: prior?.createdAt ?? event.createdAt,
     error: error ?? prior?.error ?? null,
@@ -957,6 +964,7 @@ function upsertRunEntry(
     ...(prior?.stopping === true && !isTerminalRunEntryStatus(status) ? { stopping: true } : {}),
     ...(prior?.usage ? { usage: prior.usage } : {}),
     ...(prior?.attempt ? { attempt: prior.attempt } : {}),
+    ...(startedBy ? { startedBy } : {}),
     ...(prior?.background && !isTerminalRunEntryStatus(status) ? { background: true } : {}),
     ...(prior?.turnReplyMessageIds ? { turnReplyMessageIds: prior.turnReplyMessageIds } : {}),
     ...(prior?.priorUsage ? { priorUsage: prior.priorUsage } : {}),

@@ -1,4 +1,9 @@
-import { compareSequence, type AgentEvent, type Run, type Sequence } from "@opensteer/core";
+import {
+  compareSequence,
+  type AgentEventView as AgentEvent,
+  type Run,
+  type Sequence,
+} from "@opensteer/core";
 import type { RunQueueEntry } from "./client.js";
 
 /** Ended Runs remembered, oldest forgotten first, so a late read cannot restore one. */

@@ -121,6 +121,7 @@ const releasedMigrationNames = [
   "0111_environment_discovery",
   "0112_task_done",
   "0113_person_asked_threads",
+  "0114_run_started_by",
 ];
 
 describe("migration names", () => {

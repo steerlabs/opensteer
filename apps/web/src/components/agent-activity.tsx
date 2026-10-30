@@ -30,6 +30,7 @@ import {
   formatElapsed,
   groupTranscriptEntries,
   hasRunOutcome,
+  silentRunLabel,
   isTerminalRunEntryStatus,
   incomingMessagePreview,
   messagePages,
@@ -175,6 +176,8 @@ const ReaderComputers = createContext<TranscriptComputers | null>(null);
 const RunPictures = createContext<HostClient | null>(null);
 
 const noWorkspaces: readonly WorkspaceSummary[] = [];
+const noWaitingRequests: readonly import("@opensteer/core").WaitingRequest[] = [];
+const noAssignments: Readonly<Record<string, import("@opensteer/core").AssignmentSummary>> = {};
 const noBrowsers: readonly BrowserSessionSummary[] = [];
 
 /**
@@ -190,6 +193,8 @@ export function AgentTranscript({
   computers = null,
   live = true,
   entries,
+  waitingRequests = noWaitingRequests,
+  assignments = noAssignments,
   browserSessions = noBrowsers,
   engineName,
   homeThreadId = null,
@@ -223,6 +228,8 @@ export function AgentTranscript({
   computers?: TranscriptComputers | null;
   live?: boolean;
   entries: readonly TranscriptEntry[];
+  waitingRequests?: readonly import("@opensteer/core").WaitingRequest[];
+  assignments?: Readonly<Record<string, import("@opensteer/core").AssignmentSummary>>;
   browserSessions?: readonly BrowserSessionSummary[];
   /**
    * Names the engine behind a recorded selection, as the reader knows it.
@@ -270,8 +277,8 @@ export function AgentTranscript({
   workspaces?: readonly WorkspaceSummary[];
 }) {
   const groups = useMemo(
-    () => groupTranscriptEntries(entries, { inputQueuePaused, startHold }),
-    [entries, inputQueuePaused, startHold],
+    () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
+    [entries, inputQueuePaused, startHold, assignments],
   );
   const unreadBoundaryKey = useMemo(
     () => firstUnreadGroupKey(groups, conversation ? null : unreadBoundarySequence),
@@ -296,10 +303,11 @@ export function AgentTranscript({
           conversationRows(groups, {
             atComputer: (turn) => turnComputer(turn) !== null,
             live,
+            waitingRequests,
             pictured: (turn) => runPlace(threadPlace, workingRunId(turn)) !== null,
           })
         : groups.map((group) => ({ group, key: group.key })),
-    [conversation, groups, live, threadPlace],
+    [conversation, groups, live, threadPlace, waitingRequests],
   );
   const indicator =
     live && !(requestShown && activity === "waiting_for_you")
@@ -686,12 +694,13 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const now = useComputerUseNow(turn);
   const kept = useKeptComputerStop(turn, now);
   const composing = view.composing && live && now === null && kept === null;
-  const working = live && workingRunId(turn) !== null;
+  const working = turn.personWaiting !== false && live && workingRunId(turn) !== null;
   const startHold = live ? view.startHold : null;
-  const outcome = turn.run !== null && showsRunOutcome(turn.run);
+  const outcome = turn.personWaiting !== false && turn.run !== null && showsRunOutcome(turn.run);
   // A Run that ended without a reply, stopped or failed, keeps its places under how it ended.
   const placesUnderOutcome = outcome && view.reply === null;
   const tasks = renderTask === undefined ? [] : turn.assignments;
+  const openActivity = useContext(OpenActivity);
   // The conversation leaves out a turn with nothing of its own to show
   // (`conversationRows`). One can still come to nothing here for what
   // only this screen knows: a Mac session it is not shown, or tasks it has no
@@ -715,6 +724,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
         <KeptComputerStopLine key={kept.sessionId} stop={kept} />
       ) : null}
       {composing && restartPending(turn.run) ? <RunRestart>{restartingLabel}</RunRestart> : null}
+      {view.reply && turn.source ? <TurnSource source={turn.source} /> : null}
       {view.reply ? (
         <ReplyBubble message={view.reply} turnKey={turnKey} />
       ) : composing ? (
@@ -728,7 +738,19 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       {tasks.map((entry) => (
         <Fragment key={entry.id}>{renderTask?.(entry)}</Fragment>
       ))}
-      {turn.run && outcome ? <RunOutcome conversation run={turn.run} /> : null}
+      {turn.run && outcome ? (
+        turn.run.status === "completed" && turn.run.replyMessageId === null ? (
+          <button
+            type="button"
+            className="run-note run-note--worked"
+            onClick={(event) => openActivity?.(turnKey, event.currentTarget)}
+          >
+            {silentRunLabel(turn.run)}
+          </button>
+        ) : (
+          <RunOutcome conversation run={turn.run} />
+        )
+      ) : null}
       {placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
     </div>
   );
@@ -1203,6 +1225,7 @@ function TurnContent({
   turn: Turn;
 }) {
   const active = turnState(turn) !== "settled";
+  const silent = turn.run?.status === "completed" && turn.run.replyMessageId === null;
   const work = entries ?? turn.work;
   const folded = fold === undefined ? null : !fold.open;
   const rows = useMemo(() => {
@@ -1210,8 +1233,11 @@ function TurnContent({
     // The reply keeps its row's key either way, so folding never redraws it.
     if (folded !== null)
       return [statusRow, ...workRows(folded ? work.filter((entry) => entry === turn.reply) : work)];
-    return [...workRows(work), ...(status && (work.length > 0 || active) ? [statusRow] : [])];
-  }, [work, active, folded, status, turn.reply]);
+    return [
+      ...workRows(work),
+      ...(status && (work.length > 0 || active || silent) ? [statusRow] : []),
+    ];
+  }, [work, active, folded, status, turn.reply, silent]);
   return (
     <div className="turn__content">
       {rows.map((row) =>
@@ -1911,6 +1937,30 @@ function UpdateLine({
   );
 }
 
+function TurnSource({ source }: { source: NonNullable<Turn["source"]> }) {
+  const { workspaces } = useContext(Speakers);
+  const home = useContext(HomeThread);
+  if (source.author.kind === "human") return null;
+  const from = source.task
+    ? {
+        glyph: "message" as const,
+        name: source.task.workerThread.title,
+        href: `/threads/${source.task.workerThread.id}`,
+      }
+    : updateSource(source.author, "input", workspaces, home);
+  const content = (
+    <>
+      <Icon name={from.glyph} /> {from.name} ·{" "}
+      <time dateTime={source.createdAt}>{formatClockTime(source.createdAt)}</time> ›
+    </>
+  );
+  return (
+    <div className="turn-source">
+      {from.href ? <AreaLink to={from.href}>{content}</AreaLink> : content}
+    </div>
+  );
+}
+
 /** Who an update came from, and where the reader can follow it. */
 function updateSource(
   author: UpdateAuthor,
@@ -2264,7 +2314,7 @@ function RunOutcome({
   if (run.status === "completed" && run.replyMessageId === null) {
     return (
       <>
-        <p className="run-note">Finished without a reply.</p>
+        {conversation ? <p className="run-note">{silentRunLabel(run)}</p> : null}
         {restart}
       </>
     );

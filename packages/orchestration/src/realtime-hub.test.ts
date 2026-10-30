@@ -585,7 +585,7 @@ function viewerState() {
 function event(workspaceId: WorkspaceId, value: string): AgentEvent {
   return {
     createdAt: new Date().toISOString(),
-    data: { status: "running" },
+    data: { status: "running", startedBy: { kind: "platform", cause: "test" } },
     environmentId: createId("environment"),
     eventId: createId("event"),
     runId: createId("run"),

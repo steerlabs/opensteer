@@ -13,7 +13,7 @@ import {
   PendingRequestSchema,
   ThreadAccessModeSchema,
   createId,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type ContentPart,
   type EnvironmentId,
   type MessageId,
@@ -334,7 +334,7 @@ integration.sequential("conversation delivery", () => {
       const run = await runRow(runId);
       const generation = bindingGeneration ?? run.bindingGeneration;
       if (generation === null) throw new Error("The Run has no binding to report from");
-      return store.commitRunnerEvent({
+      const committed = await store.commitRunnerEvent({
         environmentId: f.environmentId,
         event: {
           bindingGeneration: generation,
@@ -350,6 +350,26 @@ integration.sequential("conversation delivery", () => {
         runnerBootId: f.runnerBootId,
         runnerId: f.runnerId,
       });
+      if (
+        [
+          "run.started",
+          "run.status",
+          "run.restarted",
+          "run.phase",
+          "run.completed",
+          "run.failed",
+          "run.interrupted",
+        ].includes(type) &&
+        !committed.wasDuplicate
+      ) {
+        const seed = await database
+          .selectFrom("messages")
+          .select("author")
+          .where("id", "=", run.seedInputId)
+          .executeTakeFirstOrThrow();
+        expect(committed.event.data).toMatchObject({ startedBy: seed.author });
+      }
+      return committed;
     }
     async function start(f: Fixture, runId: RunId) {
       const bound = await claimAndBind(f, runId);

@@ -4661,6 +4661,7 @@ export function migrationProvider() {
         "0111_environment_discovery": environmentDiscoveryMigration,
         "0112_task_done": taskDoneMigration,
         "0113_person_asked_threads": personAskedThreadsMigration,
+        "0114_run_started_by": runStartedByMigration,
       };
     },
   };
@@ -6142,6 +6143,21 @@ export const personAskedThreadsMigration: Migration = {
         and jsonb_typeof(event.data -> 'thread') = 'object'
         and event.data #>> '{thread,id}' = thread.id
         and event.data #> '{thread,listed}' is distinct from to_jsonb(thread.listed);
+    `.execute(database);
+  },
+};
+
+/** Backfill once without per-event lookups; replayed pages must classify independently. */
+export const runStartedByMigration: Migration = {
+  async up(database) {
+    await sql`
+      update workspace_events event
+      set data = event.data || jsonb_build_object('startedBy', message.author)
+      from runs run join messages message on message.id = run.seed_input_id
+      where event.run_id = run.id
+        and event.type in ('run.started', 'run.status', 'run.restarted', 'run.phase',
+                           'run.completed', 'run.failed', 'run.interrupted')
+        and event.data->'startedBy' is distinct from message.author
     `.execute(database);
   },
 };

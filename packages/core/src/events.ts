@@ -16,6 +16,8 @@ import {
   AssignmentSummarySchema,
   IsoDateTimeSchema,
   MessageContentSchema,
+  MessageAuthorSchema,
+  MessageAuthorViewSchema,
   MessageSchema,
   MessageViewSchema,
   RunFailureViewSchema,
@@ -240,11 +242,13 @@ const eventDataSchemas = {
    * shown, what a channel sends and what an Assignment returns.
    */
   "run.completed": z.object({
+    startedBy: MessageAuthorSchema,
     replyMessageId: MessageIdSchema.nullable(),
     status: z.literal("completed"),
   }),
-  "run.failed": RunFailureSchema,
+  "run.failed": RunFailureSchema.extend({ startedBy: MessageAuthorSchema }),
   "run.interrupted": z.object({
+    startedBy: MessageAuthorSchema,
     cause: z.enum(["lease-lost"]).optional(),
     status: z.literal("interrupted"),
   }),
@@ -253,6 +257,7 @@ const eventDataSchemas = {
    * native conversation: attempt `attempt` takes over. Written by the Host.
    */
   "run.restarted": z.object({
+    startedBy: MessageAuthorSchema,
     attempt: z.number().int().min(2),
     /**
      * What the attempts it replaced consumed, as their engines stated it. The
@@ -262,9 +267,11 @@ const eventDataSchemas = {
     reason: z.enum(["steer", "recovery"]),
   }),
   "run.started": z.object({
+    startedBy: MessageAuthorSchema,
     status: z.literal("running"),
   }),
   "run.status": z.object({
+    startedBy: MessageAuthorSchema,
     status: RunStatusSchema,
   }),
   /**
@@ -282,6 +289,7 @@ const eventDataSchemas = {
    * the way a completed Run's is and written by the Host.
    */
   "run.phase": z.strictObject({
+    startedBy: MessageAuthorSchema,
     phase: z.enum(["turn", "background"]),
     replyMessageId: MessageIdSchema.nullable().optional(),
   }),
@@ -341,8 +349,16 @@ const eventDataSchemas = {
  */
 const runnerEventDataSchemas = {
   ...eventDataSchemas,
-  "run.completed": eventDataSchemas["run.completed"].omit({ replyMessageId: true }),
-  "run.phase": eventDataSchemas["run.phase"].omit({ replyMessageId: true }),
+  "run.completed": eventDataSchemas["run.completed"].omit({
+    replyMessageId: true,
+    startedBy: true,
+  }),
+  "run.phase": eventDataSchemas["run.phase"].omit({ replyMessageId: true, startedBy: true }),
+  "run.started": eventDataSchemas["run.started"].omit({ startedBy: true }),
+  "run.status": eventDataSchemas["run.status"].omit({ startedBy: true }),
+  "run.restarted": eventDataSchemas["run.restarted"].omit({ startedBy: true }),
+  "run.failed": eventDataSchemas["run.failed"].omit({ startedBy: true }),
+  "run.interrupted": eventDataSchemas["run.interrupted"].omit({ startedBy: true }),
   "tool.started": toolStartedRunnerData,
 } as const;
 
@@ -378,17 +394,29 @@ const eventDataViewSchemas = {
     continuationIdentity: ProviderContinuationIdentityViewSchema,
   }),
   "thread.access-mode-updated": z.object(eventDataSchemas["thread.access-mode-updated"].shape),
-  "run.completed": eventDataSchemas["run.completed"],
-  "run.failed": RunFailureViewSchema,
-  "run.interrupted": eventDataSchemas["run.interrupted"],
+  "run.completed": eventDataSchemas["run.completed"].extend({
+    startedBy: MessageAuthorViewSchema.optional(),
+  }),
+  "run.failed": RunFailureViewSchema.extend({ startedBy: MessageAuthorViewSchema.optional() }),
+  "run.interrupted": eventDataSchemas["run.interrupted"].extend({
+    startedBy: MessageAuthorViewSchema.optional(),
+  }),
   "run.restarted": z.object({
     ...eventDataSchemas["run.restarted"].shape,
+    startedBy: MessageAuthorViewSchema.optional(),
     priorUsage: RunUsageViewSchema.optional(),
   }),
-  "run.started": eventDataSchemas["run.started"],
-  "run.status": eventDataSchemas["run.status"],
+  "run.started": eventDataSchemas["run.started"].extend({
+    startedBy: MessageAuthorViewSchema.optional(),
+  }),
+  "run.status": eventDataSchemas["run.status"].extend({
+    startedBy: MessageAuthorViewSchema.optional(),
+  }),
   "run.usage": RunUsageViewSchema,
-  "run.phase": z.object(eventDataSchemas["run.phase"].shape),
+  "run.phase": z.object({
+    ...eventDataSchemas["run.phase"].shape,
+    startedBy: MessageAuthorViewSchema.optional(),
+  }),
   "node.started": z.object(eventDataSchemas["node.started"].shape),
   "node.updated": z.object(eventDataSchemas["node.updated"].shape),
   "node.completed": z.object({
@@ -523,6 +551,8 @@ export const AgentEventViewSchema = z
       new TextEncoder().encode(JSON.stringify(event)).byteLength <= agentEventMaxSerializedBytes,
     `Agent event must not exceed ${agentEventMaxSerializedBytes} serialized bytes`,
   );
+
+export type AgentEventView = z.infer<typeof AgentEventViewSchema>;
 
 export type AgentEvent = z.infer<typeof AgentEventSchema>;
 

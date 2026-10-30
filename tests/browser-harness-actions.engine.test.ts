@@ -9,7 +9,7 @@ import { z } from "zod";
 import {
   ModelSelectionSchema,
   zeroSequence,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type RunId,
 } from "../packages/core/src/index.js";
 import type { LaunchedBrowser } from "../packages/browser-runtime-core/src/index.js";

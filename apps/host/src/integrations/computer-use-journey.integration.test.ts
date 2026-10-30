@@ -22,7 +22,7 @@ import {
   ModelSelectionSchema,
   ThreadAccessModeSchema,
   createId,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type ContentPart,
   type EnvironmentId,
   type HarnessInstanceId,

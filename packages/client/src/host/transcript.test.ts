@@ -2,7 +2,7 @@ import {
   RunnerIdSchema,
   SequenceSchema,
   createId,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type MessageId,
   type Request,
   type RunId,
@@ -1625,4 +1625,25 @@ describe("delivery outcomes across history pages", () => {
       reply.data.messageId,
     ]);
   });
+});
+
+it("a terminal page carries the waking author without the start and later upserts preserve it", () => {
+  const startedBy = { kind: "platform" as const, cause: "assignment-result" };
+  const entries = fold([
+    event("run.completed", { status: "completed", replyMessageId: null, startedBy }),
+  ]);
+  expect(entries[0]).toMatchObject({ kind: "run", startedBy });
+  const updated = fold([event("run.status", { status: "completed", startedBy })], entries);
+  expect(updated[0]).toMatchObject({ kind: "run", startedBy });
+});
+
+it("a phase can identify a Run first read from an older Host without reopening a settled Run", () => {
+  const startedBy = { kind: "platform" as const, cause: "assignment-result" };
+  for (const initial of [
+    event("run.started", { status: "running" }),
+    event("run.completed", { status: "completed", replyMessageId: null }),
+  ]) {
+    const entries = fold([initial, event("run.phase", { phase: "turn", startedBy })]);
+    expect(entries[0]).toMatchObject({ startedBy, status: initial.data.status });
+  }
 });

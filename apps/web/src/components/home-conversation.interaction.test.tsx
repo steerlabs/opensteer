@@ -623,3 +623,71 @@ function stubLayoutApis(): void {
     }),
   );
 }
+
+it("quiet Chat hides non-human work, names its reply source and opens homeRun human Activity", async () => {
+  const { node, root } = setup();
+  const open = vi.fn();
+  const waking = { ...report, runId: homeRun.runId, policy: "queue" as const };
+  const automated = { ...homeRun, startedBy: report.author };
+  const render = async (entries: TranscriptEntry[]) =>
+    act(async () =>
+      root.render(
+        <MemoryRouter>
+          <AgentTranscript
+            conversation
+            entries={entries}
+            onOpenActivity={open}
+            workspaces={[
+              {
+                id: reportWorkspaceId,
+                homeThreadId: null,
+                description: "",
+                fileCount: 0,
+                harnessLabel: "Codex",
+                kind: "specialized",
+                machineName: null,
+                name: "Research",
+                icon: null,
+                runnerLabel: "",
+                storageIssue: null,
+                color: null,
+                updatedAt: "2026-09-26T15:00:00.000Z",
+                status: "ready",
+              } satisfies WorkspaceSummary,
+            ]}
+          />
+        </MemoryRouter>,
+      ),
+    );
+  await render([waking, { ...automated, status: "running" }]);
+  expect(node.textContent).toBe("");
+  await render([waking, automated]);
+  expect(node.textContent).toBe("");
+  await render([waking, { ...automated, replyMessageId: answer.id }, answer]);
+  expect(node.textContent).toContain(answer.body);
+  expect(node.querySelector(".update-line")).toBeNull();
+  expect(node.querySelector('a[href^="/threads/"]')?.textContent).toContain("Mattress research");
+  await render([{ ...homeRun, endedAt: "2026-09-26T15:02:00.000Z" }]);
+  await press(node, "Worked for 2m");
+  expect(open).toHaveBeenCalled();
+  const human = { kind: "human" as const, displayName: "You", principalId: "person" };
+  await render([
+    {
+      ...homeRun,
+      startedBy: human,
+      status: "failed",
+      error: { code: "failed", message: "Could not finish", retryable: false },
+    },
+  ]);
+  expect(node.textContent).toContain("Could not finish");
+  await render([{ ...homeRun, startedBy: human, status: "interrupted" }]);
+  expect(node.textContent).toContain("Stopped.");
+  await act(async () =>
+    root.render(
+      <MemoryRouter>
+        <AgentTranscript entries={[{ ...homeRun, endedAt: "2026-09-26T15:02:00.000Z" }]} />
+      </MemoryRouter>,
+    ),
+  );
+  expect(node.textContent).toContain("Worked for 2m");
+});

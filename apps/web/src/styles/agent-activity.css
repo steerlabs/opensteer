@@ -1221,3 +1221,21 @@ div.trace-step__head .trace-step__detail {
 .task-bubble__text {
   flex: 1;
 }
+
+.run-note--worked {
+  font-size: 12.5px;
+}
+
+.turn-source,
+.turn-source a {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--muted-dim);
+  font-size: 12px;
+}
+
+.turn-source .icon {
+  width: 14px;
+  height: 14px;
+}

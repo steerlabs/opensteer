@@ -40,7 +40,7 @@ import {
   RunIdSchema,
   TimeZoneSchema,
   zeroSequence,
-  type AgentEvent,
+  type AgentEventView as AgentEvent,
   type AssignmentSummary,
   type AssignmentView,
   type Attachment,
