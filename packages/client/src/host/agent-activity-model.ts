@@ -849,30 +849,33 @@ export interface WorkSummary {
   readonly state: TurnState;
 }
 
-export function workSummary(turn: Turn): WorkSummary {
+/**
+ * A task's turn's status line, or null when it has none: a turn that settled
+ * on its reply alone did no work to sum up.
+ */
+export function workSummary(turn: Turn): WorkSummary | null {
+  const { run } = turn;
   const state = turnState(turn);
   // The work is what came before the reply: writing the answer is not more of it.
   const steps = stepsOf(turn);
+  const silent = run?.status === "completed" && run.replyMessageId === null;
+  if (state === "settled" && steps.length === 0 && !silent) return null;
   const tools = steps.filter((entry): entry is ToolEntry => entry.kind === "tool");
   const errors = errorCount(tools);
-  const startedAt = turn.run?.createdAt ?? turn.work[0]?.createdAt ?? null;
-  if (turn.run?.status === "queued" && turn.inputQueuePaused) {
+  const startedAt = run?.createdAt ?? turn.work[0]?.createdAt ?? null;
+  if (run?.status === "queued" && turn.inputQueuePaused) {
     return { errors, label: "Queued", meta: "", startedAt: null, state };
   }
   if (state !== "settled") {
     return { errors, label: liveLabel(turn, state), meta: "", startedAt, state };
   }
-  const onlyThinking = steps.every((entry) => entry.kind === "reasoning");
+  const onlyThinking = steps.length > 0 && steps.every((entry) => entry.kind === "reasoning");
   const duration = workDuration(steps);
   const verb = onlyThinking ? "Thought" : "Worked";
   return {
     errors,
     label:
-      turn.run?.status === "completed" && turn.run.replyMessageId === null && turn.run.endedAt
-        ? silentRunLabel(turn.run)
-        : duration
-          ? `${verb} for ${duration}`
-          : verb,
+      silent && run.endedAt ? silentRunLabel(run) : duration ? `${verb} for ${duration}` : verb,
     meta: workMeta(steps),
     startedAt,
     state,

@@ -301,6 +301,13 @@ describe("AgentTranscript work", () => {
       );
     }
   });
+
+  it("ends a turn that only answered at its answer", () => {
+    const answer = { ...note, id: "final-answer", body: "Here is the answer." };
+    const container = mount([{ ...run, replyMessageId: answer.id }, answer]);
+    expect(container.textContent).toContain(answer.body);
+    expect(container.querySelector('[aria-label="Agent status"]')).toBeNull();
+  });
 });
 
 describe("a Computer use row", () => {

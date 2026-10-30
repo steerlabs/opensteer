@@ -435,7 +435,7 @@ describe("foldTranscriptEvent", () => {
     const label = (entries: readonly TranscriptEntry[]) => {
       const [group] = groupTranscriptEntries(entries);
       if (group?.kind !== "turn") throw new Error("Expected the Run's turn");
-      return workSummary(group.turn).label;
+      return workSummary(group.turn)?.label;
     };
     expect(label(fold([...opening, ...ending]))).toBe("Worked for 2s");
     expect(label(mergeTranscriptSegments(fold(opening), fold(ending)))).toBe("Worked for 2s");

@@ -64,6 +64,7 @@ import {
   type Turn,
   type WorkEntry,
   type WorkRow,
+  type WorkSummary,
   type WorkspaceSummary,
   type HostClient,
 } from "@opensteer/client/host";
@@ -508,14 +509,15 @@ function BylineTaskMark({
 function WorkStatus({
   onToggle,
   open,
+  summary,
   turn,
 }: {
   /** Given, the line is the disclosure for the turn's folded trace. */
   onToggle?: () => void;
   open?: boolean;
+  summary: WorkSummary;
   turn: Turn;
 }) {
-  const summary = useMemo(() => workSummary(turn), [turn]);
   const connected = useContext(TranscriptLive);
   const requestShown = useContext(RequestShown);
   const now = useComputerUseNow(turn);
@@ -1247,25 +1249,27 @@ function TurnContent({
   turn: Turn;
 }) {
   const active = turnState(turn) !== "settled";
-  const silent = turn.run?.status === "completed" && turn.run.replyMessageId === null;
   const work = entries ?? turn.work;
   const folded = fold === undefined ? null : !fold.open;
+  const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
   const rows = useMemo(() => {
-    const statusRow = { kind: "status" as const, key: "status" };
+    const statusRows =
+      summary === null ? [] : [{ kind: "status" as const, key: "status", summary }];
     // The reply keeps its row's key either way, so folding never redraws it.
     if (folded !== null)
-      return [statusRow, ...workRows(folded ? work.filter((entry) => entry === turn.reply) : work)];
-    return [
-      ...workRows(work),
-      ...(status && (work.length > 0 || active || silent) ? [statusRow] : []),
-    ];
-  }, [work, active, folded, status, turn.reply, silent]);
+      return [
+        ...statusRows,
+        ...workRows(folded ? work.filter((entry) => entry === turn.reply) : work),
+      ];
+    return [...workRows(work), ...statusRows];
+  }, [work, folded, summary, turn.reply]);
   return (
     <div className="turn__content">
       {rows.map((row) =>
         row.kind === "status" ? (
           <WorkStatus
             key={row.key}
+            summary={row.summary}
             turn={turn}
             {...(fold ? { onToggle: fold.onToggle, open: fold.open } : {})}
           />

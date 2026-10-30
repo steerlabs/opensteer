@@ -584,7 +584,7 @@ describe("workSummary", () => {
         status === "starting" || status === "running",
       );
       if (status === "queued") {
-        expect(workSummary(paused.turn).label).not.toBe("Starting");
+        expect(workSummary(paused.turn)).toBeNull();
         expect(turnState(resumed.turn)).toBe("live");
         expect(conversationTurn(resumed.turn).composing).toBe(true);
       }
@@ -596,12 +596,12 @@ describe("workSummary", () => {
     const turn = (entries: TranscriptEntry[]): Turn => turns([live, ...entries])[0]!;
 
     expect(workSummary(turn([]))).toMatchObject({ label: "Working", state: "live" });
-    expect(workSummary(turns([run({ status: "starting" })])[0]!).label).toBe("Starting");
-    expect(workSummary(turn([reasoning({ completedAt: null, state: "streaming" })])).label).toBe(
+    expect(workSummary(turns([run({ status: "starting" })])[0]!)?.label).toBe("Starting");
+    expect(workSummary(turn([reasoning({ completedAt: null, state: "streaming" })]))?.label).toBe(
       "Thinking",
     );
     expect(
-      workSummary(turn([command("pnpm test", { completedAt: null, state: "running" })])).label,
+      workSummary(turn([command("pnpm test", { completedAt: null, state: "running" })]))?.label,
     ).toBe("Running a command");
     expect(
       workSummary(
@@ -613,10 +613,10 @@ describe("workSummary", () => {
             tool: { name: "Bash", namespace: "claude" },
           }),
         ]),
-      ).label,
+      )?.label,
     ).toBe("Run the unit tests");
     expect(
-      workSummary(turn([command("ls"), message({ id: "stream:run-a", streaming: true })])).label,
+      workSummary(turn([command("ls"), message({ id: "stream:run-a", streaming: true })]))?.label,
     ).toBe("Writing");
     expect(workSummary(turns([run({ status: "waiting" })])[0]!)).toMatchObject({
       label: "Waiting for you",
@@ -626,7 +626,7 @@ describe("workSummary", () => {
       label: "Stopping",
       state: "stopping",
     });
-    expect(workSummary(turn([])).startedAt).toBe(at(0));
+    expect(workSummary(turn([]))?.startedAt).toBe(at(0));
   });
 
   it("says how long the work took and what it was once settled", () => {
@@ -652,6 +652,21 @@ describe("workSummary", () => {
     });
   });
 
+  // A turn that only answered once drew a bare "Thought" under its reply.
+  it("has no status line for a turn that settled on its reply alone", () => {
+    const reply = message();
+    for (const status of ["completed", "failed", "interrupted"] as const) {
+      expect(workSummary(turns([run({ replyMessageId: reply.id, status }), reply])[0]!)).toBeNull();
+    }
+    expect(
+      workSummary(turns([run({ replyMessageId: reply.id }), reasoning(), reply])[0]!)?.label,
+    ).toBe("Thought for 3s");
+    expect(workSummary(turns([run({ endedAt: at(9), startedAt: at(1) })])[0]!)?.label).toBe(
+      "Worked for 8s",
+    );
+    expect(workSummary(turns([run()])[0]!)?.label).toBe("Worked");
+  });
+
   // The ways it could fail: a decision made long after the Run ended counted as
   // work; the time an engine stood waiting on a live Request counted as work;
   // two waits at once taken off twice.
@@ -665,16 +680,16 @@ describe("workSummary", () => {
           command("ls", { completedAt: at(5) }),
           request({ createdAt: decidedHoursLater, requestKind: "integration.install" }),
         ])[0]!,
-      ).label,
+      )?.label,
     ).toBe("Worked for 5s");
 
     const approved = request({ createdAt: at(32), waitedSince: at(2) });
     const waitedOnce = [run(), reasoning(), command("pnpm publish", { completedAt: at(40) })];
-    expect(workSummary(turns([...waitedOnce, approved])[0]!).label).toBe("Worked for 10s");
+    expect(workSummary(turns([...waitedOnce, approved])[0]!)?.label).toBe("Worked for 10s");
     expect(
       workSummary(
         turns([...waitedOnce, approved, request({ createdAt: at(35), waitedSince: at(10) })])[0]!,
-      ).label,
+      )?.label,
     ).toBe("Worked for 7s");
   });
 
@@ -686,7 +701,7 @@ describe("workSummary", () => {
           tool({ arguments: { file_path: "b.ts" }, tool: { name: "Edit", namespace: "claude" } }),
           tool({ arguments: { file_path: "c.ts" }, tool: { name: "Edit", namespace: "claude" } }),
         ])[0]!,
-      ).meta,
+      )?.meta,
     ).toBe("2 files edited");
   });
 });
@@ -1328,8 +1343,8 @@ describe("a Computer use turn", () => {
             feed.detail,
           ];
         }),
-        workSummary(turn).label,
-        workSummary(turn).meta,
+        workSummary(turn)?.label,
+        workSummary(turn)?.meta,
       ];
       for (const text of shown) {
         expect(text).not.toMatch(/igr_|itl_/u);
@@ -1375,7 +1390,7 @@ describe("a Computer use turn", () => {
       label: "Using Slack",
       tone: "running",
     });
-    expect(workSummary(looking).label).toBe("Looking at Slack on Alex's MacBook Pro");
+    expect(workSummary(looking)?.label).toBe("Looking at Slack on Alex's MacBook Pro");
   });
 
   it("paints a row by its latest step", () => {
@@ -1456,7 +1471,7 @@ describe("a Computer use turn", () => {
     expect(
       workSummary(
         turns([run(), computerStep("observe"), computerStep("observe", { place: notes })])[0]!,
-      ).meta,
+      )?.meta,
     ).toBe("1 step in Slack, 1 step in Notes");
   });
 
@@ -1521,7 +1536,7 @@ describe("Computer use on a phone", () => {
     ]);
     expect(toolPresentation(lookup).kind).toBe("computer");
     expect(activityFeedPresentation(lookup).detail).toBe("Pixel 7");
-    expect(workSummary(phoneTurn(entries, false)).meta).toBe(
+    expect(workSummary(phoneTurn(entries, false))?.meta).toBe(
       "1 integration lookup, 6 steps on Pixel 7",
     );
     const live = phoneStep("act", {
@@ -1533,10 +1548,10 @@ describe("Computer use on a phone", () => {
     expect(rowShape(workRows([...entries, live]))).toMatchObject([
       { detail: "Tapping", group: "computer", label: "Using Pixel 7", tone: "running" },
     ]);
-    expect(workSummary(phoneTurn([live])).label).toBe("Tapping on Pixel 7");
+    expect(workSummary(phoneTurn([live]))?.label).toBe("Tapping on Pixel 7");
     expect(turnComputer(phoneTurn([live]))).toEqual({ action: "Tapping", kind: "phone", ...pixel });
     expect(turnComputer(phoneTurn(calls))).toEqual({ action: "Using", kind: "phone", ...pixel });
-    expect(workSummary(phoneTurn(calls)).label).toBe("Using Pixel 7");
+    expect(workSummary(phoneTurn(calls))?.label).toBe("Using Pixel 7");
   });
 
   it.each([
@@ -1558,7 +1573,7 @@ describe("Computer use on a phone", () => {
       state: "running",
     });
     expect(toolPresentation(entry)).toMatchObject({ activeLabel: label, kind: "computer" });
-    expect(workSummary(phoneTurn([entry])).label).toBe(`${label} on Pixel 7`);
+    expect(workSummary(phoneTurn([entry]))?.label).toBe(`${label} on Pixel 7`);
   });
 
   it("reads observations and act headlines, failures and stops as Computer use", () => {
@@ -1568,7 +1583,7 @@ describe("Computer use on a phone", () => {
       label: "Looked at Pixel 7",
       detail: "",
     });
-    expect(workSummary(phoneTurn([{ ...look, output: undefined, state: "running" }])).label).toBe(
+    expect(workSummary(phoneTurn([{ ...look, output: undefined, state: "running" }]))?.label).toBe(
       "Looking at Pixel 7",
     );
     const act = phoneStep("act");
@@ -1614,7 +1629,7 @@ describe("Computer use on a phone", () => {
       { label: "Used Pixel 7", detail: "2 steps", steps: 2 },
       { label: "Used Slack", detail: "2 steps on Alex's MacBook Pro", steps: 2 },
     ]);
-    expect(workSummary(phoneTurn(entries, false)).meta).toBe(
+    expect(workSummary(phoneTurn(entries, false))?.meta).toBe(
       "4 steps on Pixel 7, 2 steps in Slack",
     );
   });

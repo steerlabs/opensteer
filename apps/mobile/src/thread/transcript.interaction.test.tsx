@@ -368,6 +368,11 @@ describe("native transcript prose", () => {
     render([{ ...run, status: "completed", usage: runUsage }, command]);
     expect(container.textContent).not.toContain("1.6k in");
     expect(container.textContent).not.toContain("Execution details");
+
+    const answer = { ...note, id: "final", body: "Here is the useful answer." };
+    render([{ ...run, replyMessageId: answer.id, status: "completed" }, answer]);
+    expect(container.textContent).toContain(answer.body);
+    expect(container.querySelector('[aria-label="Agent status"]')).toBeNull();
   });
 
   it("shows snapshot reasoning and progress beside compact tools, independently of status", () => {
