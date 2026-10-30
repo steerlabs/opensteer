@@ -102,7 +102,7 @@
       ],
       "tests": ["apps/desktop/native/dictation"],
       "scripts": ["apps/desktop/scripts/build-dictation-helper.ts"],
-      "extra": ["apps/desktop/scripts", "apps/desktop/package.json"]
+      "extra": ["apps/desktop/package.json"]
     }
   ]
 }
