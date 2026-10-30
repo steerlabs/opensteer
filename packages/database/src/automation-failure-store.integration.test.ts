@@ -329,13 +329,15 @@ integration.sequential("automation failure notices", () => {
         const seed = await transaction
           .selectFrom("runs")
           .innerJoin("messages", "messages.id", "runs.seedInputId")
-          .select("messages.author")
+          .select(["messages.author", "runs.createdAt"])
           .where("runs.id", "=", runId)
           .executeTakeFirstOrThrow();
         const event = AgentEventSchema.parse({
           createdAt: createdAt.toISOString(),
           data: {
             replyMessageId: messageId,
+            startedAt: seed.createdAt.toISOString(),
+            personWaiting: seed.author.kind === "human",
             startedBy: MessageAuthorSchema.parse(seed.author),
             status: "completed",
           },

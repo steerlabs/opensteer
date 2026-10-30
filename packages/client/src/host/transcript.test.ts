@@ -1647,3 +1647,41 @@ it("a phase can identify a Run first read from an older Host without reopening a
     expect(entries[0]).toMatchObject({ startedBy, status: initial.data.status });
   }
 });
+
+it("preserves authoritative start and human engagement across lifecycle events", () => {
+  const startedBy = { kind: "platform" as const, cause: "assignment-result" };
+  const startedAt = "2026-01-01T00:00:00.000Z";
+  const entries = fold([
+    event("run.completed", {
+      status: "completed",
+      replyMessageId: null,
+      startedBy,
+      startedAt,
+      personWaiting: true,
+    }),
+    event("run.phase", { phase: "turn", startedBy, personWaiting: false }),
+    event("run.status", { status: "completed", startedBy, personWaiting: false }),
+  ]);
+  expect(entries[0]).toMatchObject({ startedAt, createdAt: startedAt, personWaiting: true });
+});
+
+it("ORs engagement and keeps the authoritative start when history pages merge", () => {
+  const startedBy = { kind: "platform" as const, cause: "assignment-result" };
+  const startedAt = "2026-01-01T00:00:00.000Z";
+  const earlier = fold([
+    event("run.phase", { phase: "turn", startedBy, startedAt, personWaiting: true }),
+  ]);
+  const later = fold([
+    event("run.completed", {
+      status: "completed",
+      replyMessageId: null,
+      startedBy,
+      personWaiting: false,
+    }),
+  ]);
+  expect(mergeTranscriptSegments(earlier, later)[0]).toMatchObject({
+    createdAt: startedAt,
+    startedAt,
+    personWaiting: true,
+  });
+});

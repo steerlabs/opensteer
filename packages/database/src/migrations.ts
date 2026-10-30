@@ -6152,12 +6152,22 @@ export const runStartedByMigration: Migration = {
   async up(database) {
     await sql`
       update workspace_events event
-      set data = event.data || jsonb_build_object('startedBy', message.author)
-      from runs run join messages message on message.id = run.seed_input_id
-      where event.run_id = run.id
+      set data = event.data || context.data
+      from (
+        select run.id, jsonb_build_object(
+          'startedBy', message.author,
+          'startedAt', to_char(run.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+          'personWaiting', message.author->>'kind' = 'human' or exists (
+            select 1 from messages input where input.run_id = run.id
+            and input.kind = 'input' and input.author->>'kind' = 'human'
+          )
+        ) as data
+        from runs run join messages message on message.id = run.seed_input_id
+      ) context
+      where event.run_id = context.id
         and event.type in ('run.started', 'run.status', 'run.restarted', 'run.phase',
                            'run.completed', 'run.failed', 'run.interrupted')
-        and event.data->'startedBy' is distinct from message.author
+        and not event.data @> context.data
     `.execute(database);
   },
 };

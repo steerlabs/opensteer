@@ -373,6 +373,8 @@ function runEvent(
     createdAt: "2026-09-05T00:00:00.000Z",
     data: {
       ...outcome.data,
+      startedAt: "2026-08-09T09:00:00.000Z",
+      personWaiting: true,
       startedBy: {
         displayName: "Alex",
         kind: "human",

@@ -26,7 +26,7 @@ import {
   eventFromRow,
   lockThreadRow,
 } from "./store-primitives.js";
-import { appendHostWorkspaceEvent, stampRunStartedBy } from "./workspace-events.js";
+import { appendHostWorkspaceEvent, stampRunContext } from "./workspace-events.js";
 import { messageFromRow, runUsageFromRow, threadInputFromRow } from "./thread-row-mappers.js";
 import { markThreadStatePending, projectThreadState } from "./thread-status.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
@@ -94,7 +94,9 @@ function runnerReportedData(row: WorkspaceEventRow): unknown {
         : null;
   if (typeof row.data !== "object" || row.data === null) return row.data;
   return Object.fromEntries(
-    Object.entries(row.data).filter(([key]) => key !== hostKey && key !== "startedBy"),
+    Object.entries(row.data).filter(
+      ([key]) => key !== hostKey && !["startedBy", "startedAt", "personWaiting"].includes(key),
+    ),
   );
 }
 
@@ -1078,7 +1080,7 @@ export async function commitRunnerEvent(
       .insertInto("workspaceEvents")
       .values({
         createdAt: new Date(event.emittedAt),
-        data: jsonValue(await stampRunStartedBy(transaction, event.type, event.runId, stored)),
+        data: jsonValue(await stampRunContext(transaction, event.type, event.runId, stored)),
         environmentId: input.environmentId,
         eventId,
         runId: event.runId,

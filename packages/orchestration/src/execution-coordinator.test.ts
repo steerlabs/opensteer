@@ -764,6 +764,8 @@ function failureEvent(command: CommandRow): AgentEvent {
   return AgentEventSchema.parse({
     createdAt: new Date().toISOString(),
     data: {
+      startedAt: "2026-08-09T09:00:00.000Z",
+      personWaiting: true,
       startedBy: {
         displayName: "Alex",
         kind: "human",
@@ -797,6 +799,8 @@ function statusEvent(
     createdAt: new Date().toISOString(),
     data: {
       status,
+      startedAt: "2026-08-09T09:00:00.000Z",
+      personWaiting: true,
       startedBy: {
         displayName: "Alex",
         kind: "human",

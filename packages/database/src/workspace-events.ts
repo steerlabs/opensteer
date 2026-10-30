@@ -211,7 +211,7 @@ export async function appendHostWorkspaceEvent(
     .executeTakeFirstOrThrow();
   const event = AgentEventSchema.parse({
     createdAt: createdAt.toISOString(),
-    data: await stampRunStartedBy(transaction, input.type, input.runId, input.data),
+    data: await stampRunContext(transaction, input.type, input.runId, input.data),
     environmentId: input.environmentId,
     eventId,
     runId: input.runId,
@@ -243,7 +243,7 @@ export async function appendHostWorkspaceEvent(
 }
 
 /** Lifecycle pages stand alone, including Host-written stops before execution. */
-export async function stampRunStartedBy(
+export async function stampRunContext(
   transaction: Transaction<DatabaseSchema>,
   type: string,
   runId: RunId | null,
@@ -265,8 +265,20 @@ export async function stampRunStartedBy(
   const seed = await transaction
     .selectFrom("runs")
     .innerJoin("messages", "messages.id", "runs.seedInputId")
-    .select("messages.author")
+    .select(["messages.author", "runs.createdAt"])
+    .select(
+      sql<boolean>`exists (
+      select 1 from messages input where input.run_id = runs.id
+      and input.kind = 'input' and input.author->>'kind' = 'human'
+    )`.as("personWaiting"),
+    )
     .where("runs.id", "=", runId)
     .executeTakeFirstOrThrow();
-  return { ...data, startedBy: MessageAuthorSchema.parse(seed.author) };
+  const startedBy = MessageAuthorSchema.parse(seed.author);
+  return {
+    ...data,
+    startedBy,
+    startedAt: seed.createdAt.toISOString(),
+    personWaiting: startedBy.kind === "human" || seed.personWaiting,
+  };
 }

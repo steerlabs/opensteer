@@ -167,9 +167,25 @@ it("requires the seed author durably, accepts older Host omissions, and keeps it
   ] as const) {
     expect(AgentEventSchema.safeParse(event(type, data)).success).toBe(false);
     expect(AgentEventViewSchema.safeParse(event(type, data)).success).toBe(true);
-    expect(AgentEventSchema.safeParse(event(type, { ...data, startedBy })).success).toBe(true);
+    expect(
+      AgentEventSchema.safeParse(
+        event(type, {
+          ...data,
+          startedBy,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          personWaiting: false,
+        }),
+      ).success,
+    ).toBe(true);
   }
-  expect(runnerEventDataSchemas["run.completed"].parse({ status: "completed" })).toEqual({
+  expect(
+    runnerEventDataSchemas["run.completed"].parse({
+      status: "completed",
+      startedBy,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      personWaiting: true,
+    }),
+  ).toEqual({
     status: "completed",
   });
 });

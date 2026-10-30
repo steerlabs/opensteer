@@ -633,6 +633,7 @@ it("quiet Chat keeps automatic replies and lets silent human work open Activity"
     {
       ...run,
       status: "completed",
+      startedAt: run.createdAt,
       endedAt: new Date(Date.parse(run.createdAt) + 120_000).toISOString(),
     },
   ]);
@@ -642,19 +643,21 @@ it("quiet Chat keeps automatic replies and lets silent human work open Activity"
   render([
     {
       ...run,
+      personWaiting: true,
       startedBy: human,
       status: "failed",
       error: { code: "failed", message: "Could not finish", retryable: false },
     },
   ]);
   expect(container.textContent).toContain("Could not finish");
-  render([{ ...run, startedBy: human, status: "interrupted" }]);
+  render([{ ...run, personWaiting: true, startedBy: human, status: "interrupted" }]);
   expect(container.textContent).toContain("Stopped.");
   const task = setup();
   task.render([
     {
       ...run,
       status: "completed",
+      startedAt: run.createdAt,
       endedAt: new Date(Date.parse(run.createdAt) + 120_000).toISOString(),
     },
   ]);

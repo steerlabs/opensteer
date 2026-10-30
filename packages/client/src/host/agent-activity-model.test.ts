@@ -1828,8 +1828,17 @@ describe("quiet Chat", () => {
     expect(rows([input(), run({ startedBy })])).toHaveLength(2);
     expect(rows([run()])).toHaveLength(1);
   });
+  it("keeps outcomes when a reloaded page omits the person's steer", () => {
+    for (const status of ["completed", "failed", "interrupted"] as const)
+      expect(rows([run({ startedBy, personWaiting: true, status })])).toHaveLength(1);
+  });
+  it("does not invent elapsed time for an older Host", () => {
+    expect(silentRunLabel(run({ endedAt: at(60) }))).toBe("Worked");
+  });
   it("uses whole Run elapsed time for silent human work", () => {
-    expect(silentRunLabel(run({ endedAt: at(60) }))).toBe("Worked for 1m");
+    expect(silentRunLabel(run({ createdAt: at(60), startedAt: at(0), endedAt: at(60) }))).toBe(
+      "Worked for 1m",
+    );
   });
 });
 

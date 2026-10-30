@@ -305,10 +305,10 @@ as epochs 32 and 37 do. A change these rules cover is never a bump:
   and 39 slipped through.
   Run lifecycle events (`run.started`, `run.status`, `run.restarted`, `run.phase`
   and all three terminal events) durably require `startedBy`, the seed message's
-  author. The Host stamps it for Runner and Host writes; migration 0113 backfills
-  history. View readers and `RunEntry` keep it optional: an older Host omits it,
+  author, `startedAt`, the Run's creation time, and `personWaiting`, whether its seed or any input it took is human-authored. The Host stamps these fields for Runner and Host writes; migration 0114 backfills
+  history. View readers and `RunEntry` keep these fields optional: an older Host omits them,
   which means unknown and preserves the existing conversation rendering. Only
-  a known non-human author enables quiet turns. This read-only added field needs
+  a known non-human author enables quiet turns. These read-only added fields need
   neither a capability advertisement nor an epoch bump.
 - **Added kinds.** Readers skip, or fall back on, a union member or enum value they
   do not know, rather than refusing the whole list or frame.

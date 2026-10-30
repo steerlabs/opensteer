@@ -1417,6 +1417,14 @@ describeStore("PostgreSQL store", (it) => {
       expect.objectContaining({
         data: {
           status: "queued",
+          startedAt: (
+            await database
+              .selectFrom("runs")
+              .select("createdAt")
+              .where("id", "=", unbound.run.id)
+              .executeTakeFirstOrThrow()
+          ).createdAt.toISOString(),
+          personWaiting: true,
           startedBy: {
             displayName: "Alex",
             kind: "human",
@@ -1570,6 +1578,14 @@ describeStore("PostgreSQL store", (it) => {
           expect.objectContaining({
             data: {
               status: "queued",
+              startedAt: (
+                await database
+                  .selectFrom("runs")
+                  .select("createdAt")
+                  .where("id", "=", turn.run.id)
+                  .executeTakeFirstOrThrow()
+              ).createdAt.toISOString(),
+              personWaiting: true,
               startedBy: {
                 displayName: "Alex",
                 kind: "human",
@@ -1668,6 +1684,14 @@ describeStore("PostgreSQL store", (it) => {
         expect.objectContaining({
           data: {
             status: "queued",
+            startedAt: (
+              await database
+                .selectFrom("runs")
+                .select("createdAt")
+                .where("id", "=", next.run.id)
+                .executeTakeFirstOrThrow()
+            ).createdAt.toISOString(),
+            personWaiting: true,
             startedBy: {
               displayName: "Alex",
               kind: "human",

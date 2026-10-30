@@ -399,12 +399,17 @@ integration("notification decision boundary", () => {
         const seed = await transaction
           .selectFrom("runs")
           .innerJoin("messages", "messages.id", "runs.seedInputId")
-          .select("messages.author")
+          .select(["messages.author", "runs.createdAt"])
           .where("runs.id", "=", target.runId)
           .executeTakeFirstOrThrow();
         const parsed = AgentEventSchema.parse({
           createdAt: createdAt.toISOString(),
-          data: { ...data, startedBy: MessageAuthorSchema.parse(seed.author) },
+          data: {
+            ...data,
+            startedAt: seed.createdAt.toISOString(),
+            personWaiting: seed.author.kind === "human",
+            startedBy: MessageAuthorSchema.parse(seed.author),
+          },
           environmentId: fixture.environmentId,
           eventId,
           runId: target.runId,

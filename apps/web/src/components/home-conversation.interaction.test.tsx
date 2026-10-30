@@ -667,25 +667,30 @@ it("quiet Chat hides non-human work, names its reply source and opens homeRun hu
   expect(node.textContent).toContain(answer.body);
   expect(node.querySelector(".update-line")).toBeNull();
   expect(node.querySelector('a[href^="/threads/"]')?.textContent).toContain("Mattress research");
-  await render([{ ...homeRun, endedAt: "2026-09-26T15:02:00.000Z" }]);
+  await render([{ ...homeRun, startedAt: homeRun.createdAt, endedAt: "2026-09-26T15:02:00.000Z" }]);
   await press(node, "Worked for 2m");
   expect(open).toHaveBeenCalled();
   const human = { kind: "human" as const, displayName: "You", principalId: "person" };
   await render([
     {
       ...homeRun,
+      personWaiting: true,
       startedBy: human,
       status: "failed",
       error: { code: "failed", message: "Could not finish", retryable: false },
     },
   ]);
   expect(node.textContent).toContain("Could not finish");
-  await render([{ ...homeRun, startedBy: human, status: "interrupted" }]);
+  await render([{ ...homeRun, personWaiting: true, startedBy: human, status: "interrupted" }]);
   expect(node.textContent).toContain("Stopped.");
   await act(async () =>
     root.render(
       <MemoryRouter>
-        <AgentTranscript entries={[{ ...homeRun, endedAt: "2026-09-26T15:02:00.000Z" }]} />
+        <AgentTranscript
+          entries={[
+            { ...homeRun, startedAt: homeRun.createdAt, endedAt: "2026-09-26T15:02:00.000Z" },
+          ]}
+        />
       </MemoryRouter>,
     ),
   );

@@ -293,6 +293,15 @@ export function AgentTranscript({
     return byTurn;
   }, [conversation, groups]);
   const threadPlace = useThreadPlace(pictures, threadId);
+  const stopTurn = groups.find(
+    (group) => group.kind === "turn" && turnState(group.turn) !== "settled",
+  );
+  const keptStop = useKeptComputerStop(
+    stopTurn?.kind === "turn" ? stopTurn.turn : null,
+    null,
+    computers,
+    live,
+  );
   const rows = useMemo(
     () =>
       conversation
@@ -301,13 +310,14 @@ export function AgentTranscript({
           // row that draws nothing takes no room on this screen. A reply
           // waiting on the person is kept while its live picture is.
           conversationRows(groups, {
-            atComputer: (turn) => turnComputer(turn) !== null,
+            atComputer: (turn) =>
+              turnComputer(turn) !== null || (keptStop !== null && turn.runId === keptStop.runId),
             live,
             waitingRequests,
             pictured: (turn) => runPlace(threadPlace, workingRunId(turn)) !== null,
           })
         : groups.map((group) => ({ group, key: group.key })),
-    [conversation, groups, live, threadPlace, waitingRequests],
+    [conversation, groups, live, threadPlace, waitingRequests, keptStop],
   );
   const indicator =
     live && !(requestShown && activity === "waiting_for_you")
@@ -636,10 +646,18 @@ const keptStoppedMs = 3_000;
  * then `Stopped using Mac mini` for a moment — instead of reading as
  * ordinary work.
  */
-function useKeptComputerStop(turn: Turn, now: ComputerUseNow | null): ComputerUseStop | null {
+function useKeptComputerStop(
+  turn: Turn | null,
+  now: ComputerUseNow | null,
+  source?: TranscriptComputers | null,
+  live?: boolean,
+): ComputerUseStop | null {
   const connected = useContext(TranscriptLive);
   const computers = useContext(ReaderComputers);
-  const stop = useComputerUseStopForRun(computers?.hostClient ?? null, turn.runId);
+  const stop = useComputerUseStopForRun(
+    (source === undefined ? computers : source)?.hostClient ?? null,
+    turn?.runId ?? null,
+  );
   const settledAt = stop?.phase === "stopped" ? stop.settledAt : null;
   const [expired, setExpired] = useState<number | null>(null);
   useEffect(() => {
@@ -650,7 +668,14 @@ function useKeptComputerStop(turn: Turn, now: ComputerUseNow | null): ComputerUs
     );
     return () => window.clearTimeout(timer);
   }, [settledAt]);
-  if (now !== null || stop === null || !connected || turnState(turn) === "settled") return null;
+  if (
+    now !== null ||
+    stop === null ||
+    !(live ?? connected) ||
+    turn === null ||
+    turnState(turn) === "settled"
+  )
+    return null;
   if (stop.phase === "failed") return null;
   if (
     settledAt !== null &&

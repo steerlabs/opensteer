@@ -1892,7 +1892,7 @@ integration.sequential("Run recovery acceptance", () => {
     const seed = await store.database
       .selectFrom("runs")
       .innerJoin("messages", "messages.id", "runs.seedInputId")
-      .select("messages.author")
+      .select(["messages.author", "runs.createdAt"])
       .where("runs.id", "=", runId)
       .executeTakeFirstOrThrow();
     const assistant = stored.find((event) => event.type === "assistant.message")!;
@@ -1909,7 +1909,15 @@ integration.sequential("Run recovery acceptance", () => {
     ).toEqual(
       emitted.map((event) =>
         event.type === "run.started" || event.type === "run.completed"
-          ? { ...event, data: { ...recordSchema.parse(event.data), startedBy: seed.author } }
+          ? {
+              ...event,
+              data: {
+                ...recordSchema.parse(event.data),
+                startedBy: seed.author,
+                startedAt: seed.createdAt.toISOString(),
+                personWaiting: seed.author.kind === "human",
+              },
+            }
           : event,
       ),
     );

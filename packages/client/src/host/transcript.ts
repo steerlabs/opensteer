@@ -88,6 +88,7 @@ export function foldTranscriptEvent(
       if (isTerminalRunEntryStatus(prior.status)) {
         return upsertEntry(entries, {
           ...prior,
+          ...runContext(prior, event),
           ...(startedBy ? { startedBy } : {}),
           ...(turnReplies ? { turnReplyMessageIds: turnReplies } : {}),
         });
@@ -95,6 +96,7 @@ export function foldTranscriptEvent(
       const { background: _background, ...rest } = prior;
       return upsertEntry(entries, {
         ...rest,
+        ...runContext(prior, event),
         ...(startedBy ? { startedBy } : {}),
         ...(event.data.phase === "background" ? { background: true } : {}),
         ...(turnReplies ? { turnReplyMessageIds: turnReplies } : {}),
@@ -582,7 +584,11 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
     ];
     return {
       ...next,
-      createdAt: previous.createdAt,
+      createdAt: next.startedAt ?? previous.startedAt ?? previous.createdAt,
+      ...((next.startedAt ?? previous.startedAt)
+        ? { startedAt: next.startedAt ?? previous.startedAt }
+        : {}),
+      personWaiting: next.personWaiting === true || previous.personWaiting === true,
       error: next.error ?? previous.error,
       replyMessageId: next.replyMessageId ?? previous.replyMessageId,
       ...(usage === undefined ? {} : { usage }),
@@ -953,7 +959,7 @@ function upsertRunEntry(
   const prior = findEntry(entries, id, "run");
   const startedBy = "startedBy" in event.data ? event.data.startedBy : prior?.startedBy;
   return upsertEntry(entries, {
-    createdAt: prior?.createdAt ?? event.createdAt,
+    ...runContext(prior, event),
     error: error ?? prior?.error ?? null,
     id,
     kind: "run",
@@ -1116,3 +1122,15 @@ export type {
   RunEntry,
   ToolEntry,
 };
+
+function runContext(prior: RunEntry | undefined, event: AgentEvent) {
+  const startedAt =
+    ("startedAt" in event.data ? event.data.startedAt : undefined) ?? prior?.startedAt;
+  return {
+    createdAt: startedAt ?? prior?.createdAt ?? event.createdAt,
+    ...(startedAt ? { startedAt } : {}),
+    personWaiting:
+      prior?.personWaiting === true ||
+      ("personWaiting" in event.data && event.data.personWaiting === true),
+  };
+}

@@ -439,6 +439,8 @@ export type RunEntryStatus =
 export interface RunEntry {
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;
+  startedAt?: string;
+  personWaiting?: boolean;
   /** Which attempt is executing, once a restart replaced the first one. */
   attempt?: number;
   /** Its engine finished a turn while work it started in the background still runs. */

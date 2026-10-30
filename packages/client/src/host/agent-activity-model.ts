@@ -295,7 +295,7 @@ export function groupTranscriptEntries(
       ...(startedBy ? { startedBy } : {}),
       personWaiting:
         startedBy === undefined ||
-        startedBy.kind === "human" ||
+        runEntry?.personWaiting === true ||
         inputs.some((entry) => entry.author.kind === "human"),
       ...(startedBy && startedBy.kind !== "human"
         ? {
@@ -615,7 +615,8 @@ export function conversationAssignmentNeedsReader(
 
 /** A silent reply uses the Run's whole elapsed time, including waiting. */
 export function silentRunLabel(run: RunEntry): string {
-  return `Worked for ${formatDuration(Math.max(0, Date.parse(run.endedAt ?? run.createdAt) - Date.parse(run.createdAt)))}`;
+  if (!run.startedAt) return "Worked";
+  return `Worked for ${formatDuration(Math.max(0, Date.parse(run.endedAt ?? run.createdAt) - Date.parse(run.startedAt)))}`;
 }
 
 /* ---- Activity ---- */

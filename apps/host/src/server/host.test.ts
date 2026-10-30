@@ -696,6 +696,8 @@ describe("rpc envelope", () => {
         message: "Access revoked",
         retryable: false,
         status: "failed",
+        startedAt: "2026-08-09T09:00:00.000Z",
+        personWaiting: true,
         startedBy: {
           displayName: "Alex",
           kind: "human",
