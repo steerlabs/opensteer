@@ -56,14 +56,8 @@ public final class OverlayController: ActionFeedback {
     let next = Self.sessions(sessions, owners: owners).map {
       OverlayModel.Session(id: $0.id, threadTitle: $0.threadTitle, apps: $0.apps.filter { !controlled.contains($0.key) })
     } + ownerInput
-    let previousOwners = Dictionary(
-      uniqueKeysWithValues: model.sessions.flatMap { session in
-        session.apps.map { ($0.key, session.id) }
-      })
-    let nextOwners = Dictionary(
-      uniqueKeysWithValues: next.flatMap { session in
-        session.apps.map { ($0.key, session.id) }
-      })
+    let previousOwners = OverlayModel.owners(model.sessions)
+    let nextOwners = OverlayModel.owners(next)
     let nextInstances = Dictionary(
       uniqueKeysWithValues: sessions.flatMap { session in
         session.orderedApps.compactMap { app in

@@ -168,6 +168,16 @@ struct OverlayModel {
   private var revealUntil: Date?
   private var pointerOverPill = false
 
+  /// Several independent person views may share an app. Order is immaterial,
+  /// but replacing any holder retires the app's previous visual feedback.
+  static func owners(_ sessions: [Session]) -> [String: Set<String>] {
+    var result: [String: Set<String>] = [:]
+    for session in sessions {
+      for app in session.apps { result[app.key, default: []].insert(session.id) }
+    }
+    return result
+  }
+
   // MARK: - Events
 
   /// `pointerNear` is whether the pointer is where the expanded pill would
@@ -176,14 +186,8 @@ struct OverlayModel {
     sessions next: [Session], ending: Ending, at now: Date, pointerNear: Bool = false
   ) {
     let previous = sessions
-    let previousOwners = Dictionary(
-      uniqueKeysWithValues: previous.flatMap { session in
-        session.apps.map { ($0.key, session.id) }
-      })
-    let nextOwners = Dictionary(
-      uniqueKeysWithValues: next.flatMap { session in
-        session.apps.map { ($0.key, session.id) }
-      })
+    let previousOwners = Self.owners(previous)
+    let nextOwners = Self.owners(next)
     let arrived =
       !Set(next.map(\.id)).isSubset(of: previous.map(\.id))
       || nextOwners.contains { previousOwners[$0.key] != $0.value }
