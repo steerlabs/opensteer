@@ -40,8 +40,16 @@
     {
       "task": "iphone",
       "timeout": 6,
-      "swift": ["packages/apple-data", "apps/mobile/modules/iphone-apps/ios"],
-      "tests": ["packages/apple-data", "apps/mobile/modules/iphone-apps/ios"],
+      "swift": [
+        "packages/apple-data",
+        "apps/mobile/modules/iphone-apps/ios",
+        "apps/mobile/modules/dictation/ios"
+      ],
+      "tests": [
+        "packages/apple-data",
+        "apps/mobile/modules/iphone-apps/ios",
+        "apps/mobile/modules/dictation/ios"
+      ],
       "scripts": [
         "scripts/generate-apple-data-contracts.ts",
         "apps/desktop/src/computer-use/lifecycle-lock-holder.fixture.ts"
@@ -73,9 +81,15 @@
         "packages/apple-data",
         "packages/macos-signing"
       ],
-      "tests": ["apps/desktop/native/computer-use"],
-      "scripts": ["scripts/generate-apple-data-contracts.ts"],
-      "extra": ["packages/protocol/fixtures/login-envelope-v1.json"]
+      "tests": [
+        "apps/desktop/native/computer-use"
+      ],
+      "scripts": [
+        "scripts/generate-apple-data-contracts.ts"
+      ],
+      "extra": [
+        "packages/protocol/fixtures/login-envelope-v1.json"
+      ]
     },
     {
       "task": "passwords-tests",

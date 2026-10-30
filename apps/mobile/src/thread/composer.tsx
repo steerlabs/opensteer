@@ -1,3 +1,8 @@
+import { useFocusEffect } from "@react-navigation/native";
+import { useId } from "react";
+import { useDictation } from "../dictation/context.js";
+import { DictationMic, DictationStatus } from "../dictation/controls.js";
+import { dictationLabels } from "@opensteer/client/dictation";
 import { useHostSelector } from "@opensteer/client/react";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import {
@@ -31,6 +36,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  AccessibilityInfo,
   Alert,
   Pressable,
   StyleSheet,
@@ -162,6 +168,28 @@ export function Composer(props: {
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, threadId);
   const text = draft?.text ?? "";
+  const dictation = useDictation();
+  const dictationState = useSyncExternalStore(dictation.subscribe, dictation.getSnapshot);
+  const instance = useId();
+  const owner = JSON.stringify([deploymentId, userId, threadId, instance]);
+  const currentOwner = useRef(owner);
+  currentOwner.current = owner;
+  const selection = useRef({ start: text.length, end: text.length });
+  const preview = dictationState.owner === owner ? dictationState.preview : null;
+  const dictating =
+    dictationState.owner === owner &&
+    ["starting", "listening", "finishing"].includes(dictationState.phase);
+  const displayedText = preview?.text ?? text;
+  const visible = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      visible.current = true;
+      return () => {
+        visible.current = false;
+        dictation.leave(owner);
+      };
+    }, [dictation, owner]),
+  );
   const quote = draft?.quote ?? null;
   const pending = drafts.readPending(deploymentId, userId, threadId);
   const [sending, setSending] = useState(false);
@@ -250,10 +278,11 @@ export function Composer(props: {
     readOnly,
     running: props.running,
     sending,
-    text,
+    text: displayedText,
     textHidden,
   });
-  const canSend = view.canSend;
+  const canSend =
+    view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
   const requestBlocked = disabled || sending || pending !== null;
   /**
    * The link a person shares to bring another device back here. It is built
@@ -284,6 +313,56 @@ export function Composer(props: {
         }
       },
     );
+  };
+
+  useEffect(() => {
+    if (preview) {
+      selection.current = preview.selection;
+      input.current?.setNativeProps({ selection: preview.selection });
+    }
+  }, [preview?.text]);
+  useEffect(() => {
+    if (readOnly || textHidden) dictation.leave(owner);
+  }, [readOnly, textHidden, dictation, owner]);
+  const phase = dictationState.owner === owner ? dictationState.phase : "idle";
+  const notice = dictationState.notice?.owner === owner ? dictationState.notice.message : null;
+  useEffect(() => {
+    if (phase === "listening") {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      AccessibilityInfo.announceForAccessibility("Dictation started");
+    } else if (phase === "starting")
+      AccessibilityInfo.announceForAccessibility(dictationLabels.starting);
+    else if (phase === "finishing")
+      AccessibilityInfo.announceForAccessibility(dictationLabels.finishing);
+    else if (phase === "downloading")
+      AccessibilityInfo.announceForAccessibility("Downloading language for dictation");
+  }, [phase]);
+  useEffect(() => {
+    if (notice) AccessibilityInfo.announceForAccessibility(notice);
+  }, [notice]);
+  const startDictation = (): void =>
+    dictation.start({
+      owner,
+      read: () => ({
+        text: drafts.readDraft(deploymentId, userId, threadId)?.text ?? "",
+        selection: selection.current,
+      }),
+      commit: (next, caret) => {
+        selection.current = caret;
+        void drafts.writeDraft(deploymentId, userId, threadId, next).catch(() => {
+          if (mounted.current && currentOwner.current === owner)
+            setDraftFailure("This draft could not be saved on this phone.");
+        });
+        if (mounted.current) {
+          draftText.current = next;
+          input.current?.setNativeProps({ selection: caret });
+        }
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      },
+    });
+  const editText = (next: string): void => {
+    changeText(next);
+    dictation.release(owner);
   };
 
   // The update this message answers. It lives with the draft, so it survives
@@ -431,8 +510,7 @@ export function Composer(props: {
     void deliverExclusively(pending);
   }, [deliverExclusively, pending, props.canRespond, readOnly]);
 
-  const send = async (): Promise<void> => {
-    const sourceText = draftText.current;
+  const sendMessage = async (sourceText: string): Promise<void> => {
     if (!canSend || inFlight.current) return;
     // Every file is on the Host, or Send is not offered: words never go on
     // without the files meant to travel with them.
@@ -486,6 +564,30 @@ export function Composer(props: {
       if (drafts.readPending(deploymentId, userId, threadId) === null) {
         props.mutationGate.release(claim);
       }
+    }
+  };
+
+  const latestSend = useRef({ canSend, sendMessage });
+  latestSend.current = { canSend, sendMessage };
+  const finishingSend = useRef(false);
+  const send = async (): Promise<void> => {
+    if (finishingSend.current) return;
+    finishingSend.current = true;
+    try {
+      const result = dictating ? await dictation.stop() : { kind: "idle" as const };
+      if (
+        result.kind === "failed" ||
+        result.kind === "aborted" ||
+        !mounted.current ||
+        !visible.current ||
+        !latestSend.current.canSend
+      )
+        return;
+      await latestSend.current.sendMessage(
+        result.kind === "committed" ? result.text : draftText.current,
+      );
+    } finally {
+      finishingSend.current = false;
     }
   };
 
@@ -692,6 +794,7 @@ export function Composer(props: {
           onRetry={staged.retry}
         />
       )}
+      <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <ComposerBar
         // Two lines from the start: the page above the field is part of the box.
         shape={includedPage === null || view.readOnly ? view.shape : "rounded"}
@@ -709,16 +812,25 @@ export function Composer(props: {
           ? {}
           : {
               leading: (
-                <NativeMenu
-                  accessibilityHint="Change the model, and what else can be done here"
-                  accessibilityLabel="Thread actions"
-                  onPresent={hold}
-                  onSettle={settle}
-                  options={menuOptions}
-                  style={composerControlStyle}
-                >
-                  <ComposerCircleFace icon="plus" />
-                </NativeMenu>
+                <View style={{ flexDirection: "row" }}>
+                  <NativeMenu
+                    accessibilityHint="Change the model, and what else can be done here"
+                    accessibilityLabel="Thread actions"
+                    onPresent={hold}
+                    onSettle={settle}
+                    options={menuOptions}
+                    style={composerControlStyle}
+                  >
+                    <ComposerCircleFace icon="plus" />
+                  </NativeMenu>
+                  <DictationMic
+                    controller={dictation}
+                    snapshot={dictationState}
+                    owner={owner}
+                    disabled={disabled || textHidden || pending !== null || sending}
+                    onStart={startDictation}
+                  />
+                </View>
               ),
             })}
         field={
@@ -746,7 +858,10 @@ export function Composer(props: {
                 maxFontSizeMultiplier={controlFontScaleLimit}
                 multiline
                 onBlur={() => setFocused(false)}
-                onChangeText={changeText}
+                onChangeText={editText}
+                onSelectionChange={(event) => {
+                  selection.current = event.nativeEvent.selection;
+                }}
                 onFocus={() => {
                   setFocused(true);
                   settle();
@@ -760,7 +875,7 @@ export function Composer(props: {
                 ref={input}
                 selectionColor={color.ember}
                 style={[styles.input, { maxHeight: fieldMaxHeight }]}
-                value={text}
+                value={displayedText}
               />
             </Pressable>
           ) : (
@@ -774,7 +889,7 @@ export function Composer(props: {
           : {
               action: (
                 <View style={composerControlStyle}>
-                  {view.action === "stop" ? (
+                  {view.action === "stop" && !dictating ? (
                     <ComposerAction
                       busy={stopping || props.runStopping}
                       disabled={stopping || props.runStopping || !props.canRespond}

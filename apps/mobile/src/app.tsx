@@ -1,4 +1,6 @@
 import { createExpoSavedViews } from "./platform/expo-saved-views.js";
+
+import { DictationProvider } from "./dictation/context.js";
 import * as Application from "expo-application";
 import { OAuthDeepLinkBroker, type NativeOAuthIdentity } from "@opensteer/client/auth";
 import {
@@ -586,34 +588,36 @@ export function App(): ReactNode {
   // lives inside the stack as its layout — is recognised on the UI thread.
   return (
     <GestureHandlerRootView style={styles.root}>
-      <MobileClientProvider client={client}>
-        <IphoneAppsProvider controller={iphone}>
-          <MobileNotificationsProvider notifications={notifications}>
-            <SafeAreaProvider>
-              <StatusBar style="light" />
-              <IphoneAppsNotice controller={iphone} />
-              {linkFailure === null ? null : (
-                <LinkFailure detail={linkFailure} onDismiss={() => setLinkFailure(null)} />
-              )}
-              {integrationNotice === null ? null : (
-                <IntegrationNotice
-                  detail={integrationNotice.detail}
-                  onDismiss={() => setIntegrationNotice(null)}
-                  title={integrationNotice.title}
+      <DictationProvider>
+        <MobileClientProvider client={client}>
+          <IphoneAppsProvider controller={iphone}>
+            <MobileNotificationsProvider notifications={notifications}>
+              <SafeAreaProvider>
+                <StatusBar style="light" />
+                <IphoneAppsNotice controller={iphone} />
+                {linkFailure === null ? null : (
+                  <LinkFailure detail={linkFailure} onDismiss={() => setLinkFailure(null)} />
+                )}
+                {integrationNotice === null ? null : (
+                  <IntegrationNotice
+                    detail={integrationNotice.detail}
+                    onDismiss={() => setIntegrationNotice(null)}
+                    title={integrationNotice.title}
+                  />
+                )}
+                <Navigation
+                  initialState={initialNavigationState}
+                  onReady={handleNavigatorReady}
+                  onStateChange={syncDeferredRootSelection}
+                  ref={navigationRef}
+                  theme={navigationTheme}
                 />
-              )}
-              <Navigation
-                initialState={initialNavigationState}
-                onReady={handleNavigatorReady}
-                onStateChange={syncDeferredRootSelection}
-                ref={navigationRef}
-                theme={navigationTheme}
-              />
-              <IphoneAppsPrompt controller={iphone} />
-            </SafeAreaProvider>
-          </MobileNotificationsProvider>
-        </IphoneAppsProvider>
-      </MobileClientProvider>
+                <IphoneAppsPrompt controller={iphone} />
+              </SafeAreaProvider>
+            </MobileNotificationsProvider>
+          </IphoneAppsProvider>
+        </MobileClientProvider>
+      </DictationProvider>
     </GestureHandlerRootView>
   );
 }
