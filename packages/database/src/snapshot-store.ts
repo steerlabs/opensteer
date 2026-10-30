@@ -67,6 +67,8 @@ export interface DurableWindowReadOptions {
 }
 
 export interface WorkspaceSnapshotReadOptions {
+  /** Skip message history and its counts; clients must read durable history on open. */
+  readonly omitMessages?: boolean;
   readonly viewerId?: UserId;
   readonly maxMessages?: number;
   readonly maxSerializedBytes?: number;
@@ -90,6 +92,7 @@ function buildWorkspaceSnapshot(input: {
   readonly readStates: WorkspaceSnapshot["readStates"];
   readonly notificationPreferences: WorkspaceSnapshot["notificationPreferences"];
   readonly messageTotals: ReadonlyMap<ThreadId, number>;
+  readonly omitMessages: boolean;
   readonly messagesDesc: readonly MessageView[];
   readonly pendingRequestTotal: number;
   readonly pendingRequestsDesc: readonly PendingRequest[];
@@ -101,7 +104,7 @@ function buildWorkspaceSnapshot(input: {
 }): WorkspaceSnapshot {
   const messages = [...input.messagesDesc].reverse();
   const pendingRequests = [...input.pendingRequestsDesc].reverse();
-  const messageWindows = input.threads.map((thread) => {
+  const messageWindows = (input.omitMessages ? [] : input.threads).map((thread) => {
     const threadMessages = messages.filter((message) => message.threadId === thread.id);
     const totalItems = input.messageTotals.get(thread.id) ?? 0;
     const hasMore = totalItems > threadMessages.length;
@@ -125,6 +128,7 @@ function buildWorkspaceSnapshot(input: {
     notificationPreferences: input.notificationPreferences,
     messages,
     messageWindows,
+    ...(input.omitMessages ? { messagesOmitted: true } : {}),
     pendingRequests,
     pendingRequestWindow: {
       byteCount: serializedArrayBytes(pendingRequests),
@@ -219,25 +223,29 @@ export async function workspaceSnapshot(
         threadIds.length === 0
           ? [[], [], [], { count: "0" }, []]
           : await Promise.all([
-              transaction
-                .selectFrom("messages")
-                .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
-                .selectAll("messages")
-                .select("threadInputs.policy")
-                .select(publishedMessagePredicate("threadInputs").as("published"))
-                .where("messages.threadId", "in", threadIds)
-                .where(messageWasNotWithdrawn)
-                .orderBy("messages.createdAt", "desc")
-                .orderBy("messages.id", "desc")
-                .limit(maxMessages + 1)
-                .execute(),
-              transaction
-                .selectFrom("messages")
-                .select(["threadId", ({ fn }) => fn.countAll<string>().as("count")])
-                .where("threadId", "in", threadIds)
-                .where(messageWasNotWithdrawn)
-                .groupBy("threadId")
-                .execute(),
+              options.omitMessages
+                ? []
+                : transaction
+                    .selectFrom("messages")
+                    .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
+                    .selectAll("messages")
+                    .select("threadInputs.policy")
+                    .select(publishedMessagePredicate("threadInputs").as("published"))
+                    .where("messages.threadId", "in", threadIds)
+                    .where(messageWasNotWithdrawn)
+                    .orderBy("messages.createdAt", "desc")
+                    .orderBy("messages.id", "desc")
+                    .limit(maxMessages + 1)
+                    .execute(),
+              options.omitMessages
+                ? []
+                : transaction
+                    .selectFrom("messages")
+                    .select(["threadId", ({ fn }) => fn.countAll<string>().as("count")])
+                    .where("threadId", "in", threadIds)
+                    .where(messageWasNotWithdrawn)
+                    .groupBy("threadId")
+                    .execute(),
               transaction
                 .selectFrom("requests")
                 .selectAll()
@@ -306,6 +314,7 @@ export async function workspaceSnapshot(
         readStates,
         notificationPreferences,
         messageTotals,
+        omitMessages: options.omitMessages === true,
         messagesDesc,
         pendingRequestTotal: safeCount(pendingCountRow.count),
         pendingRequestsDesc,
@@ -321,6 +330,7 @@ export async function workspaceSnapshot(
           readStates,
           notificationPreferences,
           messageTotals,
+          omitMessages: options.omitMessages === true,
           messagesDesc,
           pendingRequestTotal: safeCount(pendingCountRow.count),
           pendingRequestsDesc,
@@ -337,6 +347,7 @@ export async function workspaceSnapshot(
           readStates,
           notificationPreferences,
           messageTotals,
+          omitMessages: options.omitMessages === true,
           messagesDesc,
           pendingRequestTotal: safeCount(pendingCountRow.count),
           pendingRequestsDesc,

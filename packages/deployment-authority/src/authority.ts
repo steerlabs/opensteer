@@ -260,6 +260,8 @@ export const HostCapabilitySchema = z.enum([
    * (`thread.icon.set`) and a specialist's colour (`workspace.color.set`).
    */
   "task-marks-v1",
+  /** A subscription may omit snapshot message history and its windows. */
+  "snapshot-messages-omit-v1",
   "shared-task-done-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;

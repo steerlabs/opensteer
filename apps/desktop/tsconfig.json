@@ -40,6 +40,7 @@
     "scripts/tsup.electron-native-browser.config.ts",
     "scripts/journey-isolation.ts",
     "scripts/journey-isolation.test.ts",
+    "scripts/journey-artifacts.test.ts",
     "scripts/journey-preparation.test.ts",
     "scripts/journey-launch.test.ts",
     "scripts/run-macos-journeys.ts",

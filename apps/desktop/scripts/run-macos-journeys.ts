@@ -1,5 +1,8 @@
+import { collectJourneyEvidence } from "./journey-artifacts.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { bindPath, validatePathBinding } from "./journey-paths.js";
+import { stopLegacyGroup } from "./journey-legacy-stop.js";
+import type { ProcessIdentity } from "./journey-processes.js";
 import { stopRegisteredGroups } from "./journey-processes.js";
 import { launchRegisteredWorkload } from "./journey-launch.js";
 import {
@@ -58,6 +61,9 @@ const constants = {
   nativeResourceCache: NATIVE_RESOURCE_CACHE,
 };
 let interrupted = false;
+let legacyRunning = false;
+let legacyGroup: ProcessIdentity | undefined;
+let interruptStop: Promise<void> | undefined;
 let accepted = false;
 const selected: string[] = [];
 let registration: Registration | undefined;
@@ -65,7 +71,14 @@ let out = "";
 let runId = "";
 let sha = "";
 const prepare: { step: string; seconds: number; exitCode: number }[] = [];
-const results: { name: string; exitCode: number; seconds: number; outcome: string }[] = [];
+const results: {
+  name: string;
+  exitCode: number;
+  seconds: number;
+  outcome: string;
+  crashReports: number;
+  evidenceError?: string | undefined;
+}[] = [];
 const head = () => execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 async function record(value = registration, includeMarker = true) {
   if (!value) return;
@@ -88,7 +101,7 @@ async function execute(command: string, log: string, env = process.env): Promise
   return launchRegisteredWorkload({
     command,
     log,
-    env,
+    env: { ...env, OPENSTEER_LEGACY_GRACEFUL_STOP: legacyRunning ? "1" : "0" },
     applicationRoot: registration?.temporary.find(
       (binding) => binding.path === env.OPENSTEER_JOURNEY_APPS,
     ),
@@ -97,6 +110,7 @@ async function execute(command: string, log: string, env = process.env): Promise
       const proposed = { ...registration!, groups: [...registration!.groups, identity] };
       await record(proposed);
       registration = proposed;
+      if (legacyRunning) legacyGroup = identity;
     },
   });
 }
@@ -182,7 +196,8 @@ async function main() {
       if (arg === "--run-id") runId = value;
       else if (arg === "--out") out = value;
       else sha = value;
-    } else if (names.includes(arg) && !selected.includes(arg)) selected.push(arg);
+    } else if ((names.includes(arg) || arg === "mac-owner") && !selected.includes(arg))
+      selected.push(arg);
     else throw Error(`Unknown argument: ${arg}`);
   }
   if (legacy) {
@@ -222,7 +237,7 @@ async function main() {
     keychain: [],
     temporary: selected.flatMap((name) => [
       bindPath(journeyTemporaryDirectory(runId, name)),
-      bindPath(journeyApplicationDirectory(home, runId, name)),
+      ...(name === "mac-owner" ? [] : [bindPath(journeyApplicationDirectory(home, runId, name))]),
     ]),
     canonical: CANONICAL_PATHS.filter((p) => !pre.after.canonical.includes(p)).map((p) =>
       bindPath(path.join(home, p)),
@@ -236,7 +251,10 @@ async function main() {
   }
   const signal = () => {
     interrupted = true;
-    void stopGroups(false).catch((error) => console.error(error));
+    interruptStop ??= (async () => {
+      if (legacyGroup) await stopLegacyGroup(legacyGroup);
+      await stopGroups(false);
+    })().catch((error) => console.error(error));
   };
   process.on("SIGTERM", signal);
   process.on("SIGHUP", signal);
@@ -277,39 +295,60 @@ async function main() {
       for (const name of selected) {
         if (interrupted) break;
         const directory = path.join(out, name);
-        const apps = journeyApplicationDirectory(home, runId, name);
-        const original = registration.temporary.find((binding) => binding.path === apps)!;
-        validatePathBinding(original);
-        mkdirSync(apps, { recursive: true });
-        validatePathBinding(original);
-        registration.temporary = registration.temporary.map((binding) =>
-          binding.path === apps ? bindPath(apps) : binding,
-        );
-        await record();
         mkdirSync(journeyTemporaryDirectory(runId, name), { recursive: true, mode: 0o700 });
-        for (const sub of ["config", "cache", "data", "downloads"])
-          mkdirSync(path.join(directory, sub), { recursive: true });
-        const env = {
-          ...process.env,
-          OPENSTEER_JOURNEY_OUT: directory,
-          OPENSTEER_JOURNEY_APPS: apps,
-          OPENSTEER_JOURNEY_KEYCHAIN_PREFIX: `${KEYCHAIN_PREFIX}${runId}-${name}-`,
-          TMPDIR: journeyTemporaryDirectory(runId, name) + "/",
-          XDG_CONFIG_HOME: path.join(directory, "config"),
-          XDG_CACHE_HOME: path.join(directory, "cache"),
-          XDG_DATA_HOME: path.join(directory, "data"),
-          OPENSTEER_PERSONAL_E2E_ARTIFACT_DIR: directory,
-          OPENSTEER_DISPLAY_E2E_ARTIFACT_DIR: directory,
-          OPENSTEER_USB_E2E_ARTIFACT_DIR: directory,
-          OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR: path.join(directory, "state-import"),
-          OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR: path.join(directory, "passkey-policy"),
-        };
+        if (name !== "mac-owner") {
+          const apps = journeyApplicationDirectory(home, runId, name);
+          const original = registration.temporary.find((binding) => binding.path === apps)!;
+          validatePathBinding(original);
+          mkdirSync(apps, { recursive: true });
+          validatePathBinding(original);
+          registration.temporary = registration.temporary.map((binding) =>
+            binding.path === apps ? bindPath(apps) : binding,
+          );
+          await record();
+          for (const sub of ["config", "cache", "data", "downloads"])
+            mkdirSync(path.join(directory, sub), { recursive: true });
+        }
+        const env =
+          name === "mac-owner"
+            ? {
+                ...process.env,
+                TMPDIR: journeyTemporaryDirectory(runId, name) + "/",
+                OPENSTEER_LEGACY_TEMP_ROOT: journeyTemporaryDirectory(runId, name),
+              }
+            : {
+                ...process.env,
+                OPENSTEER_JOURNEY_OUT: directory,
+                OPENSTEER_JOURNEY_APPS: journeyApplicationDirectory(home, runId, name),
+                OPENSTEER_JOURNEY_KEYCHAIN_PREFIX: `${KEYCHAIN_PREFIX}${runId}-${name}-`,
+                TMPDIR: journeyTemporaryDirectory(runId, name) + "/",
+                XDG_CONFIG_HOME: path.join(directory, "config"),
+                XDG_CACHE_HOME: path.join(directory, "cache"),
+                XDG_DATA_HOME: path.join(directory, "data"),
+                OPENSTEER_PERSONAL_E2E_ARTIFACT_DIR: directory,
+                OPENSTEER_DISPLAY_E2E_ARTIFACT_DIR: directory,
+                OPENSTEER_USB_E2E_ARTIFACT_DIR: directory,
+                OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR: path.join(directory, "state-import"),
+                OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR: path.join(directory, "passkey-policy"),
+              };
+        const startedAt = Date.now();
         const start = performance.now();
+        legacyRunning = name === "mac-owner";
         const code = await execute(
           `bash scripts/journey-command.sh ${name}`,
           path.join(out, `${name}.log`),
           env,
         );
+        await interruptStop;
+        legacyRunning = false;
+        legacyGroup = undefined;
+        const evidence = await collectJourneyEvidence(
+          home,
+          startedAt,
+          directory,
+          name === "mac-owner" ? path.join(home, "opensteer-job/artifacts/mac-owner") : undefined,
+        );
+        if (evidence.evidenceError) console.error(evidence.evidenceError);
         execFileSync(
           process.execPath,
           [
@@ -318,6 +357,8 @@ async function main() {
             name,
             String(code),
             String((performance.now() - start) / 1000),
+            String(evidence.crashReports),
+            ...(evidence.evidenceError ? [evidence.evidenceError] : []),
           ],
           { stdio: "inherit" },
         );
@@ -329,6 +370,8 @@ async function main() {
               exitCode: z.number(),
               seconds: z.number(),
               outcome: z.string(),
+              crashReports: z.number().int().nonnegative(),
+              evidenceError: z.string().optional(),
             })
             .parse(JSON.parse(lines.at(-1)!)),
         );
@@ -339,6 +382,7 @@ async function main() {
         await delay(500);
       }
   } finally {
+    await interruptStop;
     await stopGroups();
     const ports = systemPorts(home, process.pid, registration);
     await ports.cleanup(ports.collect());

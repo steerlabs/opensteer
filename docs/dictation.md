@@ -39,3 +39,73 @@ authority for the shapes every platform implements and the composer consumes:
   on every platform.
 - **Bounds** are in UTF-16 code units. Real dictation stays far below them, so exceeding
   one fails the session rather than truncating it.
+
+## Composer controller
+
+Create one DictationController from @opensteer/client/dictation per app runtime
+and share it across composers. Supply the platform port and a lowercase UUID v4
+generator; clock and timers can be injected. Call refresh() at startup, on focus
+or foreground, and after returning from microphone Settings. Availability starts
+unknown (hide the mic); denied permission keeps the mic visible with Open Settings.
+
+Subscribe with useSyncExternalStore(controller.subscribe, controller.getSnapshot).
+Snapshots retain identity between changes. Subscribe the waveform separately with
+subscribeLevel; levels never publish snapshots. Dispose the controller at runtime
+teardown. Each target has a stable owner, reads the latest draft, and commits into
+that original draft even after its composer leaves.
+
+The state machine is idle → starting → listening → finishing → idle, or idle →
+downloading → idle. A download never starts capture automatically. Disable other
+owners' mic controls while a session is active. Each composer renders
+dictationView(snapshot, owner): whether the mic shows, whether another composer
+blocks it, its own phase, preview, progress, timer start and notice, and the
+language label (the active session's, so a refresh mid-session cannot relabel it).
+stop and cancel take the owner, so one composer can never finish or discard
+another's words. Render shared presentation labels and status formatters from the
+same export; notices only promise kept words when they reached the draft.
+
+Preview stays null until speech arrives. Then render its text over the unchanged
+draft, and apply its UTF-16 selection only when the preview text changes. Selection
+moves alone do not relocate dictation. On completion the controller inserts final
+segments at the captured selection, or appends if the draft changed externally.
+Any ending other than cancel also keeps a tentative tail the person already saw; native code finalizes first, so one remains only when that was cut short. Cancel discards the preview.
+
+For Send/Enter, await stop(owner) (one shared promise per session; another owner's call returns idle and touches nothing). Send the explicit
+text on committed; use the current draft on idle/empty; never send on failed/aborted.
+Re-check existing send gates and mounted ownership after awaiting, and deduplicate
+Send presses in the composer. Typing, paste, cut, delete and IME start must adopt
+the displayed edit into the draft and call release(owner) in the same handler.
+Selection moves are not edits.
+
+Call leave(owner) on unmount, hide or thread switch: starting cancels; listening
+stops and commits; finishing continues into the original target. Send waiters abort
+immediately. Downloads continue across composer changes. Native owners handle
+window destruction. The ten-minute timer starts on listening and stops with a limit
+notice. Sequence gaps and rejected commands retain received text and cancel native
+work through the same idempotent termination path.
+
+Show notices only for their owner. The next mic action, an edit in that composer,
+or dismiss clears them; empty/downloaded dismiss after five seconds. Announce
+state changes and notices once, rather than announcing text, level or timer ticks.
+
+## Desktop composer
+
+The web runtime shares one controller backed by the optional desktop dictation
+bridge. Availability refreshes on startup, focus and return to a visible window;
+unsupported browsers have no microphone control. Each composer scopes ownership
+to its deployment, user, thread and instance, and leaves when hidden or unmounted.
+Live words appear at the captured selection without changing the draft. Cancel
+restores the original words and selection; typing or starting IME composition
+adopts the displayed text and releases dictation. Escape keeps the words, while
+Enter and Send finalize before submitting through the existing send gates.
+
+The toolbar replaces its model slot with shared live-state copy, a separately
+subscribed level meter and a one-second timer. The mic becomes an accent Stop
+control while listening and a spinner while waiting; Cancel stays beside the live
+state. Narrow conversation composers keep a full-width draft above a permanent
+toolbar row; wider conversation composers retain their single-line layout.
+Persistent notices appear above the draft. Unsupported browsers create no
+controller or lifecycle listeners. A polite live region announces states and notices without
+reading partial words, levels or timer ticks. Reduced motion keeps the meter static.
+`dictation-visual.html?state=listening` is the fake-port visual fixture; its `state`
+parameter also accepts idle, downloading, starting, finishing and every notice kind.

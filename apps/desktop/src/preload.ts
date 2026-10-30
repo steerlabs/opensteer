@@ -1,3 +1,4 @@
+import { DesktopWebLinkDeliverySchema, DesktopWebLinkSchema } from "@opensteer/protocol/desktop";
 import type { ViewerClipboardBridge } from "@opensteer/client/editing";
 import {
   DesktopDownloadsSnapshotSchema,
@@ -291,6 +292,13 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
   pasteViewerClipboard: () => invoke<void>(desktopBridgeChannels.pasteViewerClipboard),
   setViewerKeyboardActive: (active: boolean) =>
     invoke<void>(desktopBridgeChannels.setViewerKeyboardActive, z.boolean().parse(active)),
+  webLinkDelivery: async (input: import("@opensteer/protocol/desktop").DesktopWebLinkDelivery) => {
+    const result = await invoke(
+      desktopBridgeChannels.webLinkDelivery,
+      DesktopWebLinkDeliverySchema.parse(input),
+    );
+    return result === null ? null : DesktopWebLinkSchema.parse(result);
+  },
   onWorkspaceTabCommand: (listener: (command: DesktopWorkspaceTabCommand) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
       listener(DesktopWorkspaceTabCommandSchema.parse(value));

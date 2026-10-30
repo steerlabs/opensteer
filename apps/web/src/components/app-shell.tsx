@@ -1,3 +1,12 @@
+import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
+import {
+  desktopWebLinksReady,
+  openDesktopWebLink,
+  receiveDesktopWebLinks,
+  webLinkSelection,
+  type WebLinkFailureActions,
+} from "../desktop/web-links.js";
+import { lastBrowsingChoice } from "./workspace/start-page.js";
 import { DownloadFeedback } from "./browser/browser-downloads.js";
 import { provisionalThreadTitle } from "@opensteer/core";
 import { useNativeBrowserOverlay } from "./native-browser-overlays.js";
@@ -287,6 +296,66 @@ export function AppShell({
     { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
     snapshot.homeThreadId,
   );
+  const webLinkNavigation = useRef(nav);
+  webLinkNavigation.current = nav;
+  const webLinkView = useRef({ key: location.key, revision: 0, changedAt: 0 });
+  if (webLinkView.current.key !== location.key)
+    webLinkView.current = {
+      key: location.key,
+      revision: webLinkView.current.revision + 1,
+      changedAt: Date.now(),
+    };
+  const [webLinkFailure, setWebLinkFailure] = useState<{
+    message: string;
+    actions: WebLinkFailureActions;
+  } | null>(null);
+  const webLinkReady = desktopWebLinksReady(desktopDeployment?.kind === "personal", snapshot);
+  useEffect(() => {
+    if (
+      !webLinkReady ||
+      !snapshot.deploymentId ||
+      !snapshot.user ||
+      !suppliedDesktopBridge?.webLinkDelivery
+    )
+      return;
+    const deploymentId = DesktopWebLinkDeliverySchema.shape.deploymentId.parse(
+      snapshot.deploymentId,
+    );
+    const userId = snapshot.user.id;
+    const bridge = suppliedDesktopBridge;
+    setWebLinkFailure(null);
+    const selection = webLinkSelection(() => webLinkView.current);
+    return receiveDesktopWebLinks(
+      bridge,
+      {
+        deploymentId,
+        userId,
+        identity: () => lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
+      },
+      () => {
+        const select = selection(webLinkNavigation.current.beginPlaceOperation());
+        return (link, acknowledge) =>
+          openDesktopWebLink(
+            link,
+            hostClient,
+            link.request!.identity,
+            select(link.receivedAt),
+            acknowledge,
+          );
+      },
+      (error, actions) => {
+        if (actions) setWebLinkFailure({ message: actionErrorMessage(error), actions });
+        else toast.error(actionErrorMessage(error));
+      },
+    );
+  }, [
+    webLinkReady,
+    suppliedDesktopBridge,
+    snapshot.deploymentId,
+    snapshot.user?.id,
+    hostClient,
+    toast,
+  ]);
   // The remembered place reopens once per viewer for the shell's life: Settings
   // unmounts the workspace's keys, and coming back from it is not a launch.
   const placeRestored = useRef<string | null>(null);
@@ -898,6 +967,12 @@ export function AppShell({
       nav={nav}
       openDrawer={openMobileNavigation}
     >
+      {webLinkFailure ? (
+        <DesktopWebLinkFailureNotice
+          {...webLinkFailure}
+          onResolve={() => setWebLinkFailure(null)}
+        />
+      ) : null}
       {doneReview.review ? (
         <Dialog
           labelledBy="task-done-confirmation-title"
@@ -1232,4 +1307,38 @@ function ShellRouteOutlet({
 
 function navigationDrawerElement() {
   return document.getElementById("app-sidebar");
+}
+
+export function DesktopWebLinkFailureNotice({
+  message,
+  actions,
+  onResolve,
+}: {
+  message: string;
+  actions: WebLinkFailureActions;
+  onResolve: () => void;
+}) {
+  return (
+    <div className="notice" role="alert">
+      <p>Could not open a web link. {message}</p>
+      <button
+        type="button"
+        onClick={() => {
+          onResolve();
+          void actions.retry();
+        }}
+      >
+        Retry
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          onResolve();
+          void actions.dismiss();
+        }}
+      >
+        Dismiss
+      </button>
+    </div>
+  );
 }
