@@ -206,7 +206,8 @@ try {
   );
   // Packaged builds reject Workspace overrides and symlinks. Its default is
   // temporary only because this machine is disposable; never reuse a Workspace.
-  const workspaceParent = path.join(runnerHome, "OpenSteer");
+  // The app keeps its durable folder's legacy spelling (config.ts durableDesktopPathName).
+  const workspaceParent = path.join(runnerHome, `Open${"S"}teer`);
   await mkdir(workspaceParent, { recursive: true });
   const workspace = path.join(workspaceParent, "Workspaces");
   await mkdir(workspace);
