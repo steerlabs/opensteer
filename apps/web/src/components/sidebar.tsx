@@ -6,6 +6,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -37,6 +38,7 @@ import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import { deploymentNameFrom } from "./deployment-name.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import { Icon } from "./icon.js";
+import { Dialog } from "./dialog.js";
 import { Popover } from "./popover.js";
 import { createPortal } from "react-dom";
 import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
@@ -92,7 +94,6 @@ export interface SidebarProps {
   onCloseMobile: () => void;
   onLoadEarlierTasks: () => Promise<void>;
   onNewTab: () => void;
-  onOpenShortcuts: () => void;
   onSetTaskDone: (threadId: string, done: boolean) => void;
   onToggleCollapsed: () => void;
 }
@@ -113,7 +114,6 @@ export function Sidebar({
   onCloseMobile,
   onLoadEarlierTasks,
   onNewTab,
-  onOpenShortcuts,
   onSetTaskDone,
   onToggleCollapsed,
 }: SidebarProps) {
@@ -632,7 +632,6 @@ export function Sidebar({
       <SidebarFooter
         connection={connection}
         onCloseMobile={onCloseMobile}
-        onOpenShortcuts={onOpenShortcuts}
         onThisComputer={deployment?.onThisComputer === true}
         placeName={placeName}
         workspace={workspace}
@@ -1264,14 +1263,12 @@ function CloseTabButton({
 function SidebarFooter({
   connection,
   onCloseMobile,
-  onOpenShortcuts,
   onThisComputer,
   placeName,
   workspace,
 }: {
   readonly connection: ReturnType<typeof describeHostConnection>;
   readonly onCloseMobile: () => void;
-  readonly onOpenShortcuts: () => void;
   readonly onThisComputer: boolean;
   readonly placeName: string;
   readonly workspace: WorkspaceState;
@@ -1280,6 +1277,8 @@ function SidebarFooter({
   const places = useDesktopPlaces();
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [switchingComputer, setSwitchingComputer] = useState(false);
+  const switchTitleId = useId();
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   // An Account sign-in that ended on its own is worth a mark, not a banner:
   // the place in use is unaffected, and the menu says what to do.
@@ -1297,16 +1296,7 @@ function SidebarFooter({
   }[] = [
     { icon: "users", label: "Specialists", onSelect: () => go("/specialists", true) },
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
-    { icon: "laptop", label: "Computers", onSelect: () => go("/settings/computers", false) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
-    {
-      icon: "keyboard",
-      label: "Keyboard shortcuts",
-      onSelect: () => {
-        setOpen(false);
-        onOpenShortcuts();
-      },
-    },
   ];
   return (
     <div className="sidebar__footer">
@@ -1342,7 +1332,6 @@ function SidebarFooter({
           label={places ? "Places and menu" : "Menu"}
           onClose={() => setOpen(false)}
         >
-          {places ? <PlaceMenuPlaces onClose={() => setOpen(false)} places={places} /> : null}
           <div className="picker__section">
             {items.map((item) => (
               <button
@@ -1360,6 +1349,27 @@ function SidebarFooter({
             ))}
           </div>
           {places ? (
+            <div className="picker__section">
+              <button
+                className="picker__row"
+                onClick={() => {
+                  setOpen(false);
+                  setSwitchingComputer(true);
+                }}
+                role="menuitem"
+                type="button"
+              >
+                <span aria-hidden className="picker__check picker__check--icon">
+                  <Icon name="repeat" />
+                </span>
+                <span className="picker__label-stack">
+                  <span className="picker__label">Switch computer…</span>
+                  {signInEnded ? <span className="picker__detail">Sign in again</span> : null}
+                </span>
+              </button>
+            </div>
+          ) : null}
+          {places ? (
             <PlaceAccountFooter
               account={places.snapshot.account}
               onSignOut={() => {
@@ -1369,6 +1379,16 @@ function SidebarFooter({
             />
           ) : null}
         </Popover>
+      ) : null}
+      {switchingComputer && places ? (
+        <Dialog
+          labelledBy={switchTitleId}
+          onClose={() => setSwitchingComputer(false)}
+          returnFocusTo={anchorRef.current}
+          title="Switch computer"
+        >
+          <PlaceMenuPlaces onClose={() => setSwitchingComputer(false)} places={places} />
+        </Dialog>
       ) : null}
       {signingOut && places ? (
         <SignOutDialog
