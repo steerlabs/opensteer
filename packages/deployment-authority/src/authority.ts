@@ -264,6 +264,8 @@ export const HostCapabilitySchema = z.enum([
   /** A subscription may omit snapshot message history and its windows. */
   "snapshot-messages-omit-v1",
   "shared-task-done-v1",
+  /** A person can rename and delete their browser profiles. */
+  "browser-profile-manage-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

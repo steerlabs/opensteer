@@ -2876,6 +2876,9 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "browser.profileGrant.revoke":
       await client.revokeBrowserProfileGrant(command.grantId);
       return unsupportedMockRpc();
+    case "browser.profile.rename":
+    case "browser.profile.delete":
+      return unsupportedMockRpc();
     case "computer.view.open":
     case "computer.view.close":
     case "computer.view.renew":
@@ -11750,6 +11753,7 @@ function createInitialSnapshot(): HostSnapshot {
     taskMarksAvailable: true,
     sharedTaskDoneAvailable: true,
     workspaceTabReopenAvailable: true,
+    browserProfileManageAvailable: true,
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
     ownerViewWindowsAvailable: true,

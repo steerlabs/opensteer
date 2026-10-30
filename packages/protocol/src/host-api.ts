@@ -151,6 +151,8 @@ import {
 import { WorkspaceStorageChoiceSchema } from "@opensteer/workspace";
 import { z } from "zod";
 import {
+  BrowserProfileNameSchema,
+  BrowserProfileSchema,
   CreateBrowserProfileBodySchema,
   BrowserContextCandidateInputSchema,
   BrowserContextCandidateSchema,
@@ -944,6 +946,22 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("browser.profileGrant.revoke"),
   }),
+  /** Requires the Host's `browser-profile-manage-v1` capability. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    name: BrowserProfileNameSchema,
+    profileId: BrowserProfileIdSchema,
+    type: z.literal("browser.profile.rename"),
+  }),
+  /**
+   * Erases the profile's saved sign-ins and site data, revokes every grant of
+   * it and closes its tabs. Requires `browser-profile-manage-v1`.
+   */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    profileId: BrowserProfileIdSchema,
+    type: z.literal("browser.profile.delete"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     sessionId: z.string().min(1),
@@ -1257,6 +1275,8 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   CreateBrowserProfileGrantResponseSchema.extend({ type: z.literal("browser.profile.grant") }),
   z.object({ type: z.literal("browser.profileGrant.revoke") }),
+  z.object({ profile: BrowserProfileSchema, type: z.literal("browser.profile.rename") }),
+  z.object({ type: z.literal("browser.profile.delete") }),
   z.object({ type: z.literal("browser.session.close") }),
   z.object({
     revision: TriggerRevisionViewSchema,

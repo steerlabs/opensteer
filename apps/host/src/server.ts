@@ -2678,6 +2678,18 @@ export async function createHostServer(
           }),
           type: command.type,
         };
+      case "browser.profile.rename":
+        return {
+          profile: await dependencies.browser.renameProfile({
+            name: command.name,
+            ownerId: userId,
+            profileId: command.profileId,
+          }),
+          type: command.type,
+        };
+      case "browser.profile.delete":
+        await dependencies.browser.deleteProfile({ ownerId: userId, profileId: command.profileId });
+        return { type: command.type };
       case "browser.profileGrant.revoke": {
         const revoked = await dependencies.store.revokeBrowserProfileGrant(command.grantId, userId);
         await dependencies.browser.detachAgentSessionsForRevokedProfileGrant({
@@ -3073,6 +3085,7 @@ export function advertisedCapabilities(
     "browser-capture-region-v1",
     "browser-search-suggestions-v1",
     "workspace-tab-reopen-v1",
+    "browser-profile-manage-v1",
     ...(dependencies.authenticator.identity.nativeOpenIdConfiguration()
       ? (["native-oauth"] as const)
       : []),

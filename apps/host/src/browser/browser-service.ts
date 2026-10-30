@@ -412,6 +412,15 @@ export interface BrowserSessionRepository {
     ownerId: UserId,
   ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "specialized" } | null>;
   listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]>;
+  renameBrowserProfile(input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<BrowserProfileRecord>;
+  deleteBrowserProfile(input: {
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }>;
   listActiveBrowserSessionsForAgent(input: {
     readonly allOwnerWorkspaces: boolean;
     readonly ownerId: UserId;
@@ -1052,6 +1061,47 @@ export class BrowserService {
     const profile = await this.#repository.createBrowserProfile(input);
     if (input.workspaceId) this.#onProfilesChanged(input.ownerId, input.workspaceId);
     return publicProfile(profile);
+  }
+
+  async renameProfile(input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<BrowserProfile> {
+    const profile = await this.#repository.renameBrowserProfile(input);
+    await this.#ownerProfilesChanged(input.ownerId);
+    return publicProfile(profile);
+  }
+
+  /**
+   * Deletes a profile, then stops what still holds it: its live sessions and
+   * the tabs waiting to restore it. The deletion already fences them, so a
+   * session this fails to stop can neither save nor start again, and deleting
+   * again retries the rest.
+   */
+  async deleteProfile(input: {
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<void> {
+    const { sessionIds } = await this.#repository.deleteBrowserProfile(input);
+    this.invalidatePlaceAuthority();
+    try {
+      const results = await Promise.allSettled(
+        sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
+      );
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure) {
+        throw unavailable("Some tabs using this profile didn’t close. Try again.", failure.reason);
+      }
+    } finally {
+      await this.#ownerProfilesChanged(input.ownerId);
+    }
+  }
+
+  /** Every device of the owner rereads its profiles, whichever Workspace it follows. */
+  async #ownerProfilesChanged(ownerId: UserId): Promise<void> {
+    const main = await this.#repository.findMainWorkspaceForOwner(ownerId);
+    if (main) this.#onProfilesChanged(ownerId, main.id);
   }
 
   async profileSiteData(input: {

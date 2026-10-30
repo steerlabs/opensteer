@@ -342,6 +342,109 @@ export async function listBrowserProfiles(
     .execute();
 }
 
+/** A deleted profile, or another person's, is not found. */
+export async function renameBrowserProfile(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  },
+): Promise<BrowserProfileRecord> {
+  const row = await database
+    .updateTable("browserProfiles")
+    .set({ name: input.name, updatedAt: new Date() })
+    .where("id", "=", input.profileId)
+    .where("ownerId", "=", input.ownerId)
+    .where("archivedAt", "is", null)
+    .returning(["id", "name", "ownerId", "revision"])
+    .executeTakeFirst();
+  if (!row) throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+  return row;
+}
+
+/**
+ * Deletes one of the owner's profiles. Its saved state is erased and its
+ * grants revoked under the lock that every session start and revision commit
+ * takes, so no session can start with it and no late save can restore it
+ * afterwards. The row stays, archived, because sessions keep naming the
+ * identity they were created with.
+ *
+ * Returns the sessions still holding the profile for the caller to stop: every
+ * live one, and the latest of each tab lineage that still has open tabs.
+ * Deleting again returns whatever is left, so a retry finishes the job.
+ */
+export async function deleteBrowserProfile(
+  database: Kysely<DatabaseSchema>,
+  input: { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
+): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }> {
+  return withDatabaseTransaction(database, async (transaction) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${input.profileId}`}, 0))`.execute(
+      transaction,
+    );
+    const profile = await transaction
+      .selectFrom("browserProfiles")
+      .select("archivedAt")
+      .where("id", "=", input.profileId)
+      .where("ownerId", "=", input.ownerId)
+      .forUpdate()
+      .executeTakeFirst();
+    if (!profile) {
+      throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+    }
+    if (!profile.archivedAt) {
+      const now = new Date();
+      await transaction
+        .updateTable("browserProfiles")
+        .set({ archivedAt: now, updatedAt: now })
+        .where("id", "=", input.profileId)
+        .execute();
+      await transaction
+        .deleteFrom("browserProfileRevisions")
+        .where("profileId", "=", input.profileId)
+        .execute();
+      await transaction
+        .updateTable("browserProfileGrants")
+        .set({ revokedAt: now })
+        .where("profileId", "=", input.profileId)
+        .where("revokedAt", "is", null)
+        .execute();
+    }
+    const holders = await transaction
+      .selectFrom("browserSessions as session")
+      .select("session.id")
+      .where("session.profileId", "=", input.profileId)
+      .where((eb) =>
+        eb.or([
+          eb("session.state", "not in", ["closed", "failed"]),
+          eb.and([
+            eb.exists(
+              eb
+                .selectFrom("workspaceTabs as tab")
+                .select("tab.id")
+                .whereRef("tab.groupId", "=", "session.tabGroupId")
+                .where("tab.closedAt", "is", null),
+            ),
+            eb.not(
+              eb.exists(
+                eb
+                  .selectFrom("browserSessions as newer")
+                  .select("newer.id")
+                  .whereRef("newer.tabGroupId", "=", "session.tabGroupId")
+                  .where(
+                    sql<boolean>`(newer.created_at, newer.id) > (session.created_at, session.id)`,
+                  ),
+              ),
+            ),
+          ]),
+        ]),
+      )
+      .orderBy("session.id")
+      .execute();
+    return { sessionIds: holders.map((holder) => holder.id) };
+  });
+}
+
 export async function readBrowserProfileRevision(
   database: Kysely<DatabaseSchema>,
   profileId: BrowserProfileId,
@@ -482,6 +585,15 @@ export async function createBrowserSession(
       await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${profileId}`}, 0))`.execute(
         transaction,
       );
+      // Under the lock a deletion takes, so a session cannot outlive its profile.
+      const profile = await transaction
+        .selectFrom("browserProfiles")
+        .select("archivedAt")
+        .where("id", "=", profileId)
+        .executeTakeFirst();
+      if (!profile || profile.archivedAt) {
+        throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+      }
       const placementHolders = await transaction
         .selectFrom("browserSessions")
         .select(["id", "placementKey", "state"])
