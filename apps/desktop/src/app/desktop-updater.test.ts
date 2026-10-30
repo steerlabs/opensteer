@@ -86,3 +86,42 @@ it("sets the channel before refusing downgrades and waits for native staging, cl
   controller.abort();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+// The gate's refusal journeys need the cause, but native messages carry URLs and paths.
+it("logs a fixed refusal reason and never the native message", async () => {
+  vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+  vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
+  const log = vi.fn();
+  const controller = new AbortController();
+  startDesktopUpdater({
+    updates: { owner: "steerlabs", repo: "opensteer", channel: "latest" },
+    signal: controller.signal,
+    log,
+    readinessChanged: vi.fn(),
+  });
+  mocks.native.emit(
+    "error",
+    Object.assign(
+      new Error(
+        "Code signature at URL file:///private/var/update/Opensteer.app did not pass validation",
+      ),
+      { code: -1, domain: "SQRLCodeSignatureErrorDomain" },
+    ),
+  );
+  mocks.native.emit(
+    "error",
+    Object.assign(
+      new Error(
+        "Update failed:The application has ElectronSquirrelPreventDowngrades enabled and is trying to update from '0.1.220' to '0.1.219' which appears to be a downgrade",
+      ),
+      { code: 2, domain: "SQRLUpdaterErrorDomain" },
+    ),
+  );
+  mocks.updater.emit("error", new Error("https://objects.example/private-token"));
+  expect(log.mock.calls.filter(([event]) => event === "desktop.update.failed")).toEqual([
+    ["desktop.update.failed", { reason: "signature" }],
+    ["desktop.update.failed", { reason: "downgrade" }],
+    ["desktop.update.failed", { reason: "other" }],
+  ]);
+  controller.abort();
+});
