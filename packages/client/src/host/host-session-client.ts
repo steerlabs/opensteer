@@ -3100,6 +3100,9 @@ export class HttpHostClient {
       // asked to replace, so the reverification runs beside it.
       if (!revalidateCapabilities) return this.#bootstrapPromise;
       await Promise.all([this.#bootstrapPromise, this.#refreshCapabilities({ revalidate: true })]);
+      // An explicit refresh may follow a mutation committed after that read
+      // began. Read again after it settles so its stale answer cannot win.
+      if (!this.#disposed) await this.#bootstrap();
       return;
     }
     const operation = this.#performBootstrap(revalidateCapabilities);
