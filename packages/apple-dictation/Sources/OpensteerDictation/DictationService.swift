@@ -10,6 +10,7 @@ public actor DictationService {
     var seq = 0
     var tracker = ResultTracker()
     var listening = false
+    var downloading = false
     var stopping = false
     var lastLevel = ContinuousClock.now
     var work: Task<Void, Never>?
@@ -110,10 +111,11 @@ public actor DictationService {
   }
   public func download(session: String) throws {
     guard let s = try admit(session) else { return }
+    s.downloading = true
     s.work = Task {
       do {
         try await s.recognizer.download { progress in Task { await self.progress(s, progress) } }
-        guard self.current(s) else { return }
+        guard self.current(s), !s.stopping else { return }
         await self.terminate(s, .completed, nil)
       } catch { await self.fail(s, .downloadFailed) }
     }
@@ -133,6 +135,7 @@ public actor DictationService {
     guard current(s), !s.stopping else { return }
     // Fence admission at command acceptance, before the finalizer task runs.
     s.stopping = true; s.capture.stop(); s.queue.finish()
+    let reason: DictationEndReason = s.downloading && reason == .completed ? .cancelled : reason
     s.finisher = Task { await self.finish(s, reason: reason) }
   }
   public func cancel(session: String) async {
@@ -141,9 +144,15 @@ public actor DictationService {
   private func finish(_ s: Session, reason: DictationEndReason) async {
     guard current(s) else { return }
     guard s.listening else { await terminate(s, reason, nil); return }
+    // Preparation and backpressured draining can stall before finalization starts.
+    s.deadline = Task {
+      do { try await Task.sleep(for: finalizationTimeout) } catch { return }
+      await self.fail(s, .recognitionFailed)
+    }
     do {
       try await s.feeder?.value
       guard current(s) else { return }
+      s.deadline?.cancel()
       s.deadline = Task {
         do { try await Task.sleep(for: finalizationTimeout) } catch { return }
         await self.fail(s, .recognitionFailed)

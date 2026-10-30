@@ -123,7 +123,9 @@ Results replace overlapping audio ranges and promote at Apple's finalization wat
 including unchanged tentative results. Text coalesces every 100 ms, retaining every newly
 finalized segment. Stop removes capture, drains the bounded ten-second queue and converter,
 finishes input, finalizes and consumes results, then flushes text before ending. Cancellation
-supersedes admission and finalization; the latter has a five-second deadline. Overflow and
+supersedes admission and finalization. Preparation/draining and finalization each
+have a five-second stop deadline. Stopping a model download cancels it rather than
+reporting installation success. Overflow and
 wire limits (1,000 segments per array, 50,000 UTF-16 units per segment) fail explicitly.
 
 iOS uses `.record` / `.measurement` with Bluetooth HFP for minimally processed speech

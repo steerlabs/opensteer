@@ -40,14 +40,17 @@ actor FakeRecognizer: Recognizer {
   var hanging = false
   var longText = false
   var delayedPreparation = false
+  var delayedFeed = false
+  var delayedDownload = false
   init() { (stream, output) = AsyncStream.makeStream() }
-  func configure(hanging: Bool = false, longText: Bool = false, delayedPreparation: Bool = false) { self.hanging = hanging; self.longText = longText; self.delayedPreparation = delayedPreparation }
+  func configure(hanging: Bool = false, longText: Bool = false, delayedPreparation: Bool = false, delayedFeed: Bool = false, delayedDownload: Bool = false) { self.hanging = hanging; self.longText = longText; self.delayedPreparation = delayedPreparation; self.delayedFeed = delayedFeed; self.delayedDownload = delayedDownload }
   func availability(microphone: DictationMicrophone) async -> DictationAvailability { .available(locale: "en-US", languageName: "English", model: .installed, microphone: microphone) }
-  func download(progress: @escaping @Sendable (Double?) -> Void) async throws { progress(0.5) }
+  func download(progress: @escaping @Sendable (Double?) -> Void) async throws { progress(0.5); if delayedDownload { try await Task.sleep(for: .seconds(60)) } }
   func admit() async throws { trace.append("admit") }
   func prepare() async throws { trace.append("prepare"); if delayedPreparation { try await Task.sleep(for: .seconds(60)) } }
   func feed(_ buffer: AVAudioPCMBuffer) async throws {
     trace.append("feed")
+    if delayedFeed { try await Task.sleep(for: .seconds(60)) }
     output.yield(.init(start: 0, end: 1, finalization: 0, text: longText ? String(repeating: "😀", count: 25_001) : "last words"))
   }
   func finishInput() async throws { trace.append("finishInput") }
@@ -125,19 +128,30 @@ final class EngineTests: XCTestCase {
     XCTAssertEqual(events.ended.map(\.payload), [.ended(.failed, .busy), .ended(.cancelled, nil)])
   }
   func testOverflowDeadlineAndUTF16LimitsFailExplicitly() async throws {
-    for scenario in 0..<3 {
+    for scenario in 0..<5 {
       let events = Events(), capture = Capture(), recognizer = FakeRecognizer()
       capture.burst = scenario == 0 ? 101 : 1
-      await recognizer.configure(hanging: scenario == 1, longText: scenario == 2, delayedPreparation: scenario == 0)
+      await recognizer.configure(hanging: scenario == 1, longText: scenario == 2, delayedPreparation: scenario == 0 || scenario == 3, delayedFeed: scenario == 4)
       let service = DictationService(emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer }, timeout: .milliseconds(25))
       try await service.start(session: id)
       try await wait { events.all.contains { $0.payload == .listening } }
-      if scenario == 1 {
+      if scenario == 1 || scenario >= 3 {
         let stop = Task { await service.stop(session: id) }
         try await wait { !events.ended.isEmpty }; stop.cancel(); await stop.value
       } else { try await wait { !events.ended.isEmpty } }
       XCTAssertEqual(events.ended.map(\.payload), [.ended(.failed, .recognitionFailed)])
     }
+  }
+  func testStoppedDownloadIsCancelledRatherThanInstalled() async throws {
+    let events = Events(), capture = Capture(), recognizer = FakeRecognizer()
+    await recognizer.configure(delayedDownload: true)
+    let service = DictationService(emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+    try await service.download(session: id)
+    try await wait { !events.all.isEmpty }
+    await service.stop(session: id)
+    try await wait { !events.ended.isEmpty }
+    XCTAssertEqual(events.ended.map(\.payload), [.ended(.cancelled, nil)])
+    XCTAssertEqual(capture.starts, 0)
   }
   func testTextTicksAndMeterStayBounded() async throws {
     let events = Events(), capture = Capture(), recognizer = FakeRecognizer()
