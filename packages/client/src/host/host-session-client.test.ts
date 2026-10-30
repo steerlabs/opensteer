@@ -2537,6 +2537,58 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
+  it("keeps an unchanged Thread's identity when another Thread's work arrives", async () => {
+    const workspace = makeWorkspace();
+    const open = makeThread(workspace.id);
+    const busy = makeThread(workspace.id);
+    const sockets: FakeSocket[] = [];
+    const client = createHttpHostClient({
+      fetch: async () => json(bootstrap([workspace])),
+      refreshIntervalMs: 0,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      const socket = sockets[0]!;
+      socket.open();
+      socket.receive({
+        snapshot: {
+          ...workspaceSnapshot(workspace, "0"),
+          readStates: [
+            {
+              asOfSequence: sequence("0"),
+              readSequence: null,
+              threadId: open.id,
+              unreadSequence: null,
+            },
+          ],
+          threads: [open, busy],
+        },
+        type: "host.snapshot",
+      });
+      const revision = client.getSnapshot().revision;
+      const before = client.getSnapshot().threads.find(({ id }) => id === open.id);
+      expect(before?.unread).toBe(false);
+      socket.receive({
+        events: [
+          agentEvent(workspace.id, busy.id, createId("run"), "1", "run.started", {
+            status: "running",
+          }),
+        ],
+        type: "host.events",
+      });
+      await vi.waitFor(() => expect(client.getSnapshot().revision).toBeGreaterThan(revision));
+      // Screens compare Thread records by identity; a copy redraws the open conversation.
+      expect(client.getSnapshot().threads.find(({ id }) => id === open.id)).toBe(before);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("applies a reread stream only after the durable events it follows", async () => {
     const workspace = makeWorkspace();
     const thread = makeThread(workspace.id);

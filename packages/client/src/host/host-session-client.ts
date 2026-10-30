@@ -5388,9 +5388,13 @@ export class HttpHostClient {
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
+      // An unchanged Thread keeps its identity: screens compare records by
+      // reference, and every publish passes through here.
       threads: snapshot.threads.map((thread) => {
         const state = snapshot.threadReadStates[thread.id];
-        return state ? { ...thread, unread: isThreadUnread(state) } : thread;
+        if (!state) return thread;
+        const unread = isThreadUnread(state);
+        return thread.unread === unread ? thread : { ...thread, unread };
       }),
       network: this.#network,
       revision: this.#snapshot.revision + 1,

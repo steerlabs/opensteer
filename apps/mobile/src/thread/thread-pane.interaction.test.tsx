@@ -58,6 +58,7 @@ import type { ThreadHeaderState } from "./thread-pane.js";
  */
 
 const harness = vi.hoisted(() => ({
+  paneRenders: 0,
   drafts: null as ThreadDraftStore | null,
   navigate: vi.fn(),
   dispatch: vi.fn(),
@@ -235,7 +236,12 @@ vi.mock("react-native-reanimated", () => {
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
-vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
+vi.mock("@react-navigation/elements", () => ({
+  useHeaderHeight: () => {
+    harness.paneRenders += 1;
+    return 0;
+  },
+}));
 vi.mock("@react-navigation/native", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   const navigation = {
@@ -1107,6 +1113,108 @@ it("counts each tab in the Tabs control, which always opens the collection, and 
       params: { deploymentId, threadId: workId, sessionId: session.id, tabId: second.id },
     }),
   );
+});
+
+it("does not render the pane for another thread's durable event or streaming append", async () => {
+  let snapshot = snapshotFor({
+    entries: [said("Keep this conversation", null)],
+    run: null,
+    threadId: workId,
+  });
+  const host = fakeHost(snapshot);
+  const { container } = await mount(host, workId);
+  const renders = harness.paneRenders;
+  const backgroundRunId = createId("run");
+  const background = wrote("Background reply", backgroundRunId, chatId);
+  snapshot = {
+    ...snapshot,
+    revision: snapshot.revision + 1,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === chatId ? { ...thread, title: "Background task renamed" } : thread,
+    ),
+    workspaces: snapshot.workspaces.map((workspace) => ({
+      ...workspace,
+      updatedAt: "2026-10-29T12:00:00.000Z",
+    })),
+    transcripts: {
+      ...snapshot.transcripts,
+      [chatId]: [background],
+    },
+  };
+  host.move(snapshot);
+  await settle();
+  expect.soft(harness.paneRenders - renders).toBe(0);
+  snapshot = {
+    ...snapshot,
+    transcripts: {
+      ...snapshot.transcripts,
+      [chatId]: [{ ...background, body: "Background reply keeps streaming" }],
+    },
+  };
+  host.move(snapshot);
+  await settle();
+  expect.soft(harness.paneRenders - renders).toBe(0);
+  expect(text(container)).toContain("Keep this conversation");
+});
+
+it("renders this thread's transcript, stream, requests, input queue, run queue and state changes", async () => {
+  const runId = createId("run");
+  const message = wrote("Reply begins", runId, workId);
+  let snapshot = snapshotFor({
+    entries: [said("Start work", runId), ran(runId), message],
+    run: { id: runId, status: "running" },
+    threadId: workId,
+  });
+  const host = fakeHost(snapshot);
+  const { container } = await mount(host, workId);
+  const move = async (patch: Partial<HostSnapshot>) => {
+    const before = harness.paneRenders;
+    snapshot = { ...snapshot, ...patch };
+    host.move(snapshot);
+    await settle();
+    expect(harness.paneRenders).toBeGreaterThan(before);
+  };
+  await move({
+    transcripts: {
+      ...snapshot.transcripts,
+      [workId]: [...snapshot.transcripts[workId]!, said("New durable message", null)],
+    },
+  });
+  expect(text(container)).toContain("New durable message");
+  await move({
+    transcripts: {
+      ...snapshot.transcripts,
+      [workId]: snapshot.transcripts[workId]!.map((entry) =>
+        entry.id === message.id ? { ...message, body: "Reply begins and keeps streaming" } : entry,
+      ),
+    },
+  });
+  expect(text(container)).toContain("Reply begins and keeps streaming");
+  const request = { ...approval(runId, "Review this new approval"), originatingThreadId: workId };
+  await move({ requests: { [workId]: [request] } });
+  expect(text(container)).toContain("Review this new approval");
+  const waiting = said("New queued instruction", null);
+  await move({
+    inputQueues: {
+      [workId]: {
+        threadId: workId,
+        paused: false,
+        steerRunId: runId,
+        items: [waitingInput(waiting, workId)],
+      } as ThreadInputQueue,
+    },
+  });
+  expect(container.querySelector('[aria-label="Queued messages"]')?.textContent).toContain(
+    waiting.body,
+  );
+  await move({ runQueue: [] });
+  expect(hasButton(container, "Stop this run")).toBe(false);
+  await move({
+    threads: snapshot.threads.map((thread) =>
+      thread.id === workId ? { ...thread, status: "archived" } : thread,
+    ),
+  });
+  expect(text(container)).toContain("This thread is archived and cannot take new messages.");
 });
 
 describe("Chat while Opensteer is replying", () => {
