@@ -18,7 +18,7 @@ final class EventTap: @unchecked Sendable {
     case session
   }
 
-  private let handler: Handler
+  private let context: Context
   private let lock = NSLock()
   private var port: CFMachPort?
   private var source: CFRunLoopSource?
@@ -28,9 +28,11 @@ final class EventTap: @unchecked Sendable {
     _ scope: Scope, place: CGEventTapPlacement, options: CGEventTapOptions,
     types: [UInt32], handler: @escaping Handler
   ) {
-    self.handler = handler
+    context = Context(handler)
     let mask = types.reduce(CGEventMask(0)) { $0 | (1 << CGEventMask($1)) }
-    let info = Unmanaged.passUnretained(self).toOpaque()
+    // The registration, not the EventTap owner, keeps callbacks alive until
+    // their run-loop source is removed after any callback already executing.
+    let info = Unmanaged.passRetained(context).toOpaque()
     let created: CFMachPort?
     switch scope {
     case .process(let pid):
@@ -43,9 +45,11 @@ final class EventTap: @unchecked Sendable {
     }
     guard let created, let source = CFMachPortCreateRunLoopSource(nil, created, 0) else {
       if let created { CFMachPortInvalidate(created) }
+      Unmanaged<Context>.fromOpaque(info).release()
       return nil
     }
     port = created
+    context.install(created)
     self.source = source
     EventTapThread.shared.add(source, enabling: created)
   }
@@ -58,24 +62,58 @@ final class EventTap: @unchecked Sendable {
     let source = self.source
     self.port = nil
     self.source = nil
+    context.stop()
     lock.unlock()
     guard let port else { return }
     CGEvent.tapEnable(tap: port, enable: false)
     CFMachPortInvalidate(port)
-    if let source { EventTapThread.shared.remove(source) }
+    if let source {
+      let context = context
+      EventTapThread.shared.remove(source) {
+        Unmanaged.passUnretained(context).release()
+      }
+    }
   }
 
   private static let callback: CGEventTapCallBack = { _, type, event, info in
     guard let info else { return Unmanaged.passUnretained(event) }
-    let tap = Unmanaged<EventTap>.fromOpaque(info).takeUnretainedValue()
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-      tap.lock.lock()
-      let port = tap.port
-      tap.lock.unlock()
-      if let port { CGEvent.tapEnable(tap: port, enable: true) }
-      return Unmanaged.passUnretained(event)
+    let context = Unmanaged<Context>.fromOpaque(info).takeUnretainedValue()
+    return context.receive(type, event).map { Unmanaged.passUnretained($0) }
+  }
+
+  final class Context: @unchecked Sendable {
+    private let handler: Handler
+    private let lock = NSLock()
+    private var stopped = false
+    private var port: CFMachPort?
+
+    init(_ handler: @escaping Handler) { self.handler = handler }
+
+    func install(_ port: CFMachPort) {
+      lock.lock()
+      self.port = port
+      lock.unlock()
     }
-    return tap.handler(type, event).map { Unmanaged.passUnretained($0) }
+
+    func stop() {
+      lock.lock()
+      stopped = true
+      port = nil
+      lock.unlock()
+    }
+
+    func receive(_ type: CGEventType, _ event: CGEvent) -> CGEvent? {
+      lock.lock()
+      let stopped = stopped
+      let port = port
+      lock.unlock()
+      guard !stopped else { return event }
+      if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let port { CGEvent.tapEnable(tap: port, enable: true) }
+        return event
+      }
+      return handler(type, event)
+    }
   }
 }
 
@@ -107,8 +145,11 @@ final class EventTapThread: @unchecked Sendable {
     }
   }
 
-  func remove(_ source: CFRunLoopSource) {
-    perform { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes) }
+  func remove(_ source: CFRunLoopSource, then retired: @escaping () -> Void) {
+    perform {
+      CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+      retired()
+    }
   }
 
   private func perform(_ body: @escaping () -> Void) {
