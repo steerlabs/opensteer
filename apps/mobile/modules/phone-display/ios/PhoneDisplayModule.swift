@@ -168,6 +168,8 @@ final class PhoneDisplayPictureView: ExpoView {
   private let picture = CALayer()
   private let queue = PictureQueue<Data>()
   private var shown: PictureRequest?
+  /// Counts every change of what is shown, so a commit learns whether its picture is still the one on screen.
+  private var shownVersion = 0
   private var observer: NSObjectProtocol?
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
@@ -206,6 +208,7 @@ final class PhoneDisplayPictureView: ExpoView {
   }
   private func remove() {
     shown = nil
+    shownVersion += 1
     CATransaction.begin()
     CATransaction.setDisableActions(true)
     picture.contents = nil
@@ -223,16 +226,25 @@ final class PhoneDisplayPictureView: ExpoView {
         guard let self else { job.receipt(.dropped); return }
         let result = self.queue.complete(decoded: image != nil)
         if let shown = result.shown, let image {
-          if self.showing { self.draw(image, shown.request); shown.receipt(.presented) } else { shown.receipt(.dropped) }
+          if self.showing { self.draw(image, shown.request, shown.receipt) } else { shown.receipt(.dropped) }
         }
         if let next = result.next { self.decode(next) }
       }
     }
   }
-  private func draw(_ image: CGImage, _ request: PictureRequest) {
+  /// Settles as presented only once the picture's transaction has committed
+  /// and it is still the one shown, so input never aims at a picture that was
+  /// replaced or cleared before it reached the screen. The completion always
+  /// runs after the commit, which bounds the wait.
+  private func draw(_ image: CGImage, _ request: PictureRequest, _ receipt: PictureReceipt) {
     shown = request
+    shownVersion += 1
+    let version = shownVersion
     CATransaction.begin()
     CATransaction.setDisableActions(true)
+    CATransaction.setCompletionBlock { [weak self] in
+      receipt(self?.shownVersion == version && self?.showing == true ? .presented : .dropped)
+    }
     picture.contents = image
     picture.cornerRadius = request.cornerRadius
     place()

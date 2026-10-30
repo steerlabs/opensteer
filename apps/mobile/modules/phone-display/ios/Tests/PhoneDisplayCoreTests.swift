@@ -112,5 +112,7 @@ final class PictureDecoderTests: XCTestCase {
     XCTAssertEqual(PictureDecoder.decode(data, width: 32, height: 24).map { [$0.width, $0.height] }, [32, 24])
     XCTAssertNil(PictureDecoder.decode(data, width: 24, height: 32))
     XCTAssertNil(PictureDecoder.decode(Data([0xFF, 0xD8, 0xFF]), width: 32, height: 24))
+    // A header that declares the size but whose scan data is cut off never draws a partial picture.
+    XCTAssertNil(PictureDecoder.decode(data.prefix(data.count / 2), width: 32, height: 24))
   }
 }

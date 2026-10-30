@@ -265,7 +265,7 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
       main.post {
         val (shown, next) = queue.complete(bitmap != null)
         if (shown != null && bitmap != null) {
-          if (showing) { picture.show(bitmap, shown.request); shown.receipt(PictureOutcome.PRESENTED) }
+          if (showing) picture.show(bitmap, shown.request, shown.receipt)
           else shown.receipt(PictureOutcome.DROPPED)
         }
         next?.let(::decode)
@@ -300,26 +300,41 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
   }
 }
 
-/** Draws the one shown bitmap into its aspect-fit rect. */
+/**
+ * Draws the one shown bitmap into its aspect-fit rect. A picture settles as
+ * presented only when it is actually drawn, so input never aims at one that
+ * was replaced or cleared first; a view that never draws drops it after a
+ * bounded wait.
+ */
 private class PictureSurface(context: Context) : View(context) {
   private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
   private val clip = Path()
   private val target = RectF()
   private var bitmap: Bitmap? = null
   private var request: PictureRequest? = null
+  private var undrawn: PictureReceipt? = null
+  private val abandon = Runnable { settle(PictureOutcome.DROPPED) }
   /** Returns whether a picture was on screen before. */
-  fun show(next: Bitmap?, nextRequest: PictureRequest?): Boolean {
+  fun show(next: Bitmap?, nextRequest: PictureRequest?, receipt: PictureReceipt? = null): Boolean {
     val had = bitmap != null
+    settle(PictureOutcome.DROPPED)
     bitmap = next
     request = nextRequest
+    undrawn = receipt
+    if (receipt != null) postDelayed(abandon, 1_000)
     invalidate()
     return had
+  }
+  private fun settle(outcome: PictureOutcome) {
+    removeCallbacks(abandon)
+    undrawn?.invoke(outcome)
+    undrawn = null
   }
   override fun onDraw(canvas: Canvas) {
     val shown = bitmap ?: return
     // Laid out in density-independent pixels, as React Native lays out the page around it.
     val density = resources.displayMetrics.density
-    val rect = request?.rect(width / density.toDouble(), height / density.toDouble()) ?: return
+    val rect = request?.rect(width / density.toDouble(), height / density.toDouble()) ?: return settle(PictureOutcome.DROPPED)
     target.set(rect[0].toFloat() * density, rect[1].toFloat() * density, rect[2].toFloat() * density, rect[3].toFloat() * density)
     val radius = (request?.cornerRadius ?: 0.0).toFloat() * density
     canvas.save()
@@ -329,5 +344,6 @@ private class PictureSurface(context: Context) : View(context) {
     }
     canvas.drawBitmap(shown, null, target, paint)
     canvas.restore()
+    settle(PictureOutcome.PRESENTED)
   }
 }
