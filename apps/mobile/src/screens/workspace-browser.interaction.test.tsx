@@ -93,6 +93,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   }),
 }));
 vi.mock("react-native", () => ({
+  PixelRatio: { get: () => 3 },
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
   ActivityIndicator: () => null,
   Alert: { alert: vi.fn() },

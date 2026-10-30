@@ -2,6 +2,7 @@ import type {
   BrowserCommand,
   BrowserFrameStore,
   BrowserFrameView,
+  BrowserRasterDemand,
   BrowserSessionSummary,
   BrowserWatchState,
   HostClient,
@@ -18,6 +19,7 @@ import {
 import {
   Image,
   PanResponder,
+  PixelRatio,
   Pressable,
   StyleSheet,
   Text,
@@ -27,7 +29,11 @@ import {
 } from "react-native";
 import { color, radius, space, type as textType } from "../theme.js";
 import { usePaneGeometry } from "../ui/pane.js";
-import { browserFrameContentRect, browserCropCue } from "@opensteer/shared/browserPresentation";
+import {
+  browserFrameContentRect,
+  browserCropCue,
+  browserRasterDensity,
+} from "@opensteer/shared/browserPresentation";
 import {
   mobileBrowserFrameKey,
   mobileBrowserPoint,
@@ -140,8 +146,14 @@ export function BrowserStream({
     () =>
       active
         ? interactive
-          ? hostClient.retainBrowserViewer(session.id, tabId, { captureRegion: true })
-          : hostClient.retainBrowserWatch(session.id, tabId, { captureRegion: true })
+          ? hostClient.retainBrowserViewer(session.id, tabId, {
+              captureRegion: true,
+              rasterDemand: true,
+            })
+          : hostClient.retainBrowserWatch(session.id, tabId, {
+              captureRegion: true,
+              rasterDemand: true,
+            })
         : undefined,
     [active, attempt, hostClient, interactive, session.id, tabId],
   );
@@ -260,6 +272,34 @@ export function BrowserStream({
   const size = useRef({ width: 0, height: 0 });
   const origin = useRef({ x: 0, y: 0 });
   const [stageSize, setStageSize] = useState(size.current);
+  const rasterDemand = useRef<BrowserRasterDemand | null>(null);
+  const drawnHeader = displayed?.source.header;
+  const contentRect = drawnHeader
+    ? browserFrameContentRect(
+        { ...stageSize, left: 0, top: 0 },
+        drawnHeader.rasterWidth,
+        drawnHeader.rasterHeight,
+        drawnHeader.capture,
+        "center",
+      )
+    : null;
+  const density = browserRasterDensity(
+    contentRect?.width ?? 0,
+    drawnHeader?.capture?.width ?? drawnHeader?.viewportWidth ?? 0,
+    PixelRatio.get(),
+  );
+  useLayoutEffect(() => {
+    const demand = active ? frames.rasterDemand?.(session.id, tabId) : undefined;
+    rasterDemand.current = demand ?? null;
+    return () => {
+      demand?.release();
+      rasterDemand.current = null;
+    };
+  }, [active, frames, session.id, tabId]);
+  useLayoutEffect(() => {
+    rasterDemand.current?.update(density);
+  }, [active, density, frames, session.id, tabId]);
+
   const input = useRef({
     active,
     interactive,

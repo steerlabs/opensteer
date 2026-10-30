@@ -79,6 +79,7 @@ vi.mock("react-native", () => ({
     onLoad: () => void;
     source: { uri: string };
   }) => <img alt={accessibilityLabel ?? ""} onError={onError} onLoad={onLoad} src={source.uri} />,
+  PixelRatio: { get: () => 2 },
   PanResponder: {
     create: (gestures: PanResponderCallbacks) => {
       native.gestures = gestures;
@@ -170,7 +171,10 @@ function setup(interactive = true) {
   };
   let watch = { frame: null as BrowserFrameView | null, error: null, status: "live" as const };
   const listeners = new Set<() => void>();
+  const demand = { update: vi.fn(), release: vi.fn() };
+  const rasterDemand = vi.fn(() => demand);
   const frames: BrowserFrameStore = {
+    rasterDemand,
     get: vi.fn(() => picture),
     subscribe: vi.fn((_sessionId, listener) => {
       listeners.add(listener);
@@ -253,6 +257,8 @@ function setup(interactive = true) {
   };
   return {
     container,
+    demand,
+    rasterDemand,
     decode,
     dropFeed,
     emit,
@@ -287,6 +293,26 @@ describe.each(["image", "picture"] as const)(
   (presenter) => {
     beforeEach(() => {
       native.presenter = presenter;
+    });
+
+    it("matches raster detail to its pane without retaking the feed, and releases it on hide", async () => {
+      const { demand, rasterDemand, decode, emit, hostClient, render, send } = setup();
+      render("synchronized");
+      expect(rasterDemand).toHaveBeenCalledExactlyOnceWith(sessionId, surfaceId);
+      expect(demand.update).toHaveBeenLastCalledWith(2);
+      emit();
+      await decode();
+      expect(demand.update).toHaveBeenLastCalledWith(1);
+      native.layout = { height: 450, width: 300, x: 0, y: 0 };
+      render("synchronized");
+      expect(demand.update).toHaveBeenLastCalledWith(0.75);
+      native.layout = { height: 600, width: 800, x: 0, y: 0 };
+      render("synchronized");
+      expect(demand.update).toHaveBeenLastCalledWith(2);
+      expect(hostClient.retainBrowserViewer).toHaveBeenCalledTimes(1);
+      expect(send).not.toHaveBeenCalled();
+      render("synchronized", false);
+      expect(demand.release).toHaveBeenCalledTimes(1);
     });
 
     it("waits for synchronization, shows a requested frame, and maps a page tap", async () => {
@@ -514,7 +540,7 @@ describe.each(["image", "picture"] as const)(
       expect(hostClient.retainBrowserViewer).toHaveBeenCalledWith(
         session("synchronized").id,
         surfaceId,
-        { captureRegion: true },
+        { captureRegion: true, rasterDemand: true },
       );
       expect(hostClient.browserFrames.subscribe).toHaveBeenCalledWith(
         session("synchronized").id,
@@ -549,7 +575,7 @@ describe.each(["image", "picture"] as const)(
       expect(hostClient.retainBrowserWatch).toHaveBeenCalledWith(
         session("synchronized").id,
         surfaceId,
-        { captureRegion: true },
+        { captureRegion: true, rasterDemand: true },
       );
       expect(hostClient.retainBrowserViewer).not.toHaveBeenCalled();
       expect(send).not.toHaveBeenCalled();
