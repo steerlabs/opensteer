@@ -68,38 +68,11 @@ export async function runDisplayEditingJourney(directory: string) {
         });
         await until(() => baseline.some((message) => message.state === "live"));
         assert.ok(baseline.every((message) => message.editingVersion === undefined));
-        lease.takeOver();
-        if (mac && !negotiated) {
-          await delay(20);
-          assert.equal(lease.getSnapshot().control.state, "released");
-          assert.equal(
-            fixture.sent.some((message) => message.type === "host.integrations.mac-owner.control"),
-            false,
-          );
+        if (!negotiated) {
+          assert.equal(lease.getSnapshot().input, "unavailable");
+          assert.equal(lease.input(1, [{ kind: "text", insert: "baseline" }]), false);
         } else {
-          await until(() => lease.getSnapshot().control.state === "held");
-          if (!negotiated) {
-            assert.equal(
-              lease.input(1, [
-                { kind: "text", insert: "baseline" },
-                { kind: "text", deleteBackward: 1 },
-                { kind: "text", submit: true },
-              ]),
-              true,
-            );
-            await until(() =>
-              fixture.sent.some((message) => message.type === "host.integrations.display.input"),
-            );
-            const input = fixture.sent.find(
-              (message) => message.type === "host.integrations.display.input",
-            );
-            assert.deepEqual(input?.events, [
-              { kind: "text", insert: "baseline" },
-              { kind: "text", deleteBackward: 1 },
-              { kind: "text", submit: true },
-            ]);
-            assert.equal(lease.input(1, [{ kind: "copy" }]), false);
-          } else {
+          {
             await until(() => editing!.getSnapshot().context !== null);
             let state = createEditingState("mac", displayEditingAbilities);
             const completions: Promise<unknown>[] = [];
@@ -215,8 +188,7 @@ export async function runDisplayEditingJourney(directory: string) {
               ),
             );
           }
-          lease.giveBack();
-          await until(fixture.released);
+          lease.resetInput();
         }
         assert.deepEqual(fixture.failures, []);
         const artifact = path.join(directory, `${name}.json`);

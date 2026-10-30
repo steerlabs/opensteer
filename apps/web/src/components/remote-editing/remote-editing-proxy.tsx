@@ -34,6 +34,7 @@ export interface RemoteEditingWire {
   ): () => void;
 }
 export interface RemoteEditingProxyHandle {
+  cancel(): void;
   focus(touch?: boolean): void;
   pointerDown(): void;
   activate(): void;
@@ -72,6 +73,7 @@ export function RemoteEditingProxy({
   enabled,
   label,
   onLeave,
+  cancelCompositionOnBlur = false,
   platform,
   ref,
   wire,
@@ -81,6 +83,7 @@ export function RemoteEditingProxy({
   readonly context: EditingContext | null;
   readonly enabled: boolean;
   readonly label: string;
+  readonly cancelCompositionOnBlur?: boolean;
   readonly onLeave?: (() => void) | undefined;
   readonly platform?: EditingViewerPlatform;
   readonly ref?: Ref<RemoteEditingProxyHandle>;
@@ -90,8 +93,8 @@ export function RemoteEditingProxy({
   const lastElement = useRef<RemoteProxyElement | null>(null);
   const restoreFocus = useRef(false);
   const state = useRef(createEditingState(platform ?? viewerEditingPlatform(), abilities));
-  const current = useRef({ enabled, context, abilities, wire, onLeave });
-  current.current = { enabled, context, abilities, wire, onLeave };
+  const current = useRef({ enabled, context, abilities, wire, onLeave, cancelCompositionOnBlur });
+  current.current = { enabled, context, abilities, wire, onLeave, cancelCompositionOnBlur };
   const [preedit, setPreedit] = useState("");
   const [error, setError] = useState<string | null>(null);
   const touchFocus = useRef(false);
@@ -220,6 +223,11 @@ export function RemoteEditingProxy({
   useImperativeHandle(
     ref,
     () => ({
+      cancel() {
+        state.current = { ...state.current, composition: null, compositionTail: "discard" };
+        feed({ type: "blur" });
+        if (element.current) element.current.value = "";
+      },
       focus,
       pointerDown: () => {
         const composing = state.current.composition !== null;
@@ -484,6 +492,8 @@ export function RemoteEditingProxy({
       [
         "blur",
         (event) => {
+          if (current.current.cancelCompositionOnBlur)
+            state.current = { ...state.current, composition: null, compositionTail: "discard" };
           feed({ type: "blur" }, event);
           const bridge = desktopBridge();
           if (bridge?.setViewerKeyboardActive)

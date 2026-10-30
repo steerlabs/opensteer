@@ -362,6 +362,34 @@ describe("ComputerAppHub", () => {
     });
   });
 
+  it.each([false, true])(
+    "projects phone shared input only when advertised: %s",
+    async (sharedInput) => {
+      const initial = integrationsStream({ runnerId });
+      const stream = {
+        ...initial,
+        identity: {
+          ...initial.identity,
+          modules: {
+            integrations: {
+              platform: "android" as const,
+              protocolVersion: 4,
+              ...(sharedInput ? { sharedInput: 1 as const } : {}),
+            },
+          },
+        },
+      };
+      const peer = controlPeer();
+      hub.attach(peer, stream);
+      await hub.handleMessage(peer, stream, { ...statusFrame(stream, []), displayAvailable: true });
+      const live = hub.displayStream(runnerId);
+      expect(live).toMatchObject(sharedInput ? { sharedInput: 1 } : {});
+      expect(live && live !== "unsupported" ? live.sharedInput : undefined).toBe(
+        sharedInput ? 1 : undefined,
+      );
+    },
+  );
+
   describe("Mac window video", () => {
     // What a Mac's Runner advertises in production: the shared owner-view
     // version in its descriptor and, from its helper, in its status.

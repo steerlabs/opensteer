@@ -430,7 +430,7 @@ Task viewers connect at `/v1/computer-use/sessions/:sessionId/display`; independ
 viewers connect at `/v1/computer-use/views/:viewId/:generation/display`. Both require the
 ordinary login, effective owner and live source authorization, checked again every five
 seconds and before media delivery using current in-memory authority. Owner-only views say
-“View only.” Taking over remains an explicit action in an authorized task Watch; owner-view
+“View only.” Authorized task Watch accepts shared input directly; owner-view
 sockets cannot control or silently follow a replacement task.
 
 Host logs distinguish the gates before capture starts. `Phone display capability changed`
@@ -456,7 +456,7 @@ and Surface on that VirtualDisplay, resizing for geometry changes; it never crea
 VirtualDisplay from the token. The initial encoder starts generation 1. Only protection lift,
 rotation/size change and encoder error reset the generation; encoder error permits one recovery
 before `failed/encoder-failed`. Screen-off and locked-screen suppression retire the current
-publication generation, clear queued media and client pixels, and release control. Local
+publication generation, clear queued media and client pixels, and reset input. Local
 wake/unlock resumes with a fresh generation/keyframe on the same VirtualDisplay. Viewing
 never wakes or unlocks the phone; a configured PIN on an unlocked phone does not suppress it. Refresh requests `PARAMETER_KEY_REQUEST_SYNC_FRAME` on the current encoder,
 so the next encoded picture is an IDR. Publication discards already queued deltas until that
@@ -502,7 +502,7 @@ start at 2.5 Mb/s within 1–4 Mb/s, reduce by 25% on sustained delay or drops, 
 10% after eight healthy seconds with flowing frames. Static silence earns no increase.
 
 Each authorized viewer socket reports
-`display.state` and `display.control` JSON and forwards the same payload under a header
+`display.state` and editing JSON and forwards the same payload under a header
 without `streamId`. Viewers acknowledge each frame with `display.ack` when the decoder takes
 it off its queue or the viewer drops it; each has credits
 of four frames and 1 MiB, admitting one larger frame when none is outstanding. Socket
@@ -516,7 +516,7 @@ state first, then the cached GOP in order, paced by its credits, followed by liv
 An empty or invalid cache requests refresh only while live and waits for the next key,
 coalesced to once per 500 ms per stream. A skipped viewer that drains its outstanding credit
 restarts from a valid cached keyframe, paced by credit, even on a static screen. Last-viewer
-departure leaves a five-second demand grace before stop. Session end closes that task's sockets and control;
+departure leaves a five-second demand grace before stop. Session end closes that task's sockets and resets input;
 owner-generation closure ends only its owner sockets. Integrations detach closes every socket.
 Watching never extends the session's hold; accepted owner input does. Authority is checked
 at admission, every five seconds and on login expiry. Each input checks only the held session
@@ -534,21 +534,28 @@ requires a fresh generation. `MainActivity` uses `FLAG_SECURE` so its
 pixels stay black even before protection closes; `WakeActivity` and the contentless
 `ProjectionActivity` do not.
 
-**Take over** acquires a phone-enforced control lease identified by `controlId`; another
-viewer gets `busy`. Acquisition blocks agent acts at admission and authority checks, withdraws
-only queued/running acts, waits for dispatched gesture cleanup and invalidates observations
-before reporting `held`. Observe remains available. The `owner-in-control` refusal reads:
-“The phone's owner is using it. Try again after they hand it back.” The Run and session remain
-active. **Give back**, viewer loss, Pause, secure lock, session end, Stop or
-integrations loss releases the lease: end the stroke, drain rejected queued owner input, cross
-the executor barrier and invalidate observations before admitting agent acts again.
+A viewer with shared input clicks, drags, scrolls and types directly while the agent keeps
+running. The person’s press waits for the agent gesture to finish or cancels it with an honest
+interrupted result. An agent gesture during a held person contact fails with
+“A person is touching the screen; try again.”, and an agent gesture or text edit while the
+person holds a key fails with “A person is holding a key; try again.” Each later stroke of an
+agent multi-tap repeats every admission check (Stop, Pause, Opensteer in front, a held key)
+without asking again for time already admitted, so a withdrawn gesture sends no further strokes. Two viewers share one person lane: while one holds a touch
+or key, another viewer’s batch receives `contended`.
 
-Viewer `display.input` and relayed `host.integrations.display.input` name the lease,
+Blur, hide, F6 and leaving send `display.input-reset` and cancel local composition. Reset is
+an ordered barrier: discard queued person work, end strokes and release keys before admitting
+the next batch. Generation changes, Pause, lock, protected screens, stream end, disconnect and
+Stop perform the same cleanup. Person input never invalidates agent observations. Text edits
+serialize with agent edits; an intervening edit rotates the editing context and stale edits
+resync rather than retrying an uncertain mutation.
+
+Viewer `display.input` and relayed `host.integrations.display.input` name the
 `geometry` generation and increasing input sequence, carrying 1–64 events. Pointer coordinates
 use [0, 1] in the stream picture and `t` uses nonnegative viewer-monotonic milliseconds;
 scroll deltas use [-1, 1] picture units per event. Navigation names back, home, recents or
 notifications. Each strict text variant inserts 1–1000 characters, deletes 1–100 characters
-backward, or submits. The phone rechecks lease, generation and input authority and never
+backward, or submits. The phone rechecks generation and input authority and never
 retries uncertain input. All owner events run in wire order on a separate serial lane, so
 agent observations do not delay them. The first text after a tap waits for that editor to receive
 focus, so a completed gesture cannot send text into the previous field. Window and power events update cached input admission;
@@ -568,7 +575,7 @@ Host confirms it with `editingVersion: 1` in `host.integrations.display.start`. 
 confirmation a new phone emits only baseline frames, so it remains readable by an older Host.
 Viewers opt in with `?editing=1`. Only opted-in viewers of a capable phone receive
 `editingVersion: 1` in `display.state`; baseline sockets keep the baseline wire.
-Only the controlling opted-in socket can send `key`, `command`, `edit`, `copy` or text `paste`.
+Every authorized shared-input opted-in socket can send `key`, `command`, `edit`, `copy` or text `paste`.
 Cut additionally requires integrations `displayCut: 1`, Host confirmation `displayCut: 1` in
 `display.start`, and viewer `?editing=1&displayCut=1`. Only their intersection receives
 `display.state.displayCut` and may send `cut {contextId}`. Older phones, Hosts and viewers
@@ -920,7 +927,7 @@ A native monotonic expiry alarm withdraws demand even if the Host is late. Queue
 and old command responses cannot revive a removed generation.
 
 Pause and the Opensteer app synchronously close the common publication
-gate and release control. Pause ends the task but preserves an independent unexpired owner
+gate and reset input. Pause ends the task but preserves an independent unexpired owner
 lease; local resume may resume that view with fresh media. Task withdrawal alone never
 closes the owner's publication gate. Locked/sleeping screens clear all retained pixels.
 Android redacts `FLAG_SECURE` surfaces in MediaProjection; accessibility cannot reliably

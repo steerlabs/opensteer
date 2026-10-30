@@ -1,5 +1,6 @@
 import {
-  MacOwnerControlParamsSchema,
+  MacOwnerInputResetParamsSchema,
+  MacOwnerInputVersionSchema,
   MacOwnerInputParamsSchema,
   MacOwnerInputEventSchema,
 } from "./mac-window-video.js";
@@ -51,10 +52,6 @@ import {
   DisplayDemandSchema,
   MacDisplayWarmSchema,
   DisplaySequenceSchema,
-  DisplayControlActionSchema,
-  DisplayControlIdSchema,
-  DisplayControlReasonSchema,
-  DisplayControlStateSchema,
   DisplayInputSchema,
   DisplayInputResultSchema,
   DisplayEditingSchema,
@@ -381,10 +378,10 @@ export type HostIntegrationsOperation =
   | z.infer<typeof HostIntegrationsDisplayDemandSchema>
   | HostIntegrationsDisplayStop
   | HostIntegrationsDisplayRefresh
-  | HostIntegrationsDisplayControl
   | HostIntegrationsDisplayInput
-  | z.infer<typeof HostIntegrationsMacOwnerControlSchema>
-  | z.infer<typeof HostIntegrationsMacOwnerInputSchema>;
+  | HostIntegrationsDisplayInputReset
+  | z.infer<typeof HostIntegrationsMacOwnerInputSchema>
+  | z.infer<typeof HostIntegrationsMacOwnerInputResetSchema>;
 
 export const ComputerAppErrorCodeSchema = z.enum([
   "invalid-arguments",
@@ -584,15 +581,15 @@ export type RunnerIntegrationsComputerAppWindowsResult = z.infer<
   typeof RunnerIntegrationsComputerAppWindowsResultSchema
 >;
 
-export const HostIntegrationsMacOwnerControlSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("host.integrations.mac-owner.control"),
-  ...MacOwnerControlParamsSchema.shape,
-});
 export const HostIntegrationsMacOwnerInputSchema = z.strictObject({
   ...integrationsFrameBase,
   type: z.literal("host.integrations.mac-owner.input"),
   ...MacOwnerInputParamsSchema.shape,
+});
+export const HostIntegrationsMacOwnerInputResetSchema = z.strictObject({
+  ...integrationsFrameBase,
+  type: z.literal("host.integrations.mac-owner.input-reset"),
+  ...MacOwnerInputResetParamsSchema.shape,
 });
 export const RunnerIntegrationsMacOwnerEventSchema = z.strictObject({
   ...integrationsFrameBase,
@@ -604,7 +601,7 @@ export const HostIntegrationsDisplayResolveSchema = z.strictObject({
   type: z.literal("host.integrations.display.resolve"),
   requestId: RunnerAuxiliaryRequestIdSchema,
   source: MacVideoSourceSchema,
-  ownerInputVersion: z.literal(1).optional(),
+  ownerInputVersion: MacOwnerInputVersionSchema,
   timeoutMs: z.number().int().positive().max(30_000),
 });
 export const RunnerIntegrationsDisplayResolvedSchema = z.strictObject({
@@ -637,6 +634,11 @@ export const HostIntegrationsDisplayStartSchema = z
     editingVersion: z.literal(1).optional(),
     /** Only sent to Android producers advertising integrations.displayCut: 1. */
     displayCut: z.literal(1).optional(),
+    /**
+     * Only sent to Android producers advertising integrations.sharedInput: 1:
+     * the person's input goes in alongside the agent's acts.
+     */
+    sharedInput: z.literal(1).optional(),
     /** Remaining resolution-through-first-keyframe budget; Mac only. */
     timeoutMs: z.number().int().positive().max(30_000).optional(),
   })
@@ -662,15 +664,7 @@ export const HostIntegrationsDisplayRefreshSchema = z.strictObject({
   streamId: DisplayStreamIdSchema,
 });
 export type HostIntegrationsDisplayRefresh = z.infer<typeof HostIntegrationsDisplayRefreshSchema>;
-export const HostIntegrationsDisplayControlSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("host.integrations.display.control"),
-  sessionId: ComputerUseSessionIdSchema,
-  streamId: DisplayStreamIdSchema,
-  controlId: DisplayControlIdSchema,
-  action: DisplayControlActionSchema,
-});
-export type HostIntegrationsDisplayControl = z.infer<typeof HostIntegrationsDisplayControlSchema>;
+/** One batch of the stream's person lane; sent only after display.start carried sharedInput. */
 export const HostIntegrationsDisplayInputSchema = z.strictObject({
   ...integrationsFrameBase,
   type: z.literal("host.integrations.display.input"),
@@ -679,6 +673,16 @@ export const HostIntegrationsDisplayInputSchema = z.strictObject({
   ...DisplayInputSchema.shape,
 });
 export type HostIntegrationsDisplayInput = z.infer<typeof HostIntegrationsDisplayInputSchema>;
+/** The viewer holding the person lane left mid-gesture: end the stroke, release held keys, drop queued input. */
+export const HostIntegrationsDisplayInputResetSchema = z.strictObject({
+  ...integrationsFrameBase,
+  type: z.literal("host.integrations.display.input-reset"),
+  sessionId: ComputerUseSessionIdSchema,
+  streamId: DisplayStreamIdSchema,
+});
+export type HostIntegrationsDisplayInputReset = z.infer<
+  typeof HostIntegrationsDisplayInputResetSchema
+>;
 export const RunnerIntegrationsDisplayStateSchema = z.strictObject({
   ...integrationsFrameBase,
   type: z.literal("runner.integrations.display.state"),
@@ -692,25 +696,11 @@ export const RunnerIntegrationsDisplayStateSchema = z.strictObject({
   rotation: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]),
 });
 export type RunnerIntegrationsDisplayState = z.infer<typeof RunnerIntegrationsDisplayStateSchema>;
-export const RunnerIntegrationsDisplayControlStateSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("runner.integrations.display.control-state"),
-  sessionId: ComputerUseSessionIdSchema,
-  streamId: DisplayStreamIdSchema,
-  controlId: DisplayControlIdSchema,
-  state: DisplayControlStateSchema,
-  reason: DisplayControlReasonSchema.optional(),
-});
-export type RunnerIntegrationsDisplayControlState = z.infer<
-  typeof RunnerIntegrationsDisplayControlStateSchema
->;
-
-/** Private editing replies name the same control and picture fence as their input. */
+/** Editing replies name the stream's person lane and the picture fence of their input. */
 const displayEditingReplyBase = {
   ...integrationsFrameBase,
   sessionId: ComputerUseSessionIdSchema,
   streamId: DisplayStreamIdSchema,
-  controlId: DisplayControlIdSchema,
   geometry: DisplayInputSchema.shape.geometry,
 };
 export const RunnerIntegrationsDisplayInputResultSchema = z.strictObject({
@@ -755,15 +745,15 @@ export const HostToIntegrationsModuleMessageSchema = z
     RunnerAuxiliaryWelcomeSchema,
     RunnerAuxiliaryRejectedSchema,
     RunnerAuxiliaryLeaseRenewedSchema,
-    HostIntegrationsMacOwnerControlSchema,
     HostIntegrationsMacOwnerInputSchema,
+    HostIntegrationsMacOwnerInputResetSchema,
     HostIntegrationsDisplayResolveSchema,
     HostIntegrationsDisplayStartSchema,
     HostIntegrationsDisplayDemandSchema,
     HostIntegrationsDisplayStopSchema,
     HostIntegrationsDisplayRefreshSchema,
-    HostIntegrationsDisplayControlSchema,
     HostIntegrationsDisplayInputSchema,
+    HostIntegrationsDisplayInputResetSchema,
     HostIntegrationsInvokeSchema,
     HostIntegrationsComputerUseSchema,
     HostIntegrationsComputerAppWindowsSchema,
@@ -789,7 +779,6 @@ export const IntegrationsModuleEventSchema = z
     RunnerIntegrationsDisplaySourceChangedSchema,
     RunnerIntegrationsDisplayStateSchema,
     RunnerIntegrationsDisplaySourceEndedSchema,
-    RunnerIntegrationsDisplayControlStateSchema,
     RunnerIntegrationsDisplayInputResultSchema,
     RunnerIntegrationsDisplayEditingSchema,
     RunnerIntegrationsDisplayClipboardSchema,

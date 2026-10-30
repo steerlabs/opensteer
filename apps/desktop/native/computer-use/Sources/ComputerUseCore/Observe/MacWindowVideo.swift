@@ -1206,7 +1206,7 @@ final class MacWindowVideoRegistry {
       }
       return ResolveResult(
         target: MacVideoTarget(kind: "mac-window", bindingId: resolved.binding.id,
-          editingVersion: params.ownerInputVersion == 1 && connection.negotiatedOwnerInputVersion == 1 ? 1 : nil))
+          editingVersion: params.ownerInputVersion == 2 && connection.negotiatedOwnerInputVersion == 2 ? 1 : nil))
     case "display.demand":
       let params = try envelope.decodeParams(DemandParams.self, method: envelope.method)
       if let current = pending, current.params.streamId == params.streamId,

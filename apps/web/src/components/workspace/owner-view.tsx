@@ -10,12 +10,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import { computerAppIdentityKey, type ComputerView } from "@opensteer/protocol";
 import { actionErrorMessage, usePageVisible } from "../../ui-utils.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";
-import {
-  ComputerDisplayScreen,
-  PhoneControlButton,
-  PhoneControlBar,
-  useComputerDisplay,
-} from "../phone-display.js";
+import { ComputerDisplayScreen, PhoneControlBar, useComputerDisplay } from "../phone-display.js";
 import {
   canStreamComputerDisplay,
   computerReasonWords,
@@ -117,10 +112,10 @@ export function OwnerView({
   }, [alive, generation, hostClient, owned, viewId, visible]);
 
   const shown = live ? display.picture : null;
-  const canControl = !phone && display.snapshot.display?.editingVersion === 1;
-  const controlling = canControl && display.snapshot.control.state === "held";
+  const canControl = !phone && display.snapshot.input === "available";
+  const inputAvailable = canControl && display.snapshot.input === "available";
   useEffect(() => {
-    if (!visible) display.lease?.giveBack();
+    if (!visible) display.lease?.resetInput();
   }, [visible, display.lease]);
 
   const [zoomed, setZoomed] = useState(false);
@@ -279,14 +274,12 @@ export function OwnerView({
           <span className="computer-watch__app">{targetName}</span>
           {phone ? null : <span className="computer-watch__place">{machineName}</span>}
         </span>
-        {canControl ? (
-          <PhoneControlButton display={display} phoneName={targetName} />
-        ) : (
+        {!canControl ? (
           <span className="owner-view__view-only" title="You can watch it here, not use it">
             <Icon name="eye" />
             View only
           </span>
-        )}
+        ) : null}
         {marks}
         <span className="computer-watch__spacer" />
         {local ? (
@@ -313,7 +306,7 @@ export function OwnerView({
           <ComputerDisplayScreen
             dim={false}
             display={display}
-            interactive={controlling && visible}
+            interactive={inputAvailable && visible}
             label={targetName}
             onEnlarge={() => setZoomed((value) => !value)}
             shown={shown !== null}

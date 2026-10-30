@@ -256,14 +256,14 @@ export class ComputerAppModuleHandler {
     }
     const message = HostToIntegrationsModuleMessageSchema.parse(JSON.parse(frame.toString("utf8")));
     switch (message.type) {
-      case "host.integrations.mac-owner.control":
+      case "host.integrations.mac-owner.input-reset":
       case "host.integrations.mac-owner.input":
       case "host.integrations.display.resolve":
       case "host.integrations.display.start":
       case "host.integrations.display.demand":
       case "host.integrations.display.refresh":
       case "host.integrations.display.stop":
-      case "host.integrations.display.control":
+      case "host.integrations.display.input-reset":
       case "host.integrations.display.input":
         this.#video?.handle(message);
         return;

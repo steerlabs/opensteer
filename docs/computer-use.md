@@ -590,15 +590,15 @@ Before each action, the helper verifies the bound window's exact process,
 including its kernel start time, bundle path and live signature. Window inventory/binding can discover
 or relaunch an app; acting never switches to a different process with the same bundle id.
 Untargeted typing follows focus within the bound group as earlier actions left it.
-If the person is in that app with another window key, keys and typing refuse
-`owner-in-control`: `The person is using another window of this app; no keys were sent.`
+If a person holds a button or key in that app, agent mutations refuse
+`failed`: `A person is pressing in this app; try again.`
 When the person is in another app, background key preparation selects the bound group's eligible key window without changing the person's front app. Long input checks Stop, the deadlines
 and the target process between chunks or ticks. For clicks, scrolls and point-targeted
 typing the drawn pointer travels to the target first and Stop is re-checked before anything
 is posted.
 
 **Errors.** `permission-required`, `app-not-allowed`, `app-not-found`, `app-not-running`,
-`no-session`, `busy`, `owner-in-control`, `stale-observation`, `stopped-by-user`, `unsupported`, `failed`,
+`no-session`, `busy`, `stale-observation`, `stopped-by-user`, `unsupported`, `failed`,
 `outcome-unknown`, `delivery-unconfirmed`, `incompatible-version`. Each carries a sentence a person or model can
 act on; none carries a path. Session validation precedes the locked-screen check, so a
 closed or stopped session retains its own error even while the Mac is locked. A valid
@@ -1227,7 +1227,7 @@ allowed to do itself, for **every** supervised slot whether or not it runs agent
 
 The [negotiated owner-input lane](#negotiated-mac-owner-input) uses this same
 bridge and helper. Desktop offers
-`ownerInputVersion: 1` in its protocol-10 hello and forwards owner input only after
+`ownerInputVersion: 2` in its protocol-10 hello and forwards owner input only after
 that helper confirms it. The bridge checks both the connection-bound view source
 and the stream owner on every request. Person input carries no agent observations,
 transcript steps or text-bearing action receipts. The local pill says
@@ -1316,9 +1316,8 @@ and computer use expose real viewing surfaces.
 Phone live display uses the owner-only WebSocket upgrade
 `/v1/computer-use/sessions/:sessionId/display`. The Host authenticates it like browser
 sockets, checks the session's owner and live attempt grant before admitting it, then
-reauthorizes every five seconds and on login expiry. `display.state` and `display.control`
-JSON accompany binary H.264 frames; clients send acknowledgements and acquire, release,
-input or `display.keyframe` messages. The shared
+reauthorizes every five seconds and on login expiry. `display.state` and editing messages
+JSON accompany binary H.264 frames; clients send acknowledgements, input, input reset or `display.keyframe` messages. The shared
 [display contract](../packages/protocol/src/display-stream.ts) bounds each viewer to four
 unacknowledged live frames and 1 MiB, with one larger frame admitted into an empty window.
 A viewer acknowledges every frame it received exactly once and in order, once its decoder has
@@ -1330,15 +1329,8 @@ sequences, so after such a state a viewer's sequences restart at or below the re
 frame and increase again from there. Scroll deltas have a mouse wheel's sense: positive `dy`
 reveals content below. Closes 1001, 1008 and 1013, and transport closes 1005, 1006, 1011 and
 1012, are transient and retried with backoff; 1000 (ended or unsupported), 1009, 4002 and 4003
-are terminal. Watch does not renew the hold; accepted owner input does. Input checks the held
-session and phone-confirmed lease in memory; admission and the five-second recheck own
-authorization.
-Every client uses live phone display exclusively, including independent owner views and
-Expo task viewing. Old phone apps are out of date; no phone capture fallback exists. See [Live display](agent-phone.md#live-display) for generation,
-publication and phone-enforced control-lease rules. While an owner holds control, agent
-acts refuse with `owner-in-control`: “The phone's owner is using it. Try again after they
-hand it back.” The Host relays display and control; the phone enforces publication
-and the owner control lease.
+are terminal. Watch does not renew the hold; accepted owner input does. Input checks the current generation and projected shared-input authority.
+See [Live display](agent-phone.md#live-display) for the phone’s shared input and gesture rules.
 
 Web and desktop decode the stream with WebCodecs. Before opening a socket they ask whether
 the browser decodes Constrained Baseline H.264, preferring hardware; one that cannot reads
@@ -1356,24 +1348,18 @@ the screen on `protected`, `stopped`, `failed` or `unsupported`, on a terminal c
 the login changes. After a terminal close the last state chooses the words, such as “Finished
 using <phone>”, “<phone> stopped sharing its screen” or “Couldn’t show <phone>’s screen”, and
 nothing reconnects until the view is opened again. A transient close reconnects with backoff,
-with control released and no input replayed.
+with input reset and no input replayed.
 [`phone-display-stream.ts`](../packages/client/src/integrations/phone-display-stream.ts)
 owns the transport and the web view's
 [`phone-display-media.ts`](../apps/web/src/components/phone-display-media.ts) the decoder.
 
-**Take over** in the Watch's header asks for the lease; while it is held the bar under the
-picture reads “You’re controlling the phone” with Back, Home and Recent apps, and **Give back**
-returns it. Control is the session's in a client: any view of it may use or give it back, and
-the view that took it gives it back when it goes. Presses and drags map into the picture as
-drawn inside the view, a press beside it does nothing, and moves are sent once per animation
-frame. Wheel turns scroll. A hidden text field takes the keyboard: committed text, including an
-IME's commit and a paste, is typed, a composition in progress is not, Backspace deletes, Enter
-submits, and shortcuts stay the page's. Input is sent only in the stream's current geometry; a
-stroke cut by a generation change is cancelled in the new one, and a view that goes away
-mid-stroke ends it. Hiding the page or leaving the view ends the stroke, gives control back
-and closes the socket. Leaving the view lets the picture go; hiding the page pauses the
-shared stream in the Host client, which keeps the last picture and opens a socket again
-when the page is shown.
+People press directly into a phone picture or authorized Mac owner picture to focus typing.
+Pointer, wheel and keyboard input use only the current displayed geometry; opening the view
+never focuses its hidden keyboard. Phone navigation appears whenever input is available.
+Blur, hide, F6 and leaving reset input, cancel composition and release all held contacts.
+Mac task Watch remains view-only. Phone gesture integrity is owned by
+[Live display](agent-phone.md#live-display); Mac integrity is described under
+[owner input](#negotiated-mac-owner-input).
 
 Remote Stop is the Host taking the Run's authority on that Mac back, and it is complete
 when the RPC returns: the Run can never call there again, even after a Host restart, and the
@@ -1388,21 +1374,22 @@ Computer view, Settings — sends Stop through one client store, so they show th
 
 ### Words
 
-| Concept             | Use                                             | Do not use                                |
-| ------------------- | ----------------------------------------------- | ----------------------------------------- |
-| The feature         | `Computer use`                                  | CUA, GUI automation, agent control        |
-| Observe-only access | `Can see`                                       | Read only, view                           |
-| Full access         | `Can see and control`                           | Read-write, full control, Full access     |
-| The policy          | `App approvals`, `Allow any app automatically`  | Full access, trust mode, auto-approve all |
-| Taking an app back  | `Remove` (ask), `Block` (automatic)             | Revoke, disable                           |
-| The helper          | `Opensteer Computer Use` (as macOS shows it)    | daemon, service, agent                    |
-| A live session      | `Typing in Notes` · `On example-mac`            | session, CUA session                      |
-| Ending one          | `Stop using Mac` in a Thread, `Stop` on its Mac | Cancel, Kill, End session                 |
-| The grants          | `macOS Accessibility`, `macOS Screen Recording` | permissions (alone), TCC                  |
+| Concept              | Use                                             | Do not use                                |
+| -------------------- | ----------------------------------------------- | ----------------------------------------- |
+| The feature          | `Computer use`                                  | CUA, GUI automation, agent control        |
+| Observe-only access  | `Can see`                                       | Read only, view                           |
+| Full access          | `Can see and control`                           | Read-write, full control, Full access     |
+| The policy           | `App approvals`, `Allow any app automatically`  | Full access, trust mode, auto-approve all |
+| Taking an app back   | `Remove` (ask), `Block` (automatic)             | Revoke, disable                           |
+| Input into a picture | Click, drag, scroll and type                    | Take over, Give back                      |
+| The helper           | `Opensteer Computer Use` (as macOS shows it)    | daemon, service, agent                    |
+| A live session       | `Typing in Notes` · `On example-mac`            | session, CUA session                      |
+| Ending one           | `Stop using Mac` in a Thread, `Stop` on its Mac | Cancel, Kill, End session                 |
+| The grants           | `macOS Accessibility`, `macOS Screen Recording` | permissions (alone), TCC                  |
 
-Mac owner views offer Take over / Give back when every hop negotiates
+Mac owner pictures accept shared input when every hop negotiates
 [owner input](#negotiated-mac-owner-input) for a read-write app approval.
-The person must explicitly take control; a picture alone grants no input.
+Only the Host’s projected `sharedInput: 1` enables input.
 “Use on this Mac” remains the separate operation that brings the app forward locally.
 
 ## 7. Out of scope by decision
@@ -1462,11 +1449,11 @@ Owner input follows the same layers. `OwnerInputStateTests` and `CaptureLayoutTe
 queue admission, retired sample incarnations, the independent Stop pill and which
 layout changes retire a capture generation. The Host socket journey in
 `display-stream-hub.test.ts` covers opt-in projection, read-write admission,
-controller-only clipboard replies, stale generations and disconnect release against
+viewer-correlated clipboard replies, stale generations and disconnect release against
 scripted native peers. The real-GUI check is the
 [native Mac owner journey](../apps/desktop/native/computer-use/Tests/Fixtures/MacOwnerInputJourney/run-vm.sh):
 AppKit and Electron fields through the real helper core and decoded H.264, covering
-take-over during agent typing, controller handoff, IME commits, verified and stale
+shared input during agent typing, viewer contention, IME commits, verified and stale
 replacement, paste, copy, secure refusal, composition fencing and cleanup.
 `OPENSTEER_MAC_OWNER_VIEW_ONLY_JOURNEY=1` selects the baseline view-only peer checks and
 `OPENSTEER_MAC_OWNER_ENGINES=appkit` one engine. It does not exercise the Host/Runner or
@@ -1678,36 +1665,14 @@ viewer screenshot budget or phone viewer JPEG encoder remains.
 
 ### Negotiated Mac owner input
 
-The helper negotiates `ownerInputVersion: 1` only when its peer offers v1 in
-hello. The signed Runner advertises `macOwnerInputVersion: 1` only with its
-Desktop computer-use bridge. A supporting Host offers `ownerInputVersion: 1` on `display.resolve`; only a helper connection
-that negotiated owner input returns `target.editingVersion: 1`. This Host-initiated
-probe keeps old Hosts' strict status and resolution frames unchanged. The Host
-projects `display.state.editingVersion: 1` only to sockets opened with `editing=1`.
-Absent any link in that negotiation, Mac viewing remains passive. Frame headers
-and the Host API epoch stay unchanged.
+Every hop negotiates owner input version 2; legacy version 1 is read tolerantly and enables
+no input. Writers emit version 2 only to peers that offered it. The viewer sends `sharedInput=1`
+and receives `display.state.sharedInput: 1` only while its exact owner-view generation and
+read-write app approval authorize input. Editing additionally negotiates `editing=1`.
+The Host relays input and reset with no control ID. Results and clipboard replies correlate
+by sequence to their originating viewer; editing context reaches authorized editing viewers.
+See [Host compatibility](host-boundaries.md#compatibility) for previous-release viewers.
 
-Viewer `display.control` and `display.input` use the shared display vocabulary.
-The Host admits only the effective owner's exact live owner-view generation and
-rechecks the current connected, unblocked read-write approval. It forwards ephemeral
-`host.integrations.mac-owner.control` / `.input` with the authenticated auxiliary
-fence. Runner and Desktop relay the helper's `display.control` / `.input` requests.
-Runner offers `x-opensteer-mac-owner-input: 1` on the authenticated bridge
-upgrade; previous Desktops ignore that header. Before extending `display.resolve`,
-Runner reads Desktop's baseline `permissions.get` readiness. Desktop includes
-owner-input support only for an opted-in Runner and its helper's negotiated
-version, preserving the exact baseline reply for previous strict Runners. The bridge projects resolve to exactly `{source}`
-unless that connection still advertises input, including after reconnect, so a
-previous Desktop's strict request parser can continue passive viewing.
-Readiness loss or a bridge reconnect invalidates live owner-video sources through
-`display.source-changed`, so viewers re-resolve and remove Take over when the new
-Desktop/helper does not support input. A control request racing that loss is refused
-as `stream-lost`; deadline expiry is `timed-out`. Input reports `unsupported` for an
-unsupported edit and `not-held` after transport loss or timeout. Desktop also enforces
-the connection's opt-in on control/input requests and owner-input events.
-`runner.integrations.mac-owner.event` carries control, editing context, input result
-or clipboard replies back to the exact controlling socket; passive viewers receive
-none of them. Inputs name a display generation and increasing batch sequence.
 Capture generations fence the picture-to-window mapping: root identity/frame,
 exterior member geometry, crop, display, scale and capture mode. A child wholly
 inside the root does not retire that mapping when it appears, disappears or
@@ -1719,17 +1684,16 @@ input remains stale.
 
 The lane has the following authority and cleanup rules:
 
-The helper arbitrates across views, windows and Host connections. Acquisition
-advances an app control epoch, fences new agent effects, drains active actions and
-invalidates observations before reporting held. Agent mutations then refuse
-`owner-in-control`. Give back revokes queued person input, sends cleanup releases to
-retained process/window identities, drains and invalidates again before admitting
-agents. Every agent batch, including snapshot-free keys, needs an observation in
-the current app control epoch after give-back. Before the first takeover, the
-initial epoch preserves snapshot-free input. Other apps keep independent authority.
-Reconnect never reacquires. Hidden demand, disconnect, target loss,
-lock/sleep, local app switching, Stop and 60 seconds without accepted user intent
-release control; a held stroke also has a five-second liveness bound.
+One per-app mutation coordinator serializes person batches and every mutating agent effect,
+including AX mutations. A person press waits for the current agent effect. An agent effect
+while a person holds a button or key fails with “A person is pressing in this app; try again.”
+Two viewers share one person lane; another viewer’s batch receives `contended` while held.
+The coordinator spans the app, so while a view of one window holds a button or key, a batch
+from a view of another window of the same app also receives `contended`.
+Observations remain valid after person input. Text edits rotate context after intervening edits.
+Reset discards queued input and finishes physical cleanup before admitting the next batch.
+Blur, hide, F6, leaving, geometry changes, lock, target or approval loss, disconnect and Stop
+reset input. Held contacts retain the five-second liveness bound.
 
 The helper reserves complete batches in a count- and byte-bounded person lane,
 separate from agent actions. Shared focus protection inherits the calling lane's
@@ -1738,8 +1702,7 @@ queue behind agent AX reads. Bounded native focus rounds share an asynchronous
 gate so restoration cannot compete over the local front app. Agent preparation
 ends its taps and screen hold before delivery; a local click or window switch
 during delivery does not stop agent input. Remote person bursts retain their
-keyboard protection and after-input watch, and an explicit remote take-over
-revokes an admitted agent batch at every effect. Stop sends
+keyboard protection and after-input watch, and the mutation coordinator serializes effects. Stop sends
 cleanup-only releases without waiting for that gate. Held keys/buttons retain their original process and
 AX window identity. Mouse input includes hover, modifiers and click count; wheel
 deltas map from normalized picture fractions to native pixels. Keyboard characters

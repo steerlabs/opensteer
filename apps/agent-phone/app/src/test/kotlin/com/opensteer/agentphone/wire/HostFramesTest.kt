@@ -46,7 +46,7 @@ class HostFramesTest {
                 IntegrationsMessage.McpOpen::class, IntegrationsMessage.McpMessage::class, IntegrationsMessage.McpClose::class,
                 IntegrationsMessage.Invoke::class,
                 DisplayMessage.Start::class, DisplayMessage.Stop::class, DisplayMessage.Refresh::class,
-                DisplayMessage.Control::class, DisplayMessage.Control::class, DisplayMessage.Input::class,
+                DisplayMessage.Input::class, DisplayMessage.InputReset::class,
                 DisplayMessage.Demand::class, DisplayAck::class,
             ),
             decoded.map { it::class },

@@ -43,15 +43,15 @@ import Darwin
       return
     }
     var params: [String: Any] = ["protocolVersion": 10, "ownerViewVersion": 3]
-    if ownerInput { params["ownerInputVersion"] = 1 }
+    if ownerInput { params["ownerInputVersion"] = 2 }
     let reply = try await request("hello", params)
     try require(reply["ownerViewVersion"] as? Int == 3, "Owner-view v3 negotiation failed")
     if ownerInput {
-      try require(reply["ownerInputVersion"] as? Int == 1, "Owner input was not negotiated")
+      try require(reply["ownerInputVersion"] as? Int == 2, "Owner input was not negotiated")
     } else {
       try require(reply["ownerInputVersion"] == nil, "Baseline hello acquired an unnegotiated input capability")
     }
-    negotiatedOwnerInput = reply["ownerInputVersion"] as? Int == 1
+    negotiatedOwnerInput = reply["ownerInputVersion"] as? Int == 2
     greeted = true
   }
   func nextFrame() async throws -> Data {
@@ -102,10 +102,10 @@ import Darwin
       let object = try JSONSerialization.jsonObject(with: value) as? [String: Any]
       if (object?["id"] as? NSNumber)?.intValue == expected { reply = value; break }
       if object?["event"] as? String == "display.owner-input",
-        let params = object?["params"] as? [String: Any], let control = params["controlId"] as? String,
+        let params = object?["params"] as? [String: Any], let stream = params["streamId"] as? String,
         let message = params["message"] as? [String: Any], message["type"] as? String == "display.editing",
         let context = message["context"] as? [String: Any] {
-        ownerEditing[control] = context
+        ownerEditing[stream] = context
       }
       try value.write(to: out.appendingPathComponent("wire-event-\(expected)-\(UUID().uuidString).json"))
     }
@@ -193,10 +193,10 @@ extension WireJourney {
     let fixtureEngine = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_ELECTRON_APP"] == nil ? "appkit" : "electron"
     var cases: [String: String] = [:]
     var active: String?
-    let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "takeover-during-agent-mutation", "takeover-two-viewers", "agent-refused-held", "another-app-agent-unaffected",
+    let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-button", "another-app-agent-unaffected",
       "native-text-key", "IME-commit", "verified-replacement", "stale-replacement", "rich-paste-refusal",
       "multiline-paste", "AX-copy", "save-chord", "undo-chord", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
-      "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "giveback-epoch", "explicit-viewer-handoff", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "local-switch-cleanup", "disconnect-cleanup"]
+      "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "reset-preserves-agent-observation", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "disconnect-cleanup"]
     for name in planned { cases[name] = "not-run" }
     let pasteboard = NSPasteboard.general
     let sentinel = "owner-input-guest-sentinel-" + UUID().uuidString
@@ -223,7 +223,6 @@ extension WireJourney {
     let viewB = "cvw_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
     let streamA = "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     let streamB = "dsp_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-    let controlA = "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     let agent = try WireJourney(out: out.appendingPathComponent("agent"), helper: helper)
     let other = try WireJourney(out: out.appendingPathComponent("other-viewer"), helper: helper)
     let mediaA = try WireJourney(out: out.appendingPathComponent("media-A"), helper: helper)
@@ -238,7 +237,7 @@ extension WireJourney {
     let ref = try ((bound["window"] as? [String: Any])?["ref"] as? String).unwrap("agent window ref")
     _ = try await agent.request("session.observe", ["sessionId": session, "app": sessionApp, "window": ref, "includeScreenshot": false])
     let helperApp = await helper.registry.sessions[session]?.app(app.bundleId)
-    let appFence = try (helperApp?.ownerInputFence).unwrap("actual helper app fence")
+    let mutations = try (helperApp?.mutations).unwrap("actual helper app mutation lane")
     passed()
     start("helper-baseline-negotiation")
     do {
@@ -256,13 +255,10 @@ extension WireJourney {
         try require(target["editingVersion"] == nil, "A baseline helper peer received editing without hello negotiation")
         targets.append(target)
       }
-      do {
-        _ = try await baseline.request("display.control", ["streamId": streamA, "source": source,
-          "controlId": controlA, "action": "acquire", "access": "read-write"])
-        throw JourneyFailure.failed("A baseline helper peer acquired owner input")
-      } catch let error as HelperError {
-        try require(error.code == .unsupported, "Baseline peer had the wrong control refusal")
-      }
+      let refused = try await baseline.request("display.input", ["streamId": streamA, "source": source,
+        "geometry": 1, "sequence": 0, "events": [["kind": "copy"]]])
+      try require(refused["outcome"] as? String == "refused" && refused["reason"] as? String == "unavailable",
+        "A baseline helper peer admitted owner input")
       _ = try await baseline.request("view.close", ["viewId": view, "generation": 1, "leaseDurationMs": 300_000])
       try JSONSerialization.data(withJSONObject: ["passed": true,
         "boundary": "actual current helper with baseline Host-style hello and resolve", "targets": targets],
@@ -289,7 +285,7 @@ extension WireJourney {
     for (wire, view, window, stream, media) in [(self, viewA, a, streamA, mediaA), (other, viewB, b, streamB, mediaB)] {
       _ = try await wire.request("view.open", ["viewId": view, "generation": 1, "leaseDurationMs": 300_000,
         "target": ["kind": "app", "app": identity, "window": window]])
-      let resolved = try await wire.request("display.resolve", ["source": source(view), "ownerInputVersion": 1])
+      let resolved = try await wire.request("display.resolve", ["source": source(view), "ownerInputVersion": 2])
       let target = try (resolved["target"] as? [String: Any]).unwrap("video target")
       try require(target["editingVersion"] as? Int == 1, "Video resolution did not confirm editing")
       let started = try await wire.request("display.start", ["streamId": stream, "target": target,
@@ -305,12 +301,20 @@ extension WireJourney {
     _ = try await request("permissions.get", [:])
     let initialEvents = Set(try FileManager.default.contentsOfDirectory(at: out, includingPropertiesForKeys: nil)
       .filter { $0.lastPathComponent.hasPrefix("wire-event-") })
-    func control(_ wire: WireJourney, _ stream: String, _ view: String, _ id: String, _ action: String) async throws -> [String: Any] {
-      try await wire.request("display.control", ["streamId": stream, "source": source(view),
-        "controlId": id, "action": action, "access": "read-write"])
+    func reset(_ wire: WireJourney, _ stream: String, _ view: String) async throws {
+      _ = try await wire.request("display.input-reset", ["streamId": stream, "source": source(view)])
+    }
+    var inputSequence = 0
+    var receipts: [[String: Any]] = []
+    func input(_ events: [[String: Any]], generation: Int? = nil) async throws -> [String: Any] {
+      defer { inputSequence += 1 }
+      let answer = try await request("display.input", ["streamId": streamA, "source": source(viewA),
+        "geometry": generation ?? geometry, "sequence": inputSequence, "events": events])
+      receipts.append(answer)
+      return answer
     }
     passed()
-    start("takeover-during-agent-mutation")
+    start("person-waits-for-agent-mutation")
     let dispatchLog = out.appendingPathComponent("dispatch.jsonl")
     func dispatchedKeys() throws -> Int {
       try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
@@ -340,30 +344,20 @@ extension WireJourney {
     let beforeAgent = try dispatchedKeys()
     let agentTask = Task { @MainActor in
       try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
-        "actions": [["type": "type", "text": String(repeating: "z\n", count: 4_000)],
+        "actions": [["type": "type", "text": String(repeating: "z\n", count: 128)],
           ["type": "key", "keys": "x"]]])
     }
     let startedBy = Date().addingTimeInterval(3)
     while try dispatchedKeys() == beforeAgent, Date() < startedBy {
       try await Task.sleep(nanoseconds: 10_000_000)
     }
-    let acquired: [String: Any]
     do {
       try require(try dispatchedKeys() > beforeAgent, "Agent mutation never reached the native fixture")
-      acquired = try await control(self, streamA, viewA, controlA, "acquire")
-      try require(acquired["state"] as? String == "held", "Take over was not held")
-      let interrupted = try await agentTask.value
-      let atHeld = try dispatchedKeys()
-      try await Task.sleep(nanoseconds: 200_000_000)
-      let afterHeld = try dispatchedKeys()
-      let error = (interrupted["error"] as? [String: Any])?["code"] as? String
-      try JSONSerialization.data(withJSONObject: ["before": beforeAgent, "atHeld": atHeld,
-        "afterHeld": afterHeld, "agentResult": interrupted], options: [.prettyPrinted, .sortedKeys])
-        .write(to: out.appendingPathComponent("owner-agent-takeover.json"))
-      try require(atHeld == afterHeld && atHeld > beforeAgent && atHeld - beforeAgent < 8_000
-        && (interrupted["performed"] as? [String])?.isEmpty == true
-        && ["owner-in-control", "outcome-unknown"].contains(error ?? ""),
-        "Take-over did not fence/drain the admitted native agent mutation")
+      let personBatch = try await input([["kind": "copy"]])
+      let result = try await agentTask.value
+      try require(personBatch["outcome"] as? String == "dispatched"
+        && result["error"] is NSNull && (result["performed"] as? [String])?.count == 2,
+        "Shared input interrupted the agent or lost the waiting person batch")
     } catch {
       helper.stopFromOverlay()
       _ = try? await agentTask.value
@@ -371,16 +365,21 @@ extension WireJourney {
     }
     try await Contracts.command(out, "owner-clear")
     passed()
-    start("takeover-two-viewers")
-    let contender = try await control(other, streamB, viewB, "dcl_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "acquire")
-    try require(contender["state"] as? String == "refused" && contender["reason"] as? String == "busy", "Second controller was not refused busy")
+    start("two-idle-attachments-share-app")
+    let second = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
+      "geometry": firstGeometry, "sequence": 0, "events": [["kind": "copy"]]])
+    try require(second["outcome"] as? String == "dispatched", "Idle attachment excluded another viewer")
     passed()
-    start("agent-refused-held")
-    do {
-      _ = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
-        "actions": [["type": "key", "keys": "x"]]])
-      throw JourneyFailure.failed("Agent act was admitted while owner held control")
-    } catch let error as HelperError { try require(error.code == .ownerInControl, "Agent act had the wrong takeover refusal") }
+    start("agent-refused-held-button")
+    let heldContact = try await input([["kind": "mouse", "phase": "down", "button": "left",
+      "clickCount": 1, "modifiers": [], "x": 0.5, "y": 0.5]])
+    try require(heldContact["outcome"] as? String == "dispatched", "Person button did not go down")
+    let heldResult = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
+      "actions": [["type": "key", "keys": "x"]]])
+    let heldError = heldResult["error"] as? [String: Any]
+    try require(heldError?["code"] as? String == "failed"
+      && heldError?["message"] as? String == "A person is pressing in this app; try again.",
+      "Agent did not refuse the actual held contact")
     passed()
     start("another-app-agent-unaffected")
     do {
@@ -424,19 +423,24 @@ extension WireJourney {
       _ = try await independent.request("session.close", ["sessionId": otherSession])
     }
     passed()
-    var inputSequence = 0
-    var receipts: [[String: Any]] = []
-    func input(_ events: [[String: Any]], generation: Int? = nil, id: String = controlA) async throws -> [String: Any] {
-      defer { inputSequence += 1 }
-      let answer = try await request("display.input", ["streamId": streamA, "source": source(viewA),
-        "controlId": id, "geometry": generation ?? geometry, "sequence": inputSequence, "events": events])
-      receipts.append(answer)
-      return answer
+    let beforeResetUps = try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+      let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+      return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
+    }.count
+    try await reset(self, streamA, viewA)
+    let releaseBy = Date().addingTimeInterval(2)
+    func mouseUps() throws -> Int {
+      try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+        let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
+      }.count
     }
+    while try mouseUps() == beforeResetUps, Date() < releaseBy { try await Task.sleep(nanoseconds: 10_000_000) }
+    try require(try mouseUps() == beforeResetUps + 1, "Reset did not release exactly one held person button")
     func context(sensitive: Bool? = nil, excluding: String? = nil) async throws -> String {
       for _ in 0..<30 {
         _ = try await request("permissions.get", [:])
-        if let context = ownerEditing[controlA], let id = context["contextId"] as? String,
+        if let context = ownerEditing[streamA], let id = context["contextId"] as? String,
           let field = context["field"] as? [String: Any], id != excluding,
           sensitive == nil || field["sensitive"] as? Bool == sensitive {
           return id
@@ -525,7 +529,7 @@ extension WireJourney {
     try await Contracts.command(out, "resize", "B")
     _ = try await request("display.refresh", ["streamId": streamA])
     let (stableGeometry, _) = try await mediaA.keyframe(streamA)
-    try require(stableGeometry == firstGeometry, "Stable take-over/typing changed capture generation")
+    try require(stableGeometry == firstGeometry, "Stable shared input changed capture generation")
     _ = try await request("permissions.get", [:])
     let stableStates = try FileManager.default.contentsOfDirectory(at: out, includingPropertiesForKeys: nil)
       .filter { $0.lastPathComponent.hasPrefix("wire-event-") && !initialEvents.contains($0) }
@@ -536,7 +540,7 @@ extension WireJourney {
         return state
       }
     try require(stableStates.allSatisfy { $0["generation"] as? Int == firstGeometry && $0["state"] as? String == "live" },
-      "Stable take-over/typing retired a current capture incarnation")
+      "Stable shared input retired a current capture incarnation")
     passed()
     start("native-fixture-pixel-latency")
     let latency = try await OwnerLatencyEvidence.run(wire: self, media: mediaA, stream: streamA,
@@ -617,55 +621,37 @@ extension WireJourney {
     let changedImage = try await VideoEvidence.decode(changed)
     try NSBitmapImageRep(cgImage: changedImage).representation(using: .png, properties: [:])
       .unwrap("owner changed PNG").write(to: out.appendingPathComponent("owner-edited.png"))
-    start("giveback-epoch")
+    start("reset-preserves-agent-observation")
     try await Contracts.command(out, "owner-end")
-    _ = try await control(self, streamA, viewA, controlA, "release")
-    do {
-      _ = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
-        "actions": [["type": "key", "keys": "x"]]])
-      throw JourneyFailure.failed("Agent reused its pre-takeover authority without observing again")
-    } catch let error as HelperError { try require(error.code == .staleObservation, "Give-back had the wrong old-observation refusal") }
-    _ = try await agent.request("session.observe", ["sessionId": session, "app": sessionApp, "window": ref,
-      "includeScreenshot": false])
-    let refreshed = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
+    try await reset(self, streamA, viewA)
+    let resumed = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
       "actions": [["type": "key", "keys": "y"]]])
-    let refreshedText = try await note()
-    try require(refreshed["error"] is NSNull && (refreshed["performed"] as? [String])?.count == 1
-      && refreshedText == literal + "y", "A fresh post-owner observation did not re-admit agent keys")
-    passed()
-    start("explicit-viewer-handoff")
-    let nextControl = "dcl_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-    let handoff = try await control(other, streamB, viewB, nextControl, "acquire")
-    try require(handoff["state"] as? String == "held", "Give-back did not permit another viewer's explicit takeover")
-    _ = try await control(other, streamB, viewB, nextControl, "release")
+    try require(resumed["error"] is NSNull && (resumed["performed"] as? [String])?.count == 1,
+      "Person input invalidated the agent's observation")
+    try await Contracts.command(out, "owner-select-all")
+    _ = try await input([["kind": "paste", "text": literal]])
     passed()
     start("lost-keyup-cleanup")
-    let lostControl = "dcl_dddddddd-dddd-4ddd-8ddd-dddddddddddd"
-    let lost = try await control(self, streamA, viewA, lostControl, "acquire")
-    try require(lost["state"] as? String == "held", "Lost-keyup setup did not acquire control")
     let beforeLost = try modifierReleases()
-    let lostDown = try await input(shiftDown, id: lostControl)
+    let lostDown = try await input(shiftDown)
     try require(lostDown["outcome"] as? String == "dispatched", "Lost-keyup setup was refused")
     try await waitForModifierRelease(after: beforeLost, seconds: 6)
-    let expired = try await input([["kind": "copy"]], id: lostControl)
-    try require(expired["outcome"] as? String == "refused" && expired["reason"] as? String == "not-held",
-      "Lost keyup left the old lease admitted")
-    _ = try await control(self, streamA, viewA, lostControl, "release")
+    let expired = try await input([["kind": "copy"]])
+    try require(expired["outcome"] as? String == "dispatched",
+      "Lost keyup prevented the next shared batch")
+    try await reset(self, streamA, viewA)
     passed()
     start("hide-cleanup")
-    let hideControl = "dcl_44444444-4444-4444-8444-444444444444"
-    let hiding = try await control(self, streamA, viewA, hideControl, "acquire")
-    try require(hiding["state"] as? String == "held", "Hidden-demand setup did not acquire control")
     let beforeHide = try modifierReleases()
-    let hideDown = try await input(shiftDown, id: hideControl)
+    let hideDown = try await input(shiftDown)
     try require(hideDown["outcome"] as? String == "dispatched", "Hidden-demand Shift was refused")
     _ = try await request("display.demand", ["streamId": streamA, "revision": 1, "sources": [],
       "warm": ["durationMs": 30_000, "sources": [source(viewA)]]])
     try await waitForModifierRelease(after: beforeHide, seconds: 2)
-    let hiddenInput = try await input([["kind": "copy"]], id: hideControl)
-    try require(hiddenInput["outcome"] as? String == "refused" && hiddenInput["reason"] as? String == "not-held",
+    let hiddenInput = try await input([["kind": "copy"]])
+    try require(hiddenInput["outcome"] as? String == "refused" && hiddenInput["reason"] as? String == "unavailable",
       "Hidden demand left owner input admitted")
-    _ = try await control(self, streamA, viewA, hideControl, "release")
+    try await reset(self, streamA, viewA)
     _ = try await request("display.demand", ["streamId": streamA, "revision": 2, "sources": [source(viewA)]])
     let hiddenGeneration = geometry
     for _ in 0..<12 {
@@ -674,21 +660,29 @@ extension WireJourney {
     }
     try require(geometry > hiddenGeneration, "Hidden demand did not fence its old picture generation")
     passed()
+    start("disconnect-cleanup")
+    let beforeDisconnect = try modifierReleases()
+    let disconnectDown = try await input(shiftDown)
+    try require(disconnectDown["outcome"] as? String == "dispatched", "Disconnect Shift was refused")
+    try require(Darwin.shutdown(client, SHUT_RDWR) == 0, "Failed to disconnect the input socket")
+    try await waitForModifierRelease(after: beforeDisconnect, seconds: 2)
+    try await mutations.beginAgent()
+    mutations.endAgent()
+    passed()
+    // Use the independent viewer for Stop after the first viewer disconnects.
     start("Stop-without-session")
     _ = try await agent.request("session.close", ["sessionId": session])
     try require(helper.registry.sessions.isEmpty, "Owner Stop fixture still had an agent session")
-    let stopControl = "dcl_cccccccc-cccc-4ccc-8ccc-cccccccccccc"
-    let reacquired = try await control(self, streamA, viewA, stopControl, "acquire")
-    try require(reacquired["state"] as? String == "held", "Explicit second takeover failed")
     let beforeStop = try modifierReleases()
-    let held = try await input(shiftDown, id: stopControl)
+    let held = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
+      "geometry": firstGeometry, "sequence": 1, "events": shiftDown])
     try require(held["outcome"] as? String == "dispatched", "Held-key fixture failed")
     helper.stopFromOverlay()
-    try await Task.sleep(nanoseconds: 400_000_000)
-    let stopped = try await input([["kind": "copy"]], id: stopControl)
-    try require(stopped["outcome"] as? String == "refused" && stopped["reason"] as? String == "not-held", "Stop without a session left input admitted")
     try await waitForModifierRelease(after: beforeStop, seconds: 2)
-    _ = try await control(self, streamA, viewA, stopControl, "release")
+    let stopped = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
+      "geometry": firstGeometry, "sequence": 2, "events": [["kind": "copy"]]])
+    try require(stopped["outcome"] as? String == "refused" && stopped["reason"] as? String == "unavailable",
+      "Stop without a session left input admitted")
     passed()
     start("local-cover-invariants")
     try require(PrivateAPI.focusPID(front: true) == originalFront && CGEvent(source: nil)?.location == originalPointer,
@@ -705,47 +699,6 @@ extension WireJourney {
       "afterChangeCount": pasteboard.changeCount, "boundary": "VM general pasteboard; host clipboard sharing disabled"])
       .write(to: out.appendingPathComponent("owner-pasteboard.json"))
     passed()
-    start("local-switch-cleanup")
-    let switchControl = "dcl_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
-    let switched = try await control(self, streamA, viewA, switchControl, "acquire")
-    try require(switched["state"] as? String == "held", "Local-switch setup did not acquire control")
-    let beforeSwitch = try modifierReleases()
-    let switchDown = try await input(shiftDown, id: switchControl)
-    try require(switchDown["outcome"] as? String == "dispatched", "Local-switch Shift was refused")
-    // This is the person's deliberate local app switch, after the unchanged-front evidence ended.
-    try await Contracts.command(out, "focus", "A")
-    try await waitForModifierRelease(after: beforeSwitch, seconds: 2)
-    let switchedInput = try await input([["kind": "copy"]], id: switchControl)
-    try require(switchedInput["outcome"] as? String == "refused" && switchedInput["reason"] as? String == "not-held",
-      "Local switching left the previous controller admitted")
-    _ = try await control(self, streamA, viewA, switchControl, "release")
-    person.show()
-    try await Task.sleep(nanoseconds: 200_000_000)
-    passed()
-    start("disconnect-cleanup")
-    let disconnectControl = "dcl_ffffffff-ffff-4fff-8fff-ffffffffffff"
-    let disconnecting = try await control(self, streamA, viewA, disconnectControl, "acquire")
-    try require(disconnecting["state"] as? String == "held", "Disconnect setup did not acquire control")
-    let beforeDisconnect = try modifierReleases()
-    let disconnectDown = try await input(shiftDown, id: disconnectControl)
-    try require(disconnectDown["outcome"] as? String == "dispatched", "Disconnect Shift was refused")
-    let disconnectedBy = Date().addingTimeInterval(2)
-    try require(Darwin.shutdown(client, SHUT_RDWR) == 0, "Failed to disconnect the controlling socket")
-    try await waitForModifierRelease(after: beforeDisconnect, seconds: max(0, disconnectedBy.timeIntervalSinceNow))
-    var authorityReleased = false
-    while Date() < disconnectedBy {
-      if let ticket = try? appFence.beginAgent() {
-        appFence.endAgent(ticket)
-        authorityReleased = true
-        break
-      }
-      try await Task.sleep(nanoseconds: 20_000_000)
-    }
-    try require(authorityReleased, "Disconnect did not finish its app authority release")
-    let afterDisconnect = try await control(other, streamB, viewB, nextControl, "acquire")
-    try require(afterDisconnect["state"] as? String == "held", "Disconnect did not return app authority for explicit takeover")
-    _ = try await control(other, streamB, viewB, nextControl, "release")
-    passed()
     try JSONSerialization.data(withJSONObject: ["passed": true, "boundary": "real helper core wire, AX and H.264; no Host/Runner",
       "engine": fixtureEngine, "receipts": receipts, "geometry": geometry, "nativeLatencyPercentiles": latency,
       "unqualified": ["Host/Runner/shipping viewer path and latency", "native IME source traces", "native mixed-version binaries"]], options: [.prettyPrinted, .sortedKeys])
@@ -756,7 +709,7 @@ extension WireJourney {
 extension WireJourney {
   func ownerViewOnly(app: AppIdentity, window: CGWindowID) async throws {
     let names = ["baseline-hello-does-not-negotiate-input", "baseline-and-probed-resolve",
-      "passive-media-decodes", "forged-control-refused", "forged-input-zero-delivery", "passive-media-after-refusal"]
+      "passive-media-decodes", "forged-input-zero-delivery", "passive-media-after-refusal"]
     var cases = Dictionary(uniqueKeysWithValues: names.map { ($0, "not-run") })
     var active: String?
     func start(_ name: String) { active = name; cases[name] = "running" }
@@ -775,7 +728,6 @@ extension WireJourney {
     let identity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(app))
     let view = "cvw_44444444-4444-4444-8444-444444444444"
     let stream = "dsp_44444444-4444-4444-8444-444444444444"
-    let control = "dcl_44444444-4444-4444-8444-444444444444"
     let source: [String: Any] = ["kind": "owner-view", "viewId": view, "generation": 1]
     _ = try await request("view.open", ["viewId": view, "generation": 1,
       "leaseDurationMs": 300_000, "target": ["kind": "app", "app": identity, "window": window]])
@@ -812,20 +764,11 @@ extension WireJourney {
       }.count
     }
     let before = try keys()
-    start("forged-control-refused")
-    do {
-      _ = try await request("display.control", ["streamId": stream, "source": source,
-        "controlId": control, "action": "acquire", "access": "read-write"])
-      throw JourneyFailure.failed("A baseline helper peer acquired forged control")
-    } catch let error as HelperError {
-      try require(error.code == .unsupported, "Wrong view-only control refusal")
-    }
-    passed()
     start("forged-input-zero-delivery")
     let result = try await request("display.input", ["streamId": stream, "source": source,
-      "controlId": control, "geometry": geometry, "sequence": 1,
+      "geometry": geometry, "sequence": 1,
       "events": [["kind": "key", "action": "down", "code": "KeyX", "key": "x", "text": "x", "modifiers": []]]])
-    try require(result["outcome"] as? String == "refused" && result["reason"] as? String == "not-held",
+    try require(result["outcome"] as? String == "refused" && result["reason"] as? String == "unavailable",
       "Wrong view-only input refusal")
     try await Task.sleep(nanoseconds: 200_000_000)
     let after = try keys()

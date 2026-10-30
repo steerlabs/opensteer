@@ -133,7 +133,6 @@ class Socket implements WebSocketClient {
   }
 }
 const sessionId = "cus_11111111-1111-4111-8111-111111111111";
-const controlId = "dcl_22222222-2222-4222-8222-222222222222";
 const context = {
   contextId: "00000000-0000-4000-8000-000000000001",
   field: { kind: "text", multiline: true, sensitive: false },
@@ -260,6 +259,7 @@ async function setup(
       width: 200,
       height: 400,
       editingVersion: 1,
+      sharedInput: 1,
     });
     socket.emit("message", {
       data: encodeDisplayViewerFrame(
@@ -289,12 +289,10 @@ async function press(label: string) {
 function input() {
   return socket.sent.filter((m) => m.type === "display.input");
 }
-it("takes over, maps touch, edits, reports receipts, copies and releases on hide through the real display transport", async () => {
+it("accepts input without a button, maps touch, edits, reports receipts, copies and releases on hide through the real display transport", async () => {
   const { connect, render } = await setup();
   expect(connect.mock.calls[0]?.[1]).toEqual({ editing: 1 });
-  await press("Take over");
-  expect(socket.sent).toContainEqual({ type: "display.control", action: "acquire" });
-  await act(async () => socket.json({ type: "display.control", state: "held", controlId }));
+  expect(container.textContent).not.toMatch(/Take over|Give back|controlling/);
   await act(async () => state.layout?.({ nativeEvent: { layout: { width: 400, height: 400 } } }));
   const touch = { nativeEvent: { locationX: 200, locationY: 200, timestamp: 10, touches: [{}] } };
   await act(async () => {
@@ -354,19 +352,17 @@ it("takes over, maps touch, edits, reports receipts, copies and releases on hide
   );
   expect(state.copy).toHaveBeenCalledExactlyOnceWith("selected", { inputFormat: "plain" });
   evidence.push({
-    case: "phone-takeover",
+    case: "phone-shared-input",
     messages: socket.sent,
     clipboard: "selected",
     status: "passed-scripted-component-journey",
   });
   await render(false);
-  expect(socket.sent).toContainEqual({ type: "display.control", action: "release" });
+  expect(socket.sent).toContainEqual({ type: "display.input-reset" });
   expect(socket.readyState).toBe(3);
 });
 
 async function holdAndType() {
-  await press("Take over");
-  await act(async () => socket.json({ type: "display.control", state: "held", controlId }));
   await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
   await press("Keyboard");
 }
@@ -415,6 +411,7 @@ it("retires pending copy and editing context when the display generation changes
       width: 200,
       height: 400,
       editingVersion: 1,
+      sharedInput: 1,
     });
     socket.json({
       type: "display.clipboard",
@@ -464,32 +461,21 @@ it("retires pending copy and editing context when the display generation changes
   expect(state.copy).toHaveBeenCalledExactlyOnceWith("new generation", { inputFormat: "plain" });
 });
 
-it("retires pending copy when control is reacquired and waits for the new operation", async () => {
-  await setup();
-  await holdAndType();
-  await act(async () => state.proxy?.onEvent({ type: "copy" }));
-  await press("Give back");
-  await act(async () => socket.json({ type: "display.control", state: "released" }));
-  await press("Take over");
+it("keeps an unavailable display view-only with no input buttons", async () => {
+  await setup(false, "android", true);
   await act(async () =>
     socket.json({
-      type: "display.control",
-      state: "held",
-      controlId: "dcl_33333333-3333-4333-8333-333333333333",
+      type: "display.state",
+      state: "live",
+      generation: 1,
+      width: 200,
+      height: 400,
+      editingVersion: 1,
     }),
   );
-  await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
-  await press("Keyboard");
-  await act(async () => state.proxy?.onEvent({ type: "copy" }));
-  const sequence = input().at(-1)?.sequence;
-  await act(async () =>
-    socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "old control" }),
-  );
-  expect(state.copy).not.toHaveBeenCalled();
-  await act(async () =>
-    socket.json({ type: "display.clipboard", sequence, outcome: "copied", text: "new control" }),
-  );
-  expect(state.copy).toHaveBeenCalledExactlyOnceWith("new control", { inputFormat: "plain" });
+  expect(container.textContent).not.toMatch(/Take over|Give back|controlling/);
+  expect(container.querySelector('button[aria-label="Keyboard"]')).toBeNull();
+  expect(input()).toEqual([]);
 });
 
 it("uses shared bounded paste batches and handles every split-frame receipt", async () => {
@@ -531,21 +517,32 @@ it("offers Mac input only where its video is available", async () => {
   await act(async () => root!.unmount());
   root = null;
   await setup(false, "android");
-  await press("Take over");
-  expect(socket.sent).toContainEqual({ type: "display.control", action: "acquire" });
+  expect(container.textContent).not.toMatch(/Take over|Give back/);
 });
 
-it("shows owner-view control refusals with the server's reason", async () => {
-  await setup(false, "android", true);
-  await press("Take over");
-  await act(async () => socket.json({ type: "display.control", state: "refused", reason: "busy" }));
-  expect(container.textContent).toContain("Control refused: busy");
+it("resets input when its keyboard blurs", async () => {
+  await setup();
+  await holdAndType();
+  await act(async () =>
+    state.proxy?.onEvent({
+      type: "compositionstart",
+      proxy: { value: "", selectionStart: 0, selectionEnd: 0 },
+    }),
+  );
+  await act(async () =>
+    state.proxy?.onEvent({
+      type: "compositionupdate",
+      data: "に",
+      proxy: { value: "に", selectionStart: 1, selectionEnd: 1 },
+    }),
+  );
+  await act(async () => state.proxy?.onEvent({ type: "blur" }));
+  expect(input()).toEqual([]);
+  expect(socket.sent).toContainEqual({ type: "display.input-reset" });
 });
 
 it("cancels a held touch before the stage moves and refuses stale picture input", async () => {
   await setup();
-  await press("Take over");
-  await act(async () => socket.json({ type: "display.control", state: "held", controlId }));
   await act(async () => state.layout?.({ nativeEvent: { layout: { width: 400, height: 400 } } }));
   const touch = { nativeEvent: { locationX: 200, locationY: 200, timestamp: 10, touches: [{}] } };
   await act(async () => state.touch?.onTouchStart?.(touch));
@@ -562,6 +559,7 @@ it("cancels a held touch before the stage moves and refuses stale picture input"
       width: 400,
       height: 200,
       editingVersion: 1,
+      sharedInput: 1,
     });
     state.touch?.onTouchEnd?.({
       ...touch,
@@ -588,10 +586,8 @@ it("keeps Mac task screens and phone owner screens passive", async () => {
   expect(container.querySelector('button[aria-label="Take over"]')).toBeNull();
 });
 
-it("commits local preedit before giving back control when its screen hides", async () => {
+it("cancels local preedit and resets input when its screen hides", async () => {
   const { render } = await setup();
-  await press("Take over");
-  await act(async () => socket.json({ type: "display.control", state: "held", controlId }));
   await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
   await press("Keyboard");
   await act(async () => {
@@ -610,9 +606,7 @@ it("commits local preedit before giving back control when its screen hides", asy
     (message) =>
       message.type === "display.input" && JSON.stringify(message.events).includes('"text":"に"'),
   );
-  const released = socket.sent.findIndex(
-    (message) => message.type === "display.control" && message.action === "release",
-  );
-  expect(committed).toBeGreaterThanOrEqual(0);
-  expect(released).toBeGreaterThan(committed);
+  const released = socket.sent.findIndex((message) => message.type === "display.input-reset");
+  expect(committed).toBe(-1);
+  expect(released).toBeGreaterThanOrEqual(0);
 });

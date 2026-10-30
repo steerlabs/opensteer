@@ -99,11 +99,11 @@ try {
       const url = new URL(`http://127.0.0.1:${address.port}`);
       url.searchParams.set(
         "displaySocketUrl",
-        `${host.base}/v1/computer-use/${route}/display?editing=1`,
+        `${host.base}/v1/computer-use/${route}/display?editing=1&sharedInput=1`,
       );
       url.searchParams.set("mac", mac ? "1" : "0");
       await page.goto(url.toString());
-      await page.getByRole("button", { name: "Take over", exact: true }).click();
+      // Input is shared with the agent: the field enables as soon as the Host offers it.
       const field = page.locator("textarea.remote-keyboard-input:not(:disabled)");
       await field.focus();
       await page.keyboard.type("e");
@@ -212,10 +212,12 @@ try {
           ),
         );
       await page.screenshot({ path: path.join(directory, `${name}.png`) });
-      await page.getByRole("button", { name: "Give back", exact: true }).click();
+      // Leaving the picture releases what this viewer holds; the display stays usable.
+      await page.keyboard.press("F6");
       await page.waitForFunction(
         () =>
-          document.querySelector<HTMLTextAreaElement>("textarea.remote-keyboard-input")?.disabled,
+          !document.activeElement?.matches("textarea.remote-keyboard-input") &&
+          (Reflect.get(window, "displayEditingSmoke") as DisplayEditingSmokeApi).resets() > 0,
       );
       assert.deepEqual(errors, []);
       assert.deepEqual(host.failures, []);

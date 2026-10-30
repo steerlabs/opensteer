@@ -318,10 +318,10 @@ struct OverlayModel {
     let ordered = frontOrder(at: now)
     let pill = Pill(
       status: sessions.contains(where: \.ownerInput)
-        ? "Remote control of " + Self.list(sessions.filter(\.ownerInput).flatMap(\.apps).map(\.name))
+        ? "Sharing " + Self.list(sessions.filter(\.ownerInput).flatMap(\.apps).map(\.name))
         : Self.status(active: active, held: heldApps, typing: typing),
       compactStatus: sessions.contains(where: \.ownerInput)
-        ? "Remote control · " + Self.list(sessions.filter(\.ownerInput).flatMap(\.apps).map(\.name))
+        ? "Sharing · " + Self.list(sessions.filter(\.ownerInput).flatMap(\.apps).map(\.name))
         : compactStatus(active: active, front: ordered.first),
       detail: Self.detail(Self.titles(of: detailSessions)),
       controls: .session,

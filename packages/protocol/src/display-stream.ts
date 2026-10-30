@@ -54,11 +54,8 @@ export const DisplayStreamIdSchema = z
   .regex(new RegExp(`^dsp_${uuid}$`, "i"))
   .brand<"DisplayStreamId">();
 export type DisplayStreamId = z.infer<typeof DisplayStreamIdSchema>;
-export const DisplayControlIdSchema = z
-  .string()
-  .regex(new RegExp(`^dcl_${uuid}$`, "i"))
-  .brand<"DisplayControlId">();
-export type DisplayControlId = z.infer<typeof DisplayControlIdSchema>;
+/** Read only from previous-release viewers, whose Take over named a control; never issued. */
+export const LegacyDisplayControlIdSchema = z.string().regex(new RegExp(`^dcl_${uuid}$`, "i"));
 
 /** Viewer authority is independent of the shared phone producer. */
 export const DisplaySourceSchema = z.discriminatedUnion("kind", [
@@ -199,21 +196,6 @@ export const DisplayStreamReasonSchema = z.enum([
   "data-socket-failed",
 ]);
 export type DisplayStreamReason = z.infer<typeof DisplayStreamReasonSchema>;
-export const DisplayControlStateSchema = z.enum(["held", "released", "refused"]);
-export type DisplayControlState = z.infer<typeof DisplayControlStateSchema>;
-export const DisplayControlReasonSchema = z.enum([
-  "busy",
-  "paused",
-  "secure-lock",
-  "session-ended",
-  "stream-lost",
-  "timed-out",
-  "released-by-owner",
-  "viewer-gone",
-]);
-export type DisplayControlReason = z.infer<typeof DisplayControlReasonSchema>;
-export const DisplayControlActionSchema = z.enum(["acquire", "release"]);
-export type DisplayControlAction = z.infer<typeof DisplayControlActionSchema>;
 
 const normalizedPoint = z.number().min(0).max(1);
 /** One paste fits the Host's display frame bound even with escaped characters. */
@@ -272,8 +254,30 @@ export const DisplayInputEventSchema = z.union([
 export type DisplayInputEvent = z.infer<typeof DisplayInputEventSchema>;
 export const DisplayInputEventsSchema = z.array(DisplayInputEventSchema).min(1).max(64);
 export type DisplayInputEvents = z.infer<typeof DisplayInputEventsSchema>;
+/**
+ * Updates what a viewer still holds on a display (a touch, mouse buttons,
+ * keys) after one of its events. The Host's person lane and a client sharing
+ * one socket among several views keep the same account of it.
+ */
+export function trackHeldDisplayInput(held: Set<string>, event: DisplayInputEvent): void {
+  if (event.kind === "pointer" || event.kind === "mouse") {
+    const key = event.kind === "pointer" ? "pointer" : `mouse:${event.button}`;
+    if (event.phase === "down") held.add(key);
+    else if (event.phase === "up") held.delete(key);
+    else if (event.phase === "cancel")
+      for (const item of held)
+        if (event.kind === "pointer" ? item === "pointer" : item.startsWith("mouse:"))
+          held.delete(item);
+  } else if (event.kind === "key") {
+    if (event.action === "down") held.add(`key:${event.code}`);
+    else held.delete(`key:${event.code}`);
+  }
+}
+/**
+ * One batch of a person's input. A viewer numbers its own batches; the Host
+ * renumbers them into the display's single person lane for the producer.
+ */
 export const DisplayInputSchema = z.strictObject({
-  controlId: DisplayControlIdSchema,
   geometry: DisplayGenerationSchema,
   sequence: DisplaySequenceSchema,
   events: DisplayInputEventsSchema,
@@ -298,26 +302,38 @@ export const DisplayViewerStateSchema = z.strictObject({
   editingVersion: z.literal(1).optional(),
   /** Requires the producer capability and viewer editing=1&displayCut=1. */
   displayCut: z.literal(1).optional(),
+  /**
+   * This viewer may send `display.input` alongside the agent. Projected only to
+   * viewers that connected with sharedInput=1, while the producer negotiated
+   * shared input and this viewer is allowed to use it.
+   */
+  sharedInput: z.literal(1).optional(),
 });
 export type DisplayViewerState = z.infer<typeof DisplayViewerStateSchema>;
-export const DisplayViewerControlSchema = z.strictObject({
+/**
+ * The only answer a previous-release viewer's Take over request receives.
+ * Nothing takes control of a display, so it is never held; that release shows
+ * no words for this reason and simply keeps its picture.
+ */
+export const LegacyDisplayViewerControlSchema = z.strictObject({
   type: z.literal("display.control"),
-  state: z.enum([...DisplayControlStateSchema.options, "busy"]),
-  controlId: DisplayControlIdSchema.optional(),
-  reason: DisplayControlReasonSchema.optional(),
+  state: z.literal("refused"),
+  reason: z.literal("released-by-owner"),
 });
-export type DisplayViewerControl = z.infer<typeof DisplayViewerControlSchema>;
 export const DisplayInputRefusalSchema = z.enum([
   "no-field",
   "sensitive",
   "stale",
   "unsupported",
   "too-large",
-  "not-held",
+  /** Shared input is not available to this viewer, or the producer cannot take input now. */
+  "unavailable",
+  /** Another viewer is still holding a touch, button or key on this display. */
+  "contended",
 ]);
 export type DisplayInputRefusal = z.infer<typeof DisplayInputRefusalSchema>;
 /**
- * What became of one `display.input` batch, for the controlling viewer.
+ * What became of one `display.input` batch, for the viewer that sent it.
  * `dispatched` means the producer handed it to the target, never that the
  * target applied it.
  */
@@ -335,7 +351,7 @@ export const DisplayEditingSchema = z.strictObject({
   context: EditingContextSchema,
 });
 export type DisplayEditing = z.infer<typeof DisplayEditingSchema>;
-/** The selected text a controlling viewer's `copy` or `cut` read; nothing for a secret field. */
+/** The selected text a viewer's `copy` or `cut` read; nothing for a secret field. */
 export const DisplayClipboardSchema = z.strictObject({
   type: z.literal("display.clipboard"),
   sequence: DisplaySequenceSchema,
@@ -345,7 +361,6 @@ export const DisplayClipboardSchema = z.strictObject({
 export type DisplayClipboard = z.infer<typeof DisplayClipboardSchema>;
 export const DisplayViewerServerMessageSchema = z.discriminatedUnion("type", [
   DisplayViewerStateSchema,
-  DisplayViewerControlSchema,
   DisplayInputResultSchema,
   DisplayEditingSchema,
   DisplayClipboardSchema,
@@ -356,8 +371,21 @@ export const DisplayViewerClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("display.viewport"), maxLongSide: DisplayMaxLongSideSchema }),
   // The viewer lost its decoder state and needs a fresh decodable start.
   z.strictObject({ type: z.literal("display.keyframe") }),
-  z.strictObject({ type: z.literal("display.control"), action: DisplayControlActionSchema }),
-  z.strictObject({ type: z.literal("display.input"), ...DisplayInputSchema.shape }),
+  z.strictObject({
+    type: z.literal("display.input"),
+    ...DisplayInputSchema.shape,
+    /** Sent only by a previous-release viewer; such a batch is never applied. */
+    controlId: LegacyDisplayControlIdSchema.optional(),
+  }),
+  /**
+   * Release everything this viewer holds on the display (touch, buttons, keys)
+   * and drop its unapplied batches: it blurred, hid or is leaving. Sent only
+   * after the Host projected sharedInput; the Host acts on it only from the
+   * viewer currently holding the person lane.
+   */
+  z.strictObject({ type: z.literal("display.input-reset") }),
+  /** A previous-release viewer's Take over or Give back; answered or ignored, never applied. */
+  z.strictObject({ type: z.literal("display.control"), action: z.enum(["acquire", "release"]) }),
 ]);
 export type DisplayViewerClientMessage = z.infer<typeof DisplayViewerClientMessageSchema>;
 

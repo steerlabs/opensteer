@@ -272,13 +272,13 @@ describe("independent Mac control authorization", () => {
         viewId: view.viewId,
         generation: view.generation,
       };
-      await expect(h.service.authorizeControl(source, owner)).rejects.toThrow();
+      await expect(h.service.authorizeInput(source, owner)).rejects.toThrow();
       h.setAccess("read-write");
-      await expect(h.service.authorizeControl(source, owner)).resolves.toBe(machine);
+      await expect(h.service.authorizeInput(source, owner)).resolves.toBe(machine);
       h.setAccess("read");
-      await expect(h.service.authorizeControl(source, owner)).rejects.toThrow();
+      await expect(h.service.authorizeInput(source, owner)).rejects.toThrow();
       h.revoke();
-      await expect(h.service.authorizeControl(source, owner)).rejects.toThrow();
+      await expect(h.service.authorizeInput(source, owner)).rejects.toThrow();
     } finally {
       h.service.shutdown();
     }

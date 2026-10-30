@@ -60,7 +60,6 @@ class PhoneDesk(
     private val protection = AtomicLong()
 
     @Volatile var protectionChanged: (Boolean) -> Unit = {}
-    @Volatile var ownerInControl = false
     @Volatile private var ownWindow = false
     @Volatile private var ownerDisplay: DisplayState? = null
 
@@ -157,7 +156,7 @@ class PhoneDesk(
     }
 
     fun act(session: ActiveSession, params: ActParams, budget: Budget, login: LoginDispatch? = null): ComputerUseOutcome {
-        (refusal(session) ?: (if (ownerInControl) ActError(ComputerUseErrorCode.OWNER_IN_CONTROL, OWNER_CONTROL) else null))
+        refusal(session)
             ?.let { return failure(it.code, it.message) }
         holder(session.id)?.let { return it }
         val snapshot = latest
@@ -229,11 +228,6 @@ class PhoneDesk(
     fun installedApps(params: InstalledAppsParams): ComputerUseOutcome =
         ComputerUseOutcome.Ok(AndroidPhoneWire.installedAppsResult(LaunchableApps.page(device.launcherEntries(), params)))
 
-    /** Forgets every observation before owner control begins. */
-    fun invalidateObservations() {
-        latest = null
-    }
-
     /** The Opensteer app came to the front: whatever was being collected may hold its screens. */
     fun ownAppShown() {
         ownWindow = true
@@ -276,14 +270,12 @@ class PhoneDesk(
         Cancellation.Reason.CANCELLED -> ActError(ComputerUseErrorCode.OUTCOME_UNKNOWN, CANCELLED)
         Cancellation.Reason.STOPPED -> ActError(ComputerUseErrorCode.STOPPED_BY_USER, STOPPED)
         Cancellation.Reason.PAUSED -> ActError(ComputerUseErrorCode.STOPPED_BY_USER, PAUSED)
-        Cancellation.Reason.OWNER_CONTROL -> ActError(ComputerUseErrorCode.OWNER_IN_CONTROL, OWNER_CONTROL)
     }
 
     /** Only local state: safe as the final authority decision after Android has finished all blocking reads. */
     private fun authority(budget: Budget, session: ActiveSession): ActError? {
         budget.cancel.reason?.let { return withdrawal(it) }
-        return (if (ownerInControl) ActError(ComputerUseErrorCode.OWNER_IN_CONTROL, OWNER_CONTROL) else null)
-            ?: refusal(session)
+        return refusal(session)
             ?: (if (activeSession != session) ActError(ComputerUseErrorCode.FAILED, ENDED) else null)
     }
 
@@ -496,6 +488,8 @@ class PhoneDesk(
         Step.Done(run(action, snapshot, session, budget, saved))
     } catch (refusal: Refusal) {
         Step.Refused(refusal.error)
+    } catch (error: PersonContactException) {
+        Step.Refused(ActError(ComputerUseErrorCode.FAILED, error.message!!))
     } catch (error: LoginTextException) {
         Step.Refused(ActError(ComputerUseErrorCode.FAILED, error.message!!))
     } catch (interrupted: InterruptedException) {
@@ -508,7 +502,12 @@ class PhoneDesk(
     private fun run(action: PhoneAction, snapshot: Snapshot, session: ActiveSession, budget: Budget, saved: PreparedLoginText?): String = when (action) {
         is PhoneAction.Tap -> {
             val at = locate(action.target, snapshot)
-            effect(device.tap(at.point, action.count, budget) { admit(budget, session, Device.tapMs(action.count), "tap", touch = true) }, "tap")
+            var admitted = false
+            effect(device.tap(at.point, action.count, budget) {
+                // A multi-tap's later strokes repeat every check, but not the time already admitted.
+                admit(budget, session, if (admitted) 0 else Device.tapMs(action.count), "tap", touch = true)
+                admitted = true
+            }, "tap")
             Performed.tap(at.name, at.shown, action.count)
         }
         is PhoneAction.LongPress -> {
@@ -523,8 +522,8 @@ class PhoneDesk(
             Performed.swiped(shownPoint(from, snapshot), shownPoint(to, snapshot))
         }
         is PhoneAction.Drag -> drag(action, snapshot, session, budget)
-        is PhoneAction.Type -> type(action, snapshot, session, budget, saved)
-        is PhoneAction.Clear -> {
+        is PhoneAction.Type -> device.edit { type(action, snapshot, session, budget, saved) }
+        is PhoneAction.Clear -> device.edit {
             val field = editable(locate(action.target, snapshot), action.target, snapshot)
             if (!device.setText(field, "") { admit(budget, session, 0, "clear", touch = true) }) {
                 refuse(ComputerUseErrorCode.UNSUPPORTED, "${describe(field)} did not accept being cleared.")
@@ -762,7 +761,6 @@ class PhoneDesk(
         const val SETTLE_MS = 250L
         private const val CANCELLATION_POLL_MS = 50L
         private const val SCROLL_SWIPE_MS = 300
-        const val OWNER_CONTROL = "The phone\'s owner is using it. Try again after they hand it back."
         const val PAUSED = "Paused on the phone: its owner has stopped agents from using it."
         const val STOPPED = "The phone's owner stopped this task on the phone."
         const val CANCELLED = "The request was cancelled before the batch completed."

@@ -13,18 +13,15 @@ import {
   RunnerDescriptorSchema,
   RunnerIntegrationsDisplayStateSchema,
   RunnerIntegrationsComputerUseResultSchema,
-  RunnerIntegrationsDisplayControlStateSchema,
-  DisplayControlIdSchema,
+  RunnerIntegrationsDisplayInputResultSchema,
   agentPhonePackageName,
   androidPhoneDefinitionId,
   androidIntegrationsProtocolVersion,
   displayDemandGraceMs,
   hostApiVersionHeader,
   type AndroidPhoneAction,
-  type DisplayControlId,
   type ComputerViewId,
   type DisplayInputEvent,
-  type DisplayViewerControl,
   type DisplayViewerState,
 } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
@@ -93,7 +90,7 @@ const Pointer = z.object({ x: z.number(), y: z.number() });
 const journeyRedaction = new Redaction();
 
 it.each([
-  { name: "live phone display and owner control", editingOnly: false },
+  { name: "live phone display and shared input", editingOnly: false },
   { name: "native phone editing", editingOnly: true },
 ])(`$name on Android API ${api}`, async ({ editingOnly }) => {
   const base =
@@ -126,13 +123,7 @@ it.each([
     generation: number;
     reason?: string;
   }[] = [];
-  const phoneControls: {
-    receivedMs: number;
-    sessionId: string;
-    controlId: string;
-    state: string;
-    reason?: string;
-  }[] = [];
+  const phoneInputs: z.infer<typeof RunnerIntegrationsDisplayInputResultSchema>[] = [];
   const descriptors: z.infer<typeof RunnerDescriptorSchema>[] = [];
   const ingressErrors: string[] = [];
   const phoneRefusals: { requestId: string; code: string; receivedMs: number }[] = [];
@@ -216,7 +207,7 @@ it.each([
       evidence,
       cleanupFailures,
       phoneStates,
-      phoneControls,
+      phoneInputs,
       ingressErrors,
       phoneRefusals,
       latencyBasis:
@@ -347,17 +338,8 @@ it.each([
               ...(reason ? { reason } : {}),
             });
           }
-          if (tagged.type === "runner.integrations.display.control-state") {
-            const { sessionId, controlId, state, reason } =
-              RunnerIntegrationsDisplayControlStateSchema.parse(value);
-            phoneControls.push({
-              receivedMs: performance.now(),
-              sessionId,
-              controlId,
-              state,
-              ...(reason ? { reason } : {}),
-            });
-          }
+          if (tagged.type === "runner.integrations.display.input-result")
+            phoneInputs.push(RunnerIntegrationsDisplayInputResultSchema.parse(value));
         } catch (error) {
           ingressErrors.push(redaction.error(error));
         }
@@ -533,10 +515,8 @@ it.each([
             b.wait("second owner keyframe", () => b.trace.frames[0]),
           ]);
           await decodedPixels("owner-without-task", a.trace.frames[0]!);
-          a.send({ type: "display.control", action: "acquire" });
           a.send({
             type: "display.input",
-            controlId: DisplayControlIdSchema.parse(`dcl_${randomUUID()}`),
             geometry: a.trace.frames[0]!.header.generation,
             sequence: 0,
             events: [
@@ -555,7 +535,7 @@ it.each([
           ).toEqual([]);
           expect(await sessions()).toEqual([]);
           expect(await counts()).toEqual(before);
-          expect(phoneControls).toEqual([]);
+          expect(phoneInputs).toEqual([]);
           const projection = await phone.shell("dumpsys media_projection");
           evidence.ownerWithoutTask = {
             before,
@@ -709,22 +689,6 @@ it.each([
         timeout,
       );
     }
-    function control(
-      view: ComputerDisplayViewer,
-      after: number,
-      desired: DisplayViewerControl["state"],
-    ) {
-      return view.wait(`control ${desired}`, () => {
-        for (const event of view.trace.events.slice(after))
-          if (
-            event.kind === "message" &&
-            event.message.type === "display.control" &&
-            event.message.state === desired
-          )
-            return event.message;
-        return undefined;
-      });
-    }
     function firstFrame(view: ComputerDisplayViewer, after = 0, timeout = 15_000) {
       return view.wait("keyframe", () => view.trace.frames[after], timeout);
     }
@@ -785,24 +749,6 @@ it.each([
           view.check();
           return view.closed ? true : undefined;
         },
-        15_000,
-        20,
-      );
-    }
-    async function releasedOnPhone(id: string, controlId: DisplayControlId, after: number) {
-      await eventually(
-        "phone releases owner control",
-        async () =>
-          phoneControls
-            .slice(after)
-            .some(
-              (message) =>
-                message.sessionId === id &&
-                message.controlId === controlId &&
-                message.state === "released",
-            )
-            ? true
-            : undefined,
         15_000,
         20,
       );
@@ -1019,35 +965,44 @@ it.each([
     }
     const protectedOwner = await ownerView();
     await firstFrame(protectedOwner.view);
+    // A phone owner view idles out after three minutes unless its viewer renews
+    // it, as an open client does; the editing phases alone outlast that.
+    const renewProtectedOwner = setInterval(() => {
+      void testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "computer.view.renew",
+          viewId: protectedOwner.source.viewId,
+          generation: protectedOwner.source.generation,
+          idempotencyKey: randomUUID(),
+        },
+        owner,
+      ).catch((error: unknown) => cleanupFailures.push(`owner renewal: ${String(error)}`));
+    }, 60_000);
+    cleanup.push(async () => clearInterval(renewProtectedOwner));
     let inputSequence = 0;
-    let lease!: DisplayControlId;
-    function input(
-      view: ComputerDisplayViewer,
-      controlId: DisplayControlId,
-      events: DisplayInputEvent[],
-    ) {
+    function input(view: ComputerDisplayViewer, events: DisplayInputEvent[]) {
       view.send({
         type: "display.input",
-        controlId,
         geometry: latest(view).header.generation,
         sequence: inputSequence++,
         events,
       });
     }
-    async function acquire(view: ComputerDisplayViewer) {
-      const cursor = view.trace.events.length;
-      view.send({ type: "display.control", action: "acquire" });
-      const held = await control(view, cursor, "held");
-      if (!held.controlId) throw new Error("Held lease has no controlId.");
-      return held.controlId;
+    async function inputReady(view: ComputerDisplayViewer) {
+      await state(view, 0, (message) => message.state === "live" && message.sharedInput === 1);
+    }
+    function resetInput(view: ComputerDisplayViewer) {
+      view.send({ type: "display.input-reset" });
     }
     // View lookup gives physical screen pixels; observation.geometry is a
     // scaled JPEG and cannot normalize those coordinates. Cache the current
     // window-manager display size before sending any pointer traffic.
-    async function pointerSender(view: ComputerDisplayViewer, controlId: DisplayControlId) {
+    async function pointerSender(view: ComputerDisplayViewer) {
       const screen = await physicalScreen();
       return (phase: "down" | "move" | "up", pixels: { x: number; y: number }) =>
-        input(view, controlId, [
+        input(view, [
           {
             kind: "pointer",
             phase,
@@ -1076,52 +1031,65 @@ it.each([
       { after: number; from: { x: number; y: number }; to: { x: number; y: number } } | undefined;
 
     if (editingOnly) {
-      lease = await acquire(first);
+      await inputReady(first);
     } else {
-      await phase("owner-control-and-agent-admission", async () => {
-        const beforeAcquire = await observe();
+      await phase("shared-input-and-agent-contact-admission", async () => {
+        const beforeViewing = await observe();
         const before = await baseline();
-        lease = await acquire(first);
-        const refusalCursor = phoneRefusals.length;
+        await inputReady(first);
+        const action: AndroidPhoneAction = {
+          type: "tap",
+          count: 1,
+          target: { index: elementIndex(beforeViewing, "button", "Record a tap") },
+        };
+        const accepted = await act([action]);
+        expect(accepted.isError, resultText(accepted)).not.toBe(true);
+        await receipt("button_tap", before);
+        const contactStart = await baseline();
+        const button = await point("fixture_button");
+        const sendPointer = await pointerSender(first);
+        sendPointer("down", button);
+        await receipt("button_touch", contactStart, "down");
+        const observed = await observe();
         const refused = await act([
           {
             type: "tap",
             count: 1,
-            target: { index: elementIndex(beforeAcquire, "button", "Record a tap") },
+            target: { index: elementIndex(observed, "button", "Record a tap") },
           },
         ]);
         expect(refused.isError).toBe(true);
-        expect(resultText(refused)).toContain(
-          "The phone's owner is using it. Try again after they hand it back.",
-        );
-        evidence.ownerInControlRefusal = resultText(refused);
-        expect(phoneRefusals.slice(refusalCursor).map((row) => row.code)).toContain(
-          "owner-in-control",
-        );
-        expect((await observe()).tree.length).toBeGreaterThan(0);
-        expect((await sessions()).map((row) => row.sessionId)).toEqual([initialSession]);
-        expect(
-          (await readReceipts(phone)).filter((row) => row.id > before && row.kind === "button_tap"),
-        ).toEqual([]);
+        // The refusal follows the fresh observation an act result carries.
+        const refusal = refused.content
+          .flatMap((block) => (block.type === "text" ? [block.text] : []))
+          .join("\n");
+        expect(refusal).toContain("A person is touching the screen; try again.");
+        evidence.personContactRefusal = refusal;
         const cursor = second.trace.events.length;
-        second.send({ type: "display.control", action: "acquire" });
-        await control(second, cursor, "busy");
-        const button = await point("fixture_button");
-        const sendPointer = await pointerSender(first, lease);
-        sendPointer("down", button);
-        await delay(80);
+        input(second, [{ kind: "nav", to: "home" }]);
+        await second.wait("another viewer is contended while contact is held", () =>
+          second.trace.events
+            .slice(cursor)
+            .find(
+              (event) =>
+                event.kind === "message" &&
+                event.message.type === "display.input.result" &&
+                event.message.reason === "contended",
+            ),
+        );
+        await observe();
         sendPointer("up", button);
-        await receipt("button_tap", before);
-        expect(
-          (await readReceipts(phone)).filter((row) => row.id > before && row.kind === "button_tap"),
-        ).toHaveLength(1);
+        await receipt("button_tap", contactStart);
+        const afterPerson = await act([{ type: "wait", ms: 1 }]);
+        expect(afterPerson.isError, resultText(afterPerson)).not.toBe(true);
+        expect((await sessions()).map((row) => row.sessionId)).toEqual([initialSession]);
       });
       await phase("owner-streamed-drag", async () => {
         const from = await point("fixture_drag");
         const to = await point("fixture_drop_target");
         const after = await baseline();
         dragEvidence = { after, from, to };
-        const sendPointer = await pointerSender(first, lease);
+        const sendPointer = await pointerSender(first);
         sendPointer("down", from);
         // Keep contact alive beyond Android's long-press threshold; moves then
         // cover the requested ~500 ms without crossing the 500 ms watchdog.
@@ -1144,9 +1112,7 @@ it.each([
       });
     }
     await phase("negotiated-native-editing", async () => {
-      let cursor = first.trace.events.length;
-      first.send({ type: "display.control", action: "release" });
-      await control(first, cursor, "released");
+      resetInput(first);
       const editing = viewer(initialSession, true);
       await firstFrame(editing);
       expect(
@@ -1157,7 +1123,7 @@ it.each([
             event.message.editingVersion === 1,
         ),
       ).toBe(true);
-      let editingLease = await acquire(editing);
+      await inputReady(editing);
       const activity =
         "com.opensteer.agentphone.fixture/com.opensteer.agentphone.fixture.EditingFixtureActivity";
       const outcomes: unknown[] = [];
@@ -1186,7 +1152,7 @@ it.each([
       ) => {
         const sequence = inputSequence;
         const after = editing.trace.events.length;
-        input(editing, editingLease, events);
+        input(editing, events);
         const result = await editing.wait("editing batch receipt", () => {
           const found = editing.trace.events
             .slice(after)
@@ -1228,10 +1194,8 @@ it.each([
       for (const mode of ["native", "resource-less", "webview", "compose"]) {
         await independent(`editing-${mode}`, async () => {
           if (mode !== "native") {
-            const releaseCursor = editing.trace.events.length;
-            editing.send({ type: "display.control", action: "release" });
-            await control(editing, releaseCursor, "released");
-            editingLease = await acquire(editing);
+            resetInput(editing);
+            await inputReady(editing);
           }
           const start = editing.trace.events.length;
           const before = await baseline();
@@ -1246,7 +1210,7 @@ it.each([
               },
               15_000,
             );
-            const sendPointer = await pointerSender(editing, editingLease);
+            const sendPointer = await pointerSender(editing);
             sendPointer("down", at);
             sendPointer("up", at);
             await receipt("editing_web_focus", before);
@@ -1543,7 +1507,7 @@ it.each([
         };
         const initialPoint = await eventually("bottom editor", editorPoint, 15000);
         evidence.imeInitialPoint = initialPoint;
-        const sendPointer = await pointerSender(editing, editingLease);
+        const sendPointer = await pointerSender(editing);
         sendPointer("down", initialPoint);
         sendPointer("up", initialPoint);
         await dispatch([{ kind: "paste", text: "moved by IME" }]);
@@ -1597,9 +1561,7 @@ it.each([
           second.trace.events.some(
             (event) =>
               event.kind === "message" &&
-              ["display.editing", "display.clipboard", "display.input.result"].includes(
-                event.message.type,
-              ),
+              ["display.editing", "display.clipboard"].includes(event.message.type),
           ),
         ).toBe(false);
         const sentSequences = new Set(
@@ -1617,12 +1579,14 @@ it.each([
       });
       await writeFile(join(directory, "editing.png"), await phone.screencap());
 
-      cursor = editing.trace.events.length;
-      editing.send({ type: "display.control", action: "release" });
-      await control(editing, cursor, "released");
+      resetInput(editing);
       await editing.close();
-      await phone.shell(`am start -W -n ${fixtureActivities.display}`);
-      lease = await acquire(first);
+      // The editing fixtures share the display fixture's task; without clearing
+      // them, bringing the task forward leaves the last editing case on top.
+      await phone.shell(
+        `am start -W --activity-clear-top --activity-single-top -n ${fixtureActivities.display}`,
+      );
+      await inputReady(first);
       if (failures.length) throw new AggregateError(failures, "Native editing cases failed");
     });
 
@@ -1630,24 +1594,24 @@ it.each([
       await phase("owner-text-and-back", async () => {
         const after = await baseline();
         const editor = await point("fixture_text");
-        const sendPointer = await pointerSender(first, lease);
+        const sendPointer = await pointerSender(first);
         sendPointer("down", editor);
         await delay(80);
         sendPointer("up", editor);
-        input(first, lease, [{ kind: "text", insert: "owner-okX" }]);
+        input(first, [{ kind: "text", insert: "owner-okX" }]);
         await receipt("text", after, "owner-okX");
-        input(first, lease, [{ kind: "text", deleteBackward: 1 }]);
+        input(first, [{ kind: "text", deleteBackward: 1 }]);
         await receipt("text", after, "owner-ok");
-        input(first, lease, [{ kind: "text", submit: true }]);
+        input(first, [{ kind: "text", submit: true }]);
         const submitted = await receipt("submit", after);
         expect(submitted.detail).toMatch(/^[^:]+:owner-ok$/u);
         expect((await observe()).tree).toContainEqual(
           expect.objectContaining({ role: "edittext", label: "owner-ok" }),
         );
         // First dismiss the IME, then Back must leave the Activity itself.
-        input(first, lease, [{ kind: "nav", to: "back" }]);
+        input(first, [{ kind: "nav", to: "back" }]);
         await delay(500);
-        input(first, lease, [{ kind: "nav", to: "back" }]);
+        input(first, [{ kind: "nav", to: "back" }]);
         await eventually(
           "owner Back leaves fixture",
           async () =>
@@ -1663,36 +1627,17 @@ it.each([
           },
           15_000,
         );
-        const cursor = first.trace.events.length;
-        first.send({ type: "display.control", action: "release" });
-        await control(first, cursor, "released");
+        resetInput(first);
         const beforeTap = await baseline();
         const action: AndroidPhoneAction = {
           type: "tap",
           count: 1,
           target: { index: elementIndex(stale, "button", "Record a tap") },
         };
-        const refused = await act([action]);
-        expect(refused.isError).toBe(true);
-        expect(resultText(refused)).toContain(
-          `Observation ${stale.observationId} is not this phone's latest; observe again.`,
-        );
-        evidence.staleAfterReleaseRefusal = resultText(refused);
-        expect(
-          (await readReceipts(phone)).filter(
-            (row) => row.id > beforeTap && row.kind === "button_tap",
-          ),
-        ).toEqual([]);
-        const fresh = await observe();
-        const accepted = await act([
-          {
-            type: "tap",
-            count: 1,
-            target: { index: elementIndex(fresh, "button", "Record a tap") },
-          },
-        ]);
+        const accepted = await act([action]);
         expect(accepted.isError, resultText(accepted)).not.toBe(true);
         await receipt("button_tap", beforeTap);
+        evidence.personResetPreservesObservation = true;
       });
 
       async function protectedInterval(
@@ -1706,8 +1651,8 @@ it.each([
           generation: latest(view).header.generation,
         }));
         const beforeContact = (await readReceipts(phone)).at(-1)?.id ?? 0;
-        const contactLease = await acquire(first);
-        const contact = await pointerSender(first, contactLease);
+        await inputReady(first);
+        const contact = await pointerSender(first);
         contact("down", await point("fixture_button"));
         await receipt("button_touch", beforeContact, "down");
         await enter();
@@ -1811,6 +1756,7 @@ it.each([
           counts,
         };
       });
+      clearInterval(renewProtectedOwner);
       await closeOwner(protectedOwner.source);
       await closed(protectedOwner.view);
 
@@ -1890,15 +1836,17 @@ it.each([
         await phone.shell(`am start -W -n ${fixtureActivities.display}`);
       });
 
-      await phase("session-end-closes-viewers-and-control", async () => {
-        const controlId = await acquire(first);
-        const after = phoneControls.length;
+      await phase("session-end-closes-viewers-and-contact", async () => {
+        await inputReady(first);
+        const beforeContact = await baseline();
+        (await pointerSender(first))("down", await point("fixture_button"));
+        await receipt("button_touch", beforeContact, "down");
         const released = await call("release");
-        expect(released.isError, resultText(released)).not.toBe(true);
+        expect(released.isError, JSON.stringify(released)).not.toBe(true);
         await Promise.all([
           closed(first),
           closed(second),
-          releasedOnPhone(initialSession, controlId, after),
+          receipt("button_touch", beforeContact, "cancel"),
         ]);
         expect(await sessions()).toEqual([]);
         expect(first.closed && second.closed).toBe(true);
@@ -1943,7 +1891,7 @@ it.each([
         evidence.projectionAfterGrace = dump;
         expect(dump).toMatch(/Media Projection:\s*(?:null|\(null\))/iu);
         const released = await call("release");
-        expect(released.isError, resultText(released)).not.toBe(true);
+        expect(released.isError, JSON.stringify(released)).not.toBe(true);
       });
       await phase("zero-versus-eight-mixed-viewer-fairness-and-bounds", async () => {
         await openFixture();
@@ -2075,10 +2023,10 @@ it.each([
         viewers.push(replaying);
         cleanup.push(() => replaying.close());
         await Promise.all([firstFrame(dying), firstFrame(own.view), firstFrame(replaying)]);
-        const controlId = await acquire(dying);
+        await inputReady(dying);
         const before = await baseline();
         const button = await point("fixture_button");
-        const sendPointer = await pointerSender(dying, controlId);
+        const sendPointer = await pointerSender(dying);
         sendPointer("down", button);
         await delay(80);
         sendPointer("up", button);
@@ -2124,14 +2072,12 @@ it.each([
             (row) => row.id > before && row.kind !== "scroll_offset",
           ),
         ).toEqual(history.filter((row) => row.kind !== "scroll_offset"));
-        // A new lease succeeds; none of the dead viewer's control/input is replayed.
-        await acquire(recovered);
-        const cursor = recovered.trace.events.length;
-        recovered.send({ type: "display.control", action: "release" });
-        await control(recovered, cursor, "released");
+        // Shared input is available again; none of the dead viewer's input is replayed.
+        await inputReady(recovered);
+        resetInput(recovered);
         await recovered.close();
         const released = await call("release");
-        expect(released.isError, resultText(released)).not.toBe(true);
+        expect(released.isError, JSON.stringify(released)).not.toBe(true);
       });
       await phase("pause-ends-display-and-agent-session", async () => {
         await openFixture();
@@ -2173,19 +2119,11 @@ it.each([
       await phase("final-publication-and-receipt-audit", async () => {
         viewers.forEach((view) => view.check());
         expect(ingressErrors).toEqual([]);
-        expect(
-          second.trace.events.filter(
-            (event) =>
-              event.kind === "message" &&
-              event.message.type === "display.control" &&
-              event.message.state === "held",
-          ),
-          "the busy viewer never receives the first viewer's control lease",
-        ).toEqual([]);
+        expect(phoneRefusals.map((row) => row.code)).not.toContain("owner-in-control");
         // Every positive input has one durable receipt; later duplicates (even
         // after process death) cannot pass an earlier phase's immediate check.
         const all = await readReceipts(phone);
-        expect(all.filter((row) => row.kind === "button_tap")).toHaveLength(3);
+        expect(all.filter((row) => row.kind === "button_tap")).toHaveLength(4);
         expect(all.filter((row) => row.kind === "drop").map((row) => row.detail)).toEqual([
           "target",
         ]);
@@ -2354,7 +2292,7 @@ it.each([
       await phase("owner-no-wake-demand-grace-and-lease-expiry", async () => {
         await phone.shell(`am start -W -n ${fixtureActivities.display}`);
         const receiptsBefore = await readReceipts(phone);
-        const controlsBefore = phoneControls.length;
+        const controlsBefore = phoneInputs.length;
         await phone.shell("input keyevent KEYCODE_SLEEP");
         const sleeping = await ownerView();
         await state(
@@ -2365,7 +2303,7 @@ it.each([
         await delay(1_000);
         expect(sleeping.view.trace.frames).toEqual([]);
         expect(await phone.shell("dumpsys power")).toMatch(/mWakefulness=Asleep/u);
-        expect(phoneControls).toHaveLength(controlsBefore);
+        expect(phoneInputs).toHaveLength(controlsBefore);
         expect(await sessions()).toEqual([]);
         await phone.shell("input keyevent KEYCODE_WAKEUP");
         await phone.shell("wm dismiss-keyguard");
@@ -2416,7 +2354,7 @@ it.each([
         const taskView = viewer(current.id);
         const own = await ownerView();
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
-        await acquire(taskView);
+        await inputReady(taskView);
         evidence.reboot = await rebootDevice(phone);
         await Promise.all([closed(taskView), closed(own.view)]);
         await waitForPhoneOnline(phone, host, runnerId, 60_000);
@@ -2449,7 +2387,7 @@ it.each([
         const taskView = viewer(current.id);
         const own = await ownerView();
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
-        await acquire(taskView);
+        await inputReady(taskView);
         const savedTicket = frontDoor.latestDisplayStart?.dataTicket;
         if (!savedTicket) throw new Error("No data ticket before Host restart");
         const savedMedia = frontDoor.latestDisplayMedia;
@@ -2495,10 +2433,8 @@ it.each([
         const recovered = viewer(next.id);
         const reopened = await ownerView();
         await Promise.all([firstFrame(recovered), firstFrame(reopened.view)]);
-        await acquire(recovered);
-        const controlCursor = recovered.trace.events.length;
-        recovered.send({ type: "display.control", action: "release" });
-        await control(recovered, controlCursor, "released");
+        await inputReady(recovered);
+        resetInput(recovered);
         await decodedPixels("task-after-host-restart", recovered.trace.frames[0]!);
         // Reuse the exact old masked binary packet on the new authenticated
         // data connection: its old stream identity must fail before fanout.
@@ -2593,7 +2529,7 @@ it.each([
         const taskView = viewer(current.id);
         const own = await ownerView();
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
-        await acquire(taskView);
+        await inputReady(taskView);
         await testRpcData(
           host.origin,
           "commands.dispatch",
@@ -2628,7 +2564,7 @@ it.each([
         const taskView = viewer(current.id);
         const own = await ownerView();
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
-        await acquire(taskView);
+        await inputReady(taskView);
         const headers = { ...stranger.headers, origin: host.publicOrigin };
         const otherMachine = (
           await testRpcData(host.origin, "machines.list", {}, { headers })
@@ -2745,7 +2681,7 @@ it.each([
         const taskView = viewer(current.id);
         const own = await ownerView();
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
-        await acquire(taskView);
+        await inputReady(taskView);
         const oldTicket = frontDoor.latestDisplayStart?.dataTicket;
         if (!oldTicket) throw new Error("No display ticket before owner Off");
         const connection = (
@@ -2802,7 +2738,7 @@ it.each([
         // The owner's view keeps its id; reopening it is a newer generation.
         expect(onOwner.source.viewId).toBe(own.source.viewId);
         expect(onOwner.source.generation).toBeGreaterThan(own.source.generation);
-        await acquire(onTaskView);
+        await inputReady(onTaskView);
         const onTicket = frontDoor.latestDisplayStart?.dataTicket;
         if (!onTicket) throw new Error("No display ticket before owner lowers access");
         await oldTicketRefused(oldTicket);
@@ -2836,7 +2772,7 @@ it.each([
         const final = await freshTask("New authority after widening");
         const finalTask = viewer(final.id);
         await firstFrame(finalTask);
-        await acquire(finalTask);
+        await inputReady(finalTask);
         await closeOwner(onOwner.source);
         await final.finish();
         evidence.ownerAccess = {
@@ -2850,16 +2786,18 @@ it.each([
           lowerRefusals,
         };
       });
-      await phase("sign-out-ends-login-viewers-and-control", async () => {
+      await phase("sign-out-ends-login-viewers-and-contact", async () => {
         const current = await freshTask("Signed out display");
         const taskView = viewer(current.id);
         const own = await ownerView();
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
-        const held = await acquire(taskView);
-        const controlCursor = phoneControls.length;
+        await inputReady(taskView);
+        const beforeContact = await baseline();
+        (await pointerSender(taskView))("down", await point("fixture_button"));
+        await receipt("button_touch", beforeContact, "down");
         await testRpcData(host.origin, "auth.signOut", {}, owner);
         await Promise.all([closed(taskView), closed(own.view)]);
-        await releasedOnPhone(current.id, held, controlCursor);
+        await receipt("button_touch", beforeContact, "cancel");
         expect(taskView.trace.events.at(-1)).toMatchObject({ kind: "close" });
         await current.finish();
       });

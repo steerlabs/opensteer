@@ -12,7 +12,7 @@ import ApplicationServices
       actions: [.key(keys: "x")], app: state, window: a.ref, snapshot: nil,
       cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
     try require(
-      otherKey.performed.isEmpty && otherKey.error?.code == .ownerInControl,
+      otherKey.performed.isEmpty && otherKey.error?.code == .failed,
       "N6 moved person's key window")
         await cover.moveAside()
     try await personClick(a.id, pid: pid, out: out)
@@ -33,39 +33,39 @@ import ApplicationServices
     try require(personPID != pid, "N6 independent app was not foreground")
         await cover.moveAside()
     try await command(out, "raise", "A")
-    let takeoverFrame = try KeyWindow.currentFrame(a.id).unwrap("takeover frame")
-    let takeover = Process()
-    takeover.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
-        let beforeTakeover = try String(contentsOf: out.appendingPathComponent("events.jsonl"))
+    let personInputFrame = try KeyWindow.currentFrame(a.id).unwrap("person input frame")
+    let personInput = Process()
+    personInput.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        let beforePersonInput = try String(contentsOf: out.appendingPathComponent("events.jsonl"))
           .split(separator: "\n").count
-        takeover.arguments = [
-          "--person-click", String(Double(takeoverFrame.minX + 40)),
-          String(Double(takeoverFrame.midY)), String(a.id),
+        personInput.arguments = [
+          "--person-click", String(Double(personInputFrame.minX + 40)),
+          String(Double(personInputFrame.midY)), String(a.id),
         ]
-        takeover.environment = ProcessInfo.processInfo.environment.merging([
+        personInput.environment = ProcessInfo.processInfo.environment.merging([
           "OPENSTEER_PERSON_WAIT_EVENTS": out.appendingPathComponent("events.jsonl").path,
           "OPENSTEER_PERSON_WAIT_TOKEN": "z",
-          "OPENSTEER_PERSON_WAIT_BASELINE": String(beforeTakeover),
+          "OPENSTEER_PERSON_WAIT_BASELINE": String(beforePersonInput),
           "OPENSTEER_PERSON_THEN_TYPE": "p",
         ]) { _, new in new }
     let dispatchBaseline =
       ((try? String(contentsOf: out.appendingPathComponent("dispatch.jsonl"))) ?? "")
       .split(separator: "\n").count
     let watch = try PersonWatch(fixturePID: pid)
-    try takeover.run()
-    defer { if takeover.isRunning { takeover.terminate(); takeover.waitUntilExit() } }
-    let takenOver = try await ActionRunner.run(actions: [.type(text: String(repeating: "z", count: 2_000))], app: state, window: a.ref, snapshot: nil, cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
-    let takeoverDeadline = Date().addingTimeInterval(3)
-    while takeover.isRunning, Date() < takeoverDeadline { try await Task.sleep(nanoseconds: 20_000_000) }
+    try personInput.run()
+    defer { if personInput.isRunning { personInput.terminate(); personInput.waitUntilExit() } }
+    let sharedInput = try await ActionRunner.run(actions: [.type(text: String(repeating: "z", count: 2_000))], app: state, window: a.ref, snapshot: nil, cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
+    let personInputDeadline = Date().addingTimeInterval(3)
+    while personInput.isRunning, Date() < personInputDeadline { try await Task.sleep(nanoseconds: 20_000_000) }
     try await Task.sleep(nanoseconds: 300_000_000)
-    let takeoverWatch = watch.finish(personPID: personPID)
-    try require(!takeover.isRunning && takeover.terminationStatus == 0, "N6 takeover source failed")
-    let takeoverRows = try String(contentsOf: out.appendingPathComponent("events.jsonl"))
-      .split(separator: "\n").dropFirst(beforeTakeover)
-    let agentKeysInA = takeoverRows.filter {
+    let personInputWatch = watch.finish(personPID: personPID)
+    try require(!personInput.isRunning && personInput.terminationStatus == 0, "N6 physical person input source failed")
+    let personInputRows = try String(contentsOf: out.appendingPathComponent("events.jsonl"))
+      .split(separator: "\n").dropFirst(beforePersonInput)
+    let agentKeysInA = personInputRows.filter {
       $0.contains("\"characters\":\"z\"") && $0.contains("\"window\":\"A\"")
     }.count
-    let personKeyInA = takeoverRows.contains {
+    let personKeyInA = personInputRows.contains {
       $0.contains("\"characters\":\"p\"") && $0.contains("\"window\":\"A\"")
     }
     // In the order the app received them: agent keys before the person's
@@ -83,14 +83,14 @@ import ApplicationServices
       dispatched[(row + 1)...].filter { ($0["type"] as? NSNumber)?.intValue == 10 }.count
     } ?? 0
     try JSONSerialization.data(withJSONObject: [
-      "error": takenOver.error?.code.rawValue ?? "", "message": takenOver.error?.message ?? "",
-      "performed": takenOver.performed, "agentKeysInA": agentKeysInA,
+      "error": sharedInput.error?.code.rawValue ?? "", "message": sharedInput.error?.message ?? "",
+      "performed": sharedInput.performed, "agentKeysInA": agentKeysInA,
       "personKeyInA": personKeyInA, "keysBeforeClick": keysBeforeClick,
       "keysAfterClick": keysAfterClick, "fixturePID": Int(pid), "windowA": Int(a.id),
-      "frontAfter": Int(PrivateAPI.focusPID(front: true) ?? 0), "watch": takeoverWatch.json,
-    ]).write(to: out.appendingPathComponent("N6-takeover.json"))
+      "frontAfter": Int(PrivateAPI.focusPID(front: true) ?? 0), "watch": personInputWatch.json,
+    ]).write(to: out.appendingPathComponent("N6-person-input.json"))
     try require(
-      takenOver.error == nil && takenOver.performed.count == 1,
+      sharedInput.error == nil && sharedInput.performed.count == 1,
       "N6 the person's click stopped or failed the agent's input")
     try require(agentKeysInA == 2_000, "N6 the agent's keys did not all reach A")
     // After the click: the person's key and at least one of the agent's.
@@ -99,7 +99,7 @@ import ApplicationServices
       "N6 the person's click did not land while the agent's keys were going out")
     try require(personKeyInA, "N6 the person's key after clicking in did not reach A")
     try require(
-      takeoverWatch.fixtureCameForward && !takeoverWatch.personSentBack
+      personInputWatch.fixtureCameForward && !personInputWatch.personSentBack
         && PrivateAPI.focusPID(front: true) == pid,
       "N6 the person was sent back to the app they left")
         await cover.moveAside()
@@ -175,7 +175,7 @@ import ApplicationServices
           keyWindowAfter == b.id && PrivateAPI.focusPID(front: true) == pid,
           "N6 the keyboard was moved back off the person's window")
     await cover.show()
-        try Data("Person-focus cases, takeover and same-app mid-type switch passed\n".utf8).write(
+        try Data("Person-focus cases, physical person input and same-app mid-type switch passed\n".utf8).write(
           to: out.appendingPathComponent("N6-passed.txt"))
   }
 }

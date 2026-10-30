@@ -68,8 +68,6 @@ class Cancellation {
         /** The owner paused the phone. */
         PAUSED,
 
-        /** Only agent acts are withdrawn when the owner takes control. */
-        OWNER_CONTROL,
     }
 
     private val withdrawn = AtomicReference<Reason?>(null)
@@ -134,7 +132,17 @@ data class ActiveSession(val id: String, val runId: String, val title: String?)
  * its answer is interrupted: the interrupt is kept, never turned into a
  * gesture that was not made.
  */
+class PersonContactException(message: String = TOUCHING) : Exception(message) {
+    companion object {
+        const val TOUCHING = "A person is touching the screen; try again."
+        const val KEY = "A person is holding a key; try again."
+    }
+}
+
 interface Device {
+    /** A whole edit, including its reads and cursor updates, shares one lane with person IME edits. */
+    fun <T> edit(action: () -> T): T = action()
+
     fun display(): DisplayState
 
     /** The app in front, this one included, labelled as the launcher labels it. */

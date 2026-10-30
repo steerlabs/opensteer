@@ -4,6 +4,7 @@ import {
   MacWindowVideoStateSchema,
   MacOwnerInputEventSchema,
   MacWindowVideoSourceEventSchema,
+  MacOwnerInputVersionSchema,
 } from "./mac-window-video.js";
 import { ComputerViewHelperRequestSchema } from "./computer-view-requests.js";
 import { ComputerViewSchema, ComputerViewNativeResultSchema } from "./computer-view.js";
@@ -375,6 +376,11 @@ export const ComputerUseErrorCodeSchema = z.enum([
   "app-not-running",
   "no-session",
   "busy",
+  /**
+   * Read only: a previous-release phone or Mac helper refused an act during
+   * Take over. Nothing current produces it; shared input never refuses an agent
+   * because a person is using the device.
+   */
   "owner-in-control",
   "stale-observation",
   "stopped-by-user",
@@ -573,8 +579,8 @@ export const computerUseHelperMaxFrameBytes = 4 * 1_024 * 1_024;
 
 export const ComputerUseHelperMethodSchema = z.enum([
   "hello",
-  "display.control",
   "display.input",
+  "display.input-reset",
   "display.resolve",
   "display.start",
   "display.demand",
@@ -609,7 +615,7 @@ const EmptyParamsSchema = z.strictObject({});
 
 export const ComputerUseHelloParamsSchema = z.strictObject({
   loginText: z.literal(1).optional(),
-  ownerInputVersion: z.literal(1).optional(),
+  ownerInputVersion: MacOwnerInputVersionSchema,
   ownerViewVersion: z.literal(3).optional(),
   clientVersion: z.string().min(1).max(64),
   protocolVersion: z.number().int().positive().max(1_000),
@@ -624,7 +630,7 @@ export const ComputerUseHelloParamsSchema = z.strictObject({
  */
 export const ComputerUseHelloResultSchema = z.strictObject({
   loginText: LoginReceiverKeySchema.optional(),
-  ownerInputVersion: z.literal(1).optional(),
+  ownerInputVersion: MacOwnerInputVersionSchema,
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
   helperVersion: z.string().min(1).max(64),
   minProtocolVersion: z.number().int().positive().max(1_000),
@@ -643,7 +649,7 @@ export const ComputerUseHelloResultSchema = z.strictObject({
 export const ComputerUsePermissionsResultSchema = z.strictObject({
   /** Desktop bridge advertisement derived from its authenticated helper handshake. */
   computerUseVersion: z.literal(2).optional(),
-  ownerInputVersion: z.literal(1).optional(),
+  ownerInputVersion: MacOwnerInputVersionSchema,
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
   permissions: ComputerUsePermissionsSchema,
 });
@@ -908,14 +914,14 @@ export const ComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
   z.strictObject({
     id: helperRequestIdSchema,
     timeoutMs: ComputerUseTimeoutMsSchema.optional(),
-    method: z.literal("display.control"),
-    params: z.lazy(() => macWindowVideoParams["display.control"]),
+    method: z.literal("display.input"),
+    params: z.lazy(() => macWindowVideoParams["display.input"]),
   }),
   z.strictObject({
     id: helperRequestIdSchema,
     timeoutMs: ComputerUseTimeoutMsSchema.optional(),
-    method: z.literal("display.input"),
-    params: z.lazy(() => macWindowVideoParams["display.input"]),
+    method: z.literal("display.input-reset"),
+    params: z.lazy(() => macWindowVideoParams["display.input-reset"]),
   }),
   z.strictObject({
     id: helperRequestIdSchema,
@@ -1072,8 +1078,8 @@ export type ComputerUseHelperRequest = z.infer<typeof ComputerUseHelperRequestSc
  * table is the one place that pairing lives.
  */
 export const computerUseHelperResults = {
-  "display.control": z.lazy(() => macWindowVideoResults["display.control"]),
   "display.input": z.lazy(() => macWindowVideoResults["display.input"]),
+  "display.input-reset": z.lazy(() => macWindowVideoResults["display.input-reset"]),
   "display.resolve": z.lazy(() => macWindowVideoResults["display.resolve"]),
   "display.start": z.lazy(() => macWindowVideoResults["display.start"]),
   "display.demand": z.lazy(() => macWindowVideoResults["display.demand"]),
@@ -1220,7 +1226,7 @@ const WritingDataInvokeSchema = z.object({ effect: z.literal("write") });
 export function computerUseRequestMayHaveEffect(method: string, params: unknown): boolean {
   if (
     method === "display.input" ||
-    method === "display.control" ||
+    method === "display.input-reset" ||
     method === "session.act" ||
     method === "imessage.send" ||
     method === "view.open" ||

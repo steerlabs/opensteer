@@ -327,7 +327,7 @@ final class HelperWireFixtureTests: XCTestCase {
         window: method == "view.open"
           ? Wire.ViewStateResult.OwnerWindowSummary(id: 42, title: "Shopping list") : nil)
     }
-    results["display.control"] = MacOwnerInput.Control(state: "held", controlId: Self.controlId)
+    results["display.input-reset"] = Wire.EmptyResult()
     results["display.input"] = MacOwnerInput.Result(sequence: 0, outcome: "dispatched")
     results["display.resolve"] = MacWindowVideoRegistry.ResolveResult(target: Self.videoTarget)
     results["display.start"] = MacWindowVideoRegistry.StartResult(attachmentToken: Self.bindingId)
@@ -370,7 +370,7 @@ final class HelperWireFixtureTests: XCTestCase {
 
     let events: [String: any Encodable] = [
       "display.owner-input": MacOwnerInput.Publication(streamId: Self.streamId, source: Self.ownerSource,
-        controlId: Self.controlId, message: .init(type: "display.input.result", sequence: 0, outcome: "dispatched")),
+        message: .init(type: "display.input.result", sequence: 0, outcome: "dispatched")),
       "session.stopped": SessionStoppedParams(reason: .user, sessionId: Self.sessionId),
       "display.state": MacVideoState(
         streamId: Self.streamId, state: "live", reason: nil,
@@ -528,7 +528,6 @@ final class HelperWireFixtureTests: XCTestCase {
 
   private static let streamId = "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
   private static let bindingId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-  private static let controlId = "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
   private static let ownerSource = MacVideoSource(kind: "owner-view", sessionId: nil, appKey: nil,
     viewId: "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", generation: 1)
   private static let videoTarget = MacVideoTarget(kind: "mac-window", bindingId: bindingId)
@@ -545,10 +544,9 @@ final class HelperWireFixtureTests: XCTestCase {
     let owner = JSONValue.object(["kind": .string("owner-view"),
       "viewId": .string("cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "generation": .number(1)])
     let params: [String: JSONValue] = [
-      "display.control": .object(["streamId": .string(streamId), "source": owner,
-        "controlId": .string(controlId), "action": .string("acquire"), "access": .string("read-write")]),
+      "display.input-reset": .object(["streamId": .string(streamId), "source": owner]),
       "display.input": .object(["streamId": .string(streamId), "source": owner,
-        "controlId": .string(controlId), "geometry": .number(1), "sequence": .number(0),
+        "geometry": .number(1), "sequence": .number(0),
         "events": .array([.object(["kind": .string("copy")])])]),
       "display.resolve": .object(["source": source]),
       "display.start": .object([
@@ -597,8 +595,8 @@ final class HelperWireFixtureTests: XCTestCase {
         let params = try envelope.decodeParams(Wire.ObserveParams.self, method: method)
         XCTAssertEqual(params.app, SessionApp(access: .read, identity: notes))
         XCTAssertNotNil(try envelope.deadline(receivedAt: Date()))
-      case "display.control":
-        _ = try envelope.decodeParams(MacOwnerInput.ControlParams.self, method: method)
+      case "display.input-reset":
+        _ = try envelope.decodeParams(MacOwnerInput.ResetParams.self, method: method)
       case "display.input":
         _ = try envelope.decodeParams(MacOwnerInput.InputParams.self, method: method)
       case "display.resolve":
@@ -698,7 +696,7 @@ final class HelperWireFixtureTests: XCTestCase {
         "session.open", "session.close", "session.windows", "session.bind", "session.observe",
         "session.act",
         "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
-        "display.attach", "display.control", "display.input",
+        "display.attach", "display.input-reset", "display.input",
         "data.status",
         "data.request", "data.invoke", "imessage.account", "imessage.poll", "imessage.send",
       ]
@@ -714,7 +712,7 @@ final class HelperWireFixtureTests: XCTestCase {
         "permissions.request", "view.windows", "view.open", "session.windows", "session.bind",
         "session.open", "session.observe", "session.act",
         "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
-        "display.attach", "display.control", "display.input",
+        "display.attach", "display.input-reset", "display.input",
         "data.request",
         "data.invoke", "imessage.poll", "imessage.send",
       ])

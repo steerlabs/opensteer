@@ -154,6 +154,14 @@ is not protection against a non-browser caller holding a stolen token.
 
 ## Compatibility
 
+Display input requires end-to-end `sharedInput: 1` negotiation. Viewer sockets opt in with
+`sharedInput=1`; the Host projects it only while the producer supports it and the viewer is
+authorized. Mac owner input negotiates version 2, reads legacy 1 tolerantly and emits 2 only
+to peers that offered it. Missing negotiation keeps viewing available without input.
+Previous-release viewers’ `display.control` acquire requests receive the legacy refusal;
+release and controlId-bearing input are ignored without closing the socket. Current writers
+never emit `owner-in-control`; its error vocabulary remains readable for compatibility.
+
 Compatibility starts with the first public release: "the previous release" a wire
 change must stay readable by is a public release.
 [previous-release-compat.integration.test.ts](../apps/host/src/agents/previous-release-compat.integration.test.ts)

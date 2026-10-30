@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   ComputerUseHelloParamsSchema,
   ComputerUseHelloResultSchema,
+  ComputerUsePermissionsResultSchema,
+  HostIntegrationsDisplayResolveSchema,
   macWindowVideoParams,
   macWindowVideoResults,
   RunnerIntegrationsModuleSchema,
@@ -13,7 +15,6 @@ const source = {
   generation: 1,
 };
 const streamId = "dsp_01900000-0000-7000-8000-000000000001";
-const controlId = "dcl_01900000-0000-7000-8000-000000000001";
 
 describe("Mac owner input contract", () => {
   it("offers optional input without changing baseline hello", () => {
@@ -24,29 +25,29 @@ describe("Mac owner input contract", () => {
     ).toBe(true);
     expect(
       ComputerUseHelloParamsSchema.safeParse({ ...baseline, ownerInputVersion: 2 }).success,
-    ).toBe(false);
+    ).toBe(true);
     expect(ComputerUseHelloResultSchema.shape.ownerInputVersion.safeParse(undefined).success).toBe(
       true,
+    );
+  });
+  it("reads legacy peer input negotiation as unsupported", () => {
+    expect(ComputerUseHelloResultSchema.shape.ownerInputVersion.parse(1)).toBeUndefined();
+    expect(ComputerUsePermissionsResultSchema.shape.ownerInputVersion.parse(1)).toBeUndefined();
+    expect(HostIntegrationsDisplayResolveSchema.shape.ownerInputVersion.parse(1)).toBeUndefined();
+    expect(ComputerUseHelloParamsSchema.shape.ownerInputVersion.parse(1)).toBeUndefined();
+    expect(macWindowVideoParams["display.resolve"].parse({ source, ownerInputVersion: 1 })).toEqual(
+      { source, ownerInputVersion: undefined },
     );
   });
   it("advertises Runner input independently of passive video", () => {
     expect(RunnerIntegrationsModuleSchema.shape.macOwnerInputVersion.safeParse(1).success).toBe(
       true,
     );
-    expect(RunnerIntegrationsModuleSchema.shape.macOwnerInputVersion.parse(2)).toBeUndefined();
+    expect(RunnerIntegrationsModuleSchema.shape.macOwnerInputVersion.parse(1)).toBeUndefined();
   });
-  it("requires exact owner authority, read-write access and per-batch generation", () => {
-    const control = { streamId, controlId, source, action: "acquire", access: "read-write" };
-    expect(macWindowVideoParams["display.control"].safeParse(control).success).toBe(true);
-    expect(
-      macWindowVideoParams["display.control"].safeParse({ ...control, access: "read" }).success,
-    ).toBe(false);
-    expect(
-      macWindowVideoParams["display.control"].safeParse({ ...control, source: undefined }).success,
-    ).toBe(false);
+  it("requires exact owner authority and per-batch generation without a control lease", () => {
     const input = {
       streamId,
-      controlId,
       source,
       geometry: 1,
       sequence: 0,
@@ -67,7 +68,6 @@ describe("Mac owner input contract", () => {
   it("admits bounded rich-paste metadata for the text-only target to refuse", () => {
     const input = {
       streamId,
-      controlId,
       source,
       geometry: 1,
       sequence: 1,

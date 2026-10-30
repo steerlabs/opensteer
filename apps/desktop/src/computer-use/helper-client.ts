@@ -4,6 +4,7 @@ import {
   decodeDisplayMediaFrame,
   DisplayAckSchema,
   macWindowVideoResults,
+  macWindowVideoParams,
 } from "@opensteer/protocol";
 import { unlink } from "node:fs/promises";
 import type { Socket } from "node:net";
@@ -168,7 +169,7 @@ export interface ComputerUseHelperClientOptions {
   readonly onHandshake?: (hello: {
     readonly loginText?: LoginReceiverKey;
     readonly ownerViewVersion?: number;
-    readonly ownerInputVersion?: 1;
+    readonly ownerInputVersion?: 2;
     readonly protocolVersion: number;
     readonly helperVersion: string;
     readonly permissions: ComputerUsePermissions;
@@ -233,6 +234,7 @@ interface PendingRequest {
 interface HelperConnection {
   readonly generation: number;
   readonly helperVersion: string;
+  readonly ownerInputVersion?: 2 | undefined;
   readonly permissions: ComputerUsePermissions;
   readonly socket: Socket;
 }
@@ -318,6 +320,23 @@ export class ComputerUseHelperClient {
     }
     const deadline = options.deadline ?? this.#defaultDeadline();
     const connection = await this.#connect(deadline);
+    if (method === "display.resolve") {
+      const resolved = macWindowVideoParams["display.resolve"].parse(params);
+      params = {
+        source: resolved.source,
+        ...(connection.ownerInputVersion === 2 && resolved.ownerInputVersion === 2
+          ? { ownerInputVersion: 2 }
+          : {}),
+      };
+    }
+    if (
+      (method === "display.input" || method === "display.input-reset") &&
+      connection.ownerInputVersion !== 2
+    )
+      throw new ComputerUseHelperFailure(
+        "unsupported",
+        "This Mac's helper does not support shared owner input.",
+      );
     return (await this.#send(
       connection,
       method,
@@ -429,7 +448,6 @@ export class ComputerUseHelperClient {
             params: {
               protocolVersion: computerUseHelperProtocolVersion,
               ownerViewVersion: macOwnerViewVersion,
-              ownerInputVersion: 1,
               clientVersion: this.#options.appVersion,
             },
           }),
@@ -594,7 +612,7 @@ export class ComputerUseHelperClient {
         clientVersion: this.#options.appVersion,
         protocolVersion: computerUseHelperProtocolVersion,
         ownerViewVersion: macOwnerViewVersion,
-        ownerInputVersion: 1,
+        ownerInputVersion: 2,
         loginText: 1,
       },
       due,
@@ -630,6 +648,7 @@ export class ComputerUseHelperClient {
     });
     return {
       helperVersion: result.helperVersion,
+      ownerInputVersion: result.ownerInputVersion,
       generation,
       permissions: result.permissions,
       socket,

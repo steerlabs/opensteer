@@ -3,114 +3,77 @@ import XCTest
 @testable import ComputerUseCore
 
 final class OwnerInputStateTests: XCTestCase {
-  @WorkActor
-  func testEveryAgentBatchRequiresTheCurrentControlObservation() async throws {
-    let fence = OwnerInputFence()
-    let app = AppSessionState(
-      identity: AppIdentity(bundleId: "com.opensteer.epoch-fixture", displayName: "Epoch", teamId: nil),
-      path: "/absent/Epoch.app", ownerInputFence: fence)
-    let monitor = WindowMonitor()
-    defer { monitor.stop() }
-    func batch(_ actions: [ActionRequest] = []) async throws -> ActionRunner.RunResult {
-      try await ActionRunner.run(actions: actions, app: app, observationId: "",
-        cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
+  func testAgentWaitsForPersonBatchAndIdleAttachmentDoesNotExclude() async throws {
+    let lane = AppMutationCoordinator()
+    await lane.beginPerson()
+    let started = expectation(description: "agent submitted")
+    let entered = Locked(false)
+    let agent = Task {
+      started.fulfill()
+      try await lane.beginAgent()
+      entered.withLock { $0 = true }
+      lane.endAgent()
     }
-    func observe() {
-      app.record(LatestObservation(
-        observationId: UUID().uuidString, processIdentifier: 1, windowID: 1,
-        windowFrame: CGRect(x: 0, y: 0, width: 100, height: 100),
-        coordinates: ObservationCoordinates(cropOrigin: .zero, scale: 1,
-          geometry: Observation.Geometry(width: 100, height: 100)),
-        elements: [], takenAt: Date()))
+    await fulfillment(of: [started], timeout: 1)
+    XCTAssertFalse(entered.current)
+    lane.endPerson()
+    try await agent.value
+    XCTAssertTrue(entered.current)
+    try await lane.beginAgent()
+    lane.endAgent()
+  }
+
+  func testAgentFailsOnlyWhilePersonContactIsHeld() async throws {
+    let lane = AppMutationCoordinator()
+    await lane.beginPerson()
+    lane.setHeld(true, attachment: "person")
+    lane.endPerson()
+    do {
+      try await lane.beginAgent()
+      lane.endAgent()
+      XCTFail("An agent must not enter a held contact")
+    } catch let error as HelperError {
+      XCTAssertEqual(error.code, .failed)
+      XCTAssertEqual(error.message, "A person is pressing in this app; try again.")
     }
-    let initial = try await batch()
-    XCTAssertNil(initial.error)
-    XCTAssertEqual(app.observationControlEpoch, 0)
-    for controller in ["first", "second"] {
-      let epoch = try fence.acquire(controller)
-      try fence.hold(controller, epoch: epoch)
-      app.invalidateOwnerInputObservations()
-      XCTAssertTrue(fence.release(controller))
-      fence.finishRelease(controller)
-      let batches: [[ActionRequest]] = [[], [.key(keys: "x")]]
-      for actions in batches {
-        do {
-          _ = try await batch(actions)
-          XCTFail("Every batch needs an observation after the person used the app")
-        } catch let error as HelperError {
-          XCTAssertEqual(error.code, .staleObservation)
-          XCTAssertTrue(error.message.localizedCaseInsensitiveContains("person"))
-          XCTAssertTrue(error.message.localizedCaseInsensitiveContains("observe"))
-        }
-      }
-      observe()
-      let refreshed = try await batch()
-      XCTAssertNil(refreshed.error)
-      // A stale rejection must have ended its ticket, or the next hold fails.
+    await lane.beginPerson()
+    lane.setHeld(false, attachment: "person")
+    lane.endPerson()
+    try await lane.beginAgent()
+    lane.endAgent()
+  }
+
+  func testAnotherViewOfTheAppCannotPressWhileOneHoldsButTheHolderCanRelease() async {
+    let lane = AppMutationCoordinator()
+    await lane.beginPerson()
+    lane.setHeld(true, attachment: "window-a")
+    lane.endPerson()
+    XCTAssertTrue(lane.heldByOther("window-b"))
+    XCTAssertFalse(lane.heldByOther("window-a"))
+    await lane.beginPerson()
+    lane.setHeld(false, attachment: "window-a")
+    lane.endPerson()
+    XCTAssertFalse(lane.heldByOther("window-b"))
+  }
+
+  func testPersonBatchWaitsForAgentAXMutation() async throws {
+    let lane = AppMutationCoordinator()
+    try await lane.beginAgent()
+    let submitted = expectation(description: "person submitted")
+    let effects = Locked<[String]>([])
+    let person = Task {
+      submitted.fulfill()
+      await lane.beginPerson()
+      effects.withLock { $0.append("person") }
+      lane.endPerson()
     }
-  }
-
-  @WorkActor
-  func testOneAppsLeaseDoesNotStaleAnotherAppsAgentBatch() async throws {
-    let leased = OwnerInputFence()
-    let other = AppSessionState(
-      identity: AppIdentity(bundleId: "com.opensteer.other-fixture", displayName: "Other", teamId: nil),
-      path: "/absent/Other.app", ownerInputFence: OwnerInputFence())
-    let epoch = try leased.acquire("person")
-    try leased.hold("person", epoch: epoch)
-    let monitor = WindowMonitor()
-    defer { monitor.stop() }
-    let result = try await ActionRunner.run(actions: [], app: other, observationId: "",
-      cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
-    XCTAssertNil(result.error)
-    XCTAssertEqual(other.ownerInputFence.epoch, 0)
-  }
-
-  func testAdmittedAgentCannotDeliverAfterTakeoverAndHeldWaitsForDrain() async throws {
-    let fence = OwnerInputFence()
-    let other = OwnerInputFence()
-    let agent = try fence.beginAgent()
-    let unaffected = try other.beginAgent()
-    let epoch = try fence.acquire("person")
-    var effects = 0
-    XCTAssertThrowsError(try fence.hold("person", epoch: epoch))
-    do { try fence.checkAgent(agent); effects += 1 } catch {}
-    XCTAssertNoThrow(try other.checkAgent(unaffected))
-    fence.endAgent(agent)
-    await fence.drain()
-    try fence.hold("person", epoch: epoch)
-    do { try fence.checkAgent(agent); effects += 1 } catch {}
-    XCTAssertEqual(effects, 0)
-    XCTAssertTrue(fence.isHeld("person", epoch: epoch))
-    other.endAgent(unaffected)
-  }
-
-  func testTakeoverFencesAndDrainsBeforeHeld() async throws {
-    let fence = OwnerInputFence()
-    let agent = try fence.beginAgent()
-    let epoch = try fence.acquire("one")
-    XCTAssertThrowsError(try fence.beginAgent())
-    XCTAssertThrowsError(try fence.checkAgent(agent))
-    XCTAssertThrowsError(try fence.hold("one", epoch: epoch))
-    fence.endAgent(agent)
-    await fence.drain()
-    try fence.hold("one", epoch: epoch)
-    XCTAssertThrowsError(try fence.acquire("two"))
-    XCTAssertTrue(fence.isHeld("one", epoch: epoch))
-  }
-
-  func testReleaseRemainsFencedUntilCleanupAndRotatesEpoch() throws {
-    let fence = OwnerInputFence()
-    let epoch = try fence.acquire("one")
-    try fence.hold("one", epoch: epoch)
-    XCTAssertFalse(fence.release("wrong"))
-    XCTAssertTrue(fence.release("one"))
-    XCTAssertFalse(fence.isHeld("one", epoch: epoch))
-    XCTAssertThrowsError(try fence.beginAgent())
-    fence.finishRelease("one")
-    let next = try fence.beginAgent()
-    XCTAssertNotEqual(next.epoch, epoch)
-    fence.endAgent(next)
+    await fulfillment(of: [submitted], timeout: 1)
+    XCTAssertTrue(effects.current.isEmpty)
+    effects.withLock { $0.append("AX value") }
+    lane.endAgent()
+    await person.value
+    XCTAssertEqual(effects.current, ["AX value", "person"])
+    XCTAssertEqual(lane.revision, 1)
   }
 
   func testQueueBoundsOrderAndInvalidation() throws {
@@ -127,7 +90,7 @@ final class OwnerInputStateTests: XCTestCase {
     XCTAssertThrowsError(try lane.admit(sequence: 3, bytes: 1))
   }
 
-  func testIndependentOwnerControlHasVisibleStopPill() {
+  func testIndependentPersonInputHasVisibleStopPill() {
     var model = OverlayModel()
     let app = OverlayModel.App(key: "fixture", name: "Fixture", access: .readWrite, path: "/Fixture.app")
     let now = Date()
@@ -135,7 +98,7 @@ final class OwnerInputStateTests: XCTestCase {
       ending: .ended, at: now, pointerNear: false)
     let pill = model.presentation(at: now).pill
     XCTAssertEqual(pill?.controls, .session)
-    XCTAssertEqual(pill?.status, "Remote control of Fixture")
+    XCTAssertEqual(pill?.status, "Sharing Fixture")
   }
 
   func testCaptureIncarnationNeverAcceptsRetiredSamples() {

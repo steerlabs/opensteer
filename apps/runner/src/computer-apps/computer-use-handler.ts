@@ -146,7 +146,7 @@ export class ComputerUseHandler {
     | {
         readonly at: number;
         readonly ownerViewVersion?: number | undefined;
-        readonly ownerInputVersion?: 1 | undefined;
+        readonly ownerInputVersion?: 2 | undefined;
         readonly computerUseVersion?: 2 | undefined;
         readonly permissions: ComputerUsePermissions;
       }
@@ -185,7 +185,7 @@ export class ComputerUseHandler {
     if (
       method === "display.resolve" &&
       "ownerInputVersion" in params &&
-      params.ownerInputVersion === 1
+      params.ownerInputVersion === 2
     ) {
       await this.permissions({ deadline });
     }

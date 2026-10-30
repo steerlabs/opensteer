@@ -331,7 +331,7 @@ async function phoneVectors(
 
 /**
  * The preview Host's phone: its libx264 home screen decodes to the layout's
- * colours, and control is granted, used and given back over the same socket.
+ * colours, and shared input goes directly over the same socket.
  */
 async function mockPreview(acceleration: HardwareAcceleration): Promise<DisplaySmokeScenario> {
   let socket: MockPhoneDisplaySocket | null = null;
@@ -359,11 +359,8 @@ async function mockPreview(acceleration: HardwareAcceleration): Promise<DisplayS
     line: sample(canvas, 150, 371),
   };
   const view = run.streams.retain(run.target);
-  view.takeOver();
-  await until(() => view.getSnapshot().control.state === "held");
+  await until(() => view.getSnapshot().input === "available");
   const sent = view.input(1, [{ kind: "nav", to: "home" }]);
-  view.giveBack();
-  await until(() => view.getSnapshot().control.state === "released");
   view.release();
   return run.finish(null, {
     samples,
@@ -377,7 +374,7 @@ async function mockPreview(acceleration: HardwareAcceleration): Promise<DisplayS
         button: near(samples.button, [0xe4, 0xaf, 0x77]),
         line: near(samples.line, [0xb6, 0xbe, 0xc8]),
       },
-      controlInputSent: sent,
+      sharedInputSent: sent,
     },
   });
 }
@@ -413,9 +410,7 @@ async function ownerAuthority(acceleration: HardwareAcceleration): Promise<Displ
   siblingSocket.frames(frames.slice(0, 1));
   await until(() => siblingSocket.idle && sibling.picture.getSnapshot().shown !== null);
   const view = run.streams.retain(run.target);
-  view.takeOver();
   const inputSent = view.input(1, [{ kind: "nav", to: "home" }]);
-  view.giveBack();
   view.release();
   decoderControl.holdOutputs = 1;
   socket.frames(frames.slice(1));
@@ -437,9 +432,7 @@ async function ownerAuthority(acceleration: HardwareAcceleration): Promise<Displ
       decoded,
       independentSibling,
       inputSent,
-      controlSent: timeline.some(
-        (entry) => entry === "display.control" || entry.startsWith("display.input"),
-      ),
+      inputFrameSent: timeline.some((entry) => entry.startsWith("display.input")),
       cleared:
         run.picture.getSnapshot().shown === null &&
         sample(canvas, 30, 300).every((value) => value <= 8),

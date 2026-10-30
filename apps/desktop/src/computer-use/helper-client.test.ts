@@ -87,6 +87,52 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     expect(harness.commands()).not.toContain("/usr/bin/open");
   });
 
+  it.each([undefined, 1, 2] as const)(
+    "keeps computer use with a helper answering owner input %s",
+    async (version) => {
+      const harness = await helperHarness({
+        hello: {
+          helperVersion: "test",
+          minProtocolVersion: 10,
+          protocolVersion: 10,
+          routes: { windowLocation: true, windowGroups: true },
+          permissions: { accessibility: "granted", screenRecording: "granted" },
+          ...(version === undefined ? {} : { ownerInputVersion: version }),
+        },
+      });
+      await expect(harness.client.request("permissions.get", {})).resolves.toMatchObject({
+        permissions: {},
+      });
+      const source = {
+        kind: "owner-view",
+        viewId: "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        generation: 1,
+      };
+      harness.reply("display.resolve", () => ({
+        target: { kind: "mac-window", bindingId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      }));
+      await harness.client.request("display.resolve", { source, ownerInputVersion: 2 });
+      expect(harness.received.at(-1)).toMatchObject({
+        method: "display.resolve",
+        params: {
+          source,
+          ...(version === 2 ? { ownerInputVersion: 2 } : {}),
+        },
+      });
+      expect((harness.received.at(-1) as { params: unknown }).params).toEqual({
+        source,
+        ...(version === 2 ? { ownerInputVersion: 2 } : {}),
+      });
+      if (version !== 2)
+        await expect(
+          harness.client.request("display.input-reset", {
+            source,
+            streamId: "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          }),
+        ).rejects.toMatchObject({ code: "unsupported" });
+    },
+  );
+
   it("surfaces incompatible-version with the update sentence", async () => {
     const harness = await helperHarness({
       hello: {

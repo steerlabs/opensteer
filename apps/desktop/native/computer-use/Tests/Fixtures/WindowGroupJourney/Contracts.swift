@@ -174,52 +174,26 @@ import ApplicationServices
       }
       let initialCount = try nativeKeys()
       let initial = try await key()
-      try JSONSerialization.data(withJSONObject: ["controlEpoch": state.ownerInputFence.epoch,
-        "observationEpoch": state.observationControlEpoch,
-        "frontPID": PrivateAPI.focusPID(front: true) ?? 0, "expectedPID": pid,
-        "performedCount": initial.performed.count, "error": initial.error?.code.rawValue ?? "none"],
-        options: [.prettyPrinted, .sortedKeys])
-        .write(to: out.appendingPathComponent("owner-epoch-initial.json"))
-      try require(initial.error == nil && initial.performed.count == 1, "Epoch zero refused snapshot-free input")
+      try require(initial.error == nil && initial.performed.count == 1, "Idle input refused agent key")
       try await delivered(after: initialCount)
-      stages.append(["stage": "epoch-zero", "nativeDeliveries": 1, "passed": true])
-      for controller in ["epoch-first", "epoch-repeat"] {
-        let epoch = try state.ownerInputFence.acquire(controller)
-        try state.ownerInputFence.hold(controller, epoch: epoch)
-        state.invalidateOwnerInputObservations()
+      for attachment in ["first", "repeat"] {
+        await state.mutations.beginPerson()
+        state.mutations.setHeld(true, attachment: attachment)
+        state.mutations.endPerson()
         let before = try nativeKeys()
-        do {
-          _ = try await key()
-          throw JourneyFailure.failed("Held owner control admitted an agent key")
-        } catch let error as HelperError {
-          try require(error.code == .ownerInControl, "Wrong held agent refusal")
-        }
-        try require(state.ownerInputFence.release(controller), "Lease release failed")
-        state.ownerInputFence.finishRelease(controller)
-        try JSONSerialization.data(withJSONObject: ["controlEpoch": state.ownerInputFence.epoch,
-          "observationEpoch": state.observationControlEpoch])
-          .write(to: out.appendingPathComponent("owner-epoch-before.json"))
-        do {
-          let result = try await key()
-          try JSONSerialization.data(withJSONObject: ["performedCount": result.performed.count,
-            "error": result.error?.code.rawValue ?? "none"])
-            .write(to: out.appendingPathComponent("owner-epoch-key-result.json"))
-          throw JourneyFailure.failed("Snapshot-free key reused pre-takeover authority")
-        } catch let error as HelperError {
-          try require(error.code == .staleObservation
-            && error.message.localizedCaseInsensitiveContains("person")
-            && error.message.localizedCaseInsensitiveContains("observe"), "Wrong release-epoch refusal")
-        }
-        try await Task.sleep(nanoseconds: 150_000_000)
-        try require(try nativeKeys() == before, "Held or stale agent batch delivered a native key")
-        _ = try await AppObserver.observe(app: state, window: chosen.ref, monitor: monitor)
-        let refreshed = try await key()
-        try require(refreshed.error == nil && refreshed.performed.count == 1, "Fresh observation did not re-admit keys")
+        let held = try await key()
+        try require(held.error?.code == .failed
+          && held.error?.message == "A person is pressing in this app; try again.", "Wrong held-contact refusal")
+        await state.mutations.beginPerson()
+        state.mutations.setHeld(false, attachment: attachment)
+        state.mutations.endPerson()
+        let resumed = try await key()
+        try require(resumed.error == nil && resumed.performed.count == 1,
+          "Shared person input required a new observation")
         try await delivered(after: before)
-        stages.append(["stage": controller, "heldDeliveries": 0, "staleDeliveries": 0,
-          "freshDeliveries": 1, "controlEpoch": state.ownerInputFence.epoch, "passed": true])
+        stages.append(["stage": attachment, "heldDeliveries": 0, "resumedDeliveries": 1, "passed": true])
       }
-      try Data("Fresh-observation epoch enforced before key dispatch\n".utf8)
+      try Data("Only an actual held contact excludes agent input\n".utf8)
         .write(to: out.appendingPathComponent("owner-epoch-passed.txt"))
       return
     }

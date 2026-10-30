@@ -44,8 +44,7 @@ public struct LatestObservation {
 public final class AppSessionState {
   public nonisolated let identity: AppIdentity
   public nonisolated let path: String
-  nonisolated let ownerInputFence: OwnerInputFence
-  var observationControlEpoch = 0
+  nonisolated let mutations: AppMutationCoordinator
   public var processIdentifier: pid_t?
   /// The process the last full identity check verified.
   var verified: ProcessStamp?
@@ -74,19 +73,19 @@ public final class AppSessionState {
   }
 
   nonisolated convenience init(
-    identity: AppIdentity, path: String, ownerInputFence: OwnerInputFence
+    identity: AppIdentity, path: String, mutations: AppMutationCoordinator
   ) {
-    self.init(identity: identity, path: path, focus: FocusSlot(), ownerInputFence: ownerInputFence)
+    self.init(identity: identity, path: path, focus: FocusSlot(), mutations: mutations)
   }
 
   nonisolated init(
     identity: AppIdentity, path: String, focus: FocusSlot,
     menuShortcuts: MenuShortcutIndex = MenuShortcutIndex(),
-    ownerInputFence: OwnerInputFence = OwnerInputFence()
+    mutations: AppMutationCoordinator = AppMutationCoordinator()
   ) {
     self.focus = focus
     self.menuShortcuts = menuShortcuts
-    self.ownerInputFence = ownerInputFence
+    self.mutations = mutations
     self.identity = identity
     self.path = path
   }
@@ -100,13 +99,6 @@ public final class AppSessionState {
   /// shortcut index is read again from the app's current menus.
   func record(_ observation: LatestObservation) {
     latest = observation
-    observationControlEpoch = ownerInputFence.epoch
-    menuShortcuts.invalidate()
-  }
-
-  func invalidateOwnerInputObservations() {
-    unboundLatest = nil
-    for window in windows.values { window.latest = nil }
     menuShortcuts.invalidate()
   }
 

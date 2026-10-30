@@ -16,8 +16,8 @@ import {
   DisplayStreamIdSchema,
   encodeDisplayMediaFrame,
   macWindowVideoParams,
-  HostIntegrationsMacOwnerControlSchema,
   HostIntegrationsMacOwnerInputSchema,
+  HostIntegrationsMacOwnerInputResetSchema,
   type ComputerUseBridgeRequest,
 } from "@opensteer/protocol";
 import { ComputerUseBridgeDeadlineError } from "./computer-use-bridge-client.js";
@@ -65,6 +65,7 @@ it.each([
     const credits: unknown[] = [];
     let supported = true;
     let changeReadiness = () => {};
+    let ownerEvent = (_source: typeof source) => {};
     const media = encodeDisplayMediaFrame(
       {
         streamId,
@@ -97,6 +98,26 @@ it.each([
           socket.send(media, { binary: true });
           return;
         }
+        ownerEvent = (source) =>
+          socket.send(
+            JSON.stringify({
+              kind: "event",
+              event: "display.owner-input",
+              params: {
+                streamId,
+                source,
+                message: {
+                  type: "display.editing",
+                  generation: 1,
+                  context: {
+                    contextId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    field: null,
+                    caret: null,
+                  },
+                },
+              },
+            }),
+          );
         changeReadiness = () => {
           supported = false;
           socket.send(JSON.stringify({ kind: "event", event: "grants.changed" }));
@@ -118,8 +139,8 @@ it.each([
               ownerViewVersion: 3,
               ...(supported &&
               !["previous-desktop", "previous-helper"].includes(peer) &&
-              request.headers["x-opensteer-mac-owner-input"] === "1"
-                ? { ownerInputVersion: 1 }
+              request.headers["x-opensteer-mac-owner-input"] === "2"
+                ? { ownerInputVersion: 2 }
                 : {}),
               permissions: { accessibility: "granted", screenRecording: "granted" },
             });
@@ -147,7 +168,7 @@ it.each([
               },
             });
           } else if (frame.method === "display.start") answer({ attachmentToken });
-          else if (frame.method === "display.control" || frame.method === "display.input") {
+          else if (frame.method === "display.input") {
             if (peer === "lost") socket.terminate();
             else
               socket.send(
@@ -189,7 +210,7 @@ it.each([
           type: "host.integrations.display.resolve",
           requestId: "resolve",
           source,
-          ownerInputVersion: 1,
+          ownerInputVersion: 2,
           timeoutMs: 5_000,
         }),
       );
@@ -213,7 +234,7 @@ it.each([
       expect(requests.find((r) => r.method === "display.resolve")?.params).toEqual({
         source,
         ...(supported && !["previous-desktop", "previous-helper"].includes(peer)
-          ? { ownerInputVersion: 1 }
+          ? { ownerInputVersion: 2 }
           : {}),
       });
       relay.handle(
@@ -234,23 +255,47 @@ it.each([
       await expect.poll(() => received.length).toBe(1);
       expect(received[0]).toEqual(Buffer.from(media));
       await expect.poll(() => credits).toEqual([{ type: "display.ack", sequence: 0 }]);
-      if (["unsupported", "lost", "timeout"].includes(peer)) {
-        const controlId = "dcl_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        if (peer === "timeout")
-          vi.spyOn(handler, "videoRequest").mockRejectedValueOnce(
-            new ComputerUseBridgeDeadlineError("display.control", true),
-          );
+      if (peer === "current") {
+        const otherSource = DisplaySourceSchema.parse({
+          kind: "owner-view",
+          viewId: "cvw_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          generation: 1,
+        });
+        ownerEvent(otherSource);
+        ownerEvent(source);
+        await expect
+          .poll(() =>
+            events.filter((event) => event.type === "runner.integrations.mac-owner.event"),
+          )
+          .toHaveLength(1);
+        expect(
+          events.find((event) => event.type === "runner.integrations.mac-owner.event"),
+        ).toMatchObject({ source });
         relay.handle(
-          HostIntegrationsMacOwnerControlSchema.parse({
+          HostIntegrationsMacOwnerInputSchema.parse({
             ...fence,
-            type: "host.integrations.mac-owner.control",
+            type: "host.integrations.mac-owner.input",
             streamId,
-            source,
-            controlId,
-            access: "read-write",
-            action: "acquire",
+            source: otherSource,
+            geometry: 1,
+            sequence: 0,
+            events: [{ kind: "copy" }],
           }),
         );
+        relay.handle(
+          HostIntegrationsMacOwnerInputResetSchema.parse({
+            ...fence,
+            type: "host.integrations.mac-owner.input-reset",
+            streamId,
+            source,
+          }),
+        );
+        await expect
+          .poll(() => requests.filter((request) => request.method === "display.input-reset"))
+          .toHaveLength(1);
+        expect(requests.filter((request) => request.method === "display.input")).toHaveLength(0);
+      }
+      if (["unsupported", "lost", "timeout"].includes(peer)) {
         if (peer === "timeout")
           vi.spyOn(handler, "videoRequest").mockRejectedValueOnce(
             new ComputerUseBridgeDeadlineError("display.input", true),
@@ -261,31 +306,11 @@ it.each([
             type: "host.integrations.mac-owner.input",
             streamId,
             source,
-            controlId,
             sequence: 0,
             geometry: 1,
             events: [{ kind: "copy" }],
           }),
         );
-        await expect
-          .poll(() =>
-            events.find(
-              (event) =>
-                event.type === "runner.integrations.mac-owner.event" &&
-                event.message.type === "display.control",
-            ),
-          )
-          .toMatchObject({
-            message: {
-              state: "refused",
-              reason:
-                peer === "unsupported"
-                  ? "stream-lost"
-                  : peer === "timeout"
-                    ? "timed-out"
-                    : "stream-lost",
-            },
-          });
         await expect
           .poll(() =>
             events.find(
@@ -297,7 +322,7 @@ it.each([
           .toMatchObject({
             message: {
               outcome: "refused",
-              reason: peer === "unsupported" ? "unsupported" : "not-held",
+              reason: peer === "unsupported" ? "unsupported" : "unavailable",
             },
           });
       }
@@ -330,7 +355,7 @@ it.each([
             type: "host.integrations.display.resolve",
             requestId: "after-readiness-loss",
             source,
-            ownerInputVersion: 1,
+            ownerInputVersion: 2,
             timeoutMs: 5_000,
           }),
         );

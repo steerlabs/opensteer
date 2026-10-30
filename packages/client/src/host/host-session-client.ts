@@ -655,6 +655,7 @@ export class HttpHostClient {
         ? `/v1/computer-use/sessions/${encodeURIComponent(ref.sessionId)}/display`
         : `/v1/computer-use/views/${encodeURIComponent(ref.viewId)}/${ref.generation}/display`;
     const url = new URL(this.#webSocketUrl(path));
+    url.searchParams.set("sharedInput", "1");
     if (options?.editing === 1) {
       url.searchParams.set("editing", "1");
       if (ref.kind === "task-session") url.searchParams.set("displayCut", "1");

@@ -167,7 +167,7 @@ export class ComputerUseService {
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
   /** The grants the helper last reported since this app started, if it has. */
   #ownerViewVersion: number | undefined;
-  #ownerInputVersion: 1 | undefined;
+  #ownerInputVersion: 2 | undefined;
   #computerUseVersion: 2 | undefined;
   #loginReceiver: LoginReceiverKey | null = null;
   readonly #capabilityListeners = new Set<() => void>();
@@ -577,9 +577,9 @@ export class ComputerUseService {
           throw new ComputerUseHelperFailure("no-session", "That owner view lease has expired.");
         params = { ...request.params, leaseDurationMs: Math.max(1, remaining) };
       }
-      if (method === "display.control" || method === "display.input") {
+      if (method === "display.input-reset" || method === "display.input") {
         await client.handshake(deadline);
-        if (this.#ownerInputVersion !== 1)
+        if (this.#ownerInputVersion !== 2)
           throw new ComputerUseHelperFailure(
             "unsupported",
             "This Mac's helper does not support owner input.",

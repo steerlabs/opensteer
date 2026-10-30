@@ -15,8 +15,6 @@ import {
   encodeDisplayMediaFrame,
   mintComputerUseSessionId,
   DisplayStreamIdSchema,
-  DisplayControlIdSchema,
-  type DisplayControlId,
   type DisplayStreamReason,
   RunnerAuxiliaryFrameFenceSchema,
   type HostIntegrationsOperation,
@@ -111,6 +109,7 @@ async function until(check: () => boolean) {
 async function fixture(
   supported = true,
   kind: {
+    sharedInput?: boolean;
     editing?: boolean;
     displayCut?: boolean;
     mac?: boolean;
@@ -138,6 +137,7 @@ async function fixture(
   let now = Date.now();
   let live = true;
   let authorized = true;
+  let inputAuthorized = true;
   let signedIn = true;
   let loginExpiresAt = now + 60_000;
   let activities = 0;
@@ -164,6 +164,7 @@ async function fixture(
         integrations: {
           platform: mac ? "darwin" : "android",
           protocolVersion: mac ? 5 : 4,
+          ...(!mac && kind.sharedInput !== false ? { sharedInput: 1 } : {}),
           ...(editing ? { editing: 1 } : {}),
           ...(displayCut ? { displayCut: 1 } : {}),
           ...(mac
@@ -171,7 +172,7 @@ async function fixture(
                 computerUseVersion: 2,
                 ownerViewVersion: 3,
                 macWindowVideoVersion: 1,
-                ...(macOwnerInput ? { macOwnerInputVersion: 1 } : {}),
+                ...(macOwnerInput ? { macOwnerInputVersion: 2 } : {}),
               }
             : {}),
         },
@@ -192,7 +193,7 @@ async function fixture(
             type: "runner.integrations.display.resolved",
             requestId: message.requestId,
             target:
-              message.ownerInputVersion === 1 && macHelperInput
+              message.ownerInputVersion === 2 && macHelperInput
                 ? macTarget
                 : { kind: "mac-window", bindingId: macTarget.bindingId },
           });
@@ -236,9 +237,9 @@ async function fixture(
         if (mac && authorized) return runnerId;
         throw new Error("No owner lease in this task fixture");
       },
-      authorizeControl: async () => {
+      authorizeInput: async () => {
         await authorizationGate;
-        if (!mac || !authorized)
+        if (!mac || !inputAuthorized)
           throw new OpensteerError({ code: "forbidden", message: "Read-write approval required" });
         return runnerId;
       },
@@ -295,7 +296,7 @@ async function fixture(
   }
   const viewer = (editing = false, displayCut = false) =>
     connect(
-      `/v1/computer-use/sessions/${sessionId}/display${editing ? "?editing=1" : ""}${displayCut ? "&displayCut=1" : ""}`,
+      `/v1/computer-use/sessions/${sessionId}/display?sharedInput=1${editing ? "&editing=1" : ""}${displayCut ? "&displayCut=1" : ""}`,
       "owner",
     );
   const start = () =>
@@ -322,16 +323,6 @@ async function fixture(
       height: 640,
       rotation: 0,
       ...(reason === undefined ? {} : { reason }),
-    });
-  }
-  async function control(controlId: DisplayControlId, state: "held" | "released" | "refused") {
-    await apps.handleMessage(peer, stream, {
-      ...fence,
-      type: "runner.integrations.display.control-state",
-      streamId: start().streamId,
-      sessionId,
-      controlId,
-      state,
     });
   }
   function frame(
@@ -368,11 +359,14 @@ async function fixture(
     macSource,
     macViewer: (editing = false) =>
       connect(
-        `/v1/computer-use/views/${macSource.viewId}/1/display${editing ? "?editing=1" : ""}`,
+        `/v1/computer-use/views/${macSource.viewId}/1/display?sharedInput=1${editing ? "&editing=1" : ""}`,
         "owner",
       ),
     serverViewers,
     hub,
+    inputAuthorization: (value: boolean) => {
+      inputAuthorized = value;
+    },
     apps,
     peer,
     stream,
@@ -386,7 +380,6 @@ async function fixture(
     phone,
     start,
     state,
-    control,
     frame,
     connect,
     advance: (ms: number) => {
@@ -427,6 +420,385 @@ async function fixture(
 }
 
 describe("phone display Host sockets", () => {
+  it("frees the lane when the phone refuses a press from a viewer without editing", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(false);
+    const b = await f.viewer(false);
+    await f.state();
+    const down = (viewer: typeof a, sequence: number) =>
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: sequence }],
+      });
+    down(a, 1);
+    await a.roundTrip();
+    await f.apps.handleMessage(f.peer, f.stream, {
+      ...f.fence,
+      type: "runner.integrations.display.input-result",
+      streamId: f.start().streamId,
+      sessionId: f.sessionId,
+      geometry: 1,
+      sequence: 0,
+      outcome: "refused",
+      reason: "unavailable",
+    });
+    await a.roundTrip();
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.input-reset")).toHaveLength(
+      1,
+    );
+    down(b, 1);
+    await b.roundTrip();
+    expect(b.json().some((m) => m.reason === "contended")).toBe(false);
+  });
+
+  it("spends replies owed while a Mac viewer had no approval, so they never use up its room", async () => {
+    const f = await fixture(true, { mac: true });
+    const viewer = await f.macViewer(true);
+    await f.state();
+    await viewer.roundTrip();
+    const projected = () =>
+      viewer
+        .json()
+        .filter((m) => m.type === "display.state")
+        .at(-1)?.sharedInput;
+    expect(projected()).toBe(1);
+    for (let sequence = 1; sequence <= 128; sequence++)
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "text", insert: "x" }],
+      });
+    await viewer.roundTrip();
+    f.inputAuthorization(false);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(() => projected() === undefined);
+    for (let sequence = 0; sequence < 128; sequence++)
+      await f.apps.handleMessage(f.peer, f.stream, {
+        ...f.fence,
+        type: "runner.integrations.mac-owner.event",
+        streamId: f.start().streamId,
+        source: f.macSource,
+        message: { type: "display.input.result", sequence, outcome: "dispatched" },
+      });
+    f.inputAuthorization(true);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(() => projected() === 1);
+    viewer.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 129,
+      events: [{ kind: "text", insert: "y" }],
+    });
+    await viewer.roundTrip();
+    expect(viewer.json().some((m) => m.reason === "too-large")).toBe(false);
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input")).toHaveLength(129);
+  });
+
+  it("keeps room for a release when the lane's queue is full", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    await f.state();
+    const send = (sequence: number, phase: string) =>
+      a.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "pointer", phase, x: 0.5, y: 0.5, t: sequence }],
+      });
+    send(1, "down");
+    for (let sequence = 2; sequence <= 128; sequence++) send(sequence, "move");
+    await a.roundTrip();
+    send(129, "move");
+    send(130, "up");
+    await a.roundTrip();
+    expect(a.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 129,
+      outcome: "refused",
+      reason: "too-large",
+    });
+    expect(a.json().some((m) => m.sequence === 130 && m.outcome === "refused")).toBe(false);
+    const relayed = f.sent.filter((m) => m.type === "host.integrations.display.input");
+    expect(relayed.at(-1)?.events).toEqual([
+      { kind: "pointer", phase: "up", x: 0.5, y: 0.5, t: 130 },
+    ]);
+  });
+
+  it("frees the lane when the phone refuses the press holding it, never a later one", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    const b = await f.viewer(true);
+    await f.state();
+    const send = (viewer: typeof a, sequence: number, phase: string) =>
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "pointer", phase, x: 0.5, y: 0.5, t: sequence }],
+      });
+    const refuse = (sequence: number) =>
+      f.apps.handleMessage(f.peer, f.stream, {
+        ...f.fence,
+        type: "runner.integrations.display.input-result",
+        streamId: f.start().streamId,
+        sessionId: f.sessionId,
+        geometry: 1,
+        sequence,
+        outcome: "refused",
+        reason: "unavailable",
+      });
+    const resets = () =>
+      f.sent.filter((m) => m.type === "host.integrations.display.input-reset").length;
+    send(a, 1, "down");
+    await a.roundTrip();
+    send(a, 2, "move");
+    await a.roundTrip();
+    // A refusal of an earlier batch must not end the press a later batch continues.
+    await refuse(0);
+    await a.roundTrip();
+    expect(resets()).toBe(0);
+    await refuse(1);
+    await a.roundTrip();
+    expect(resets()).toBe(1);
+    // The phone has no finger down, so another viewer is not told the lane is taken.
+    send(b, 1, "down");
+    await b.roundTrip();
+    expect(b.json().some((m) => m.reason === "contended")).toBe(false);
+    expect(
+      f.sent.filter((m) => m.type === "host.integrations.display.input").map((m) => m.sequence),
+    ).toEqual([0, 1, 2]);
+  });
+
+  it("arbitrates held gestures, honors only holder resets and cleans up departed holders", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    const b = await f.viewer(true);
+    await f.state();
+    const send = (viewer: typeof a, sequence: number, phase: string) =>
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "pointer", phase, x: 0.5, y: 0.5, t: sequence }],
+      });
+    send(a, 10, "down");
+    await a.roundTrip();
+    send(b, 20, "down");
+    await b.roundTrip();
+    expect(b.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 20,
+      outcome: "refused",
+      reason: "contended",
+    });
+    b.send({ type: "display.input-reset" });
+    await b.roundTrip();
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.input-reset")).toHaveLength(
+      0,
+    );
+    a.send({ type: "display.input-reset" });
+    await a.roundTrip();
+    send(b, 21, "down");
+    await b.roundTrip();
+    b.socket.close();
+    await b.closed;
+    await until(
+      () => f.sent.filter((m) => m.type === "host.integrations.display.input-reset").length === 2,
+    );
+    send(a, 11, "down");
+    await a.roundTrip();
+    await f.state("live", 2);
+    await a.roundTrip();
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.input-reset")).toHaveLength(
+      3,
+    );
+    expect(
+      f.sent.filter((m) => m.type === "host.integrations.display.input").map((m) => m.sequence),
+    ).toEqual([0, 1, 2]);
+  });
+
+  it("ends a gesture on its own releases without a reset and drops replies for departed viewers", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    const b = await f.viewer(true);
+    await f.state();
+    for (const [sequence, phase] of [
+      [0, "down"],
+      [1, "up"],
+    ] as const) {
+      a.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "pointer", phase, x: 0.5, y: 0.5, t: sequence }],
+      });
+      await a.roundTrip();
+    }
+    b.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    await b.roundTrip();
+    a.socket.close();
+    await a.closed;
+    await f.apps.handleMessage(f.peer, f.stream, {
+      ...f.fence,
+      type: "runner.integrations.display.input-result",
+      streamId: f.start().streamId,
+      sessionId: f.sessionId,
+      geometry: 1,
+      sequence: 0,
+      outcome: "dispatched",
+    });
+    await b.roundTrip();
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.input-reset")).toEqual([]);
+    expect(b.json().filter((m) => m.type === "display.input.result")).toEqual([]);
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toHaveLength(3);
+  });
+
+  it("bounds outstanding receipts and keeps keys held after a pointer cancels", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    const b = await f.viewer(true);
+    await f.state();
+    a.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 0,
+      events: [
+        {
+          kind: "key",
+          action: "down",
+          key: "Shift",
+          code: "ShiftLeft",
+          modifiers: [],
+          location: 1,
+          repeat: false,
+        },
+        { kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 0 },
+        { kind: "pointer", phase: "cancel", x: 0.5, y: 0.5, t: 1 },
+      ],
+    });
+    await a.roundTrip();
+    b.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    await b.roundTrip();
+    expect(b.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 0,
+      outcome: "refused",
+      reason: "contended",
+    });
+    a.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 1,
+      events: [
+        {
+          kind: "key",
+          action: "up",
+          key: "Shift",
+          code: "ShiftLeft",
+          modifiers: [],
+          location: 1,
+          repeat: false,
+        },
+      ],
+    });
+    await a.roundTrip();
+    for (let sequence = 2; sequence <= 128; sequence++)
+      a.send({ type: "display.input", geometry: 1, sequence, events: [{ kind: "copy" }] });
+    await a.roundTrip();
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toHaveLength(128);
+    expect(a.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 128,
+      outcome: "refused",
+      reason: "too-large",
+    });
+  });
+
+  it("routes receipts and clipboard privately while broadcasting editing, and refuses legacy acquire", async () => {
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    const b = await f.viewer(true);
+    const baseline = await f.connect(`/v1/computer-use/sessions/${f.sessionId}/display`, "owner");
+    await f.state();
+    a.send({ type: "display.input", geometry: 1, sequence: 40, events: [{ kind: "copy" }] });
+    await a.roundTrip();
+    const base = { ...f.fence, streamId: f.start().streamId, sessionId: f.sessionId, geometry: 1 };
+    for (const event of [
+      {
+        ...base,
+        type: "runner.integrations.display.input-result",
+        sequence: 0,
+        outcome: "dispatched",
+      },
+      {
+        ...base,
+        type: "runner.integrations.display.clipboard",
+        sequence: 0,
+        outcome: "copied",
+        text: "private",
+      },
+      {
+        ...base,
+        type: "runner.integrations.display.editing",
+        context: { contextId: randomUUID(), field: null, caret: null },
+      },
+    ])
+      await f.apps.handleMessage(f.peer, f.stream, event as never);
+    await Promise.all([a.roundTrip(), b.roundTrip(), baseline.roundTrip()]);
+    expect(a.json()).toContainEqual({
+      type: "display.clipboard",
+      sequence: 40,
+      outcome: "copied",
+      text: "private",
+    });
+    expect(
+      b.json().filter((m) => m.type === "display.clipboard" || m.type === "display.input.result"),
+    ).toEqual([]);
+    expect(
+      [a, b].every((v) => v.json().some((m) => m.type === "display.editing" && m.generation === 1)),
+    ).toBe(true);
+    expect(
+      baseline.json().every((m) => m.sharedInput === undefined && m.type !== "display.editing"),
+    ).toBe(true);
+    baseline.send({ type: "display.control", action: "acquire" });
+    baseline.send({ type: "display.control", action: "release" });
+    baseline.send({
+      type: "display.input",
+      controlId: `dcl_${randomUUID()}`,
+      geometry: 1,
+      sequence: 50,
+      events: [{ kind: "copy" }],
+    });
+    await baseline.roundTrip();
+    expect(baseline.json()).toContainEqual({
+      type: "display.control",
+      state: "refused",
+      reason: "released-by-owner",
+    });
+    expect(baseline.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("leaves phones without shared input view-only", async () => {
+    const f = await fixture(true, { sharedInput: false });
+    const viewer = await f.viewer();
+    await f.state();
+    viewer.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 0,
+      events: [{ kind: "text", insert: "hello" }],
+    });
+    await viewer.roundTrip();
+    expect(f.start().sharedInput).toBeUndefined();
+    expect(viewer.json().every((m) => m.sharedInput === undefined)).toBe(true);
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toEqual([]);
+  });
+
   // Editing failure cases are recorded before implementation in the builder evidence.
   it.each([false, true])(
     "negotiates phone editing without changing baseline viewers (phone=%s)",
@@ -439,14 +811,9 @@ describe("phone display Host sockets", () => {
       expect(f.start().editingVersion).toBe(editing ? 1 : undefined);
       expect(baseline.json().every((m) => m.editingVersion === undefined)).toBe(true);
       expect(opted.json().at(-1).editingVersion).toBe(editing ? 1 : undefined);
-      opted.send({ type: "display.control", action: "acquire" });
-      await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-      const acquire = f.sent.findLast((m) => m.type === "host.integrations.display.control")!;
-      if (acquire.type !== "host.integrations.display.control") throw new Error("No lease");
-      await f.control(acquire.controlId, "held");
       opted.send({
         type: "display.input",
-        controlId: acquire.controlId,
+
         geometry: 1,
         sequence: 1,
         events: [{ kind: "paste", text: "hello" }],
@@ -457,7 +824,7 @@ describe("phone display Host sockets", () => {
       );
       opted.send({
         type: "display.input",
-        controlId: acquire.controlId,
+
         geometry: 1,
         sequence: 2,
         events: [{ kind: "mouse", phase: "down", button: "left", modifiers: [], x: 0.5, y: 0.5 }],
@@ -482,9 +849,12 @@ describe("phone display Host sockets", () => {
     const sockets: WebSocket[] = [];
     const streams = new DisplayStreams({
       connect: () => {
-        const socket = new WebSocket(`${f.base}/v1/computer-use/sessions/${f.sessionId}/display`, {
-          headers: { authorization: "Bearer owner" },
-        });
+        const socket = new WebSocket(
+          `${f.base}/v1/computer-use/sessions/${f.sessionId}/display?sharedInput=1`,
+          {
+            headers: { authorization: "Bearer owner" },
+          },
+        );
         sockets.push(socket);
         return socket as never;
       },
@@ -500,12 +870,7 @@ describe("phone display Host sockets", () => {
     await until(() => Boolean(f.start()));
     await f.state();
     await until(() => lease.getSnapshot().connection === "open");
-    lease.takeOver();
-    await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-    const acquire = f.sent.findLast((m) => m.type === "host.integrations.display.control")!;
-    if (acquire.type !== "host.integrations.display.control") throw new Error("No lease");
-    await f.control(acquire.controlId, "held");
-    await until(() => lease.getSnapshot().control.state === "held");
+    await until(() => lease.getSnapshot().input === "available");
     const events = Array.from({ length: 64 }, () => ({
       kind: "text" as const,
       insert: "\u0001".repeat(1000),
@@ -543,14 +908,9 @@ describe("phone display Host sockets", () => {
     const f = await fixture(true, { editing: true });
     const viewer = await f.viewer(true);
     await f.state();
-    viewer.send({ type: "display.control", action: "acquire" });
-    await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-    const acquire = f.sent.findLast((m) => m.type === "host.integrations.display.control")!;
-    if (acquire.type !== "host.integrations.display.control") throw new Error("No lease");
-    await f.control(acquire.controlId, "held");
     viewer.send({
       type: "display.input",
-      controlId: acquire.controlId,
+
       geometry: 1,
       sequence: 0,
       events: [{ kind: "paste", text: "hello" }],
@@ -566,7 +926,7 @@ describe("phone display Host sockets", () => {
     });
     viewer.send({
       type: "display.input",
-      controlId: acquire.controlId,
+
       geometry: 1,
       sequence: 1,
       events: [{ kind: "copy" }],
@@ -581,7 +941,7 @@ describe("phone display Host sockets", () => {
     expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toHaveLength(1);
     viewer.send({
       type: "display.input",
-      controlId: acquire.controlId,
+
       geometry: 2,
       sequence: 2,
       events: [{ kind: "copy" }],
@@ -592,9 +952,9 @@ describe("phone display Host sockets", () => {
       type: "runner.integrations.display.input-result",
       streamId: f.start().streamId,
       sessionId: f.sessionId,
-      controlId: acquire.controlId,
+
       geometry: 2,
-      sequence: 2,
+      sequence: 1,
       outcome: "dispatched",
     });
     await f.state("live", 3);
@@ -613,15 +973,10 @@ describe("phone display Host sockets", () => {
     const f = await fixture(true, { editing: true });
     const viewer = await f.viewer(true);
     await f.state();
-    viewer.send({ type: "display.control", action: "acquire" });
-    await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-    const acquire = f.sent.findLast((m) => m.type === "host.integrations.display.control")!;
-    if (acquire.type !== "host.integrations.display.control") throw new Error("No lease");
-    await f.control(acquire.controlId, "held");
     for (const [sequence, type] of ["image/png", "application/octet-stream"].entries()) {
       viewer.send({
         type: "display.input",
-        controlId: acquire.controlId,
+
         geometry: 1,
         sequence,
         events: [{ kind: "paste", items: [{ type, size: 10 }] }],
@@ -650,14 +1005,9 @@ describe("phone display Host sockets", () => {
       expect(f.start().displayCut).toBe(displayCut ? 1 : undefined);
       expect(old.json().every((m) => m.displayCut === undefined)).toBe(true);
       expect(viewer.json().at(-1).displayCut).toBe(displayCut ? 1 : undefined);
-      viewer.send({ type: "display.control", action: "acquire" });
-      await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-      const acquire = f.sent.findLast((m) => m.type === "host.integrations.display.control")!;
-      if (acquire.type !== "host.integrations.display.control") throw new Error("No lease");
-      await f.control(acquire.controlId, "held");
       viewer.send({
         type: "display.input",
-        controlId: acquire.controlId,
+
         geometry: 1,
         sequence: 0,
         events: [{ kind: "cut", contextId: randomUUID() }],
@@ -671,7 +1021,7 @@ describe("phone display Host sockets", () => {
           ...f.fence,
           streamId: f.start().streamId,
           sessionId: f.sessionId,
-          controlId: acquire.controlId,
+
           geometry: 1,
           type: "runner.integrations.display.clipboard",
           sequence: 0,
@@ -693,106 +1043,6 @@ describe("phone display Host sockets", () => {
         });
     },
   );
-
-  it("refuses new input from baseline controllers and routes editing only to the opted-in controller", async () => {
-    const f = await fixture(true, { editing: true });
-    const baseline = await f.viewer();
-    const opted = await f.viewer(true);
-    await f.state();
-    baseline.send({ type: "display.control", action: "acquire" });
-    await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-    const first = f.sent.findLast((m) => m.type === "host.integrations.display.control")!;
-    if (first.type !== "host.integrations.display.control") throw new Error("No lease");
-    await f.control(first.controlId, "held");
-    baseline.send({
-      type: "display.input",
-      controlId: first.controlId,
-      geometry: 1,
-      sequence: 0,
-      events: [{ kind: "copy" }],
-    });
-    await baseline.roundTrip();
-    expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toEqual([]);
-    baseline.send({ type: "display.control", action: "release" });
-    await baseline.roundTrip();
-    await f.control(first.controlId, "released");
-    opted.send({ type: "display.control", action: "acquire" });
-    await until(
-      () =>
-        f.sent.filter(
-          (m) => m.type === "host.integrations.display.control" && m.action === "acquire",
-        ).length === 2,
-    );
-    const second = f.sent.findLast((m) => m.type === "host.integrations.display.control")!;
-    if (second.type !== "host.integrations.display.control") throw new Error("No lease");
-    await f.control(second.controlId, "held");
-    opted.send({
-      type: "display.input",
-      controlId: second.controlId,
-      geometry: 1,
-      sequence: 10,
-      events: [{ kind: "copy" }],
-    });
-    await opted.roundTrip();
-    const base = {
-      ...f.fence,
-      streamId: f.start().streamId,
-      sessionId: f.sessionId,
-      controlId: second.controlId,
-      geometry: 1,
-    };
-    for (const event of [
-      {
-        ...base,
-        type: "runner.integrations.display.input-result",
-        sequence: 10,
-        outcome: "dispatched",
-      },
-      {
-        ...base,
-        type: "runner.integrations.display.clipboard",
-        sequence: 10,
-        outcome: "copied",
-        text: "selected",
-      },
-      {
-        ...base,
-        type: "runner.integrations.display.editing",
-        context: {
-          contextId: randomUUID(),
-          field: { kind: "text", multiline: false, sensitive: false },
-          caret: null,
-        },
-      },
-    ])
-      await f.apps.handleMessage(f.peer, f.stream, event as never);
-    await opted.roundTrip();
-    expect(
-      opted
-        .json()
-        .filter((m) =>
-          ["display.input.result", "display.clipboard", "display.editing"].includes(m.type),
-        )
-        .map((m) => m.type),
-    ).toEqual(["display.input.result", "display.clipboard", "display.editing"]);
-    expect(
-      baseline
-        .json()
-        .some((m) =>
-          ["display.input.result", "display.clipboard", "display.editing"].includes(m.type),
-        ),
-    ).toBe(false);
-    await f.apps.handleMessage(f.peer, f.stream, {
-      ...base,
-      controlId: first.controlId,
-      type: "runner.integrations.display.clipboard",
-      sequence: 10,
-      outcome: "copied",
-      text: "late",
-    } as never);
-    await opted.roundTrip();
-    expect(opted.json().filter((m) => m.type === "display.clipboard")).toHaveLength(1);
-  });
 
   it("binds one-use tickets to integrations, session and stream, with a 60-second expiry", async () => {
     const f = await fixture();
@@ -847,10 +1097,6 @@ describe("phone display Host sockets", () => {
     const oldServer = serverDataSockets.get(oldClaims.streamId)!;
     await f.state();
     const oldFrame = f.frame(1, true);
-    a.send({ type: "display.control", action: "acquire" });
-    await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-    const oldControl = f.sent.find((m) => m.type === "host.integrations.display.control")!;
-    if (oldControl.type !== "host.integrations.display.control") throw new Error("No control");
     f.hub.endSession(f.sessionId);
     await a.closed;
     const b = await f.viewer();
@@ -865,7 +1111,6 @@ describe("phone display Host sockets", () => {
     lateSocket.terminate();
     const phone = await f.phone();
     f.hub.failDataSocket(oldClaims);
-    await f.control(oldControl.controlId, "held");
     await f.apps.handleMessage(f.peer, f.stream, {
       ...f.fence,
       type: "runner.integrations.display.state",
@@ -985,7 +1230,7 @@ describe("phone display Host sockets", () => {
   it("refuses non-owners and closes on revocation and login expiry", async () => {
     const f = await fixture();
     await expect(
-      f.connect(`/v1/computer-use/sessions/${f.sessionId}/display`, "other"),
+      f.connect(`/v1/computer-use/sessions/${f.sessionId}/display?sharedInput=1`, "other"),
     ).rejects.toThrow(/403/);
     const viewer = await f.viewer();
     f.revoke();
@@ -1242,7 +1487,13 @@ describe("phone display Host sockets", () => {
       }
       if (cause === "command-failed") {
         vi.spyOn(f.apps, "sendDisplay").mockResolvedValue(false);
-        viewer.send({ type: "display.control", action: "acquire" });
+        await f.state();
+        viewer.send({
+          type: "display.input",
+          geometry: 1,
+          sequence: 0,
+          events: [{ kind: "text", insert: "hello" }],
+        });
       }
       if (cause === "data-lost") (await f.phone()).socket.close();
       if (cause === "start-timeout") {
@@ -1505,63 +1756,6 @@ describe("phone display Host sockets", () => {
       await f.state();
       await f.viewer();
       expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(1);
-    },
-  );
-  it.each(["acquiring", "releasing"] as const)(
-    "expires a lost %s answer so the next acquire works",
-    async (state) => {
-      const f = await fixture();
-      const viewer = await f.viewer();
-      await f.phone();
-      await f.state();
-      viewer.send({ type: "display.control", action: "acquire" });
-      await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-      const acquire = f.sent.find((m) => m.type === "host.integrations.display.control")!;
-      if (acquire.type !== "host.integrations.display.control") throw new Error("No control");
-      if (state === "releasing") {
-        await f.control(acquire.controlId, "held");
-        viewer.send({ type: "display.control", action: "release" });
-        await until(() =>
-          f.sent.some(
-            (m) => m.type === "host.integrations.display.control" && m.action === "release",
-          ),
-        );
-      }
-      f.advance(5_001);
-      f.hub.sweep();
-      await until(() =>
-        viewer.json().some((m) => m.type === "display.control" && m.state === "released"),
-      );
-      expect(viewer.json().at(-1)).toMatchObject({
-        type: "display.control",
-        controlId: acquire.controlId,
-        state: "released",
-        reason: "timed-out",
-      });
-      expect(
-        f.sent.some(
-          (m) =>
-            m.type === "host.integrations.display.control" &&
-            m.controlId === acquire.controlId &&
-            m.action === "release",
-        ),
-      ).toBe(true);
-      viewer.send({ type: "display.control", action: "acquire" });
-      await until(
-        () =>
-          f.sent.filter(
-            (m) => m.type === "host.integrations.display.control" && m.action === "acquire",
-          ).length === 2,
-      );
-      const next = f.sent.findLast(
-        (m) => m.type === "host.integrations.display.control" && m.action === "acquire",
-      )!;
-      if (next.type !== "host.integrations.display.control") throw new Error("No next control");
-      await f.control(acquire.controlId, "held");
-      await f.control(next.controlId, "held");
-      await until(() =>
-        viewer.json().some((m) => m.controlId === next.controlId && m.state === "held"),
-      );
     },
   );
   it("restarts the cached GOP at each keyframe", async () => {
@@ -1831,57 +2025,33 @@ describe("phone display Host sockets", () => {
     expect(stops()).toHaveLength(1);
     expect(await phone.closed).toBe(1000);
   });
-  it("reserves pending control, forwards only held ordered input, and releases on disconnect", async () => {
-    const f = await fixture();
-    const a = await f.viewer();
-    const b = await f.viewer();
-    await f.phone();
-    await f.state();
-    a.send({ type: "display.control", action: "acquire" });
-    await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-    const acquire = f.sent.find((m) => m.type === "host.integrations.display.control")!;
-    if (acquire.type !== "host.integrations.display.control") throw new Error("No acquire");
-    b.send({ type: "display.control", action: "acquire" });
-    await until(() => b.json().some((m) => m.state === "busy"));
-    const input = {
-      type: "display.input",
-      controlId: acquire.controlId,
-      geometry: 1,
-      sequence: 1,
-      events: [{ kind: "nav", to: "home" }],
-    };
-    a.send(input);
-    b.send(input);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(f.activity()).toBe(0);
-    await f.control(acquire.controlId, "held");
-    a.send(input);
-    await until(() => f.activity() === 1);
-    a.send(input);
-    b.send({ ...input, sequence: 2 });
-    a.send({ ...input, sequence: 2 });
-    await until(() => f.activity() === 2);
-    expect(
-      f.sent.filter((m) => m.type === "host.integrations.display.input").map((m) => m.sequence),
-    ).toEqual([1, 2]);
-    a.socket.close();
-    await a.closed;
-    await until(() =>
-      f.sent.some((m) => m.type === "host.integrations.display.control" && m.action === "release"),
-    );
-  });
-  // Input failures: per-message database waits starve acks and overflow the
-  // command inbox; concurrent input reorders; dropped input renews the hold.
+  it.each(["protected", "generation", "session"] as const)(
+    "does not renew dropped input after %s",
+    async (cause) => {
+      const f = await fixture();
+      const viewer = await f.viewer();
+      await f.phone();
+      await f.state();
+      if (cause === "session") f.end();
+      if (cause === "protected" || cause === "generation")
+        await f.state(cause === "protected" ? "protected" : "live", cause === "generation" ? 2 : 1);
+      if (viewer.socket.readyState === WebSocket.OPEN)
+        viewer.send({
+          type: "display.input",
+          geometry: 1,
+          sequence: 1,
+          events: [{ kind: "nav", to: "home" }],
+        });
+      await delay(30);
+      expect(f.activity()).toBe(0);
+      expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toEqual([]);
+    },
+  );
   it("forwards 160 ordered inputs with interleaved acks while authorization is blocked", async () => {
     const f = await fixture();
     const viewer = await f.viewer();
     const phone = await f.phone();
     await f.state();
-    viewer.send({ type: "display.control", action: "acquire" });
-    await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-    const acquire = f.sent.find((m) => m.type === "host.integrations.display.control")!;
-    if (acquire.type !== "host.integrations.display.control") throw new Error("No acquire");
-    await f.control(acquire.controlId, "held");
     for (let sequence = 1; sequence <= 4; sequence++)
       phone.socket.send(f.frame(sequence, sequence === 1));
     await until(() => viewer.media().length === 4);
@@ -1891,7 +2061,6 @@ describe("phone display Host sockets", () => {
       for (let sequence = 1; sequence <= 160; sequence++) {
         viewer.send({
           type: "display.input",
-          controlId: acquire.controlId,
           geometry: 1,
           sequence,
           events: [{ kind: "pointer", phase: "move", x: 0.5, y: 0.5, t: sequence }],
@@ -1905,7 +2074,7 @@ describe("phone display Host sockets", () => {
       await until(() => viewer.media().length === 5);
       expect(
         f.sent.filter((m) => m.type === "host.integrations.display.input").map((m) => m.sequence),
-      ).toEqual(Array.from({ length: 160 }, (_, index) => index + 1));
+      ).toEqual(Array.from({ length: 160 }, (_, index) => index));
       expect(f.activity()).toBe(160);
       expect(f.authorizationChecks()).toBe(checks);
       expect(viewer.socket.readyState).toBe(WebSocket.OPEN);
@@ -1913,35 +2082,6 @@ describe("phone display Host sockets", () => {
       resume();
     }
   });
-  it.each(["protected", "generation", "session", "released"] as const)(
-    "does not renew dropped input after %s",
-    async (cause) => {
-      const f = await fixture();
-      const viewer = await f.viewer();
-      await f.phone();
-      await f.state();
-      viewer.send({ type: "display.control", action: "acquire" });
-      await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-      const acquire = f.sent.find((m) => m.type === "host.integrations.display.control")!;
-      if (acquire.type !== "host.integrations.display.control") throw new Error("No acquire");
-      await f.control(acquire.controlId, "held");
-      if (cause === "session") f.end();
-      if (cause === "released") await f.control(acquire.controlId, "released");
-      if (cause === "protected" || cause === "generation")
-        await f.state(cause === "protected" ? "protected" : "live", cause === "generation" ? 2 : 1);
-      if (viewer.socket.readyState === WebSocket.OPEN)
-        viewer.send({
-          type: "display.input",
-          controlId: acquire.controlId,
-          geometry: 1,
-          sequence: 1,
-          events: [{ kind: "nav", to: "home" }],
-        });
-      await delay(30);
-      expect(f.activity()).toBe(0);
-      expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toEqual([]);
-    },
-  );
   it("tells viewers a session ended before closing them for good", async () => {
     const f = await fixture();
     const viewer = await f.viewer();
@@ -2098,35 +2238,6 @@ describe("phone display Host sockets", () => {
       g.connect("/internal/v1/computer-use/display", g.start().dataTicket),
     ).rejects.toThrow(/401/);
   });
-  it("relays refusal/release only to the requesting viewer and issues fresh control IDs", async () => {
-    const f = await fixture();
-    const viewer = await f.viewer();
-    const other = await f.viewer();
-    await f.phone();
-    viewer.send({ type: "display.control", action: "acquire" });
-    await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-    const acquire = f.sent.find((m) => m.type === "host.integrations.display.control")!;
-    if (acquire.type !== "host.integrations.display.control") throw new Error("No acquire");
-    await f.control(DisplayControlIdSchema.parse(`dcl_${randomUUID()}`), "held");
-    await f.control(acquire.controlId, "refused");
-    await until(() => viewer.json().some((m) => m.state === "refused"));
-    expect(other.json().some((m) => m.type === "display.control")).toBe(false);
-    other.send({ type: "display.control", action: "acquire" });
-    await until(
-      () => f.sent.filter((m) => m.type === "host.integrations.display.control").length === 2,
-    );
-    const next = f.sent.filter((m) => m.type === "host.integrations.display.control")[1]!;
-    expect(next.controlId).not.toBe(acquire.controlId);
-    await f.control(next.controlId, "held");
-    other.send({ type: "display.control", action: "release" });
-    await until(() =>
-      f.sent.some((m) => m.type === "host.integrations.display.control" && m.action === "release"),
-    );
-    await f.control(next.controlId, "held");
-    await f.control(next.controlId, "released");
-    await until(() => other.json().some((m) => m.state === "released"));
-    expect(other.json().filter((m) => m.state === "held")).toHaveLength(1);
-  });
   it.each(["invalid-json", "unknown-field", "binary", "oversize"])(
     "rejects %s viewer commands",
     async (kind) => {
@@ -2138,7 +2249,7 @@ describe("phone display Host sockets", () => {
       if (kind === "binary") viewer.socket.send(new Uint8Array([1]));
       if (kind === "oversize") viewer.socket.send("x".repeat(256 * 1_024 + 1));
       expect(await viewer.closed).toBe(kind === "oversize" ? 1009 : 4002);
-      expect(f.sent.filter((m) => m.type === "host.integrations.display.control")).toEqual([]);
+      expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toEqual([]);
     },
   );
   it("refuses an upgrade whose owner authorization resolves after Host shutdown", async () => {
@@ -2158,11 +2269,14 @@ describe("phone display Host sockets", () => {
       const f = await fixture();
       const viewer = await f.viewer();
       const phone = await f.phone();
-      viewer.send({ type: "display.control", action: "acquire" });
-      await until(() => f.sent.some((m) => m.type === "host.integrations.display.control"));
-      const acquire = f.sent.find((m) => m.type === "host.integrations.display.control")!;
-      if (acquire.type !== "host.integrations.display.control") throw new Error("No acquire");
-      await f.control(acquire.controlId, "held");
+      await f.state();
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence: 0,
+        events: [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 0 }],
+      });
+      await viewer.roundTrip();
       if (cause === "session") f.end();
       if (cause === "detach") f.apps.detach(f.peer, "transport-disconnected");
       if (cause === "shutdown") await f.app.close();
@@ -2172,9 +2286,7 @@ describe("phone display Host sockets", () => {
       if (cause !== "detach") {
         expect(f.sent.slice(-2)).toMatchObject([
           {
-            type: "host.integrations.display.control",
-            action: "release",
-            controlId: acquire.controlId,
+            type: "host.integrations.display.input-reset",
           },
           { type: "host.integrations.display.stop" },
         ]);
@@ -2220,7 +2332,7 @@ describe("phone display Host sockets", () => {
 });
 
 describe("Mac owner input over authenticated display sockets", () => {
-  it("re-resolves the same binding without Take over after readiness loss", async () => {
+  it("re-resolves the same binding after readiness loss and ignores a legacy Take over", async () => {
     const negotiation = { mac: true, macOwnerInput: true, macHelperInput: true };
     const f = await fixture(true, negotiation);
     const viewer = await f.macViewer(true);
@@ -2242,8 +2354,98 @@ describe("Mac owner input over authenticated display sockets", () => {
     passive.send({ type: "display.control", action: "acquire" });
     await passive.roundTrip();
     expect(
-      f.sent.filter((message) => message.type === "host.integrations.mac-owner.control"),
+      f.sent.filter((message) => message.type === "host.integrations.mac-owner.input"),
     ).toHaveLength(0);
+  });
+
+  it("projects shared input per viewer and rechecks read-write approval without ending viewing", async () => {
+    const f = await fixture(true, { mac: true });
+    const a = await f.macViewer(true);
+    const b = await f.macViewer(true);
+    const baseline = await f.connect(
+      `/v1/computer-use/views/${f.macSource.viewId}/1/display`,
+      "owner",
+    );
+    await f.state();
+    await Promise.all([a.roundTrip(), b.roundTrip(), baseline.roundTrip()]);
+    expect(
+      a
+        .json()
+        .filter((m) => m.type === "display.state")
+        .at(-1).sharedInput,
+    ).toBe(1);
+    expect(baseline.json().at(-1).sharedInput).toBeUndefined();
+    a.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 7,
+      events: [{ kind: "mouse", phase: "down", button: "left", modifiers: [], x: 0.5, y: 0.5 }],
+    });
+    await a.roundTrip();
+    const input = f.sent.findLast((m) => m.type === "host.integrations.mac-owner.input")!;
+    expect(input.sequence).toBe(0);
+    await f.apps.handleMessage(f.peer, f.stream, {
+      ...f.fence,
+      type: "runner.integrations.mac-owner.event",
+      streamId: f.start().streamId,
+      source: f.macSource,
+      message: { type: "display.input.result", sequence: 0, outcome: "dispatched" },
+    });
+    await Promise.all([a.roundTrip(), b.roundTrip()]);
+    expect(a.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 7,
+      outcome: "dispatched",
+    });
+    expect(b.json().every((m) => m.type !== "display.input.result")).toBe(true);
+    f.inputAuthorization(false);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(
+      () =>
+        a
+          .json()
+          .filter((m) => m.type === "display.state")
+          .at(-1).sharedInput === undefined,
+    );
+    expect(a.socket.readyState).toBe(WebSocket.OPEN);
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input-reset")).toHaveLength(
+      1,
+    );
+    f.inputAuthorization(true);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(
+      () =>
+        a
+          .json()
+          .filter((m) => m.type === "display.state")
+          .at(-1).sharedInput === 1,
+    );
+  });
+
+  it("tells an idle Mac viewer when its approval is granted or removed", async () => {
+    const f = await fixture(true, { mac: true });
+    f.inputAuthorization(false);
+    const idle = await f.macViewer(true);
+    await f.state();
+    await idle.roundTrip();
+    const projected = () =>
+      idle
+        .json()
+        .filter((m) => m.type === "display.state")
+        .at(-1)?.sharedInput;
+    expect(projected()).toBeUndefined();
+    // The viewer never sent input: approval alone must make it usable.
+    f.inputAuthorization(true);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(() => projected() === 1);
+    f.inputAuthorization(false);
+    f.advance(5001);
+    f.hub.sweep();
+    await until(() => projected() === undefined);
+    expect(idle.socket.readyState).toBe(WebSocket.OPEN);
   });
 
   it.each([
@@ -2265,11 +2467,11 @@ describe("Mac owner input over authenticated display sockets", () => {
     viewer.send({ type: "display.control", action: "acquire" });
     await viewer.roundTrip();
     expect(
-      f.sent.filter((message) => message.type === "host.integrations.mac-owner.control"),
+      f.sent.filter((message) => message.type === "host.integrations.mac-owner.input"),
     ).toHaveLength(0);
     viewer.send({
       type: "display.input",
-      controlId: `dcl_${randomUUID()}`,
+
       geometry: 1,
       sequence: 0,
       events: [{ kind: "copy" }],
@@ -2283,7 +2485,7 @@ describe("Mac owner input over authenticated display sockets", () => {
     );
     expect(resolves.length).toBeGreaterThan(0);
     expect(
-      resolves.every((message) => (message.ownerInputVersion === 1) === negotiation.macOwnerInput),
+      resolves.every((message) => (message.ownerInputVersion === 2) === negotiation.macOwnerInput),
     ).toBe(true);
     const out = process.env.OPENSTEER_MAC_INPUT_ARTIFACT_DIR;
     if (out) {
@@ -2302,96 +2504,6 @@ describe("Mac owner input over authenticated display sockets", () => {
             commands: f.sent,
             mediaHeader: viewer.media()[0]!.header,
             payloadHex: Buffer.from(viewer.media()[0]!.payload).toString("hex"),
-          },
-          null,
-          2,
-        ),
-      );
-    }
-  });
-
-  it("projects baseline wire and sends negotiated input only to its controller", async () => {
-    const f = await fixture(true, { mac: true });
-    const old = await f.macViewer();
-    const viewer = await f.macViewer(true);
-    const data = await f.phone();
-    data.socket.send(f.frame(1, true));
-    await viewer.received(() => viewer.media().length === 1);
-    await old.received(() => old.media().length === 1);
-    expect(old.json().every((m) => m.editingVersion === undefined)).toBe(true);
-    expect(viewer.json().some((m) => m.editingVersion === 1)).toBe(true);
-    old.send({ type: "display.control", action: "acquire" });
-    await old.roundTrip();
-    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.control")).toHaveLength(0);
-    viewer.send({ type: "display.control", action: "acquire" });
-    await until(() => f.sent.some((m) => m.type === "host.integrations.mac-owner.control"));
-    const acquire = f.sent.find((m) => m.type === "host.integrations.mac-owner.control")!;
-    if (acquire.type !== "host.integrations.mac-owner.control") throw new Error("No acquisition");
-    expect(acquire).toMatchObject({ source: f.macSource, access: "read-write", action: "acquire" });
-    await f.apps.handleMessage(f.peer, f.stream, {
-      ...f.fence,
-      type: "runner.integrations.mac-owner.event",
-      streamId: f.start().streamId,
-      source: f.macSource,
-      controlId: acquire.controlId,
-      message: { type: "display.control", state: "held", controlId: acquire.controlId },
-    });
-    await viewer.received(() => viewer.json().some((m) => m.state === "held"));
-    viewer.send({
-      type: "display.input",
-      controlId: acquire.controlId,
-      geometry: 1,
-      sequence: 0,
-      events: [{ kind: "copy" }],
-    });
-    await until(() => f.sent.some((m) => m.type === "host.integrations.mac-owner.input"));
-    await f.apps.handleMessage(f.peer, f.stream, {
-      ...f.fence,
-      type: "runner.integrations.mac-owner.event",
-      streamId: f.start().streamId,
-      source: f.macSource,
-      controlId: acquire.controlId,
-      message: {
-        type: "display.clipboard",
-        sequence: 0,
-        outcome: "copied",
-        text: "fixture selection",
-      },
-    });
-    await viewer.received(() => viewer.json().some((m) => m.type === "display.clipboard"));
-    await old.roundTrip();
-    expect(old.json().some((m) => m.type === "display.clipboard")).toBe(false);
-    viewer.send({
-      type: "display.input",
-      controlId: acquire.controlId,
-      geometry: 2,
-      sequence: 1,
-      events: [{ kind: "copy" }],
-    });
-    await viewer.received(() =>
-      viewer
-        .json()
-        .some(
-          (m) => m.type === "display.input.result" && m.sequence === 1 && m.outcome === "stale",
-        ),
-    );
-    viewer.socket.close();
-    await until(() =>
-      f.sent.some(
-        (m) => m.type === "host.integrations.mac-owner.control" && m.action === "release",
-      ),
-    );
-    const out = process.env.OPENSTEER_MAC_INPUT_ARTIFACT_DIR;
-    if (out) {
-      await mkdir(out, { recursive: true });
-      await writeFile(
-        path.join(out, "host-display.json"),
-        JSON.stringify(
-          {
-            passed: true,
-            boundary: "Host with scripted native peer",
-            frames: viewer.json(),
-            commands: f.sent,
           },
           null,
           2,

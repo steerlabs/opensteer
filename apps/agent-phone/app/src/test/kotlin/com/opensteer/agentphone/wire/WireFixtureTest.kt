@@ -43,7 +43,7 @@ class WireFixtureTest {
                 value.fields.entries.joinToString(",\n", "{\n", "\n$indent}") { (key, item) ->
                     inner + JsonText.stringify(JsonString(key)) + ": " + pretty(item, inner)
                 }
-            else -> JsonText.stringify(value)
+            else -> JsonText.stringifyFrame(value)
         }
     }
 }
@@ -196,21 +196,7 @@ object WireFixture {
                 "mcpClosed" to IntegrationsWire.mcpUnapproved(auxiliaryFence, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
             ),
             "displayFrames" to JsonArray((vectors.fields.getValue("phoneFrames") as JsonArray).items.map { entry ->
-                val f = Fields.of((entry as JsonObject).fields.getValue("frame"), "phone")
-                val type = f.string("type")
-                val fence = RunnerWire.auxiliaryFence(f)
-                val stream = f.string("streamId")
-                when {
-                    type.endsWith("control-state") -> DisplayWire.controlState(fence, f.string("sessionId"), stream, f.string("controlId"), f.string("state"), f.optionalString("reason"))
-                    type.endsWith("source-ended") -> {
-                        f.literal("display", "main")
-                        val source = f.obj("source")
-                        source.literal("kind", "owner-view")
-                        DisplayWire.sourceEnded(fence, stream, DisplaySource.Owner(source.string("viewId"), source.int("generation")), f.string("reason"))
-                    }
-                    else -> { f.literal("display", "main"); DisplayWire.state(fence, stream, f.string("state"), f.optionalString("reason"),
-                        f.int("generation"), f.int("width").toInt(), f.int("height").toInt(), f.int("rotation").toInt()) }
-                }
+                displayFrame((entry as JsonObject).fields.getValue("frame") as JsonObject)
             }),
             "displayMedia" to JsonArray((vectors.fields.getValue("displayMediaFrames") as JsonArray).items.map { entry ->
                 val frame = entry as JsonObject
@@ -279,6 +265,33 @@ object WireFixture {
                 ),
             ),
         )
+    }
+
+    fun displayFrame(frame: JsonObject): JsonObject {
+        val f = Fields.of(frame, "phone")
+        val type = f.string("type")
+        val fence = RunnerWire.auxiliaryFence(f)
+        val stream = f.string("streamId")
+        val result = when {
+            type.endsWith("source-ended") -> {
+                f.literal("display", "main")
+                val source = f.obj("source")
+                source.literal("kind", "owner-view")
+                DisplayWire.sourceEnded(fence, stream, DisplaySource.Owner(source.string("viewId"), source.int("generation")), f.string("reason"))
+            }
+            type.endsWith("editing") -> DisplayWire.editingContext(fence, stream, f.string("sessionId"), f.int("geometry"), f.objectValue("context"))
+            type.endsWith("input-result") || type.endsWith("clipboard") -> {
+                val input = DisplayMessage.Input(fence, f.string("sessionId"), stream, f.int("geometry"), f.int("sequence"), emptyList())
+                val fields = linkedMapOf("sequence" to jsonOf(input.sequence), "outcome" to jsonOf(f.string("outcome")))
+                f.optionalString("reason")?.let { fields["reason"] = jsonOf(it) }
+                f.optionalString("text")?.let { fields["text"] = jsonOf(it) }
+                DisplayWire.editingReply(input, type.substringAfterLast('.'), *fields.toList().toTypedArray())
+            }
+            else -> { f.literal("display", "main"); DisplayWire.state(fence, stream, f.string("state"), f.optionalString("reason"),
+                f.int("generation"), f.int("width").toInt(), f.int("height").toInt(), f.int("rotation").toInt()) }
+        }
+        f.end()
+        return result
     }
 
     private fun Observation.copyForFixture(observationId: String, screenshot: ScreenshotOutcome) = Observation.visible(

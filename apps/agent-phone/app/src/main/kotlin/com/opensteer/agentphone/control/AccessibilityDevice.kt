@@ -1,13 +1,11 @@
 package com.opensteer.agentphone.control
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
 import android.app.KeyguardManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Path
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.os.Build
@@ -46,6 +44,28 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
     private val keyguard = service.getSystemService(KeyguardManager::class.java)
     private val displays = service.getSystemService(DisplayManager::class.java)
     private val turns = ScreenshotTurns()
+    private val textLane = java.util.concurrent.locks.ReentrantLock()
+    @Volatile var textChanged: () -> Unit = {}
+    /** The person still holds a key in the focused field; agent effects wait for its release or a reset. */
+    @Volatile var personKeysHeld: () -> Boolean = { false }
+    private fun personAdmit(admit: () -> Unit): () -> Unit = {
+        if (personKeysHeld()) throw PersonContactException(PersonContactException.KEY)
+        admit()
+    }
+    fun <T> readEditing(action: () -> T): T {
+        textLane.lock()
+        try { return action() } finally { textLane.unlock() }
+    }
+    override fun <T> edit(action: () -> T): T = personEdit {
+        // Checked inside the text lane, which the person's key presses also take.
+        if (personKeysHeld()) throw PersonContactException(PersonContactException.KEY)
+        try { action() } finally { clearOwnerText() }
+    }
+    fun <T> personEdit(action: () -> T): T {
+        textLane.lock()
+        try { return action() } finally { try { textChanged() } finally { textLane.unlock() } }
+    }
+
 
     /**
      * An element exactly as the walk found it. The node is the element's own
@@ -318,7 +338,7 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
             else if (insert != null) TextInsertion.insert(field.text, field.selectionStart, field.selectionEnd, insert)
             else TextInsertion.deleteBackward(field.text, field.selectionStart, field.selectionEnd, delete)
         if (edit == null) {
-            android.util.Log.w("OpensteerDisplay", "Owner password edit refused: no IME connection and this lease does not know the field value; empty the field on the phone first")
+            android.util.Log.w("OpensteerDisplay", "Owner password edit refused: no IME connection and this input stream does not know the field value; empty the field on the phone first")
             return false
         }
         if (!setText(field, edit.text, admit)) {
@@ -347,38 +367,31 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
         return false
     }
 
-    override fun tap(point: DisplayPoint, count: Int, budget: Budget, admit: () -> Unit): Effect {
-        val gesture = GestureDescription.Builder()
-        repeat(count) { gesture.addStroke(GestureDescription.StrokeDescription(at(point), it * Device.DOUBLE_TAP_SPACING_MS, Device.TAP_MS)) }
-        return dispatch(gesture.build(), Device.tapMs(count), budget, admit)
-    }
+    override fun tap(point: DisplayPoint, count: Int, budget: Budget, admit: () -> Unit): Effect =
+        dispatch(List(count) { GestureSegment(listOf(point), Device.TAP_MS, false, true,
+            delayMs = if (it == 0) 0 else Device.DOUBLE_TAP_SPACING_MS - Device.TAP_MS) }, Device.tapMs(count), budget, admit)
 
-    override fun press(point: DisplayPoint, durationMs: Int, budget: Budget, admit: () -> Unit): Effect = dispatch(
-        GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(at(point), 0, durationMs.toLong())).build(),
-        durationMs.toLong(),
-        budget,
-        admit,
-    )
+    override fun press(point: DisplayPoint, durationMs: Int, budget: Budget, admit: () -> Unit): Effect =
+        dispatch(listOf(GestureSegment(listOf(point), durationMs.toLong(), false, true)), durationMs.toLong(), budget, admit)
 
-    override fun swipe(from: DisplayPoint, to: DisplayPoint, durationMs: Int, budget: Budget, admit: () -> Unit): Effect = dispatch(
-        GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(line(from, to), 0, durationMs.toLong())).build(),
-        durationMs.toLong(),
-        budget,
-        admit,
-    )
+    override fun swipe(from: DisplayPoint, to: DisplayPoint, durationMs: Int, budget: Budget, admit: () -> Unit): Effect =
+        dispatch(listOf(GestureSegment(listOf(from, to), durationMs.toLong(), false, true)), durationMs.toLong(), budget, admit)
 
     private class Held(val point: DisplayPoint, @Volatile var admit: () -> Unit) : Contact {
         val finished = java.util.concurrent.CompletableFuture<Boolean>()
     }
 
     override fun touchDown(point: DisplayPoint, holdMs: Int, budget: Budget, admit: () -> Unit): Contact? {
-        val held = Held(point, admit)
+        val held = Held(point, personAdmit(admit))
         val started = java.util.concurrent.CompletableFuture<Boolean>()
-        admit()
+        held.admit()
         gestures.scheduler.down(point, { !budget.halted && runCatching { held.admit() }.isSuccess }, watchdog = false,
-            done = { held.finished.complete(it) }, onStarted = { started.complete(it) })
+            done = { held.finished.complete(it) }, onStarted = { started.complete(it) },
+            producer = GestureScheduler.Producer.AGENT, contact = held,
+            contended = { started.completeExceptionally(PersonContactException()) })
         val accepted = try { started.get(minOf(1500, budget.remainingMs()).coerceAtLeast(1), TimeUnit.MILLISECONDS) }
             catch (_: java.util.concurrent.TimeoutException) { true }
+            catch (error: java.util.concurrent.ExecutionException) { throw (error.cause as? PersonContactException ?: error) }
             catch (_: InterruptedException) { Thread.currentThread().interrupt(); true }
         return if (accepted) held else null
     }
@@ -392,16 +405,16 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
             if (!held.finished.isDone) {
                 val at = DisplayPoint(held.point.x + (to.x - held.point.x) * step / steps,
                     held.point.y + (to.y - held.point.y) * step / steps)
-                if (step == steps) gestures.scheduler.up(at) else gestures.scheduler.move(at)
+                if (step == steps) gestures.scheduler.up(at, producer = GestureScheduler.Producer.AGENT, contact = held) else gestures.scheduler.move(at, producer = GestureScheduler.Producer.AGENT, contact = held)
             }
         }
         return try {
             if (held.finished.get(minOf(durationMs + 1500L, budget.remainingMs()).coerceAtLeast(1), TimeUnit.MILLISECONDS)) Effect.DONE else Effect.FAILED
-        } catch (_: java.util.concurrent.TimeoutException) { gestures.scheduler.cancel(); Effect.UNKNOWN }
-        catch (_: InterruptedException) { gestures.scheduler.cancel(); Thread.currentThread().interrupt(); Effect.UNKNOWN }
+        } catch (_: java.util.concurrent.TimeoutException) { gestures.scheduler.cancel(producer = GestureScheduler.Producer.AGENT, contact = held); Effect.UNKNOWN }
+        catch (_: InterruptedException) { gestures.scheduler.cancel(producer = GestureScheduler.Producer.AGENT, contact = held); Thread.currentThread().interrupt(); Effect.UNKNOWN }
     }
 
-    override fun lift(contact: Contact) { gestures.scheduler.cancel() }
+    override fun lift(contact: Contact) { gestures.scheduler.cancel(producer = GestureScheduler.Producer.AGENT, contact = contact) }
 
     override fun focus(element: LiveElement, admit: () -> Unit): Boolean {
         val node = (element.ref as NodeRef).node
@@ -523,22 +536,20 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
      * the budget allows, but past a cancel, because a gesture on the screen
      * cannot be taken back and its completed progress is part of the answer.
      */
-    private fun dispatch(gesture: GestureDescription, durationMs: Long, budget: Budget, admit: () -> Unit): Effect {
-        val latch = CountDownLatch(1)
-        val completed = AtomicBoolean(false)
-        val callback = object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription) {
-                completed.set(true)
-                latch.countDown()
-            }
-
-            override fun onCancelled(gestureDescription: GestureDescription) {
-                latch.countDown()
-            }
+    private fun dispatch(segments: List<GestureSegment>, durationMs: Long, budget: Budget, admit: () -> Unit): Effect {
+        val answer = java.util.concurrent.CompletableFuture<GestureScheduler.Result>()
+        val admitted = personAdmit(admit)
+        gestures.scheduler.agent(segments, admitted, { answer.complete(it) }, { answer.completeExceptionally(it) },
+            authority = { runCatching(admitted).isSuccess })
+        val result = try { answer.get(minOf(durationMs + GESTURE_GRACE_MS, budget.remainingMs()).coerceAtLeast(1), TimeUnit.MILLISECONDS) }
+            catch (error: java.util.concurrent.ExecutionException) { throw requireNotNull(error.cause) }
+            catch (_: java.util.concurrent.TimeoutException) { return Effect.UNKNOWN }
+            catch (_: InterruptedException) { Thread.currentThread().interrupt(); return Effect.UNKNOWN }
+        return when (result) {
+            GestureScheduler.Result.DONE -> Effect.DONE
+            GestureScheduler.Result.INTERRUPTED -> Effect.FAILED
+            GestureScheduler.Result.PERSON_CONTACT -> throw PersonContactException()
         }
-        admit()
-        if (!service.dispatchGesture(gesture, callback, main)) return Effect.FAILED
-        return gestureAnswer(latch, completed, minOf(durationMs + GESTURE_GRACE_MS, budget.remainingMs()))
     }
 
     private fun live(node: AccessibilityNodeInfo, ref: NodeRef): LiveElement {
@@ -611,13 +622,6 @@ class AccessibilityDevice(private val service: AccessibilityService, private val
     }
 
     private fun Rect.toPixelRect() = PixelRect(left, top, right, bottom)
-
-    private fun at(point: DisplayPoint) = Path().apply { moveTo(point.x.toFloat(), point.y.toFloat()) }
-
-    private fun line(from: DisplayPoint, to: DisplayPoint) = Path().apply {
-        moveTo(from.x.toFloat(), from.y.toFloat())
-        lineTo(to.x.toFloat(), to.y.toFloat())
-    }
 
     private companion object {
         const val MAX_VISITS = 6_000

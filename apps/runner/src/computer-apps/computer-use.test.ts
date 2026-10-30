@@ -395,7 +395,7 @@ describe("computer use over the desktop bridge", () => {
     const permissions = { accessibility: "granted", screenRecording: "granted" } as const;
     const reads = () => bridge.requests.filter(({ method }) => method === "permissions.get").length;
     bridge.answer("permissions.get", () => ({
-      result: { permissions, computerUseVersion: 2, ownerViewVersion: 3, ownerInputVersion: 1 },
+      result: { permissions, computerUseVersion: 2, ownerViewVersion: 3, ownerInputVersion: 2 },
     }));
     await computerUse.permissions();
     expect(computerUse.ownerViewVersion()).toBe(3);
@@ -1593,7 +1593,7 @@ describe("computer use over the desktop bridge", () => {
     });
     teardown.push(() => prepared?.close?.());
     expect(prepared?.descriptor).toMatchObject({ macWindowVideoVersion: 1, platform: "darwin" });
-    expect(prepared?.descriptor).toHaveProperty("macOwnerInputVersion", 1);
+    expect(prepared?.descriptor).toHaveProperty("macOwnerInputVersion", 2);
     prepared?.close?.();
     const standalone = prepareIntegrationsModule({
       dataDirectory: "/tmp/opensteer-capture-descriptor",

@@ -15,8 +15,8 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Real accessibility/runtime with a loopback WebSocket peer, on a dedicated unpaired emulator.
- * Failures: data socket never opens, owner input bypasses gates, acquire stops agent observations,
- * release admits an old observation, drag loses its hold, off/on reuses pixels, own-app protection fails to lift,
+ * Failures: data socket never opens, person input bypasses gates or invalidates observations,
+ * contacts overlap, reset replays queued work, drag loses its hold, off/on reuses pixels, own-app protection fails to lift,
  * socket failure ends the runtime. Reflection keeps test admission out of the shipping interface.
  */
 internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumentation) {
@@ -96,12 +96,12 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
             if (message is DisplayMessage.Start) stream = message.streamId
             display.handle(message, "http://127.0.0.1:18765", operations) {
             states += it
-            File(directory, "runtime-states.json").writeText(JsonText.stringify(JsonArray(states.toList())))
+            File(directory, "runtime-states.json").writeText(JsonText.stringifyFrame(JsonArray(states.toList())))
             }
         }
         fun state(name: String) = states.lastOrNull { it.fields["state"] == jsonOf(name) }
         fun generation(): Long = requireNotNull(state("live")).number("generation").toLong()
-        send(DisplayMessage.Start(fence, stream, "t".repeat(64), 1280, 30, 0, listOf(DisplaySource.Task(session))))
+        send(DisplayMessage.Start(fence, stream, "t".repeat(64), 1280, 30, 0, listOf(DisplaySource.Task(session)), editingVersion = 1, displayCut = 1, sharedInput = 1))
         until("live media") { state("live") != null }
         val ownerId = "cvw_88888888-8888-4888-8888-888888888888"
         fun owner(operation: String, generation: Long = 1, leaseMs: Long = 180000, accepted: Boolean = true) {
@@ -114,16 +114,22 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
         val ownerSource = DisplaySource.Owner(ownerId, 1)
         send(DisplayMessage.Demand(fence, stream, 1, listOf(DisplaySource.Task(session), ownerSource)))
         val producer = field<Any>(display, "current")
+        until("owner demand admitted before task close") { field<List<DisplaySource>>(producer, "sources").contains(ownerSource) }
         val beforeTaskEnd = generation()
         call(PhoneRequest.Close)
         until("task source ended independently") { states.any { it.fields["type"] == jsonOf("runner.integrations.display.source-ended") && it.fields["reason"] == jsonOf("session-ended") } }
-        check(field<Any>(display, "current") === producer && generation() == beforeTaskEnd)
+        check(field<Any>(display, "current") === producer && generation() == beforeTaskEnd && field<Long>(producer, "generation") == beforeTaskEnd) {
+            "Demand handoff changed generation from $beforeTaskEnd to ${field<Long>(producer, "generation")}; sources=${field<List<DisplaySource>>(producer, "sources")}"
+        }
         session = "cus_99999999-9999-4999-8999-999999999999"
         observe()
         send(DisplayMessage.Demand(fence, stream, 2, listOf(DisplaySource.Task(session), ownerSource)))
+        until("replacement task demand admitted") { field<List<DisplaySource>>(producer, "sources").contains(DisplaySource.Task(session)) }
         owner("close")
         until("owner source ended independently") { states.any { it.fields["reason"] == jsonOf("owner-ended") } }
-        check(field<Any>(display, "current") === producer && generation() == beforeTaskEnd)
+        check(field<Any>(display, "current") === producer && generation() == beforeTaskEnd && field<Long>(producer, "generation") == beforeTaskEnd) {
+            "Demand handoff changed generation from $beforeTaskEnd to ${field<Long>(producer, "generation")}; sources=${field<List<DisplaySource>>(producer, "sources")}"
+        }
         owner("open", generation = 2, leaseMs = 1500)
         val expiringOwner = DisplaySource.Owner(ownerId, 2)
         send(DisplayMessage.Demand(fence, stream, 3, listOf(DisplaySource.Task(session), expiringOwner)))
@@ -186,60 +192,73 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
         // The peer delays initial acknowledgement beyond 500ms; recovery must keep this generation.
         Thread.sleep(1200)
         check(generation() == firstGeneration)
-        val beforeTakeover = observe()
+        val beforeInterruption = observe()
         val cancelledDrag = CompletableFuture<ComputerUseOutcome>()
         val presses = receipts("chip_touch").count { it == "down" }
-        operations.run(PhoneCall("native-${++request}", session, run, "Takeover during drag",
-            PhoneRequest.Act(ActParams(beforeTakeover.string("observationId"),
+        operations.run(PhoneCall("native-${++request}", session, run, "Person interrupts drag",
+            PhoneRequest.Act(ActParams(beforeInterruption.string("observationId"),
                 listOf(PhoneAction.Drag(target(dragFrom), target(dragTo), 1600, 600)), false)), SystemClock.elapsedRealtime()+10000)) {
             cancelledDrag.complete(it)
         }
         until("agent press in flight") { receipts("chip_touch").count { it == "down" } > presses }
-        send(DisplayMessage.Control(fence, session, stream, control, "acquire"))
-        until("owner held") { state("held") != null }
-        val cancelled = cancelledDrag.get(3, TimeUnit.SECONDS)
-        check(cancelled is ComputerUseOutcome.Ok && (cancelled.value as JsonObject).obj("error").string("code") == "owner-in-control") {
-            "Takeover did not cancel the real agent drag: $cancelled"
-        }
-        val heldObservation = observe()
-        check((act(heldObservation, listOf(PhoneAction.Wait(1))) as ComputerUseOutcome.Failure).code == ComputerUseErrorCode.OWNER_IN_CONTROL)
         val tap = point("Record a tap")
         val dimensions = device.display()
         val x = tap.x.toDouble() / (dimensions.width - 1)
         val y = tap.y.toDouble() / (dimensions.height - 1)
-        send(DisplayMessage.Input(fence, session, stream, control, firstGeneration, 0, listOf(
+        send(DisplayMessage.Input(fence, session, stream, firstGeneration, 0, listOf(DisplayInput.Pointer("down", x, y, 0.0))))
+        until("person contact") { receipts("button_touch").lastOrNull() == "down" }
+        val cancelled = cancelledDrag.get(3, TimeUnit.SECONDS)
+        check(cancelled is ComputerUseOutcome.Ok && (cancelled.value as JsonObject).obj("error").string("message") == "The drag was interrupted.") {
+            "Person down did not interrupt the real agent drag: $cancelled"
+        }
+        val duringTouch = act(observe(), listOf(PhoneAction.Tap(target(tap), 1))) as ComputerUseOutcome.Ok
+        check((duringTouch.value as JsonObject).obj("error").string("message") == "A person is touching the screen; try again.")
+        val heldObservation = observe()
+        send(DisplayMessage.InputReset(fence, session, stream))
+        until("reset cancels person contact") { receipts("button_touch").lastOrNull() == "cancel" }
+        check((act(heldObservation, listOf(PhoneAction.Wait(1))) as ComputerUseOutcome.Ok).value.let { (it as JsonObject).fields["error"] == JsonNull })
+        send(DisplayMessage.Control(fence, session, stream, control, "acquire"))
+        until("legacy Host refused") { state("refused")?.fields?.get("reason") == jsonOf("released-by-owner") }
+        val replies = states.count { it.fields["type"] == jsonOf("runner.integrations.display.input-result") }
+        send(DisplayMessage.Input(fence, session, stream, firstGeneration, 999, listOf(DisplayInput.Nav("home")), controlId = control))
+        send(DisplayMessage.Input(fence, session, stream, firstGeneration, 1, listOf(
             DisplayInput.Pointer("down", x, y, 0.0), DisplayInput.Pointer("up", x, y, 1.0))))
-        Thread.sleep(500)
+        until("legacy input ignored before shared input") { states.count { it.fields["type"] == jsonOf("runner.integrations.display.input-result") } == replies + 1 }
         val editor = point("Type here")
         val ex = editor.x.toDouble() / (dimensions.width - 1)
         val ey = editor.y.toDouble() / (dimensions.height - 1)
-        send(DisplayMessage.Input(fence, session, stream, control, firstGeneration, 1, listOf(
+        send(DisplayMessage.Input(fence, session, stream, firstGeneration, 2, listOf(
             DisplayInput.Pointer("down", ex, ey, 2.0), DisplayInput.Pointer("up", ex, ey, 3.0))))
         until("owner editor focused") { device.focusedInput() != null }
-        send(DisplayMessage.Input(fence, session, stream, control, firstGeneration, 2, listOf(
+        send(DisplayMessage.Input(fence, session, stream, firstGeneration, 3, listOf(
             DisplayInput.Insert("owner\uD83D\uDE42"), DisplayInput.Delete(1), DisplayInput.Submit)))
         try {
             until("owner batch insertion/deletion") { device.focusedInput()?.text == "owner" }
         } catch (error: Exception) {
-            File(directory, "runtime-states.json").writeText(JsonText.stringify(JsonArray(states.toList())))
+            File(directory, "runtime-states.json").writeText(JsonText.stringifyFrame(JsonArray(states.toList())))
             error("Owner text insertion/deletion failed: focused=${device.focusedInput()}; ${error.message}")
         }
 
-        var sequence = 3L
-        fun input(vararg events: DisplayInput) = send(DisplayMessage.Input(fence, session, stream, control, generation(), sequence++, events.toList()))
+        var sequence = 4L
+        fun input(vararg events: DisplayInput) = send(DisplayMessage.Input(fence, session, stream, generation(), sequence++, events.toList()))
         fun pointer(phase: String, at: DisplayPoint, t: Double = SystemClock.elapsedRealtime().toDouble()) =
             DisplayInput.Pointer(phase, at.x.toDouble() / (dimensions.width - 1), at.y.toDouble() / (dimensions.height - 1), t)
+        until("editing context before agent edit") { states.any { it.fields["type"] == jsonOf("runner.integrations.display.editing") } }
+        val beforeAgentEdit = (states.last { it.fields["type"] == jsonOf("runner.integrations.display.editing") }.fields.getValue("context") as JsonObject).string("contextId")
+        val agentEdit = act(observe(), listOf(PhoneAction.Type(null, "-agent", false))) as ComputerUseOutcome.Ok
+        check((agentEdit.value as JsonObject).fields["error"] == JsonNull)
+        val staleSequence = sequence
+        input(DisplayInput.Edit(beforeAgentEdit, "must-not-appear", "", ""))
+        until("agent edit rotates person context") { states.any { it.fields["type"] == jsonOf("runner.integrations.display.input-result") &&
+            it.fields["sequence"] == jsonOf(staleSequence) && it.fields["outcome"] == jsonOf("stale") } }
+        check(device.focusedInput()?.text == "owner-agent")
         // Pointer focus, text and navigation share one owner lane, including one wire batch.
         val password = point("Password")
         input(pointer("down", password), pointer("up", password), DisplayInput.Insert("a"), DisplayInput.Insert("bc"),
             DisplayInput.Delete(1), DisplayInput.Insert("Z"))
         until("exact password receipt") { receipts("password").lastOrNull() == "abZ" }
-        check(receipts("text").last() == "owner") { "Password typing reached the previous editor" }
-        val leaseReports = states.size
-        // Back-to-back give-back/reacquire, including the same control ID, must queue across cleanup.
-        send(DisplayMessage.Control(fence, session, stream, control, "release"))
-        send(DisplayMessage.Control(fence, session, stream, control, "acquire"))
-        until("same-ID reacquired behind release") { states.drop(leaseReports).any { it.fields["state"] == jsonOf("held") } }
+        check(receipts("text").last() == "owner-agent") { "Password typing reached the previous editor" }
+        send(DisplayMessage.InputReset(fence, session, stream))
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             input(DisplayInput.Insert("🙂"), DisplayInput.Delete(1), DisplayInput.Insert("!"))
             until("IME edits existing secret without shadow") { receipts("password").lastOrNull() == "abZ!" }
@@ -284,21 +303,30 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
         Thread.sleep(400)
         check(receipts("scroll_offset").last().toInt() == scrollAfter) { "Wheel still flinging" }
         File(directory, "owner-gestures.json").writeText("{\"passwordExact\":true,\"cancelDidNotClick\":true,\"longPressDrop\":true,\"maxDragVelocityPxS\":$maxVelocity,\"scrollDistancePx\":${scrollAfter-scrollBefore}}")
-        send(DisplayMessage.Input(fence, session, stream, control, firstGeneration, sequence++, listOf(DisplayInput.Nav("back"))))
-        Thread.sleep(300)
-        send(DisplayMessage.Control(fence, session, stream, control, "release"))
-        until("owner released") { !desk.ownerInControl && states.lastOrNull { it.fields["controlId"] == jsonOf(control) }?.fields?.get("state") == jsonOf("released") }
-        check((act(heldObservation, listOf(PhoneAction.Wait(1))) as ComputerUseOutcome.Failure).code == ComputerUseErrorCode.STALE_OBSERVATION)
+        val staleGeometrySequence = sequence++
+        send(DisplayMessage.Input(fence, session, stream, firstGeneration - 1, staleGeometrySequence, listOf(DisplayInput.Nav("back"))))
+        until("stale geometry refused") { states.any { it.fields["type"] == jsonOf("runner.integrations.display.input-result") &&
+            it.fields["sequence"] == jsonOf(staleGeometrySequence) && it.fields["outcome"] == jsonOf("stale") } }
+        val resetObservation = observe()
+        send(DisplayMessage.InputReset(fence, session, stream))
+        check((act(resetObservation, listOf(PhoneAction.Wait(1))) as ComputerUseOutcome.Ok).value.let { (it as JsonObject).fields["error"] == JsonNull })
         val wakeStates = states.size
         val wakeObservation = observe()
         check(act(wakeObservation, listOf(PhoneAction.Wake)) is ComputerUseOutcome.Ok)
         Thread.sleep(500)
         check(generation() == firstGeneration && states.drop(wakeStates).none { it.fields["state"] == jsonOf("protected") }) { "Wake helper protected the display" }
+        val touchesBeforeSleep = receipts("button_touch").size
+        input(pointer("down", tap))
+        until("contact before sleep") { receipts("button_touch").drop(touchesBeforeSleep).contains("down") }
         File(directory, "ready").writeText("runtime-power")
         until("screen-off state") { state("screen-off") != null }
-        until("live after wake") { states.lastOrNull()?.fields?.get("state") == jsonOf("live") }
+        until("screen-off cancels contact") { receipts("button_touch").drop(touchesBeforeSleep).contains("cancel") }
+        until("live after wake") { states.lastOrNull { it.fields["type"] == jsonOf("runner.integrations.display.state") }?.fields?.get("state") == jsonOf("live") }
         check(generation() > firstGeneration) { "Wake reused pre-sleep pixels" }
         firstGeneration = generation()
+        val touchesBeforeOwnApp = receipts("button_touch").size
+        input(pointer("down", tap))
+        until("contact before own app") { receipts("button_touch").drop(touchesBeforeOwnApp).contains("down") }
         val mainMonitor = instrumentation.addMonitor(com.opensteer.agentphone.ui.MainActivity::class.java.name, null, false)
         context.startActivity(Intent(context, com.opensteer.agentphone.ui.MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         val mainActivity = requireNotNull(mainMonitor.waitForActivityWithTimeout(3000))
@@ -316,10 +344,10 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
         }
         instrumentation.removeMonitor(mainMonitor)
         until("own-app protection") { state("protected")?.fields?.get("reason") == jsonOf("opensteer-app") }
-        // Touching Opensteer's own UI is refused by cached admission while navigation remains possible.
+        until("own app cancels contact") { receipts("button_touch").drop(touchesBeforeOwnApp).contains("cancel") }
+        // Touching Opensteer's own UI is refused by cached admission.
         send(DisplayMessage.Control(fence, session, stream, control, "acquire"))
-        until("takeover refused on own app") { states.lastOrNull { it.fields["controlId"] == jsonOf(control) }?.fields?.get("state") == jsonOf("refused") }
-        check(!desk.ownerInControl)
+        until("legacy control refused on own app") { states.lastOrNull { it.fields["controlId"] == jsonOf(control) }?.fields?.get("state") == jsonOf("refused") }
         check(!desk.ownerAdmission(session, true))
         val ownTouches = java.util.concurrent.atomic.AtomicInteger()
         val originalCallback = mainActivity.window.callback
@@ -335,7 +363,7 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
             Thread.sleep(300)
             check(!desk.ownerAdmission(session, true) && ownTouches.get() == 0) { "Owner touch reached Opensteer's window" }
         } finally { instrumentation.runOnMainSync { mainActivity.window.callback = originalCallback } }
-        send(DisplayMessage.Control(fence, session, stream, control, "release"))
+        send(DisplayMessage.InputReset(fence, session, stream))
         File(directory, "ready").writeText("runtime-lift")
         until("lift generation") { generation() > firstGeneration }
         val liftedGeneration = generation()
@@ -354,8 +382,19 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
         failEncoder()
         until("repeated encoder failure") { state("failed")?.fields?.get("reason") == jsonOf("encoder-failed") }
         val beforeRestart = states.size
-        send(DisplayMessage.Start(fence, "dsp_44444444-4444-4444-8444-444444444444", "t".repeat(64), 1280, 30, 0, listOf(DisplaySource.Task(session))))
+        send(DisplayMessage.Start(fence, "dsp_44444444-4444-4444-8444-444444444444", "t".repeat(64), 1280, 30, 0, listOf(DisplaySource.Task(session)), editingVersion = 1, displayCut = 1))
         until("fresh stream after encoder failure") { states.drop(beforeRestart).any { it.fields["state"] == jsonOf("live") } }
+        val baselineReplies = states.size
+        val baselineTaps = receipts("button_tap").size
+        send(DisplayMessage.Input(fence, session, stream, generation(), 0, listOf(
+            DisplayInput.Pointer("down", x, y, 0.0), DisplayInput.Pointer("up", x, y, 1.0))))
+        display.editingChanged()
+        val drained = CompletableFuture<Unit>()
+        executor.ownerInput { drained.complete(Unit) }; drained.get(3, TimeUnit.SECONDS)
+        Thread.sleep(250)
+        check(states.drop(baselineReplies).none { it.fields["type"] in setOf(jsonOf("runner.integrations.display.editing"),
+            jsonOf("runner.integrations.display.input-result"), jsonOf("runner.integrations.display.clipboard")) })
+        check(receipts("button_tap").size == baselineTaps)
         // A peer close is isolated from the runtime and does not end the agent session.
         val connection = java.net.URL("http://127.0.0.1:18765/close").openConnection().apply { connectTimeout = 2000; readTimeout = 2000 }
         connection.getInputStream().use { it.readBytes() }
@@ -365,18 +404,21 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
         send(DisplayMessage.Start(fence, "dsp_77777777-7777-4777-8777-777777777777", "u".repeat(64), 1280, 30, 0, listOf(DisplaySource.Task(session))))
         until("HTTP socket refusal") { states.drop(badTicketAt).any { it.fields["state"] == jsonOf("failed") && it.fields["reason"] == jsonOf("data-socket-failed") } }
         observe()
-        check(stops.isEmpty()) { "Control lease stopped the agent Run" }
+        check(stops.isEmpty()) { "Person input stopped the agent Run" }
+        context.startActivity(Intent().setClassName("com.opensteer.agentphone.fixture", "com.opensteer.agentphone.fixture.FixtureActivity")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        until("fixture restored before Pause") { device.foreground()?.packageName == "com.opensteer.agentphone.fixture" }
         val beforePause = states.size
         owner("open", generation = 3)
         val survivingOwner = DisplaySource.Owner(ownerId, 3)
-        send(DisplayMessage.Start(fence, "dsp_55555555-5555-4555-8555-555555555555", "t".repeat(64), 1280, 30, 0, listOf(DisplaySource.Task(session), survivingOwner)))
+        send(DisplayMessage.Start(fence, "dsp_55555555-5555-4555-8555-555555555555", "t".repeat(64), 1280, 30, 0, listOf(DisplaySource.Task(session), survivingOwner), editingVersion = 1, sharedInput = 1))
         until("stream before Pause") { states.drop(beforePause).any { it.fields["state"] == jsonOf("live") } }
-        val pauseControl = "dcl_66666666-6666-4666-8666-666666666666"
-        send(DisplayMessage.Control(fence, session, stream, pauseControl, "acquire"))
-        until("held before Pause") { states.any { it.fields["controlId"] == jsonOf(pauseControl) && it.fields["state"] == jsonOf("held") } }
+        val touchesBeforePause = receipts("button_touch").size
+        send(DisplayMessage.Input(fence, session, stream, generation(), 0, listOf(DisplayInput.Pointer("down", x, y, 0.0))))
+        until("contact before Pause") { receipts("button_touch").drop(touchesBeforePause).contains("down") }
         executor.setPaused(true)
         until("Pause protects both sources") { states.drop(beforePause).any { it.fields["state"] == jsonOf("protected") && it.fields["reason"] == jsonOf("paused") } }
-        until("Pause releases owner") { states.any { it.fields["controlId"] == jsonOf(pauseControl) && it.fields["state"] == jsonOf("released") } }
+        until("Pause cancels person contact") { receipts("button_touch").drop(touchesBeforePause).contains("cancel") }
         check(desk.activeSession == null && stops.size == 1)
         check(operations.displayUnavailable(survivingOwner) == null) { "Pause removed independent owner lease" }
         val pausedGeneration = generation()
@@ -385,9 +427,9 @@ internal class DisplayRuntimeAcceptance(private val instrumentation: Instrumenta
         check(desk.activeSession == null)
         owner("close", generation = 3)
         send(DisplayMessage.Stop(fence, stream))
-        until("last demand stops projection") { states.lastOrNull()?.fields?.get("state") == jsonOf("stopped") }
-        val json = "{\"passed\":true,\"mode\":\"runtime\",\"powerGeneration\":$firstGeneration,\"liftGeneration\":$liftedGeneration,\"encoderRecoveryGeneration\":$recoveredGeneration,\"repeatedEncoderFailure\":true,\"ownerActRefused\":true,\"releaseStaleObservation\":true,\"dataFailureIsolated\":true,\"nativeOwnerExpiry\":true,\"pausePreservesOwner\":true}"
-        File(directory, "runtime-states.json").writeText(JsonText.stringify(JsonArray(states.toList())))
+        until("last demand stops projection") { states.lastOrNull { it.fields["type"] == jsonOf("runner.integrations.display.state") }?.fields?.get("state") == jsonOf("stopped") }
+        val json = "{\"passed\":true,\"mode\":\"runtime\",\"powerGeneration\":$firstGeneration,\"liftGeneration\":$liftedGeneration,\"encoderRecoveryGeneration\":$recoveredGeneration,\"repeatedEncoderFailure\":true,\"heldContactRefusal\":true,\"resetPreservesObservation\":true,\"dataFailureIsolated\":true,\"nativeOwnerExpiry\":true,\"pausePreservesOwner\":true}"
+        File(directory, "runtime-states.json").writeText(JsonText.stringifyFrame(JsonArray(states.toList())))
         File(directory, "runtime.json").writeText(json)
         return json
     }

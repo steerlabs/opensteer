@@ -416,7 +416,7 @@ class RunnerConnection(
         }
         // No local check of the challenge's expiry: the Host judges it by its
         // own clock, and this phone's may be off.
-        val descriptor = RunnerDescriptor(bootId, deviceName?.invoke() ?: identity.runnerName, identity.runnerId, runtimeVersion, loginText = true, editing = true, displayCut = true)
+        val descriptor = RunnerDescriptor(bootId, deviceName?.invoke() ?: identity.runnerName, identity.runnerId, runtimeVersion, loginText = true, editing = true, displayCut = true, sharedInput = true)
         val proof = if (identity.enrolled) {
             RunnerWire.authenticate(challenge, descriptor, identity.runnerKey)
         } else {

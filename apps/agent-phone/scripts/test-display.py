@@ -18,6 +18,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--api', choices=['30', '33', '36'], required=True)
 parser.add_argument('--artifacts', type=Path, required=True)
 parser.add_argument('--verify-only', action='store_true')
+parser.add_argument('--gpu', default='swiftshader_indirect', help='Emulator GPU backend; use host for hardware rendering')
 parser.add_argument('--modes', nargs='+', default=['permission', 'basic', 'flow', 'rotation', 'power', 'secure', 'protection', 'runtime', 'death', 'restart'])
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[3]
@@ -173,7 +174,7 @@ if serial in attached:
     raise RuntimeError(serial + ' is already in use')
 log = (out / 'emulator.log').open('wb')
 emulator = subprocess.Popen([str(sdk / 'emulator/emulator'), '-avd', 'opensteer-agent-phone-' + args.api,
-    '-port', '5580', '-memory', '4096', '-no-window', '-no-audio', '-no-snapshot-save', '-no-boot-anim', '-read-only', '-gpu', 'swiftshader_indirect'], stdout=log, stderr=subprocess.STDOUT)
+    '-port', '5580', '-memory', '4096', '-no-window', '-no-audio', '-no-snapshot-save', '-no-boot-anim', '-read-only', '-gpu', args.gpu], stdout=log, stderr=subprocess.STDOUT)
 active = None
 try:
     deadline = time.monotonic() + 150

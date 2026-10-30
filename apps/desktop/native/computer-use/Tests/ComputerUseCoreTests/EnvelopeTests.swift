@@ -69,6 +69,7 @@ final class EnvelopeTests: XCTestCase {
       Set(HelperErrorCode.allCases.map(\.rawValue)),
       [
         "permission-required", "app-not-allowed", "app-not-found", "app-not-running",
+        // owner-in-control remains readable only for previous-release peers.
         "no-session", "busy", "owner-in-control", "stale-observation", "stopped-by-user",
         "unsupported", "failed", "outcome-unknown", "delivery-unconfirmed", "incompatible-version",
       ]
