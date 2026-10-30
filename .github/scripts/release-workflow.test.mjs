@@ -790,6 +790,7 @@ test("final release bytes launch before upload, for both channels, with failure 
   assert.equal(launch.name, "Launch check");
   assert.equal(launch["timeout-minutes"], 4);
   assert.match(launch.run, /smoke-desktop-release.ts/);
+  assert.match(launch.run, /--install-in-applications/);
   assert.match(launch.run, /beta\/mac-arm64\/Opensteer Beta.app/);
   assert.match(launch.run, /release\/mac-arm64\/Opensteer.app/);
   assert.equal(steps[prepare + 2].if, "failure()");

@@ -36,18 +36,16 @@ Per-channel concurrency coalesces pending runs but never cancels a running build
 mid-notarization. A coalesced stable dispatch may need redispatch. Never publish
 an older insider after a newer one: the updater selects the first eligible feed entry.
 
-Each final signed and notarized build must launch in an isolated fresh profile,
-start its bundled Personal Host, render the first screen and stop its children
-before publication. The release-only launch check has a three-minute deadline;
-failures retain logs and a screenshot. The explicit smoke launch mode accepts only
-Playwright's ephemeral debugger ports with a fresh private HOME, userData and
-workspace; normal packaged launches still reject debugging switches. Smoke mode
-uses Chromium’s mock Keychain instead of the user’s Keychain, keeps the
-login-shell and engine environment in that HOME and skips the move-to-
-Applications prompt. It is an instrumentation exception for release checks, not
-a sandbox against a same-user process that deliberately enables it.
-Database upgrade coverage belongs to the
-migration compatibility tests. VM update journeys remain optional on-demand tools.
+Each final signed and notarized build is launched as an ordinary child process
+in the ephemeral release VM, from a disposable copy in Applications. A fresh
+profile contains only Personal setup intent; the app creates its own database
+and credentials. The external check observes the supervisor's published Personal
+selection, loopback health and visible loaded window, then sends the app's normal
+SIGTERM quit and waits for its captured children to exit. The three-minute check
+retains logs and an optional VM screenshot on failure. It changes no shipped-app
+behavior, launch policy, debugger fuses, Keychain use or environment resolution.
+Database upgrade coverage belongs to the migration compatibility tests. VM update
+journeys remain optional on-demand tools.
 
 A dispatch of either channel stops at the draft unless `publish=true`. Publication
 re-downloads and verifies draft assets, manifest hashes, SHA256SUMS, source identity

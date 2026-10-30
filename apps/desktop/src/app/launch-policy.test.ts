@@ -1,6 +1,3 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { assertDesktopLaunch } from "./launch-policy.js";
 
@@ -77,33 +74,4 @@ describe("Desktop launch policy", () => {
       launch(["--remote-debugging-port=9222", "--no-sandbox"], { SSLKEYLOGFILE: "/tmp/k" }, false),
     ).not.toThrow();
   });
-});
-
-it("admits only ephemeral Playwright ports in a fresh private smoke profile", () => {
-  const home = mkdtempSync(path.join(tmpdir(), "opensteer-launch-"));
-  const environment = {
-    OPENSTEER_DESKTOP_RELEASE_SMOKE: "1",
-    HOME: home,
-    OPENSTEER_DESKTOP_DATA_DIR: path.join(home, "userdata"),
-  };
-  try {
-    expect(() => launch(["--inspect=0", "--remote-debugging-port=0"], environment)).not.toThrow();
-    for (const flag of [
-      "--inspect=9229",
-      "--remote-debugging-port=9222",
-      "--remote-debugging-address=0.0.0.0",
-      "--no-sandbox",
-    ])
-      expect(() => launch([flag], environment)).toThrow();
-    expect(() =>
-      launch(["--inspect=0"], { ...environment, OPENSTEER_DESKTOP_DATA_DIR: "/tmp/other" }),
-    ).toThrow(/isolated/);
-    expect(() =>
-      launch(["--inspect=0"], { ...environment, OPENSTEER_DESKTOP_RELEASE_SMOKE: undefined }),
-    ).toThrow();
-    mkdirSync(environment.OPENSTEER_DESKTOP_DATA_DIR);
-    expect(() => launch(["--inspect=0"], environment)).toThrow(/fresh/);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
 });

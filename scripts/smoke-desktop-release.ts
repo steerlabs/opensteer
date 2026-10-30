@@ -1,190 +1,298 @@
-import { execFileSync, type ChildProcess } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { appendFileSync, closeSync, openSync, watch } from "node:fs";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { _electron, type ElectronApplication, type Page } from "playwright-core";
-import { z } from "zod";
 import { descendantPids } from "./smoke-desktop-release-processes.js";
+import { personalSelectionReady, personalSetupIntent } from "./smoke-desktop-release-profile.js";
 
 const { values } = parseArgs({
   options: {
     executable: { type: "string" },
     "artifacts-dir": { type: "string" },
+    "install-in-applications": { type: "boolean" },
   },
 });
 if (!values.executable) throw Error("--executable must name the packaged executable");
+const ciInstall = values["install-in-applications"] === true;
+if (ciInstall && (process.env.GITHUB_ACTIONS !== "true" || process.env.CI !== "true"))
+  throw Error("Installing the check copy in /Applications is allowed only in GitHub Actions");
 const started = performance.now();
-const artifacts = path.resolve(
-  values["artifacts-dir"] ?? path.join(tmpdir(), "desktop-launch-artifacts"),
-);
-await mkdir(artifacts, { recursive: true });
-// Playwright can reject additional launch-output promises when an executable
-// exits before opening its debugging ports. Preserve those diagnostics too.
-let asynchronousError: unknown;
-const asyncFailure = (error: unknown) => {
-  asynchronousError = error;
-  process.exitCode = 1;
-  appendFileSync(path.join(artifacts, "failure.txt"), `${String(error)}\n`);
-};
-process.on("unhandledRejection", asyncFailure);
 const home = await realpath(
   await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "opensteer-launch-")),
 );
 const data = path.join(home, "userdata");
-const temporary = path.join(home, "tmp");
-await mkdir(temporary, { mode: 0o700 });
-let app: ElectronApplication | undefined;
-let page: Page | undefined;
-let launched: ChildProcess | undefined;
-let step = "packaged executable did not launch";
-let children: number[] = [];
-const processTable = () =>
-  execFileSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8", timeout: 5_000 });
-const alive = (pid: number) => {
+const artifacts = path.resolve(values["artifacts-dir"] ?? path.join(home, "artifacts"));
+await mkdir(artifacts, { recursive: true });
+await mkdir(data, { mode: 0o700 });
+await mkdir(path.join(home, "tmp"), { mode: 0o700 });
+const roots = new Set<number>();
+const children = new Set<number>();
+let app: ChildProcess | undefined;
+let quitting = false;
+let installed: string | undefined;
+let step = "preparing the isolated packaged app";
+const failure = new AbortController();
+function capture() {
+  const table = execFileSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8", timeout: 2_000 });
+  for (const root of roots) for (const pid of descendantPids(table, root)) children.add(pid);
+}
+function killCaptured() {
   try {
-    process.kill(pid, 0);
-    return true;
+    capture();
   } catch {
-    return false;
+    /* Retain already captured identities if ps fails. */
   }
-};
-async function bounded<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  for (const pid of [...children].reverse().concat([...roots])) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH"))
+        appendFileSync(
+          path.join(artifacts, "cleanup.log"),
+          `Could not stop captured PID ${pid}: ${String(error)}\n`,
+        );
+    }
+  }
+}
+const hardDeadline = setTimeout(() => {
+  appendFileSync(path.join(artifacts, "failure.txt"), `180-second deadline: ${step}\n`);
+  killCaptured();
+  process.exit(1);
+}, 180_000);
+async function bounded<T>(
+  name: string,
+  milliseconds: number,
+  work: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  step = name;
+  const timeout = AbortSignal.timeout(milliseconds);
+  const signal = AbortSignal.any([timeout, failure.signal]);
+  signal.throwIfAborted();
+  let stop: (() => void) | undefined;
   try {
     return await Promise.race([
-      work,
+      work(signal),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(Error(step)), timeoutMs);
+        stop = () => reject(Error(`${name}: ${String(signal.reason)}`));
+        signal.addEventListener("abort", stop, { once: true });
       }),
     ]);
   } finally {
-    clearTimeout(timer);
+    if (stop) signal.removeEventListener("abort", stop);
   }
 }
-const deadline = setTimeout(() => {
-  writeFileSync(
-    path.join(artifacts, "failure.txt"),
-    `Launch check exceeded 180 seconds: ${step}\n`,
-  );
-  console.error(`Launch check exceeded 180 seconds: ${step}`);
-  if (launched?.pid) children.push(...descendantPids(processTable(), launched.pid));
-  for (const pid of [...children.reverse(), launched?.pid]) {
-    if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+function command(program: string, args: string[], timeout = 10_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      program,
+      args,
+      { timeout, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (child.pid) roots.delete(child.pid);
+        if (error) reject(Error(`${program}: ${stderr || error.message}`));
+        else resolve(stdout);
+      },
+    );
+    if (child.pid) roots.add(child.pid);
+  });
+}
+async function ports(): Promise<[number, number]> {
+  const servers = [net.createServer(), net.createServer()];
+  try {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve, reject) => {
+            server.once("error", reject);
+            server.listen(0, "127.0.0.1", resolve);
+          }),
+      ),
+    );
+    return servers.map((server) => (server.address() as net.AddressInfo).port) as [number, number];
+  } finally {
+    await Promise.all(
+      servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+    );
   }
-  process.exit(1);
-}, 180_000);
+}
+async function waitForSelection(deploymentId: string, signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let dirty = false,
+      checking = false;
+    const observer = watch(data, { recursive: true }, () => {
+      dirty = true;
+      void check();
+    });
+    const finish = (error?: unknown) => {
+      observer.close();
+      signal.removeEventListener("abort", aborted);
+      error ? reject(error) : resolve();
+    };
+    const aborted = () => finish(signal.reason);
+    signal.addEventListener("abort", aborted, { once: true });
+    observer.on("error", finish);
+    async function check() {
+      if (checking) return;
+      checking = true;
+      try {
+        // Drain file events, rather than polling the profile or sleeping.
+        do {
+          dirty = false;
+          capture();
+          try {
+            const catalog = await readFile(
+              path.join(data, "deployment-connections.v1.json"),
+              "utf8",
+            );
+            if (personalSelectionReady(catalog, deploymentId)) {
+              finish();
+              return;
+            }
+          } catch (error) {
+            if (!(
+              error instanceof SyntaxError ||
+              (error instanceof Error && "code" in error && error.code === "ENOENT")
+            ))
+              throw error;
+          }
+        } while (dirty && !signal.aborted);
+      } catch (error) {
+        finish(error);
+      } finally {
+        checking = false;
+      }
+    }
+    dirty = true;
+    void check();
+  });
+}
+let exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
 try {
-  // Pass no signing or account credentials into the packaged process.
-  app = await _electron.launch({
-    executablePath: path.resolve(values.executable),
-    timeout: 30_000,
-    env: {
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
-      HOME: home,
-      OPENSTEER_DESKTOP_RELEASE_SMOKE: "1",
-      TMPDIR: temporary,
-      OPENSTEER_DESKTOP_DATA_DIR: data,
-    },
-  });
-  launched = app.process();
-  launched.stdout?.on("data", (chunk: Buffer) =>
-    appendFileSync(path.join(artifacts, "stdout.log"), chunk),
+  const sourceExecutable = path.resolve(values.executable);
+  const bundle = path.resolve(path.dirname(sourceExecutable), "../..");
+  if (!bundle.endsWith(".app")) throw Error("Executable must be inside App.app/Contents/MacOS");
+  let copy: string;
+  if (ciInstall) {
+    installed = `/Applications/opensteer-launch-${crypto.randomUUID()}`;
+    await command("sudo", ["-n", "mkdir", installed]);
+    copy = path.join(installed, path.basename(bundle));
+    await command("sudo", ["-n", "/usr/bin/ditto", bundle, copy], 20_000);
+  } else {
+    copy = path.join(home, path.basename(bundle));
+    await command("/usr/bin/ditto", [bundle, copy], 20_000);
+  }
+  const observer = path.join(home, "observer");
+  await command(
+    "xcrun",
+    [
+      "swiftc",
+      path.join(import.meta.dirname, "smoke-desktop-release-observer.swift"),
+      "-o",
+      observer,
+    ],
+    20_000,
   );
-  launched.stderr?.on("data", (chunk: Buffer) =>
-    appendFileSync(path.join(artifacts, "stderr.log"), chunk),
-  );
-  step = "isolated profile was not applied";
-  const actualData = await bounded(
-    app.evaluate(({ app }) => app.getPath("userData")),
+  const [hostPort, postgresPort] = await bounded(
+    "loopback ports could not be reserved",
     5_000,
+    ports,
   );
-  if (actualData !== data) throw Error("Packaged app ignored isolated userData");
-  step = "desktop window never opened";
-  page = await app.firstWindow({ timeout: 30_000 });
-  const mainWindow = await bounded(app.browserWindow(page), 5_000);
-  await bounded(
-    mainWindow.evaluate(
-      (window) =>
-        window.isVisible() ||
-        new Promise<boolean>((resolve) => window.once("show", () => resolve(true))),
-    ),
-    5_000,
+  const releaseBytes = await readFile(
+    path.join(copy, "Contents/Resources/personal-runtime/release.json"),
+    "utf8",
   );
-  const fatal: string[] = [];
-  page.on("pageerror", (error) => fatal.push(error.message));
-  step = "first screen never rendered";
-  await page
-    .getByRole("button", { name: /start|set up|use this computer/i })
-    .first()
-    .waitFor({ timeout: 30_000 });
-  step = "Personal Host never became ready";
-  await bounded(
-    page.evaluate(async () => {
-      const bridge = (
-        window as Window & {
-          opensteerDesktop?: import("../packages/protocol/src/desktop.js").OpensteerDesktopBridge;
-        }
-      ).opensteerDesktop!;
-      // The existing operation resolves after the supervisor finishes startup.
-      await bridge.createPersonalDeployment();
-      const snapshot = await bridge.getDeploymentAccessSnapshot();
-      if (snapshot.personalSetup?.state !== "ready")
-        throw Error(
-          `Personal setup is ${snapshot.personalSetup?.state}: ${snapshot.personalSetup?.issue?.detail ?? "not ready"}`,
-        );
-    }),
-    80_000,
-  );
-  children = descendantPids(processTable(), launched!.pid!);
-  step = "Personal Host health endpoint did not respond";
-  const manifest = z
-    .object({ hostPort: z.number().int().min(1).max(65535) })
-    .parse(JSON.parse(await readFile(path.join(data, "personal-deployment.v1.json"), "utf8")));
-  const health = await fetch(`http://127.0.0.1:${manifest.hostPort}/healthz`, {
-    signal: AbortSignal.timeout(5_000),
+  const intent = personalSetupIntent(releaseBytes, home, hostPort, postgresPort);
+  await writeFile(path.join(data, "personal-deployment.v1.json"), JSON.stringify(intent), {
+    mode: 0o600,
   });
-  if (!health.ok) throw Error(`Host health HTTP ${health.status}`);
-  step = "Personal first screen never rendered";
-  await page.getByPlaceholder("Ask Opensteer…").waitFor({ timeout: 15_000 });
-  if (fatal.length) throw Error(`Renderer fatal errors: ${fatal.join("; ")}`);
-  step = "desktop did not quit cleanly";
-  children = [...new Set([...children, ...descendantPids(processTable(), launched!.pid!)])];
-  const child = launched!;
-  await bounded(app.close(), 15_000);
-  if (child.exitCode !== 0) throw Error(`Desktop exited ${child.exitCode}`);
-  step = "desktop children survived quit";
-  const survivors = children.filter(alive);
-  if (survivors.length) throw Error(`Child PIDs still running: ${survivors.join(", ")}`);
-  if (asynchronousError !== undefined)
-    throw Error(`Asynchronous launch failure: ${String(asynchronousError)}`);
+  step = "packaged main process did not start";
+  const stdout = openSync(path.join(artifacts, "stdout.log"), "a", 0o600);
+  const stderr = openSync(path.join(artifacts, "stderr.log"), "a", 0o600);
+  try {
+    app = spawn(path.join(copy, "Contents/MacOS", path.basename(sourceExecutable)), [], {
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: home,
+        TMPDIR: path.join(home, "tmp"),
+        OPENSTEER_DESKTOP_DATA_DIR: data,
+      },
+      stdio: ["ignore", stdout, stderr],
+    });
+  } finally {
+    closeSync(stdout);
+    closeSync(stderr);
+  }
+  const child = app;
+  if (child.pid) roots.add(child.pid);
+  exit = new Promise((resolve) => {
+    child.once("error", (error) => failure.abort(error));
+    child.once("exit", (code, signal) => {
+      if (!quitting) failure.abort(Error(`Desktop exited before readiness: ${code ?? signal}`));
+      resolve({ code, signal });
+    });
+  });
+  await bounded(
+    "packaged main process did not start",
+    5_000,
+    () =>
+      new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      }),
+  );
+  await bounded("Personal supervisor never published a ready selection", 95_000, (signal) =>
+    waitForSelection(intent.deploymentId, signal),
+  );
+  await bounded("Personal Host health did not respond", 5_000, async (signal) => {
+    const response = await fetch(`http://127.0.0.1:${hostPort}/healthz`, { signal });
+    if (!response.ok || ((await response.json()) as { ok?: boolean }).ok !== true)
+      throw Error("Host health was not OK");
+  });
+  await bounded("renderer never presented its loaded window", 10_000, () =>
+    command(observer, ["window", String(child.pid)], 8_000),
+  );
+  const output = await readFile(path.join(artifacts, "stdout.log"), "utf8");
+  if (/"event":"desktop\.(?:failed|preload\.error)"/u.test(output))
+    throw Error("Desktop reported a fatal or preload error");
+  capture();
+  quitting = true;
+  child.kill("SIGTERM");
+  const result = await bounded("desktop did not quit through SIGTERM", 35_000, () => exit!);
+  if (result.code !== 0 || result.signal !== null)
+    throw Error(`Desktop quit unexpectedly: ${JSON.stringify(result)}`);
+  await bounded("captured desktop children did not exit", 12_000, () =>
+    command(observer, ["exit", ...[...children].map(String)], 11_000),
+  );
   console.log(
-    `Desktop launch check passed in ${((performance.now() - started) / 1000).toFixed(1)}s`,
+    `Desktop external launch check passed in ${((performance.now() - started) / 1000).toFixed(1)}s`,
   );
 } catch (error) {
-  console.error(`${step}: ${String(error)}`);
-  await writeFile(path.join(artifacts, "failure.txt"), `${step}: ${String(error)}\n`);
-  await page
-    ?.screenshot({ path: path.join(artifacts, "window.png"), timeout: 5_000 })
-    .catch(() => {});
+  const message = `${step}: ${String(error)}`;
+  console.error(message);
+  await writeFile(path.join(artifacts, "failure.txt"), message + "\n");
+  if (ciInstall)
+    await command(
+      "/usr/sbin/screencapture",
+      ["-x", path.join(artifacts, "screen.png")],
+      5_000,
+    ).catch(() => {});
+  process.exitCode = 1;
+} finally {
+  if (app?.pid && app.exitCode === null && app.signalCode === null) {
+    capture();
+    quitting = true;
+    app.kill("SIGTERM");
+    await Promise.race([exit, new Promise((resolve) => setTimeout(resolve, 35_000).unref())]);
+  }
   await cp(path.join(data, "logs"), path.join(artifacts, "logs"), { recursive: true }).catch(
     () => {},
   );
-  for (const deployment of await readdir(path.join(data, "deployments")).catch(() => [])) {
-    await cp(
-      path.join(data, "deployments", deployment, "logs"),
-      path.join(artifacts, "deployments", deployment),
-      { recursive: true },
-    ).catch(() => {});
-  }
-  process.exitCode = 1;
-} finally {
-  if (launched?.pid) children.push(...descendantPids(processTable(), launched!.pid!));
-  for (const pid of [...children.reverse(), launched?.pid]) {
-    if (pid && alive(pid)) process.kill(pid, "SIGKILL");
-  }
-  clearTimeout(deadline);
-  process.off("unhandledRejection", asyncFailure);
-  await rm(home, { recursive: true, force: true });
+  killCaptured();
+  clearTimeout(hardDeadline);
+  if (installed) await command("sudo", ["-n", "rm", "-rf", installed], 10_000);
+  // Preserve evidence when the caller did not provide an external artifacts directory.
+  if (values["artifacts-dir"]) await rm(home, { recursive: true, force: true });
 }

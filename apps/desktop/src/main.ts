@@ -1,4 +1,3 @@
-import { open as openInspector } from "node:inspector";
 import { autoUpdater } from "electron-updater";
 import { startDesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
@@ -102,10 +101,7 @@ import {
   defaultPersonalDeploymentName,
 } from "./secrets/personal-deployment-store.js";
 import { PersonalDeploymentSupervisor } from "./supervisor/personal-deployment-supervisor.js";
-import {
-  FixedPersonalUserEnvironment,
-  NativePersonalUserEnvironment,
-} from "./supervisor/personal-user-environment.js";
+import { NativePersonalUserEnvironment } from "./supervisor/personal-user-environment.js";
 import {
   NodePersonalProcessPort,
   readPersonalProcessSupervisorRelease,
@@ -189,16 +185,7 @@ app.on("second-instance", (_event, argv) => {
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
 });
 
-const releaseSmoke = process.env.OPENSTEER_DESKTOP_RELEASE_SMOKE === "1";
-
 if (acceptLaunch()) {
-  // Shipped fuses keep CLI inspection disabled; only a validated fresh smoke
-  // profile opens a loopback inspector for the release harness.
-  if (releaseSmoke) {
-    // Chromium cookie encryption must use the isolated test Keychain too.
-    app.commandLine.appendSwitch("use-mock-keychain");
-    openInspector(0, "127.0.0.1");
-  }
   app.setName(desktopApplicationName(app.isPackaged, embeddedRelease.application.name));
   app.enableSandbox();
   void startDesktop().catch((error: unknown) => {
@@ -240,8 +227,7 @@ async function startDesktop(): Promise<void> {
     });
   }
   // Only a build that updates itself needs to live in Applications.
-  if (!releaseSmoke && loaded.config.updates && (await offerMoveToApplications(reportEvent)))
-    return;
+  if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();
   for (const url of process.argv) routeDesktopUrl(url, oauthDeepLinks, webLinks);
   await runDesktop(loaded, privateFiles);
@@ -313,9 +299,7 @@ async function runDesktop(
       ),
   });
   const resourcesDirectory = path.dirname(loaded.config.personal.releaseDirectory);
-  const personalUserEnvironment = releaseSmoke
-    ? new FixedPersonalUserEnvironment(process.env)
-    : new NativePersonalUserEnvironment();
+  const personalUserEnvironment = new NativePersonalUserEnvironment();
   const hostControl = new NativePersonalHostControl({
     fetch: (deploymentId, input, init) => hostNetwork.partitionFetch(deploymentId, input, init),
   });

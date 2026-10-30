@@ -246,7 +246,7 @@ jobs:
             app="$GITHUB_WORKSPACE/apps/desktop/release/beta/mac-arm64/Opensteer Beta.app"
           fi
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
-          pnpm exec tsx scripts/smoke-desktop-release.ts --executable "$app/Contents/MacOS/$executable" --artifacts-dir "$RUNNER_TEMP/launch-check"
+          pnpm exec tsx scripts/smoke-desktop-release.ts --executable "$app/Contents/MacOS/$executable" --artifacts-dir "$RUNNER_TEMP/launch-check" --install-in-applications
       - name: Launch failure artifacts
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
