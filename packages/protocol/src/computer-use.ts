@@ -4,7 +4,7 @@ import {
   MacWindowVideoStateSchema,
   MacOwnerInputEventSchema,
   MacWindowVideoSourceEventSchema,
-  macOwnerInputVersion,
+  MacOwnerInputVersionSchema,
 } from "./mac-window-video.js";
 import { ComputerViewHelperRequestSchema } from "./computer-view-requests.js";
 import { ComputerViewSchema, ComputerViewNativeResultSchema } from "./computer-view.js";
@@ -615,7 +615,7 @@ const EmptyParamsSchema = z.strictObject({});
 
 export const ComputerUseHelloParamsSchema = z.strictObject({
   loginText: z.literal(1).optional(),
-  ownerInputVersion: z.literal(macOwnerInputVersion).optional(),
+  ownerInputVersion: MacOwnerInputVersionSchema,
   ownerViewVersion: z.literal(3).optional(),
   clientVersion: z.string().min(1).max(64),
   protocolVersion: z.number().int().positive().max(1_000),
@@ -630,7 +630,7 @@ export const ComputerUseHelloParamsSchema = z.strictObject({
  */
 export const ComputerUseHelloResultSchema = z.strictObject({
   loginText: LoginReceiverKeySchema.optional(),
-  ownerInputVersion: z.literal(macOwnerInputVersion).optional(),
+  ownerInputVersion: MacOwnerInputVersionSchema,
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
   helperVersion: z.string().min(1).max(64),
   minProtocolVersion: z.number().int().positive().max(1_000),
@@ -649,7 +649,7 @@ export const ComputerUseHelloResultSchema = z.strictObject({
 export const ComputerUsePermissionsResultSchema = z.strictObject({
   /** Desktop bridge advertisement derived from its authenticated helper handshake. */
   computerUseVersion: z.literal(2).optional(),
-  ownerInputVersion: z.literal(macOwnerInputVersion).optional(),
+  ownerInputVersion: MacOwnerInputVersionSchema,
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
   permissions: ComputerUsePermissionsSchema,
 });

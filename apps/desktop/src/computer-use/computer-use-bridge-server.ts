@@ -88,7 +88,7 @@ export interface ComputerUseBridgeHelperPort {
     options: ComputerUseHelperRequestOptions,
   ): Promise<ComputerUseMediaAttachment>;
   ownerViewVersion?(): number | undefined;
-  ownerInputVersion?(): 1 | undefined;
+  ownerInputVersion?(): 2 | undefined;
   computerUseVersion?(): 2 | undefined;
   loginReceiver?(): LoginReceiverKey | null;
   onCapabilitiesChanged?(listener: () => void): () => void;
@@ -236,7 +236,7 @@ interface BridgeConnection {
 /** One connection's ownership identity, liveness fence, and in-flight opens. */
 interface BridgeOwner {
   alive: boolean;
-  readonly ownerInputVersion: 1 | undefined;
+  readonly ownerInputVersion: 2 | undefined;
   readonly opening: Set<ComputerUseSessionId>;
   readonly passwords: Set<string>;
 }
@@ -534,7 +534,7 @@ export class ComputerUseBridgeServer {
         this.#accept(
           websocket,
           release,
-          request.headers[computerUseBridgeOwnerInputHeader] === "1" ? 1 : undefined,
+          request.headers[computerUseBridgeOwnerInputHeader] === "2" ? 2 : undefined,
         );
       });
     });
@@ -610,7 +610,7 @@ export class ComputerUseBridgeServer {
     this.#url = null;
   }
 
-  #accept(socket: WebSocket, releaseClaim: () => void, ownerInputVersion: 1 | undefined): void {
+  #accept(socket: WebSocket, releaseClaim: () => void, ownerInputVersion: 2 | undefined): void {
     // The owner is the connection's identity for ownership and its liveness
     // fence in one object: `alive` is what tells an answer that arrived after
     // the socket died that it has nobody to go to. `opening` holds the
@@ -630,7 +630,7 @@ export class ComputerUseBridgeServer {
         ) {
           if (
             event.event === "display.owner-input" &&
-            (owner.ownerInputVersion !== 1 || !this.#ownsVideoSource(event.params.source, owner))
+            (owner.ownerInputVersion !== 2 || !this.#ownsVideoSource(event.params.source, owner))
           )
             return;
           send(socket, { ...event, kind: "event" });
@@ -818,8 +818,8 @@ export class ComputerUseBridgeServer {
     }
     if (method.startsWith("display.")) {
       if (
-        (method === "display.control" || method === "display.input") &&
-        owner.ownerInputVersion !== 1
+        (method === "display.input-reset" || method === "display.input") &&
+        owner.ownerInputVersion !== 2
       ) {
         refuse("unsupported", "Negotiate Mac owner input before controlling this view.");
         return;
@@ -829,7 +829,7 @@ export class ComputerUseBridgeServer {
         return;
       }
       if (
-        method !== "display.control" &&
+        method !== "display.input-reset" &&
         method !== "display.input" &&
         method !== "display.resolve" &&
         method !== "display.start" &&
@@ -891,7 +891,21 @@ export class ComputerUseBridgeServer {
         entry?.socket?.terminate();
       }
       try {
-        const result = await this.#helper.request(method, parsed.data, { deadline });
+        const forwarded =
+          method === "display.resolve"
+            ? (() => {
+                const resolved = macWindowVideoParams["display.resolve"].parse(parsed.data);
+                return {
+                  source: resolved.source,
+                  ...(owner.ownerInputVersion === 2 &&
+                  this.#helper.ownerInputVersion?.() === 2 &&
+                  resolved.ownerInputVersion === 2
+                    ? { ownerInputVersion: 2 }
+                    : {}),
+                };
+              })()
+            : parsed.data;
+        const result = await this.#helper.request(method, forwarded, { deadline });
         if (streamId && method === "display.start" && "attachmentToken" in result) {
           const entry = this.#videos.get(streamId);
           if (!entry || entry !== startingVideo || !owner.alive || this.#now() >= deadline) {
@@ -1023,7 +1037,7 @@ export class ComputerUseBridgeServer {
       if (outcome.kind === "answer") {
         const ownerViewVersion = this.#helper.ownerViewVersion?.();
         const ownerInputVersion =
-          owner.ownerInputVersion === 1 ? this.#helper.ownerInputVersion?.() : undefined;
+          owner.ownerInputVersion === 2 ? this.#helper.ownerInputVersion?.() : undefined;
         const computerUseVersion = this.#helper.computerUseVersion?.();
         answer({
           permissions: outcome.value,

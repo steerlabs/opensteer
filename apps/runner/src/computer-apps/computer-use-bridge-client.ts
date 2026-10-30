@@ -104,7 +104,7 @@ export interface ComputerUseBridgeRequestOptions {
 
 export interface ComputerUseBridgeClientOptions {
   /** Readiness for the current Desktop connection, cleared on loss and reconnect. */
-  readonly ownerInputVersion?: () => 1 | undefined;
+  readonly ownerInputVersion?: () => 2 | undefined;
   /** How long past a deadline to wait; `computerUseRunnerGraceMs` unless a test shortens it. */
   readonly graceMs?: number;
   /** The clock deadlines are read against. */
@@ -325,7 +325,7 @@ export class ComputerUseBridgeClient {
         // Reconnecting may have replaced the Desktop since readiness was read.
         // Project at the write so a previous strict bridge gets its exact shape.
         let params: unknown = frame.params;
-        if (frame.method === "display.resolve" && this.#options.ownerInputVersion?.() !== 1) {
+        if (frame.method === "display.resolve" && this.#options.ownerInputVersion?.() !== 2) {
           const resolved = macWindowVideoParams["display.resolve"].safeParse(params);
           if (!resolved.success) {
             this.#reject(
@@ -378,7 +378,7 @@ export class ComputerUseBridgeClient {
       followRedirects: false,
       headers: {
         authorization: `Bearer ${this.#options.token}`,
-        [computerUseBridgeOwnerInputHeader]: "1",
+        [computerUseBridgeOwnerInputHeader]: "2",
       },
       maxPayload: computerUseBridgeMaxFrameBytes,
       perMessageDeflate: false,
