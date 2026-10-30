@@ -827,7 +827,7 @@ export function Composer(props: {
                     controller={dictation}
                     snapshot={dictationState}
                     owner={owner}
-                    disabled={disabled || textHidden || pending !== null || sending}
+                    disabled={readOnly || textHidden}
                     onStart={startDictation}
                   />
                 </View>
