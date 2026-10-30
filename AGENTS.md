@@ -262,6 +262,7 @@ decisions and constraints the code can't show.
 | Browser profile formats                                                | [Snapshot contract](packages/browser-profile/src/snapshot.ts)                                                 |
 | Chrome sign-ins and the Chrome extension                               | [Chrome sign-ins](docs/browser-sources.md)                                                                    |
 | Voice dictation into the composer                                      | [Dictation](docs/dictation.md)                                                                                |
+| Voice mode: talking to Chat hands-free                                 | [Voice](docs/voice.md)                                                                                        |
 | Saved-password sign-ins and Opensteer Passwords                        | [Opensteer Passwords](docs/passwords.md)                                                                      |
 | Desktop builds, signing and releases                                   | [Releases](docs/releases.md)                                                                                  |
 | Tests, CI selection, integration databases and the VM                  | [Testing](docs/testing.md)                                                                                    |

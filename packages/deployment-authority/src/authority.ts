@@ -266,6 +266,8 @@ export const HostCapabilitySchema = z.enum([
   "shared-task-done-v1",
   /** A person can rename and delete their browser profiles. */
   "browser-profile-manage-v1",
+  /** Clients can hold a voice call through `voice.*` (see docs/voice.md). */
+  "voice-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

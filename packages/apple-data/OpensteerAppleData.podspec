@@ -1,3 +1,10 @@
+# SwiftPM synthesizes PackageResources for embedInCode; CocoaPods does not.
+# Embed the same catalog bytes without introducing a runtime resource bundle.
+require 'base64'
+contracts = File.read(File.join(__dir__, 'Sources/OpensteerAppleData/Resources/contracts.json'))
+File.write(File.join(__dir__, 'Sources/OpensteerAppleData/PackageResources.generated.swift'),
+  "#if !SWIFT_PACKAGE\nimport Foundation\nenum PackageResources {\n  static let contracts_json = Data(base64Encoded: \"#{Base64.strict_encode64(contracts)}\")!\n}\n#endif\n")
+
 Pod::Spec.new do |s|
   s.name = 'OpensteerAppleData'
   s.version = '1.0.0'

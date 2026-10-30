@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   HarnessIdSchema,
   ModelSelectionSchema,
@@ -2577,3 +2578,140 @@ function ticket(fence: RunnerConnectionFence): RunnerAuxiliaryTicketClaims {
     runnerId: fence.runnerId,
   };
 }
+
+describe("Runner voice relay", () => {
+  const sessionId = "00000000-0000-4000-8000-000000000001";
+  const userId = createId("user"),
+    harnessInstanceId = createId("harnessInstance");
+  const command = {
+    action: "start" as const,
+    sessionId,
+    harnessInstanceId,
+    offer: "private-offer",
+  };
+  async function fixture(voice = true) {
+    const registry = new RunnerRegistry({
+      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+    });
+    const environmentId = createId("environment");
+    const peer = new MemoryRunnerPeer("voice");
+    const identity = hello(createId("runner"), environmentId, "boot-1");
+    await registerAttached(
+      registry,
+      { ...identity, capabilities: voice ? ["voice-v1"] : [] },
+      peer,
+    );
+    return { registry, environmentId, peer };
+  }
+  it("correlates fenced answers and refusals, ignoring late replies", async () => {
+    const f = await fixture();
+    try {
+      const request = f.registry.voice(
+        f.environmentId,
+        userId,
+        command,
+        new AbortController().signal,
+      );
+      const sent = f.peer.messages.at(-1);
+      if (sent?.type !== "host.voice") throw new Error("Voice request was not sent");
+      expect(sent).toMatchObject({
+        ...fenceOf(f.peer),
+        command,
+        userId,
+      });
+      await f.registry.handle(f.peer, {
+        ...fenceOf(f.peer),
+        type: "runner.voice",
+        requestId: sent.requestId,
+        result: { ok: true, answer: "answer" },
+      });
+      expect(await request).toEqual({ ok: true, answer: "answer" });
+      await f.registry.handle(f.peer, {
+        ...fenceOf(f.peer),
+        type: "runner.voice",
+        requestId: sent.requestId,
+        result: { ok: false, reason: "voice-ended", message: "Ended." },
+      });
+      const next = f.registry.voice(f.environmentId, userId, command, new AbortController().signal);
+      const nextSent = f.peer.messages.at(-1);
+      if (nextSent?.type !== "host.voice") throw new Error("Voice request was not sent");
+      await f.registry.handle(f.peer, {
+        ...fenceOf(f.peer),
+        type: "runner.voice",
+        requestId: nextSent.requestId,
+        result: { ok: false, reason: "voice-refused", message: "Refused." },
+      });
+      expect(await next).toMatchObject({ ok: false, reason: "voice-refused" });
+    } finally {
+      await f.registry.close();
+    }
+  });
+  it("rejects offline and older Runners, and outstanding requests on disconnect", async () => {
+    const f = await fixture(false);
+    await expect(
+      f.registry.voice(f.environmentId, userId, command, new AbortController().signal),
+    ).rejects.toMatchObject({ reason: "voice-runner-unsupported" });
+    await f.registry.close();
+    await expect(
+      f.registry.voice(f.environmentId, userId, command, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "runner_offline" });
+    const live = await fixture();
+    const pending = live.registry.voice(
+      live.environmentId,
+      userId,
+      command,
+      new AbortController().signal,
+    );
+    const rejected = expect(pending).rejects.toThrow("Runner disconnected");
+    live.registry.disconnect(live.peer);
+    await rejected;
+    await live.registry.close();
+  });
+  it("rejects on disconnect even when the socket send is still backed up", async () => {
+    const f = await fixture();
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(f.peer, "send").mockImplementation(async (message) => {
+      f.peer.messages.push(message);
+      await held;
+    });
+    try {
+      const request = f.registry.voice(
+        f.environmentId,
+        userId,
+        command,
+        new AbortController().signal,
+      );
+      const rejected = expect(
+        withTimeout(request, 1_000, {
+          timeoutError: () => new Error("Disconnect did not reject the blocked voice request"),
+        }),
+      ).rejects.toThrow("Runner disconnected");
+      f.registry.disconnect(f.peer);
+      await rejected;
+    } finally {
+      release();
+      await f.registry.close();
+    }
+  });
+  it.each(["start", "renew"] as const)("bounds %s requests", async (action) => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    try {
+      const pending = f.registry.voice(
+        f.environmentId,
+        userId,
+        action === "start" ? command : { action, sessionId, harnessInstanceId },
+        new AbortController().signal,
+      );
+      const rejected = expect(pending).rejects.toMatchObject({ code: "timeout" });
+      await vi.advanceTimersByTimeAsync(action === "start" ? 30_000 : 10_000);
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+      await f.registry.close();
+    }
+  });
+});

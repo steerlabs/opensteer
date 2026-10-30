@@ -225,6 +225,14 @@ import {
   ModelServerViewSchema,
 } from "./runner.js";
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
+import {
+  VoiceEmptyResultSchema,
+  VoiceRenewInputSchema,
+  VoiceSayInputSchema,
+  VoiceStartInputSchema,
+  VoiceStartResultSchema,
+  VoiceStopInputSchema,
+} from "./voice.js";
 
 const emptyInputSchema = z.strictObject({});
 const emptyOutputSchema = z.object({});
@@ -1454,6 +1462,19 @@ export const hostApi = defineRpc({
     }),
     z.object({ servers: z.array(ModelServerViewSchema).max(maxModelServers) }),
   ),
+  /**
+   * A voice call on one of the person's ChatGPT accounts on that work
+   * location's computer. The client's offer goes to the Runner, which creates
+   * the call; audio then flows between the client and the vendor only.
+   * Requires `voice-v1`; errors carry a `VoiceRefusalReason`.
+   */
+  "voice.start": declaration("POST", VoiceStartInputSchema, VoiceStartResultSchema),
+  /** Keeps a call alive for another lease, rechecking the person may still use it. */
+  "voice.renew": declaration("POST", VoiceRenewInputSchema, VoiceEmptyResultSchema),
+  /** Has the voice tell the person something, such as Chat's reply. */
+  "voice.say": declaration("POST", VoiceSayInputSchema, VoiceEmptyResultSchema),
+  /** Ends a call. Ending one that is already over succeeds. */
+  "voice.stop": declaration("POST", VoiceStopInputSchema, VoiceEmptyResultSchema),
   "integration.authorization.get": declaration(
     "GET",
     z.strictObject({ attemptId: IntegrationAuthorizationAttemptIdSchema }),

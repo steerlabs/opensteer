@@ -1,0 +1,266 @@
+/* Voice: the composer's waveform button, and the live bar that shows a call
+   is on. The bar docks above Chat's composer, or floats at the bottom of the
+   main area when no Chat composer is on screen. Loudness reaches the orb as
+   one CSS variable (`--level`, 0–1), so meters never re-render React. */
+
+.composer__attach.composer__voice--on,
+.composer__attach.composer__voice--on:hover:not(:disabled),
+.composer--conversation .composer__attach.composer__voice--on,
+.composer--conversation .composer__attach.composer__voice--on:hover:not(:disabled) {
+  background: var(--ember);
+  color: var(--ink-on-ember);
+}
+
+.voice-dock {
+  max-width: var(--composer-max-width);
+  margin: 0 auto;
+}
+.voice-dock:not(:empty) {
+  padding-bottom: var(--space-8);
+}
+
+.voice-float {
+  position: absolute;
+  bottom: var(--space-20);
+  left: 50%;
+  z-index: var(--layer-toast);
+  width: min(460px, calc(100% - var(--space-32)));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.voice-float > * {
+  pointer-events: auto;
+}
+
+.voice-island {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-height: 52px;
+  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--surface-elevated) 92%, transparent);
+  box-shadow: var(--shadow-raised);
+  backdrop-filter: blur(18px) saturate(1.2);
+  animation: voice-island-in var(--duration-med) var(--ease-spring) both;
+}
+.voice-island--docked {
+  box-shadow: 0 4px 24px rgb(0 0 0 / 12%);
+}
+.voice-island:not(.voice-island--notice)[data-phase="hearing"],
+.voice-island:not(.voice-island--notice)[data-phase="speaking"] {
+  border-color: var(--ember-line);
+}
+
+@keyframes voice-island-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+}
+
+.voice-island__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+}
+.voice-island__label {
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.01em;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.voice-island__label:only-child {
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+}
+.voice-island__caption {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-lg);
+  line-height: 18px;
+  white-space: nowrap;
+}
+.voice-island__caption[data-overflow="true"] {
+  mask-image: linear-gradient(to right, transparent, #000 28px);
+}
+.voice-island[data-phase="thinking"] .voice-island__caption {
+  color: var(--muted);
+}
+.voice-island[data-phase="speaking"] .voice-island__caption {
+  color: var(--text-soft);
+}
+
+.voice-island__button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-full);
+  color: var(--text-soft);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+.voice-island__button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.voice-island__button:disabled {
+  opacity: 0.45;
+}
+.voice-island__button--on {
+  background: var(--red-wash);
+  color: var(--red-text);
+}
+.voice-island__button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.voice-island__end {
+  flex: none;
+  height: 34px;
+  padding: 0 var(--space-14);
+  border-radius: var(--radius-full);
+  background: var(--red-wash);
+  border: 1px solid var(--red-line);
+  color: var(--red-text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-strong);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.voice-island__end:hover {
+  background: color-mix(in srgb, var(--red) 18%, transparent);
+}
+
+.voice-island--notice {
+  gap: var(--space-8);
+  padding-left: var(--space-16);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+.voice-island--notice > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--amber);
+}
+.voice-island__notice {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The orb: a warm core that swells with whoever is talking, a halo that
+   brightens with it, and a slow breath while it waits. */
+.voice-orb {
+  --level: 0;
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 30px;
+}
+.voice-orb::before,
+.voice-orb::after {
+  content: "";
+  position: absolute;
+  border-radius: var(--radius-full);
+  transition:
+    transform 110ms linear,
+    opacity 160ms linear,
+    filter var(--duration-med) var(--ease-out);
+}
+.voice-orb::after {
+  inset: -7px;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--ember) 45%, transparent) 0%,
+    transparent 68%
+  );
+  opacity: calc(0.25 + var(--level) * 0.75);
+  transform: scale(calc(0.85 + var(--level) * 0.45));
+}
+.voice-orb::before {
+  inset: 3px;
+  z-index: 1;
+  background: radial-gradient(
+    circle at 34% 30%,
+    #fff4ef 0%,
+    var(--ember-bright) 30%,
+    var(--ember) 58%,
+    color-mix(in srgb, var(--ember) 55%, #5b2f22) 100%
+  );
+  box-shadow: 0 0 12px color-mix(in srgb, var(--ember) 40%, transparent);
+  transform: scale(calc(0.88 + var(--level) * 0.32));
+}
+.voice-island[data-phase="listening"] .voice-orb::before {
+  animation: voice-breathe 2.6s ease-in-out infinite;
+}
+.voice-island[data-phase="connecting"] .voice-orb::before {
+  filter: saturate(0.35) brightness(0.8);
+  animation: voice-breathe 1.2s ease-in-out infinite;
+}
+.voice-island[data-phase="thinking"] .voice-orb::before {
+  background: conic-gradient(
+    from 0deg,
+    var(--ember) 0deg,
+    #fff4ef 90deg,
+    var(--ember) 180deg,
+    color-mix(in srgb, var(--ember) 45%, #5b2f22) 270deg,
+    var(--ember) 360deg
+  );
+  animation: voice-turn 1.6s linear infinite;
+}
+.voice-island[data-phase="speaking"] .voice-orb::after {
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--ember-bright) 60%, transparent) 0%,
+    transparent 70%
+  );
+}
+.voice-island[data-muted="true"] .voice-orb::before,
+.voice-island[data-muted="true"] .voice-orb::after {
+  filter: saturate(0) brightness(0.6);
+  animation: none;
+}
+
+@keyframes voice-breathe {
+  50% {
+    transform: scale(0.94);
+  }
+}
+@keyframes voice-turn {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-island {
+    animation: none;
+  }
+  .voice-orb::before,
+  .voice-orb::after,
+  .voice-island .voice-orb::before {
+    animation: none;
+    transform: none;
+  }
+  .voice-orb::after {
+    transform: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .voice-float {
+    bottom: calc(var(--space-12) + env(safe-area-inset-bottom));
+  }
+  .voice-island__end {
+    padding: 0 var(--space-12);
+  }
+}

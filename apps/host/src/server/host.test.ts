@@ -366,6 +366,7 @@ describe("Host signing keys", () => {
         bootstrapMethods: ["password"],
         capabilities: [
           "chat-attachments",
+          "voice-v1",
           "thread-titles-v1",
           "task-marks-v1",
           "snapshot-messages-omit-v1",
@@ -420,6 +421,7 @@ describe("Host signing keys", () => {
         apiVersion: hostApiVersion,
         capabilities: [
           "chat-attachments",
+          "voice-v1",
           "thread-titles-v1",
           "task-marks-v1",
           "snapshot-messages-omit-v1",

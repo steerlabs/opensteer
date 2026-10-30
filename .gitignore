@@ -46,3 +46,6 @@ apps/agent-phone/fixture/build/
 apps/mobile/modules/*/android/build/
 
 /apps/desktop/build/generated/
+
+# CocoaPods equivalent of SwiftPM embedInCode.
+/packages/apple-data/Sources/OpensteerAppleData/PackageResources.generated.swift

@@ -7,13 +7,20 @@ import {
   type IsolationLevel,
 } from "kysely";
 import { OpensteerError } from "@opensteer/core";
-import { Pool } from "pg";
+import { Client, Pool, type PoolClient } from "pg";
 import type { DatabaseSchema } from "./schema.js";
 
 interface DatabaseConnectionOptions {
   readonly connectionString: string;
   readonly maxConnections?: number;
   readonly applicationName?: string;
+}
+
+const databaseHolders = new WeakMap<Kysely<DatabaseSchema>, () => string>();
+
+/** Checkout sites only: SQL and connection credentials must never enter shutdown diagnostics. */
+export function databaseShutdownDetails(database: Kysely<DatabaseSchema>): string {
+  return databaseHolders.get(database)?.() ?? "";
 }
 
 export function createDatabase(
@@ -28,14 +35,60 @@ export function createDatabase(
       max: options.maxConnections ?? 10,
     });
 
-  return new Kysely<DatabaseSchema>({
-    dialect: new PostgresDialect({ pool }),
+  const holders = new Map<object, { origin: Error; started: number; state: string }>();
+  const clients = new Map<PoolClient, object>();
+  const forget = (client: PoolClient) => {
+    const token = clients.get(client);
+    if (token) holders.delete(token);
+    clients.delete(client);
+  };
+  pool.on("release", (_error, client) => forget(client));
+  pool.on("remove", forget);
+  const database = new Kysely<DatabaseSchema>({
+    dialect: new PostgresDialect({
+      controlClient: Client,
+      pool: {
+        options: pool.options,
+        async connect() {
+          const token = {};
+          const limit = Error.stackTraceLimit;
+          Error.stackTraceLimit = 40;
+          const origin = new Error("Database checkout");
+          Error.stackTraceLimit = limit;
+          const holder = {
+            origin,
+            started: performance.now(),
+            state: "acquiring",
+          };
+          holders.set(token, holder);
+          try {
+            const client = await pool.connect();
+            holder.state = "checked out";
+            clients.set(client, token);
+            return client;
+          } catch (error) {
+            holders.delete(token);
+            throw error;
+          }
+        },
+        end: () => pool.end(),
+      },
+    }),
     // Column names are converted; what a JSON column holds is not. Opensteer's
     // own documents are camelCase already, and a document from elsewhere — an
     // MCP tool's schema, a program's environment — must read back exactly as
     // it was written: `PLUGIN_ROOT` is not `PLUGINROOT`.
     plugins: [new CamelCasePlugin({ maintainNestedObjectKeys: true })],
   });
+  databaseHolders.set(database, () =>
+    [...holders.values()]
+      .map(
+        (holder) =>
+          `${holder.state} for ${Math.round(performance.now() - holder.started)}ms at ${holder.origin.stack}`,
+      )
+      .join("; "),
+  );
+  return database;
 }
 
 /**
