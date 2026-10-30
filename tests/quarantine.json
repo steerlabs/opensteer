@@ -445,5 +445,21 @@
     "evidence": [
       "Owner input reorders a person's local keystrokes, never loses them: in VM run 20261029T030730Z-d2ca0afa (direct AppKit owner-input), 3 of 2071 numbered tokens arrived reordered, e.g. '1038|1039|1040|' as '1038|039|11040|', right after an owner input dispatch, with no front app, pointer or Space change. A person key routed to the owner's target during the guarded dispatch reaches it late and is sent on after later keys went directly to the person's app; PersonKeyOrder orders only keys typed after a key is sent on. The fix ends each hold with a barrier through the target and lands red-first after the open-source cutover, because it changes the frozen focus files."
     ]
+  },
+  {
+    "file": "apps/host/src/runtime/machine-access-lifecycle.integration.test.ts",
+    "name": [
+      "Machine access across a Run's authority",
+      "keeps a session through a token refresh and past its first token's expiry"
+    ],
+    "area": "Machine access",
+    "owner": "Machine access maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-10-30T03:57:30Z",
+    "deadline": "2026-11-06T03:57:30Z",
+    "sha": "6a217cb128a600dbe20235d7b47b6688d4333e75",
+    "evidence": [
+      "integration (4) on 6a217cb (PR #221, which changed only Thread listing): the test ran 84.9 s, its hook timed out at 60 s and database fixture containment failed ('Producers of ... host_clone ... did not stop'); 'ends an overdue background Run's sessions ...' then failed only by worker contamination. The same job passed on rerun at the same SHA (run 40999673919, attempt 2), and the whole file passed 14/14 locally at that SHA (13.2 s for this test). Reproduce under the full integration shard's load; fix why the token-refresh session leaves database producers running past teardown, keeping the refresh and expiry assertions unchanged."
+    ]
   }
 ]
