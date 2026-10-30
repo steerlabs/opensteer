@@ -120,7 +120,7 @@ integration("Expo external engine sign-in recovery", () => {
       expect(engine).toBeDefined();
       await act(async () => engine!.click());
       expect(document.body.textContent).toContain("Sign in to use Cursor");
-      const checkAgain = button("Check again");
+      const checkAgain = button("Sign in");
       expect(checkAgain).toBeDefined();
       const before = container.innerHTML;
       await writeFile(state, "happy");
@@ -164,7 +164,6 @@ integration("Expo external engine sign-in recovery", () => {
             )
             .toBe(model.modelId);
         });
-        await act(async () => button("Done")!.click());
       }
       expect(navigation.goBack).toHaveBeenCalled();
       const artifactDirectory =

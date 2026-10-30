@@ -1,3 +1,4 @@
+import { UsageNotice } from "./usage-notice.js";
 import {
   accountGettingReady,
   accessModeConflict,
@@ -380,7 +381,7 @@ export function FirstMessageComposer(props: {
   readonly execution: FirstMessageExecution;
   readonly inputRef: RefObject<TextInputInstance | null>;
   readonly onChangeText: (text: string) => void;
-  readonly onChooseAI: (pickerAttemptId?: string) => void;
+  readonly onChooseAI: (pickerAttemptId?: string, conversation?: boolean) => void;
   readonly onSend: (selection: ExecutionSelection | null) => void;
   readonly placeholder: string;
   readonly quote: ThreadDraftQuote | null;
@@ -608,6 +609,11 @@ export function FirstMessageComposer(props: {
             {blocker.reason}
           </AppText>
         )}
+        <UsageNotice
+          placements={props.execution.placements}
+          selection={selection}
+          onSwitch={() => props.onChooseAI(undefined, true)}
+        />
         <ComposerBar
           accessory={
             <ComposerPills

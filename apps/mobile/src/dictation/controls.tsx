@@ -8,7 +8,7 @@ import {
   type DictationController,
 } from "@opensteer/client/dictation";
 import { useEffect, useState, type ReactNode } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { useReducedMotion } from "react-native-reanimated";
 import { color, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
@@ -21,29 +21,19 @@ export function DictationMic(props: {
   disabled: boolean;
   onStart(): void;
 }): ReactNode {
-  const c = props.controller;
   const s = dictationView(props.snapshot, props.owner);
   if (!s.visible) return null;
-  const stopping = s.phase === "listening" || s.phase === "finishing";
-  const disabled = props.disabled || s.blocked || (s.phase !== "idle" && !stopping);
+  const disabled = props.disabled || s.blocked || s.phase !== "idle";
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={
-        stopping ? dictationLabels.stop : dictationStartLabel(s.languageName ?? "")
-      }
-      accessibilityState={{ disabled, busy: s.phase === "finishing" }}
+      accessibilityLabel={dictationStartLabel(s.languageName ?? "")}
+      accessibilityState={{ disabled }}
       disabled={disabled}
       style={[composerControlStyle, disabled && { opacity: 0.45 }]}
-      onPress={stopping ? () => void c.stop(props.owner) : props.onStart}
+      onPress={props.onStart}
     >
-      {s.phase === "finishing" ? (
-        <View style={styles.control}>
-          <ActivityIndicator color={color.ember} />
-        </View>
-      ) : (
-        <ComposerCircleFace icon={stopping ? "stop.fill" : "mic"} />
-      )}
+      <ComposerCircleFace icon="mic" />
     </Pressable>
   );
 }
@@ -52,35 +42,23 @@ export function DictationStatus({
   controller: c,
   snapshot,
   owner,
+  onSend,
+  canSend,
 }: {
   controller: DictationController;
   snapshot: DictationSnapshot;
   owner: string;
+  onSend?: () => void;
+  canSend?: boolean;
 }): ReactNode {
   const s = dictationView(snapshot, owner);
   const notice = s.notice;
   const status =
-    s.phase === "downloading"
-      ? dictationDownloadStatus(s.languageName ?? "", s.progress)
-      : s.phase === "starting"
-        ? dictationLabels.starting
-        : s.phase === "finishing"
-          ? dictationLabels.finishing
-          : null;
+    s.phase === "downloading" ? dictationDownloadStatus(s.languageName ?? "", s.progress) : null;
   return (
     <>
       {s.phase !== "idle" ? (
         <View style={styles.row}>
-          {s.phase === "listening" ? (
-            <>
-              <Level controller={c} />
-              <Elapsed since={s.listeningSince} />
-            </>
-          ) : (
-            <AppText role="secondary" tone="muted" style={styles.words}>
-              {status}
-            </AppText>
-          )}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
@@ -89,14 +67,48 @@ export function DictationStatus({
             onPress={() => c.cancel(owner)}
             style={styles.control}
           >
-            <AppText role="secondary" tone="muted">
-              {s.phase === "downloading"
-                ? dictationLabels.cancelDownload
-                : s.phase === "starting"
-                  ? dictationLabels.cancelStarting
-                  : "✕"}
-            </AppText>
+            <AppText tone="muted">×</AppText>
           </Pressable>
+          {s.phase === "downloading" ? (
+            <AppText role="secondary" tone="muted" style={styles.words}>
+              {status}
+            </AppText>
+          ) : (
+            <>
+              <Level controller={c} active={s.phase === "listening"} />
+              <View
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+                style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+              >
+                <AppText style={{ color: color.red }}>●</AppText>
+                <Elapsed since={s.startedAt} />
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={dictationLabels.stop}
+                accessibilityState={{
+                  busy: s.phase === "finishing",
+                  disabled: s.phase === "finishing",
+                }}
+                disabled={s.phase === "finishing"}
+                onPress={() => void c.stop(owner)}
+                style={[styles.control, { opacity: s.phase === "finishing" ? 0.4 : 1 }]}
+              >
+                <AppText>✓</AppText>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Send message"
+                disabled={!canSend}
+                accessibilityState={{ disabled: !canSend }}
+                onPress={onSend}
+                style={styles.control}
+              >
+                <AppText>↑</AppText>
+              </Pressable>
+            </>
+          )}
         </View>
       ) : null}
       {notice ? (
@@ -137,28 +149,44 @@ function Elapsed({ since }: { since: number | null }): ReactNode {
     return () => clearInterval(timer);
   }, []);
   return (
-    <AppText role="secondary" tone="muted" style={styles.words}>
+    <AppText role="secondary" tone="muted" style={{ fontVariant: ["tabular-nums"] }}>
       {dictationElapsed(now - (since ?? now))}
     </AppText>
   );
 }
-function Level({ controller }: { controller: DictationController }): ReactNode {
+function Level({
+  controller,
+  active,
+}: {
+  controller: DictationController;
+  active: boolean;
+}): ReactNode {
   const reduced = useReducedMotion();
-  const [level, setLevel] = useState(0);
+  const [levels, setLevels] = useState<number[]>(Array(12).fill(0));
   useEffect(
-    () => (reduced ? undefined : controller.subscribeLevel(setLevel)),
-    [controller, reduced],
+    () =>
+      reduced || !active
+        ? undefined
+        : controller.subscribeLevel((level) =>
+            setLevels((previous) => [...previous.slice(1), level]),
+          ),
+    [controller, reduced, active],
   );
   return (
-    <View accessible={false} style={styles.meter}>
-      {[0.3, 0.6, 1, 0.6, 0.3].map((scale, i) => (
+    <View
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={styles.meter}
+    >
+      {levels.map((level, i) => (
         <View
           key={i}
           style={{
             width: 3,
             borderRadius: 2,
             backgroundColor: color.ember,
-            height: reduced ? 8 : 3 + level * scale * 17,
+            height: reduced ? 8 : 3 + (active ? level : 0) * 17,
           }}
         />
       ))}
@@ -171,7 +199,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space[8],
     paddingHorizontal: space[12],
-    flexWrap: "wrap",
   },
   words: { flex: 1 },
   control: {
@@ -180,5 +207,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  meter: { height: 24, flexDirection: "row", alignItems: "center", gap: 3 },
+  meter: {
+    overflow: "hidden",
+    minWidth: 0,
+    flex: 1,
+    height: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+  },
 });
