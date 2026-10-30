@@ -3,6 +3,7 @@ import type { Session } from "electron";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
 
 export interface BrowserSessionPolicyOptions {
+  readonly provider?: boolean;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
   readonly pagePolicyPreloadPath: string;
@@ -34,7 +35,28 @@ export function applyBrowserSessionPolicy(
   session.webRequest.onHeadersReceived(
     { types: ["mainFrame", "subFrame"], urls: ["<all_urls>"] },
     (details, callback) => {
-      callback({ responseHeaders: withPagePermissionsPolicy(details.responseHeaders) });
+      let deny = !options.provider;
+      if (options.provider && details.resourceType === "subFrame") {
+        // Keep the site's computed policy visible for the frames we serve. A
+        // missing frame identity, like a foreign ancestor, is refused closed.
+        const frame = details.frame;
+        try {
+          const origin = new URL(details.url).origin;
+          let ancestor = frame?.parent;
+          deny = !ancestor || origin === "null";
+          while (ancestor) {
+            if (new URL(ancestor.url).origin !== origin) deny = true;
+            ancestor = ancestor.parent;
+          }
+        } catch {
+          deny = true;
+        }
+      }
+      callback({
+        responseHeaders: deny
+          ? withPagePermissionsPolicy(details.responseHeaders)
+          : (details.responseHeaders ?? {}),
+      });
     },
   );
   session.webRequest.onBeforeRequest((details, callback) => {

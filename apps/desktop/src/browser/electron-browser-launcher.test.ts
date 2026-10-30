@@ -6,6 +6,12 @@ import { describe, expect, it, vi } from "vitest";
 type Bounds = { x: number; y: number; width: number; height: number };
 
 const electron = vi.hoisted(() => ({
+  bootstrap: undefined as
+    | undefined
+    | ((
+        method: string,
+        deliver: (method: string, parameters: unknown) => void,
+      ) => Promise<unknown> | undefined),
   hosts: [] as Array<{
     contentView: {
       addChildView: ReturnType<typeof vi.fn>;
@@ -55,9 +61,19 @@ vi.mock("electron", () => {
       isAttached: vi.fn(() => true),
       off: vi.fn(),
       on: vi.fn(),
-      sendCommand: vi.fn(async (method: string) =>
-        method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-1" } } : {},
-      ),
+      once: vi.fn(),
+      sendCommand: vi.fn((method: string) => {
+        const result = electron.bootstrap?.(method, (name, parameters) => {
+          for (const [event, listener] of this.debugger.on.mock.calls)
+            if (event === "message") listener({}, name, parameters);
+        });
+        return (
+          result ??
+          Promise.resolve(
+            method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-1" } } : {},
+          )
+        );
+      }),
     };
     readonly focus = vi.fn();
     readonly beginFrameSubscription = vi.fn(
@@ -737,8 +753,18 @@ describe("native placement", () => {
 });
 
 describe("Electron geometry lifecycle", () => {
-  async function launch(bindGeometry = true) {
+  async function launch(bindGeometry = true, provider = false) {
     const browser = await new ElectronBrowserLauncher({
+      ...(provider
+        ? {
+            authenticator: {
+              ceremony: async () => ({
+                kind: "refused" as const,
+                error: "NotAllowedError" as const,
+              }),
+            },
+          }
+        : {}),
       downloads: { accept: () => undefined },
       pagePolicyPreloadPath: "/opensteer/browser-page-preload.cjs",
     }).launch({
@@ -766,6 +792,29 @@ describe("Electron geometry lifecycle", () => {
     };
     return { browser, page, native, view, host, unbind, drain, releaseInput, serialize };
   }
+
+  it("keeps provider TLS domains in the existing hub ownership until the page releases", async () => {
+    const { browser, page, view } = await launch(false, true);
+    try {
+      const platform = await page.cdp();
+      for (const domain of ["Network", "Security"]) {
+        await platform.send(`${domain}.enable`);
+        await platform.send(`${domain}.disable`);
+        expect(
+          view.webContents.debugger.sendCommand.mock.calls.filter(
+            ([method]) => method === `${domain}.enable`,
+          ),
+        ).toHaveLength(1);
+        expect(
+          view.webContents.debugger.sendCommand.mock.calls.filter(
+            ([method]) => method === `${domain}.disable`,
+          ),
+        ).toHaveLength(0);
+      }
+    } finally {
+      await browser.close();
+    }
+  });
 
   it("admits private platform composition without granting agents or derived gestures", async () => {
     const { browser, page, view, unbind } = await launch();
@@ -1464,4 +1513,151 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       await browser.close();
     }
   });
+});
+
+it.each([false, true])(
+  "owns commit, TLS and context before attachment with retained world %s and held Page replies",
+  async (retained) => {
+    const ceremony = vi.fn(async () => ({
+      kind: "refused" as const,
+      error: "InvalidStateError" as const,
+    }));
+    const sent: string[] = [];
+    const held: PromiseWithResolvers<unknown>[] = [];
+    let deliver: (method: string, parameters: unknown) => void = () => undefined;
+    electron.bootstrap = (method, emit) => {
+      deliver = emit;
+      sent.push(method);
+      if (method === "Page.enable") {
+        const reply = Promise.withResolvers<unknown>();
+        held.push(reply);
+        return reply.promise;
+      }
+      if (method === "Runtime.enable") {
+        if (retained) {
+          emit("Runtime.executionContextCreated", {
+            context: {
+              id: 1,
+              uniqueId: "first-context",
+              origin: "https://example.test",
+              auxData: { frameId: "target-1", isDefault: true, type: "default" },
+            },
+          });
+        }
+        emit("Network.responseReceived", {
+          type: "Document",
+          frameId: "target-1",
+          loaderId: "first-loader",
+          response: {
+            url: "https://example.test/",
+            securityState: "secure",
+            securityDetails: { protocol: "TLS 1.3" },
+          },
+        });
+        emit("Page.frameNavigated", {
+          frame: {
+            id: "target-1",
+            loaderId: "first-loader",
+            url: "https://example.test/",
+            securityOrigin: "https://example.test",
+          },
+        });
+
+        if (!retained) {
+          emit("Runtime.executionContextCreated", {
+            context: {
+              id: 1,
+              uniqueId: "first-context",
+              origin: "https://example.test",
+              auxData: { frameId: "target-1", isDefault: true, type: "default" },
+            },
+          });
+        }
+      }
+      return undefined;
+    };
+    const launching = new ElectronBrowserLauncher({
+      authenticator: { ceremony },
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/opensteer/browser-page-preload.cjs",
+    }).launch({
+      initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
+      partitionKey: "session:bsn_00000000-0000-4000-8000-000000000099",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000099"),
+      snapshot: { cookies: [], origins: [] },
+    });
+    try {
+      try {
+        await vi.waitFor(() => expect(sent).toContain("Target.getTargetInfo"));
+        expect(sent).toContain("Network.enable");
+        expect(sent).toContain("Security.enable");
+        expect(sent.indexOf("Network.enable")).toBeLessThan(sent.indexOf("Runtime.enable"));
+        expect(sent.indexOf("Security.enable")).toBeLessThan(sent.indexOf("Runtime.enable"));
+        expect(sent).toContain("Page.addScriptToEvaluateOnNewDocument");
+      } finally {
+        for (const reply of held) reply.resolve({});
+      }
+      await launching;
+      const debug = electron.views.at(-1)!.webContents.debugger;
+      await vi.waitFor(() =>
+        expect(debug.sendCommand.mock.calls.some(([m]) => m === "Runtime.addBinding")).toBe(true),
+      );
+      const registration = debug.sendCommand.mock.calls.find(([m]) => m === "Runtime.addBinding")!;
+      debug.sendCommand.mockImplementation(async (method) =>
+        method === "Page.getFrameTree"
+          ? {
+              frameTree: {
+                frame: {
+                  id: "target-1",
+                  url: "https://example.test/",
+                  securityOrigin: "https://example.test",
+                },
+              },
+            }
+          : method === "Page.getPermissionsPolicyState"
+            ? { states: [{ feature: "publickey-credentials-get", allowed: true }] }
+            : {},
+      );
+      deliver("Runtime.bindingCalled", {
+        name: registration[1]!.name,
+        executionContextId: 1,
+        payload: JSON.stringify({ op: "get", id: "first", options: { challenge: "AQID" } }),
+      });
+      await vi.waitFor(() => expect(ceremony).toHaveBeenCalledOnce());
+    } finally {
+      for (const reply of held) reply.resolve({});
+      electron.bootstrap = undefined;
+      await (await launching).close();
+    }
+  },
+);
+
+it("closes a failed provider bootstrap without retrying an initial domain enable", async () => {
+  let attempts = 0;
+  electron.bootstrap = (method) =>
+    method === "Network.enable" && ++attempts === 1
+      ? Promise.reject(new Error("Synthetic bootstrap failure."))
+      : undefined;
+  const launcher = new ElectronBrowserLauncher({
+    authenticator: { ceremony: async () => ({ kind: "refused", error: "NotAllowedError" }) },
+    downloads: { accept: () => undefined },
+    pagePolicyPreloadPath: "/opensteer/browser-page-preload.cjs",
+  });
+  let browser;
+  try {
+    browser = await launcher
+      .launch({
+        initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
+        partitionKey: "session:bsn_00000000-0000-4000-8000-000000000098",
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000098"),
+        snapshot: { cookies: [], origins: [] },
+      })
+      .catch(() => undefined);
+    expect(attempts).toBe(1);
+    if (browser) await vi.waitFor(() => expect(browser!.context.pages()).toHaveLength(0));
+  } finally {
+    electron.bootstrap = undefined;
+    await browser?.close();
+    launcher.close();
+  }
 });
