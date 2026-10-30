@@ -1683,7 +1683,10 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const firstCdp = await firstPage.cdp();
     await firstCdp.send("Page.navigate", { url: origin });
     await waitFor(() => firstPage.url() === `${origin}/`);
-    await firstCdp.send("Runtime.evaluate", {
+    const populated = await firstCdp.send<{
+      exceptionDetails?: unknown;
+      result?: { value?: unknown };
+    }>("Runtime.evaluate", {
       awaitPromise: true,
       expression: `new Promise((resolve, reject) => {
           document.cookie = "session=portable-cookie; SameSite=Lax";
@@ -1701,6 +1704,10 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
           };
         })`,
     });
+    // CDP resolves protocol errors as exceptionDetails. A completed send is
+    // insufficient evidence that the fixture committed its IndexedDB write.
+    expect(populated.exceptionDetails).toBeUndefined();
+    expect(populated.result?.value).toBe(true);
     await firstPage.close();
     const normalOrigin = `http://localhost:${address.port}`;
     const normalPage = await first.context.createPage();

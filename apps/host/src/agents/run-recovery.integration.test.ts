@@ -268,6 +268,7 @@ integration.sequential("Run recovery acceptance", () => {
       "--unique-threads",
       "--capture-tokens",
       "--capture-process-id",
+      "--capture-records",
       `--capture=${capture}`,
       `--release-file=${release}`,
       ...(options.engineArguments ?? []),

@@ -87,12 +87,16 @@ func TestShellProxyProcess(t *testing.T) {
 	}
 	_ = recordWriter.Close()
 	recordDone := make(chan struct{})
+	processDone := make(chan struct{})
 	go func() {
 		defer close(recordDone)
 		defer recordReader.Close()
 		if os.Getenv("OPENSTEER_SHELL_TEST_DRAIN") == "0" {
 			<-time.After(2 * time.Second)
 			return
+		}
+		if os.Getenv("OPENSTEER_SHELL_TEST_HOLD_RECORDS") == "1" {
+			<-processDone
 		}
 		file, openErr := os.OpenFile(os.Getenv("OPENSTEER_SHELL_TEST_RECORDS"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if openErr == nil {
@@ -112,10 +116,22 @@ func TestShellProxyProcess(t *testing.T) {
 	}()
 	_, _ = io.Copy(os.Stdout, stdout)
 	_ = command.Wait()
+	close(processDone)
 	<-recordDone
 	if address := os.Getenv("OPENSTEER_SHELL_TEST_DONE"); address != "" {
 		connection, err := net.Dial("unix", address)
 		if err == nil {
+			file, openErr := os.Open(os.Getenv("OPENSTEER_SHELL_TEST_RECORDS"))
+			if openErr == nil {
+				scanner := bufio.NewScanner(file)
+				for scanner.Scan() {
+					var record map[string]any
+					if json.Unmarshal(scanner.Bytes(), &record) == nil && record["kind"] == "process.exited" {
+						_ = json.NewEncoder(connection).Encode(record)
+					}
+				}
+				_ = file.Close()
+			}
 			_ = connection.Close()
 		}
 	}
@@ -234,7 +250,7 @@ func TestOpenSSHExecLifecycleAndPolicy(t *testing.T) {
 	}
 	defer done.Close()
 	command := fixture.sshCommand("cat; echo done")
-	command.Env = append(command.Env, "OPENSTEER_SHELL_TEST_DONE="+donePath)
+	command.Env = append(command.Env, "OPENSTEER_SHELL_TEST_DONE="+donePath, "OPENSTEER_SHELL_TEST_HOLD_RECORDS=1")
 	command.Stdin = strings.NewReader("input\n")
 	output, err := command.CombinedOutput()
 	if err != nil || string(output) != "input\ndone\n" {
@@ -247,7 +263,17 @@ func TestOpenSSHExecLifecycleAndPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy did not finish copying records: %v", err)
 	}
-	_ = completed.Close()
+	defer completed.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	if err := completed.SetReadDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	var acknowledgedExit map[string]any
+	if err := json.NewDecoder(completed).Decode(&acknowledgedExit); err != nil {
+		t.Fatalf("proxy did not deliver process.exited: %v", err)
+	}
 	records := fixture.records(t)
 	for _, kind := range []string{"ready", "exec", "process.started", "process.exited", "channel.closed"} {
 		if !recordsContain(records, kind) {
@@ -268,6 +294,9 @@ func TestOpenSSHExecLifecycleAndPolicy(t *testing.T) {
 	}
 	started := recordWithKind(records, "process.started")
 	exited := recordWithKind(records, "process.exited")
+	if acknowledgedExit["kind"] != "process.exited" || acknowledgedExit["channel"] != started["channel"] || acknowledgedExit["processGroupId"] != started["processGroupId"] {
+		t.Fatalf("exit acknowledgement did not correlate: %#v %#v", started, acknowledgedExit)
+	}
 	if started["processGroupId"] != exited["processGroupId"] || started["channel"] != exited["channel"] {
 		t.Fatalf("process lifecycle did not correlate: %#v %#v", started, exited)
 	}

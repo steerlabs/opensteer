@@ -1,5 +1,6 @@
+import { readCodexCaptures } from "./codex-capture.test-support.js";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
@@ -120,6 +121,7 @@ integration("Run tool authority", () => {
                 "--scenario=long-stream-held",
                 "--unique-threads",
                 `--release-file=${releaseFile}`,
+                "--capture-records",
                 `--capture=${captureFile}`,
                 "--capture-tokens",
                 "--capture-process-id",
@@ -174,7 +176,10 @@ integration("Run tool authority", () => {
     await expect
       .poll(
         async () => {
-          engine = heldRunCapture(await readFile(captureFile, "utf8").catch(() => ""), marker);
+          engine = heldRunCapture(
+            (await readCodexCaptures(captureFile)).map((row) => JSON.stringify(row)).join("\n"),
+            marker,
+          );
           return engine;
         },
         { timeout: 30_000 },
@@ -291,7 +296,9 @@ integration("Run tool authority", () => {
     await expect
       .poll(
         async () => {
-          captured = await readFile(captureFile, "utf8").catch(() => "");
+          captured = (await readCodexCaptures(captureFile))
+            .map((row) => JSON.stringify(row))
+            .join("\n");
           const rows = captured
             .split("\n")
             .filter(Boolean)
@@ -462,7 +469,9 @@ integration("Run tool authority", () => {
       await expect
         .poll(
           async () => {
-            const captured = await readFile(captureFile, "utf8").catch(() => "");
+            const captured = (await readCodexCaptures(captureFile))
+              .map((row) => JSON.stringify(row))
+              .join("\n");
             detachedChild = captured
               .split("\n")
               .filter(Boolean)

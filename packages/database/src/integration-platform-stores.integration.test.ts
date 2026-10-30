@@ -5377,6 +5377,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
       connectionString: databaseUrl ?? "postgres://unconfigured",
       maxConnections: 8,
     });
+    const released = Promise.withResolvers<void>();
+    const acquired = Promise.withResolvers<void>();
+    const work: Promise<unknown>[] = [];
+    const failures: unknown[] = [];
     try {
       const stores = new IntegrationPlatformStore(wide);
       const waitingOnLocks = async (count: number) => {
@@ -5393,8 +5397,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       };
       // The barrier: somebody else holds the Workspace, so each ask stops at
       // the first lock it needs that the other might be holding.
-      let release!: () => void;
-      const released = new Promise<void>((resolve) => (release = resolve));
       const barrier = wide.transaction().execute(async (transaction) => {
         await transaction
           .selectFrom("workspaces")
@@ -5402,23 +5404,35 @@ integration.sequential("PostgreSQL computer app connections", () => {
           .where("id", "=", first.workspaceId)
           .forUpdate()
           .execute();
-        await released;
+        acquired.resolve();
+        await released.promise;
       });
+      work.push(barrier);
+      void barrier.catch(acquired.reject);
+      await acquired.promise;
       // The covered ask queues for the Workspace first; the automatic one
       // then reaches it holding whatever its order took before it.
       const coveredAsk = ask(second, covered.runnerId, calendar, stores);
+      work.push(coveredAsk);
       await waitingOnLocks(1);
       const automaticAsk = ask(first, automatic.runnerId, notes, stores);
+      work.push(automaticAsk);
       await waitingOnLocks(2);
-      release();
+      released.resolve();
       await barrier;
 
       const [coveredDecision, automaticDecision] = await Promise.all([coveredAsk, automaticAsk]);
       expect(coveredDecision.kind).toBe("workspace-grant");
       expect(automaticDecision.kind).toBe("approved");
+    } catch (error) {
+      failures.push(error);
     } finally {
+      released.resolve();
+      const results = await Promise.allSettled(work);
       await wide.destroy();
+      for (const result of results) if (result.status === "rejected") failures.push(result.reason);
     }
+    if (failures.length) throw new AggregateError(failures, "Lock-order work failed");
   });
 
   describe("one waiting approval per app, answered only by a person", () => {

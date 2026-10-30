@@ -1,7 +1,11 @@
 import { createId } from "@opensteer/core";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { runnerCatalogReadiness } from "./runner-readiness.test-support.js";
+import {
+  runnerCatalogReadiness,
+  runnerReady,
+  type RunnerReadinessSnapshot,
+} from "./runner-readiness.test-support.js";
 
 // Isolated failure schedules: wrong boot/environment; preparing; partial captures;
 // a new connection combining old readiness; reconnecting back to an earlier ID.
@@ -77,5 +81,81 @@ describe("Runner catalog readiness connection fencing", () => {
     expect(ready).not.toHaveBeenCalled();
     observe("new-boot", "connection-a", environment, [catalogs[1]!]);
     expect(ready).toHaveBeenCalledOnce();
+  });
+});
+
+describe("boot-specific observation", () => {
+  it("rejects stale incarnation data until the expected current connection commits", async () => {
+    vi.useFakeTimers();
+    const listeners = new Set<() => void>();
+    let snapshot: RunnerReadinessSnapshot = {
+      bootId: "old",
+      environmentId: environment,
+      connectionId: "old-connection",
+      currentConnectionId: "new-connection",
+      connected: true,
+      catalogs,
+    };
+    const pending = runnerReady({
+      bootId: "new",
+      environmentId: environment,
+      harnessInstanceIds: accounts,
+      deadlineMs: 10,
+      read: () => snapshot,
+      subscribe: (notify) => {
+        listeners.add(notify);
+        return () => {
+          listeners.delete(notify);
+        };
+      },
+    });
+    let settled = false;
+    void pending.promise.then(() => {
+      settled = true;
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(false);
+      snapshot = { ...snapshot, bootId: "new" };
+      for (const notify of listeners) notify();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(false);
+      snapshot = {
+        ...snapshot,
+        connectionId: "new-connection",
+        environmentId: createId("environment"),
+      };
+      for (const notify of listeners) notify();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(false);
+      snapshot = { ...snapshot, environmentId: environment };
+      for (const notify of listeners) notify();
+      await pending.promise;
+      expect(listeners.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      pending.dispose();
+      vi.useRealTimers();
+    }
+  });
+  it("fails on an unexpected disconnect", async () => {
+    const unsubscribe = vi.fn();
+    const pending = runnerReady({
+      bootId: "new",
+      environmentId: environment,
+      harnessInstanceIds: accounts,
+      deadlineMs: 10,
+      read: () => ({
+        bootId: "new",
+        environmentId: environment,
+        connectionId: "a",
+        currentConnectionId: undefined,
+        connected: false,
+        catalogs,
+      }),
+      subscribe: () => unsubscribe,
+    });
+    await expect(pending.promise).rejects.toThrow("disconnected");
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 });

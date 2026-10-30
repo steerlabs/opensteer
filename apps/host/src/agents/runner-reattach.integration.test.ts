@@ -149,6 +149,7 @@ integration("Runs that outlive their connection", () => {
               `--scenario=${input.scenario ?? "long-stream-held"}`,
               "--unique-threads",
               `--release-file=${releaseFile}`,
+              "--capture-records",
               `--capture=${captureFile}`,
               "--capture-process-id",
               ...(input.engineArguments ?? []),
@@ -791,6 +792,7 @@ integration("Runs that outlive their connection", () => {
     let readyDispatchDelayMs: number;
     try {
       await releasePreparation();
+      // restartRunner joins runnerReady for the replacement boot, never the old catalog.
       await restarting;
       await waitFor(gate.isEntered, 5_000, "prompt dispatch after preparation settled");
       readyDispatchDelayMs = Date.now() - preparationReleasedAt;

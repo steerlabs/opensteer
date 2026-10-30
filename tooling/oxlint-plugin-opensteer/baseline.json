@@ -260,8 +260,6 @@
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/agents/background-work.integration.test.ts": {
-    "no-polling-loop-in-tests:ebd7e6c31819d143f3a5": 1,
-    "no-real-time-wait-in-tests:129e9a5c97b5e0cd6f88": 1,
     "no-real-time-wait-in-tests:147bde6da16440003777": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
@@ -309,8 +307,6 @@
   },
   "apps/host/src/agents/home-viewer-sync.integration.test.ts": {
     "no-real-time-wait-in-tests:1f45fe408b3a7474f904": 1,
-    "no-unbounded-created-promise:6ae4d76c26fc32006d9b": 1,
-    "no-unbounded-created-promise:9c27be62481d00835903": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/agents/live-streaming.integration.test.ts": {

@@ -14,6 +14,7 @@
     "./browserPresentation": "./src/browserPresentation.ts",
     "./canonicalJson": "./src/canonicalJson.ts",
     "./clock": "./src/clock.ts",
+    "./test-support/observation": "./src/observation.test-support.ts",
     "./test-support/clock": "./src/clock.test-support.ts",
     "./test-support/integrationRunnerBuild": "./src/integrationRunnerBuild.test-support.ts",
     "./delay": "./src/delay.ts",

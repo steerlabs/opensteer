@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   harnessMinimumVersion,
   ModelSelectionSchema,
+  type RequestId,
   type RunId,
   type ThreadId,
 } from "@opensteer/core";
@@ -22,7 +23,8 @@ import {
 } from "@opensteer/harness-claude";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   codexThreadOf,
@@ -408,9 +410,38 @@ integration("Execution nodes", () => {
     { timeout: 120_000 },
     async (scenario) => {
       const { active, threadId } = await startOpencode(scenario);
-      const runId = await queue(active, threadId, "Research the release notes");
-
-      const request = await pendingRequest(active, runId);
+      const publication = Promise.withResolvers<RequestId>();
+      const release = Promise.withResolvers<void>();
+      const store = active.host.store;
+      const commit = store.commitRunnerEvent.bind(store);
+      const held = vi.spyOn(store, "commitRunnerEvent").mockImplementation(async (input) => {
+        if (input.event.type === "request.opened") {
+          publication.resolve(input.event.data.request.id);
+          await release.promise;
+        }
+        return commit(input);
+      });
+      let runId: RunId;
+      let publishedId: RequestId;
+      try {
+        runId = await queue(active, threadId, "Research the release notes");
+        publishedId = await withTimeout(publication.promise, 30_000, {
+          timeoutError: () => new Error("OpenCode did not publish request.opened to the Host"),
+        });
+        // Hold the actual Host commit, rather than guessing how long the
+        // provider takes to ask. No client can answer an uncommitted Request.
+        const before = await store.database
+          .selectFrom("requests")
+          .select("id")
+          .where("id", "=", publishedId)
+          .execute();
+        expect(before).toEqual([]);
+      } finally {
+        release.resolve();
+      }
+      const request = await pendingRequest(active, runId!);
+      held.mockRestore();
+      expect(request.id).toBe(publishedId!);
       expect(request.originatingNodeId).not.toBeNull();
       await answer(active, request);
       await settled(active, runId);

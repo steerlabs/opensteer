@@ -1,3 +1,4 @@
+import { createCaptureRecordWriter } from "../../../../packages/harness-codex/src/test-fixtures/capture-records.mjs";
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, watch } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +11,11 @@ const fixture = argument("fixture");
 const scratch = argument("scratch");
 const capture = argument("capture");
 if (!fixture || !scratch || !capture) throw new Error("Missing scripted-engine paths");
+const writeRecord = createCaptureRecordWriter(capture);
+const publish = (message: Readonly<Record<string, unknown>>, runId: string | null = null) => {
+  if (process.argv.includes("--capture-records")) writeRecord(message, runId);
+  else appendFileSync(capture, `${JSON.stringify(message)}\n`);
+};
 const preparationRelease = argument("preparation-release");
 const releaseFile = join(scratch, `turn-${process.pid}`);
 const child = spawn(
@@ -56,10 +62,13 @@ lines.on("line", (line) => {
         preparationRelease &&
         !existsSync(preparationRelease)
       ) {
-        appendFileSync(
-          capture,
-          `${JSON.stringify({ preparationHeld: { pid: process.pid, runnerPid: Number(argument("readiness-runner-pid") ?? process.ppid), enginePid: child.pid } })}\n`,
-        );
+        publish({
+          preparationHeld: {
+            pid: process.pid,
+            runnerPid: Number(argument("readiness-runner-pid") ?? process.ppid),
+            enginePid: child.pid,
+          },
+        });
         // Hold the real app-server handshake; catalog inspection itself remains responsive.
         await new Promise<void>((resolve) => {
           const ready = () => {
@@ -73,15 +82,15 @@ lines.on("line", (line) => {
         });
       }
       if (message.method === "turn/start" && !ephemeral) {
-        appendFileSync(
-          capture,
-          `${JSON.stringify({
+        publish(
+          {
             dispatchReadinessTurn: {
               input: message.params?.input,
               releaseFile,
               threadId: message.params?.threadId,
             },
-          })}\n`,
+          },
+          message.params?.threadId ?? null,
         );
       }
       child.stdin.write(`${line}\n`);

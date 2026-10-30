@@ -673,6 +673,81 @@ integration("Browser presence and conversation usage", () => {
     cleanups.push(async () => liveClient.dispose());
     liveClient.activateWorkspace(run.workspaceId);
     await until(() => (liveClient.getSnapshot().connection === "connected" ? true : undefined));
+    const projected = Promise.withResolvers<NonNullable<typeof initial>>();
+    const releaseProjection = Promise.withResolvers<void>();
+    const projectionJoined = Promise.withResolvers<void>();
+    const project = host.runtime.browser.catalogsForViewers.bind(host.runtime.browser);
+    let holdProjection = true;
+    const projection = vi
+      .spyOn(host.runtime.browser, "catalogsForViewers")
+      .mockImplementation(async (id) => {
+        const catalogs = await project(id);
+        if (id === sessionId && holdProjection) {
+          holdProjection = false;
+          projected.resolve(catalogs.get(host.ownerId)!);
+          try {
+            await releaseProjection.promise;
+          } finally {
+            projectionJoined.resolve();
+          }
+        }
+        return catalogs;
+      });
+    try {
+      runtime.sendServer({
+        type: "browser.surfaces.changed",
+        surfaces: surfaces.map((surface) => ({ ...surface, title: `${surface.title} deferred` })),
+      });
+      const older = await withTimeout(projected.promise, 5_000, {
+        timeoutError: () => new Error("Host did not project the deferred catalog"),
+      });
+      runtime.sendServer({ type: "browser.surfaces.changed", surfaces });
+      await liveClient.waitForSnapshot((snapshot) =>
+        snapshot.browserSessions.some(
+          (session) =>
+            session.id === sessionId &&
+            session.tabCatalog !== undefined &&
+            session.tabCatalog.generation === older.generation &&
+            session.tabCatalog.revision > older.revision,
+        ),
+      );
+      const newer = liveClient
+        .getSnapshot()
+        .browserSessions.find((session) => session.id === sessionId)!.tabCatalog;
+      const realtime = liveClient.sockets.find((socket) => socket.url.includes("/v1/realtime"))!;
+      const received = Promise.withResolvers<void>();
+      const observe = (raw: WebSocket.RawData) => {
+        const message = JSON.parse(raw.toString()) as {
+          type: string;
+          catalog?: { revision: number };
+        };
+        if (
+          message.type === "host.browser-tabs-changed" &&
+          message.catalog?.revision === older.revision
+        )
+          received.resolve();
+      };
+      realtime.on("message", observe);
+      try {
+        releaseProjection.resolve();
+        await withTimeout(received.promise, 5_000, {
+          timeoutError: () => new Error("Host did not deliver the older catalog"),
+        });
+        expect(
+          liveClient.getSnapshot().browserSessions.find((session) => session.id === sessionId)
+            ?.tabCatalog,
+        ).toEqual(newer);
+      } finally {
+        realtime.off("message", observe);
+      }
+    } finally {
+      releaseProjection.resolve();
+      if (!holdProjection)
+        await withTimeout(projectionJoined.promise, 5_000, {
+          timeoutError: () => new Error("Deferred catalog projection did not join"),
+        });
+      projection.mockRestore();
+    }
     const releaseWatch = liveClient.retainBrowserWatch(sessionId, "page-y");
     cleanups.push(async () => releaseWatch());
     await until(() =>
@@ -779,6 +854,15 @@ integration("Browser presence and conversation usage", () => {
     expect(occupied?.tabs.find((tab) => tab.id === "page-y")?.occupants).toEqual([
       expect.objectContaining({ threadId: run.threadId, holding: true, acting: true }),
     ]);
+    await liveClient.waitForSnapshot((snapshot) =>
+      snapshot.browserSessions.some(
+        (session) =>
+          session.id === sessionId &&
+          session.tabCatalog !== undefined &&
+          session.tabCatalog.generation === occupied?.generation &&
+          session.tabCatalog.revision === occupied?.revision,
+      ),
+    );
     const latestBeforeExpiry = await host.runtime.browser.latestPlaces(host.ownerId);
     expect(latestBeforeExpiry).toEqual(
       expect.arrayContaining([
