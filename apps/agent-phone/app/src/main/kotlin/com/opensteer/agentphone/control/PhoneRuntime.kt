@@ -76,8 +76,7 @@ class PhoneRuntime(private val service: AgentPhoneAccessibilityService, private 
         },
     )
     private val alarms = MonotonicAlarms(SystemClock::elapsedRealtime)
-    private val executor = PhoneExecutor(desk, SystemClock::elapsedRealtime, alarms, post = { connection.post(it) }, log = { Log.w(TAG, it) },
-        cleanupGestures = { done -> gestures.scheduler.cancel(done) })
+    private val executor = PhoneExecutor(desk, SystemClock::elapsedRealtime, alarms, post = { connection.post(it) }, log = { Log.w(TAG, it) })
     private val display = com.opensteer.agentphone.display.DisplayStream(service, client, desk, executor, device, gestures)
     private val notification = StatusNotification(service)
     private val wakeLock = service.getSystemService(PowerManager::class.java)

@@ -119,7 +119,7 @@ object IntegrationsWire {
                 StreamFrame.LeaseRenewed(fence, fields.isoTime("streamLeaseExpiresAt"))
             }
             "host.integrations.display.demand", "host.integrations.display.start", "host.integrations.display.stop", "host.integrations.display.refresh",
-            "host.integrations.display.control", "host.integrations.display.input" -> DisplayWire.decode(type, fields, fence)
+            "host.integrations.display.control", "host.integrations.display.input", "host.integrations.display.input-reset" -> DisplayWire.decode(type, fields, fence)
             "host.integrations.invoke" -> {
                 fields.enum("access", ACCESS)
                 fields.objectValue("arguments")

@@ -5,6 +5,67 @@ import org.junit.Test
 
 /** Failure list: overlap, discontinuity, unbounded moves, stationary injection, up/cancel endpoint, watchdog, lost authority. */
 class GestureSchedulerTest {
+    @Test fun aCancelledDoubleTapNeverDispatchesTheRemainingTapAfterCleanup() {
+        val clock = Clock(); val segments = ArrayList<GestureSegment>(); var result: GestureScheduler.Result? = null
+        val scheduler = GestureScheduler(clock) { segment, done -> segments += segment; done(segment.cancel) }
+        scheduler.agent(List(2) { GestureSegment(listOf(DisplayPoint(50, 50)), 50, false, true) }, {}, { result = it })
+        clock.advance()
+        assertEquals(GestureScheduler.Result.INTERRUPTED, result)
+        assertEquals(1, segments.count { !it.cancel })
+    }
+    @Test fun personResetDropsFractionalScrollEvenWithoutAnActiveContact() {
+        val clock = Clock(); val segments = ArrayList<GestureSegment>()
+        val scheduler = GestureScheduler(clock) { segment, done -> segments += segment; done(true) }
+        scheduler.scroll(DisplayPoint(50, 50), 4.0, 0.0, { true }, DisplayPoint(100, 100)); clock.advance()
+        assertTrue(segments.isEmpty())
+        scheduler.cancel(producer = GestureScheduler.Producer.PERSON); clock.advance()
+        scheduler.scroll(DisplayPoint(50, 50), 10.0, 0.0, { true }, DisplayPoint(100, 100)); clock.advance()
+        assertEquals(10, segments.filter { it.points.size > 1 }.sumOf { it.points.last().x - it.points.first().x })
+    }
+    @Test fun personDownInterruptsEveryAgentGestureAndWaitsForConfirmedCleanup() {
+        for (points in listOf(listOf(DisplayPoint(5, 5)), listOf(DisplayPoint(5, 5), DisplayPoint(50, 50)))) {
+            val clock = Clock(); val segments = ArrayList<GestureSegment>(); val callbacks = ArrayList<(Boolean) -> Unit>()
+            var result: GestureScheduler.Result? = null
+            val scheduler = GestureScheduler(clock) { segment, done -> segments += segment; callbacks += done }
+            scheduler.agent(listOf(GestureSegment(points, 500, false, true)), {}, { result = it })
+            clock.advance()
+            scheduler.down(DisplayPoint(80, 80), { true }); clock.advance()
+            assertEquals(1, segments.size)
+            callbacks.removeAt(0)(false); clock.advance()
+            assertTrue(segments.last().cancel)
+            assertNull(result)
+            callbacks.removeAt(0)(true); clock.advance()
+            assertEquals(GestureScheduler.Result.INTERRUPTED, result)
+            assertEquals(DisplayPoint(80, 80), segments.last().points.single())
+        }
+    }
+
+    @Test fun agentGestureDuringPersonContactFailsWithoutDispatchAndCanRetryAfterRelease() {
+        val clock = Clock(); val segments = ArrayList<GestureSegment>(); var result: GestureScheduler.Result? = null
+        val scheduler = GestureScheduler(clock) { segment, done -> segments += segment; done(true) }
+        scheduler.down(DisplayPoint(5, 5), { true }); clock.advance()
+        val tap = listOf(GestureSegment(listOf(DisplayPoint(80, 80)), 50, false, true))
+        scheduler.agent(tap, {}, { result = it }); clock.advance()
+        assertEquals(GestureScheduler.Result.PERSON_CONTACT, result)
+        assertEquals(1, segments.size)
+        scheduler.up(DisplayPoint(5, 5)); clock.advance()
+        scheduler.agent(tap, {}, { result = it }); clock.advance()
+        assertEquals(GestureScheduler.Result.DONE, result)
+    }
+
+    @Test fun lateAgentDragCleanupCannotCancelThePersonsReplacementContact() {
+        val clock = Clock(); val segments = ArrayList<GestureSegment>(); val token = Any()
+        val scheduler = GestureScheduler(clock) { segment, done -> segments += segment; done(true) }
+        scheduler.down(DisplayPoint(5, 5), { true }, producer = GestureScheduler.Producer.AGENT, contact = token); clock.advance()
+        scheduler.down(DisplayPoint(80, 80), { true }); clock.advance()
+        val before = segments.size
+        scheduler.cancel(producer = GestureScheduler.Producer.AGENT, contact = token)
+        scheduler.move(DisplayPoint(99, 99), producer = GestureScheduler.Producer.AGENT, contact = token)
+        scheduler.up(DisplayPoint(99, 99), producer = GestureScheduler.Producer.AGENT, contact = token); clock.advance(32)
+        assertEquals(before, segments.size)
+        scheduler.up(DisplayPoint(80, 80)); clock.advance()
+        assertEquals(DisplayPoint(80, 80), segments.last().points.last())
+    }
     private class Clock : GestureClock {
         var now = 0L
         val tasks = ArrayList<Pair<Long, () -> Unit>>()

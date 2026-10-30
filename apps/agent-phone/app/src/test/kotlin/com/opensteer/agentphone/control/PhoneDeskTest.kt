@@ -1016,16 +1016,27 @@ class PhoneDeskTest {
         assertTrue(device.did.any { it.startsWith("move ") })
     }
 
-    @Test fun ownerAuthorityEndingASegmentedDragKeepsTheOwnerRefusal() {
+    @Test fun agentContactDuringPersonTouchReportsTheRetryMessage() {
         val id = observe().observation().string("observationId")
-        device.gestures = Effect.FAILED
-        device.afterMoveTaken = { desk.ownerInControl = true }
-        val result = actValue(id, PhoneAction.Drag(PhoneTarget.Element(0), PhoneTarget.Point(100, 100), 600, 600))
-        assertEquals("owner-in-control", result.errorCode())
-        assertTrue(device.did.contains("lift"))
+        device.duringPrepare = { if (it == "tap") throw PersonContactException() }
+        val result = actValue(id, PhoneAction.Tap(PhoneTarget.Element(0), 1))
+        assertEquals("failed", result.errorCode())
+        val error = result.fields.getValue("error") as JsonObject
+        assertEquals("A person is touching the screen; try again.", error.string("message"))
+        assertTrue(device.did.isEmpty())
     }
 
-
+    @Test fun interruptedTapAndSwipeReportFailureWithoutClaimingProgress() {
+        for ((what, action) in listOf("tap" to PhoneAction.Tap(PhoneTarget.Element(0), 1),
+            "swipe" to PhoneAction.Swipe(PhoneTarget.Element(0), PhoneTarget.Point(100, 100), 500))) {
+            val id = observe().observation().string("observationId")
+            device.gestures = Effect.FAILED
+            val result = actValue(id, action)
+            assertEquals("failed", result.errorCode())
+            assertEquals("The $what was interrupted.", (result.fields.getValue("error") as JsonObject).string("message"))
+            assertTrue(result.performed().isEmpty())
+        }
+    }
 
     @Test fun windowListChangesLiftTheOwnAppProtectionWhenAnotherPackageHasFocus() {
         observe()

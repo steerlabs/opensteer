@@ -1,6 +1,6 @@
 package com.opensteer.agentphone.control
 
-/** API 30 fallback: only a field emptied in this lease can have a known secret. Never copy masked text. */
+/** API 30 fallback: learn a secret only from an empty field; forget it on reset or agent editing. Never copy masked text. */
 class OwnerPassword {
     private var node: Any? = null
     private var value: String? = null

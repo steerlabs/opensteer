@@ -409,7 +409,9 @@
           }
         ],
         "maxLongSide": 1280,
-        "maxFps": 30
+        "maxFps": 30,
+        "editingVersion": 1,
+        "sharedInput": 1
       }
     },
     {
@@ -452,44 +454,9 @@
         "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
         "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
         "module": "integrations",
-        "type": "host.integrations.display.control",
-        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
-        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
-        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
-        "action": "acquire"
-      }
-    },
-    {
-      "channel": "integrations",
-      "frame": {
-        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
-        "connectionGeneration": 3,
-        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
-        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
-        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
-        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
-        "module": "integrations",
-        "type": "host.integrations.display.control",
-        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
-        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
-        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
-        "action": "release"
-      }
-    },
-    {
-      "channel": "integrations",
-      "frame": {
-        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
-        "connectionGeneration": 3,
-        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
-        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
-        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
-        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
-        "module": "integrations",
         "type": "host.integrations.display.input",
         "sessionId": "cus_99999999-9999-4999-8999-999999999999",
         "streamId": "dsp_11111111-1111-4111-8111-111111111111",
-        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
         "geometry": 1,
         "sequence": 0,
         "events": [
@@ -557,6 +524,21 @@
             "submit": true
           }
         ]
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.input-reset",
+        "sessionId": "cus_99999999-9999-4999-8999-999999999999",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111"
       }
     },
     {
@@ -737,6 +719,9 @@
     {
       "channel": "integrations",
       "frame": {
+        "sequence": 0,
+        "outcome": "refused",
+        "reason": "unavailable",
         "bootId": "rbt_22222222-2222-4222-8222-222222222222",
         "connectionGeneration": 3,
         "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
@@ -744,16 +729,18 @@
         "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
         "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
         "module": "integrations",
-        "type": "runner.integrations.display.control-state",
         "sessionId": "cus_99999999-9999-4999-8999-999999999999",
         "streamId": "dsp_11111111-1111-4111-8111-111111111111",
-        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
-        "state": "held"
+        "geometry": 1,
+        "type": "runner.integrations.display.input-result"
       }
     },
     {
       "channel": "integrations",
       "frame": {
+        "sequence": 1,
+        "outcome": "copied",
+        "text": "milk, eggs ✓",
         "bootId": "rbt_22222222-2222-4222-8222-222222222222",
         "connectionGeneration": 3,
         "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
@@ -761,17 +748,29 @@
         "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
         "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
         "module": "integrations",
-        "type": "runner.integrations.display.control-state",
         "sessionId": "cus_99999999-9999-4999-8999-999999999999",
         "streamId": "dsp_11111111-1111-4111-8111-111111111111",
-        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
-        "state": "released",
-        "reason": "viewer-gone"
+        "geometry": 1,
+        "type": "runner.integrations.display.clipboard"
       }
     },
     {
       "channel": "integrations",
       "frame": {
+        "context": {
+          "contextId": "11111111-1111-4111-8111-111111111111",
+          "field": {
+            "kind": "text",
+            "multiline": false,
+            "sensitive": false,
+            "inputMode": "text"
+          },
+          "caret": {
+            "x": 0.25,
+            "y": 0.5,
+            "height": 0.025
+          }
+        },
         "bootId": "rbt_22222222-2222-4222-8222-222222222222",
         "connectionGeneration": 3,
         "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
@@ -779,12 +778,10 @@
         "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
         "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
         "module": "integrations",
-        "type": "runner.integrations.display.control-state",
         "sessionId": "cus_99999999-9999-4999-8999-999999999999",
         "streamId": "dsp_11111111-1111-4111-8111-111111111111",
-        "controlId": "dcl_22222222-2222-4222-8222-222222222222",
-        "state": "refused",
-        "reason": "busy"
+        "geometry": 1,
+        "type": "runner.integrations.display.editing"
       }
     }
   ],
