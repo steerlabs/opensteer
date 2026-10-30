@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { verifyAXDriver } from "./ax-driver-artifact.js";
 import { journeyMetadata, journeyInput } from "./evidence.js";
 import { forbiddenPublicUpdateHosts } from "./update-traffic.js";
 import { githubJourney } from "./eu-journey.js";
@@ -27,7 +28,14 @@ const out = path.join(homedir(), "opensteer-job/artifacts/public-download");
 const root = path.join(homedir(), "public-download-mirror");
 mkdirSync(out, { recursive: true });
 cpSync(share, root, { recursive: true });
-const steps: { name: string; seconds: number; output?: string; passed: boolean }[] = [];
+const steps: {
+  name: string;
+  seconds: number;
+  output?: string;
+  error?: string;
+  signal?: NodeJS.Signals | null;
+  passed: boolean;
+}[] = [];
 const log = path.join(out, "network.jsonl");
 writeFileSync(log, "");
 const run = (exe: string, args: string[], allowFailure = false) => {
@@ -38,6 +46,8 @@ const run = (exe: string, args: string[], allowFailure = false) => {
     name: [exe, ...args].join(" "),
     seconds: (Date.now() - started) / 1000,
     output,
+    error: result.error?.message,
+    signal: result.signal,
     passed: result.status === 0,
   });
   if (!allowFailure) assert.equal(result.status, 0, output);
@@ -155,11 +165,14 @@ try {
   run("csrutil", ["status"]);
   run("sudo", ["spctl", "--global-enable"]);
   assert.match(run("spctl", ["--status"]).output, /assessments enabled/iu);
-  run("swiftc", [
-    path.join(import.meta.dirname, "ax-driver.swift"),
-    "-o",
-    path.join(out, "ax-driver"),
-  ]);
+  const driver = path.join(root, "ax-driver");
+  const driverManifest = verifyAXDriver(
+    readFileSync(path.join(import.meta.dirname, "ax-driver.swift")),
+    readFileSync(driver),
+    JSON.parse(readFileSync(path.join(root, "ax-driver.json"), "utf8")),
+  );
+  cpSync(driver, path.join(out, "ax-driver"));
+  writeFileSync(path.join(out, "ax-driver.json"), JSON.stringify(driverManifest, null, 2));
   sh(
     "echo '127.0.0.1 github.opensteer.test objects.opensteer.test' | sudo tee -a /etc/hosts; sudo mkdir -p /etc/resolver; printf 'nameserver 127.0.0.1\n' | sudo tee /etc/resolver/opensteer.com",
   );

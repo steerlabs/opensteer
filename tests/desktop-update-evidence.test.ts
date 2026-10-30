@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
+import { verifyAXDriver } from "../scripts/public-download/ax-driver-artifact.js";
 import {
   advertisedVersion,
   rejectionEvidence,
@@ -131,4 +133,20 @@ test("CI bridge compares same-commit signing policy and rejects altered helpers"
     expect(
       releaseComparison.safeParse({ ...input, ci: { ...inspection, ...change } }).success,
     ).toBe(false);
+});
+
+test("staged AX driver must match the current source and the compiled binary checksum", () => {
+  const source = Buffer.from("source"),
+    binary = Buffer.from("binary");
+  const hash = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+  const manifest = {
+    sourceSha256: hash(source),
+    binarySha256: hash(binary),
+    architecture: "arm64",
+    minimumMacOS: "14.0",
+    producer: "host-compile-only",
+  };
+  expect(verifyAXDriver(source, binary, manifest)).toEqual(manifest);
+  expect(() => verifyAXDriver(Buffer.from("changed source"), binary, manifest)).toThrow();
+  expect(() => verifyAXDriver(source, Buffer.from("changed binary"), manifest)).toThrow();
 });

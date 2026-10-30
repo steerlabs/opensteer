@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { prepareAXDriver } from "./ax-driver-artifact.js";
 import { journeyInput } from "./evidence.js";
 import { journeySigning } from "./signing.js";
 import { spawn } from "node:child_process";
@@ -16,6 +17,7 @@ const selected = process.argv[3]
 if (process.argv[4] !== undefined && process.argv[4] !== "--rehearsal")
   throw Error("Expected --rehearsal or no final argument");
 const evidenceKind = process.argv[4] === "--rehearsal" ? "rehearsal" : "certification";
+const axDriver = prepareAXDriver(inputs);
 const workerCount = Number(
   z.enum(["1", "2"]).default("2").parse(process.env.OPENSTEER_UPDATE_JOURNEY_WORKERS),
 );
@@ -69,6 +71,7 @@ const save = () =>
       {
         scope: "electron-updater-github-two-channels",
         evidenceKind,
+        axDriver,
         workers: workerCount,
         startedAt,
         finishedAt,

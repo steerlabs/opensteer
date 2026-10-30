@@ -19,6 +19,10 @@ the exercised feed, metadata and ZIP requests reached the mirror. Captures must 
 Everything that launches Electron, changes trust or drives UI runs in disposable
 `pnpm test:vm` clones. Set `OPENSTEER_UPDATE_JOURNEY_WORKERS=1` to run sequentially; the receipt records
 worker count, overall timestamps and each VM job’s phase timings.
+The runner compiles the AX test driver once on the host (without executing it),
+using the local module cache, then stages it through the read-only input share.
+The guest checks both source and binary hashes before running it; GUI control
+remains entirely inside the VM.
 The runner uses the existing two-guest queue and deletes
 owned clones after failures too. Nothing installs or launches an app on the host.
 No command here publishes releases or pushes a branch.
