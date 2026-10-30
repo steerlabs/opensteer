@@ -400,7 +400,7 @@ export class IdentityService {
               name: client.displayName,
               policy: null,
               postLogoutRedirectUris: null,
-              public: true,
+              applicationType: "native",
               redirectUris: sqlJson(client.redirectUris),
               referenceId: nativeOAuthReference(client.clientId),
               requirePkce: true,
@@ -413,7 +413,6 @@ export class IdentityService {
               subjectType: "public",
               tokenEndpointAuthMethod: "none",
               tos: null,
-              type: "native",
               updatedAt: now,
               uri: null,
               userId: null,
@@ -647,8 +646,7 @@ export class IdentityService {
     if (!client) return nativeOAuthError(400, "invalid_client", "client is invalid");
     let payload: JWTPayload;
     try {
-      // Better Auth's logout handler fetches its internal JWKS URL over HTTP,
-      // but that implementation route is intentionally not exposed by Host.
+      // The internal JWKS route is intentionally not exposed by Host.
       // Verify against its in-process key set. Logout deliberately accepts an
       // expired ID token: its signed sid remains the session being ended after
       // the ten-minute ID-token lifetime, while refresh sessions last 30 days.
@@ -1628,34 +1626,57 @@ export class IdentityService {
     }
     const token = LocalPasswordRecoveryTokenSchema.parse(tokenValue);
     const newPassword = IdentityPasswordSchema.parse(passwordValue);
+    const passwordHash = await (await this.#auth.$context).password.hash(newPassword);
     const now = new Date();
-    const recovery = await this.#database
-      .selectFrom("authVerifications")
-      .innerJoin("users", "users.id", "authVerifications.value")
-      .select(["users.id as userId", "users.disabledAt", "users.instanceRole"])
-      .where("authVerifications.identifier", "=", `reset-password:${token}`)
-      .where("authVerifications.expiresAt", ">", now)
-      .executeTakeFirst();
-    if (!recovery || recovery.instanceRole !== "administrator" || recovery.disabledAt !== null) {
-      throw invalidOperatorRecoveryLink();
-    }
-    const sessions = await this.#database
-      .selectFrom("authSessions")
-      .select("id")
-      .where("userId", "=", recovery.userId)
-      .execute();
-
-    const response = await this.#auth.handler(
-      new Request(new URL(`${internalAuthPath}/reset-password`, this.#options.publicOrigin), {
-        body: JSON.stringify({ newPassword, token }),
-        headers: {
-          "content-type": "application/json",
-          origin: this.#options.publicOrigin.origin,
-        },
-        method: "POST",
-      }),
-    );
-    if (!response.ok) throw invalidOperatorRecoveryLink();
+    // Better Auth's reset deletes every session in one unordered statement
+    // inside its own transaction, so the Host consumes its own capability here
+    // and fences the sessions in id order first.
+    const { recovery, sessions } = await this.#database
+      .transaction()
+      .execute(async (transaction) => {
+        const verification = await transaction
+          .deleteFrom("authVerifications")
+          .where("identifier", "=", `reset-password:${token}`)
+          .where("expiresAt", ">", now)
+          .returning("value")
+          .executeTakeFirst();
+        const userId = UserIdSchema.safeParse(verification?.value);
+        const recovery = userId.success
+          ? await transaction
+              .selectFrom("users")
+              .select(["id as userId", "disabledAt", "instanceRole"])
+              .where("id", "=", userId.data)
+              .forNoKeyUpdate()
+              .executeTakeFirst()
+          : undefined;
+        if (
+          !recovery ||
+          recovery.instanceRole !== "administrator" ||
+          recovery.disabledAt !== null
+        ) {
+          throw invalidOperatorRecoveryLink();
+        }
+        const sessions = await transaction
+          .selectFrom("authSessions")
+          .select("id")
+          .where("userId", "=", recovery.userId)
+          .orderBy("id", "asc")
+          // FOR UPDATE: fence the exact ordered deletion set.
+          .forUpdate()
+          .execute();
+        await transaction
+          .deleteFrom("authSessions")
+          .where("userId", "=", recovery.userId)
+          .execute();
+        const updated = await transaction
+          .updateTable("authAccounts")
+          .set({ password: passwordHash, updatedAt: now })
+          .where("userId", "=", recovery.userId)
+          .where("providerId", "=", "credential")
+          .executeTakeFirst();
+        if (updated.numUpdatedRows !== 1n) throw invalidOperatorRecoveryLink();
+        return { recovery, sessions };
+      });
     for (const session of sessions) this.#options.onSessionEnded?.(session.id);
 
     await this.#database
@@ -2539,6 +2560,8 @@ function createOpensteerAuth(
       "/change-email",
       "/delete-user",
       "/link-social",
+      "/request-password-reset",
+      "/reset-password",
       "/sso/delete-provider",
       "/sso/get-provider",
       "/sso/providers",
@@ -2558,7 +2581,6 @@ function createOpensteerAuth(
       maxPasswordLength: identityPasswordMaxLength,
       minPasswordLength: identityPasswordMinLength,
       requireEmailVerification: false,
-      revokeSessionsOnPasswordReset: true,
     },
     plugins: [
       ...(options.oidcProviders.length === 0
@@ -2608,10 +2630,6 @@ function createOpensteerAuth(
               idTokenExpiresIn: 10 * 60,
               loginPage: "/",
               refreshTokenExpiresIn: 30 * 24 * 60 * 60,
-              silenceWarnings: {
-                oauthAuthServerConfig: true,
-                openidConfig: true,
-              },
               schema: {
                 oauthAccessToken: { modelName: "hostOAuthAccessTokens" },
                 oauthClient: {
@@ -2619,12 +2637,16 @@ function createOpensteerAuth(
                   modelName: "hostOAuthClients",
                 },
                 oauthConsent: { modelName: "hostOAuthConsents" },
+                oauthResource: { modelName: "hostOAuthResources" },
+                oauthClientResource: { modelName: "hostOAuthClientResources" },
+                oauthClientAssertion: { modelName: "hostOAuthClientAssertions" },
                 oauthRefreshToken: { modelName: "hostOAuthRefreshTokens" },
               },
               scopes: [...nativeOAuthScopes],
               storeClientSecret: "hashed",
               storeTokens: "hashed",
-              validAudiences: [options.publicOrigin.origin],
+              resources: [options.publicOrigin.origin],
+              enforcePerClientResources: false,
             }),
           ]
         : []),

@@ -127,6 +127,8 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
         .where("id", "=", staleSession.sessionId)
         .executeTakeFirstOrThrow();
 
+      const stalePage = await beginAuthorization(server, staleSession.cookie, "consent", "900");
+      expect(stalePage.pathname).toBe("/sign-in");
       const staleTokens = await authorizeAndExchange(server, staleSession.cookie, "consent");
       const staleRefresh = await database
         .selectFrom("oauthRefreshToken")
@@ -210,6 +212,85 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
     }
   });
 
+  it("returns a re-login redirect when consent cannot satisfy prompt=login", async () => {
+    const auth = createControlPlaneAuth(database, config);
+    const authenticator = new ControlPlaneAuthenticator(auth, database, publicOrigin);
+    const server = await createControlPlaneServer({
+      auth,
+      authenticator,
+      connectLifecycle,
+      managedDeploymentDomain: config.managedDeploymentDomain,
+      publicOrigin,
+      store,
+    });
+    try {
+      const session = await sessionCookie(auth, accountId);
+      await database
+        .updateTable("authSessions")
+        .set({ createdAt: new Date(Date.now() - 901_000) })
+        .where("id", "=", session.sessionId)
+        .execute();
+      const page = await beginAuthorization(server, session.cookie, "login consent");
+      expect(page.pathname).toBe("/sign-in");
+      page.searchParams.delete("test_verifier");
+      const response = await server.inject({
+        method: "POST",
+        url: "/consent",
+        headers: {
+          cookie: session.cookie,
+          origin: publicOrigin.origin,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        payload: new URLSearchParams({
+          decision: "accept",
+          oauth_query: page.search.slice(1),
+        }).toString(),
+      });
+      expect(response.statusCode, response.body).toBe(302);
+      const redirect = new URL(String(response.headers.location));
+      expect(redirect.origin).toBe(publicOrigin.origin);
+      expect(redirect.pathname).toBe("/sign-in");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("revokes offline credentials when the Account browser session signs out", async () => {
+    const auth = createControlPlaneAuth(database, config);
+    const authenticator = new ControlPlaneAuthenticator(auth, database, publicOrigin);
+    const server = await createControlPlaneServer({
+      auth,
+      authenticator,
+      connectLifecycle,
+      managedDeploymentDomain: config.managedDeploymentDomain,
+      publicOrigin,
+      store,
+    });
+    try {
+      const session = await sessionCookie(auth, accountId);
+      const tokens = await authorizeAndExchange(server, session.cookie, "consent");
+      const signOut = await server.inject({
+        method: "POST",
+        url: "/sign-out",
+        headers: { cookie: session.cookie, origin: publicOrigin.origin },
+      });
+      expect(signOut.statusCode, signOut.body).toBe(303);
+      expect((await requestRefresh(server, tokens.refreshToken)).statusCode).not.toBe(200);
+      await expect(
+        authenticator.authenticate(new Headers({ authorization: `Bearer ${tokens.accessToken}` })),
+      ).rejects.toMatchObject({ code: "unauthorized" });
+      expect(
+        await database
+          .selectFrom("oauthRefreshToken")
+          .select("id")
+          .where("sessionId", "=", session.sessionId)
+          .execute(),
+      ).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("rejects a retired native client's bearer and refresh tokens without ending the Account session", async () => {
     const auth = createControlPlaneAuth(database, config);
     const authenticator = new ControlPlaneAuthenticator(auth, database, publicOrigin);
@@ -258,6 +339,7 @@ async function beginAuthorization(
   server: Awaited<ReturnType<typeof createControlPlaneServer>>,
   cookie: string,
   prompt: "consent" | "login consent",
+  maxAge?: string,
 ): Promise<URL> {
   const verifier = `desktop-pkce-${crypto.randomUUID()}-${crypto.randomUUID()}`;
   const authorization = new URL("/api/auth/oauth2/authorize", publicOrigin);
@@ -267,7 +349,9 @@ async function beginAuthorization(
     createHash("sha256").update(verifier).digest("base64url"),
   );
   authorization.searchParams.set("code_challenge_method", "S256");
-  authorization.searchParams.set("max_age", prompt === "login consent" ? "0" : "900");
+  if (maxAge || prompt === "login consent") {
+    authorization.searchParams.set("max_age", maxAge ?? "0");
+  }
   authorization.searchParams.set("prompt", prompt);
   authorization.searchParams.set("redirect_uri", opensteerDesktopAccountOAuthCallback);
   authorization.searchParams.set("resource", publicOrigin.origin);

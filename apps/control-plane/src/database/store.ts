@@ -185,8 +185,7 @@ export class ControlPlaneStore {
           tokenEndpointAuthMethod: "none",
           grantTypes: jsonStringArray(["authorization_code", "refresh_token"]),
           responseTypes: jsonStringArray(["code"]),
-          public: true,
-          type: "native",
+          applicationType: "native",
           requirePkce: true,
           // Keep the one historical bare reference during this narrow
           // backport. The previous Beta binary can then restart against the
@@ -326,8 +325,7 @@ export class ControlPlaneStore {
         tokenEndpointAuthMethod: "none",
         grantTypes: jsonStringArray(["authorization_code"]),
         responseTypes: jsonStringArray(["code"]),
-        public: true,
-        type: "web",
+        applicationType: "web",
         requirePkce: true,
         referenceId: "official-portal",
         metadata: { managedBy: "opensteer-control-plane", kind: "official-portal" },
@@ -691,8 +689,7 @@ export class ControlPlaneStore {
         tokenEndpointAuthMethod: "client_secret_basic",
         grantTypes: jsonStringArray(["authorization_code"]),
         responseTypes: jsonStringArray(["code"]),
-        public: false,
-        type: "web",
+        applicationType: "web",
         requirePkce: true,
         referenceId: deploymentOAuthReference(input.deploymentId),
         metadata: { managedBy: "opensteer-control-plane", deploymentId: input.deploymentId },
@@ -1307,8 +1304,7 @@ export class ControlPlaneStore {
   async revokeAccountSessions(accountId: ControlPlaneAccountId): Promise<void> {
     await this.#database.transaction().execute(async (transaction) => {
       await requireAccount(transaction, accountId);
-      // Better Auth 1.6 does not bind provider-token revocation to session
-      // revocation, so revoke both stores explicitly.
+      // Revoke even offline tokens and tokens without a session binding.
       await transaction.deleteFrom("oauthAccessTokens").where("userId", "=", accountId).execute();
       await transaction.deleteFrom("oauthRefreshToken").where("userId", "=", accountId).execute();
       await transaction
@@ -1336,8 +1332,7 @@ export class ControlPlaneStore {
    * Revokes exactly one Account session and everything issued against it. The
    * portal signs out this way: it holds no Account cookie of its own, and one
    * sign-out has to end the Account session that proved the portal session.
-   * Better Auth 1.6 does not bind provider-token revocation to session
-   * deletion, so both token stores are cleared in the same statement.
+   * Direct database deletes bypass Better Auth hooks.
    */
   async revokeAccountSession(
     accountId: ControlPlaneAccountId,
