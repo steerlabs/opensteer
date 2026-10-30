@@ -3,14 +3,14 @@
 `useComputerDisplay` retains the same `editing: 1` target for both transport and
 shared decoder. The Host's `display.state.editingVersion` selects behavior.
 Baseline phones keep their committed-text input. Baseline Mac app views remain
-view-only; Mac task Watch and phone owner views remain view-only. A negotiated
-Mac owner view offers the same Take over / Give back actions as phone task Watch.
-The shipped Mac helper and Runner gate owner input off pending native qualification:
-Mac owner views receive no editing version and offer no Take over action.
+view-only; Mac task Watch and phone owner views remain view-only. Shared input is enabled
+by `snapshot.input === "available"`, using current displayed geometry. Pressing the picture
+focuses typing; blur, hide, F6 and leaving reset input and cancel local composition.
+See [the display contract](../../../../docs/computer-use.md#negotiated-mac-owner-input).
 
 `DisplayEditingSession` adapts the shared proxy to the lease, without another
 input authority. The lease reports batch sequences before send, including each
-split frame. Context and pending operations retire on control, socket or display
+split frame. Context and pending operations retire on connection or display
 generation changes. Input uses the currently drawn generation; clipboard results only
 settle an awaited copy or Cut. Empty/refused results leave the viewer clipboard alone.
 The proxy owns the browser gesture/native desktop clipboard port.
@@ -29,7 +29,7 @@ comes from the presented, fitted picture.
 Mac pointerdown captures the pointer; the paired mousedown supplies the browser's
 native click count. Pointer moves carry hover/drag, buttons and modifiers, with one
 release per button. Input, pointer and scroll batches share one lease sequence.
-Blur/unmount ends held input; F6 and hiding/leaving give back control. The enlarged
+Blur/unmount ends held input; F6 and hiding/leaving reset input. The enlarged
 phone view is the sole active proxy while open. Stop uses its existing task path.
 
 ## Checks
@@ -63,7 +63,7 @@ pnpm test:vm -- bash ../web/scripts/run-display-editing-desktop-smoke.sh
 ```
 
 It drives native typing/Cmd+A/C/V, the shipping preload/clipboard IPC, a visible
-rich-paste refusal, Mac display-mode Cmd+Z/right double-click and give-back. It
+rich-paste refusal, Mac display-mode Cmd+Z/right double-click and input reset. It
 uses a fake display producer and the real decoder/screens/transport; Mac owner
 source admission is qualified by the separate Host journey. Guest artifacts are
 `artifacts/display-editing/{result.json,wire.json,viewer.png}`. This is a renderer

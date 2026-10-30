@@ -39,22 +39,21 @@ deletion echo updates only that proxy. Plain insertions pass through the shared 
 with text project to `input.key`.
 
 Phone task and Mac owner screens opt in to interaction; grid previews keep baseline passive sockets.
-`apps/mobile/src/computers/display-input.tsx` retains the display transport's existing control
-lease with `editing: 1`, and mounts this proxy while the person uses Keyboard. The shared
+`apps/mobile/src/computers/display-input.tsx` retains the display transport with `editing: 1`, and mounts this proxy while the person uses Keyboard. The shared
 `DisplayEditingSession` owns editing context, operations, correlated receipts, clipboard results
-and bounded paste batches. Control, connection and display-generation changes retire pending
+and bounded paste batches. Connection and display-generation changes retire pending
 operations. The native view keeps preedit local and maps touches through the displayed frame's
 letterboxing and generation, cancelling a touch on layout changes. Copy results use
 `expo-clipboard`; empty/refused results leave it alone. Cut and nontext paste are visibly
-refused. Give back, leaving and backgrounding release control.
+refused. Blur, Done, leaving and backgrounding reset input and cancel local composition.
 
 The native clipboard port writes plain text, HTML (with OS-derived plain text) or an image in
 arrival order. Expo's public API cannot atomically preserve arbitrary mixed image/HTML or
 multiple items; unsupported formats are reported. Neither native bridge compilation nor a
 scripted component journey qualifies a real soft keyboard.
 
-Mac owner views on Android mount the same controls. Negotiated owner-view leases use the
-same take-over/give-back transport as phone task leases with their own owner-view authority.
+Mac owner views on Android accept shared input with their own owner-view authority.
+See [the shared display contract](../../../../docs/computer-use.md#negotiated-mac-owner-input).
 iOS Mac video is unavailable.
 
 Run individual JS checks and the mobile typecheck:

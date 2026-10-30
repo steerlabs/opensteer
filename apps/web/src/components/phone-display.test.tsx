@@ -125,7 +125,21 @@ beforeEach(async () => {
       ) => void;
       socket.addEventListener = ((type: string, listener: Listener) => {
         if (type === "message") listeners.push(listener);
-        add(type, listener);
+        add(type, (event) => {
+          if (
+            type === "message" &&
+            sessionId.kind === "owner-view" &&
+            typeof event.data === "string"
+          ) {
+            const message = JSON.parse(event.data);
+            if (message.type === "display.state" && message.editingVersion === undefined) {
+              const { sharedInput: _sharedInput, ...baseline } = message;
+              listener({ data: JSON.stringify(baseline) });
+              return;
+            }
+          }
+          listener(event);
+        });
       }) as WebSocketClient["addEventListener"];
       const send = socket.send.bind(socket);
       socket.send = (data) => {
@@ -212,12 +226,15 @@ async function until(reached: () => boolean) {
   await settle();
 }
 
-function controlling(): boolean {
-  return document.querySelector(".phone-display__note") !== null;
+function inputAvailable(): boolean {
+  return document.querySelector("[data-live-page]") !== null;
 }
 
 function shown(): boolean {
-  return document.querySelector(".phone-display__enlarge") !== null;
+  return (
+    document.querySelector("canvas")?.width === 360 &&
+    document.querySelector(".phone-display__picture--hidden") === null
+  );
 }
 
 function button(name: string): HTMLButtonElement {
@@ -279,29 +296,35 @@ describe("live phone Watch", () => {
     show();
     const name = phone().machine.name;
     expect(document.querySelector('[role="status"]')?.textContent).toBe(`Connecting to ${name}…`);
-    await until(() => decoder.outputs.length > 0 && sockets[0]?.sent.length === 1);
+    await until(
+      () =>
+        decoder.outputs.length > 0 &&
+        sockets[0]?.sent.some((message) => message.type === "display.ack") === true,
+    );
     expect(decoder.configs).toEqual([
       { codec: "avc1.42C01E", hardwareAcceleration: "prefer-hardware", optimizeForLatency: true },
     ]);
     expect(decoder.outputs).toEqual([0]);
-    expect(sockets[0]?.sent).toEqual([{ type: "display.ack", sequence: 0 }]);
-    expect(decoder.timeline).toEqual(["dequeue 0", "display.ack 0", "output 0"]);
-    expect(button(`Enlarge ${name}`).parentElement?.getAttribute("style")).toContain("360 / 780");
+    expect(sockets[0]?.sent.filter((message) => message.type !== "display.input-reset")).toEqual([
+      { type: "display.ack", sequence: 0 },
+    ]);
+    expect(decoder.timeline.filter((entry) => !entry.startsWith("display.input-reset"))).toEqual([
+      "dequeue 0",
+      "display.ack 0",
+      "output 0",
+    ]);
+    expect(canvas().parentElement?.getAttribute("style")).toContain("360 / 780");
     expect(canvas().width).toBe(360);
     expect(canvas().height).toBe(780);
     expect(document.querySelector(".computer-watch__status")).toBeNull();
   });
 
-  it("hands the phone to its owner and back, mapping input into the drawn picture", async () => {
+  it("accepts shared input and resets on F6, mapping input into the drawn picture", async () => {
     show();
     await until(shown);
-    act(() => button("Take over").click());
-    expect(button("Taking over…").disabled).toBe(true);
-    await until(controlling);
-    expect(document.querySelector(".phone-display__note")?.textContent).toBe(
-      "You’re controlling the phone",
-    );
-    expect(document.activeElement).toBe(keyboard());
+    await until(inputAvailable);
+    expect(document.body.textContent).not.toMatch(/Take over|Give back|controlling/);
+    expect(document.activeElement).not.toBe(keyboard());
     pointer("pointerdown", 180 + 90, 390);
     expect(document.activeElement).toBe(keyboard());
     pointer("pointermove", 180 + 180, 195);
@@ -328,7 +351,7 @@ describe("live phone Watch", () => {
     expect(inputs.map(({ geometry, sequence }) => ({ geometry, sequence }))).toEqual(
       inputs.map((_, sequence) => ({ geometry: 1, sequence })),
     );
-    expect(new Set(inputs.map((message) => message.controlId)).size).toBe(1);
+    expect(inputs.every((message) => !("controlId" in message))).toBe(true);
     expect(inputs.flatMap((message) => message.events as unknown[])).toEqual([
       expect.objectContaining({ kind: "pointer", phase: "down", x: 0.25, y: 0.5 }),
       expect.objectContaining({ kind: "pointer", phase: "move", x: 0.5, y: 0.25 }),
@@ -337,18 +360,18 @@ describe("live phone Watch", () => {
       { kind: "text", submit: true },
       { kind: "nav", to: "back" },
     ]);
-    act(() => button("Give back").click());
-    await until(() => !controlling());
-    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.control", action: "release" });
-    expect(document.querySelector(".phone-display__note")).toBeNull();
-    expect(button("Take over")).toBeDefined();
+    act(() => keyboard().dispatchEvent(new KeyboardEvent("keydown", { key: "F6", bubbles: true })));
+    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
+    expect(document.activeElement).not.toBe(keyboard());
+    expect(document.body.textContent).not.toContain("Take over");
   });
 
   it("types an IME's committed text and a paste, never a partial composition", async () => {
     show();
     await until(shown);
-    act(() => button("Take over").click());
-    await until(controlling);
+    await until(inputAvailable);
+    pointer("pointerdown", 270, 390);
+    pointer("pointerup", 270, 390);
     const target = keyboard();
     const composing = new InputEvent("beforeinput", {
       bubbles: true,
@@ -400,8 +423,7 @@ describe("live phone Watch", () => {
   it("ends a drag when the enlarged picture it was in closes", async () => {
     show();
     await until(shown);
-    act(() => button("Take over").click());
-    await until(controlling);
+    await until(inputAvailable);
     act(() => button("Phone options").click());
     act(() => button("Enlarge").click());
     const enlarged = document.querySelectorAll("canvas")[1];
@@ -424,32 +446,30 @@ describe("live phone Watch", () => {
   it("ignores a press in the letterbox beside the picture", async () => {
     show();
     await until(shown);
-    act(() => button("Take over").click());
-    await until(controlling);
+    await until(inputAvailable);
     pointer("pointerdown", 90, 390);
     pointer("pointerup", 90, 390);
     expect(sockets[0]!.sent.filter((message) => message.type === "display.input")).toEqual([]);
   });
 
-  it("gives control back and closes the socket when the page is hidden", async () => {
+  it("resets input and closes the socket when the page is hidden", async () => {
     show();
     await until(shown);
-    act(() => button("Take over").click());
-    await until(controlling);
+    await until(inputAvailable);
     pointer("pointerdown", 270, 390);
     show(false);
     const sent = sockets[0]!.sent;
-    expect(sent.slice(-2)).toEqual([
+    expect(sent).toContainEqual(
       expect.objectContaining({
         type: "display.input",
         events: [expect.objectContaining({ phase: "cancel", x: 0.25, y: 0.5 })],
       }),
-      { type: "display.control", action: "release" },
-    ]);
+    );
+    expect(sent.at(-1)).toEqual({ type: "display.input-reset" });
     expect(sockets[0]!.closed).toBe(true);
   });
 
-  it("keeps the hidden Watch picture but refuses Take over before the replacement paints", async () => {
+  it("keeps the hidden Watch picture but refuses input before the replacement paints", async () => {
     show();
     await until(shown);
     const firstCanvas = canvas();
@@ -476,14 +496,10 @@ describe("live phone Watch", () => {
     });
     await until(() => pending.length > 0);
     expect(canvas()).toBe(firstCanvas);
-    expect(
-      [...document.querySelectorAll("button")].some((button) => button.textContent === "Take over"),
-    ).toBe(false);
+    expect(inputAvailable()).toBe(false);
     decode.mockRestore();
     act(() => pending.forEach(({ decoder, chunk }) => decoder.decode(chunk)));
-    await until(() =>
-      [...document.querySelectorAll("button")].some((button) => button.textContent === "Take over"),
-    );
+    await until(inputAvailable);
     expect(canvas()).toBe(firstCanvas);
   });
 
@@ -518,14 +534,14 @@ async function negotiatedPhone() {
     sockets[0]!.deliver({
       type: "display.state",
       state: "live",
+      sharedInput: 1,
       generation: 1,
       width: 360,
       height: 780,
       editingVersion: 1,
     }),
   );
-  act(() => button("Take over").click());
-  await until(controlling);
+  await until(inputAvailable);
   act(() =>
     sockets[0]!.deliver({ type: "display.editing", generation: 1, context: editingContext }),
   );
@@ -599,6 +615,17 @@ describe("negotiated phone viewer wire", () => {
       { kind: "command", command: "deleteBackward" },
     ]);
   });
+  it("cancels composition and resets input when the keyboard blurs", async () => {
+    const field = await negotiatedPhone();
+    act(() => field.focus());
+    act(() => field.dispatchEvent(composition("compositionstart", "")));
+    proxyInput(field, "に", "insertCompositionText", true);
+    act(() => field.blur());
+    act(() => field.dispatchEvent(composition("compositionend", "に")));
+    expect(remoteEvents()).toEqual([]);
+    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
+    expect(document.querySelector("[data-remote-preedit]")).toBeNull();
+  });
   it("keeps preedit local at the mapped caret and commits once at the old context", async () => {
     const field = await negotiatedPhone();
     act(() => field.dispatchEvent(composition("compositionstart", "")));
@@ -636,6 +663,7 @@ describe("negotiated phone viewer wire", () => {
       sockets[0]!.deliver({
         type: "display.state",
         state: "live",
+        sharedInput: 1,
         generation: 1,
         width: 1080,
         height: 1920,
@@ -667,6 +695,7 @@ describe("negotiated phone viewer wire", () => {
         sockets[0]!.deliver({
           type: "display.state",
           state: "live",
+          sharedInput: 1,
           generation: 1,
           width: 1080,
           height: 1920,
@@ -698,6 +727,7 @@ describe("negotiated phone viewer wire", () => {
       sockets[0]!.deliver({
         type: "display.state",
         state: "live",
+        sharedInput: 1,
         generation: 1,
         width: 1080,
         height: 1920,
@@ -729,6 +759,7 @@ describe("negotiated phone viewer wire", () => {
       sockets[0]!.deliver({
         type: "display.state",
         state: "live",
+        sharedInput: 1,
         generation: 1,
         width: 360,
         height: 780,
@@ -794,7 +825,7 @@ describe("negotiated phone viewer wire", () => {
         text: "unsolicited",
       }),
     );
-    act(() => button("Give back").click());
+    act(() => field.dispatchEvent(new KeyboardEvent("keydown", { key: "F6", bubbles: true })));
     act(() =>
       sockets[0]!.deliver({
         type: "display.clipboard",
@@ -845,12 +876,13 @@ describe("negotiated phone viewer wire", () => {
       "The field changed. Try again.",
     );
   });
-  it("fences editing to current pixels and releases control on F6", async () => {
+  it("fences editing to current pixels and resets input on F6", async () => {
     const field = await negotiatedPhone();
     act(() =>
       sockets[0]!.deliver({
         type: "display.state",
         state: "live",
+        sharedInput: 1,
         generation: 2,
         width: 360,
         height: 780,
@@ -860,7 +892,7 @@ describe("negotiated phone viewer wire", () => {
     hardware(field, "x", "KeyX");
     expect(remoteEvents()).toEqual([]);
     hardware(field, "F6", "F6");
-    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.control", action: "release" });
+    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
   });
 });
 
@@ -901,6 +933,7 @@ async function negotiatedMacOwner() {
     sockets[0]!.deliver({
       type: "display.state",
       state: "live",
+      sharedInput: 1,
       generation: 1,
       width: 360,
       height: 780,
@@ -908,7 +941,6 @@ async function negotiatedMacOwner() {
     }),
   );
   expect(document.querySelector(".owner-view__view-only")).toBeNull();
-  act(() => button("Take over").click());
   await until(() => document.querySelector("textarea.remote-keyboard-input") !== null);
   act(() =>
     sockets[0]!.deliver({ type: "display.editing", generation: 1, context: editingContext }),
@@ -936,7 +968,7 @@ describe("Mac owner viewer", () => {
         editingVersion: 1,
       }),
     );
-    expect(button("Take over")).toBeDefined();
+    expect(document.body.textContent).not.toContain("Take over");
     act(() =>
       sockets[0]!.deliver({
         type: "display.state",
@@ -964,30 +996,14 @@ describe("Mac owner viewer", () => {
     expect(remoteEvents()).toEqual([]);
   });
 
-  it("keeps baseline streams view-only and takes over negotiated streams with the phone product words", async () => {
+  it("accepts negotiated Mac input without a button and resets on F6", async () => {
     const field = await negotiatedMacOwner();
     expect(requestedEditing).toEqual({ editing: 1 });
-    expect(document.querySelector(".phone-display__note")?.textContent).toBe(
-      "You’re controlling the app",
-    );
+    expect(document.body.textContent).not.toMatch(/Take over|Give back|controlling/);
     hardware(field, "a", "KeyA");
     expect(remoteEvents()).toMatchObject([{ kind: "key", text: "a" }]);
-    act(() => button("Give back").click());
-    await until(() => document.querySelector(".phone-display__note") === null);
-    act(() =>
-      sockets[0]!.deliver({ type: "display.control", state: "refused", reason: "timed-out" }),
-    );
-    expect(document.querySelector(".phone-display__note")?.textContent).toBe(
-      "The app didn’t respond in time",
-    );
-    act(() => button("Take over").click());
-    await until(
-      () =>
-        document.querySelector<HTMLTextAreaElement>("textarea.remote-keyboard-input")?.disabled ===
-        false,
-    );
     hardware(field, "F6", "F6");
-    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.control", action: "release" });
+    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
   });
   it("sends hover, right and middle buttons, modifiers, click counts, drag and scroll in current geometry", async () => {
     await negotiatedMacOwner();
@@ -1076,7 +1092,7 @@ describe("Mac owner viewer", () => {
     ]);
     expect(inputs().every((batch) => batch.geometry === 1)).toBe(true);
   });
-  it("releases held mouse and keys before giving back when leaving the view", async () => {
+  it("releases held mouse and keys before reset when leaving the view", async () => {
     const field = await negotiatedMacOwner();
     hardware(field, "F2", "F2");
     act(() =>
@@ -1114,7 +1130,7 @@ describe("Mac owner viewer", () => {
     expect(remoteEvents()).toContainEqual(
       expect.objectContaining({ kind: "key", action: "up", code: "F2" }),
     );
-    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.control", action: "release" });
+    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
     expect(sockets[0]!.closed).toBe(true);
   });
 });

@@ -2,7 +2,6 @@ import type { EditingOperation } from "@opensteer/client/editing";
 import {
   DisplayEditingSession,
   displayEditingAbilities,
-  phoneControlNote,
   type DisplayLease,
   type DisplayEditingSnapshot,
 } from "@opensteer/client/integrations";
@@ -36,7 +35,7 @@ export interface DisplayPicture {
 }
 
 export interface DisplayControlsHandle {
-  giveBack(): void;
+  resetInput(): void;
 }
 
 /** Input uses the geometry actually decoded, and the same lease that owns its pixels. */
@@ -54,16 +53,11 @@ export function DisplayControls({
   readonly ref?: Ref<DisplayControlsHandle>;
 }) {
   const snapshot = useSyncExternalStore(lease.subscribe, lease.getSnapshot);
-  const held = snapshot.control.state === "held";
-  const controlNote = phone
-    ? phoneControlNote(snapshot.control)
-    : held
-      ? "You’re controlling this app"
-      : snapshot.control.state === "busy"
-        ? "Another viewer is controlling this app"
-        : "reason" in snapshot.control && snapshot.control.reason
-          ? `Control ${snapshot.control.state}: ${snapshot.control.reason}`
-          : null;
+  const held =
+    visible &&
+    snapshot.input === "available" &&
+    picture !== null &&
+    picture.generation === snapshot.display?.generation;
   const negotiated = snapshot.display?.editingVersion === 1;
   const [session, setSession] = useState<DisplayEditingSession | null>(null);
   const currentSession = useRef<DisplayEditingSession | null>(null);
@@ -74,14 +68,14 @@ export function DisplayControls({
   const context = snapshot.display?.generation === picture?.generation ? editing.context : null;
   const [typing, setTyping] = useState(false);
   const [receipt, setReceipt] = useState<string | null>(null);
-  useEffect(() => setReceipt(null), [snapshot.control, snapshot.display?.generation]);
+  useEffect(() => setReceipt(null), [snapshot.input, snapshot.display?.generation]);
   const proxy = useRef<NativeEditingProxyHandle>(null);
   useImperativeHandle(
     ref,
     () => ({
-      giveBack() {
-        proxy.current?.interrupt("blur");
-        lease.giveBack();
+      resetInput() {
+        proxy.current?.cancel();
+        lease.resetInput();
       },
     }),
     [lease],
@@ -100,8 +94,8 @@ export function DisplayControls({
     currentSession.current = next;
     setSession(next);
     return () => {
-      proxy.current?.interrupt("blur");
-      lease.giveBack();
+      proxy.current?.cancel();
+      lease.resetInput();
       currentSession.current = null;
       next.dispose();
     };
@@ -111,22 +105,24 @@ export function DisplayControls({
     [session, picture?.generation],
   );
   useEffect(() => {
-    if (!held) setTyping(false);
+    if (!held) {
+      proxy.current?.cancel();
+      lease.resetInput();
+      setTyping(false);
+    }
     stroke.current = null;
-  }, [held, picture?.generation]);
+  }, [held, picture?.generation, lease]);
 
   const submit = (action: () => ReturnType<DisplayEditingSession["send"]>): boolean => {
     const before = lease.getSnapshot();
-    if (!session || before.control.state !== "held") return false;
-    const controlId = before.control.controlId;
+    if (!session || before.input !== "available") return false;
     const generation = before.display?.generation;
     const active = () => {
       const now = lease.getSnapshot();
       return (
         currentSession.current === session &&
         now.connection === "open" &&
-        now.control.state === "held" &&
-        now.control.controlId === controlId &&
+        now.input === "available" &&
         now.display?.generation === generation
       );
     };
@@ -145,7 +141,11 @@ export function DisplayControls({
     return true;
   };
   const send = (events: readonly DisplayInputEvent[], geometry = picture?.generation): boolean =>
-    session !== null && submit(() => session.input(geometry ?? null, events));
+    held &&
+    geometry !== undefined &&
+    (negotiated
+      ? session !== null && submit(() => session.input(geometry, events))
+      : lease.input(geometry, events));
   const sendOperation = (operation: EditingOperation): boolean =>
     session !== null && submit(() => session.send(operation));
   const touch = (phase: "down" | "move" | "up" | "cancel", event: GestureResponderEvent) => {
@@ -236,28 +236,6 @@ export function DisplayControls({
         onTouchCancel={(event) => touch("cancel", event)}
       />
       <View style={styles.controls}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={held ? "Give back" : "Take over"}
-          disabled={
-            !held &&
-            (!negotiated ||
-              snapshot.control.state === "acquiring" ||
-              snapshot.connection !== "open")
-          }
-          onPress={() => {
-            if (held) {
-              proxy.current?.interrupt("blur");
-              lease.giveBack();
-            } else {
-              lease.takeOver();
-              if (lease.getSnapshot().control.state !== "acquiring")
-                setReceipt("Take over refused: unsupported for this view.");
-            }
-          }}
-        >
-          <AppText>{held ? "Give back" : "Take over"}</AppText>
-        </Pressable>
         {held && context?.field ? (
           <Pressable
             accessibilityRole="button"
@@ -267,22 +245,30 @@ export function DisplayControls({
             <AppText>Keyboard</AppText>
           </Pressable>
         ) : null}
-        <AppText>{receipt ?? editing.receipt ?? controlNote}</AppText>
+        <AppText>{receipt ?? editing.receipt}</AppText>
         {!negotiated ? <AppText>Editing is unavailable for this display.</AppText> : null}
         {held && typing ? (
           <View style={styles.keyboard}>
             <NativeEditingProxy
+              cancelCompositionOnBlur
               ref={proxy}
               label={`Type into the ${phone ? "phone" : "Mac app"}`}
               context={context}
               abilities={displayEditingAbilities}
               sendOperation={sendOperation}
-              onDone={() => setTyping(false)}
+              onDone={() => {
+                lease.resetInput();
+                setTyping(false);
+              }}
             />
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Done"
-              onPress={() => setTyping(false)}
+              onPress={() => {
+                proxy.current?.cancel();
+                lease.resetInput();
+                setTyping(false);
+              }}
             >
               <AppText>Done</AppText>
             </Pressable>

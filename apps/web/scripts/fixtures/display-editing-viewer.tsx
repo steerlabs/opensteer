@@ -11,19 +11,20 @@ import {
 import {
   ComputerDisplayScreen,
   PhoneControlBar,
-  PhoneControlButton,
   useComputerDisplay,
 } from "../../src/components/phone-display.js";
 import "../../src/styles/watch.css";
 
 export interface DisplayEditingSmokeApi {
   events(): readonly DisplayInputEvent[];
+  resets(): number;
   mac(value: boolean): void;
   emptyCopy(): void;
   close(): void;
 }
 const events: DisplayInputEvent[] = [];
 let empty = false;
+let resets = 0;
 const client = new MockHostClient({ latencyMs: 0 });
 await client.load();
 const machine = client.getSnapshot().machines.find((machine) => machine.device?.form === "phone");
@@ -56,7 +57,7 @@ class EditingSocket implements WebSocketClient {
       }
       const message = JSON.parse(event.data) as DisplayViewerServerMessage;
       this.#json(message.type === "display.state" ? { ...message, editingVersion: 1 } : message);
-      if (message.type === "display.control" && message.state === "held")
+      if (message.type === "display.state" && message.state === "live")
         this.#json({ type: "display.editing", generation: 1, context });
     });
   }
@@ -78,6 +79,7 @@ class EditingSocket implements WebSocketClient {
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
     if (typeof data !== "string") throw new Error("Expected JSON");
     const message = DisplayViewerClientMessageSchema.parse(JSON.parse(data));
+    if (message.type === "display.input-reset") resets++;
     if (message.type !== "display.input") {
       this.#base.send(data);
       return;
@@ -107,6 +109,7 @@ client.connectComputerDisplay = () => {
   socket.send = (data) => {
     if (typeof data === "string") {
       const message = DisplayViewerClientMessageSchema.parse(JSON.parse(data));
+      if (message.type === "display.input-reset") resets++;
       if (message.type === "display.input") events.push(...message.events);
     }
     send(data);
@@ -132,11 +135,10 @@ function Fixture() {
   });
   return (
     <section className="computer-watch" style={{ width: 720 }}>
-      <PhoneControlButton display={display} phoneName={mac ? "Fixture app" : "Fixture phone"} />
       <ComputerDisplayScreen
         dim={false}
         display={display}
-        interactive={display.snapshot.control.state === "held"}
+        interactive={display.snapshot.input === "available"}
         label="Display smoke"
         onEnlarge={null}
         shown={display.picture !== null}
@@ -149,6 +151,7 @@ const root = createRoot(document.getElementById("root")!);
 root.render(<Fixture />);
 Reflect.set(window, "displayEditingSmoke", {
   events: () => events,
+  resets: () => resets,
   mac: (value: boolean) => setMac(value),
   emptyCopy: () => {
     empty = true;
