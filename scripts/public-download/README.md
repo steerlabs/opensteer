@@ -53,7 +53,7 @@ Phone signing/receipt stages. It uses the local Developer ID keychain and the
 `notarizationProfile` from `apps/desktop/scripts/signing-input.cjs` configuration
 (`OPENSTEER_DESKTOP_SIGNING_FILE`). Team identity is carried as validated journey
 metadata; no credentials enter guest metadata. Configure these as described in
-[Signed local installation](../../docs/releases.md#signed-local-installation),
+[signed local installation](../../.agents/skills/install-desktop/SKILL.md),
 or pass `--config /absolute/local-install.json`. Never export credentials or work
 around a noninteractive signing failure.
 
