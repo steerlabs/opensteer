@@ -807,11 +807,24 @@ describe("the v7 web review's findings", () => {
       "https://example.com",
       revisited,
     ]);
+    const favicon = client.recentSites.list(personal)[0]?.favicon;
+    expect(favicon).toMatch(/^data:image\/png;base64,/u);
     await agentGoes("https://agent-later.example/");
     expect(client.recentSites.list(personal).map((site) => site.origin)).toEqual([
       "https://example.com",
       revisited,
     ]);
+    await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
+    expect(
+      element<HTMLImageElement>('.start-tile[title="example.com"] .site-mark').getAttribute("src"),
+    ).toBe(favicon);
+    await typeInto(element<HTMLInputElement>(".start-page__input"), "https://new-site.example");
+    await pressEnter(element(".start-page__input"));
+    await settle(1_100);
+    expect(client.recentSites.list(personal)[0]).toMatchObject({
+      origin: "https://new-site.example",
+      favicon,
+    });
   }, 20_000);
 
   it("m2 · Clear browsing history and a profile pick leave the keyboard in the search field", async () => {

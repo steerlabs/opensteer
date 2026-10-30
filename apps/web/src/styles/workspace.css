@@ -538,14 +538,8 @@
   max-width: 40%;
 }
 
-.side-result .pbadge {
-  display: grid;
-}
-
 .side-result .side-result__profile-match {
-  box-shadow:
-    0 0 0 1.5px var(--ring-bg),
-    0 0 0 3px var(--ember-line);
+  box-shadow: 0 0 0 1.5px var(--ember-line);
 }
 
 .side-result {
@@ -2213,7 +2207,7 @@ button.start-apps__row--away:focus-visible {
   stroke-dasharray: 2.4 2;
 }
 
-/* On a site's icon: the badge sits over its corner, ringed in the row's own ground. */
+/* On a site's icon: the badge sits over its corner, without an added outline. */
 .place-mark-badged {
   position: relative;
   display: inline-grid;
@@ -2222,13 +2216,10 @@ button.start-apps__row--away:focus-visible {
 
 .pbadge {
   position: absolute;
+  display: grid;
   right: -6px;
   bottom: -6px;
   border-radius: 50%;
-  box-shadow: 0 0 0 1.5px var(--ring-bg, var(--bg));
-}
-
-.pbadge.pavatar--guest {
   box-shadow: none;
 }
 
