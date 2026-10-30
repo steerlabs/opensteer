@@ -74,6 +74,8 @@ function convergence(options: {
 }) {
   const recorded: HarnessInstanceCatalog[][] = [];
   const revisions: ReadonlyMap<HarnessInstanceId, number>[] = [];
+  // Stored before the reconcile under test starts its clock, as a real observation is.
+  const capturedAt = options.capturedAt ?? new Date();
   const inspectHarnesses = vi.fn<HarnessCatalogInspector["inspectHarnesses"]>(async () => [
     readyCatalog(),
   ]);
@@ -82,7 +84,7 @@ function convergence(options: {
       options.stored
         ? [
             {
-              capturedAt: options.capturedAt ?? new Date(),
+              capturedAt,
               catalog: options.stored,
               environmentId: harnessEnvironmentId,
               harnessInstanceId,
