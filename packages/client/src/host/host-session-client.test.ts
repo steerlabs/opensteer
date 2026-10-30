@@ -1512,6 +1512,44 @@ describe("HttpHostClient durable realtime", () => {
     },
   );
 
+  it("refreshes the engine catalog after an older bootstrap has finished", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let reads = 0;
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+      fetch: async () => {
+        reads += 1;
+        if (reads !== 2) return json(bootstrap([]));
+        // A read taken after catalog discard but before inspection commits.
+        const stale = bootstrap([]);
+        stale.environments[0]!.harnessCatalogs = [];
+        return new Promise<Response>((resolve) => {
+          release = () => resolve(json(stale));
+          entered();
+        });
+      },
+    });
+    try {
+      await client.load();
+      const olderRead = client.load();
+      await reading;
+      // The CLI inspection has now committed. Its caller needs a new read,
+      // even though the earlier bootstrap has not delivered its answer yet.
+      const refreshed = client.refresh();
+      release();
+      await Promise.all([olderRead, refreshed]);
+      expect(client.getSnapshot().environments[0]?.harnessCatalogs[0]?.status).toBe("ready");
+      expect(reads).toBe(3);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("answers a notice that lands mid-read with exactly one more read", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();
@@ -12319,3 +12357,97 @@ describe("HttpHostClient overnight transcript residency", () => {
     },
   );
 });
+
+it.each([false, true])(
+  "gates the passkey viewer opt-in on the Host capability (%s)",
+  async (capable) => {
+    const workspace = makeWorkspace("Example");
+    const sessionId = createBrowserSessionId();
+    const runnerId = createId("runner");
+    const tabId = BrowserSurfaceIdSchema.parse("tab");
+    const browser: HostedBrowserBootstrap = {
+      available: true,
+      placements: [
+        {
+          kind: "runner",
+          runnerId,
+          runtimeId: "runtime",
+          label: "Example computer",
+          environmentIds: [],
+          available: true,
+        },
+      ],
+      profileGrants: [],
+      profiles: [],
+      sessions: [
+        {
+          id: sessionId,
+          access: "full-control",
+          origin: "workspace",
+          state: "ready",
+          createdAt: now,
+          updatedAt: now,
+          workspaceId: workspace.id,
+          profileId: null,
+          runtimeId: "runtime",
+          placement: { kind: "runner", runnerId },
+          tabCatalog: {
+            generation: 1,
+            revision: 1,
+            tabs: [
+              {
+                id: tabId,
+                title: "Example",
+                site: "https://example.test",
+                iconRef: null,
+                order: 0,
+                openerId: null,
+                availability: "ready",
+                documentId: null,
+                occupants: [],
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const sockets: { url: string; socket: FakeSocket }[] = [];
+    const client = createHttpHostClient({
+      capabilities: capable
+        ? ["browser-passkeys-v1", "browser-target-control-v1"]
+        : ["browser-target-control-v1"],
+      fetch: async () => json(bootstrap([workspace], browser)),
+      refreshIntervalMs: 0,
+      webSocketFactory: (url) => {
+        const socket = new FakeSocket();
+        sockets.push({ url, socket });
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      const release = client.retainBrowserViewer(sessionId, tabId, { picture: false });
+      const connection = sockets.find(({ url }) => url.includes("/browser-sessions/"))!;
+      expect(new URL(connection.url).searchParams.get("passkeys")).toBe(capable ? "notice" : null);
+      connection.socket.open();
+      connection.socket.receiveRaw({
+        type: "browser.snapshot",
+        sessionId,
+        access: "full-control",
+        state: "ready",
+        dialog: null,
+        targetedStreamingVersion: 1,
+        surfaces: [{ id: tabId, active: true, title: "Example", url: "https://example.test" }],
+        ...(capable ? { passkeys: "notice" } : {}),
+      });
+      if (capable) {
+        connection.socket.receiveRaw({ type: "browser.passkey.notice", surfaceId: tabId });
+        expect(client.browserPasskeys.get(sessionId, tabId)).toEqual({ kind: "notice" });
+      }
+      release();
+      expect(client.browserPasskeys.get(sessionId, tabId)).toBeNull();
+    } finally {
+      client.dispose();
+    }
+  },
+);

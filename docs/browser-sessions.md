@@ -381,6 +381,35 @@ too. The
 [shared scenario](../packages/browser-runtime-core/src/test-support/passkey-policy-scenario.ts)
 checks both engines.
 
+### Native passkey routing
+
+`OPENSTEER_PASSKEYS=1` enables the optional `browser-passkeys-v1` Host capability;
+it is off by default and needs no Host API epoch change. A runtime launches the
+page provider only after it advertises `modules.browser.passkeys: 1`, receives
+`passkeys: 1` in the browser auxiliary welcome and holds a signed attach ticket
+with `passkeys: 1`; otherwise the existing page policy applies. A shared profile
+browser is reused only in a matching passkey mode: an idle one is checkpointed
+and closed before relaunch, and one held by another session refuses the attach
+for retry.
+
+- Viewers opt in on their control socket with `passkeys=native` or
+  `passkeys=notice`. Only opted-in viewers receive the mode and its consumer
+  token, and runtime ceremony messages end at the Host, never fanned out to
+  viewers. Desktop builds without native support, web and mobile are notice
+  viewers.
+- A request belongs to one runtime connection, session and document. A
+  person-attributed request reaches only that person's presenting viewer. Agent
+  and unattributed requests offer Continue to eligible viewers, and the first
+  native claim binds the request. Losing that presentation, access or
+  connection ends it without rerouting; the deadline applies even while an
+  answer is being authorized.
+- Desktop main proxies streamed and native control sockets and holds the
+  request before notifying the renderer. The renderer can only ask to present an
+  opaque request ID and learns only that the offer ended, never the origin,
+  options or client data. The OS authenticator gets the actual origin and the
+  complete normalized options from main. Neither main nor the runtime repairs
+  the OS's client data or any other signed bytes.
+
 ## Profiles and identity
 
 Profiles are durable identities, not account names. Main and the person can create

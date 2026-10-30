@@ -73,6 +73,7 @@ export const RunnerAuxiliaryWelcomeSchema = z.strictObject({
    */
   browserAttachPublicKeys: BrowserAttachPublicKeysSchema.optional(),
   /** Opt in only when the descriptor offers it; old Hosts receive no new status fields. */
+  passkeys: z.literal(1).optional(),
   loginText: z.literal(1).optional(),
   passwordSignIn: z.literal(1).optional(),
   heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),

@@ -17,6 +17,8 @@ export type PresentedSurfaceEvent =
  * with the ledger, which hears the person's view size through `follow`.
  */
 export interface PresentedSurface {
+  /** Trusted input from this live presentation, attributed by desktop main. */
+  passkeyInput?(consumerToken: string | null): void;
   readonly page: BrowserPage;
   readonly sessionId: BrowserSessionId;
   readonly surfaceId: BrowserSurfaceId;

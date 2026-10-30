@@ -1051,6 +1051,7 @@ export async function connectCallerMachine(
     readonly integrations?: RunnerDescriptor["modules"]["integrations"];
     readonly browser?: RunnerDescriptor["modules"]["browser"];
     readonly name: string;
+    readonly maxConcurrentRuns?: number;
     /** Holds its own directories, the way a local-directory Deployment needs. */
     readonly localDirectory?: boolean;
     readonly loginFill?: boolean;
@@ -1113,7 +1114,7 @@ export async function connectCallerMachine(
           },
         ],
         localStorage: disk?.inventory ?? null,
-        maxConcurrentRuns: 4,
+        maxConcurrentRuns: input.maxConcurrentRuns ?? 4,
         providerStateModes: ["ambient", "isolated"],
         workspaceBackings: disk ? ["local-directory"] : ["portablefs"],
         workspaceMounts: [],

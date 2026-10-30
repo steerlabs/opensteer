@@ -1661,3 +1661,59 @@ it("closes a failed provider bootstrap without retrying an initial domain enable
     launcher.close();
   }
 });
+
+it("updates provider header policy disabled, enabled, disabled on the same Session", async () => {
+  const { session } = await import("electron");
+  const accept = vi.fn();
+  const launcher = new ElectronBrowserLauncher({
+    downloads: { accept },
+    pagePolicyPreloadPath: "/tmp/browser-page-preload.cjs",
+  });
+  const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000009");
+  const observed: boolean[] = [];
+  try {
+    for (const provider of [false, true, false]) {
+      const browser = await launcher.launch({
+        sessionId,
+        partitionKey: `session:${sessionId}`,
+        initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+        snapshot: { cookies: [], origins: [] },
+        ...(provider
+          ? {
+              authenticator: {
+                ceremony: async () => ({
+                  kind: "refused" as const,
+                  error: "NotAllowedError" as const,
+                }),
+              },
+            }
+          : {}),
+      });
+      try {
+        const profile = vi.mocked(session.fromPartition).mock.results.at(-1)!.value as {
+          webRequest: { onHeadersReceived: ReturnType<typeof vi.fn> };
+          registerPreloadScript: ReturnType<typeof vi.fn>;
+          setPermissionCheckHandler: ReturnType<typeof vi.fn>;
+        };
+        const headers = profile.webRequest.onHeadersReceived.mock.calls.at(-1)![1] as (
+          details: object,
+          answer: (value: { responseHeaders: Record<string, string[]> }) => void,
+        ) => void;
+        headers(
+          { resourceType: "mainFrame", url: "https://example.test", responseHeaders: {} },
+          (value) =>
+            observed.push(!JSON.stringify(value.responseHeaders).includes("publickey-credentials")),
+        );
+        expect(observed.at(-1)).toBe(provider);
+        expect(profile.registerPreloadScript).toHaveBeenCalledTimes(1);
+        expect(profile.setPermissionCheckHandler).toHaveBeenCalledTimes(1);
+      } finally {
+        await browser.close();
+      }
+    }
+    expect(observed).toEqual([false, true, false]);
+    expect(accept).toHaveBeenCalledTimes(1);
+  } finally {
+    launcher.close();
+  }
+});

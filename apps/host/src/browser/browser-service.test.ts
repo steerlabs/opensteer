@@ -1,3 +1,5 @@
+import { previousBrowser } from "./test-support/passkey-compatibility/readers.js";
+import { BrowserPasskeyOfferSchema } from "@opensteer/protocol/passkeys";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createHash, generateKeyPairSync, verify, randomUUID, type KeyObject } from "node:crypto";
 import {
@@ -65,6 +67,7 @@ const cleanups: Array<() => Promise<void>> = [];
  */
 function runnerTarget(options: {
   readonly navigationVersion?: boolean;
+  readonly passkeys?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
@@ -103,6 +106,7 @@ function runnerTarget(options: {
               return socket;
             },
             navigationVersion: options.navigationVersion ?? false,
+            passkeys: options.passkeys === true,
             cdpBoundary: true,
             workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
             sharedControl: options.sharedControl ?? true,
@@ -1510,7 +1514,9 @@ describe("BrowserService", () => {
 
   it("publishes only bounded current-page metadata in the catalog", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -1858,7 +1864,9 @@ describe("BrowserService", () => {
 
   it("announces a page a Run first uses as conversation usage, and never as a session change", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -1909,7 +1917,9 @@ describe("BrowserService", () => {
 
   it("refuses an older runtime that cannot preserve shared tab identity", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -1922,7 +1932,9 @@ describe("BrowserService", () => {
   });
   it("owns one authenticated Runtime connection and brokers strict UI consumers", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -2163,7 +2175,9 @@ describe("BrowserService", () => {
 
   it("gives every late viewer one complete materialized snapshot", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -2244,7 +2258,9 @@ describe("BrowserService", () => {
 
   it("admits a viewer only while its login is signed in, and lets go of one whose access cannot be read", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -2307,7 +2323,9 @@ describe("BrowserService", () => {
 
   it("announces the Workspace whenever a Browser Session appears or changes state", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -2430,7 +2448,9 @@ describe("BrowserService", () => {
 
   it("reconciles stale active rows and rejects unsupported navigation schemes", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -2467,7 +2487,9 @@ describe("BrowserService", () => {
 
   it("opens a session whose first page answers with a navigation error, and fails one whose CDP fails", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -2770,7 +2792,9 @@ describe("BrowserService", () => {
 
   it("requires one full-control profile grant before raw CDP reaches a Runtime", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -2833,7 +2857,9 @@ describe("BrowserService", () => {
 
   it("sends a browser session to the computer that runs its work location", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const environmentId = createId("environment");
@@ -2859,7 +2885,9 @@ describe("BrowserService", () => {
 
   it("requires an explicit choice when two computers run the same work location", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const environmentId = createId("environment");
@@ -2895,7 +2923,9 @@ describe("BrowserService", () => {
 
   it("runs a browser session on the machine the agent named", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const runEnvironmentId = createId("environment");
@@ -2936,7 +2966,9 @@ describe("BrowserService", () => {
 
   it("refuses a named machine that runs no connected browser", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const browserEnvironmentId = createId("environment");
@@ -2982,7 +3014,9 @@ describe("BrowserService", () => {
 
   it("falls back to the only connected computer and refuses to guess between many", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const only = testRunner({ environmentIds: [createId("environment")] });
 
@@ -3040,7 +3074,9 @@ describe("BrowserService", () => {
 
   it("does not route a chosen incompatible browser to another computer", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const outdatedEnvironmentId = createId("environment");
@@ -3089,7 +3125,9 @@ describe("BrowserService", () => {
 
   it("keeps established session and profile placement ahead of environment defaults", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const environmentId = createId("environment");
@@ -3147,7 +3185,9 @@ describe("BrowserService", () => {
 
   it("never reuses a user session on a profile that was not granted to agents", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -3177,7 +3217,9 @@ describe("BrowserService", () => {
 
   it("opens a fresh agent session with no profile, no grant, and no lease", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -3239,7 +3281,9 @@ describe("BrowserService", () => {
 
   it("scopes a fresh session to its Workspace and the owner's Main", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -3281,7 +3325,9 @@ describe("BrowserService", () => {
 
   it("keeps a Workspace session's identity immutable across reuse", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -3316,7 +3362,9 @@ describe("BrowserService", () => {
 
   it("promotes a fresh session's live state into a new profile on request", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -3362,7 +3410,9 @@ describe("BrowserService", () => {
 
   it("reports a Runtime that refuses or never answers a state export", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -3401,7 +3451,9 @@ describe("BrowserService", () => {
 
   it("brokers an agent save request and promotes the session when the owner grants it", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -3493,7 +3545,9 @@ describe("BrowserService", () => {
 
   it("cancels a pending save when its source session closes", async () => {
     const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
@@ -3569,6 +3623,7 @@ const exportedSnapshot = {
 };
 
 function freshService(options: {
+  readonly passkeys?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
@@ -3597,6 +3652,7 @@ function freshService(options: {
       url: options.runtime.url,
       sharedControl: options.sharedControl ?? true,
       targetControl: options.targetControl ?? false,
+      passkeys: options.passkeys === true,
       editing: options.editing,
       clipboard: options.clipboard,
     }),
@@ -4532,6 +4588,7 @@ async function startFakeRuntime(
   connectionCount(): number;
   lastClaims(): ReturnType<typeof BrowserAttachTicketClaimsSchema.parse> | undefined;
   nextCommand(): Promise<Record<string, unknown>>;
+  receivedCommands(): readonly Record<string, unknown>[];
   releaseInitialSnapshots(): void;
   sendFrame(frame: Buffer): void;
   sendServer(message: Record<string, unknown>): void;
@@ -4542,6 +4599,7 @@ async function startFakeRuntime(
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Unexpected fake Runtime address.");
   const commands: Array<Record<string, unknown>> = [];
+  const receivedCommands: Array<Record<string, unknown>> = [];
   const waiters: Array<(command: Record<string, unknown>) => void> = [];
   const sockets = new Set<WebSocket>();
   const pendingInitialSnapshots: Array<() => void> = [];
@@ -4602,6 +4660,7 @@ async function startFakeRuntime(
     socket.on("message", (raw, isBinary) => {
       if (isBinary) return;
       const command = JSON.parse(raw.toString()) as Record<string, unknown>;
+      receivedCommands.push(command);
       const waiter = waiters.shift();
       if (waiter) waiter(command);
       else commands.push(command);
@@ -4617,6 +4676,7 @@ async function startFakeRuntime(
   return {
     connectionCount: () => connections,
     lastClaims: () => latestClaims,
+    receivedCommands: () => receivedCommands,
     nextCommand: () => {
       const command = commands.shift();
       return command
@@ -4766,3 +4826,213 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   });
   return { promise, resolve };
 }
+
+it.each([
+  [undefined, false],
+  [undefined, true],
+  ["1", false],
+  ["1", true],
+] as const)(
+  "negotiates passkeys only with a capable runtime and enabled Host (flag=%s, advertised=%s)",
+  async (flag, advertised) => {
+    vi.stubEnv("OPENSTEER_PASSKEYS", flag);
+    const enabled = flag === "1" && advertised;
+    try {
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+        targetedStreaming: true,
+      });
+      const ownerId = createId("user"),
+        workspaceId = createId("workspace");
+      const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+      const service = freshService({ keys, runtime, repository, passkeys: advertised });
+      const opened = await service.openAgentSession({
+        ownerId,
+        workspaceId,
+        agentBindingId: "passkey-compat",
+        fresh: true,
+      });
+      expect(runtime.lastClaims()?.passkeys).toBe(enabled ? 1 : undefined);
+      if (!enabled)
+        previousBrowser.BrowserAttachTicketClaimsSchema!.parse(
+          JSON.parse(JSON.stringify(runtime.lastClaims())),
+        );
+      const old = new RecordingPeer("old-viewer"),
+        modern = new RecordingPeer("modern-viewer");
+      const baseline = await service.attach(ownerId, opened.session.id, old, consumerOptions());
+      const opted = await service.attach(ownerId, opened.session.id, modern, {
+        ...consumerOptions(),
+        passkeys: "native",
+      });
+      expect(old.text()[0]).not.toHaveProperty("passkeys");
+      await baseline.handle(
+        Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1" })),
+        false,
+      );
+      await runtime.nextCommand();
+      if (enabled) {
+        expect(modern.text()[0]).toMatchObject({ passkeys: "native" });
+        await opted.handle(
+          Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1" })),
+          false,
+        );
+        const request = {
+          type: "passkey.ceremony",
+          ceremonyId: randomUUID(),
+          surfaceId: "page-1",
+          documentId: "document",
+          op: "get",
+          origin: "https://login.example.test",
+          rpId: "example.test",
+          options: {
+            challenge: "AQID",
+            allowCredentials: [],
+            userVerification: "preferred",
+            extensions: {},
+          },
+          clientDataJSON: "AQID",
+          cause: "unknown",
+          deadline: Date.now() + 10_000,
+        };
+        runtime.sendServer(request);
+        await waitFor(() =>
+          modern.text().some((message) => message.type === "browser.passkey.offer"),
+        );
+        expect(
+          old
+            .text()
+            .some(
+              (message) =>
+                message.type.startsWith("browser.passkey.") || message.type === "passkey.ceremony",
+            ),
+        ).toBe(false);
+        const offer = BrowserPasskeyOfferSchema.parse(
+          modern.text().find((message) => message.type === "browser.passkey.offer"),
+        );
+        if (offer.type !== "browser.passkey.offer") throw new Error("Missing offer");
+        await opted.handle(
+          Buffer.from(JSON.stringify({ type: "passkey.claim", requestId: offer.requestId })),
+          false,
+        );
+        await waitFor(() =>
+          modern.text().some((message) => message.type === "browser.passkey.request"),
+        );
+        await opted.handle(
+          Buffer.from(
+            JSON.stringify({
+              type: "passkey.respond",
+              requestId: offer.requestId,
+              outcome: { kind: "refused", error: "NotAllowedError" },
+            }),
+          ),
+          false,
+        );
+      } else expect(modern.text()[0]).not.toHaveProperty("passkeys");
+      opted.close();
+      baseline.close();
+      for (const frame of old.text()) previousBrowser.BrowserServerMessageSchema!.parse(frame);
+      if (!enabled) {
+        expect(runtime.receivedCommands().length).toBeGreaterThan(0);
+        for (const frame of runtime.receivedCommands())
+          previousBrowser.BrowserClientMessageSchema!.parse(frame);
+        for (const frame of modern.text()) previousBrowser.BrowserServerMessageSchema!.parse(frame);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  },
+);
+
+it("runs the next control socket command after a passkey authorization deadline", async () => {
+  vi.stubEnv("OPENSTEER_PASSKEYS", "1");
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const service = freshService({ keys, runtime, repository, passkeys: true });
+  const opened = await service.openAgentSession({
+    ownerId,
+    workspaceId,
+    agentBindingId: "passkey-deadline",
+    fresh: true,
+  });
+  const peer = new RecordingPeer("passkey-deadline");
+  let reads = 0;
+  const attachment = await service.attach(ownerId, opened.session.id, peer, {
+    ...consumerOptions(),
+    passkeys: "native",
+    signedIn: async () => (++reads === 1 ? true : new Promise(() => {})),
+  });
+  try {
+    const snapshot = BrowserServerMessageSchema.parse(peer.text()[0]);
+    if (snapshot.type !== "browser.snapshot") throw new Error("Missing snapshot");
+    await attachment.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1" })),
+      false,
+    );
+    await runtime.nextCommand();
+    runtime.sendServer({
+      type: "passkey.ceremony",
+      ceremonyId: randomUUID(),
+      surfaceId: "page-1",
+      documentId: "document",
+      op: "get",
+      origin: "https://login.example.test",
+      rpId: "example.test",
+      options: {
+        challenge: "AQID",
+        allowCredentials: [],
+        userVerification: "preferred",
+        extensions: {},
+      },
+      clientDataJSON: "AQID",
+      cause: { person: snapshot.passkeyConsumerToken },
+      deadline: Date.now() + 1000,
+    });
+    await waitFor(() => peer.text().some((message) => message.type === "browser.passkey.request"));
+    const request = BrowserServerMessageSchema.parse(
+      peer.text().find((message) => message.type === "browser.passkey.request"),
+    );
+    if (request.type !== "browser.passkey.request") throw new Error("Missing request");
+    // The server awaits each handle call before reading the next socket command.
+    const queued = attachment
+      .handle(
+        Buffer.from(
+          JSON.stringify({
+            type: "passkey.respond",
+            requestId: request.requestId,
+            outcome: {
+              kind: "asserted",
+              credentialId: "AQID",
+              clientDataJSON: "BAUG",
+              authenticatorData: "BwgJ",
+              signature: "CgsM",
+              userHandle: null,
+              authenticatorAttachment: "platform",
+            },
+          }),
+        ),
+        false,
+      )
+      .then(() =>
+        attachment.handle(
+          Buffer.from(JSON.stringify({ type: "navigation.reload", surfaceId: "page-1" })),
+          false,
+        ),
+      );
+    await queued;
+    expect(await runtime.nextCommand()).toMatchObject({
+      type: "passkey.result",
+      outcome: { kind: "refused", error: "NotAllowedError" },
+    });
+    expect(await runtime.nextCommand()).toMatchObject({
+      type: "navigation.reload",
+      surfaceId: "page-1",
+    });
+  } finally {
+    attachment.close();
+  }
+});

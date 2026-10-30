@@ -195,6 +195,208 @@ describe("BrowserRuntime", () => {
     expect(runtime.health().state).toBe("closed");
   });
 
+  it("relaunches an idle profile with the requested passkey mode after the old browser exits", async () => {
+    let releaseClose: () => void = () => {};
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    let closeStarted = false;
+    class DelayedCloseBrowser extends FakeLaunchedBrowser {
+      override async close(): Promise<void> {
+        closeStarted = true;
+        await closeGate;
+        await super.close();
+      }
+    }
+    const browsers: FakeLaunchedBrowser[] = [];
+    const requests: Parameters<BrowserLauncher["launch"]>[0][] = [];
+    const launcher: BrowserLauncher = {
+      launch: async (request) => {
+        requests.push(request);
+        const context = new FakeContext([new FakePage()]);
+        const browser =
+          browsers.length === 0
+            ? new DelayedCloseBrowser(context)
+            : new FakeLaunchedBrowser(context);
+        browsers.push(browser);
+        return browser;
+      },
+    };
+    const verifier = new FakeTicketVerifier();
+    verifier.setClaims(
+      "enabled",
+      validClaims({
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+        passkeys: 1,
+      }),
+    );
+    const runtime = new BrowserRuntime({
+      idleProfileHostTimeoutMs: 30_000,
+      launcher,
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+    });
+    try {
+      const first = await runtime.attach("disabled", new FakeSink(), { passkeys: true });
+      await first.close();
+      const pending = runtime.attach("enabled", new FakeSink(), { passkeys: true });
+      await vi.waitFor(() => expect(closeStarted).toBe(true));
+      expect(requests).toHaveLength(1);
+      releaseClose();
+      const second = await pending;
+      expect(browsers[0]?.closeCount).toBe(1);
+      expect(requests).toHaveLength(2);
+      expect(requests[1]?.authenticator).toBeDefined();
+      await second.close();
+    } finally {
+      releaseClose();
+      await runtime.shutdown();
+    }
+  });
+
+  it("keeps the profile locked if the close event precedes process exit and shutdown times out", async () => {
+    let releaseClose: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    let closing = false;
+    class SlowExitBrowser extends FakeLaunchedBrowser {
+      override async close(): Promise<void> {
+        this.crash();
+        closing = true;
+        await gate;
+        await super.close();
+      }
+    }
+    const launcher = new FakeIsolatingLauncher();
+    const slow = new SlowExitBrowser(new FakeContext([new FakePage()]));
+    const launch: BrowserLauncher = {
+      launch: async (request) => {
+        if (launcher.launchCount === 0) {
+          launcher.launchCount++;
+          launcher.requests.push(request);
+          return slow;
+        }
+        return launcher.launch(request);
+      },
+    };
+    const verifier = new FakeTicketVerifier();
+    verifier.setClaims(
+      "enabled",
+      validClaims({
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+        passkeys: 1,
+      }),
+    );
+    const runtime = new BrowserRuntime({
+      idleProfileHostTimeoutMs: 30_000,
+      launcher: launch,
+      onCheckpointFailure: () => {},
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+    });
+    try {
+      const first = await runtime.attach("first", new FakeSink(), { passkeys: true });
+      await first.close();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const pending = runtime.attach("enabled", new FakeSink(), { passkeys: true });
+      const failed = expect(pending).rejects.toMatchObject({ code: "conflict", retryable: true });
+      await flushMicrotasks();
+      expect(closing).toBe(true);
+      await vi.advanceTimersByTimeAsync(browserStateImportRuntimeTimeoutMs + 15_001);
+      await failed;
+      await expect(
+        runtime.attach("enabled", new FakeSink(), { passkeys: true }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        retryable: true,
+      });
+      expect(launcher.launchCount).toBe(1);
+    } finally {
+      releaseClose();
+      await flushMicrotasks();
+      vi.useRealTimers();
+      await runtime.shutdown();
+    }
+  });
+
+  it.each([
+    [false, true],
+    [true, false],
+  ] as const)(
+    "refuses a passkey mode change while another session holds the profile (old=%s, new=%s)",
+    async (oldMode, newMode) => {
+      const launcher = new FakeIsolatingLauncher();
+      const verifier = new FakeTicketVerifier(validClaims(oldMode ? { passkeys: 1 } : {}));
+      verifier.setClaims(
+        "second",
+        validClaims({
+          sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+          ...(newMode ? { passkeys: 1 } : {}),
+        }),
+      );
+      const runtime = new BrowserRuntime({
+        launcher,
+        profileStateClient: new FakeProfileStateClient(),
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: verifier,
+      });
+      try {
+        const first = await runtime.attach("first", new FakeSink(), { passkeys: true });
+        await expect(
+          runtime.attach("second", new FakeSink(), { passkeys: true }),
+        ).rejects.toMatchObject({
+          code: "conflict",
+          retryable: true,
+          message: expect.stringMatching(/passkey/i),
+        });
+        expect(launcher.launchCount).toBe(1);
+        expect(runtime.health().sessionCount).toBe(1);
+        await first.close();
+      } finally {
+        await runtime.shutdown();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "reuses a profile when passkey mode matches (enabled=%s)",
+    async (enabled) => {
+      const launcher = new FakeIsolatingLauncher();
+      const verifier = new FakeTicketVerifier(validClaims(enabled ? { passkeys: 1 } : {}));
+      verifier.setClaims(
+        "second",
+        validClaims({
+          sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+          ...(enabled ? { passkeys: 1 } : {}),
+        }),
+      );
+      const runtime = new BrowserRuntime({
+        launcher,
+        profileStateClient: new FakeProfileStateClient(),
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: verifier,
+      });
+      try {
+        const first = await runtime.attach("first", new FakeSink(), { passkeys: true });
+        const second = await runtime.attach("second", new FakeSink(), { passkeys: true });
+        expect(launcher.launchCount).toBe(1);
+        expect(Boolean(launcher.requests[0]?.authenticator)).toBe(enabled);
+        expect(runtime.health().sessionCount).toBe(2);
+        await first.close();
+        await second.close();
+      } finally {
+        await runtime.shutdown();
+      }
+    },
+  );
+
   it("keeps a Profile Host and retries after an idle checkpoint failure", async () => {
     vi.useFakeTimers();
     try {
@@ -715,3 +917,28 @@ describe("BrowserRuntime", () => {
     await runtime.shutdown();
   });
 });
+
+it.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+] as const)(
+  "requires the Host welcome and signed passkey claim before provider launch (welcome=%s, claim=%s)",
+  async (enabled, signed) => {
+    const launcher = new FakeLauncher();
+    const runtime = new BrowserRuntime({
+      launcher,
+      profileStateClient: forbiddenProfileState,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(freshClaims(signed ? { passkeys: 1 } : {})),
+    });
+    try {
+      await runtime.attach("ticket", new FakeSink(), { passkeys: enabled });
+      expect(launcher.lastRequest?.authenticator !== undefined).toBe(enabled && signed);
+    } finally {
+      await runtime.shutdown();
+    }
+  },
+);

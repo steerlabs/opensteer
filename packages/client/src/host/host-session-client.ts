@@ -1,3 +1,4 @@
+import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { BrowserEditingStore } from "./browser-editing.js";
 import { BrowserPreferences } from "./browser-preferences.js";
 import { WorkspaceTabActivations } from "./workspace-tab-activations.js";
@@ -514,6 +515,7 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
   /** Verified by the connection owner for this client’s attachment. Null is unknown. */
@@ -542,6 +544,7 @@ export interface HttpHostClientOptions {
 }
 
 export class HttpHostClient {
+  readonly browserPasskeys: BrowserPasskeys;
   readonly recentSites: RecentSitesStore;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: OwnerViewHostClient["retainComputerView"];
@@ -608,6 +611,7 @@ export class HttpHostClient {
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "control"),
     "control",
     (sessionId, message, surfaceId) => {
+      this.browserPasskeys.receive(sessionId, surfaceId, message);
       if (message.type === "browser.snapshot")
         this.#browserEditing.negotiate(
           sessionId,
@@ -623,7 +627,10 @@ export class HttpHostClient {
     },
     (attempt) => this.#reconnectDelay(attempt),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
-    (sessionId, surfaceId) => this.#browserEditing.disconnect(sessionId, surfaceId),
+    (sessionId, surfaceId) => {
+      this.#browserEditing.disconnect(sessionId, surfaceId);
+      this.browserPasskeys.disconnect(sessionId, surfaceId);
+    },
   );
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
@@ -651,6 +658,8 @@ export class HttpHostClient {
       this.#baseUrl,
     );
     if (mode === "watch") url.searchParams.set("mode", mode);
+    const passkeys = this.browserPasskeys.optIn(this.#capabilities);
+    if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
   }
@@ -1070,6 +1079,7 @@ export class HttpHostClient {
 
   readonly #viewerPlatform: "mac" | "pc" | null;
   constructor(options: HttpHostClientOptions) {
+    this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.#viewerPlatform = options.viewerPlatform ?? null;
     this.#readCapabilities =
       typeof options.capabilities === "function" ? options.capabilities : null;
@@ -3100,6 +3110,9 @@ export class HttpHostClient {
       // asked to replace, so the reverification runs beside it.
       if (!revalidateCapabilities) return this.#bootstrapPromise;
       await Promise.all([this.#bootstrapPromise, this.#refreshCapabilities({ revalidate: true })]);
+      // An explicit refresh may follow a mutation committed after that read
+      // began. Read again after it settles so its stale answer cannot win.
+      if (!this.#disposed) await this.#bootstrap();
       return;
     }
     const operation = this.#performBootstrap(revalidateCapabilities);

@@ -175,6 +175,7 @@ async function startBrowserRelay(options: {
           profileSnapshotVersion: browserProfileSnapshotVersion,
           stateImport: true,
           fileStaging: true,
+          passkeys: 1,
           cdpBoundary: 1,
           ...(options.headless ? { editing: 2 as const, clipboard: true } : {}),
           sharedControl: 1,

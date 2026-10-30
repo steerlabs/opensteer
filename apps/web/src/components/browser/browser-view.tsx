@@ -1,3 +1,4 @@
+import { BrowserPasskeyBar } from "./browser-passkey-bar.js";
 import { NativeAgentCursors } from "./native-agent-cursors.js";
 import {
   nativeBrowserGeometry,
@@ -272,6 +273,17 @@ export function PlaceBrowserView({
     [hostClient, sessionId, tabId],
   );
   const viewer = useSyncExternalStore(subscribeViewer, readViewer, readViewer);
+  const subscribePasskeys = useCallback(
+    (listener: () => void) =>
+      hostClient.browserPasskeys?.subscribe(sessionId, tabId, listener) ?? (() => {}),
+    [hostClient, sessionId, tabId],
+  );
+  const readPasskeys = useCallback(
+    () => hostClient.browserPasskeys?.get(sessionId, tabId) ?? null,
+    [hostClient, sessionId, tabId],
+  );
+  const passkey = useSyncExternalStore(subscribePasskeys, readPasskeys, readPasskeys);
+
   const handoff =
     !watchable || mode.error || viewer.error || retentionError
       ? "terminal"
@@ -822,6 +834,13 @@ export function PlaceBrowserView({
               {trailing}
             </>
           }
+        />
+        <BrowserPasskeyBar
+          key={passkey?.requestId ?? "notice"}
+          state={passkey}
+          onContinue={async () => {
+            await hostClient.browserPasskeys?.continue(sessionId, tabId);
+          }}
         />
         <div className="browser-stage" ref={stageRef}>
           {!native && viewer.inputError ? (
