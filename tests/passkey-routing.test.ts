@@ -311,6 +311,7 @@ it.each([true, false])(
       await rm(directory, { recursive: true, force: true });
     }
   },
+  // oxlint-disable-next-line opensteer/no-unit-test-timeout -- Real Chromium runtime, Host routing and two RP ceremonies; every wait inside is bounded (4.5 s socket, polls and page evaluations).
   30_000,
 );
 
