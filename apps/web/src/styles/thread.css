@@ -1532,6 +1532,16 @@ label.action-row input {
   text-overflow: ellipsis;
 }
 
+/* Short of room the chip keeps only its mark, so the model's name stays. */
+.assignee [data-folded] {
+  display: none;
+}
+
+.assignee__button:has([data-folded]) {
+  justify-content: center;
+  min-width: 32px;
+}
+
 .assignee-popover {
   width: min(320px, calc(100vw - 20px));
 }
@@ -2111,6 +2121,9 @@ fieldset.action-panel {
 .exec-summary[data-folded] .exec-summary__meter {
   display: inline-flex;
 }
+.exec-summary[data-folded] .exec-summary__meter[data-folded] {
+  display: none;
+}
 .composer {
   position: relative;
 }
@@ -2200,11 +2213,9 @@ fieldset.action-panel {
     font-size: var(--text-lg);
   }
   .assignee__button {
+    min-width: 44px;
     min-height: 44px;
     padding: 0 var(--space-4);
-  }
-  .assignee__name {
-    max-width: 70px;
   }
 }
 .exec-controls .exec-summary[data-folded] {

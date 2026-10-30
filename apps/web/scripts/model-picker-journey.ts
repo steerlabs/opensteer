@@ -145,6 +145,32 @@ try {
       await page.getByRole("button", { name: "This conversation" }).waitFor();
       return { width };
     });
+    if (width < 600) {
+      // Who does the task folds to its mark before the model's name goes:
+      // the placeholder already names them.
+      await check(`${width}: model name outranks the assignee`, async () => {
+        await page.goto(`${web.origin}/new`);
+        await page.getByRole("button", { name: /^Engine and model:/ }).waitFor();
+        const fold = await page.evaluate(() =>
+          Object.fromEntries(
+            [
+              ["chip", ".assignee__button"],
+              ["assigneeShown", ".assignee__name"],
+              ["modelShown", ".exec-pill__label"],
+            ].map(([key, selector]) => {
+              const element = document.querySelector<HTMLElement>(selector!);
+              return [
+                key,
+                !!element && !element.hasAttribute("data-folded") && element.offsetWidth > 0,
+              ];
+            }),
+          ),
+        );
+        expectThat(fold, fold.chip && fold.modelShown, "The model's name gave way first");
+        await page.screenshot({ path: path.join(directory, `${width}-new-task.png`) });
+        return fold;
+      });
+    }
     if (width === 1280) {
       // The fixtures above apply choices to local state. This one starts a real
       // task, so a menu that looks right but never reaches the Host fails here.

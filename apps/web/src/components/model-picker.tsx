@@ -111,7 +111,7 @@ export function ModelPicker({
           <span className="exec-summary" data-fold={composerFold.reasoning}>
             <span className="exec-summary__words">{summary}</span>
             {level ? (
-              <span className="exec-summary__meter">
+              <span className="exec-summary__meter" data-fold={composerFold.reasoningMeter}>
                 <LevelMeter {...level} />
               </span>
             ) : null}
