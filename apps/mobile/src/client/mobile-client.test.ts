@@ -914,13 +914,73 @@ describe("MobileClient attachment reconciliation", () => {
       status: "compatible",
       capabilities: ["browser-target-control-v1", "browser-capture-region-v1"],
     };
-    expect(await read()).toEqual(options.verification.capabilities);
+    expect(await read({ revalidate: true })).toEqual(options.verification.capabilities);
     expect(port.attached).toHaveLength(1);
     options.verification = "identity-mismatch";
-    await expect(read()).rejects.toThrow();
+    await expect(read({ revalidate: true })).rejects.toThrow();
     options.verification = { status: "compatible", capabilities: [] };
     client.dispose();
     await expect(read()).rejects.toThrow();
+  });
+
+  it("reuses deferred discovery for bootstrap and polling, but not a new attachment", async () => {
+    const port = testPort({ held: true });
+    const probe = deferred<HostEpochAgreement>();
+    const started = deferred<void>();
+    const verify = vi.fn(async () => {
+      started.resolve();
+      return probe.promise;
+    });
+    const { client } = open((options) => ({ ...port.factory(options), verifyEpoch: verify }));
+    try {
+      await client.catalog.upsertAndSelect(connectComputer(1));
+      await client.initialize();
+      const selecting = client.select(serverId);
+      await started.promise;
+      expect(port.attached).toHaveLength(0);
+      probe.resolve({ status: "compatible", capabilities: ["thread-titles-v1"] });
+      await selecting;
+      const read = port.capabilityReaders.at(-1);
+      if (typeof read !== "function") throw new Error("Expected capability reader");
+      // The initial bootstrap and periodic bootstraps ask the same attachment.
+      expect(await read()).toEqual(["thread-titles-v1"]);
+      expect(await read()).toEqual(["thread-titles-v1"]);
+      expect(verify).toHaveBeenCalledTimes(1);
+      await client.retrySelection();
+      expect(verify).toHaveBeenCalledTimes(2);
+      await expect(read()).rejects.toThrow(/attachment changed/u);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("rejects a discovery refresh completed after its attachment generation changed", async () => {
+    const port = testPort({ held: true });
+    const probe = deferred<HostEpochAgreement>();
+    const { client } = open((options) => ({
+      ...port.factory(options),
+      verifyEpoch: vi
+        .fn()
+        .mockResolvedValueOnce({ status: "compatible", capabilities: [] })
+        .mockImplementationOnce(() => probe.promise)
+        .mockResolvedValue({ status: "compatible", capabilities: [] }),
+    }));
+    try {
+      await client.catalog.upsertAndSelect(connectComputer(1));
+      await client.initialize();
+      await client.select(serverId);
+      const read = port.capabilityReaders.at(-1);
+      if (typeof read !== "function") throw new Error("Expected capability reader");
+      const reading = read({ revalidate: true });
+      const rejected = expect(reading).rejects.toThrow();
+      await client.catalog.upsertAndSelect(connectComputer(2));
+      await client.reconcile();
+      probe.resolve("identity-mismatch");
+      await rejected;
+      expect(client.getSnapshot().selection.row?.verification).toBeNull();
+    } finally {
+      client.dispose();
+    }
   });
 
   it("does not replace a settled attachment when its row is selected again", async () => {

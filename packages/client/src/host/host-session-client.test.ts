@@ -5349,6 +5349,74 @@ describe("HttpHostClient browser profiles", () => {
   });
 });
 
+describe("HttpHostClient attachment discovery", () => {
+  it("uses cached evidence on periodic refresh and reverifies after a Host restart", async () => {
+    vi.useFakeTimers();
+    const workspace = makeWorkspace();
+    const sockets: FakeSocket[] = [];
+    const capabilities = vi.fn(async () => ["thread-titles-v1"] as const);
+    const client = createHttpHostClient({
+      capabilities,
+      fetch: async () => json(bootstrap([workspace])),
+      refreshIntervalMs: 15_000,
+      reconnectBaseDelayMs: 10,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(capabilities).toHaveBeenCalledTimes(2);
+      expect(capabilities).not.toHaveBeenCalledWith({ revalidate: true });
+      sockets[0]!.serverClose();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(capabilities).toHaveBeenCalledWith({ revalidate: true });
+      expect(sockets).toHaveLength(2);
+      expect(client.getSnapshot().threadRenameAvailable).toBe(true);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it.each(["unauthorized", "unsupported-version"] as const)(
+    "reverifies discovery on an RPC %s refusal",
+    async (refusal) => {
+      const capabilities = vi.fn(async () => []);
+      let refuse = false;
+      const client = createHttpHostClient({
+        capabilities,
+        fetch: async () =>
+          refuse
+            ? json(
+                {
+                  ok: false,
+                  error: {
+                    code: refusal === "unauthorized" ? "unauthorized" : "bad_request",
+                    reason: refusal,
+                    message: "Refused",
+                    retryable: false,
+                  },
+                },
+                refusal === "unauthorized" ? 401 : 400,
+              )
+            : json(bootstrap([])),
+        refreshIntervalMs: 0,
+      });
+      try {
+        await client.load();
+        refuse = true;
+        await client.rpc["workspace.catalog.list"]({ limit: 10 });
+        await vi.waitFor(() => expect(capabilities).toHaveBeenCalledWith({ revalidate: true }));
+      } finally {
+        client.dispose();
+      }
+    },
+  );
+});
+
 describe("HttpHostClient title capability", () => {
   it("refreshes capability evidence, strips generation for older Hosts and refuses unavailable or invalid renames", async () => {
     const workspace = makeWorkspace();

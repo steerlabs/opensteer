@@ -48,6 +48,7 @@ export interface HttpHostApiClientOptions {
   /** IPC adapters return buffered bodies together with their headers. */
   readonly bufferedResponses?: boolean;
   readonly onAuthenticationRequired: () => void;
+  readonly onVersionMismatch?: () => void;
 }
 
 const maximumRpcPayloadBytes = 1 * 1_024 * 1_024;
@@ -256,7 +257,11 @@ async function request<Name extends keyof typeof hostApi>(
         throw error;
       });
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
-    if (parsed.success) return parsed.data as RpcOutput<(typeof hostApi)[Name]>;
+    if (parsed.success) {
+      if (!parsed.data.ok && parsed.data.error.reason === "unsupported-version")
+        options.onVersionMismatch?.();
+      return parsed.data as RpcOutput<(typeof hostApi)[Name]>;
+    }
     return {
       error: HostApiErrorSchema.parse({
         code: "internal",

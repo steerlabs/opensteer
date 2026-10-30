@@ -504,12 +504,16 @@ interface BrowserChannelState {
 type BrowserChannel = BrowserChannelState &
   ({ mode: "control" } | { mode: "watch"; captureRegionRetainers: number });
 
+/** The connection owner keeps discovery evidence within its attachment fence. */
+export type HostCapabilityReader = (options?: {
+  readonly revalidate: boolean;
+}) => Promise<readonly HostCapability[]>;
+
 export interface HttpHostClientOptions {
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
   /** Verified by the connection owner for this client’s attachment. Null is unknown. */
-  readonly capabilities?:
-    readonly HostCapability[] | null | (() => Promise<readonly HostCapability[]>);
+  readonly capabilities?: readonly HostCapability[] | null | HostCapabilityReader;
   readonly recentSitesStorage?: RecentSitesStorage;
   /** The Host's origin. There is no ambient default: a React Native bundle has
    * no document to read one from, and a renderer may address another Host. */
@@ -1070,7 +1074,11 @@ export class HttpHostClient {
       ...(options.bufferedResponses === undefined
         ? {}
         : { bufferedResponses: options.bufferedResponses }),
-      onAuthenticationRequired: () => this.#expireSession(),
+      onAuthenticationRequired: () => {
+        this.#expireSession();
+        this.#reverifyCapabilities();
+      },
+      onVersionMismatch: () => this.#reverifyCapabilities(),
     });
     this.#workspaceTabActivations = new WorkspaceTabActivations({
       snapshot: () => this.#snapshot,
@@ -2030,7 +2038,7 @@ export class HttpHostClient {
       }
     this.#assignmentReads.clear();
     this.#requestReads.clear();
-    await this.#bootstrap();
+    await this.#bootstrap(false, true);
   }
 
   /**
@@ -2043,7 +2051,7 @@ export class HttpHostClient {
    */
   async reauthenticate(): Promise<void> {
     if (this.#disposed) return;
-    await this.#bootstrap(true);
+    await this.#bootstrap(true, true);
   }
 
   async loadEarlierTranscript(threadId: string): Promise<void> {
@@ -2421,7 +2429,8 @@ export class HttpHostClient {
   }
 
   #capabilities: readonly HostCapability[] | null;
-  readonly #readCapabilities: (() => Promise<readonly HostCapability[]>) | null;
+  readonly #readCapabilities: HostCapabilityReader | null;
+  #capabilityReadGeneration = 0;
   readonly browserTargetControlAvailable = (): Promise<boolean | null> =>
     Promise.resolve(this.#capabilities?.includes("browser-target-control-v1") ?? null);
 
@@ -3071,9 +3080,9 @@ export class HttpHostClient {
     this.#browserWatchFrameListeners.clear();
   }
 
-  async #bootstrap(force = false): Promise<void> {
+  async #bootstrap(force = false, revalidateCapabilities = false): Promise<void> {
     if (this.#bootstrapPromise && !force) return this.#bootstrapPromise;
-    const operation = this.#performBootstrap();
+    const operation = this.#performBootstrap(revalidateCapabilities);
     this.#bootstrapPromise = operation;
     try {
       await operation;
@@ -3344,38 +3353,54 @@ export class HttpHostClient {
     return result.thread;
   }
 
-  async #performBootstrap(): Promise<void> {
+  #reverifyCapabilities(): void {
+    void this.#refreshCapabilities({ revalidate: true }).catch(() => undefined);
+  }
+
+  async #refreshCapabilities(options?: { readonly revalidate: boolean }): Promise<void> {
+    if (!this.#readCapabilities || this.#disposed) return;
+    const generation = this.#viewerGeneration;
+    const read = ++this.#capabilityReadGeneration;
+    const capabilities = await this.#readCapabilities(options);
+    if (
+      generation !== this.#viewerGeneration ||
+      read !== this.#capabilityReadGeneration ||
+      this.#disposed
+    )
+      return;
+    const changed =
+      this.#capabilities === null ||
+      capabilities.length !== this.#capabilities.length ||
+      capabilities.some((capability) => !this.#capabilities?.includes(capability));
+    this.#capabilities = [...capabilities];
+    this.#update({
+      ...this.#snapshot,
+      threadRenameAvailable: capabilities.includes("thread-titles-v1"),
+      taskMarksAvailable: capabilities.includes("task-marks-v1"),
+      sharedTaskDoneAvailable: capabilities.includes("shared-task-done-v1"),
+      workspaceTabReopenAvailable: capabilities.includes("workspace-tab-reopen-v1"),
+      searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
+      iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
+      ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
+    });
+    if (changed) {
+      this.#targetedControl.capabilitiesChanged();
+      this.#targetedWatch.capabilitiesChanged();
+      for (const channel of this.#browserWatchChannels.values())
+        this.#subscribeBrowserWatch(channel);
+    }
+  }
+
+  async #performBootstrap(revalidateCapabilities: boolean): Promise<void> {
     const generation = this.#viewerGeneration;
     const presenceMark = this.#presenceCounter;
     const ownerViewRevision = this.#ownerViews.revision;
     if (this.#snapshot.session === "checking" || this.#snapshot.connection === "offline") {
       this.#update({ ...this.#snapshot, connection: "connecting" });
     }
-    if (this.#readCapabilities) {
-      const capabilities = await this.#readCapabilities();
-      if (generation !== this.#viewerGeneration || this.#disposed) return;
-      const changed =
-        this.#capabilities === null ||
-        capabilities.length !== this.#capabilities.length ||
-        capabilities.some((capability) => !this.#capabilities?.includes(capability));
-      this.#capabilities = [...capabilities];
-      this.#update({
-        ...this.#snapshot,
-        threadRenameAvailable: capabilities.includes("thread-titles-v1"),
-        taskMarksAvailable: capabilities.includes("task-marks-v1"),
-        sharedTaskDoneAvailable: capabilities.includes("shared-task-done-v1"),
-        workspaceTabReopenAvailable: capabilities.includes("workspace-tab-reopen-v1"),
-        searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
-        iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
-        ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
-      });
-      if (changed) {
-        this.#targetedControl.capabilitiesChanged();
-        this.#targetedWatch.capabilitiesChanged();
-        for (const channel of this.#browserWatchChannels.values())
-          this.#subscribeBrowserWatch(channel);
-      }
-    }
+    if (this.#readCapabilities)
+      await this.#refreshCapabilities(revalidateCapabilities ? { revalidate: true } : undefined);
+    if (generation !== this.#viewerGeneration || this.#disposed) return;
     const response = await this.rpc["bootstrap.get"]({});
     if (!response.ok && response.error.code === "unauthorized") {
       if (this.#disposed || this.#snapshot.session !== "authentication-required") return;
@@ -3958,6 +3983,9 @@ export class HttpHostClient {
     // nobody can read. The channel and its cursor stay, so the next foreground
     // or network signal opens the socket and resumes the stream.
     if (this.#workspaceReconnectSuspended()) return;
+    // A reused channel may now reach a restarted or upgraded Host at the same
+    // identity and route. Discovery is refreshed even when no bootstrap is due.
+    if (channel.progressAt > 0 || channel.reconnectAttempt > 0) this.#reverifyCapabilities();
     let socket: WebSocketClient;
     try {
       socket = this.#webSocketFactory(this.#webSocketUrl("/v1/realtime"));
@@ -4201,6 +4229,7 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.error") {
+      if (message.error.reason === "unsupported-version") this.#reverifyCapabilities();
       // The Host refused this channel. A retryable refusal is a transport
       // fault and takes the backoff; a final one leaves the channel down, and
       // the connection state is where a reader learns that.
