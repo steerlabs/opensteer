@@ -633,6 +633,266 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     await expect(countRows(database, "mcpOAuthCredentials")).resolves.toBe(0);
   });
 
+  it("does not mark a refreshed MCP credential as needing attention from a stale failure", async ({
+    storeFixture,
+  }) => {
+    const { store, platform, database } = storeFixture;
+    const userId = await store.createUser("MCP owner");
+    const installationId = createIntegrationId("installation");
+    const serverId = createIntegrationId("server");
+    await platform.install({
+      actorUserId: userId,
+      adapterSnapshot: null,
+      installation: {
+        description: "The team MCP server",
+        id: installationId,
+        manifest: {},
+        name: "team-mcp",
+        provenance: { transport: "streamable-http", url: "https://mcp.example.test/mcp" },
+        sourceKind: "remote-mcp",
+        status: "active",
+        title: "Team MCP",
+        trust: "administrator-approved",
+        version: null,
+      },
+      requestId: "install-team-mcp",
+      servers: [
+        {
+          connectionRequirement: { kind: "mcp-oauth" },
+          id: serverId,
+          name: "default",
+          status: "active",
+          statusDetail: null,
+          catalog: { definitions: {}, tools: [] },
+          transport: { headers: {}, type: "streamable-http", url: "https://mcp.example.test/mcp" },
+        },
+      ],
+    });
+    const connectionId = createIntegrationId("connection");
+    await database
+      .insertInto("integrationConnections")
+      .values({
+        accountIdentifier: null,
+        applicationSource: null,
+        authMethodId: null,
+        authorizationDigest: null,
+        capabilities: sql`'[]'::jsonb`,
+        runnerId: null,
+        connectionKind: "mcp-oauth",
+        connectionMethod: "managed-oauth",
+        credentialId: null,
+        displayName: "Team MCP",
+        externalIdentityId: null,
+        externalTenantId: null,
+        grantedScopes: sql`'[]'::jsonb`,
+        id: connectionId,
+        integrationDefinitionId: null,
+        integrationServerId: serverId,
+        ownerUserId: userId,
+        provider: `mcp:${serverId}`,
+        providerApplicationId: null,
+        status: "connected",
+        statusDetail: null,
+        transportKind: null,
+        updatedAt: new Date(),
+      })
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("mcpOAuthCredentials")
+      .values({
+        connectionId,
+        encryptedState: Buffer.from("mcp-oauth-state"),
+        encryptionKeyVersion: 1,
+        revision: 1,
+        updatedAt: new Date(),
+      })
+      .executeTakeFirstOrThrow();
+
+    expect(
+      await platform.replaceMcpOAuthCredential({
+        connectionId,
+        encryptedState: Buffer.from("refreshed"),
+        encryptionKeyVersion: 1,
+        expectedRevision: 1,
+      }),
+    ).toBe(true);
+    await platform.markMcpOAuthConnectionNeedsAttention({
+      connectionId,
+      ownerUserId: userId,
+      expectedRevision: 1,
+      statusDetail: "Expired old credential",
+    });
+    const row = await database
+      .selectFrom("integrationConnections")
+      .select(["status", "statusDetail"])
+      .where("id", "=", connectionId)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({ status: "connected", statusDetail: null });
+  });
+
+  it("reconnects a pinned MCP account in place and fulfills its pending request", async ({
+    storeFixture,
+  }) => {
+    const { store, platform, database } = storeFixture;
+    const run = await runningRunFixture(store, "mcp-reconnect");
+    const userId = run.userId;
+    const installationId = createIntegrationId("installation");
+    const serverId = createIntegrationId("server");
+    await platform.install({
+      actorUserId: userId,
+      adapterSnapshot: null,
+      installation: {
+        description: "The team MCP server",
+        id: installationId,
+        manifest: {},
+        name: "team-mcp",
+        provenance: { transport: "streamable-http", url: "https://mcp.example.test/mcp" },
+        sourceKind: "remote-mcp",
+        status: "active",
+        title: "Team MCP",
+        trust: "administrator-approved",
+        version: null,
+      },
+      requestId: "install-team-mcp",
+      servers: [
+        {
+          connectionRequirement: { kind: "mcp-oauth" },
+          id: serverId,
+          name: "default",
+          status: "active",
+          statusDetail: null,
+          catalog: { definitions: {}, tools: [] },
+          transport: { headers: {}, type: "streamable-http", url: "https://mcp.example.test/mcp" },
+        },
+      ],
+    });
+    const connectionId = createIntegrationId("connection");
+    await database
+      .insertInto("integrationConnections")
+      .values({
+        accountIdentifier: null,
+        applicationSource: null,
+        authMethodId: null,
+        authorizationDigest: null,
+        capabilities: sql`'[]'::jsonb`,
+        runnerId: null,
+        connectionKind: "mcp-oauth",
+        connectionMethod: "managed-oauth",
+        credentialId: null,
+        displayName: "Team MCP",
+        externalIdentityId: null,
+        externalTenantId: null,
+        grantedScopes: sql`'[]'::jsonb`,
+        id: connectionId,
+        integrationDefinitionId: null,
+        integrationServerId: serverId,
+        ownerUserId: userId,
+        provider: `mcp:${serverId}`,
+        providerApplicationId: null,
+        status: "connected",
+        statusDetail: null,
+        transportKind: null,
+        updatedAt: new Date(),
+      })
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("mcpOAuthCredentials")
+      .values({
+        connectionId,
+        encryptedState: Buffer.from("mcp-oauth-state"),
+        encryptionKeyVersion: 1,
+        revision: 1,
+        updatedAt: new Date(),
+      })
+      .executeTakeFirstOrThrow();
+
+    expect(
+      await platform.markMcpOAuthConnectionNeedsAttention({
+        connectionId,
+        ownerUserId: userId,
+        expectedRevision: 1,
+        statusDetail: "Reconnect",
+      }),
+    ).toBe(true);
+    const opened = await platform.requests.createIntegrationAccessRequest({
+      access: "read",
+      callId: "mcp-reconnect-pinned",
+      installationId,
+      originatingRunId: run.runId,
+      originatingThreadId: run.threadId,
+      originatingWorkspaceId: run.workspaceId,
+      reason: "Reconnect the chosen account",
+      requestedBy: userId,
+      requestedConnectionId: connectionId,
+      requestedServerId: serverId,
+      targetWorkspaceId: run.workspaceId,
+    });
+    const context = await platform.getMcpOAuthServer({
+      requestId: opened.request.id,
+      ownerUserId: userId,
+      serverId,
+    });
+    expect(context.reconnect).toEqual({ connectionId, revision: 1 });
+    const attemptId = createIntegrationId("mcpOauthAttempt");
+    const now = new Date();
+    await database
+      .insertInto("integrationAuthAttempts")
+      .values({
+        id: attemptId,
+        flow: "mcp-oauth",
+        ownerUserId: userId,
+        stateHash: "a".repeat(43),
+        launchTicketHash: "b".repeat(43),
+        browserBindingHash: "c".repeat(43),
+        encryptedPayload: Buffer.from("attempt"),
+        encryptionKeyVersion: 1,
+        status: "claimed",
+        surface: "desktop",
+        failureReason: null,
+        resultConnectionId: null,
+        expiresAt: new Date(now.getTime() + 60_000),
+        launchedAt: now,
+        claimedAt: now,
+        completedAt: null,
+        createdAt: now,
+      })
+      .executeTakeFirstOrThrow();
+    await platform.completeMcpOAuthAttempt({
+      attemptId,
+      connectionId,
+      displayName: "Team MCP",
+      encryptedState: Buffer.from("bound-state"),
+      encryptionKeyVersion: 1,
+      ownerUserId: userId,
+      serverId,
+      tools: [],
+      reconnect: { expectedRevision: 1, requestId: opened.request.id },
+    });
+    expect(
+      await platform.getMcpOAuthConnection({ connectionId, ownerUserId: userId, serverId }),
+    ).toMatchObject({
+      connectionId,
+      revision: 2,
+      encryptedState: Buffer.from("bound-state"),
+    });
+    expect(
+      await platform.isConnectionUsableForAccessRequest({
+        connectionId,
+        installationId,
+        ownerUserId: userId,
+        providerAuthorizations: {},
+        requestedServerId: serverId,
+      }),
+    ).toBe(true);
+    await platform.requests.resolveIntegrationAccessRequest({
+      providerAuthorizations: {},
+      requestId: opened.request.id,
+      resolvedBy: userId,
+      response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
+    });
+    expect((await platform.requests.get(opened.request.id))?.status).toBe("fulfilled");
+  });
+
   it("avoids a deadlock between integration uninstall and Request withdrawal", async ({
     storeFixture,
   }) => {

@@ -24,6 +24,7 @@ import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
   HarnessInstanceCatalogSchema,
+  agentToolPayloadMaxSerializedBytes,
   hostApiVersionHeader,
   ShellSessionIdSchema,
   type HarnessAuthenticationState,
@@ -56,6 +57,7 @@ import {
 } from "../server.js";
 import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
 import { WorkspaceService } from "../workspace/workspace-service.js";
+import { hostInternalRoutePaths } from "./internal-routes.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -1745,6 +1747,43 @@ describe("Request routes", () => {
 });
 
 describe("Optional subsystem registration", () => {
+  it("rejects oversized MCP bodies before handing them to the transport", async () => {
+    const handle = vi.fn();
+    const app = await createHostServer({
+      requestResponseVault: {} as never,
+      agentControl: {} as never,
+      agentTools: { handle } as never,
+      authenticator: { authenticateUser: async () => createId("user") } as never,
+      browser: {} as never,
+      commands: {} as never,
+      credentials: {} as never,
+      discovery: testDiscovery,
+      egress: {} as never,
+      files: {} as never,
+      harnessAuthenticationCoordinator: {} as never,
+      realtime: testRealtime(),
+      runnerAuthenticator: {} as never,
+      runners: {} as never,
+      securityEffects: {} as never,
+      store: {} as never,
+      workspaces: {} as never,
+    } satisfies HostServerTestOverrides);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: hostInternalRoutePaths.mcp,
+        headers: { authorization: "Bearer test", "content-type": "application/json" },
+        payload: JSON.stringify({
+          value: "x".repeat(agentToolPayloadMaxSerializedBytes + 32 * 1024),
+        }),
+      });
+      expect(response.statusCode).toBe(413);
+      expect(handle).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("no longer answers on any of the replaced session-establishment paths", async () => {
     const app = await createHostServer({
       requestResponseVault: {} as never,

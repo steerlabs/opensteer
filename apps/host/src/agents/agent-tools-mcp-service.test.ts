@@ -29,6 +29,87 @@ afterEach(async () => {
 });
 
 describe("AgentToolsMcpService", () => {
+  it("bounds tool argument elements before validation and remains usable", async () => {
+    const handle = vi.fn(async (_token: string, request: unknown) => ({
+      requestId: (request as { requestId: string }).requestId,
+      result: { accepted: true },
+      type: "thread.message.result" as const,
+    }));
+    const fixture = await startService({
+      agentControl: { handle } as unknown as AgentControlService,
+      profiles: { "run-token": "workspace" },
+    });
+    const client = await connectClient(fixture.url, "run-token");
+    try {
+      const message = { delivery: "queue", message: "hello", threadId: createId("thread") };
+      const atLimit = await client.callTool({
+        name: "thread_message",
+        arguments: {
+          ...message,
+          extra: Array.from({ length: 9_996 }, () => 1),
+        },
+      });
+      expect(atLimit.isError).toBe(true);
+      expect(JSON.stringify(atLimit.content)).not.toContain("maximum of 10000 elements");
+      const rejected = await client.callTool({
+        name: "thread_message",
+        arguments: {
+          ...message,
+          extra: Array.from({ length: 10_001 }, () => 1),
+        },
+      });
+      expect(rejected.isError).toBe(true);
+      expect(JSON.stringify(rejected.content)).toContain("maximum of 10000 elements");
+      expect(
+        (await client.callTool({ name: "thread_message", arguments: message })).isError,
+      ).not.toBe(true);
+      const places = Array.from({ length: 63 }, (_, index) => ({
+        type: "browser-page",
+        sessionId: createBrowserSessionId(),
+        tabId: `tab-${index}`,
+        title: "A page",
+        url: "https://example.com/",
+      }));
+      await client.callTool({
+        name: "thread_delegate",
+        arguments: { threadId: message.threadId, task: "Continue", places },
+      });
+      expect(handle).toHaveBeenCalledTimes(2);
+    } finally {
+      await client.close();
+      await fixture.service.close();
+    }
+  });
+
+  it("rejects oversized JSON-RPC batches on an established session", async () => {
+    const fixture = await startService({
+      agentControl: { handle: vi.fn() } as unknown as AgentControlService,
+      profiles: { "run-token": "workspace" },
+    });
+    const client = await connectClient(fixture.url, "run-token");
+    try {
+      const sessionId = (client.transport as StreamableHTTPClientTransport).sessionId;
+      if (!sessionId) throw new Error("Missing session");
+      const response = await fetch(fixture.url, {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          authorization: "Bearer run-token",
+          "content-type": "application/json",
+          "mcp-session-id": sessionId,
+        },
+        body: JSON.stringify(
+          Array.from({ length: 101 }, (_, id) => ({ jsonrpc: "2.0", id, method: "tools/list" })),
+        ),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain("Batch must not exceed 100");
+      expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+    } finally {
+      await client.close();
+      await fixture.service.close();
+    }
+  });
   it.each(["main", "workspace", "delegated", "trigger"] as const)(
     "offers environment discovery to %s without legacy workspace inputs",
     async (profile) => {

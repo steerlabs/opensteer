@@ -496,6 +496,14 @@ own OAuth accounts belong to its installation, not its definition; its Settings 
 disconnects them, and authorizing one, first or again, starts from the agent request that needs
 it, because `integration.mcp.authorization.begin` names that request.
 
+MCP OAuth credentials are bound to the authorization server discovered when they were issued.
+Connections saved before issuer binding must be authorized again; a different issuer also
+requires a new authorization before any saved credential is sent.
+Older Hosts can read the stored connection but do not enforce this binding. A downgrade can
+discard issuer fields when it rewrites credentials, requiring authorization again after upgrade.
+An in-flight reconnect started on a newer Host cannot complete on the previous release; start it
+again after the downgrade.
+
 Slack MCP is not shipped as a connectable preset: its registered-client authorization is not
 supported by the current MCP OAuth implementation. The upgrade disables that built-in preset and
 cancels its pending access requests, retaining reviewed manifests and resolved history. It

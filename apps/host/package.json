@@ -14,7 +14,7 @@
   "dependencies": {
     "@fastify/websocket": "catalog:",
     "@jitl/quickjs-singlefile-mjs-release-sync": "0.32.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "@opensteer/access": "workspace:*",
     "@opensteer/agent-plugins": "workspace:*",
     "@opensteer/agent-tools": "workspace:*",
