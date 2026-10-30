@@ -176,3 +176,12 @@ export function containGuest(out: string, run: Run) {
     throw error;
   }
 }
+
+/**
+ * `stapler validate` looks the ticket up on CloudKit, which containment blocks. Offline,
+ * Gatekeeper accepts a notarized app only through its stapled ticket.
+ */
+export function assertOfflineNotarized(spctlOutput: string): void {
+  if (!/\baccepted\b/u.test(spctlOutput) || !/source=Notarized Developer ID/u.test(spctlOutput))
+    throw new Error(`Gatekeeper did not accept a stapled notarized app:\n${spctlOutput}`);
+}

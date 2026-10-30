@@ -18,7 +18,11 @@ vi.mock("node:child_process", () => ({
     return { pid: 4242, once: () => undefined, unref: () => undefined };
   },
 }));
-import { containGuest, pfWatchdog } from "../scripts/public-download/containment.js";
+import {
+  assertOfflineNotarized,
+  containGuest,
+  pfWatchdog,
+} from "../scripts/public-download/containment.js";
 
 test("containment requires an observed deny and restores PF even if final rule verification fails", () => {
   const out = mkdtempSync(path.join(tmpdir(), "opensteer-pf-proof-"));
@@ -146,4 +150,23 @@ test("guest checks under containment never need Apple's network", () => {
     expect(
       readFileSync(path.join(import.meta.dirname, "../scripts/public-download", file), "utf8"),
     ).not.toMatch(/"stapler"/u);
+  expect(
+    readFileSync(path.join(import.meta.dirname, "../scripts/public-download/eu-guest.ts"), "utf8"),
+  ).toMatch(/assertOfflineNotarized\(\s*run\("spctl", \["--assess", "--type", "execute"/u);
+});
+
+test("the offline Gatekeeper check requires an accepted, stapled notarization", () => {
+  const app = "/Applications/Opensteer Beta.app";
+  expect(() =>
+    assertOfflineNotarized(
+      `${app}: accepted\nsource=Notarized Developer ID\norigin=Developer ID Application: X (TEAM)`,
+    ),
+  ).not.toThrow();
+  expect(() => assertOfflineNotarized(`${app}: rejected\nsource=Unnotarized Developer ID`)).toThrow(
+    /did not accept/u,
+  );
+  expect(() => assertOfflineNotarized(`${app}: accepted\nsource=Developer ID`)).toThrow(
+    /did not accept/u,
+  );
+  expect(() => assertOfflineNotarized("")).toThrow(/did not accept/u);
 });
