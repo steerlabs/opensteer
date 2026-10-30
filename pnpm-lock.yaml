@@ -27,6 +27,9 @@ catalogs:
     '@earendil-works/pi-coding-agent':
       specifier: 0.87.1
       version: 0.87.1
+    '@fastify/compress':
+      specifier: 9.3.0
+      version: 9.3.0
     '@fastify/websocket':
       specifier: 11.3.0
       version: 11.3.0
@@ -560,6 +563,9 @@ importers:
 
   apps/host:
     dependencies:
+      '@fastify/compress':
+        specifier: 'catalog:'
+        version: 9.3.0
       '@fastify/websocket':
         specifier: 'catalog:'
         version: 11.3.0
@@ -3436,8 +3442,14 @@ packages:
     resolution: {integrity: sha512-EbxYllZ7/ozONVZd425cm4XnolfW+AmSFT5aP7Jdno6oc3WrYQcHz2CO20z/2rwWwYgztmV2PXvYH+BQ8YFjqg==}
     hasBin: true
 
+  '@fastify/accept-negotiator@2.1.2':
+    resolution: {integrity: sha512-LV7MZqTwXTEt3GxBT6BU8ACztWnv++hSkMEsP3usIHiI0tA4F5EO4THhDCOr5J/ginM9DCnLCmZ6u3JLA9x8Iw==}
+
   '@fastify/ajv-compiler@4.0.6':
     resolution: {integrity: sha512-NtuzM0SfaMJbGlnjr9LWQUN5LzgSrbB8tf/wRZNas+4E1O/Nmzl53e7ruT61HDZyRCJGC6FxIogmNZO1c5ETBA==}
+
+  '@fastify/compress@9.3.0':
+    resolution: {integrity: sha512-vvm+933zsfsnw7nKsy2GWyix54k7aq3j+9EkwfH6ncngt+DUt5tgVQ/uH07/JrbOWXt1mjADjZ5MbKKwu1xhmA==}
 
   '@fastify/error@4.2.0':
     resolution: {integrity: sha512-RSo3sVDXfHskiBZKBPRgnQTtIqpi/7zhJOEmAxCiBcM7d0uwdGdxLlsCaLzGs8v8NnxIRlfG0N51p5yFaOentQ==}
@@ -10060,11 +10072,19 @@ snapshots:
       chalk: 4.1.2
       js-yaml: 4.3.2
 
+  '@fastify/accept-negotiator@2.1.2': {}
+
   '@fastify/ajv-compiler@4.0.6':
     dependencies:
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       fast-uri: 4.2.3
+
+  '@fastify/compress@9.3.0':
+    dependencies:
+      '@fastify/accept-negotiator': 2.1.2
+      fastify-plugin: 6.0.0
+      mime-db: 1.54.0
 
   '@fastify/error@4.2.0': {}
 

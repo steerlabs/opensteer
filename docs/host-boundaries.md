@@ -127,6 +127,16 @@ durable shared Thread and event records. Realtime viewer updates and reconnect
 refreshes are addressed only to the authenticated member, ordered with the
 Workspace snapshot and replay. The old bulk unread and mute RPCs are removed.
 
+The Host compresses the JSON reads a client makes to show Chat, tasks and tabs,
+listed in [`response-compression.ts`](../apps/host/src/server/response-compression.ts):
+Brotli (quality 4) or gzip/deflate (level 6) above 1 KiB, by `Accept-Encoding`,
+with `Vary: Accept-Encoding`. Those reads are most of a phone's bytes on a weak
+link. Every other route stays uncompressed, as do streams, binary bodies,
+upgrades, ranges and responses with an explicit Content-Length or cookies: that
+keeps streaming and progress semantics, and keeps credentials out of a
+compression length oracle. A gateway in front may still compress what the Host
+leaves alone, as the container gateway does.
+
 RPC methods declare their HTTP transport statically. Inputs that can grow with
 arrays, search text or opaque file keys use bounded JSON request bodies, with
 the same validation at client and Host boundaries. Ordinary RPC failures are
