@@ -6150,6 +6150,11 @@ export const personAskedThreadsMigration: Migration = {
 /** Backfill once without per-event lookups; replayed pages must classify independently. */
 export const runStartedByMigration: Migration = {
   async up(database) {
+    // Every Run lifecycle event asks whether a person's input joined its Run;
+    // without this, that lookup scans every message, here and at each commit.
+    await sql`
+      create index if not exists messages_run_inputs on messages (run_id) where kind = 'input'
+    `.execute(database);
     await sql`
       update workspace_events event
       set data = event.data || context.data
