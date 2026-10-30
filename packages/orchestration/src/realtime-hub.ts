@@ -562,6 +562,7 @@ export class RealtimeHub {
 
   async subscribe(input: {
     readonly afterSequence: Sequence;
+    readonly snapshotMessages?: "omit";
     readonly sink: RealtimeSink;
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
@@ -612,6 +613,7 @@ export class RealtimeHub {
       if (compareSequence(input.afterSequence, zeroSequence) === 0) {
         const snapshot = await this.#store.workspaceSnapshot(input.workspaceId, {
           listedOnly: true,
+          ...(input.snapshotMessages === "omit" ? { omitMessages: true } : {}),
           viewerId: input.userId,
         });
         messages.push({ snapshot, type: "host.snapshot" });

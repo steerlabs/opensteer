@@ -1,5 +1,6 @@
 /** Dependency-free IPC vocabulary shared by the main process and sandboxed preload. */
 export const desktopBridgeChannels = {
+  webLinkDelivery: "opensteer.desktop.webLinkDelivery",
   writeViewerClipboard: "opensteer.desktop.viewer.clipboard.write",
   pasteViewerClipboard: "opensteer.desktop.viewer.clipboard.paste",
   setViewerKeyboardActive: "opensteer.desktop.viewer.keyboard.active",

@@ -38,6 +38,59 @@ means PostgreSQL and runs only through `pnpm test:integration`;
 config. Default Vitest discovery excludes all three suffixes. Missing Chromium
 fails with its install command; it is never a passing skip.
 
+## Mobile network benchmark
+
+`pnpm bench:mobile-network` runs the production `HttpHostClient` against a real
+Host and isolated PostgreSQL through an in-process TCP shaper. It uses the
+integration launcher's pinned Docker image, templates, producer ownership and
+teardown. No simulator, GUI, browser process or native-helper build is required.
+An existing server may be supplied with `OPENSTEER_TEST_DATABASE_URL`; it must
+allow database creation. Without a URL or running Docker it exits 2 with
+`SKIPPED`, which is not a passing benchmark.
+
+```sh
+pnpm bench:mobile-network --profile weak-cell --seed heavy --runs 3 --out /tmp/mobile-network.json
+pnpm bench:mobile-network --scenario reconnect --runs 1
+```
+
+Defaults select both seeds, all four links and all five scenarios, with three
+serial samples. `--profile` accepts `lan`, `4g`, `weak-cell`, `edge`, or `all`;
+`--seed` accepts `light`, `heavy`, or `all`. `--scenario` accepts `cold-attach`,
+`open-task`, `reconnect`, `foreground-after-30s`, `network-change`, or `all`.
+The report defaults under `os.tmpdir()`; `OPENSTEER_MOBILE_BENCH_REPORT` also
+selects its path. Partial results survive a failed matrix with `status: failed`.
+
+The client has a fixed resolved route, no local runtime, a stored fixture session,
+mobile-style discovery/capability verification, and a driven lifecycle. Storage,
+OAuth, React rendering, and native networking are outside this measurement. Heavy
+seeds contain 300 mixed-state tasks, 2,000 Chat messages, long tool results and 20
+suspended tabs; light seeds contain five tasks, 20 Chat messages and two tabs.
+Suspended tabs exercise the real catalog and `placeList` without Chromium.
+
+Cold attach records public-store readiness, including history and `taskList`.
+Warm scenarios first attach; requesting one warm scenario excludes unrelated
+warm scenarios. Reconnect commits a real task rename during the outage and
+requires a nonzero retained cursor, replayed events and no new snapshot.
+Foreground waits a real 30 seconds before measuring recovery. The normal refresh
+and reconnect timers remain enabled, with reconnect jitter fixed at 0.5.
+
+JSON retains every sample, median milestones, delivered TCP bytes by connection,
+sanitized request lines, request concurrency waves, failed request counts, RPC
+body bytes, and WebSocket
+payload bytes by type. Follow-up traffic is counted until quiet, separately from
+user readiness. Request waves describe observed serialization, not a proven
+causal graph. HTTP and WebSocket share each direction's configured bandwidth.
+Plain HTTP timings exclude TCP handshakes and TLS: the report separately models
+one TCP RTT and one additional TLS 1.3 RTT per new connection. These are aggregate
+costs, not additive critical-path timings when handshakes overlap. TCP slow
+start, congestion, radio behavior and retransmission are not modeled.
+`--stall-every 8 --stall-ms 500` adds an occasional queue delay; it is not packet
+loss. Keep reports outside the checkout.
+
+`pnpm exec vitest run tests/mobile-network/proxy.test.ts` verifies the shaper and
+redaction. The normal PostgreSQL integration suite also runs a light/LAN
+structural journey for paged models and cursor recovery, without time budgets.
+
 ## Agent context budget
 
 `pnpm exec vitest run tests/agent-context-budget.test.ts` records compact UTF-8
@@ -472,6 +525,23 @@ bash scripts/test-macos-journeys.sh --preflight --run-id "$id" --out "$HOME/open
 bash scripts/test-macos-journeys.sh --run-id "$id" --sha "$sha" --out "$HOME/opensteer-runs/$id" saved-password windows launch
 bash scripts/test-macos-journeys.sh --postflight --run-id "$id" --out "$HOME/opensteer-runs/$id"
 ```
+
+The on-demand `mac-owner` selection uses the registered launcher and requires the
+legacy `/Users/admin/opensteer-job` layout. Its temporary fixture directories live
+under the registered run root. On interruption, its group gets a bounded grace
+period for its cleanup trap before the normal forced stop and registered cleanup.
+Files written or changed in `~/opensteer-job/artifacts/mac-owner` during the run
+are copied read-only into the selected run's `mac-owner/` directory; earlier
+or unselected engine evidence is omitted. It is excluded from default journeys
+and sweeps.
+
+After each journey, both invocation modes copy `.ips` and `.crash` files from
+`~/Library/Logs/DiagnosticReports` modified since that journey started into its
+`crash-reports/` directory. Copies are read-only, originals stay untouched, and
+`crashReports` in each manifest row records the count. A report macOS removes
+during collection is skipped. Any other collection failure is recorded as the
+row's `evidenceError`; it never changes the journey's result or stops later
+journeys. Reports are evidence only and never authorize process or file cleanup.
 
 IDs have format `yyyymmddThhmmssZ-xxxxxxxx` (eight lowercase hexadecimal digits).
 Preflight returns 0 for clean, 3 for unknown residue, or 2 for invalid arguments or

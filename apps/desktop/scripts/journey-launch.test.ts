@@ -105,3 +105,38 @@ it("executes the workload only after its ownership record is durably published",
     rmSync(root, { recursive: true, force: true });
   }
 }, 15000);
+
+it.each([false, true])(
+  "bounds a legacy interruption (ignores TERM: %s)",
+  async (ignore) => {
+    const { stopLegacyGroup } = await import("./journey-legacy-stop.js");
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "legacy-stop-")));
+    const ready = path.join(root, "ready"),
+      marker = path.join(root, "marker");
+    let identity: ProcessIdentity | undefined;
+    try {
+      const command = ignore
+        ? `trap '' TERM; touch "$READY"; while :; do sleep 0.1; done`
+        : `trap 'sleep 0.3; touch "$MARKER"; exit 0' TERM; touch "$READY"; while :; do sleep 0.1; done`;
+      const result = launchRegisteredWorkload({
+        command,
+        log: path.join(root, "log"),
+        env: { ...process.env, READY: ready, MARKER: marker, OPENSTEER_LEGACY_GRACEFUL_STOP: "1" },
+        register: async (value) => {
+          identity = value;
+        },
+      });
+      for (let i = 0; i < 200 && !existsSync(ready); i++) await delay(20);
+      expect(existsSync(ready)).toBe(true);
+      const start = Date.now();
+      await stopLegacyGroup(identity!, realProcessIO, 1000);
+      await result;
+      expect(Date.now() - start).toBeLessThan(8000);
+      expect(existsSync(marker)).toBe(!ignore);
+    } finally {
+      await stop(identity);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  10000,
+);

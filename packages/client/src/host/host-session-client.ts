@@ -216,6 +216,7 @@ const realtimeDiagnosticFields = new Set([
   "nonce",
   "threads",
   "messages",
+  "messagesOmitted",
   "runQueue",
 ]);
 
@@ -229,12 +230,15 @@ const realtimeReadableThreadSchema = ThreadViewSchema.extend({
   const status = ThreadStatusSchema.safeParse(thread.status);
   return status.success ? { ...thread, status: status.data } : null;
 });
-const realtimeSnapshotSchema = WorkspaceSnapshotSchema.extend({
-  threads: z
-    .array(realtimeReadableThreadSchema)
-    .max(workspaceSnapshotMaxThreads)
-    .transform((threads) => threads.filter((thread) => thread !== null)),
-});
+const realtimeSnapshotSchema = z
+  .object({
+    ...WorkspaceSnapshotSchema.shape,
+    threads: z
+      .array(realtimeReadableThreadSchema)
+      .max(workspaceSnapshotMaxThreads)
+      .transform((threads) => threads.filter((thread) => thread !== null)),
+  })
+  .transform((snapshot) => WorkspaceSnapshotSchema.parse(snapshot));
 const realtimeThreadStateEventSchema = AgentEventViewSchema.options[0]
   .omit({ type: true, data: true })
   .extend({
@@ -528,6 +532,12 @@ export interface HttpHostClientOptions {
   readonly reconnectBaseDelayMs?: number;
   readonly reconnectMaxDelayMs?: number;
   readonly refreshIntervalMs?: number;
+  /**
+   * Starts Home's history as soon as bootstrap names it. For a client that
+   * opens on Chat (the phone), activation follows at once and joins the read;
+   * elsewhere an unopened Home would be held outside the Workspace's Thread page.
+   */
+  readonly prefetchHome?: boolean;
   readonly webSocketFactory?: (url: string) => WebSocketClient;
 }
 
@@ -1030,6 +1040,7 @@ export class HttpHostClient {
   readonly #reconnectBaseDelayMs: number;
   readonly #reconnectMaxDelayMs: number;
   readonly #refreshIntervalMs: number;
+  readonly #prefetchHome: boolean;
   readonly #webSocketFactory: (url: string) => WebSocketClient;
   readonly #lifecycleDisposers: (() => void)[] = [];
   readonly #socketTrustWindowMs: number;
@@ -1120,6 +1131,7 @@ export class HttpHostClient {
       options.reconnectMaxDelayMs ?? defaultReconnectMaxDelayMs,
     );
     this.#refreshIntervalMs = Math.max(0, options.refreshIntervalMs ?? defaultRefreshIntervalMs);
+    this.#prefetchHome = options.prefetchHome === true;
     this.#webSocketFactory = options.webSocketFactory ?? ((url) => new globalThis.WebSocket(url));
     this.#socketTrustWindowMs = options.lifecycle?.socketTrustWindowMs ?? socketTrustWindowMs;
     const lifecycle = options.lifecycle?.getSnapshot();
@@ -3638,7 +3650,8 @@ export class HttpHostClient {
     });
     // Warm Home through the hydration owner without claiming a conversation
     // or marking it read. A later activation joins this same read.
-    if (this.#snapshot.homeThreadId) this.#ensureThreadHydration(this.#snapshot.homeThreadId);
+    if (this.#prefetchHome && this.#snapshot.homeThreadId)
+      this.#ensureThreadHydration(this.#snapshot.homeThreadId);
     // A patch older than this read is already in what it answered.
     for (const [sessionId, mark] of this.#presenceMarks) {
       if (mark > presenceMark) continue;
@@ -4035,6 +4048,9 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
+            ...(this.#capabilities?.includes("snapshot-messages-omit-v1")
+              ? { snapshotMessages: "omit" }
+              : {}),
             threadId: null,
             type: "client.subscribe",
             workspaceId: channel.workspaceId,
@@ -4415,7 +4431,12 @@ export class HttpHostClient {
       );
       this.#requestReads.delete(thread.id);
       if (!this.#historicalThreads.has(thread.id) && !this.#showsThread(thread.id)) {
-        transcripts[thread.id] = [];
+        if (snapshot.messagesOmitted) {
+          delete transcripts[thread.id];
+          delete transcriptWindows[thread.id];
+        } else {
+          transcripts[thread.id] = [];
+        }
         this.#hydratedThreads.delete(thread.id);
       }
     }

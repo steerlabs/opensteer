@@ -467,6 +467,7 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
           {health?.blocking ? null : (
             <>
               <Composer
+                dictationScope={`${deploymentId}/${userId}/new-thread/${workspace.id}`}
                 placeContext={placeContext}
                 attachments={attachmentTarget}
                 autoFocus

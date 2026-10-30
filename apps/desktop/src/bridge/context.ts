@@ -1,3 +1,4 @@
+import type { DesktopWebLinks } from "../app/web-links.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { DesktopBrowserPresentationManager } from "../browser/browser-presentation.js";
 import type { PasswordsSignInOperations } from "../passwords/sign-in-operations.js";
@@ -33,6 +34,10 @@ export interface BridgeEnvelope {
 }
 
 export interface DesktopBridgeOptions {
+  readonly webLinks?: DesktopWebLinks;
+  readonly isWorkspaceContents?: (
+    sender: Pick<WebContents, "send" | "once" | "removeListener" | "isDestroyed">,
+  ) => boolean;
   readonly downloads: Pick<DesktopDownloads, "snapshot" | "subscribe" | "open" | "show" | "cancel">;
   readonly log?: (
     event: string,

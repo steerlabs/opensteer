@@ -36,7 +36,7 @@ export const JOURNEY_TMP_PREFIX = "/tmp/oj-";
 const RUN_ID_PATTERN = /^\d{8}T\d{6}Z-([a-f0-9]{8})$/;
 export function journeyTemporaryDirectory(runId: string, journey: string): string {
   const match = RUN_ID_PATTERN.exec(runId);
-  if (!match || !JOURNEY_NAMES.some((name) => name === journey))
+  if (!match || !(journey === "mac-owner" || JOURNEY_NAMES.some((name) => name === journey)))
     throw Error("Invalid journey temporary directory");
   return `${JOURNEY_TMP_PREFIX}${match[1]}-${journey}`;
 }
@@ -114,10 +114,11 @@ export function validateRegistration(
   }
   for (const binding of reg.temporary) {
     if (
-      !JOURNEY_NAMES.some(
+      ![...JOURNEY_NAMES, "mac-owner"].some(
         (name) =>
           journeyTemporaryDirectory(reg.runId, name) === binding.path ||
-          journeyApplicationDirectory(home, reg.runId, name) === binding.path,
+          (name !== "mac-owner" &&
+            journeyApplicationDirectory(home, reg.runId, name) === binding.path),
       )
     )
       throw Error("Unregistered temporary location");
@@ -404,6 +405,7 @@ export interface JourneyRow {
   exitCode: number;
   seconds: number;
   outcome: string;
+  crashReports?: number;
 }
 export function summarizeJourneys(selected: string[], results: JourneyRow[], prepared: boolean) {
   const journeys = selected.map(
@@ -413,6 +415,7 @@ export function summarizeJourneys(selected: string[], results: JourneyRow[], pre
         exitCode: 1,
         seconds: 0,
         outcome: "skipped",
+        crashReports: 0,
       },
   );
   const passed =

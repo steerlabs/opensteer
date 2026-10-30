@@ -68,7 +68,7 @@ export async function releasedClientReader(revision: string) {
     await build({
       stdin: {
         contents: `export { HttpHostClient } from '@opensteer/client/host';
-          export { hostApi, HostToClientMessageSchema, AgentControlResponseSchema } from '@opensteer/protocol';
+          export { hostApi, ClientToHostMessageSchema, HostToClientMessageSchema, AgentControlResponseSchema } from '@opensteer/protocol';
           export { ThreadViewSchema, ThreadReadStateSchema, RequestViewSchema } from '@opensteer/core';
           export { HostDescriptorSchema, hostApiCompatibility, knownHostCapabilities } from '@opensteer/deployment-authority';
           export { heldThread, taskList, workspaceTaskList } from '@opensteer/client/host';
@@ -126,6 +126,7 @@ export async function releasedClientReader(revision: string) {
       ThreadViewSchema: { parse(value: unknown): unknown };
       ThreadReadStateSchema: { parse(value: unknown): unknown };
       HostToClientMessageSchema: { parse(value: unknown): unknown };
+      ClientToHostMessageSchema: { parse(value: unknown): unknown };
     };
     return {
       sourceRevision,

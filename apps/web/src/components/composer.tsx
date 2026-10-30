@@ -1,3 +1,10 @@
+import {
+  dictationLabels,
+  dictationView,
+  dictationStartLabel,
+  type DictationSelection,
+} from "@opensteer/client/dictation";
+import { DictationStatus, DictationLive, useDictation } from "./dictation.js";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   useCallback,
@@ -119,6 +126,8 @@ export interface ComposerRestore {
 }
 
 interface ComposerProps {
+  dictationScope?: string;
+  hidden?: boolean;
   variant?: "conversation" | "work";
   /**
    * No AI is chosen yet: the footer's "Choose AI" is the primary action, so
@@ -204,6 +213,8 @@ const noPlaces: readonly PlaceItem[] = [];
  * key. What is typed meanwhile is a separate, later message.
  */
 export function Composer({
+  dictationScope = "composer",
+  hidden = false,
   variant = "work",
   settingsRequired = false,
   attachments = null,
@@ -229,6 +240,29 @@ export function Composer({
   stopping: runStopping = false,
 }: ComposerProps) {
   const [draft, setDraft] = useState("");
+  const { controller: dictation, snapshot: speech } = useDictation();
+  const instance = useId();
+  const owner = `${dictationScope}/${instance}`;
+  const view = dictationView(speech, owner);
+  const dictating = view.phase !== "idle" && view.phase !== "downloading";
+  const preview = view.preview;
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
+  const ownerDraft = useMemo(() => ({ text: "" }), [owner]);
+  ownerDraft.text = draft;
+  const pendingSelection = useRef<DictationSelection | null>(null);
+  const [selectionVersion, setSelectionVersion] = useState(0);
+  const baseSelection = useRef<DictationSelection | null>(null);
+  const waitingSend = useRef(false);
+  const currentOwner = useRef(owner);
+  currentOwner.current = owner;
+  const currentlyHidden = useRef(hidden);
+  currentlyHidden.current = hidden;
+  useEffect(() => {
+    if (hidden) dictation?.leave(owner);
+    return () => dictation?.leave(owner);
+  }, [dictation, owner, hidden]);
+
   const [quote, setQuote] = useState<ComposerQuote | null>(null);
   const context = placeContext?.context ?? null;
   const freezeContext = useEffectEvent(() => context?.freeze());
@@ -260,6 +294,55 @@ export function Composer({
     };
   }, []);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const microphoneRef = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => {
+    const mic = microphoneRef.current;
+    if (mic?.disabled && document.activeElement === mic) textareaRef.current?.focus();
+  }, [view.phase, view.blocked, disabled, readOnly]);
+  const displayedText = preview?.text ?? draft;
+  const adoptEdit = (value: string) => {
+    latestDraft.current = value;
+    setDraft(value);
+    if (dictating) dictation?.release(owner);
+    else if (view.notice) dictation?.dismissNotice();
+  };
+  const startDictation = () => {
+    if (!dictation) return;
+    const field = textareaRef.current;
+    baseSelection.current = {
+      start: field?.selectionStart ?? draft.length,
+      end: field?.selectionEnd ?? draft.length,
+    };
+    field?.focus();
+    dictation.start({
+      owner,
+      read: () => ({
+        text: ownerDraft.text,
+        selection: {
+          start: textareaRef.current?.selectionStart ?? latestDraft.current.length,
+          end: textareaRef.current?.selectionEnd ?? latestDraft.current.length,
+        },
+      }),
+      commit: (text, selection) => {
+        ownerDraft.text = text;
+        if (currentOwner.current !== owner) return;
+        latestDraft.current = text;
+        pendingSelection.current = selection;
+        setSelectionVersion((version) => version + 1);
+        setDraft(text);
+      },
+    });
+  };
+  const cancelDictation = () => {
+    textareaRef.current?.focus();
+    if (view.phase === "downloading") {
+      dictation?.cancel(owner);
+      return;
+    }
+    pendingSelection.current = baseSelection.current;
+    dictation?.cancel(owner);
+    setSelectionVersion((version) => version + 1);
+  };
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const appliedRestore = useRef<ComposerRestore | null>(null);
   /** The pending key already tried on this connection, so a reload retries once, not in a loop. */
@@ -285,11 +368,17 @@ export function Composer({
     textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
   }, []);
 
+  useLayoutEffect(() => {
+    const selection = preview?.selection ?? pendingSelection.current;
+    if (selection) textareaRef.current?.setSelectionRange(selection.start, selection.end);
+    pendingSelection.current = null;
+    resize();
+  }, [displayedText, selectionVersion, resize]);
+
   const reportDraft = useEffectEvent((value: string) => onDraftChange?.(value));
   useEffect(() => {
-    resize();
     reportDraft(draft);
-  }, [draft, resize]);
+  }, [draft]);
 
   useEffect(() => {
     if (!restore || appliedRestore.current === restore) return;
@@ -320,7 +409,8 @@ export function Composer({
   const explicitPlaces = chips.some((chip) => !chip.auto);
   // A place picked a moment ago is still being read; the message waits for it.
   const placesPending = context?.pending ?? false;
-  const hasContent = draft.trim().length > 0 || staged.items.length > 0 || explicitPlaces;
+  const hasContent =
+    displayedText.trim().length > 0 || dictating || staged.items.length > 0 || explicitPlaces;
   const canSend =
     !disabled &&
     !readOnly &&
@@ -405,8 +495,8 @@ export function Composer({
     }
   };
 
-  const submit = async () => {
-    const body = draft.trim();
+  const submit = async (text = latestDraft.current) => {
+    const body = text.trim();
     const carried = staged.items;
     if (disabled || readOnly || submittingRef.current || !canSend) return;
     if (!body && carried.length === 0 && !explicitPlaces) return;
@@ -438,6 +528,31 @@ export function Composer({
     setMention(null);
     context?.reset();
     await deliver(submission, false, ids, carriedQuote);
+  };
+
+  const latestSubmit = useRef(submit);
+  latestSubmit.current = submit;
+  const finishAndSend = async () => {
+    if (waitingSend.current) return;
+    waitingSend.current = true;
+    try {
+      if (!dictating) {
+        await latestSubmit.current();
+        return;
+      }
+      const finish = dictation ? await dictation.stop(owner) : { kind: "idle" as const };
+      if (
+        !mounted.current ||
+        currentlyHidden.current ||
+        currentOwner.current !== owner ||
+        finish.kind === "failed" ||
+        finish.kind === "aborted"
+      )
+        return;
+      await latestSubmit.current(finish.kind === "committed" ? finish.text : latestDraft.current);
+    } finally {
+      waitingSend.current = false;
+    }
   };
 
   const sendAgain = async () => {
@@ -527,6 +642,7 @@ export function Composer({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (mention && mentionPlaces.length > 0 && !event.nativeEvent.isComposing) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -552,7 +668,11 @@ export function Composer({
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      void submit();
+      void finishAndSend();
+    } else if (event.key === "Escape" && dictating && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      event.stopPropagation();
+      void dictation?.stop(owner);
     } else if (event.key === "Escape" && onEscape) {
       event.preventDefault();
       onEscape();
@@ -681,6 +801,36 @@ export function Composer({
       </>
     ) : null;
 
+  const microphone = view.visible ? (
+    <button
+      ref={microphoneRef}
+      className={`composer__attach ${view.phase === "listening" ? "dictation-stop" : ""}`}
+      type="button"
+      aria-label={
+        view.phase === "listening" || view.phase === "finishing"
+          ? dictationLabels.stop
+          : dictationStartLabel(view.languageName ?? "")
+      }
+      title={dictationLabels.dictate}
+      disabled={
+        disabled ||
+        readOnly ||
+        view.blocked ||
+        (view.phase !== "idle" && view.phase !== "listening")
+      }
+      onClick={() => {
+        textareaRef.current?.focus();
+        if (view.phase === "listening") void dictation?.stop(owner);
+        else startDictation();
+      }}
+    >
+      {["starting", "finishing", "downloading"].includes(view.phase) ? (
+        <span className="spinner" aria-hidden="true" />
+      ) : (
+        <Icon name={view.phase === "listening" ? "stop" : "microphone"} />
+      )}
+    </button>
+  ) : null;
   const mentionList =
     mention && placeContext ? (
       <MentionList
@@ -706,7 +856,9 @@ export function Composer({
       // the controls give up words and pills first. The "about this page"
       // form shows only where it fits; the attached page says the same.
       data-fold-text={
-        variant === "conversation" ? placeholderFloor(recipient, placeholder) : undefined
+        variant === "conversation" && !dictation
+          ? placeholderFloor(recipient, placeholder)
+          : undefined
       }
       data-composer-input=""
       readOnly={readOnly}
@@ -715,21 +867,42 @@ export function Composer({
       aria-expanded={placeContext ? mention !== null && mentionPlaces.length > 0 : undefined}
       onBlur={() => setMention(null)}
       onChange={(event) => {
-        setDraft(event.target.value);
+        adoptEdit(event.target.value);
         context?.freeze();
         readMention(event.target);
       }}
+      onCompositionStart={(event) => adoptEdit(event.currentTarget.value)}
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
       placeholder={fittedPlaceholder}
       rows={1}
-      value={draft}
+      value={displayedText}
     />
   );
   const footer = (
     <>
-      {variant !== "conversation" ? attachmentControl : null}
-      <FoldRow className="composer__settings">{footerExtras}</FoldRow>
+      {variant !== "conversation" ? (
+        <>
+          {attachmentControl}
+          {microphone}
+        </>
+      ) : null}
+      {dictation ? (
+        <div className="composer__dictation-slot">
+          {dictation && view.phase !== "idle" ? (
+            <DictationLive
+              controller={dictation}
+              view={view}
+              onCancel={cancelDictation}
+              returnFocusTo={textareaRef}
+            />
+          ) : (
+            <FoldRow className="composer__settings">{footerExtras}</FoldRow>
+          )}
+        </div>
+      ) : (
+        <FoldRow className="composer__settings">{footerExtras}</FoldRow>
+      )}
       {showStop ? (
         <StopButton
           disabled={stopping || disabled || readOnly}
@@ -744,7 +917,7 @@ export function Composer({
           aria-describedby={blockedBy ? blockedById : undefined}
           className="composer__send"
           disabled={!canSend}
-          onClick={() => void submit()}
+          onClick={() => void finishAndSend()}
           title={blockedBy ?? (queues ? "Queue message" : sendLabel)}
           type="button"
         >
@@ -763,16 +936,34 @@ export function Composer({
     <div
       className={[
         "composer",
+        dictation ? "composer--dictation" : "",
         variant === "conversation" ? "composer--conversation" : "",
         dropping ? "composer--dropping" : "",
       ]
         .filter(Boolean)
         .join(" ")}
+      onKeyDown={(event) => {
+        if (event.defaultPrevented || event.nativeEvent.isComposing || mention) return;
+        if (event.key === "Escape" && dictating) {
+          event.preventDefault();
+          event.stopPropagation();
+          textareaRef.current?.focus();
+          void dictation?.stop(owner);
+        }
+      }}
       onDragEnter={handleDragOver}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
+      {dictation ? (
+        <DictationStatus
+          controller={dictation}
+          snapshot={speech}
+          owner={owner}
+          returnFocusTo={textareaRef}
+        />
+      ) : null}
       {sendBlocked !== null && !settingsRequired ? (
         <p className="composer__notice" role="status">
           {sendBlocked}
@@ -858,6 +1049,7 @@ export function Composer({
         <FoldToFit className="composer__entry">
           {mentionList}
           {attachmentControl}
+          {microphone}
           {field}
           <div className="composer__footer">{footer}</div>
         </FoldToFit>

@@ -9,6 +9,7 @@
     "./auth": "./src/auth/index.ts",
     "./computers": "./src/computers/index.ts",
     "./connections": "./src/connections/index.ts",
+    "./dictation": "./src/dictation/index.ts",
     "./editing": "./src/editing/index.ts",
     "./host": "./src/host/index.ts",
     "./host-api": "./src/host/host-api-client.ts",

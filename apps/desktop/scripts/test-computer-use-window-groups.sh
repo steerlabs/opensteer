@@ -8,7 +8,7 @@ if [[ -n "${OPENSTEER_JOURNEY_APPS:-}" ]]; then
   work="$OPENSTEER_JOURNEY_APPS"
 else
   mkdir -p "$HOME/Applications"
-  work=$(mktemp -d "$HOME/Applications/opensteer-window-groups.XXXXXX")
+  work=$(mktemp -d "${OPENSTEER_LEGACY_TEMP_ROOT:-$HOME/Applications}/opensteer-window-groups.XXXXXX")
 fi
 journey_pid=''
 cleanup() {

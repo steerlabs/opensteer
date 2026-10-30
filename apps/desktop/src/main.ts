@@ -1,6 +1,7 @@
 import { autoUpdater } from "electron-updater";
 import { startDesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
+import { DesktopWebLinks, routeDesktopUrl } from "./app/web-links.js";
 import { DesktopDownloads } from "./downloads/desktop-downloads.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { DesktopBrowserPresentationManager } from "./browser/browser-presentation.js";
@@ -151,15 +152,30 @@ const oauthDeepLinks = new OAuthDeepLinkBroker({
   ...embeddedRelease.oauth,
   application: "desktop",
 });
+const webLinks = new DesktopWebLinks((message) => {
+  void app
+    .whenReady()
+    .then(() => {
+      activeMainProcess?.focus();
+      return dialog.showMessageBox({ type: "info", title: "Opening web links", message });
+    })
+    .catch(reportFatal);
+});
+app.once("will-quit", () => webLinks.dispose());
 let activeMainProcess: DesktopMainProcess | null = null;
 let desktopLog: RotatingPersonalLog | null = null;
 const shutdown = new DesktopShutdown({ application: app, power: powerMonitor, log: reportEvent });
 app.on("open-url", (event, url) => {
-  if (!oauthDeepLinks.accept(url)) return;
+  if (oauthDeepLinks.accept(url)) {
+    event.preventDefault();
+    return;
+  }
+  if (!webLinks.accept(url)) return;
+  if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
   event.preventDefault();
 });
 app.on("second-instance", (_event, argv) => {
-  oauthDeepLinks.acceptArguments(argv);
+  for (const url of argv) routeDesktopUrl(url, oauthDeepLinks, webLinks);
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
 });
 
@@ -207,7 +223,7 @@ async function startDesktop(): Promise<void> {
   // Only a build that updates itself needs to live in Applications.
   if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();
-  oauthDeepLinks.acceptArguments(process.argv);
+  for (const url of process.argv) routeDesktopUrl(url, oauthDeepLinks, webLinks);
   await runDesktop(loaded, privateFiles);
 }
 
@@ -866,7 +882,10 @@ async function runDesktop(
     systemPreferences,
     process.platform,
   );
+  let workspaceContents: Electron.WebContents | null = null;
   const unregisterBridge = registerDesktopBridge({
+    webLinks,
+    isWorkspaceContents: (sender) => sender === workspaceContents,
     localVisibility,
     access,
     agentPhone: {
@@ -950,6 +969,7 @@ async function runDesktop(
     .catch((error) => reportNonFatal("desktop.personal.resume-failed", error));
   const mainWindows = new ElectronWindowFactory(loaded.config, {
     onCreated: (window) => {
+      workspaceContents = window.webContents;
       browserPresentation.attachWindow(window);
       window.on("focus", () => {
         if (shutdown.requested) return;
@@ -1115,6 +1135,7 @@ async function runDesktop(
         process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin,
     }),
   });
+  if (webLinks.pending) mainProcess.focus();
 
   function handleAsyncFatal(error: unknown): void {
     if (shutdown.requested || fatal) return;

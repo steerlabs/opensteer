@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
-out="$OPENSTEER_JOURNEY_OUT"
+out="${OPENSTEER_JOURNEY_OUT:-}"
 journey() {
   case "$1" in
+    mac-owner) bash native/computer-use/Tests/Fixtures/MacOwnerInputJourney/run-vm.sh ;;
     saved-password) OPENSTEER_PASSWORDS_ANYWHERE_EVIDENCE_DIR="$out" pnpm test:electron-computer-use:run ;;
     chrome-background)
       # The journey's sweep selection runs when the fixture provides it; R0 otherwise.
