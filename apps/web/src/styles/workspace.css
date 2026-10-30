@@ -2896,15 +2896,6 @@ html[data-tab-sorting] * {
   text-overflow: ellipsis;
 }
 
-.profile-chip__suffix {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-weight: var(--weight-medium);
-  text-overflow: ellipsis;
-}
-
 /* A phone's row has room for the disc alone; its name and menu are the same. */
 .browser-toolbar--compact .profile-chip {
   flex: none;
@@ -2920,8 +2911,7 @@ html[data-tab-sorting] * {
   font-size: 11.5px;
 }
 
-.browser-toolbar--compact .profile-chip__name,
-.browser-toolbar--compact .profile-chip__suffix {
+.browser-toolbar--compact .profile-chip__name {
   display: none;
 }
 

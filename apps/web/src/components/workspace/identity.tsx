@@ -40,12 +40,6 @@ export function ProfileAvatar({
 export interface BrowserPresentation {
   readonly identity: PlaceBrowserIdentity;
   readonly computer: string;
-  readonly machineId: string;
-  /**
-   * The computer is named: this identity browses on several computers, or,
-   * where this Mac is known, not on it.
-   */
-  readonly remote: boolean;
 }
 
 export interface BrowserPresentations {
@@ -55,59 +49,30 @@ export interface BrowserPresentations {
   readonly badges: boolean;
 }
 
-function identityKey(identity: PlaceBrowserIdentity): string {
-  return identity.kind === "guest" ? "guest" : `profile:${identity.profileId}`;
-}
-
-/** Each listed tab's profile and computer, with computer words where they tell apart. */
-export function browserPresentations(
-  places: readonly PlaceItem[],
-  localMachineId: string | null,
-): BrowserPresentations {
-  const sessions: {
-    readonly sessionId: string;
-    readonly identity: PlaceBrowserIdentity;
-    readonly device: NonNullable<PlaceItem["device"]>;
-  }[] = [];
-  const seen = new Set<string>();
-  for (const place of places) {
-    if (!place.browser || !place.identity || !place.device || seen.has(place.browser.sessionId))
-      continue;
-    seen.add(place.browser.sessionId);
-    sessions.push({
-      sessionId: place.browser.sessionId,
-      identity: place.identity,
-      device: place.device,
-    });
-  }
-  // The computer distinguishes tabs of one identity only when they run on different machines.
-  const computers = new Map<string, Set<string>>();
-  for (const session of sessions) {
-    const key = identityKey(session.identity);
-    computers.set(key, (computers.get(key) ?? new Set()).add(session.device.machineId));
-  }
+/** Each listed tab's profile and computer. */
+export function browserPresentations(places: readonly PlaceItem[]): BrowserPresentations {
   const bySession = new Map<string, BrowserPresentation>();
-  for (const session of sessions) {
-    bySession.set(session.sessionId, {
-      identity: session.identity,
-      computer: session.device.name,
-      machineId: session.device.machineId,
-      remote:
-        (computers.get(identityKey(session.identity))?.size ?? 0) > 1 ||
-        (localMachineId !== null && session.device.machineId !== localMachineId),
+  for (const place of places) {
+    if (
+      !place.browser ||
+      !place.identity ||
+      !place.device ||
+      bySession.has(place.browser.sessionId)
+    )
+      continue;
+    bySession.set(place.browser.sessionId, {
+      identity: place.identity,
+      computer: place.device.name,
     });
   }
   return { bySession, badges: profileBadgesVisible(places) };
 }
 
-export function useBrowserPresentations(
-  places: readonly PlaceItem[],
-  localMachineId: string | null,
-): BrowserPresentations {
+export function useBrowserPresentations(places: readonly PlaceItem[]): BrowserPresentations {
   // Unchanged words keep their objects, so their rows do not re-render.
   const previous = useRef<BrowserPresentations | null>(null);
   return useMemo(() => {
-    const next = browserPresentations(places, localMachineId);
+    const next = browserPresentations(places);
     const held = previous.current;
     if (held) {
       const bySession = new Map<string, BrowserPresentation>();
@@ -121,18 +86,7 @@ export function useBrowserPresentations(
       previous.current = { badges: next.badges, bySession };
     } else previous.current = next;
     return previous.current;
-  }, [places, localMachineId]);
-}
-
-/** The chip names the identity, with its computer only where it tells apart. */
-export function chipWords(presentation: BrowserPresentation): {
-  readonly name: string;
-  readonly suffix: string | null;
-} {
-  return {
-    name: presentation.identity.name,
-    suffix: presentation.remote ? presentation.computer : null,
-  };
+  }, [places]);
 }
 
 /** The destination in words, for names and tooltips: "Personal · Mac mini". */
