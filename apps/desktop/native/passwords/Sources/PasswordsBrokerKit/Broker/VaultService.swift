@@ -232,6 +232,10 @@ public final class VaultService: @unchecked Sendable {
     let opened: Vault
     do {
       opened = try Vault.open(root: root, protectedStore: protectedStore)
+      let agreement = KeyID.of(loaded.agreementPublicKey)
+      guard opened.head.owners.contains(where: { $0.agreementKeyID == agreement }) else {
+        return .needsReset(.otherMac)
+      }
       let checked = try opened.unlock(owner: loaded)
       checked.close()
     } catch VaultError.unsupportedVersion {
@@ -241,10 +245,6 @@ public final class VaultService: @unchecked Sendable {
     } catch {
       Log.vault.error("The vault could not be opened.")
       return .needsReset(.damaged)
-    }
-    let agreement = KeyID.of(loaded.agreementPublicKey)
-    guard opened.head.owners.contains(where: { $0.agreementKeyID == agreement }) else {
-      return .needsReset(.otherMac)
     }
     vault = opened
     owner = loaded
