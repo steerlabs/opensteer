@@ -72,3 +72,28 @@ const selectUserId = (snapshot: HostSnapshot): string | null => snapshot.user?.i
 export function useHostUserId(hostClient: HostClient | null): string | null {
   return useHostValue(hostClient, selectUserId, null);
 }
+
+const unavailableSavedSurface = { source: "pending" } as const;
+
+/** Saved values are presentation only. All Host hooks above remain live-only. */
+export function useSavedSurface<Surface extends "home" | "tasks">(
+  deploymentId: string | null,
+  surface: Surface,
+): import("../client/saved-view-presentation.js").SavedPresentationState[Surface] {
+  const client = useMobileClient();
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      deploymentId === null ? () => undefined : client.savedViews.subscribe(listener),
+    [client, deploymentId],
+  );
+  const read = useCallback(
+    () =>
+      deploymentId !== null &&
+      client.getSnapshot().selection.deploymentId === deploymentId &&
+      client.savedViews.getDeploymentId() === deploymentId
+        ? client.savedViews.getSnapshot()[surface]
+        : unavailableSavedSurface,
+    [client, deploymentId, surface],
+  );
+  return useSyncExternalStore(subscribe, read, read);
+}

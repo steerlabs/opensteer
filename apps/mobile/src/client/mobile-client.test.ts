@@ -1,9 +1,14 @@
+import { addPersonalDeployment } from "./add-deployment.js";
+import { savedViewFixture } from "../../test-support/saved-views.js";
 import {
   HostSessionExchangeError,
   type HostSessionExchangeFailure,
   type NativeOAuthIdentity,
 } from "@opensteer/client/auth";
 import type { DeploymentConnectionInput, PrivateFilesystem } from "@opensteer/client/connections";
+import { createMockHostPort } from "./mock-host-port.js";
+import { mockDeploymentConnections } from "./mock-mode.js";
+import { createMemorySavedViews } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   buildNativeIntegrationAuthorizationCallback,
@@ -21,7 +26,7 @@ import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { SessionExchangeResponseSchema } from "@opensteer/protocol";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { testDeploymentConnection } from "../../test-support/deployment-fixtures.js";
 import { MemorySecureStore } from "../platform/memory-secure-store.js";
 import { createSecureRecordStore } from "../platform/secure-record-store.js";
@@ -37,6 +42,11 @@ const oauthIdentity: NativeOAuthIdentity = {
   clientId: opensteerMobileOAuthClientId,
   hostCallback: opensteerMobileHostOAuthCallback,
 };
+
+const savedViewCleanup: (() => void)[] = [];
+afterEach(() => {
+  for (const close of savedViewCleanup.splice(0)) close();
+});
 
 const serverId = "dep_0192f4a1-1111-4000-8000-000000000001";
 const otherId = "dep_0192f4a1-4444-4000-8000-000000000004";
@@ -68,6 +78,7 @@ function testPort(options: {
   const verified: string[] = [];
   /** Makes the most recent attachment answer the way a refused Host does. */
   const refusals: (() => void)[] = [];
+  const workspaceRefusals: (() => void)[] = [];
   const factory: MobileHostPortFactory = ({ oauth, sessions }): MobileHostPort => ({
     credentials:
       options.realCredentials === true
@@ -97,7 +108,12 @@ function testPort(options: {
       // to give, so it is layered over the two members `MobileClient` reads:
       // everything else still runs on the real object and its private state.
       const listeners = new Set<() => void>();
-      let refused = false;
+      let refused = false,
+        workspaceRefused = false;
+      workspaceRefusals.push(() => {
+        workspaceRefused = true;
+        for (const listener of listeners) listener();
+      });
       refusals.push(() => {
         refused = true;
         for (const listener of listeners) listener();
@@ -108,6 +124,15 @@ function testPort(options: {
             return () => ({
               ...target.getSnapshot(),
               ...(refused ? { session: "authentication-required" as const } : {}),
+              ...(workspaceRefused
+                ? {
+                    savedViewReadiness: {
+                      tasksReady: false,
+                      home: { status: "unknown" as const },
+                      workspaceRefusal: 1,
+                    },
+                  }
+                : {}),
             });
           }
           if (property === "dispatch") {
@@ -150,6 +175,7 @@ function testPort(options: {
     disposed,
     factory,
     refusals,
+    workspaceRefusals,
     verified,
   };
 }
@@ -371,7 +397,7 @@ const accountSubject = ControlPlaneAccountIdSchema.parse(
   "acct_0192f4a1-7777-4000-8000-000000000007",
 );
 
-function accountFetch(): MobileClientOptions["fetch"] {
+function accountFetch(subject = () => accountSubject): MobileClientOptions["fetch"] {
   return async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.endsWith("/revoke")) return new Response(null, { status: 200 });
@@ -381,7 +407,7 @@ function accountFetch(): MobileClientOptions["fetch"] {
     return Response.json({
       access_token: `account-access-${"a".repeat(24)}`,
       expires_in: 3_600,
-      id_token: accountIdToken(),
+      id_token: accountIdToken(subject()),
       refresh_token: `account-refresh-${"r".repeat(24)}`,
       token_type: "Bearer",
     });
@@ -398,7 +424,7 @@ async function signInTestAccount(client: MobileClient, opened: string[]): Promis
   await client.oauth.handleCallback(callback.toString());
 }
 
-function accountIdToken(): string {
+function accountIdToken(subject = accountSubject): string {
   const encode = (value: unknown) =>
     encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
   const now = Math.floor(Date.now() / 1_000);
@@ -408,7 +434,7 @@ function accountIdToken(): string {
     email: "mobile@opensteer.test",
     exp: now + 3_600,
     iss: accountOrigin,
-    sub: accountSubject,
+    sub: subject,
   })}.${"s".repeat(86)}`;
 }
 
@@ -710,7 +736,16 @@ describe("MobileClient startup selection", () => {
 describe("MobileClient Account directory state", () => {
   it("clears a removed Account selection without switching to another deployment", async () => {
     const port = testPort({ held: false });
-    const { client } = open(port.factory);
+    const invalidated: string[] = [];
+    const { client } = open(port.factory, undefined, {
+      savedViewStore: {
+        load: async () => null,
+        write: async () => undefined,
+        invalidate: async (id) => {
+          invalidated.push(id);
+        },
+      },
+    });
     await client.catalog.upsertAndSelect(
       asInput(
         testDeploymentConnection({
@@ -725,6 +760,10 @@ describe("MobileClient Account directory state", () => {
     await client.initialize();
     await client.select(serverId);
 
+    await client.clearAccountSavedViews();
+    // Push unregistration still needs the Account credential; keys leave first.
+    expect(invalidated).toContain(serverId);
+    expect(client.getSnapshot().selection.hostClient).toBeNull();
     await client.signOutAccount();
     await settle();
 
@@ -735,6 +774,8 @@ describe("MobileClient Account directory state", () => {
       hostClient: null,
       status: "ready",
     });
+    expect(new Set(invalidated)).toEqual(new Set([serverId]));
+    expect(invalidated).not.toContain(otherId);
     client.dispose();
   });
 
@@ -1239,25 +1280,459 @@ describe("MobileClient attachment reconciliation", () => {
   });
 });
 
-describe("MobileClient sign-in", () => {
-  it("attaches a Personal session when optional saved-view identity storage fails", async () => {
-    const base = testPort({ held: false, realCredentials: true });
-    const viewLoginId = vi.fn(async () => {
-      throw new Error("Keychain locked");
+describe("MobileClient cold saved launch", () => {
+  it("resumes capture when deletion finishes after the same Deployment reattaches", async () => {
+    const encrypted = savedViewFixture(savedViewCleanup),
+      store = encrypted.open();
+    const write = vi.spyOn(store, "write"),
+      started = deferred<void>(),
+      release = deferred<void>();
+    const invalidate = store.invalidate.bind(store);
+    let delayed = false;
+    vi.spyOn(store, "invalidate").mockImplementation(async (id) => {
+      if (delayed) {
+        started.resolve();
+        await release.promise;
+      }
+      await invalidate(id);
     });
-    const factory: MobileHostPortFactory = (input) => {
-      const port = base.factory(input);
-      return { ...port, credentials: { ...port.credentials, viewLoginId } };
-    };
-    const { client } = open(factory);
+    const port = testPort({ held: false, realCredentials: true });
+    const { client } = open(port.factory, undefined, { savedViewStore: store });
     await client.initialize();
     await client.catalog.upsert(connectComputer(1));
     await client.sessions.save(personalSession());
+    await client.select(serverId);
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
+    await settle();
+    await client.savedViews.flush();
+    expect(write).toHaveBeenCalled();
+    write.mockClear();
+    delayed = true;
+    port.workspaceRefusals.at(-1)!();
+    await started.promise;
+    await client.retrySelection();
+    await settle();
+    expect(client.getSnapshot().selection.row?.status).toBe("connected");
+    await client.savedViews.flush();
+    expect(write).not.toHaveBeenCalled();
+    release.resolve();
+    await vi.waitFor(async () => {
+      await client.savedViews.flush();
+      expect(write).toHaveBeenCalled();
+    });
+    expect(client.getSnapshot().savedViewFailure).toBeNull();
+    expect(client.savedViews.getSnapshot().home.source).not.toBe("saved");
+    client.dispose();
+  });
+
+  it.each(["pairing", "connect"] as const)(
+    "erases the old key and replaces the live owner when %s replaces a Personal login",
+    async (door) => {
+      const encrypted = savedViewFixture(savedViewCleanup),
+        store = encrypted.open();
+      const write = vi.spyOn(store, "write");
+      const port = testPort({
+        held: false,
+        realCredentials: true,
+        configureClient: (host) => {
+          const read = host.getSnapshot.bind(host),
+            userId = createId("user");
+          vi.spyOn(host, "getSnapshot").mockImplementation(() => {
+            const snapshot = read();
+            return { ...snapshot, user: snapshot.user ? { ...snapshot.user, id: userId } : null };
+          });
+        },
+      });
+      const { client } = open(port.factory, undefined, { savedViewStore: store });
+      const connection = testDeploymentConnection({
+        deploymentId: serverId,
+        kind: "personal",
+        route: { kind: door === "pairing" ? "private" : "connect" },
+      });
+      if (connection.reachability !== "routed" || !connection.personalAccessRoute)
+        throw new Error("Expected a verified Personal access route");
+      const accessRoute = connection.personalAccessRoute;
+      await client.initialize();
+      const establish = vi.fn(async () => sessionExchangeResponse());
+      vi.spyOn(client.sessionExchange, "establish").mockImplementation(establish);
+      const replace = async () => {
+        if (door === "connect") {
+          await client.signIn(serverId);
+          return;
+        }
+        await addPersonalDeployment({
+          catalog: client.catalog,
+          sessions: client.sessions,
+          exchange: { establish },
+          name: connection.name,
+          pairingCode: "123456",
+          verified: {
+            bootstrapMethods: connection.bootstrapMethods,
+            capabilities: [],
+            discovery: connection.authority.document,
+            discoveryEnvelope: connection.authority,
+            endpoint: connection.endpoints[0]!,
+            accessRoute,
+          },
+        });
+        await client.reconcile();
+      };
+      if (door === "connect") {
+        await client.catalog.upsert(asInput(connection));
+        await settle();
+      }
+      await replace();
+      await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
+      await settle();
+      await client.savedViews.flush();
+      const before = write.mock.calls.at(-1)![0],
+        first = client.getSnapshot().selection.hostClient;
+      expect(await store.load(before, () => true)).toEqual(before);
+      await replace();
+      await vi.waitFor(() => expect(client.getSnapshot().selection.hostClient).not.toBe(first));
+      await settle();
+      expect(port.disposed).toContain(serverId);
+      expect(encrypted.keys.keys).toEqual([]);
+      expect(
+        (await client.sessions.load(DeploymentIdSchema.parse(serverId)))!.viewLoginId,
+      ).not.toBe(before.loginId);
+      expect(await store.load(before, () => true)).toBeNull();
+      expect(client.savedViews.getSnapshot().home.source).not.toBe("saved");
+      await client.savedViews.flush();
+      const after = write.mock.calls.at(-1)![0];
+      expect(after.loginId).not.toBe(before.loginId);
+      expect(after.userId).not.toBe(before.userId);
+      expect(await store.load(after, () => true)).toEqual(after);
+      client.dispose();
+    },
+  );
+  it("hides and erases Account A's saved view before Account B's consent", async () => {
+    const encrypted = savedViewFixture(savedViewCleanup),
+      store = encrypted.open();
+    const write = vi.spyOn(store, "write");
+    let subject = accountSubject;
+    const account = accountFetch(() => subject);
+    const port = testPort({ held: false, realCredentials: true });
+    const { client, opened } = open(port.factory, undefined, {
+      savedViewStore: store,
+      accountOrigin,
+      fetch: (input, init) =>
+        String(input).startsWith(accountOrigin) ? account(input, init) : testFetch(input),
+    });
+    vi.spyOn(client.accountDirectory, "sync").mockResolvedValue({
+      syncedDeploymentIds: [],
+      unavailable: [],
+    });
+    await client.initialize();
+    await signInTestAccount(client, opened);
+    const accountConnection = () =>
+      testDeploymentConnection({
+        deploymentId: serverId,
+        source: { kind: "account", issuer: accountOrigin, subject },
+      });
+    await client.catalog.upsert(asInput(accountConnection()));
+    await client.select(serverId);
+    await client.signIn(serverId);
+    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
+    await client.oauth.handleCallback(
+      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
+    );
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
+    await settle();
+    await client.savedViews.flush();
+    const before = write.mock.calls.at(-1)![0],
+      hostLogin = client.oauth.hostViewLoginId(accountConnection());
+    expect(before.accountSource?.subject).toBe(accountSubject);
+    expect(await store.load(before, () => true)).toEqual(before);
+    const signing = client.oauth.beginAccountSignIn();
+    expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
+    expect(client.getSnapshot().selection.hostClient).toBeNull();
+    await signing;
+    expect(encrypted.keys.keys).toEqual([]);
+    expect(client.oauth.hostViewLoginId(accountConnection())).toBe(hostLogin);
+    subject = ControlPlaneAccountIdSchema.parse("acct_0192f4a1-8888-4000-8000-000000000008");
+    const callback = new URL(opensteerMobileAccountOAuthCallback);
+    callback.searchParams.set("code", "account-code");
+    callback.searchParams.set("iss", accountOrigin);
+    callback.searchParams.set("state", new URL(opened.at(-1)!).searchParams.get("state")!);
+    await client.oauth.handleCallback(callback.toString());
+    await settle();
+    expect(client.oauth.accountIdentity()?.subject).toBe(subject);
+    expect(await store.load(before, () => true)).toBeNull();
+    await client.catalog.upsert(asInput(accountConnection()));
+    await client.select(serverId);
+    await client.signIn(serverId);
+    const hostState = new URL(opened.at(-1)!).searchParams.get("state")!;
+    await client.oauth.handleCallback(
+      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${hostState}`,
+    );
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
+    await settle();
+    await client.savedViews.flush();
+    const after = write.mock.calls.at(-1)![0];
+    expect(after.loginId).not.toBe(before.loginId);
+    expect(after.accountSource?.subject).toBe(subject);
+    expect(after.accountSource?.loginId).not.toBe(before.accountSource?.loginId);
+    expect(await store.load(after, () => true)).toEqual(after);
+    client.dispose();
+  });
+
+  it.each(["workspace", "authentication", "marker-write"] as const)(
+    "keeps refused encrypted content denied across owner restart after %s failure",
+    async (reason) => {
+      const encrypted = savedViewFixture(savedViewCleanup),
+        files = new MemoryPrivateFilesystem();
+      const records = createSecureRecordStore({
+        keyPrefix: "restart",
+        secureStore: new MemorySecureStore(),
+      });
+      const store = encrypted.open(),
+        write = vi.spyOn(store, "write");
+      const port = testPort({ held: false, realCredentials: true });
+      const { client } = open(port.factory, files, { records, savedViewStore: store });
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      await client.sessions.save(personalSession());
+      await client.select(serverId);
+      await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
+      await settle();
+      await client.savedViews.flush();
+      const saved = write.mock.calls.at(-1)![0];
+      expect(await store.load(saved, () => true)).toEqual(saved);
+      const credential = await records.read(`personal.${serverId}`);
+      let deletionAttempts = 0;
+      encrypted.keys.interrupt = (step) => {
+        if (step.startsWith("delete:")) {
+          deletionAttempts += 1;
+          if (reason !== "marker-write") throw new Error("locked");
+        }
+      };
+      const markerWrite =
+        reason === "marker-write"
+          ? vi.spyOn(files, "writeFileExclusive").mockRejectedValue(new Error("disk full"))
+          : null;
+      if (reason === "authentication") port.refusals.at(-1)!();
+      else port.workspaceRefusals.at(-1)!();
+      expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
+      await vi.waitFor(() =>
+        expect(client.getSnapshot().savedViewFailure).toMatch(/cleanup could not be completed/u),
+      );
+      await client.savedViews.flush();
+      expect(await records.read(`personal.${serverId}`)).toBe(credential);
+      const marker = `/private/saved-view-denials/${serverId}.deny`;
+      if (markerWrite) {
+        expect(deletionAttempts).toBe(1);
+        expect(encrypted.keys.keys).toEqual([]);
+        expect(files.text(marker)).toBeNull();
+      } else {
+        expect(files.text(marker)).toBe("");
+      }
+      // Restart immediately, before marker repair or any foreground retry.
+      const beforeRestart = deletionAttempts;
+      client.dispose();
+      const offline = testPort({ held: false, realCredentials: true, verification: "unreachable" });
+      const restarted = open(offline.factory, files, {
+        records,
+        savedViewStore: encrypted.open(),
+      }).client;
+      const frames: string[] = [];
+      restarted.savedViews.subscribe(() =>
+        frames.push(restarted.savedViews.getSnapshot().tasks.source),
+      );
+      await restarted.initialize();
+      await settle();
+      expect(restarted.savedViews.getSnapshot().tasks.source).not.toBe("saved");
+      expect(frames).not.toContain("saved");
+      if (markerWrite) {
+        expect(deletionAttempts).toBe(beforeRestart);
+        expect(encrypted.keys.keys).toEqual([]);
+      } else {
+        expect(deletionAttempts).toBeGreaterThan(beforeRestart);
+        expect(encrypted.keys.keys).toHaveLength(1);
+      }
+      markerWrite?.mockRestore();
+      encrypted.keys.interrupt = () => {};
+      await restarted.foregrounded();
+      expect(encrypted.keys.keys).toEqual([]);
+      expect(restarted.getSnapshot().savedViewFailure).toBeNull();
+      expect(await records.read(`personal.${serverId}`)).toBe(credential);
+      expect(await encrypted.open().load(saved, () => true)).toBeNull();
+      restarted.dispose();
+    },
+  );
+
+  it("shows the remembered saved surfaces while normal attachment bootstrap is deferred", async () => {
+    const store = createMemorySavedViews(),
+      records = createSecureRecordStore({
+        keyPrefix: "test",
+        secureStore: new MemorySecureStore(),
+      }),
+      files = new MemoryPrivateFilesystem();
+    const firstPort = testPort({ held: true, realCredentials: true });
+    const { client: first, opened } = open(firstPort.factory, files, {
+      records,
+      savedViewStore: store,
+    });
+    await first.catalog.upsertAndSelect(
+      asInput(testDeploymentConnection({ deploymentId: serverId })),
+    );
+    await first.initialize();
+    await first.signIn(serverId);
+    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
+    await first.oauth.handleCallback(
+      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
+    );
+    await settle();
+    await first.savedViews.flush();
+    const load = vi.spyOn(store, "load");
+    first.dispose();
+    const bootstrap = deferred<void>();
+    let ready = false;
+    const port = testPort({
+      held: true,
+      realCredentials: true,
+      configureClient: (host) => {
+        const read = host.getSnapshot.bind(host),
+          load = host.load.bind(host);
+        vi.spyOn(host, "getSnapshot").mockImplementation(() =>
+          ready
+            ? read()
+            : {
+                ...read(),
+                user: null,
+                session: "checking",
+                savedViewReadiness: {
+                  tasksReady: false,
+                  home: { status: "unknown" },
+                  workspaceRefusal: 0,
+                },
+              },
+        );
+        host.load = async () => {
+          await bootstrap.promise;
+          ready = true;
+          await load();
+        };
+      },
+    });
+    const { client } = open(port.factory, files, { records, savedViewStore: store });
+    await client.initialize();
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().home.source).toBe("saved"));
+    expect(client.getSnapshot().selection).toMatchObject({
+      deploymentId: serverId,
+      status: "ready",
+    });
+    expect(client.savedViews.getSnapshot().tasks).toMatchObject({
+      source: "saved",
+      label: "Updating…",
+    });
+    expect(load).toHaveBeenCalled();
+    expect(port.attached).toHaveLength(1);
+    const capabilities = port.capabilityReaders[0];
+    if (typeof capabilities !== "function") throw new Error("Expected capability reader");
+    expect(await capabilities()).toEqual([]);
+    expect(port.verified).toHaveLength(1);
+    bootstrap.resolve();
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().home.source).toBe("live"));
+    await client.savedViews.flush();
+    expect(await capabilities()).toEqual([]);
+    expect(port.verified).toHaveLength(1);
+    client.dispose();
+  });
+  it("does not revive old presentation or capture when local scope initialization crosses interactive sign-in", async () => {
+    const base = testPort({ held: true }),
+      gate = deferred<void>(),
+      loginId = globalThis.crypto.randomUUID(),
+      writes = vi.fn();
+    let calls = 0;
+    const port: MobileHostPortFactory = (input) => {
+      const value = base.factory(input);
+      return {
+        ...value,
+        credentials: {
+          ...value.credentials,
+          viewLoginId: async () => {
+            calls += 1;
+            if (calls !== 2) await gate.promise;
+            return loginId;
+          },
+        },
+      };
+    };
+    const { client } = open(port, undefined, {
+      savedViewStore: {
+        load: async () => null,
+        write: async (view) => {
+          writes(view);
+        },
+        invalidate: async () => undefined,
+      },
+    });
+    await client.catalog.upsertAndSelect(
+      asInput(testDeploymentConnection({ deploymentId: serverId })),
+    );
+    await client.initialize();
+    await vi.waitFor(() => expect(client.getSnapshot().selection.row?.status).toBe("connected"));
+    await client.signIn(serverId);
+    gate.resolve();
+    await settle();
+    expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
+    await client.savedViews.flush();
+    expect(writes).not.toHaveBeenCalled();
+    client.dispose();
+  });
+
+  it("uses the same controller with synthetic login IDs and memory-only storage in mock mode", async () => {
+    const memory = createMemorySavedViews(),
+      write = vi.spyOn(memory, "write"),
+      secure = new MemorySecureStore();
+    const { client } = open(createMockHostPort({ initialHome: "absent" }), undefined, {
+      savedViewStore: memory,
+      records: createSecureRecordStore({ keyPrefix: "mock-auth", secureStore: secure }),
+    });
+    const connection = mockDeploymentConnections()[0]!;
+    await client.catalog.upsertAndSelect(connection);
+    await client.initialize();
+    await client.select(connection.authority.document.deploymentId);
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().home.source).toBe("live"));
+    await client.savedViews.flush();
+    expect(write).toHaveBeenCalled();
+    expect(write.mock.calls.at(-1)?.[0]).toMatchObject({
+      loginId: expect.any(String),
+      home: { threadId: null, messages: [] },
+    });
+    expect(secure.keys).toEqual([]);
+    write.mockClear();
+    await client.signOutAccount();
+    await client.savedViews.flush();
+    expect(write).toHaveBeenCalled();
+    expect(write.mock.calls.at(-1)?.[1]()).toBe(true);
+    client.dispose();
+  });
+});
+
+describe("MobileClient sign-in", () => {
+  it("attaches a Personal session when optional saved-view identity storage fails", async () => {
+    const base = testPort({ held: false, realCredentials: true }),
+      store = createMemorySavedViews();
+    const load = vi.spyOn(store, "load"),
+      write = vi.spyOn(store, "write");
+    const { client } = open(base.factory, undefined, { savedViewStore: store });
+    await client.initialize();
+    await client.catalog.upsert(connectComputer(1));
+    await client.sessions.save(personalSession());
+    const metadataRead = vi
+      .spyOn(client.sessions, "load")
+      .mockRejectedValue(new Error("Keychain locked"));
     await expect(client.select(serverId)).resolves.toBeUndefined();
     await settle();
-    expect(viewLoginId).toHaveBeenCalled();
+    expect(metadataRead).toHaveBeenCalled();
     expect(base.attached).toHaveLength(1);
     expect(client.getSnapshot().selection.row?.status).toBe("connected");
+    await client.savedViews.flush();
+    expect(client.savedViews.getSnapshot().home.source).not.toBe("saved");
+    expect(load).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
     client.dispose();
   });
 
@@ -1340,7 +1815,6 @@ describe("MobileClient sign-in", () => {
     expect(client.getSnapshot().savedViewFailure).toMatch(/cleanup could not be completed/u);
     fail = false;
     await client.foregrounded();
-    await client.reconcile();
     expect(client.getSnapshot().savedViewFailure).toBeNull();
     client.dispose();
   });

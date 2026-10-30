@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createId } from "@opensteer/core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
@@ -111,14 +111,20 @@ it("reports secure deletion failure and never commits a fenced encryption", asyn
   expect(f.list()).toEqual([]);
 });
 it("settles every interrupted replacement journal on restart", async () => {
-  for (const step of ["create:", "write:", "move:", "delete:"]) {
+  for (const step of ["create:", "write:", "move-old", "move-new", "delete:"]) {
     const f = fixture(),
       value = view(),
       store = f.open();
     await store.write(value, () => true);
     let thrown = false;
     f.interrupt((s) => {
-      if (!thrown && s.startsWith(step)) {
+      const matches =
+        step === "move-old"
+          ? s.startsWith("move:") && s.endsWith(".bin")
+          : step === "move-new"
+            ? s.startsWith("move:") && s.endsWith(".bin.new")
+            : s.startsWith(step);
+      if (!thrown && matches) {
         thrown = true;
         throw new Error("terminated");
       }
@@ -129,6 +135,9 @@ it("settles every interrupted replacement journal on restart", async () => {
     f.interrupt(() => {});
     const loaded = await f.open().load(value, () => true);
     expect(loaded?.userId).toBe(value.userId);
+    expect(loaded?.capturedAt).toBe(
+      step === "move-new" || step === "delete:" ? "2026-10-29T01:00:00.000Z" : value.capturedAt,
+    );
     expect(
       f
         .list()
@@ -141,7 +150,10 @@ it("bounds committed files to four, evicts oldest write, skips on cleanup failur
   const f = fixture(),
     store = f.open(),
     values = Array.from({ length: 6 }, () => view());
-  for (const value of values) await store.write(value, () => true);
+  for (const [index, value] of values.entries()) {
+    await store.write(value, () => true);
+    utimesSync(`${f.directory}/${value.hostIdentity.deploymentId}.bin`, index + 1, index + 1);
+  }
   expect(f.list()).toHaveLength(4);
   expect(f.slots()).toHaveLength(4);
   expect(await store.load(values[0]!, () => true)).toBeNull();

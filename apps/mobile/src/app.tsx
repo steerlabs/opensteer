@@ -160,7 +160,9 @@ function mobileClient(): MobileRoot {
       privateFiles,
     }),
   });
+  const lifecycle = createMobileLifecycle({ appState: AppState, network: Network });
   const client = new MobileClient({
+    lifecycle,
     ...(!configuration.mock ? { savedViewStore: createExpoSavedViews(storeName) } : {}),
     accountOrigin: configuration.accountOrigin,
     catalogFilePath: `${root}${storeName}/deployments.json`,
@@ -178,7 +180,7 @@ function mobileClient(): MobileRoot {
         })
       : createNetworkHostPort({
           fetch: mobileHostFetch,
-          lifecycle: createMobileLifecycle({ appState: AppState, network: Network }),
+          lifecycle,
           now: () => new Date(),
           openWebSocket: openReactNativeSocket,
         }),

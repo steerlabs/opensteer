@@ -3,13 +3,21 @@ import { mainWorkspace, type HostClient, type HostSnapshot } from "@opensteer/cl
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import { useSidebarMenu } from "../navigation-header.js";
 import { color, space } from "../theme.js";
+import { SavedChat } from "../thread/saved-chat.js";
 import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
-import { useMobileClient } from "../ui/mobile-client-context.js";
+import { useMobileClient, useHostUserId, useSavedSurface } from "../ui/mobile-client-context.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -36,6 +44,18 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
   const headerHeight = useHeaderHeight();
   const hostClient = useAttachedHost(deploymentId);
+  const mobile = useMobileClient();
+  const saved = useSavedSurface(deploymentId, "home");
+  const userId = useHostUserId(hostClient);
+  const readIntroHeld = useCallback(
+    () => userId !== null && homeIntroHeld(mobile.drafts, deploymentId, userId),
+    [mobile.drafts, deploymentId, userId],
+  );
+  const introHeld = useSyncExternalStore(mobile.drafts.subscribe, readIntroHeld, readIntroHeld);
+  const introOwner = useRef<HostClient | null>(null);
+  if (hostClient && introHeld) introOwner.current = hostClient;
+  const showSaved =
+    saved.source === "saved" && (hostClient === null || introOwner.current !== hostClient);
   // The Thread the pane is showing: none while the first message is written.
   const [shownThreadId, setShownThreadId] = useState<string | null>(null);
   useSidebarMenu(hostClient);
@@ -45,11 +65,36 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   useThreadHeader({
     deploymentId,
     fallbackTitle: CHAT_THREAD_TITLE,
+    ...(showSaved && saved.source === "saved"
+      ? {
+          savedSubtitle: {
+            label: saved.label,
+            capturedAt: saved.capturedAt,
+            ...(saved.label === "Unavailable · Saved view"
+              ? {
+                  onRetry: () => {
+                    void mobile.retrySelection();
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
     header,
     hostClient,
     threadId,
   });
 
+  if (showSaved && saved.source === "saved")
+    return (
+      <Screen edgeToEdge>
+        <SavedChat
+          content={saved.content}
+          capturedAt={saved.capturedAt}
+          paddingTop={headerHeight}
+        />
+      </Screen>
+    );
   if (hostClient === null) {
     return <DeploymentGate deploymentId={deploymentId} paddingTop={headerHeight} />;
   }
@@ -182,14 +227,7 @@ function HomeConversation(props: {
   // quote or files saved but not yet sent — so it stays until it says it is done.
   const [intro, setIntro] = useState(() => {
     if (homeThreadId === null) return true;
-    if (drafts.readPending(deploymentId, userId, homeIntroDraftKey) !== null) return true;
-    const saved = drafts.readDraft(deploymentId, userId, homeIntroDraftKey);
-    return (
-      saved !== null &&
-      (saved.text.trim() !== "" ||
-        saved.quote !== undefined ||
-        (saved.attachments?.length ?? 0) > 0)
-    );
+    return homeIntroHeld(drafts, deploymentId, userId);
   });
   // The Home the intro just made, for the moment before the snapshot names it.
   const [created, setCreated] = useState<string | null>(null);
@@ -242,6 +280,19 @@ function HomeConversation(props: {
       requestId={requestId ?? null}
       threadId={threadId}
     />
+  );
+}
+
+function homeIntroHeld(
+  drafts: import("../client/thread-drafts.js").ThreadDraftStore,
+  deploymentId: string,
+  userId: string,
+): boolean {
+  if (drafts.readPending(deploymentId, userId, homeIntroDraftKey) !== null) return true;
+  const draft = drafts.readDraft(deploymentId, userId, homeIntroDraftKey);
+  return (
+    draft !== null &&
+    (draft.text.trim() !== "" || draft.quote !== undefined || (draft.attachments?.length ?? 0) > 0)
   );
 }
 

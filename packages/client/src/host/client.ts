@@ -1,4 +1,5 @@
 import type { BrowserPasskeys } from "./browser-passkeys.js";
+import type { SavedViewReadiness } from "./saved-host-view.js";
 import type { BrowserEditingStore } from "./browser-editing.js";
 import type { BrowserPreferences } from "./browser-preferences.js";
 import type {
@@ -690,6 +691,7 @@ type HostSessionState = "authenticated" | "authentication-required" | "checking"
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
 export interface HostSnapshot {
+  readonly savedViewReadiness?: SavedViewReadiness;
   readonly latestPlaces?: readonly ThreadPlaceReference[];
   /**
    * Per conversation this client shows, whether its browser usage has been
