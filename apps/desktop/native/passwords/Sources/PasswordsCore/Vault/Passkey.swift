@@ -33,14 +33,18 @@ public struct Passkey: Sendable, CustomStringConvertible, CustomDebugStringConve
     }
   }
 
-  func validate(origins: [String]) throws {
+  func validateLimits() throws {
     guard (16...1023).contains(credentialId.count), (1...64).contains(userHandle.count),
       userName.utf8.count <= 1024, userDisplayName.utf8.count <= 1024
     else { throw VaultError.invalidItem("passkey fields exceed their limits") }
+    guard !rpId.isEmpty, rpId.utf8.count <= VaultLimits.maxLoginURLBytes else { throw VaultError.invalidItem("passkey relying party ID exceeds its limits") }
+  }
+
+  func validate(origins: [String], siteOfOrigin: (String) -> String? = Origins.site(ofOrigin:)) throws {
     let origin = "https://" + rpId
     guard Origins.normalizeOrigin(origin)?.sameBytes(as: origin) == true,
       !rpId.contains(":"), !rpId.contains("/"), !rpId.contains("?"), !rpId.contains("#"),
-      let site = Origins.site(ofOrigin: origin), origins.contains(where: { Origins.site(ofOrigin: $0) == site })
+      let site = siteOfOrigin(origin), origins.contains(where: { siteOfOrigin($0) == site })
     else { throw VaultError.invalidPasskeyOrigins }
   }
 

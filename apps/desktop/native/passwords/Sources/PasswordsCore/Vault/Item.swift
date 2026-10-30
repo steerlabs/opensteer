@@ -159,6 +159,7 @@ public struct ItemDraft: Sendable {
   /// checked before asking the person to authenticate.
   public func validate() throws {
     try validateLimits()
+    for passkey in passkeys { try passkey.validate(origins: origins) }
     for origin in origins {
       guard let normalized = Origins.normalizeOrigin(origin), normalized.sameBytes(as: origin) else {
         throw VaultError.invalidItem("\(origin) is not a normalised HTTPS origin")
@@ -185,7 +186,7 @@ public struct ItemDraft: Sendable {
     var credentials = Set<Data>()
     var handles: [String: Set<Data>] = [:]
     for passkey in passkeys {
-      try passkey.validate(origins: origins)
+      try passkey.validateLimits()
       guard credentials.insert(passkey.credentialId).inserted,
         handles[passkey.rpId, default: []].insert(passkey.userHandle).inserted
       else { throw VaultError.invalidItem("passkeys repeat a credential or relying party and user handle") }

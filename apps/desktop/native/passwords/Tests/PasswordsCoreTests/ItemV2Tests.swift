@@ -45,9 +45,13 @@ final class ItemV2Tests: XCTestCase {
       ("userName", .string(String(repeating: "é", count: 513))),
       ("userDisplayName", .string(String(repeating: "x", count: 1025))),
       ("createdAt", .string("1")),
-    ] + ["EXAMPLE.com", "127.0.0.1", "localhost", "com", "example.com.", "xn--invalid-.com", "example.org", "example.com:443", "example.com/path"].map { ("rpId", .string($0)) }
+    ]
     for (field, value) in invalid {
       XCTAssertThrowsError(try Item(json: replacing(json, "passkeys", .array([replacing(key, field, value)])), revision: 1), field)
+    }
+    for rpId in ["EXAMPLE.com", "127.0.0.1", "localhost", "com", "example.com.", "xn--invalid-.com", "example.org", "example.com:443", "example.com/path"] {
+      let item = try Item(json: replacing(json, "passkeys", .array([replacing(key, "rpId", .string(rpId))])), revision: 1)
+      XCTAssertThrowsError(try item.validate(), rpId)
     }
     for keys in [[], [key, key], Array(repeating: key, count: 9)] {
       XCTAssertThrowsError(try Item(json: replacing(json, "passkeys", .array(keys)), revision: 1))
@@ -59,6 +63,34 @@ final class ItemV2Tests: XCTestCase {
     }
     for password in ["", String(repeating: "x", count: 4097)] {
       XCTAssertThrowsError(try Item(json: replacing(json, "password", .string(password)), revision: 1))
+    }
+  }
+
+  func testPasskeySiteRuleChangeRefusesValidation() throws {
+    let item = try Item(json: payload(), revision: 1)
+    let passkey = try XCTUnwrap(item.passkeys.first)
+    try passkey.validate(origins: item.origins, siteOfOrigin: { _ in "old-site" })
+    XCTAssertThrowsError(try passkey.validate(origins: item.origins, siteOfOrigin: { _ in nil }))
+    let decoded = try Item(json: item.json, revision: 1)
+    XCTAssertEqual(decoded.passkeys.count, 1)
+  }
+
+  func testSavedPasskeyWithChangedDomainRulesRemainsReadable() throws {
+    let json = payload()
+    guard case .array(let keys)? = json["passkeys"], let key = keys.first else { return XCTFail() }
+    for rpId in ["com", "example.net"] {
+      let stale = replacing(json, "passkeys", .array([replacing(key, "rpId", .string(rpId))]))
+      let fixture = try VaultFixture()
+      _ = try install(stale, in: fixture.open(), owner: fixture.owner, store: fixture.protected)
+      try fixture.withUnlocked { unlocked in
+        let item = try XCTUnwrap(unlocked.items().first)
+        XCTAssertEqual(item.passkeys.first?.rpId, rpId)
+        XCTAssertEqual(try unlocked.items(withinSite: "https://example.com").count, 1)
+        XCTAssertThrowsError(try unlocked.update(item))
+        _ = try unlocked.add([draft("example.org")])
+        XCTAssertEqual(try unlocked.items().count, 2)
+        XCTAssertEqual(try unlocked.items(withinSite: "https://example.org").count, 1)
+      }
     }
   }
 
