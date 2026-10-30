@@ -13,6 +13,7 @@ const AuthTokenSchema = z.string().min(16).max(65_536).refine(noAsciiControl);
 const ScopeSchema = z.string().regex(/^[A-Za-z0-9:._/-]{1,100}$/u);
 
 export const OAuthCredentialSchema = z.strictObject({
+  viewLoginId: z.uuid().optional(),
   accessToken: AuthTokenSchema,
   accessTokenExpiresAt: IsoDateTimeSchema,
   grantedScopes: z.array(ScopeSchema).max(32),
