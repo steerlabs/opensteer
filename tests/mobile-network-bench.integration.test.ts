@@ -129,6 +129,8 @@ integration("phone network performance using the real shared client", () => {
                 profile,
                 run,
                 signal,
+                onManifest: (manifest) => manifests.push(manifest),
+                onResult: (sample) => samples.push(sample),
                 scenarios: options
                   ? options.scenario === "all"
                     ? scenarios
@@ -146,8 +148,6 @@ integration("phone network performance using the real shared client", () => {
                     : {}),
                 },
               });
-              manifests.push(result.manifest);
-              samples.push(...result.results);
               for (const sample of result.results) {
                 if (sample.scenario === "cold-attach") {
                   expect(sample.resume.snapshots).toBe(1);

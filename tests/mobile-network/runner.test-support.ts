@@ -149,6 +149,9 @@ export async function runMobileNetworkSample(options: {
   readonly run: number;
   readonly scenarios: readonly Scenario[];
   readonly signal: AbortSignal;
+  /** Receives each measurement as it completes, so a later failure keeps it. */
+  readonly onManifest?: (manifest: Awaited<ReturnType<typeof seedWorkspace>>["manifest"]) => void;
+  readonly onResult?: (result: ScenarioResult) => void;
 }) {
   const cleanup: (() => Promise<unknown>)[] = [];
   const errors: unknown[] = [];
@@ -162,6 +165,7 @@ export async function runMobileNetworkSample(options: {
     cleanup.push(() => host.close());
     console.info(`Seeding ${options.seed}/${options.profile} run ${options.run}`);
     const fixture = await seedWorkspace(host, options.seed, cleanup);
+    options.onManifest?.(fixture.manifest);
     console.info(
       `Seeded ${fixture.manifest.tasks} tasks, ${fixture.manifest.homeMessages} Chat messages, ${fixture.manifest.tabs} tabs`,
     );
@@ -434,7 +438,10 @@ export async function runMobileNetworkSample(options: {
           events: websocket.reduce((total, message) => total + (message.eventCount ?? 0), 0),
         },
       };
-      if (selected) results.push(result);
+      if (selected) {
+        results.push(result);
+        options.onResult?.(result);
+      }
     }
     outcome = { manifest: fixture.manifest, results };
   } catch (error) {
