@@ -127,7 +127,9 @@ says so where the indicator or typing would stand (`threadStartHold`); an ordina
 does not.
 
 Unopened Threads receive domain state updates without accumulating a transcript;
-opening one reads fresh durable history. Already hydrated transcripts keep receiving
+opening one reads fresh durable history. Home starts history hydration as soon as
+authenticated bootstrap names it; activation joins that read without claiming it
+early or advancing a read marker. Already hydrated transcripts keep receiving
 updates so returning readers retain their older messages and position. Reconnect
 snapshots preserve a shown transcript and its matching
 history cursor until a history read succeeds. A snapshot that overtakes an ongoing

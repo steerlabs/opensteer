@@ -454,6 +454,9 @@ owner: it holds the catalog, the credential stores and the selection, and create
 single `HostClient`. Changing the selection bumps a monotone generation and disposes the previous
 client before the next exists, so two Hosts are never subscribed at once and a slow attachment that
 lost the race disposes itself. No screen constructs a client, opens a socket, or reads a credential.
+Authenticated bootstrap starts Home history through the shared hydration owner, so Chat
+joins that read when activated; prefetch neither claims Chat nor marks it read, including
+while the sidebar covers it.
 
 **The Host's answer outranks the record.** A credential this device holds is not a credential the
 Host still accepts: a session revoked from a browser leaves the record untouched, so a row reads

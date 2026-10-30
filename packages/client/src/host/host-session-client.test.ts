@@ -4558,6 +4558,167 @@ function queueItem(message: Message, canSteer: boolean) {
   return { canCancel: true, canMove: true, canSteer, input: pendingInput(message), message };
 }
 
+describe("HttpHostClient Home prefetch", () => {
+  function homeStartup() {
+    const workspace = makeWorkspace();
+    const home: Thread = { ...makeThread(workspace.id), role: "conversation" };
+    workspace.homeThreadId = home.id;
+    const history: ReturnType<typeof Promise.withResolvers<Response>>[] = [];
+    const operations: string[] = [];
+    const commands: string[] = [];
+    const sockets: FakeSocket[] = [];
+    let refuse = false;
+    const page = (title = "Home") => ({
+      threadId: home.id,
+      thread: { ...home, title },
+      events: [],
+      readState: {
+        ...defaultReadState(home.id),
+        asOfSequence: "7",
+        readSequence: "2",
+        unreadSequence: "7",
+      },
+      window: {
+        threadId: home.id,
+        byteCount: 0,
+        itemCount: 0,
+        totalItems: 0,
+        hasMore: false,
+        nextBefore: null,
+      },
+    });
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      browserUsageReads: "observed",
+      timeZoneReports: "observed",
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      fetch: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        const name = url.pathname.slice("/v1/rpc/".length);
+        operations.push(name);
+        if (name === "thread.events.list") {
+          const read = Promise.withResolvers<Response>();
+          history.push(read);
+          return read.promise;
+        }
+        if (name === "auth.config" && refuse)
+          return json(
+            { error: { code: "unauthorized", message: "Sign in", retryable: false } },
+            401,
+          );
+        if (name === "commands.dispatch") {
+          const command = rpcPayload(url, init);
+          commands.push(requiredString(command, "type"));
+          if (command.type === "viewer.timeZone.update")
+            return json({ timeZone: command.timeZone });
+        }
+        return json(bootstrap([workspace]));
+      },
+    });
+    return {
+      client,
+      commands,
+      history,
+      home,
+      operations,
+      page,
+      sockets,
+      workspace,
+      refuse: () => {
+        refuse = true;
+      },
+      close: () => {
+        client.dispose();
+        for (const read of history) read.resolve(json(page()));
+      },
+    };
+  }
+
+  it.each(["pending", "ready"] as const)(
+    "starts Home history before activation, joins the %s prefetch and never marks reading",
+    async (state) => {
+      const run = homeStartup();
+      try {
+        await run.client.load();
+        expect(run.history).toHaveLength(1);
+        expect(run.operations).not.toContain("thread.browserUsage.get");
+        expect(run.operations).not.toContain("thread.assignments.list");
+        expect(run.commands).not.toContain("thread.read.mark");
+        if (state === "ready") {
+          run.history[0]!.resolve(json(run.page()));
+          await vi.waitFor(() =>
+            expect(run.client.getSnapshot().threadReadStates[run.home.id]?.readSequence).toBe("2"),
+          );
+        }
+        run.client.activateThread(run.home.id);
+        expect(run.history).toHaveLength(1);
+        run.history[0]!.resolve(json(run.page()));
+        await vi.waitFor(() =>
+          expect(
+            run.client.getSnapshot().threads.find(({ id }) => id === run.home.id)?.unread,
+          ).toBe(true),
+        );
+        run.client.activateThread(run.home.id);
+        expect(run.history).toHaveLength(1);
+        expect(run.client.getSnapshot().threadReadStates[run.home.id]?.readSequence).toBe("2");
+        expect(run.commands).not.toContain("thread.read.mark");
+      } finally {
+        run.close();
+      }
+    },
+  );
+
+  it("retries a failed prefetch through the hydration owner on activation", async () => {
+    const run = homeStartup();
+    try {
+      await run.client.load();
+      expect(run.history).toHaveLength(1);
+      run.history[0]!.resolve(
+        json({ error: { code: "internal", message: "Lost history", retryable: true } }, 500),
+      );
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().threadLookups[run.home.id]).toBe("failed"),
+      );
+      run.client.activateThread(run.home.id);
+      expect(run.history).toHaveLength(2);
+      run.history[1]!.resolve(json(run.page()));
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().threadLookups[run.home.id]).toBeUndefined(),
+      );
+      expect(run.commands).not.toContain("thread.read.mark");
+    } finally {
+      run.close();
+    }
+  });
+
+  it("starts fresh hydration after sign-out and fences the previous viewer's pending history", async () => {
+    const run = homeStartup();
+    try {
+      await run.client.load();
+      expect(run.history).toHaveLength(1);
+      run.refuse();
+      await run.client.rpc["auth.config"]({});
+      expect(run.client.getSnapshot().homeThreadId).toBeNull();
+      await run.client.reauthenticate();
+      expect(run.history).toHaveLength(2);
+      run.history[0]!.resolve(json(run.page("Old viewer")));
+      run.history[1]!.resolve(json(run.page("Current viewer")));
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().threads.find(({ id }) => id === run.home.id)?.title).toBe(
+          "Current viewer",
+        ),
+      );
+      expect(run.commands).not.toContain("thread.read.mark");
+    } finally {
+      run.close();
+    }
+  });
+});
+
 describe("HttpHostClient catalog startup", () => {
   function startup(options: { readonly failSession?: number } = {}) {
     const workspace = makeWorkspace();

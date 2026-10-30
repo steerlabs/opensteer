@@ -2228,7 +2228,6 @@ export class HttpHostClient {
         if (this.#threadHydrations.get(threadId) === operation) {
           this.#threadHydrations.delete(threadId);
         }
-        this.#hydrationBuffers.delete(threadId);
       });
     this.#threadHydrations.set(threadId, operation);
   }
@@ -3601,6 +3600,9 @@ export class HttpHostClient {
       workspaceWindow: payload.workspaceWindow,
       workspaces,
     });
+    // Warm Home through the hydration owner without claiming a conversation
+    // or marking it read. A later activation joins this same read.
+    if (this.#snapshot.homeThreadId) this.#ensureThreadHydration(this.#snapshot.homeThreadId);
     // A patch older than this read is already in what it answered.
     for (const [sessionId, mark] of this.#presenceMarks) {
       if (mark > presenceMark) continue;
@@ -5100,6 +5102,8 @@ export class HttpHostClient {
     this.#deniedAssignments.clear();
     this.#observedThreads.clear();
     this.#historicalThreads.clear();
+    this.#threadHydrations.clear();
+    this.#hydrationBuffers.clear();
     this.#hydratedThreads.clear();
     this.#invalidatedHydrations.clear();
     this.#readStateLoads.clear();
