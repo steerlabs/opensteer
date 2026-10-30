@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   DEFAULT_THREAD_ACCESS_MODE,
   type ExecutionPreferences,
@@ -7,8 +8,8 @@ import {
 } from "@opensteer/core";
 import {
   accessModeOptions,
-  accessModeUnavailableReason,
   findRoute,
+  executionUsageNotice,
   routeOnAccount,
   selectionForModel,
   selectionForRoute,
@@ -17,10 +18,9 @@ import {
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
 import { AccessModeControl, accessModeGlyph } from "./access-mode-control.js";
-import { AccountPicker } from "./account-picker.js";
 import { Icon } from "./icon.js";
 import type { ExecutionAccess } from "./execution-settings.js";
-import { optionsSummary } from "./model-options-picker.js";
+import { optionsSummary } from "@opensteer/client/host";
 import { ModelPicker } from "./model-picker.js";
 import { Popover } from "./popover.js";
 import {
@@ -32,6 +32,7 @@ import {
 
 interface ExecutionControlsProps {
   access?: ExecutionAccess | undefined;
+  suppressUsageNotice?: boolean;
   /**
    * The current choice — picked this visit or remembered by the Host — when it
    * no longer resolves to an available placement. Nothing is applied over it,
@@ -79,9 +80,8 @@ interface ExecutionControlsProps {
 /**
  * The composer row's execution choice as one control: the engine's mark and,
  * in words, the engine, the model and its reasoning level. Its menu holds the
- * rest — accounts, models, the model's options and the access mode. Two
- * shortcuts join it only when they fit whole: the account, while the engine
- * has more than one, and the access mode, when it is not the default.
+ * rest — accounts, models, the model's options and the access mode. Access
+ * joins it in the footer only when it differs from Full access.
  *
  * A choice that would end the conversation's current session, or that needs
  * a different access mode, is not applied on press. It opens a review in the
@@ -90,6 +90,7 @@ interface ExecutionControlsProps {
  */
 export function ExecutionControls({
   access,
+  suppressUsageNotice = false,
   blocked = null,
   disabled = false,
   onApply,
@@ -103,24 +104,24 @@ export function ExecutionControls({
   returnFocusRef,
   selection,
 }: ExecutionControlsProps) {
+  const [conversationRequest, setConversationRequest] = useState(0);
+  const usage = suppressUsageNotice ? null : executionUsageNotice(placements, selection);
   const [pending, setPending] = useState(false);
   const [candidate, setCandidate] = useState<{
     readonly outcome: ExecutionSwitchReview;
     readonly selection: ExecutionSelection;
   } | null>(null);
   const rowRef = useRef<HTMLDivElement | null>(null);
+  const [noticeTarget, setNoticeTarget] = useState<Element | null>(null);
+  useLayoutEffect(() => {
+    setNoticeTarget(
+      rowRef.current?.closest(".composer")?.querySelector("[data-composer-notice]") ?? null,
+    );
+  }, []);
   const current = findRoute(placements, selection);
   // A choice that cannot run right now — remembered for a draft, or a Thread's
   // own — stays the pill's subject, named and marked, rather than "Choose AI".
   const stuck = blocked ?? (selection !== null && current === null ? selection : null);
-  const accounts = useMemo(
-    () =>
-      current
-        ? placements.filter((placement) => placement.driverKind === current.placement.driverKind)
-        : [],
-    [current, placements],
-  );
-
   /** Cancel changes nothing at all, and hands the keyboard back to the pill. */
   const cancelReview = () => {
     setCandidate(null);
@@ -196,16 +197,30 @@ export function ExecutionControls({
   };
 
   const controlsDisabled = disabled || pending;
-  // Full access is the default nearly everyone keeps, so the row names a mode
-  // only when it is another one, or one the chosen engine cannot enforce.
-  const accessWorthSeeing =
-    access !== undefined &&
-    (access.mode !== DEFAULT_THREAD_ACCESS_MODE ||
-      (access.engine !== null && accessModeUnavailableReason(access.mode, access.engine) !== null));
+  // Full access needs no reminder in the footer.
+  const accessWorthSeeing = access !== undefined && access.mode !== DEFAULT_THREAD_ACCESS_MODE;
   const options = current && selection ? current.model.options : [];
+  const notice = usage ? (
+    <div className="composer-usage" role="status">
+      {usage.accountTitle} is out of {usage.engineName} usage
+      {usage.resetsAt ? ` until ${usage.resetsAt}` : ""}.{" "}
+      {usage.canSwitch ? (
+        <button
+          type="button"
+          disabled={controlsDisabled}
+          onClick={() => setConversationRequest((value) => value + 1)}
+        >
+          Switch account
+        </button>
+      ) : null}
+    </div>
+  ) : null;
   return (
     <div className="exec-controls" ref={rowRef}>
+      {noticeTarget ? createPortal(notice, noticeTarget) : notice}
       <ModelPicker
+        conversationRequest={conversationRequest}
+        onAccount={chooseAccount}
         blocked={stuck}
         disabled={controlsDisabled}
         // Offered on the AI in use as well as beside the others: recovering an
@@ -243,17 +258,6 @@ export function ExecutionControls({
             : null
         }
       />
-      {current && accounts.length > 1 ? (
-        <AccountPicker
-          accounts={accounts}
-          current={current.placement}
-          disabled={controlsDisabled}
-          model={current.model}
-          onAuthenticate={onAuthenticate}
-          onRefresh={onRefresh}
-          onSelect={chooseAccount}
-        />
-      ) : null}
       {access && accessWorthSeeing ? (
         <AccessModeControl
           disabled={controlsDisabled}

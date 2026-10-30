@@ -16,7 +16,7 @@ import {
   conversationActivityTurn,
   conversationTurnRevealing,
   describeHostConnection,
-  currentConnectionUsage,
+  usageLimitReached,
   describeConnectionReset,
   groupTranscriptEntries,
   incomingTranscriptMessages,
@@ -1125,6 +1125,7 @@ function ThreadView({
               {/* The picker opens while a response runs. What it cannot do is
                   apply — and it says why, instead of being a dead control. */}
               <ExecutionControls
+                suppressUsageNotice={usageRecovery !== null}
                 access={{
                   engine: threadPlacement,
                   mode: thread.accessMode,
@@ -1261,7 +1262,7 @@ export function usageLimitRecovery(
             model.modelId === thread.modelSelection.modelId,
         ) &&
         canContinueThreadOnPlacement(thread, placement) &&
-        !usageExhausted(placement, now, thread.modelSelection),
+        !usageLimitReached(placement, thread.modelSelection, now),
     ) ?? null;
   return {
     accountLabel: current ? placementAccountTitle(current) : "this account",
@@ -1269,23 +1270,6 @@ export function usageLimitRecovery(
     alternativeAccountLabel: alternative ? placementAccountTitle(alternative) : null,
     resetsAt: connection ? describeConnectionReset(connection, now, thread.modelSelection) : null,
   };
-}
-
-/**
- * An account the provider has already refused is no help to a Run that just
- * ran out of capacity, so it is never offered as the way forward. A reading
- * whose window has since reset says nothing, which is why this asks the
- * time-aware evaluation rather than the raw flag.
- */
-function usageExhausted(
-  placement: ThreadPlacementOption,
-  now: number,
-  model: ModelSelection,
-): boolean {
-  const connection = observedAccountConnection(placement.observedConnections);
-  return (
-    connection !== null && currentConnectionUsage(connection, now, model)?.limitReached === true
-  );
 }
 
 /* ---- The conversation under a page, on a phone ---- */

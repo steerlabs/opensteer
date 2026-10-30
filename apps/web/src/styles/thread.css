@@ -1293,14 +1293,6 @@ label.action-row input {
   border-top: 1px solid var(--line);
 }
 
-.picker__item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 36px;
-}
-
 .picker__row {
   flex: 1;
   display: flex;
@@ -1373,408 +1365,6 @@ label.action-row input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The engine and model menu: engines down the side, then the browsed engine's
-   accounts and one account's models. It keeps one size while the reader
-   browses, so moving between engines never makes the panel jump. Doubled to
-   outrank the shared popover's own size limits. */
-.popover.popover--engines {
-  display: flex;
-  width: min(600px, calc(100vw - 20px));
-  height: min(500px, 72vh, calc(100dvh - 20px));
-  max-height: none;
-  max-width: none;
-  padding: 0;
-  overflow: hidden;
-}
-
-.engine-picker {
-  display: flex;
-  width: 100%;
-  min-height: 0;
-}
-
-.engine-picker__rail {
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  gap: var(--space-2);
-  width: 172px;
-  padding: var(--space-8) var(--space-6);
-  overflow-y: auto;
-  border-right: 1px solid var(--line);
-}
-
-.engine-picker__tab {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-8);
-  min-height: 34px;
-  padding: 0 var(--space-10);
-  border-radius: var(--radius-sm);
-  color: var(--muted);
-  font-size: var(--text-md);
-  text-align: left;
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.engine-picker__tab:hover {
-  background: var(--surface-hover);
-  color: var(--text-soft);
-}
-
-.engine-picker__tab[aria-selected="true"] {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.engine-picker__tab > svg,
-.engine-picker__tab .provider-logo {
-  width: 15px;
-  height: 15px;
-  flex: none;
-}
-
-/* An engine with nothing that can run right now still gets a row: its mark
-   recedes and its dot says why it is quiet. */
-.engine-picker__tab--off > svg,
-.engine-picker__tab--off .provider-logo {
-  opacity: 0.55;
-}
-
-.engine-picker__name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.engine-picker__rail .status-dot {
-  width: 6px;
-  height: 6px;
-}
-
-.engine-picker__rail .status-dot--ready {
-  background: var(--green);
-}
-
-.engine-picker__rail .status-dot--attention {
-  background: var(--amber);
-}
-
-.engine-picker__rail .status-dot--idle {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--muted-dim);
-}
-
-.engine-picker__manage {
-  display: flex;
-  flex: none;
-  margin-top: auto;
-  padding-top: var(--space-6);
-}
-
-.engine-picker__main {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.engine-picker__main .picker__search input::-webkit-search-cancel-button {
-  display: none;
-}
-
-/* A new pane settles in rather than snapping: browsing reads as moving
-   through one menu, not as the menu being replaced. */
-.engine-picker__pane,
-.engine-picker__models {
-  animation: pane-in 160ms var(--ease-out);
-}
-
-@keyframes pane-in {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* The account whose models are listed below, while the one in use keeps the
-   check: looking at an account is not choosing it. */
-.picker__row.is-viewing {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-/* The settings of the choice in force, at the menu's foot: one quiet row
-   each, named on the left, set-to on the right. */
-.engine-picker__settings {
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  gap: 1px;
-  max-height: 40%;
-  overflow-y: auto;
-  padding: var(--space-4) var(--space-6);
-  border-top: 1px solid var(--line);
-}
-
-.engine-picker__settings-heading {
-  overflow: hidden;
-  padding: var(--space-6) var(--space-10) var(--space-2);
-  color: var(--muted);
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-bold);
-  letter-spacing: 0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.setting-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  min-height: 34px;
-  padding: 0 var(--space-10);
-  border-radius: var(--radius-sm);
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  text-align: left;
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.setting-row:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.setting-row__glyph {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 16px;
-  color: var(--muted);
-}
-
-.setting-row__glyph > svg {
-  width: 13px;
-  height: 13px;
-}
-
-.setting-row__glyph .level-meter {
-  width: auto;
-  height: 12px;
-  color: var(--text-soft);
-}
-
-.setting-row__name {
-  flex: 1;
-  min-width: 0;
-}
-
-.setting-row__value {
-  overflow: hidden;
-  max-width: 55%;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.setting-row__more {
-  flex: none;
-  width: 11px;
-  height: 11px;
-  color: var(--muted-dim);
-}
-
-/* A mode the chosen engine cannot enforce: named, marked, explained. */
-.setting-row.is-unavailable .setting-row__value,
-.setting-row.is-unavailable .setting-row__glyph {
-  color: var(--red);
-}
-
-.setting-row[role="switch"][aria-checked="true"] .setting-row__value {
-  color: var(--text-soft);
-}
-
-/* A setting's choices take the menu's place, with the way back above them. */
-.engine-picker__detail {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  animation: pane-in 160ms var(--ease-out);
-}
-
-.engine-picker__back {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-6);
-  min-height: 44px;
-  padding: 0 var(--space-12);
-  border-bottom: 1px solid var(--line);
-  color: var(--text);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
-  text-align: left;
-}
-
-.engine-picker__back:hover {
-  background: var(--surface-hover);
-}
-
-.engine-picker__back > svg {
-  width: 13px;
-  height: 13px;
-  color: var(--muted);
-}
-
-.engine-picker__detail .picker__detail {
-  white-space: normal;
-}
-
-@media (hover: none) {
-  .setting-row {
-    min-height: var(--touch-target);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .engine-picker__detail {
-    animation: none;
-  }
-}
-
-.engine-picker__blocked {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-10);
-  margin: var(--space-8) var(--space-6);
-  padding: var(--space-12) var(--space-14);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  color: var(--muted);
-  font-size: var(--text-md);
-  line-height: 1.45;
-}
-
-.engine-picker__blocked .picker__setup {
-  margin: 0;
-}
-
-/* Which engine a search result or recent choice runs on, at the row's end. */
-.picker__route-mark {
-  display: grid;
-  flex: none;
-  place-items: center;
-  margin-left: auto;
-  padding-left: var(--space-8);
-  color: var(--muted-dim);
-}
-
-.picker__route-mark > svg,
-.picker__route-mark .provider-logo {
-  width: 13px;
-  height: 13px;
-}
-
-.picker__glyph .provider-logo {
-  width: 14px;
-  height: 14px;
-}
-
-.switch-review__choices {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: var(--space-4) calc(-1 * var(--space-6)) var(--space-12);
-}
-
-.switch-review__choices .picker__detail {
-  white-space: normal;
-}
-
-/* On a narrow screen the engines become a row of tabs above the search, so
-   the models keep the panel's whole width. */
-@media (max-width: 620px) {
-  .popover.popover--engines {
-    height: min(500px, 72dvh);
-  }
-
-  .engine-picker {
-    flex-direction: column;
-  }
-
-  .engine-picker__rail {
-    flex-direction: row;
-    align-items: center;
-    gap: var(--space-4);
-    width: auto;
-    padding: var(--space-6);
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    scrollbar-width: none;
-  }
-
-  .engine-picker__rail::-webkit-scrollbar {
-    display: none;
-  }
-
-  .engine-picker__tab {
-    gap: var(--space-6);
-    min-height: 32px;
-  }
-
-  .engine-picker__name {
-    flex: none;
-  }
-
-  .engine-picker__manage {
-    margin: 0 0 0 auto;
-    padding: 0;
-  }
-}
-
-@media (hover: none) {
-  .engine-picker__tab {
-    min-height: var(--touch-target);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .engine-picker__pane,
-  .engine-picker__models {
-    animation: none;
-  }
-}
-
-/* "Default" beside the account new Threads land on. Inline with the label so
-   it reads as part of the name, not as a status. */
-.picker__tag {
-  margin-left: var(--space-6);
-  padding: 1px var(--space-6);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--ember-line);
-  background: var(--ember-wash);
-  color: var(--ember);
-  font-size: var(--text-3xs);
-  font-weight: var(--weight-bold);
-  vertical-align: 1px;
 }
 
 .picker__manage {
@@ -1908,10 +1498,10 @@ label.action-row input {
   gap: var(--space-6);
   height: 28px;
   padding: 0 var(--space-10);
-  border: 1px solid var(--line-strong);
+  border: 0;
   border-radius: var(--radius-full);
-  background: var(--surface-elevated);
-  color: var(--text-soft);
+  background: transparent;
+  color: var(--muted);
   font-size: var(--text-sm);
   white-space: nowrap;
   transition:
@@ -1921,13 +1511,13 @@ label.action-row input {
 
 .assignee__button:hover,
 .assignee__button[aria-expanded="true"] {
-  border-color: var(--line-hover);
+  background: var(--surface-hover);
   color: var(--text);
 }
 
 .assignee__button .brand__mark {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 
 .assignee__button > svg {
@@ -1949,11 +1539,6 @@ label.action-row input {
 .assignee-popover .brand__mark {
   width: 16px;
   height: 16px;
-}
-
-@media (max-width: 900px) {
-  /* The mobile top bar carries the title and panel toggle; the desktop
-     breadcrumb header would duplicate it. */
 }
 
 @media (max-width: 680px) {
@@ -2244,3 +1829,297 @@ fieldset.action-panel {
 }
 
 /* The page a message will include: small, inside the box, at its top left. */
+
+.popover.popover--execution {
+  width: min(520px, calc(100vw - 20px));
+  height: min(510px, 80dvh);
+  max-height: none;
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+}
+.execution-menu {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+.execution-menu__engines {
+  flex: 0 0 160px;
+  padding: 10px 6px;
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+}
+.execution-menu__engine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  padding: 10px 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+}
+.execution-menu__engine > svg,
+.execution-menu__engine .provider-logo {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.execution-menu__engine[aria-selected="true"],
+.execution-menu__engine:hover {
+  background: var(--surface-hover);
+}
+.execution-menu__engine small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.execution-menu__engine.is-unavailable {
+  opacity: 0.55;
+}
+.execution-menu__heading {
+  display: block;
+  margin: 16px 8px 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.execution-menu__in-use {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ember);
+  margin-left: auto;
+  flex: none;
+}
+.execution-menu__pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.execution-menu__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+}
+.execution-menu .picker__row {
+  flex: none;
+  padding: 8px 10px;
+  min-height: 40px;
+}
+.execution-menu .picker__label {
+  font-size: 13.5px;
+}
+.execution-menu .picker__detail {
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+}
+.execution-menu__settings {
+  border-top: 1px solid var(--line);
+  padding: 10px 16px;
+  overflow: auto;
+  flex: none;
+  max-height: 50%;
+}
+.execution-setting {
+  padding: 6px 0;
+}
+.execution-setting__label,
+.execution-setting__ends,
+.execution-setting__switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.execution-setting__label > :last-child,
+.execution-setting__ends {
+  color: var(--muted);
+}
+.execution-setting input[type="range"] {
+  width: 100%;
+  accent-color: var(--ember);
+  margin: 12px 0;
+}
+.execution-setting__ends button {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  padding: 3px 8px;
+}
+.execution-setting__ends button[aria-pressed="true"] {
+  color: var(--ember);
+  border-color: var(--ember);
+}
+.execution-setting__switch {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  width: 100%;
+  padding: 4px 0;
+}
+.execution-switch {
+  width: 28px;
+  height: 16px;
+  border-radius: 12px;
+  background: var(--muted-dim);
+  padding: 2px;
+}
+.execution-switch i {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text);
+}
+.execution-switch[data-on="true"] {
+  background: var(--ember);
+}
+.execution-switch[data-on="true"] i {
+  margin-left: 12px;
+}
+.execution-menu__bottom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  width: 100%;
+  padding: 14px 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: left;
+  flex: none;
+}
+.execution-menu__bottom svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.execution-menu__exhausted {
+  color: var(--red);
+}
+.exec-summary {
+  color: var(--muted);
+  font-size: 12px;
+}
+.exec-summary__meter {
+  display: none;
+}
+.exec-summary[data-folded] .exec-summary__words {
+  display: none;
+}
+.exec-summary[data-folded] .exec-summary__meter {
+  display: inline-flex;
+}
+.composer {
+  position: relative;
+}
+.composer-usage {
+  border-radius: inherit;
+  padding: 7px 12px;
+  color: var(--amber);
+  background: var(--amber-wash);
+  font-size: 11px;
+  white-space: normal;
+}
+.composer-usage button {
+  color: inherit;
+  background: transparent;
+  border: 0;
+  text-decoration: underline;
+}
+@media (max-width: 599px) {
+  .popover.popover--execution {
+    left: 0 !important;
+    top: auto !important;
+    bottom: 0;
+    width: 100vw;
+    height: min(620px, 85dvh);
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .execution-menu {
+    flex-direction: column;
+  }
+  .execution-menu__engines {
+    display: flex;
+    flex: none;
+    overflow: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 10px 12px;
+    gap: 6px;
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 12px,
+      black calc(100% - 18px),
+      transparent
+    );
+  }
+  .execution-menu__engines > div {
+    flex: none;
+  }
+  .execution-menu__heading {
+    display: none;
+  }
+  .execution-menu__engine {
+    min-height: 44px;
+    width: auto;
+    border-radius: 24px;
+    padding: 8px 12px;
+  }
+  .execution-menu__engine small {
+    display: inline;
+    margin-left: 5px;
+  }
+  .execution-menu__pane {
+    min-height: 0;
+  }
+  .execution-menu .picker__row,
+  .execution-menu button,
+  .execution-menu input[type="range"] {
+    min-height: 44px;
+  }
+  .execution-menu__settings {
+    max-height: 48%;
+  }
+  .assignee__button {
+    padding: 0 4px;
+    min-height: 44px;
+  }
+  .assignee__name {
+    max-width: 70px;
+  }
+}
+.exec-controls .exec-summary[data-folded] {
+  display: inline-flex;
+}
+.composer__settings {
+  justify-content: flex-start;
+}
+.composer__settings .exec-controls {
+  margin-left: auto;
+}
+
+@media (max-width: 599px) {
+  .composer__footer button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+.execution-menu [aria-label="Models"] .picker__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -125,7 +125,18 @@ function errorText(error: unknown): string {
 async function buildMockWeb(outDir: string): Promise<void> {
   process.env.VITE_OPENSTEER_USE_MOCK = "true";
   await build({
-    build: { emptyOutDir: true, outDir, sourcemap: false },
+    build: {
+      emptyOutDir: true,
+      outDir,
+      sourcemap: false,
+      rollupOptions: {
+        input: {
+          main: path.join(webRoot, "index.html"),
+          composer: path.join(webRoot, "composer-visual.html"),
+          dictation: path.join(webRoot, "dictation-visual.html"),
+        },
+      },
+    },
     configFile: path.join(webRoot, "vite.config.ts"),
     logLevel: "error",
     mode: "production",

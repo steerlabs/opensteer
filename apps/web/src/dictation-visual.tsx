@@ -122,7 +122,7 @@ function Fixture() {
         else if (errors.includes(scenario as DictationError))
           emit({ type: "ended", reason: "failed", error: scenario as DictationError });
       }
-      setTimeout(() => emit({ type: "level", level: 0.7 }), 100);
+      emit({ type: "level", level: 0.7 });
     }, 50);
     return () => clearTimeout(drive);
   }, []);
@@ -133,7 +133,7 @@ function Fixture() {
       <DictationContext value={controller}>
         <Composer
           onSend={async () => {}}
-          placeholder="Ask Opensteer…"
+          placeholder="What should Opensteer do?"
           variant={layout === "conversation" ? "conversation" : "work"}
           attachments={{ client, scope: "dictation-visual", workspaceId }}
           restore={{
