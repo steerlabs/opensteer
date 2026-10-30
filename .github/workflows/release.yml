@@ -288,9 +288,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Drafting tooling comes from this run's commit, like publishing: an older source's
+      # stricter manifest schema must not refuse fields newer checks record. The tag still
+      # targets the manifest's source commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ needs.preflight.outputs.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020

@@ -259,8 +259,8 @@ try {
     if (!response.ok || ((await response.json()) as { ok?: boolean }).ok !== true)
       throw Error("Host health was not OK");
   });
-  await bounded("renderer never presented its loaded window", 10_000, () =>
-    command("/usr/bin/python3", [observer, "window", String(child.pid)], 8_000),
+  await bounded("renderer never presented its loaded window", 12_000, () =>
+    command("/usr/bin/python3", [observer, "window", String(child.pid), "10"], 11_000),
   );
   const output = (
     await Promise.all(

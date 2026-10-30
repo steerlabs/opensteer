@@ -551,6 +551,13 @@ test("publication needs no certificate and verifies the resolved source", () => 
       github: { sha: "2".repeat(40) },
       needs: { preflight: { outputs: { sha: source } } },
     };
+    const draftCheckout = workflow.jobs.draft.steps.find((s) =>
+      s.uses?.startsWith("actions/checkout@"),
+    );
+    assert.equal(
+      runInNewContext(draftCheckout.with.ref.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), context),
+      context.github.sha,
+    );
     for (const job of ["publish-insider", "publish-stable"]) {
       const { steps } = workflow.jobs[job];
       const checkout = steps.find((s) => s.uses?.startsWith("actions/checkout@"));

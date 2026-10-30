@@ -6,7 +6,7 @@ import sys
 import time
 
 
-def visible_window(pid):
+def has_visible_window(pid):
     cg = c.CDLL('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
     cf = c.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
     cg.CGWindowListCopyWindowInfo.argtypes = [c.c_uint32, c.c_uint32]
@@ -38,10 +38,19 @@ def visible_window(pid):
             if (number(window, 'kCGWindowOwnerPID', 4, c.c_longlong) == pid
                     and number(window, 'kCGWindowLayer', 4, c.c_longlong) == 0
                     and (number(window, 'kCGWindowAlpha', 6, c.c_double) or 0) > 0):
-                return
+                return True
     finally:
         cf.CFRelease(windows)
-    raise RuntimeError('No visible loaded desktop window for launched PID')
+    return False
+
+
+def wait_for_window(pid, seconds):
+    # WindowServer has no window-appeared event for another process, so observe until the deadline.
+    deadline = time.monotonic() + seconds
+    while not has_visible_window(pid):
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f'No visible loaded desktop window for launched PID within {seconds}s')
+        time.sleep(0.2)
 
 
 def wait_for_exits(pids):
@@ -73,7 +82,7 @@ def wait_for_exits(pids):
 
 
 if sys.argv[1] == 'window':
-    visible_window(int(sys.argv[2]))
+    wait_for_window(int(sys.argv[2]), float(sys.argv[3]))
 elif sys.argv[1] == 'exit':
     wait_for_exits(map(int, sys.argv[2:]))
 else:
