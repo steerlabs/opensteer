@@ -346,6 +346,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
         const next = { ...host, viewLoginId: globalThis.crypto.randomUUID() };
         const state = await this.#store.setHost(next);
         if (!this.#disposed && isCurrent() && this.#hostCredential(host.deploymentId) === host) {
+          this.#pendingHostWrites.delete(host.deploymentId);
           this.#adoptHostCredentials(state.hosts);
         }
       }

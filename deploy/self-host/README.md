@@ -2,8 +2,7 @@
 
 Agent Phone isn’t included in self-built images yet.
 
-Use Git and Docker Engine 29.2.1 or newer with Compose 5.1.3 and Buildx 0.36.1
-(the versions used for this rehearsal). Docker Desktop may supply these plugins.
+Use Git and Docker Engine 29.2.1 or newer with Compose 5.1.3 and Buildx 0.36.1. Docker Desktop may supply these plugins.
 No host Node, pnpm, Java or Android SDK is needed. The daemon needs Internet
 access to public image registries and package repositories. This walkthrough
 uses a local-directory workspace on a cohosted Linux Runner; it needs neither
@@ -39,7 +38,7 @@ Edit `deploy/self-host/config.env`: the initializer fills the required release
 version, source revision and stable local workspace environment ID. Set the
 required `OPENSTEER_CANONICAL_ORIGIN` to the exact URL you will open, including
 scheme and port. Keep `OPENSTEER_MODE=production`: images carry a verified web distribution.
-For a local rehearsal use `https://localhost`; Caddy issues a local certificate,
+For local use, use `https://localhost`; Caddy issues a local certificate,
 so accept its certificate warning in your browser before signing in. For an
 Internet deployment use your DNS hostname with `https://`; ports 80 and 443
 must reach this machine so Caddy can obtain a publicly trusted certificate. Keep the other uncommented defaults,

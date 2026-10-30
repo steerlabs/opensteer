@@ -3,6 +3,8 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { nodeApp } from "../../scripts/tsup-node-app.js";
 import { runnerExternals } from "../../scripts/runner-build-options.js";
+
+import { stagePasskeysAddon } from "./scripts/build-passkeys-addon.js";
 import { signingBuildPlugin } from "./scripts/signing-build-plugin.js";
 
 export default defineConfig([
@@ -16,6 +18,7 @@ export default defineConfig([
       "electron",
     ],
     onSuccess: async () => {
+      await stagePasskeysAddon();
       await mkdir("dist", { recursive: true });
       const releaseTarget = path.join("dist", "desktop-release.json");
       // Release builds copy the manifest prepare-release-resources staged and

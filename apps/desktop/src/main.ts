@@ -2,6 +2,8 @@ import { autoUpdater } from "electron-updater";
 import { startDesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
 import { DesktopWebLinks, routeDesktopUrl } from "./app/web-links.js";
+import { DesktopPasskeyRequests } from "./passkeys/passkey-requests.js";
+import type { NativePasskeys } from "./passkeys/native-passkeys.js";
 import { DesktopDownloads } from "./downloads/desktop-downloads.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { DesktopBrowserPresentationManager } from "./browser/browser-presentation.js";
@@ -9,7 +11,10 @@ import { randomBytes } from "node:crypto";
 import { ComputerAppApprovalService } from "./computer-app-approval-service.js";
 import { ComputerAppSetupGuide, dataGrantSettingsUrls } from "./computer-app-setup-guide.js";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
-import { homedir } from "node:os";
+import { homedir, release } from "node:os";
+import { DictationService } from "./dictation/dictation-service.js";
+import { NativeDictationHelperClient } from "./dictation/helper-client.js";
+import { bundledDictationBrokerPath } from "./dictation/paths.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -62,6 +67,7 @@ import { ElectronServiceNetwork } from "./app/electron-service-network.js";
 import {
   configureDesktopSession,
   desktopWebPreferences,
+  desktopWindowForContents,
   ElectronWindowFactory,
 } from "./app/electron-window.js";
 import { createDesktopApplicationMenu } from "./app/application-menu.js";
@@ -320,6 +326,32 @@ async function runDesktop(
   });
   // One Opensteer Passwords connection for this desktop. A development build
   // talks only to the development broker, whose vault holds test data.
+  const dictation = new DictationService({
+    platform: process.platform,
+    arch: process.arch,
+    osMajor: Number(release().split(".")[0]),
+    translated: app.runningUnderARM64Translation,
+    openSettings: () =>
+      shell.openExternal(
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+      ),
+    client: new NativeDictationHelperClient({
+      development: !app.isPackaged,
+      bundledAppPath: bundledDictationBrokerPath({
+        developmentRoot: path.resolve(import.meta.dirname, "..", "..", ".."),
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+      }),
+    }),
+  });
+  const interruptDictation = () => dictation.interrupt();
+  powerMonitor.on("suspend", interruptDictation);
+  powerMonitor.on("lock-screen", interruptDictation);
+  app.once("before-quit", () => {
+    dictation.close();
+    powerMonitor.removeListener("suspend", interruptDictation);
+    powerMonitor.removeListener("lock-screen", interruptDictation);
+  });
   const passwords = new PasswordsService({
     appVersion: app.getVersion(),
     bundledBrokerPath: () =>
@@ -497,11 +529,23 @@ async function runDesktop(
     projection: accessProjection,
     sessions: hostSessions,
   });
+  const nativePasskeys: NativePasskeys = {
+    available: () => false,
+    perform: async () => ({ kind: "refused", error: "NotAllowedError" }),
+  };
   const browserPresentation = new DesktopBrowserPresentationManager({
     transport: hostTransport,
     glassPreload: path.join(import.meta.dirname, "glass-preload.cjs"),
     onError: (error) => reportNonFatal("desktop.browser.presentation-failed", error),
     quit: () => app.quit(),
+  });
+  const passkeys = new DesktopPasskeyRequests({
+    presentations: browserPresentation,
+    native: nativePasskeys,
+    ownOrigins: ownOrigins.current,
+    refreshOwnOrigins: () => ownOrigins.refresh(),
+    transport: hostTransport,
+    windowForContents: desktopWindowForContents,
   });
   const closeClearedAccountSockets = accountBrokeredHostSessions.subscribe(() =>
     hostTransport.closeAllSockets(),
@@ -886,6 +930,7 @@ async function runDesktop(
   const unregisterBridge = registerDesktopBridge({
     webLinks,
     isWorkspaceContents: (sender) => sender === workspaceContents,
+    passkeys,
     localVisibility,
     access,
     agentPhone: {
@@ -944,6 +989,7 @@ async function runDesktop(
     log: reportEvent,
     ipcMain,
     downloads,
+    dictation,
     passwords: {
       open: () => passwords.open(),
       signIns: passwordsSignIns,
@@ -971,6 +1017,7 @@ async function runDesktop(
     onCreated: (window) => {
       workspaceContents = window.webContents;
       browserPresentation.attachWindow(window);
+      passkeys.attachWindow(window);
       window.on("focus", () => {
         if (shutdown.requested) return;
         access.networkChanged();
@@ -1082,7 +1129,10 @@ async function runDesktop(
     step: "stop-browser-presentation",
     order: 75,
     timeoutMs: 1_000,
-    stop: () => browserPresentation.dispose(),
+    stop: () => {
+      passkeys.dispose();
+      browserPresentation.dispose();
+    },
   });
   shutdown.add({
     component: "desktop",

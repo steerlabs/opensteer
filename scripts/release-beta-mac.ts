@@ -345,6 +345,19 @@ function credentials(config: MacConfig) {
   ];
 }
 
+export function submitMacArchiveForNotarization(
+  config: MacConfig,
+  context: MacContext,
+  archive: string,
+) {
+  return execute(
+    context,
+    "/usr/bin/xcrun",
+    ["notarytool", "submit", archive, ...credentials(config), "--wait", "--output-format", "json"],
+    900_000,
+  );
+}
+
 export async function preflightMac(input: MacConfig, context: MacContext) {
   const config = macConfigSchema.parse(input);
   const result = await preflightBuild(config, context);
@@ -445,7 +458,11 @@ async function preflightBuild(config: BuildConfig, context: MacContext) {
   };
 }
 
-async function buildSignedMac(config: BuildConfig, context: MacContext) {
+export async function buildSignedMac(
+  config: BuildConfig,
+  context: MacContext,
+  channel: "beta" | "stable" = "beta",
+) {
   const started = Date.now();
   await requireCoordinatorPackaging(context);
   if (
@@ -462,7 +479,7 @@ async function buildSignedMac(config: BuildConfig, context: MacContext) {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     OPENSTEER_DESKTOP_RELEASE: "1",
-    OPENSTEER_DESKTOP_RELEASE_CHANNEL: "beta",
+    OPENSTEER_DESKTOP_RELEASE_CHANNEL: channel,
     OPENSTEER_DESKTOP_TARGET_ARCH: config.architecture,
     OPENSTEER_DESKTOP_DEFER_NOTARIZATION: "1",
     OPENSTEER_RELEASE_VERSION: context.identity.version,
@@ -580,8 +597,12 @@ async function buildSignedMac(config: BuildConfig, context: MacContext) {
     45 * 60_000,
     env,
   );
+  const builtApp =
+    channel === "beta"
+      ? appPath(config, context)
+      : path.join(context.sourceDirectory, "apps/desktop/release/mac-arm64/Opensteer.app");
   const packagedRuntime = await readPersonalRuntimeRelease(
-    path.join(appPath(config, context), "Contents/Resources/personal-runtime"),
+    path.join(builtApp, "Contents/Resources/personal-runtime"),
     { architecture: config.architecture, operatingSystem: "darwin" },
   );
   if (
@@ -589,7 +610,7 @@ async function buildSignedMac(config: BuildConfig, context: MacContext) {
     (await hashFile(path.join(personalRuntimeSource, "release.json")))
   )
     throw new Error("Packaged Personal runtime differs from the built runtime");
-  await verifySignedBundle(config.targets[0], appPath(config, context), config, context);
+  await verifySignedBundle(config.targets[0], builtApp, config, context, channel);
   const phone = z
     .object({ apkSha256: digest, manifestSha256: digest })
     .parse(
@@ -773,9 +794,13 @@ async function verifySignedBundle(
   app: string,
   config: BuildConfig,
   context: MacContext,
+  channel: "beta" | "stable" = "beta",
 ) {
   for (const [key, expected] of [
-    ["CFBundleIdentifier", "com.steerlabs.opensteer.beta"],
+    [
+      "CFBundleIdentifier",
+      channel === "beta" ? "com.steerlabs.opensteer.beta" : "com.opensteer.opensteer",
+    ],
     ["CFBundleShortVersionString", context.identity.version],
     ["CFBundleVersion", context.identity.version],
     ["OpensteerSourceRevision", context.identity.sourceRevision],

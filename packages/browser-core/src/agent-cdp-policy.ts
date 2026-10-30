@@ -22,6 +22,48 @@ const contextParameters: ReadonlySet<string> = new Set([
   "uniqueContextId",
 ]);
 
+/**
+ * Allowlisted agent methods that only read a page: they run no page script and
+ * change nothing a script could react to. Any other admitted method may lead
+ * the page to start a passkey ceremony, so it counts as agent activity.
+ */
+export const agentObservationMethods: ReadonlySet<string> = new Set([
+  "Accessibility.disable",
+  "Accessibility.enable",
+  "Accessibility.getFullAXTree",
+  "Accessibility.getPartialAXTree",
+  "Accessibility.queryAXTree",
+  "DOM.describeNode",
+  "DOM.disable",
+  "DOM.enable",
+  "DOM.getAttributes",
+  "DOM.getBoxModel",
+  "DOM.getContentQuads",
+  "DOM.getDocument",
+  "DOM.getNodeForLocation",
+  "DOM.getOuterHTML",
+  "DOM.querySelector",
+  "DOM.querySelectorAll",
+  "DOM.requestNode",
+  "DOM.resolveNode",
+  "DOMSnapshot.captureSnapshot",
+  "Page.bringToFront",
+  "Page.disable",
+  "Page.enable",
+  "Page.getFrameTree",
+  "Page.getLayoutMetrics",
+  "Page.getNavigationHistory",
+  "Page.screencastFrameAck",
+  "Page.setLifecycleEventsEnabled",
+  "Page.startScreencast",
+  "Page.stopScreencast",
+  "Runtime.disable",
+  "Runtime.enable",
+  "Runtime.getProperties",
+  "Runtime.releaseObject",
+  "Runtime.releaseObjectGroup",
+]);
+
 export function browserInternalsRefusal(method: string): string {
   return `${method} is not available to agents: agents operate pages, not browser internals such as cookies, network traffic, storage, browser logs, or other script worlds.`;
 }

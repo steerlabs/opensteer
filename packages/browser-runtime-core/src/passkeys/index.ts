@@ -5,8 +5,10 @@ import { encodeBase64Url } from "@opensteer/shared/base64url";
 import type { PasskeyAssertedOutcome, PasskeyCreatedOutcome } from "./authenticator.js";
 export * from "./options.js";
 
+import { passkeyFlags } from "./flags.js";
+
 export const opensteerAaguid = "dd9443d6-4875-44f3-a68d-5d17076af9c5";
-export const passkeyFlags = { UP: 0x01, UV: 0x04, BE: 0x08, BS: 0x10, AT: 0x40, ED: 0x80 } as const;
+export { passkeyFlags };
 /** Bits 1 and 5 of the flags byte are reserved for future use. */
 const reservedFlags = 0x22;
 /** SecurityError is a page error name, not a DOM dependency. */
@@ -211,3 +213,4 @@ export function buildAuthenticationResponseJSON(outcome: PasskeyAssertedOutcome)
 }
 
 export * from "./authenticator.js";
+export { decodePasskeyCbor, coseKeyToSpki, decodePasskeyRegistration } from "./decode.js";

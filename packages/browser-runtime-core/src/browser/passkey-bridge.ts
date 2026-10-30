@@ -120,6 +120,7 @@ export class PasskeyBridge {
   get bindingName(): string {
     return this.config.bindingName;
   }
+  readonly #targetId: (() => Promise<string>) | undefined;
   readonly #cdp: CdpSession;
   readonly #authenticator: PasskeyAuthenticator;
   readonly #contexts: Pick<ExecutionContextInventory, "entries">;
@@ -146,6 +147,7 @@ export class PasskeyBridge {
     cdp: CdpSession,
     authenticator: PasskeyAuthenticator,
     options: {
+      targetId?: () => Promise<string>;
       config?: NonNullable<BrowserPagePolicyConfig>;
       lateBootstrap?: boolean | undefined;
       /** Electron supplies its hub's inventory; only standalone sessions keep their own. */
@@ -154,6 +156,7 @@ export class PasskeyBridge {
   ) {
     this.#cdp = cdp;
     this.#lateBootstrap = options.lateBootstrap === true;
+    this.#targetId = options.targetId;
     this.#authenticator = authenticator;
     this.config = options.config ?? createPasskeyProviderConfig();
     this.#ownedContexts = options.contexts ? undefined : new ExecutionContextInventory();
@@ -547,10 +550,9 @@ export class PasskeyBridge {
       }),
     );
     // Covers CDP validation too: a stalled renderer cannot reserve this tab forever.
-    timer = setTimeout(
-      () => controller.abort(),
-      Math.min(600_000, Math.max(30_000, options.data.timeout ?? 300_000)),
-    );
+    const deadline =
+      Date.now() + Math.min(600_000, Math.max(30_000, options.data.timeout ?? 300_000));
+    timer = setTimeout(() => controller.abort(), deadline - Date.now());
     try {
       const operation = (async () => {
         const origin = await this.#origin(context);
@@ -567,6 +569,9 @@ export class PasskeyBridge {
         if (!this.#trusted(context) || controller.signal.aborted)
           throw new Refusal("NotAllowedError");
         const common = {
+          targetId: await this.#targetId?.(),
+          documentId: context.uniqueId,
+          deadline,
           origin,
           rpId: resolved.rpId,
           signal: controller.signal,

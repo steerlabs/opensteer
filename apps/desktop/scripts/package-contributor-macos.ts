@@ -52,6 +52,7 @@ async function pnpm(...args: string[]): Promise<void> {
 try {
   await pnpm("exec", "tsx", "scripts/build-personal-runtime.ts");
   await pnpm("build:passwords-broker");
+  await pnpm("build:dictation-helper");
   await pnpm("prepare:release-resources");
   await pnpm("build");
   // One literal argv, so the signing-invocation guard sees the ad-hoc identity it exempts.

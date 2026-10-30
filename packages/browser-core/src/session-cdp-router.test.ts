@@ -6,6 +6,7 @@ import {
   type AgentCdpFields,
   type AgentCdpValue,
 } from "./agent-cdp-allowlist.js";
+import { agentObservationMethods } from "./agent-cdp-policy.js";
 import {
   SessionCdpRouter,
   SessionCdpRouterError,
@@ -561,6 +562,60 @@ describe("agent CDP boundary", () => {
       router.send("session-a", { method, ...(parameters ? { parameters } : {}), sessionId });
     return { backend, channel, events, router, send, sessionId };
   }
+
+  it("attributes agent input only after command admission and key inference", async () => {
+    const { router, sessionId } = await attachedPage();
+    const input = vi.fn();
+    try {
+      await expect(
+        router.send(
+          "session-a",
+          {
+            sessionId,
+            method: "Input.dispatchKeyEvent",
+            parameters: { key: "v", modifiers: 4, type: "keyDown" },
+          },
+          input,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(input).not.toHaveBeenCalled();
+      await router.send(
+        "session-a",
+        {
+          sessionId,
+          method: "Input.dispatchKeyEvent",
+          parameters: { key: "Enter", type: "keyDown" },
+        },
+        input,
+      );
+      expect(input).toHaveBeenCalledExactlyOnceWith("root-a");
+    } finally {
+      await router.close();
+    }
+  });
+
+  it("attributes every admitted page-changing agent command, but not observation, to the agent", async () => {
+    const { router, sessionId } = await attachedPage();
+    const activity = vi.fn();
+    const send = (method: string, parameters: CdpParameters) =>
+      router.send("session-a", { sessionId, method, parameters }, activity);
+    try {
+      await send("DOM.getDocument", {});
+      await send("Accessibility.getFullAXTree", {});
+      expect(activity).not.toHaveBeenCalled();
+      // Page script started by the agent can call navigator.credentials itself.
+      await send("Runtime.evaluate", { expression: "1" });
+      await send("DOM.setAttributeValue", { nodeId: 1, name: "data-x", value: "1" });
+      expect(activity.mock.calls).toEqual([["root-a"], ["root-a"]]);
+    } finally {
+      await router.close();
+    }
+  });
+
+  it("names only allowlisted methods as observation", () => {
+    for (const method of agentObservationMethods)
+      expect(agentCdpAllowlist.methods.has(method), method).toBe(true);
+  });
 
   it("refuses cookie, network, storage, script-planting and browser-internal page methods", async () => {
     const { channel, send } = await attachedPage();

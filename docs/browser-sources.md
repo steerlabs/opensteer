@@ -73,54 +73,29 @@ Requests. Agents get `unavailable: not-allowed` before any Request is created;
 the owner's toolbar action and Allow get the problem `not-allowed`; drains and
 standing grants skip them.
 
-`sign_in {sessionId, site, reason}` routes between Chrome reuse for the session
-and saved logins from the Personal Mac. Without `sessionId`, `sign_in` authorizes
-Passwords for the calling Workspace directly. [Opensteer Passwords](passwords.md#choosing-the-method)
-owns the routing order and Passwords results; its [field fills](passwords.md#filling-a-field)
-use the real tab, including profile-backed sessions. Chrome grants and cookie
-imports keep the rules below. A Chrome sign-in:
+Chrome consent belongs to the Browser Session's Workspace, even when Main drives
+it from another Workspace. A standing grant can deliver without another prompt;
+new delegated-thread decisions require approval. Decline and delivery must serialize
+so a declined Request never signs in. Removing a site during delivery must prevent
+import. Recheck source generation, Workspace/session access, grant and originating
+Request authority immediately before import; record receipt and settlement atomically.
+A replayed invocation returns its receipt without exporting again.
 
-1. The session must be live and reachable from the Run's Workspace, and its
-   runtime must advertise `modules.browser.stateImport`; otherwise
-   `unavailable: session-closed | runtime-outdated`.
-2. In-memory rate limits: 3 calls per (session, site) and 30 per Run per 10
-   minutes (`rate-limited`). An open Request for the same Run, Workspace and site
-   is returned instead of a new one; if that site has since been allowed some
-   other way and a Chrome can answer (the rule below), the Request is delivered
-   and completed by that call.
-3. With a grant, the preferred connected source (or the only one reporting
-   `available` when there is no usable preference) is used immediately.
-   Otherwise `main` and `workspace` Threads open a `browser.sign-in` Request;
-   delegated Threads get `unavailable: needs-approval`. When every connected
-   Chrome reports no sign-in and none is offline, the answer is `not-signed-in`
-   without a Request.
+Automatic delivery must respect the grant's preferred source rather than pick an
+arbitrary signed-in account. A connected preferred source is used directly. If
+the preferred source record exists but is disconnected, automatic delivery waits
+rather than substituting another account. Only when that preferred record is
+absent may inspection choose exactly one available source. Ambiguity needs a
+person's choice. See the service's `#standingSource` logic.
 
-`browser.session.sign-in` is the owner's toolbar action: it picks the explicit
-source, the grant's preferred source, or the only signed-in one, and remembers
-the site for the session's Workspace on success. `browser.sign-in.respond`
-answers a Request: Allow remembers the site with that source preferred and
-delivers at once; any problem leaves the Request pending and is returned for the
-card; `site-removed` means the site was removed while the sign-in was in
-flight. Decline runs in the same per-Request turn as delivery, so a declined
-Request never signs anything in. `request.respond` refuses sign-in Requests.
-When a source connects, the Host drains pending Requests whose (Workspace, site)
-has an active grant preferring that source, or preferring none that is still
-connected, in pages filtered in SQL, and delivers each whose grant would use
-that source now (the preferred one, or the only one reporting `available`).
+Only the Host imports/exports state: viewer and agent frames must never reach that
+private lane. Imports into the same context/site serialize. Runtime timeout means
+no late write; Host timeout must allow the Runtime to finish refusing first.
 
-One delivery: export from Chrome → validate the scope and the 1,000-cookie /
-1 MiB bound → re-read the session → immediately before the import, re-check in
-one transaction that the source is the same generation, the Workspace is usable,
-the grant is still active (standing and Request paths), a Request is still
-pending with its originating authority intact, and a newly remembered site fits
-the owner's 1,024-site limit → `BrowserService.applySiteCookies` sends
-`state.import` with a Host-random operation ID and awaits
-`state.import.result` → record the receipt, fulfil the Request and touch the
-grant in one transaction. The runtime answers within 20 seconds and never
-writes after giving up; the Host waits 30
-([`browserStateImport*TimeoutMs`](../packages/protocol/src/browser.ts)).
-Deliveries into one browser context and site run one at a time. The Host never relays `state.import` or `state.export` from a viewer
-or agent; the broker forwards only an allowlist of input and navigation frames.
+Routing between Chrome and Passwords belongs to
+[Passwords](passwords.md#choosing-the-method). Source:
+`apps/host/src/browser/browser-source-service.ts` and
+`apps/host/src/browser/browser-source-service.integration.test.ts`.
 
 ## Chrome's side
 
@@ -138,22 +113,8 @@ Browser Sessions offer no passkeys ([Passkeys](browser-sessions.md#passkeys));
 agents verify the account and otherwise ask the person to sign in in the
 visible browser. Removing a site stops future sign-ins; browsers already signed
 in stay signed in. Any agent with a signed-in browser can act as the person on
-that site. Migration 0055 revoked every v1 connection and grant and declined
-pending v1 copy Requests with a continuation pointing to `sign_in`; v1
-copied profiles remain ordinary profiles.
+that site.
 
 ## Verification
 
-Use the [cheapest relevant check](testing.md#how-to-test) and reuse
-one Chrome sign-in journey; these are available checks, not a per-change list.
-
-- Focused `pnpm test:integration <file>` runs
-  [the Host sign-in suite](../apps/host/src/browser/browser-source-service.integration.test.ts)
-  and [the store suite](../packages/database/src/browser-source-store.integration.test.ts)
-  against real PostgreSQL. The 0055 upgrade belongs to
-  [migration tests](../packages/database/src/migrations.integration.test.ts);
-  Run the full migration check when required.
-- `pnpm --filter @opensteer/browser-extension build` and
-  `pnpm --filter @opensteer/browser-extension test:integration` drive the
-  extension in a disposable Chromium. No verification uses a person's everyday
-  browser profile or credentials.
+Use the [Chrome sign-in checks](../.agents/skills/verify-chrome-signins/SKILL.md).

@@ -53,6 +53,7 @@ export class BrowserModuleRelay {
 
   attach(stream: RunnerModuleStream): void {
     this.#stream = stream;
+    this.#bridge.setPasskeysEnabled(stream.passkeys === 1);
     if (!stream.browserAttachPublicKeys) {
       throw new BrowserRelayError("The Host did not provide Browser Runtime attach keys.");
     }
@@ -60,6 +61,7 @@ export class BrowserModuleRelay {
   }
 
   detach(): void {
+    this.#bridge.setPasskeysEnabled(false);
     this.#stream = undefined;
     this.#capability = undefined;
     for (const channel of this.#channels.values()) clearTimeout(channel.expiryTimer);

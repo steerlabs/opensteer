@@ -16,11 +16,28 @@ export function browserViewerEditingVersion(
 export function browserViewerMessage(
   message: BrowserServerMessage,
   editing: 1 | 2 | undefined = undefined,
+  passkeys?: "native" | "notice",
+  consumerToken?: string,
 ): BrowserServerMessage {
   if (message.type === "browser.snapshot") {
-    const { editingVersion: _editingVersion, clipboard: _clipboard, ...baseline } = message;
+    const {
+      editingVersion: _editingVersion,
+      clipboard: _clipboard,
+      passkeys: _passkeys,
+      passkeyConsumerToken: _passkeyConsumerToken,
+      ...baseline
+    } = message;
     message =
-      editing === 2 ? message : editing === 1 ? { ...baseline, editingVersion: 1 } : baseline;
+      editing === 2
+        ? {
+            ...baseline,
+            editingVersion: message.editingVersion,
+            ...(message.clipboard === undefined ? {} : { clipboard: message.clipboard }),
+          }
+        : editing === 1
+          ? { ...baseline, editingVersion: 1 }
+          : baseline;
+    if (passkeys) message = { ...message, passkeys, passkeyConsumerToken: consumerToken };
   }
   if (message.type !== "browser.snapshot" && message.type !== "browser.surfaces.changed")
     return message;

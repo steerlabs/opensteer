@@ -1,6 +1,13 @@
 /** Dependency-free IPC vocabulary shared by the main process and sandboxed preload. */
 export const desktopBridgeChannels = {
   webLinkDelivery: "opensteer.desktop.webLinkDelivery",
+  dictationAvailability: "opensteer.desktop.dictation.availability",
+  dictationStart: "opensteer.desktop.dictation.start",
+  dictationDownload: "opensteer.desktop.dictation.download",
+  dictationStop: "opensteer.desktop.dictation.stop",
+  dictationCancel: "opensteer.desktop.dictation.cancel",
+  dictationSettings: "opensteer.desktop.dictation.settings",
+  dictationEvent: "opensteer.desktop.dictation.event",
   writeViewerClipboard: "opensteer.desktop.viewer.clipboard.write",
   pasteViewerClipboard: "opensteer.desktop.viewer.clipboard.paste",
   setViewerKeyboardActive: "opensteer.desktop.viewer.keyboard.active",
@@ -30,6 +37,8 @@ export const desktopBridgeChannels = {
   localVisibilityChanged: "opensteer.desktop.visibility.changed",
   useComputerViewOnThisMac: "opensteer.desktop.computer-use.use-owner-view",
   acknowledgePortableFsApproval: "opensteer.desktop.portablefs.acknowledge",
+  passkeyAvailable: "opensteer.desktop.passkey.available",
+  passkeyPresent: "opensteer.desktop.passkey.present",
   addDirect: "opensteer.desktop.access.add-direct",
   cancel: "opensteer.desktop.access.cancel",
   computerUseApprovalKey: "opensteer.desktop.computer-use.approval-key",

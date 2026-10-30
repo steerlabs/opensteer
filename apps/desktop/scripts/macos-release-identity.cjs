@@ -31,11 +31,24 @@ function desktopReleaseIdentity(channel) {
   return Object.freeze({ ...release, teamId: appleTeamId() });
 }
 
-function validateReleaseEntitlements(entitlements) {
+function validateReleaseEntitlements(entitlements, passkeyIdentity) {
   assertRecord(entitlements, "The signed macOS release entitlements");
   // Not Apple events: every command an agent runs descends from this app, so
   // sending in Messages belongs to the Computer Use helper alone.
   const expected = ["com.apple.security.cs.allow-jit"];
+  if (passkeyIdentity) {
+    const values = {
+      "com.apple.developer.web-browser.public-key-credential": true,
+      "com.apple.application-identifier": `${passkeyIdentity.teamId}.${passkeyIdentity.bundleId}`,
+      "com.apple.developer.team-identifier": passkeyIdentity.teamId,
+    };
+    for (const [key, value] of Object.entries(values)) {
+      if (entitlements[key] !== value)
+        throw new Error("The signed passkey entitlement identity differs");
+      expected.push(key);
+    }
+    expected.sort();
+  }
   if (!sameStrings(Object.keys(entitlements).sort(), expected)) {
     throw new Error(
       "The signed Electron app must use only the reviewed hardened-runtime entitlements.",
@@ -82,7 +95,8 @@ function verifyPackagedMacReleaseIdentity(appPath, identity) {
     ":-",
     appPath,
   ]);
-  validateReleaseEntitlements(entitlements);
+  const granted = require("./passkeys-signing.cjs").verifyPasskeySignature(appPath, identity);
+  validateReleaseEntitlements(entitlements, granted ? identity : undefined);
 }
 
 function readPlistString(filePath, key) {

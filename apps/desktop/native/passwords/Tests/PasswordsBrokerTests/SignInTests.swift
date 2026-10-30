@@ -3,7 +3,7 @@ import XCTest
 
 @testable import PasswordsBrokerKit
 
-/// Section 10 of FAILURES.md: how a login is (and is not) released, over
+/// Release authority: how a login is (and is not) released, over
 /// wire v2. The card is the test: it reads the decision and answers with
 /// `signin.approve`.
 @MainActor

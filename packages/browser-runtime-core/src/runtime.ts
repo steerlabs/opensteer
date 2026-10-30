@@ -1,3 +1,4 @@
+import { HostRelayAuthenticator } from "./passkeys/host-relay.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { delay } from "@opensteer/shared/delay";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -132,6 +133,9 @@ type BrowserHostIdentity = FreshHostIdentity | ProfileHostIdentity;
 
 interface BrowserHost {
   acceptingSessions: boolean;
+  passkeys: HostRelayAuthenticator | undefined;
+  readonly passkeysEnabled: boolean;
+  holdUntilClosed: boolean;
   browser: LaunchedBrowser;
   /** Serializes every profile commit, periodic or final, against one revision chain. */
   readonly checkpoints: AsyncMutex;
@@ -362,6 +366,13 @@ export class BrowserRuntime implements NativePresentationSource {
     binding.page.onClose(closed);
     session.presentations.add(closed);
     return {
+      passkeyInput: (consumerToken) => {
+        if (!released && session.claims.passkeys === 1)
+          session.host.passkeys?.record(
+            binding.targetId,
+            consumerToken ? { person: consumerToken } : "unknown",
+          );
+      },
       page: binding.page,
       sessionId,
       surfaceId,
@@ -383,12 +394,17 @@ export class BrowserRuntime implements NativePresentationSource {
     };
   }
 
-  attach(ticket: string, sink: BrowserControllerSink): Promise<BrowserAttachment> {
+  attach(
+    ticket: string,
+    sink: BrowserControllerSink,
+    options: { passkeys?: boolean } = {},
+  ): Promise<BrowserAttachment> {
     return this.mutex.run(async () => {
       if (this.shuttingDown || this.state === "closed") {
         throw new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down.");
       }
-      const claims = await this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId });
+      const verified = await this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId });
+      const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
       if (this.sessions.has(claims.sessionId)) {
         throw new BrowserRuntimeError("conflict", "The Browser Session is already attached.");
       }
@@ -412,6 +428,21 @@ export class BrowserRuntime implements NativePresentationSource {
       const sessionGeneration = ++this.generation;
       let stage = "profile-state";
       try {
+        const passkeysEnabled = claims.passkeys === 1;
+        if (host && host.passkeysEnabled !== passkeysEnabled) {
+          if (!host.acceptingSessions || host.sessions.size > 0) {
+            throw new BrowserRuntimeError(
+              "conflict",
+              "The browser profile is in use with a different passkey mode. Close its sessions and retry.",
+              { retryable: true },
+            );
+          }
+          stage = "profile-close";
+          host.holdUntilClosed = true;
+          await this.checkpointAndCloseHost(host);
+          host = undefined;
+          stage = "profile-state";
+        }
         if (!host) {
           if (this.hosts.size >= this.maxProfileHosts) {
             throw new BrowserRuntimeError("conflict", "Browser Runtime host capacity is full.");
@@ -423,7 +454,29 @@ export class BrowserRuntime implements NativePresentationSource {
             ? await this.profileStateClient.load(profileClaims)
             : null;
           stage = "context-launch";
+          const passkeys =
+            claims.passkeys === 1
+              ? new HostRelayAuthenticator((targetId) => {
+                  for (const session of this.sessions.values()) {
+                    if (session.host.identity.key !== hostKey || session.claims.passkeys !== 1)
+                      continue;
+                    const surfaceId = session.ledger.surfaceIdForTarget(targetId);
+                    if (surfaceId)
+                      return {
+                        sessionId: session.sessionId,
+                        surfaceId,
+                        send: (message) => {
+                          void session.controller
+                            .sendPasskey(message)
+                            .catch(() => passkeys?.disconnect(session.sessionId));
+                        },
+                      };
+                  }
+                  return undefined;
+                })
+              : undefined;
           const browser = await this.launcher.launch({
+            ...(passkeys ? { authenticator: passkeys } : {}),
             initialViewport: this.initialViewport,
             partitionKey: hostKey,
             sessionId: claims.sessionId,
@@ -450,6 +503,9 @@ export class BrowserRuntime implements NativePresentationSource {
             void this.closeHost(hostKey, generation, false).catch(() => undefined);
           };
           host = {
+            passkeys,
+            passkeysEnabled,
+            holdUntilClosed: false,
             acceptingSessions: true,
             browser,
             checkpoints: new AsyncMutex(),
@@ -540,6 +596,7 @@ export class BrowserRuntime implements NativePresentationSource {
         const stateImports = host.stateImports;
         const stateHost = host;
         controller = new BrowserController({
+          passkeys: claims.passkeys === 1 ? host.passkeys : undefined,
           cdpRouter: host.router,
           clipboard: hostBrowser.clipboard,
           claims,
@@ -860,6 +917,7 @@ export class BrowserRuntime implements NativePresentationSource {
     const started = performance.now();
     if (this.hosts.get(identity.key)?.generation !== host.generation) return;
     host.acceptingSessions = false;
+    host.passkeys?.close();
     host.signIns.close();
     if (host.checkpointTimer) clearTimeout(host.checkpointTimer);
     host.checkpointTimer = null;
@@ -920,13 +978,18 @@ export class BrowserRuntime implements NativePresentationSource {
       if (this.hosts.get(identity.key)?.generation === host.generation)
         this.hosts.delete(identity.key);
     };
-    host.browser.onClose(closed);
+    // A context close event can precede process exit. A mode change reserves the
+    // profile until close completes, even if the checkpoint deadline expires.
+    const onClose = () => {
+      if (!host.holdUntilClosed) closed();
+    };
+    host.browser.onClose(onClose);
     host.browser.offClose(host.onBrowserClose);
     try {
       await settleCleanup([() => host.router.close(), () => host.browser.close()]);
       closed();
     } finally {
-      host.browser.offClose(closed);
+      host.browser.offClose(onClose);
     }
   }
 

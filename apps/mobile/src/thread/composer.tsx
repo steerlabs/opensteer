@@ -1,3 +1,8 @@
+import { useFocusEffect } from "@react-navigation/native";
+import { useId } from "react";
+import { useDictation } from "../dictation/context.js";
+import { DictationMic, DictationStatus } from "../dictation/controls.js";
+import { dictationLabels, dictationView } from "@opensteer/client/dictation";
 import { useHostSelector } from "@opensteer/client/react";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import {
@@ -31,6 +36,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  AccessibilityInfo,
   Alert,
   Pressable,
   StyleSheet,
@@ -162,6 +168,27 @@ export function Composer(props: {
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, threadId);
   const text = draft?.text ?? "";
+  const dictation = useDictation();
+  const dictationState = useSyncExternalStore(dictation.subscribe, dictation.getSnapshot);
+  const instance = useId();
+  const owner = JSON.stringify([deploymentId, userId, threadId, instance]);
+  const currentOwner = useRef(owner);
+  currentOwner.current = owner;
+  const selection = useRef({ start: text.length, end: text.length });
+  const speechView = dictationView(dictationState, owner);
+  const preview = speechView.preview;
+  const dictating = ["starting", "listening", "finishing"].includes(speechView.phase);
+  const displayedText = preview?.text ?? text;
+  const visible = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      visible.current = true;
+      return () => {
+        visible.current = false;
+        dictation.leave(owner);
+      };
+    }, [dictation, owner]),
+  );
   const quote = draft?.quote ?? null;
   const pending = drafts.readPending(deploymentId, userId, threadId);
   const [sending, setSending] = useState(false);
@@ -250,10 +277,11 @@ export function Composer(props: {
     readOnly,
     running: props.running,
     sending,
-    text,
+    text: displayedText,
     textHidden,
   });
-  const canSend = view.canSend;
+  const canSend =
+    view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
   const requestBlocked = disabled || sending || pending !== null;
   /**
    * The link a person shares to bring another device back here. It is built
@@ -284,6 +312,71 @@ export function Composer(props: {
         }
       },
     );
+  };
+
+  const committedSelection = useRef<{ text: string; start: number; end: number } | null>(null);
+  useEffect(() => {
+    const caret = committedSelection.current;
+    if (caret && displayedText === caret.text) {
+      input.current?.setSelection(caret.start, caret.end);
+      committedSelection.current = null;
+    }
+  }, [displayedText, preview]);
+  useEffect(() => {
+    if (preview) {
+      selection.current = preview.selection;
+      input.current?.setSelection(preview.selection.start, preview.selection.end);
+    }
+  }, [preview?.text]);
+  useEffect(() => {
+    if (readOnly || textHidden) dictation.leave(owner);
+  }, [readOnly, textHidden, dictation, owner]);
+  const phase = speechView.phase;
+  const notice = speechView.notice?.message ?? null;
+  const previousPhase = useRef(phase);
+  useEffect(() => {
+    const previous = previousPhase.current;
+    previousPhase.current = phase;
+    if (!visible.current) return;
+    if (phase === "idle" && previous !== "idle" && previous !== "downloading" && notice === null)
+      AccessibilityInfo.announceForAccessibility(dictationLabels.stopped);
+    if (phase === "listening") {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      AccessibilityInfo.announceForAccessibility(dictationLabels.listening);
+    } else if (phase === "starting")
+      AccessibilityInfo.announceForAccessibility(dictationLabels.starting);
+    else if (phase === "finishing")
+      AccessibilityInfo.announceForAccessibility(dictationLabels.finishing);
+    else if (phase === "downloading")
+      AccessibilityInfo.announceForAccessibility("Downloading language for dictation");
+  }, [phase]);
+  useEffect(() => {
+    if (notice && visible.current) AccessibilityInfo.announceForAccessibility(notice);
+  }, [notice]);
+  const startDictation = (): void =>
+    dictation.start({
+      owner,
+      read: () => ({
+        text: drafts.readDraft(deploymentId, userId, threadId)?.text ?? "",
+        selection: selection.current,
+      }),
+      commit: (next, caret) => {
+        selection.current = caret;
+        if (mounted.current && currentOwner.current === owner)
+          committedSelection.current = { text: next, ...caret };
+        void drafts.writeDraft(deploymentId, userId, threadId, next).catch(() => {
+          if (mounted.current && currentOwner.current === owner)
+            setDraftFailure("This draft could not be saved on this phone.");
+        });
+        if (mounted.current) {
+          draftText.current = next;
+        }
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      },
+    });
+  const editText = (next: string): void => {
+    changeText(next);
+    dictation.release(owner);
   };
 
   // The update this message answers. It lives with the draft, so it survives
@@ -431,9 +524,14 @@ export function Composer(props: {
     void deliverExclusively(pending);
   }, [deliverExclusively, pending, props.canRespond, readOnly]);
 
-  const send = async (): Promise<void> => {
-    const sourceText = draftText.current;
-    if (!canSend || inFlight.current) return;
+  const sendMessage = async (sourceText: string): Promise<void> => {
+    if (
+      !canSend ||
+      inFlight.current ||
+      drafts.readPending(deploymentId, userId, threadId) !== null ||
+      (sourceText.trim() === "" && staged.items.length === 0)
+    )
+      return;
     // Every file is on the Host, or Send is not offered: words never go on
     // without the files meant to travel with them.
     const carried = staged.items;
@@ -486,6 +584,30 @@ export function Composer(props: {
       if (drafts.readPending(deploymentId, userId, threadId) === null) {
         props.mutationGate.release(claim);
       }
+    }
+  };
+
+  const latestSend = useRef({ canSend, sendMessage });
+  latestSend.current = { canSend, sendMessage };
+  const finishingSend = useRef(false);
+  const send = async (): Promise<void> => {
+    if (finishingSend.current) return;
+    finishingSend.current = true;
+    try {
+      const result = dictating ? await dictation.stop(owner) : { kind: "idle" as const };
+      if (
+        result.kind === "failed" ||
+        result.kind === "aborted" ||
+        !mounted.current ||
+        !visible.current ||
+        !latestSend.current.canSend
+      )
+        return;
+      await latestSend.current.sendMessage(
+        result.kind === "committed" ? result.text : draftText.current,
+      );
+    } finally {
+      finishingSend.current = false;
     }
   };
 
@@ -692,6 +814,7 @@ export function Composer(props: {
           onRetry={staged.retry}
         />
       )}
+      <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <ComposerBar
         // Two lines from the start: the page above the field is part of the box.
         shape={includedPage === null || view.readOnly ? view.shape : "rounded"}
@@ -709,16 +832,25 @@ export function Composer(props: {
           ? {}
           : {
               leading: (
-                <NativeMenu
-                  accessibilityHint="Change the model, and what else can be done here"
-                  accessibilityLabel="Thread actions"
-                  onPresent={hold}
-                  onSettle={settle}
-                  options={menuOptions}
-                  style={composerControlStyle}
-                >
-                  <ComposerCircleFace icon="plus" />
-                </NativeMenu>
+                <View style={{ flexDirection: "row" }}>
+                  <NativeMenu
+                    accessibilityHint="Change the model, and what else can be done here"
+                    accessibilityLabel="Thread actions"
+                    onPresent={hold}
+                    onSettle={settle}
+                    options={menuOptions}
+                    style={composerControlStyle}
+                  >
+                    <ComposerCircleFace icon="plus" />
+                  </NativeMenu>
+                  <DictationMic
+                    controller={dictation}
+                    snapshot={dictationState}
+                    owner={owner}
+                    disabled={readOnly || textHidden}
+                    onStart={startDictation}
+                  />
+                </View>
               ),
             })}
         field={
@@ -746,7 +878,10 @@ export function Composer(props: {
                 maxFontSizeMultiplier={controlFontScaleLimit}
                 multiline
                 onBlur={() => setFocused(false)}
-                onChangeText={changeText}
+                onChangeText={editText}
+                onSelectionChange={(event) => {
+                  selection.current = event.nativeEvent.selection;
+                }}
                 onFocus={() => {
                   setFocused(true);
                   settle();
@@ -760,7 +895,7 @@ export function Composer(props: {
                 ref={input}
                 selectionColor={color.ember}
                 style={[styles.input, { maxHeight: fieldMaxHeight }]}
-                value={text}
+                value={displayedText}
               />
             </Pressable>
           ) : (
@@ -774,7 +909,7 @@ export function Composer(props: {
           : {
               action: (
                 <View style={composerControlStyle}>
-                  {view.action === "stop" ? (
+                  {view.action === "stop" && !dictating ? (
                     <ComposerAction
                       busy={stopping || props.runStopping}
                       disabled={stopping || props.runStopping || !props.canRespond}

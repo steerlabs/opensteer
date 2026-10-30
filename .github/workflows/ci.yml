@@ -63,6 +63,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          # The test-lint baseline must be compared with its merge base on main.
+          fetch-depth: 0
       - uses: ./.github/actions/ci-setup
       - run: mkdir -p "$RUNNER_TEMP/evidence"
       - shell: bash
@@ -238,11 +240,17 @@ jobs:
             apps/mobile/modules/iphone-apps/ios/.build
             apps/desktop/native/computer-use/.build
             apps/desktop/native/passwords/.build
+            apps/desktop/native/dictation/.build
           key: swift-${{ runner.os }}-${{ runner.arch }}-${{ matrix.task }}-${{ steps.swift.outputs.toolchain }}-${{ steps.swift.outputs.inputs }}
       - run: mkdir -p "$RUNNER_TEMP/evidence"
       - name: Build computer use helper
         if: matrix.task == 'computer-helper'
         run: pnpm --filter @opensteer/desktop build:computer-use-helper
+      - name: Build and test dictation helper
+        if: matrix.task == 'dictation-helper'
+        run: |
+          pnpm --filter @opensteer/desktop build:dictation-helper
+          swift test --package-path apps/desktop/native/dictation
       - name: Build passwords broker
         if: matrix.task == 'passwords-helper'
         run: pnpm --filter @opensteer/desktop build:passwords-broker
@@ -255,6 +263,7 @@ jobs:
         run: |
           swift test --package-path packages/apple-data
           swift test --package-path apps/mobile/modules/iphone-apps/ios
+          swift test --package-path apps/mobile/modules/dictation/ios
       - name: Test dictation
         if: matrix.task == 'dictation'
         run: |

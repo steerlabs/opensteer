@@ -41,7 +41,7 @@ export function SettingsScreen(): ReactNode {
   const client = useMobileClient();
   const notifications = useMobileNotifications();
   const registrationState = usePushRegistration();
-  const { account, rows, selection, storageFailure } = useMobileState();
+  const { account, rows, selection, storageFailure, savedViewFailure } = useMobileState();
   const [accountError, setAccountError] = useState<string | null>(null);
   const [accountWorking, setAccountWorking] = useState(false);
   const [notificationError, setNotificationError] = useState<string | null>(null);
@@ -163,7 +163,10 @@ export function SettingsScreen(): ReactNode {
             runAccount(
               () =>
                 signOutAccountInOrder(
-                  () => notifications.registration.signOut(),
+                  async () => {
+                    await client.clearAccountSavedViews();
+                    await notifications.registration.signOut();
+                  },
                   () => client.signOutAccount(),
                 ),
               "Account sign-out did not finish. Try again while this phone is online.",
@@ -261,7 +264,7 @@ export function SettingsScreen(): ReactNode {
         onPasswordsAction={() => setPasswordsShown(true)}
         onPreferenceChange={onPreferenceChange}
         passwords={passwords}
-        storageError={storageFailure}
+        storageError={storageFailure ?? savedViewFailure}
         version={Constants.expoConfig?.version ?? "unknown"}
       />
       {passwords === null ? null : (

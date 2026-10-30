@@ -26,6 +26,7 @@ import {
   type WorkspaceView,
 } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -46,6 +47,7 @@ import { filterThreads } from "./thread-list-model.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
 import { placeList } from "./places.js";
 import { visibleTranscript } from "./transcript.js";
+import { projectSavedHome, type SavedViewReadiness } from "./saved-host-view.js";
 
 const now = "2026-08-09T20:00:00.000Z";
 const ownerId = createId("user");
@@ -229,6 +231,62 @@ function preferencesForWorkspaces(value: unknown) {
       }))
     : [];
 }
+
+describe("saved-view readiness", () => {
+  it("distinguishes unknown Main, explicitly absent Home, and accepted latest/around windows", async () => {
+    const main = makeWorkspace();
+    const thread = makeThread(main.id);
+    main.homeThreadId = thread.id;
+    const client = createHttpHostClient({
+      prefetchHome: true,
+      refreshIntervalMs: 0,
+      fetch: async (input) =>
+        new URL(String(input)).pathname.endsWith("thread.events.list")
+          ? json({
+              thread,
+              threadId: thread.id,
+              events: [],
+              window: {
+                threadId: thread.id,
+                byteCount: 2,
+                hasMore: false,
+                itemCount: 0,
+                nextBefore: null,
+                totalItems: 0,
+              },
+            })
+          : json(bootstrap([main])),
+    });
+    expect(client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().savedViewReadiness?.home.status).toBe("window"),
+    );
+    expect(client.getSnapshot().savedViewReadiness?.home).toMatchObject({
+      status: "window",
+      threadId: thread.id,
+      latest: true,
+    });
+    await client.loadTranscriptAround(thread.id, createId("message"));
+    expect(client.getSnapshot().savedViewReadiness?.home).toMatchObject({
+      status: "window",
+      latest: false,
+    });
+    client.dispose();
+    for (const [workspaces, status] of [
+      [[], "unknown"],
+      [[makeWorkspace()], "absent"],
+    ] as const) {
+      const host = createHttpHostClient({
+        refreshIntervalMs: 0,
+        fetch: async () => json(bootstrap([...workspaces])),
+      });
+      await host.load();
+      expect(host.getSnapshot().savedViewReadiness?.home.status).toBe(status);
+      host.dispose();
+    }
+  });
+});
 
 describe("HttpHostClient Workspace files", () => {
   it("lists one directory on demand and decodes a bounded UTF-8 preview", async () => {
@@ -1511,6 +1569,47 @@ describe("HttpHostClient durable realtime", () => {
       client.dispose();
     },
   );
+
+  it("refreshes the engine catalog after an older bootstrap has finished", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let reads = 0;
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+      fetch: async () => {
+        reads += 1;
+        if (reads !== 2) return json(bootstrap([]));
+        // A read taken after catalog discard but before inspection commits.
+        const stale = bootstrap([]);
+        stale.environments[0]!.harnessCatalogs = [];
+        return new Promise<Response>((resolve) => {
+          release = () => resolve(json(stale));
+          entered();
+        });
+      },
+    });
+    try {
+      await client.load();
+      const olderRead = client.load();
+      await withTimeout(reading, 1_000, {
+        timeoutError: () =>
+          new Error("The overlapping bootstrap did not reach its stale catalog read"),
+      });
+      // The CLI inspection has now committed. Its caller needs a new read,
+      // even though the earlier bootstrap has not delivered its answer yet.
+      const refreshed = client.refresh();
+      release();
+      await Promise.all([olderRead, refreshed]);
+      expect(client.getSnapshot().environments[0]?.harnessCatalogs[0]?.status).toBe("ready");
+      expect(reads).toBe(3);
+    } finally {
+      client.dispose();
+    }
+  });
 
   it("answers a notice that lands mid-read with exactly one more read", async () => {
     const workspace = makeWorkspace();
@@ -4568,13 +4667,13 @@ describe("HttpHostClient Home prefetch", () => {
     const commands: string[] = [];
     const sockets: FakeSocket[] = [];
     let refuse = false;
-    const page = (title = "Home") => ({
+    const page = (title = "Home", asOfSequence = "7") => ({
       threadId: home.id,
       thread: { ...home, title },
       events: [],
       readState: {
         ...defaultReadState(home.id),
-        asOfSequence: "7",
+        asOfSequence,
         readSequence: "2",
         unreadSequence: "7",
       },
@@ -4671,6 +4770,15 @@ describe("HttpHostClient Home prefetch", () => {
       try {
         await run.client.load();
         expect(run.history).toHaveLength(1);
+        expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
+        const accepted: string[] = [];
+        run.client.subscribe(() => {
+          const snapshot = run.client.getSnapshot();
+          if (snapshot.savedViewReadiness?.home.status !== "window") return;
+          expect(snapshot.threadReadStates[run.home.id]?.asOfSequence).toBe("7");
+          expect(snapshot.transcriptWindows[run.home.id]).toEqual(run.page().window);
+          accepted.push(snapshot.savedViewReadiness.home.threadId);
+        });
         expect(run.operations).not.toContain("thread.browserUsage.get");
         expect(run.operations).not.toContain("thread.assignments.list");
         expect(run.commands).not.toContain("thread.read.mark");
@@ -4691,7 +4799,51 @@ describe("HttpHostClient Home prefetch", () => {
         run.client.activateThread(run.home.id);
         expect(run.history).toHaveLength(1);
         expect(run.client.getSnapshot().threadReadStates[run.home.id]?.readSequence).toBe("2");
+        expect(run.client.getSnapshot().savedViewReadiness?.home).toEqual({
+          status: "window",
+          threadId: run.home.id,
+          workspaceId: run.workspace.id,
+          latest: true,
+        });
+        expect(accepted).toContain(run.home.id);
         expect(run.commands).not.toContain("thread.read.mark");
+      } finally {
+        run.close();
+      }
+    },
+  );
+
+  it.each([
+    ["pending", "5"],
+    ["pending", "7"],
+    ["ready", "5"],
+    ["ready", "7"],
+  ] as const)(
+    "keeps the %s Home read when its coverage includes snapshot %s",
+    async (state, sequence) => {
+      const run = homeStartup();
+      try {
+        await run.client.load();
+        run.client.activateThread(run.home.id);
+        if (state === "ready") {
+          run.history[0]!.resolve(json(run.page()));
+          await vi.waitFor(() =>
+            expect(run.client.getSnapshot().threadReadStates[run.home.id]?.asOfSequence).toBe("7"),
+          );
+        }
+        const socket = run.sockets[0]!;
+        socket.open();
+        socket.receive({
+          snapshot: { ...workspaceSnapshot(run.workspace, sequence), threads: [run.home] },
+          type: "host.snapshot",
+        });
+        run.history[0]!.resolve(json(run.page()));
+        await vi.waitFor(() => {
+          expect(run.client.getSnapshot().threadLookups[run.home.id]).toBeUndefined();
+          expect(run.history).toHaveLength(1);
+        });
+        run.client.activateThread(run.home.id);
+        expect(run.history).toHaveLength(1);
       } finally {
         run.close();
       }
@@ -4706,20 +4858,194 @@ describe("HttpHostClient Home prefetch", () => {
       const socket = run.sockets[0]!;
       socket.open();
       socket.receive({
-        snapshot: { ...workspaceSnapshot(run.workspace, "5"), threads: [run.home] },
+        snapshot: { ...workspaceSnapshot(run.workspace, "8"), threads: [run.home] },
         type: "host.snapshot",
       });
       run.history[0]!.resolve(json(run.page("Read before the snapshot")));
       await vi.waitFor(() => expect(run.history).toHaveLength(2));
-      run.history[1]!.resolve(json(run.page("Read after the snapshot")));
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
+      run.history[1]!.resolve(json(run.page("Read after the snapshot", "9")));
       await vi.waitFor(() =>
         expect(run.client.getSnapshot().threads.find(({ id }) => id === run.home.id)?.title).toBe(
           "Read after the snapshot",
         ),
       );
+      expect(run.client.getSnapshot().savedViewReadiness?.home).toMatchObject({
+        status: "window",
+        threadId: run.home.id,
+        latest: true,
+      });
       run.client.activateThread(run.home.id);
       expect(run.history).toHaveLength(2);
       expect(run.commands).not.toContain("thread.read.mark");
+    } finally {
+      run.close();
+    }
+  });
+
+  it.each([true, false])(
+    "withdraws Home readiness before an unshown snapshot replaces its transcript (omitted=%s)",
+    async (messagesOmitted) => {
+      const run = homeStartup();
+      const publications: { home: SavedViewReadiness["home"]; text: string | undefined }[] = [];
+      try {
+        await run.client.load();
+        const message = makeMessage(run.home.id, "input", "Keep this useful tail");
+        const acceptedPage = {
+          ...run.page(),
+          events: [
+            agentEvent(run.workspace.id, run.home.id, message.runId, "7", "message.created", {
+              input: makeThreadInput(message),
+              message,
+            }),
+          ],
+        };
+        run.history[0]!.resolve(json(acceptedPage));
+        await vi.waitFor(() =>
+          expect(projectSavedHome(run.client.getSnapshot())?.messages).toEqual([
+            { voice: "mine", text: "Keep this useful tail" },
+          ]),
+        );
+        run.client.subscribe(() => {
+          const snapshot = run.client.getSnapshot();
+          publications.push({
+            home: snapshot.savedViewReadiness!.home,
+            text: projectSavedHome(snapshot)
+              ?.messages.map(({ text }) => text)
+              .join(""),
+          });
+        });
+        const socket = run.sockets[0]!;
+        socket.open();
+        publications.length = 0;
+        socket.receive({
+          snapshot: {
+            // Newer than the accepted page (7), so that history no longer covers it.
+            ...workspaceSnapshot(run.workspace, "8"),
+            threads: [run.home],
+            ...(messagesOmitted ? { messagesOmitted: true } : {}),
+          },
+          type: "host.snapshot",
+        });
+        expect(publications.length).toBeGreaterThan(0);
+        expect(
+          publications.every(({ home, text }) => home.status === "unknown" && text === undefined),
+        ).toBe(true);
+        expect(run.client.getSnapshot().transcripts[run.home.id]).toEqual(
+          messagesOmitted ? undefined : [],
+        );
+        run.client.activateThread(run.home.id);
+        await vi.waitFor(() => expect(run.history).toHaveLength(2));
+        expect(
+          publications.every(({ home, text }) => home.status === "unknown" && text === undefined),
+        ).toBe(true);
+        run.history[1]!.resolve(
+          json({ error: { code: "internal", message: "Lost history", retryable: true } }, 500),
+        );
+        await vi.waitFor(() =>
+          expect(run.client.getSnapshot().threadLookups[run.home.id]).toBe("failed"),
+        );
+        expect(
+          publications.every(({ home, text }) => home.status === "unknown" && text === undefined),
+        ).toBe(true);
+        // A successful replacement, including an explicitly empty one, certifies a new window.
+        run.client.activateThread(run.home.id);
+        await vi.waitFor(() => expect(run.history).toHaveLength(3));
+        expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
+        run.history[2]!.resolve(json(run.page()));
+        await vi.waitFor(() =>
+          expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("window"),
+        );
+        expect(projectSavedHome(run.client.getSnapshot())?.messages).toEqual([]);
+      } finally {
+        run.close();
+      }
+    },
+  );
+
+  it("never publishes a historical Home window as an accepted latest tail", async () => {
+    const run = homeStartup();
+    try {
+      await run.client.load();
+      run.history[0]!.resolve(json(run.page()));
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("window"),
+      );
+      const historicalReadiness: boolean[] = [];
+      run.client.subscribe(() => {
+        const snapshot = run.client.getSnapshot();
+        const home = snapshot.savedViewReadiness?.home;
+        if (snapshot.transcriptWindows[run.home.id]?.byteCount === 1 && home?.status === "window")
+          historicalReadiness.push(home.latest);
+      });
+      const reading = run.client.loadTranscriptAround(run.home.id, createId("message"));
+      await vi.waitFor(() => expect(run.history).toHaveLength(2));
+      run.history[1]!.resolve(
+        json({ ...run.page(), window: { ...run.page().window, byteCount: 1 } }),
+      );
+      await reading;
+      expect(historicalReadiness.length).toBeGreaterThan(0);
+      expect(historicalReadiness).not.toContain(true);
+    } finally {
+      run.close();
+    }
+  });
+
+  it("accepts only the current Home when bootstrap replaces an in-flight prefetch", async () => {
+    const run = homeStartup();
+    try {
+      await run.client.load();
+      const replacement = { ...makeThread(run.workspace.id), role: "conversation" as const };
+      run.workspace.homeThreadId = replacement.id;
+      await run.client.refresh();
+      expect(run.history).toHaveLength(2);
+      expect(run.client.getSnapshot().homeThreadId).toBe(replacement.id);
+      run.history[0]!.resolve(json(run.page("Previous Home")));
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().threadLookups[run.home.id]).toBeUndefined(),
+      );
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
+      run.history[1]!.resolve(
+        json({
+          ...run.page(),
+          thread: replacement,
+          threadId: replacement.id,
+          readState: { ...run.page().readState, threadId: replacement.id },
+          window: { ...run.page().window, threadId: replacement.id },
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().savedViewReadiness?.home).toEqual({
+          status: "window",
+          threadId: replacement.id,
+          workspaceId: run.workspace.id,
+          latest: true,
+        }),
+      );
+    } finally {
+      run.close();
+    }
+  });
+
+  it("retains a covered Home prefetch when its snapshot arrives before activation", async () => {
+    const run = homeStartup();
+    try {
+      await run.client.load();
+      run.history[0]!.resolve(json(run.page()));
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().threadReadStates[run.home.id]?.asOfSequence).toBe("7"),
+      );
+      const socket = run.sockets[0]!;
+      socket.open();
+      socket.receive({
+        snapshot: { ...workspaceSnapshot(run.workspace, "7"), threads: [run.home] },
+        type: "host.snapshot",
+      });
+      // Covered history stays, and so does the readiness it certified.
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("window");
+      run.client.activateThread(run.home.id);
+      expect(run.history).toHaveLength(1);
+      expect(run.client.getSnapshot().threadLookups[run.home.id]).toBeUndefined();
     } finally {
       run.close();
     }
@@ -4736,6 +5062,7 @@ describe("HttpHostClient Home prefetch", () => {
       await vi.waitFor(() =>
         expect(run.client.getSnapshot().threadLookups[run.home.id]).toBe("failed"),
       );
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
       run.client.activateThread(run.home.id);
       expect(run.history).toHaveLength(2);
       run.history[1]!.resolve(json(run.page()));
@@ -4756,8 +5083,10 @@ describe("HttpHostClient Home prefetch", () => {
       run.refuse();
       await run.client.rpc["auth.config"]({});
       expect(run.client.getSnapshot().homeThreadId).toBeNull();
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
       await run.client.reauthenticate();
       expect(run.history).toHaveLength(2);
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
       run.history[0]!.resolve(json(run.page("Old viewer")));
       run.history[1]!.resolve(json(run.page("Current viewer")));
       await vi.waitFor(() =>
@@ -6676,7 +7005,11 @@ describe("HttpHostClient Thread state reconciliation", () => {
   it("keeps a reconnect snapshot newer than outstanding history", async () => {
     const workspace = makeWorkspace();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
-    const { answer, asked, client, socket } = await delayedRead({
+    const { answer, asked, client, reread, socket } = await delayedRead({
+      freshHistory: historyPage(
+        { ...thread, status: "waiting", pendingRequests: 1, inputQueuePaused: true },
+        "10",
+      ),
       path: "/v1/rpc/thread.events.list",
       response: historyPage(thread, "1"),
       thread,
@@ -6694,6 +7027,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
       });
       answer();
       await reading;
+      expect(reread).toHaveBeenCalledOnce();
       expect(client.getSnapshot().threads[0]).toMatchObject({
         inputQueuePaused: true,
         pendingRequests: 1,
@@ -8485,7 +8819,11 @@ describe("HttpHostClient Run activity and live streams", () => {
         const path = new URL(String(input)).pathname;
         if (path === "/v1/rpc/auth.config") return json(bootstrap([workspace]).identityConfig);
         if (viewer === "signed-out") return json({ error: unauthorizedError() }, 401);
-        if (path === "/v1/rpc/thread.events.list") return json(historyPage(thread));
+        if (path === "/v1/rpc/thread.events.list")
+          return json({
+            ...historyPage(thread),
+            readState: { ...defaultReadState(thread.id), asOfSequence: "1" },
+          });
         return json(
           viewer === "owner"
             ? bootstrap([workspace])
@@ -8869,6 +9207,52 @@ describe("HttpHostClient task list", () => {
         positions.unread === undefined ? null : SequenceSchema.parse(positions.unread),
     };
   }
+
+  it("publishes task readiness only after the accepted page's read states are installed", async () => {
+    const main = makeWorkspace(),
+      thread = makeThread(main.id),
+      host = taskHost([main]);
+    const client = createHttpHostClient({
+      fetch: host.fetch,
+      taskReads: "observed",
+      refreshIntervalMs: 0,
+    });
+    const observed: boolean[] = [];
+    const detach = client.subscribe(() => {
+      const snapshot = client.getSnapshot();
+      if (snapshot.savedViewReadiness?.tasksReady)
+        observed.push(
+          snapshot.threadReadStates[snapshot.tasks?.entries[0]?.thread.id ?? ""]?.readSequence ===
+            "9",
+        );
+    });
+    const loading = client.load();
+    await vi.waitFor(() => expect(host.reads).toHaveLength(1));
+    expect(client.getSnapshot().savedViewReadiness?.tasksReady).toBe(false);
+    host.reads[0]!.answer(
+      taskPage([thread], { hasMore: false, nextBefore: null }, [
+        readStateOf(thread.id, { read: "9" }),
+      ]),
+    );
+    await loading;
+    await vi.waitFor(() => expect(client.getSnapshot().savedViewReadiness?.tasksReady).toBe(true));
+    expect(observed.length).toBeGreaterThan(0);
+    await client.refresh();
+    await vi.waitFor(() => expect(host.reads).toHaveLength(2));
+    const after = { ...makeThread(main.id), title: "After" };
+    host.reads[1]!.answer(
+      taskPage([after], { hasMore: false, nextBefore: null }, [
+        readStateOf(after.id, { read: "9" }),
+      ]),
+    );
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().tasks?.entries[0]?.thread.title).toBe("After"),
+    );
+    await vi.waitFor(() => expect(client.getSnapshot().savedViewReadiness?.tasksReady).toBe(true));
+    expect(observed.every(Boolean)).toBe(true);
+    detach();
+    client.dispose();
+  });
 
   /** A page as `tasks.list` answers it, with a plain read state for each task. */
   function taskPage(
@@ -12256,6 +12640,57 @@ describe("HttpHostClient overnight transcript residency", () => {
     },
   );
 
+  it("rereads hydrated history when a newer snapshot covers a transcript gap", async () => {
+    const f = await residentFixture();
+    try {
+      const missed = agentEvent(f.workspace.id, f.thread.id, f.runId, "9", "reasoning.completed", {
+        blockId: "hydrated-snapshot-gap",
+        text: "Recorded after the hydrated page while disconnected.",
+      });
+      f.histories.set(f.thread.id, page(f.thread, [...f.events, missed], "10"));
+      f.socket.receive({
+        type: "host.snapshot",
+        snapshot: { ...workspaceSnapshot(f.workspace, "10"), threads: [f.thread, f.other] },
+      });
+      await vi.waitFor(() =>
+        expect(f.client.getSnapshot().transcripts[f.thread.id]).toContainEqual(
+          expect.objectContaining({ id: `reasoning:${f.runId}:hydrated-snapshot-gap` }),
+        ),
+      );
+      expect(f.reads.filter((id) => id === f.thread.id)).toHaveLength(2);
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("requires the newest overtaking snapshot and caps uncovered history rereads", async () => {
+    const f = await residentFixture();
+    const pending = f.holdHistory();
+    try {
+      const entries = f.client.getSnapshot().transcripts[f.thread.id];
+      const window = f.client.getSnapshot().transcriptWindows[f.thread.id];
+      f.histories.set(f.thread.id, page(f.thread, f.events, "8"));
+      const reading = f.client.loadLatestTranscript(f.thread.id);
+      await pending.asked.promise;
+      for (const sequence of ["10", "8"]) {
+        f.socket.receive({
+          type: "host.snapshot",
+          snapshot: { ...workspaceSnapshot(f.workspace, sequence), threads: [f.thread, f.other] },
+        });
+      }
+      pending.answer.resolve(json(page(f.thread, f.events, "5")));
+      await expect(reading).rejects.toThrow(
+        "The connection changed while loading this conversation",
+      );
+      expect(f.reads.filter((id) => id === f.thread.id)).toHaveLength(5);
+      expect(f.client.getSnapshot().transcripts[f.thread.id]).toBe(entries);
+      expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBe(window);
+    } finally {
+      pending.answer.resolve(json(page(f.thread, f.events, "5")));
+      f.client.dispose();
+    }
+  });
+
   it("rereads an outstanding transcript after a snapshot even when Thread state did not change", async () => {
     const f = await residentFixture();
     const pending = f.holdHistory();
@@ -12319,3 +12754,97 @@ describe("HttpHostClient overnight transcript residency", () => {
     },
   );
 });
+
+it.each([false, true])(
+  "gates the passkey viewer opt-in on the Host capability (%s)",
+  async (capable) => {
+    const workspace = makeWorkspace("Example");
+    const sessionId = createBrowserSessionId();
+    const runnerId = createId("runner");
+    const tabId = BrowserSurfaceIdSchema.parse("tab");
+    const browser: HostedBrowserBootstrap = {
+      available: true,
+      placements: [
+        {
+          kind: "runner",
+          runnerId,
+          runtimeId: "runtime",
+          label: "Example computer",
+          environmentIds: [],
+          available: true,
+        },
+      ],
+      profileGrants: [],
+      profiles: [],
+      sessions: [
+        {
+          id: sessionId,
+          access: "full-control",
+          origin: "workspace",
+          state: "ready",
+          createdAt: now,
+          updatedAt: now,
+          workspaceId: workspace.id,
+          profileId: null,
+          runtimeId: "runtime",
+          placement: { kind: "runner", runnerId },
+          tabCatalog: {
+            generation: 1,
+            revision: 1,
+            tabs: [
+              {
+                id: tabId,
+                title: "Example",
+                site: "https://example.test",
+                iconRef: null,
+                order: 0,
+                openerId: null,
+                availability: "ready",
+                documentId: null,
+                occupants: [],
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const sockets: { url: string; socket: FakeSocket }[] = [];
+    const client = createHttpHostClient({
+      capabilities: capable
+        ? ["browser-passkeys-v1", "browser-target-control-v1"]
+        : ["browser-target-control-v1"],
+      fetch: async () => json(bootstrap([workspace], browser)),
+      refreshIntervalMs: 0,
+      webSocketFactory: (url) => {
+        const socket = new FakeSocket();
+        sockets.push({ url, socket });
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      const release = client.retainBrowserViewer(sessionId, tabId, { picture: false });
+      const connection = sockets.find(({ url }) => url.includes("/browser-sessions/"))!;
+      expect(new URL(connection.url).searchParams.get("passkeys")).toBe(capable ? "notice" : null);
+      connection.socket.open();
+      connection.socket.receiveRaw({
+        type: "browser.snapshot",
+        sessionId,
+        access: "full-control",
+        state: "ready",
+        dialog: null,
+        targetedStreamingVersion: 1,
+        surfaces: [{ id: tabId, active: true, title: "Example", url: "https://example.test" }],
+        ...(capable ? { passkeys: "notice" } : {}),
+      });
+      if (capable) {
+        connection.socket.receiveRaw({ type: "browser.passkey.notice", surfaceId: tabId });
+        expect(client.browserPasskeys.get(sessionId, tabId)).toEqual({ kind: "notice" });
+      }
+      release();
+      expect(client.browserPasskeys.get(sessionId, tabId)).toBeNull();
+    } finally {
+      client.dispose();
+    }
+  },
+);

@@ -57,6 +57,7 @@ export type SFSymbolName =
   | "list.bullet"
   | "lock"
   | "lock.open"
+  | "mic"
   | "macmini"
   | "magnifyingglass"
   | "pencil"
@@ -201,6 +202,7 @@ const glyph: Record<SFSymbolName, string> = {
   "list.bullet": "≔",
   lock: "⚿",
   "lock.open": "🔓\uFE0E",
+  mic: "♩",
   macmini: "▬",
   magnifyingglass: "⌕",
   pencil: "✎",

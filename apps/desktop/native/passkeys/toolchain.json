@@ -1,0 +1,13 @@
+{
+  "xcode": "Xcode 27.1\nBuild version 27A9275",
+  "sdk": "27.0",
+  "clang": "clang-2100.3.34.2",
+  "nodeHeaders": "24.13.0",
+  "napi": 8,
+  "headers": {
+    "node_api.h": "2d4560831e525b47b060ec8a0864ab73993df9e20215ce9f0fe7b24cd31af32a",
+    "node_api_types.h": "088766b3cf1f0cd9b292c361ad30f7a04e7cc6db35a20ca52c572c1adf9635e7",
+    "js_native_api.h": "fec72e29a59ef5fa49129eff141f3a0ce0f0cb3e628b0695f8e711dccb4fdb9a",
+    "js_native_api_types.h": "4dbe2545fff0b2ea19e48021ef2e146666a6cb9b2264e9cb720a96de31feeb9f"
+  }
+}
