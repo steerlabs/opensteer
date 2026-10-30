@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { VoiceButton, VoiceDock } from "./voice.js";
 import { Link } from "react-router";
 import { CHAT_THREAD_TITLE, type ThreadAccessMode } from "@opensteer/core";
 import {
