@@ -345,7 +345,8 @@ test("release native proof and release builds share a toolchain; release caches 
   assert.equal(release.jobs.build["runs-on"], native.runner);
   assert.equal(release.jobs.build.env.DEVELOPER_DIR, native.xcode);
   assert.equal(workflow.jobs["native-mac"]["runs-on"], "${{ matrix.runner }}");
-  assert.equal(workflow.jobs["native-mac"].strategy["max-parallel"], 2);
+  // Releases wait for main's full CI; the account-wide macOS limit already caps it.
+  assert.equal(workflow.jobs["native-mac"].strategy["max-parallel"], undefined);
   const caches = release.jobs.build.steps.filter((step) => step.uses?.startsWith("actions/cache@"));
   assert.equal(caches.length, 3);
   for (const cache of caches) {

@@ -247,7 +247,6 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix:
         # Tasks, timeouts and Swift cache inputs live in .github/scripts/ci-native-mac.json;
         # `changes` selects the tasks whose inputs this change touches.
