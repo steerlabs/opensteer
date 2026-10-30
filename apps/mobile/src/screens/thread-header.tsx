@@ -84,6 +84,11 @@ export function useThreadHeader(props: {
   readonly deploymentId: string;
   /** What the bar says while no current header has been reported. */
   readonly fallbackTitle: string;
+  readonly savedSubtitle?: {
+    readonly label: string;
+    readonly capturedAt: string;
+    readonly onRetry?: () => void;
+  };
   /** The pane's header values, scoped by `useScopedThreadHeader`. */
   readonly header: ThreadHeaderState | null;
   /** The attached Host, or null while the screen is waiting for one. */
@@ -92,7 +97,7 @@ export function useThreadHeader(props: {
 }): void {
   const navigation = useNavigation();
   const glass = useLiquidGlass();
-  const { deploymentId, fallbackTitle, header, hostClient, threadId } = props;
+  const { deploymentId, fallbackTitle, header, hostClient, threadId, savedSubtitle } = props;
   useLayoutEffect(() => {
     const attached = hostClient !== null && threadId !== null;
     navigation.setOptions({
@@ -124,34 +129,53 @@ export function useThreadHeader(props: {
         : { headerBlurEffect: "systemChromeMaterialDark" as const }),
       // Both keys are always written: the navigator merges options, so a title
       // left out would keep whatever an earlier header put there.
-      ...(header === null || hostClient === null
-        ? { headerTitle: fallbackTitle, title: fallbackTitle }
-        : {
+      ...(savedSubtitle
+        ? {
             headerTitle: () => (
-              <ThreadTitle
-                {...header}
-                threadId={threadId}
-                hostClient={hostClient}
-                // Chat is the root under every stack, so it is returned to,
-                // never opened a second time over this task.
-                onOpenThread={(id) =>
-                  navigation.dispatch(
-                    id === hostClient.getSnapshot().homeThreadId
-                      ? StackActions.popTo("Home", { deploymentId })
-                      : StackActions.push("Thread", { deploymentId, threadId: id }),
-                  )
-                }
-                onRetry={() =>
-                  void hostClient.refresh({ retryConnection: true }).catch(() => undefined)
-                }
-              />
+              <View
+                accessibilityLabel={`${fallbackTitle}. Saved view, last updated ${savedSubtitle.capturedAt}.`}
+              >
+                <AppText role="title">{fallbackTitle}</AppText>
+                <ThreadSubtitle
+                  workspaceName={null}
+                  workspaceColor={null}
+                  workspaceIcon={null}
+                  connectionLabel={savedSubtitle.label}
+                  onRetry={savedSubtitle.onRetry}
+                  task={null}
+                />
+              </View>
             ),
-            // The route keeps a plain name as well: it is what a back control
-            // on the screen above this one has to say.
-            title: header.title,
-          }),
+            title: fallbackTitle,
+          }
+        : header === null || hostClient === null
+          ? { headerTitle: fallbackTitle, title: fallbackTitle }
+          : {
+              headerTitle: () => (
+                <ThreadTitle
+                  {...header}
+                  threadId={threadId}
+                  hostClient={hostClient}
+                  // Chat is the root under every stack, so it is returned to,
+                  // never opened a second time over this task.
+                  onOpenThread={(id) =>
+                    navigation.dispatch(
+                      id === hostClient.getSnapshot().homeThreadId
+                        ? StackActions.popTo("Home", { deploymentId })
+                        : StackActions.push("Thread", { deploymentId, threadId: id }),
+                    )
+                  }
+                  onRetry={() =>
+                    void hostClient.refresh({ retryConnection: true }).catch(() => undefined)
+                  }
+                />
+              ),
+              // The route keeps a plain name as well: it is what a back control
+              // on the screen above this one has to say.
+              title: header.title,
+            }),
     });
-  }, [deploymentId, fallbackTitle, glass, header, hostClient, navigation, threadId]);
+  }, [deploymentId, fallbackTitle, glass, header, hostClient, navigation, threadId, savedSubtitle]);
 }
 
 /**

@@ -46,6 +46,7 @@ import { filterThreads } from "./thread-list-model.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
 import { placeList } from "./places.js";
 import { visibleTranscript } from "./transcript.js";
+import { projectSavedHome, type SavedViewReadiness } from "./saved-host-view.js";
 
 const now = "2026-08-09T20:00:00.000Z";
 const ownerId = createId("user");
@@ -229,6 +230,62 @@ function preferencesForWorkspaces(value: unknown) {
       }))
     : [];
 }
+
+describe("saved-view readiness", () => {
+  it("distinguishes unknown Main, explicitly absent Home, and accepted latest/around windows", async () => {
+    const main = makeWorkspace();
+    const thread = makeThread(main.id);
+    main.homeThreadId = thread.id;
+    const client = createHttpHostClient({
+      prefetchHome: true,
+      refreshIntervalMs: 0,
+      fetch: async (input) =>
+        new URL(String(input)).pathname.endsWith("thread.events.list")
+          ? json({
+              thread,
+              threadId: thread.id,
+              events: [],
+              window: {
+                threadId: thread.id,
+                byteCount: 2,
+                hasMore: false,
+                itemCount: 0,
+                nextBefore: null,
+                totalItems: 0,
+              },
+            })
+          : json(bootstrap([main])),
+    });
+    expect(client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().savedViewReadiness?.home.status).toBe("window"),
+    );
+    expect(client.getSnapshot().savedViewReadiness?.home).toMatchObject({
+      status: "window",
+      threadId: thread.id,
+      latest: true,
+    });
+    await client.loadTranscriptAround(thread.id, createId("message"));
+    expect(client.getSnapshot().savedViewReadiness?.home).toMatchObject({
+      status: "window",
+      latest: false,
+    });
+    client.dispose();
+    for (const [workspaces, status] of [
+      [[], "unknown"],
+      [[makeWorkspace()], "absent"],
+    ] as const) {
+      const host = createHttpHostClient({
+        refreshIntervalMs: 0,
+        fetch: async () => json(bootstrap([...workspaces])),
+      });
+      await host.load();
+      expect(host.getSnapshot().savedViewReadiness?.home.status).toBe(status);
+      host.dispose();
+    }
+  });
+});
 
 describe("HttpHostClient Workspace files", () => {
   it("lists one directory on demand and decodes a bounded UTF-8 preview", async () => {
@@ -4709,6 +4766,15 @@ describe("HttpHostClient Home prefetch", () => {
       try {
         await run.client.load();
         expect(run.history).toHaveLength(1);
+        expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
+        const accepted: string[] = [];
+        run.client.subscribe(() => {
+          const snapshot = run.client.getSnapshot();
+          if (snapshot.savedViewReadiness?.home.status !== "window") return;
+          expect(snapshot.threadReadStates[run.home.id]?.asOfSequence).toBe("7");
+          expect(snapshot.transcriptWindows[run.home.id]).toEqual(run.page().window);
+          accepted.push(snapshot.savedViewReadiness.home.threadId);
+        });
         expect(run.operations).not.toContain("thread.browserUsage.get");
         expect(run.operations).not.toContain("thread.assignments.list");
         expect(run.commands).not.toContain("thread.read.mark");
@@ -4729,6 +4795,13 @@ describe("HttpHostClient Home prefetch", () => {
         run.client.activateThread(run.home.id);
         expect(run.history).toHaveLength(1);
         expect(run.client.getSnapshot().threadReadStates[run.home.id]?.readSequence).toBe("2");
+        expect(run.client.getSnapshot().savedViewReadiness?.home).toEqual({
+          status: "window",
+          threadId: run.home.id,
+          workspaceId: run.workspace.id,
+          latest: true,
+        });
+        expect(accepted).toContain(run.home.id);
         expect(run.commands).not.toContain("thread.read.mark");
       } finally {
         run.close();
@@ -4749,15 +4822,164 @@ describe("HttpHostClient Home prefetch", () => {
       });
       run.history[0]!.resolve(json(run.page("Read before the snapshot")));
       await vi.waitFor(() => expect(run.history).toHaveLength(2));
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
       run.history[1]!.resolve(json(run.page("Read after the snapshot")));
       await vi.waitFor(() =>
         expect(run.client.getSnapshot().threads.find(({ id }) => id === run.home.id)?.title).toBe(
           "Read after the snapshot",
         ),
       );
+      expect(run.client.getSnapshot().savedViewReadiness?.home).toMatchObject({
+        status: "window",
+        threadId: run.home.id,
+        latest: true,
+      });
       run.client.activateThread(run.home.id);
       expect(run.history).toHaveLength(2);
       expect(run.commands).not.toContain("thread.read.mark");
+    } finally {
+      run.close();
+    }
+  });
+
+  it.each([true, false])(
+    "withdraws Home readiness before an unshown snapshot replaces its transcript (omitted=%s)",
+    async (messagesOmitted) => {
+      const run = homeStartup();
+      const publications: { home: SavedViewReadiness["home"]; text: string | undefined }[] = [];
+      try {
+        await run.client.load();
+        const message = makeMessage(run.home.id, "input", "Keep this useful tail");
+        const acceptedPage = {
+          ...run.page(),
+          events: [
+            agentEvent(run.workspace.id, run.home.id, message.runId, "7", "message.created", {
+              input: makeThreadInput(message),
+              message,
+            }),
+          ],
+        };
+        run.history[0]!.resolve(json(acceptedPage));
+        await vi.waitFor(() =>
+          expect(projectSavedHome(run.client.getSnapshot())?.messages).toEqual([
+            { voice: "mine", text: "Keep this useful tail" },
+          ]),
+        );
+        run.client.subscribe(() => {
+          const snapshot = run.client.getSnapshot();
+          publications.push({
+            home: snapshot.savedViewReadiness!.home,
+            text: projectSavedHome(snapshot)
+              ?.messages.map(({ text }) => text)
+              .join(""),
+          });
+        });
+        const socket = run.sockets[0]!;
+        socket.open();
+        publications.length = 0;
+        socket.receive({
+          snapshot: {
+            ...workspaceSnapshot(run.workspace, "7"),
+            threads: [run.home],
+            ...(messagesOmitted ? { messagesOmitted: true } : {}),
+          },
+          type: "host.snapshot",
+        });
+        expect(publications.length).toBeGreaterThan(0);
+        expect(
+          publications.every(({ home, text }) => home.status === "unknown" && text === undefined),
+        ).toBe(true);
+        expect(run.client.getSnapshot().transcripts[run.home.id]).toEqual(
+          messagesOmitted ? undefined : [],
+        );
+        run.client.activateThread(run.home.id);
+        await vi.waitFor(() => expect(run.history).toHaveLength(2));
+        expect(
+          publications.every(({ home, text }) => home.status === "unknown" && text === undefined),
+        ).toBe(true);
+        run.history[1]!.resolve(
+          json({ error: { code: "internal", message: "Lost history", retryable: true } }, 500),
+        );
+        await vi.waitFor(() =>
+          expect(run.client.getSnapshot().threadLookups[run.home.id]).toBe("failed"),
+        );
+        expect(
+          publications.every(({ home, text }) => home.status === "unknown" && text === undefined),
+        ).toBe(true);
+        // A successful replacement, including an explicitly empty one, certifies a new window.
+        run.client.activateThread(run.home.id);
+        await vi.waitFor(() => expect(run.history).toHaveLength(3));
+        expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
+        run.history[2]!.resolve(json(run.page()));
+        await vi.waitFor(() =>
+          expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("window"),
+        );
+        expect(projectSavedHome(run.client.getSnapshot())?.messages).toEqual([]);
+      } finally {
+        run.close();
+      }
+    },
+  );
+
+  it("never publishes a historical Home window as an accepted latest tail", async () => {
+    const run = homeStartup();
+    try {
+      await run.client.load();
+      run.history[0]!.resolve(json(run.page()));
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("window"),
+      );
+      const historicalReadiness: boolean[] = [];
+      run.client.subscribe(() => {
+        const snapshot = run.client.getSnapshot();
+        const home = snapshot.savedViewReadiness?.home;
+        if (snapshot.transcriptWindows[run.home.id]?.byteCount === 1 && home?.status === "window")
+          historicalReadiness.push(home.latest);
+      });
+      const reading = run.client.loadTranscriptAround(run.home.id, createId("message"));
+      await vi.waitFor(() => expect(run.history).toHaveLength(2));
+      run.history[1]!.resolve(
+        json({ ...run.page(), window: { ...run.page().window, byteCount: 1 } }),
+      );
+      await reading;
+      expect(historicalReadiness.length).toBeGreaterThan(0);
+      expect(historicalReadiness).not.toContain(true);
+    } finally {
+      run.close();
+    }
+  });
+
+  it("accepts only the current Home when bootstrap replaces an in-flight prefetch", async () => {
+    const run = homeStartup();
+    try {
+      await run.client.load();
+      const replacement = { ...makeThread(run.workspace.id), role: "conversation" as const };
+      run.workspace.homeThreadId = replacement.id;
+      await run.client.refresh();
+      expect(run.history).toHaveLength(2);
+      expect(run.client.getSnapshot().homeThreadId).toBe(replacement.id);
+      run.history[0]!.resolve(json(run.page("Previous Home")));
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().threadLookups[run.home.id]).toBeUndefined(),
+      );
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
+      run.history[1]!.resolve(
+        json({
+          ...run.page(),
+          thread: replacement,
+          threadId: replacement.id,
+          readState: { ...run.page().readState, threadId: replacement.id },
+          window: { ...run.page().window, threadId: replacement.id },
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(run.client.getSnapshot().savedViewReadiness?.home).toEqual({
+          status: "window",
+          threadId: replacement.id,
+          workspaceId: run.workspace.id,
+          latest: true,
+        }),
+      );
     } finally {
       run.close();
     }
@@ -4774,6 +4996,7 @@ describe("HttpHostClient Home prefetch", () => {
       await vi.waitFor(() =>
         expect(run.client.getSnapshot().threadLookups[run.home.id]).toBe("failed"),
       );
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
       run.client.activateThread(run.home.id);
       expect(run.history).toHaveLength(2);
       run.history[1]!.resolve(json(run.page()));
@@ -4794,8 +5017,10 @@ describe("HttpHostClient Home prefetch", () => {
       run.refuse();
       await run.client.rpc["auth.config"]({});
       expect(run.client.getSnapshot().homeThreadId).toBeNull();
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
       await run.client.reauthenticate();
       expect(run.history).toHaveLength(2);
+      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
       run.history[0]!.resolve(json(run.page("Old viewer")));
       run.history[1]!.resolve(json(run.page("Current viewer")));
       await vi.waitFor(() =>
@@ -8907,6 +9132,52 @@ describe("HttpHostClient task list", () => {
         positions.unread === undefined ? null : SequenceSchema.parse(positions.unread),
     };
   }
+
+  it("publishes task readiness only after the accepted page's read states are installed", async () => {
+    const main = makeWorkspace(),
+      thread = makeThread(main.id),
+      host = taskHost([main]);
+    const client = createHttpHostClient({
+      fetch: host.fetch,
+      taskReads: "observed",
+      refreshIntervalMs: 0,
+    });
+    const observed: boolean[] = [];
+    const detach = client.subscribe(() => {
+      const snapshot = client.getSnapshot();
+      if (snapshot.savedViewReadiness?.tasksReady)
+        observed.push(
+          snapshot.threadReadStates[snapshot.tasks?.entries[0]?.thread.id ?? ""]?.readSequence ===
+            "9",
+        );
+    });
+    const loading = client.load();
+    await vi.waitFor(() => expect(host.reads).toHaveLength(1));
+    expect(client.getSnapshot().savedViewReadiness?.tasksReady).toBe(false);
+    host.reads[0]!.answer(
+      taskPage([thread], { hasMore: false, nextBefore: null }, [
+        readStateOf(thread.id, { read: "9" }),
+      ]),
+    );
+    await loading;
+    await vi.waitFor(() => expect(client.getSnapshot().savedViewReadiness?.tasksReady).toBe(true));
+    expect(observed.length).toBeGreaterThan(0);
+    await client.refresh();
+    await vi.waitFor(() => expect(host.reads).toHaveLength(2));
+    const after = { ...makeThread(main.id), title: "After" };
+    host.reads[1]!.answer(
+      taskPage([after], { hasMore: false, nextBefore: null }, [
+        readStateOf(after.id, { read: "9" }),
+      ]),
+    );
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().tasks?.entries[0]?.thread.title).toBe("After"),
+    );
+    await vi.waitFor(() => expect(client.getSnapshot().savedViewReadiness?.tasksReady).toBe(true));
+    expect(observed.every(Boolean)).toBe(true);
+    detach();
+    client.dispose();
+  });
 
   /** A page as `tasks.list` answers it, with a plain read state for each task. */
   function taskPage(

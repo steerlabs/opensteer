@@ -1,5 +1,12 @@
 import { SavedViewCache } from "./saved-view-cache.js";
 import type { HostCapability } from "@opensteer/deployment-authority";
+import { hostApiVersion, hostKeyFingerprint, isSameHost } from "@opensteer/deployment-authority";
+import {
+  createMemorySavedViews,
+  type ClientLifecycle,
+  type SavedViewScope,
+} from "@opensteer/client/host";
+import { SavedViewPresentation } from "./saved-view-presentation.js";
 import {
   AccountBrokeredHostSessions,
   HostSessionExchange,
@@ -95,6 +102,7 @@ export interface MobileDirectoryState {
 }
 
 export interface MobileClientOptions {
+  readonly lifecycle?: ClientLifecycle;
   readonly savedViewStore?: SavedViewStore;
   readonly accountOrigin: string | null;
   readonly catalogFilePath: string;
@@ -146,6 +154,8 @@ export interface MobileClientOptions {
  * afterwards means the route did not move while the operation was in flight.
  */
 export class MobileClient {
+  readonly savedViews: SavedViewPresentation;
+  readonly #lifecycle: ClientLifecycle | undefined;
   readonly accountDirectory: AccountDeploymentDirectoryService;
   readonly catalog: DeploymentCatalogStore;
   readonly directoryRefresh: AccountDirectoryRefreshService<void>;
@@ -163,6 +173,7 @@ export class MobileClient {
   readonly #changingLogins = new Set<string>();
   readonly #loginInitializedClients = new WeakSet<HostClient>();
   #attachedViewLoginId: string | undefined;
+  #cacheIdentityFailureAttempt: number | null = null;
   readonly #authStore: ProtectedAuthStore;
   readonly #fence: HostAttachmentFence;
   readonly #host: MobileHostPort;
@@ -227,13 +238,41 @@ export class MobileClient {
 
   constructor(options: MobileClientOptions) {
     this.#savedViewCache = new SavedViewCache({
-      ...(options.savedViewStore ? { store: options.savedViewStore } : {}),
+      store: options.savedViewStore ?? createMemorySavedViews(),
       files: options.privateFiles,
       directory: `${options.catalogFilePath.slice(0, options.catalogFilePath.lastIndexOf("/"))}/saved-view-denials`,
     });
+    this.savedViews = new SavedViewPresentation({
+      cache: this.#savedViewCache,
+      ...(options.now ? { now: options.now } : {}),
+    });
+    this.#lifecycle = options.lifecycle;
+    if (options.lifecycle)
+      this.#detach.push(
+        options.lifecycle.onBackground(() => {
+          void this.savedViews.flush();
+        }),
+        options.lifecycle.onNetworkChange((network) =>
+          this.savedViews.connection(network, this.#attachmentState === "offline"),
+        ),
+      );
     this.#detach.push(
       this.#savedViewCache.subscribe(() => {
-        void this.#republish();
+        const client = this.#hostClient,
+          id = this.#attachedDeploymentId;
+        // Deletion belongs to a Deployment, so a new selection visit must also
+        // regain its cache scope after the shared operation completes.
+        if (
+          client &&
+          id !== null &&
+          !this.#savedViewCache.isPending(id) &&
+          !this.#changingLogins.has(id)
+        )
+          void this.#initializeViewLoginIds(client).catch(noop);
+        const failure = this.#savedViewCache.getFailure();
+        if (failure === this.#state.savedViewFailure) return;
+        this.#state = { ...this.#state, savedViewFailure: failure };
+        for (const listener of this.#listeners) listener();
       }),
     );
     this.#seed = options.seed ?? [];
@@ -710,6 +749,12 @@ export class MobileClient {
     }
   }
 
+  /** Account UI unregisters push while its credential is held; saved pixels/keys leave first. */
+  clearAccountSavedViews(): Promise<void> {
+    this.#authorizationEpoch += 1;
+    return this.#invalidateAccountSavedViews();
+  }
+
   signOutAccount(): Promise<void> {
     this.#authorizationEpoch += 1;
     const invalidation = this.#invalidateAccountSavedViews();
@@ -780,6 +825,7 @@ export class MobileClient {
     if (this.#disposed) return;
     this.#authorizationEpoch += 1;
     this.#disposed = true;
+    this.savedViews.dispose();
     this.#releaseAttachment();
     for (const detach of this.#detach.splice(0)) detach();
     this.oauth.dispose();
@@ -832,6 +878,11 @@ export class MobileClient {
     this.#selectionFileLoaded = true;
     this.#releaseAttachment();
     this.#attachedDeploymentId = id;
+    this.#beginSavedView(
+      id,
+      this.#attachmentAttempt,
+      catalog.deployments.find(({ authority }) => authority.document.deploymentId === id)!,
+    );
     await this.#republish();
     return this.#attachmentAttempt;
   }
@@ -966,9 +1017,7 @@ export class MobileClient {
       // healthy poll cannot observe an upgrade; reconnects and refusals can.
       let evidence: typeof verification | null = verification;
       let verifying: Promise<readonly HostCapability[]> | null = null;
-      const viewLoginId = await this.#host.credentials
-        .viewLoginId?.(attachment.connection)
-        .catch(() => undefined);
+      const viewLoginId = await this.#viewLoginId(attachment.connection);
       if (!this.#isCurrentSelection(id, attempt) || generation !== this.#fence.generation) continue;
       const hostClient = this.#host.attach({
         authorization: {
@@ -1012,6 +1061,7 @@ export class MobileClient {
       this.#hostClientDetach = hostClient.subscribe(() => {
         if (this.#readAttachment(hostClient)) void this.#republish();
       });
+      this.savedViews.attach(hostClient);
       await this.#republish();
       if (this.#isCurrentSelection(id, attempt) && this.#hostClient === hostClient) {
         void hostClient.load().catch(noop);
@@ -1023,6 +1073,7 @@ export class MobileClient {
 
   async #deselectNow(): Promise<void> {
     await this.#selectionFile.write(null);
+    this.savedViews.select(null, null, () => false);
     this.#selectionPreference = null;
     this.#selectionFileLoaded = true;
     this.#releaseAttachment();
@@ -1090,12 +1141,18 @@ export class MobileClient {
       this.#selectionFileLoaded = true;
     }
     await this.catalog.remove(id);
-    if (selected) this.#releaseAttachment();
+    if (selected) {
+      this.savedViews.select(null, null, () => false);
+      this.#releaseAttachment();
+    }
     await this.#republish();
   }
 
   /** Clears a selected row that disappeared without choosing the catalog fallback. */
   async #forgetRemovedSelectionNow(): Promise<void> {
+    const id = this.#attachedDeploymentId;
+    if (id !== null) await this.#invalidateSavedView(id);
+    this.savedViews.select(null, null, () => false);
     this.#releaseAttachment();
     this.#selectionPreference = null;
     this.#selectionFileLoaded = true;
@@ -1204,6 +1261,7 @@ export class MobileClient {
 
   /** Hides synchronously; key deletion precedes revocation and credential cleanup. */
   #invalidateSavedView(id: string): Promise<void> {
+    if (this.#attachedDeploymentId === id) this.savedViews.block();
     this.#changingLogins.add(id);
     if (this.#state.selection.deploymentId === id) {
       this.#state = { ...this.#state, selection: { ...this.#state.selection, hostClient: null } };
@@ -1236,6 +1294,7 @@ export class MobileClient {
   }
 
   #disposeHostClient(): void {
+    this.savedViews.detach();
     this.#hostClientDetach?.();
     this.#hostClientDetach = null;
     this.#hostClient?.dispose();
@@ -1303,23 +1362,111 @@ export class MobileClient {
     return true;
   }
 
+  async #viewLoginId(connection: DeploymentConnection): Promise<string | undefined> {
+    const id = connection.authority.document.deploymentId,
+      attempt = this.#attachmentAttempt;
+    try {
+      return await this.#host.credentials.viewLoginId?.(connection);
+    } catch {
+      if (this.#isCurrentSelection(id, attempt)) {
+        this.#cacheIdentityFailureAttempt = attempt;
+        this.savedViews.block();
+      }
+      return undefined;
+    }
+  }
+
+  async #savedScope(connection: DeploymentConnection): Promise<SavedViewScope | null> {
+    const id = connection.authority.document.deploymentId;
+    if (this.#signedOut.has(id) || !(await this.#host.credentials.held(connection))) return null;
+    const loginId = await this.#viewLoginId(connection);
+    if (!loginId) return null;
+    const identity = connection.authority.document;
+    const base = {
+      schema: 1 as const,
+      epoch: hostApiVersion,
+      hostIdentity: {
+        deploymentId: identity.deploymentId,
+        hostInstanceId: identity.hostInstanceId,
+        hostKeyFingerprint: hostKeyFingerprint(connection.authority.publicKey.spki),
+      },
+      loginId,
+    };
+    if (connection.source.kind === "manual") return base;
+    const account = this.oauth.accountIdentity(),
+      accountLoginId = this.oauth.accountViewLoginId();
+    if (
+      !accountLoginId ||
+      !account ||
+      account.issuer !== connection.source.issuer ||
+      account.subject !== connection.source.subject
+    )
+      return null;
+    return {
+      ...base,
+      accountSource: { issuer: account.issuer, subject: account.subject, loginId: accountLoginId },
+    };
+  }
+
+  #beginSavedView(id: DeploymentId, attempt: number, connection: DeploymentConnection): void {
+    const epoch = this.#authorizationEpoch;
+    let loginId: string | undefined, accountLoginId: string | undefined;
+    const current = () =>
+      this.#isCurrentSelection(id, attempt) &&
+      this.#cacheIdentityFailureAttempt !== attempt &&
+      // An unrelated Deployment/Account cleanup cannot suspend this login.
+      (this.#authorizationEpoch === epoch || !this.#savedViewCache.isBlocked(id)) &&
+      !this.#savedViewCache.isPending(id) &&
+      !this.#changingLogins.has(id) &&
+      (loginId === undefined ||
+        this.#hostClient === null ||
+        this.#attachedViewLoginId === loginId) &&
+      (accountLoginId === undefined || this.oauth.accountViewLoginId() === accountLoginId);
+    this.savedViews.select(id, null, current);
+    void this.#savedScope(connection)
+      .then((scope) => {
+        if (scope === null) return;
+        loginId = scope.loginId;
+        accountLoginId = scope.accountSource?.loginId;
+        if (!current() || this.#savedViewCache.isBlocked(id)) return;
+        this.savedViews.load(scope);
+      })
+      .catch(noop);
+  }
+
   async #initializeViewLoginIds(client: HostClient): Promise<void> {
     const id = this.#attachedDeploymentId;
-    if (id === null) return;
+    if (id === null || this.#cacheIdentityFailureAttempt === this.#attachmentAttempt) return;
     const connection = this.#requireConnection(id);
     const attempt = this.#attachmentAttempt,
       epoch = this.#authorizationEpoch;
     const isCurrent = () =>
       this.#isCurrentSelection(id, attempt) &&
       this.#hostClient === client &&
-      this.#authorizationEpoch === epoch &&
+      this.#cacheIdentityFailureAttempt !== attempt &&
+      (this.#authorizationEpoch === epoch || !this.#savedViewCache.isBlocked(id)) &&
+      !this.#changingLogins.has(id) &&
+      !this.#savedViewCache.isPending(id) &&
       client.getSnapshot().session === "authenticated";
     await this.oauth.initializeViewLoginIds(connection, isCurrent);
     if (!isCurrent()) return;
     if (connection.kind === "personal") await this.sessions.initializeViewLoginId?.(id, isCurrent);
     if (!isCurrent()) return;
-    const loginId = await this.#host.credentials.viewLoginId?.(connection);
-    if (isCurrent()) this.#attachedViewLoginId = loginId;
+    const loginId = await this.#viewLoginId(connection);
+    if (!isCurrent()) return;
+    this.#attachedViewLoginId = loginId;
+    const scope = await this.#savedScope(connection);
+    if (isCurrent() && scope) {
+      this.#savedViewCache.confirm(id);
+      this.savedViews.authorize(
+        scope,
+        () =>
+          isCurrent() &&
+          this.#attachedViewLoginId === scope.loginId &&
+          (scope.accountSource === undefined ||
+            this.oauth.accountViewLoginId() === scope.accountSource.loginId),
+      );
+    }
   }
 
   /**
@@ -1550,6 +1697,7 @@ export class MobileClient {
     }
     if (typeof agreement === "string") {
       // Discovery refusal erases saved authority without starting a login change.
+      this.savedViews.block();
       void this.#savedViewCache.invalidate(deploymentId);
       this.#verification.set(deploymentId, agreement);
       // Keep the selected Deployment and its repair, but revoke this attachment's
@@ -1572,6 +1720,26 @@ export class MobileClient {
     // storage has been read, and a catalog write during startup must not ask.
     if (this.#disposed || !this.#initialized) return;
     const [catalog, account] = await Promise.all([this.catalog.load(), this.oauth.state()]);
+    if (catalog.revision < this.#state.catalog.revision) return;
+    // Hide a removed/replaced authority before publishing its new catalog context.
+    for (const previous of this.#state.catalog.deployments) {
+      const id = previous.authority.document.deploymentId;
+      const current = catalog.deployments.find(
+        ({ authority }) => authority.document.deploymentId === id,
+      );
+      const sameSource =
+        current &&
+        previous.source.kind === current.source.kind &&
+        (previous.source.kind === "manual" ||
+          (current.source.kind === "account" &&
+            previous.source.issuer === current.source.issuer &&
+            previous.source.subject === current.source.subject));
+      if (
+        (!current || !isSameHost(previous.authority, current.authority) || !sameSource) &&
+        !this.#savedViewCache.isBlocked(id)
+      )
+        void this.#invalidateSavedView(id);
+    }
     // A Deployment that left the catalog takes this iPhone's sharing with it.
     // There is no credential left to tell its Host with.
     const enrolled = this.#iphoneApps?.enrolledDeploymentId() ?? null;
@@ -1615,6 +1783,11 @@ export class MobileClient {
         : (catalog.deployments.find(
             ({ authority }) => authority.document.deploymentId === attachedId,
           ) ?? null);
+    const network =
+      this.#lifecycle?.getSnapshot().network ??
+      this.#hostClient?.getSnapshot().network ??
+      "unknown";
+    this.savedViews.connection(network, this.#attachmentState === "offline");
     this.#state = {
       account,
       catalog,

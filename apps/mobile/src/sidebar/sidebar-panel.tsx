@@ -1,3 +1,4 @@
+import { SavedTasks } from "./saved-tasks.js";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
   listedRowThreadId,
@@ -52,7 +53,7 @@ import {
   UnreadDot,
   type TaskShelf,
 } from "../threads/task-row.js";
-import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { useMobileClient, useMobileState, useSavedSurface } from "../ui/mobile-client-context.js";
 import { ChatOrb } from "../ui/chat-orb.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useRetainedScroll, type ScrollMemory } from "../ui/retained-scroll.js";
@@ -216,7 +217,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   // Read only while the sidebar is on screen: closed, it would otherwise
   // rebuild every row on every streamed update for a list nobody can see.
   // Opening reads the current snapshot in the same render that shows it.
-  const model = useSidebarModel(visible ? hostClient : null);
+  const savedTasks = useSavedSurface(visible ? deploymentId : null, "tasks");
+  const model = useSidebarModel(visible && savedTasks.source !== "saved" ? hostClient : null);
   const switcher = useSwitcherModel(deploymentId);
   const [doneOpen, toggleDone] = useDoneShelf();
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -399,6 +401,13 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           />
         </View>
 
+        {savedTasks.source === "saved" ? (
+          <SavedTasks
+            tasks={savedTasks.content}
+            label={savedTasks.label}
+            capturedAt={savedTasks.capturedAt}
+          />
+        ) : null}
         {model === null ? null : !model.loaded ? (
           <View style={styles.loading}>
             <ActivityIndicator color={color.muted} />

@@ -92,8 +92,8 @@ with the same Host credential. Transcript links use
 Saved views contain private Chat/task text and are presentation only. They must
 never authenticate, start or replay work, send messages, answer Requests, mark
 content read, claim the active Thread or start media/input sessions. Live Host
-state remains authoritative. The storage support alone does not enable a saved-view
-UI. An offline phone cannot learn of a server revocation it has not observed.
+state remains authoritative. An offline phone cannot learn of a server revocation it
+has not observed.
 
 Encrypt cached content with native AES-256-GCM and a fresh nonce per write. Keep
 one device-only, when-unlocked SecureStore key slot per Deployment, in a separate
@@ -118,6 +118,31 @@ against current scope; no await may separate the last lease check from native
 atomic commit. Sources: `apps/mobile/src/platform/saved-host-view-store.ts`,
 `saved-view-keys.ts`, `saved-view-crypto.ts` and
 `packages/client/src/host/saved-host-view.ts`.
+
+### Saved launch views
+
+After local hydration, Chat and the sidebar can show the remembered Deployment's
+last published Chat text and task subjects while attachment connects in parallel.
+
+- Each surface says "Updating…", or "Offline · Saved view" / "Unavailable · Saved
+  view" from real connection evidence, and switches wholesale when its fresh
+  answer arrives, including an empty one. A late disk answer never replaces a
+  fresh surface.
+- Saved text and task rows offer no actions, media, links, read marks or
+  attention counts, and Tabs are live-only. Live task state and attention counts
+  come only from the attached Host underneath. A held first-message draft stays
+  in front once its live owner is known.
+- The load starts alongside attachment, only after local selection, credentials
+  and sign-out suppression settle. Readiness follows accepted task/read-state
+  installation and an explicit Home answer; connection or prefetch start alone is
+  not readiness. Home's initial read starts even while saved Chat is in front.
+- Capture debounces installed models for two seconds and flushes best-effort on
+  background; it starts no reads of its own. It keeps only published Chat text and
+  bounded historical task subjects and groups: no cursor, Requests, queue,
+  streams, media or capability. A killed flush can leave an older view. Each
+  Deployment holds one encrypted envelope of at most 1 MiB under `Paths.cache`.
+- Native linking and OS backup/device-transfer protection need separate device
+  qualification; unit tests with Node AES-GCM qualify adapter logic only.
 
 ### Saved-view deletion
 
