@@ -4071,7 +4071,7 @@ class HostedBrowserBroker {
   >();
   readonly #dialogs = new Map<string, BrowserDialog>();
   bumpCatalog(): void {
-    this.#catalogRevisions.advance();
+    this.#catalogRevisions.announce();
     this.#onTabsChanged();
   }
   restoreIcon(id: BrowserSurfaceId, url: string, favicon: string): void {
@@ -4134,13 +4134,12 @@ class HostedBrowserBroker {
     };
     const validated = BrowserTabCatalogSchema.parse(candidate);
     if (!viewer) return validated;
-    const remembered = this.#catalogRevisions.has(viewer);
-    const result = this.#catalogRevisions.assign(viewer, validated);
-    // New or evicted readers need a fresh revision, not a viewer-wide notice.
-    // Otherwise more readers than the history bound would perpetually evict
-    // each other while processing follow-up notices.
-    if (remembered && result.revision > validated.revision) this.#onTabsChanged();
-    return result;
+    const { catalog, unannounced } = this.#catalogRevisions.assign(viewer, validated);
+    // A change no announced mutation covered reaches the viewer's other connections
+    // through one notice. New or evicted readers get a fresh revision but no notice:
+    // more readers than the history bound would otherwise evict each other forever.
+    if (unannounced) this.#onTabsChanged();
+    return catalog;
   }
 
   /** The page the person sees: the active tab's title and site. */

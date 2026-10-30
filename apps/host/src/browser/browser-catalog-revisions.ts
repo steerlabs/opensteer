@@ -5,8 +5,10 @@ import { BrowserTabCatalogSchema, type BrowserTabCatalog } from "@opensteer/prot
 /** One broker's global counter and bounded, viewer-specific publication history. */
 export class BrowserCatalogRevisions {
   #revision = 0;
+  // Counts mutations that queued a catalog notice themselves.
+  #announced = 0;
   #generation: number | undefined;
-  readonly #viewers = new Map<string, { digest: string; revision: number }>();
+  readonly #viewers = new Map<string, { digest: string; revision: number; announced: number }>();
 
   get revision(): number {
     return this.#revision;
@@ -17,14 +19,24 @@ export class BrowserCatalogRevisions {
   has(viewer: string): boolean {
     return this.#viewers.has(viewer);
   }
-  advance(): number {
+  /** A mutation that tells every connection through a catalog notice. */
+  announce(): number {
+    this.#announced++;
     return ++this.#revision;
   }
   clear(): void {
     this.#viewers.clear();
   }
 
-  assign(viewer: string, input: BrowserTabCatalog): BrowserTabCatalog {
+  /**
+   * Stamps `input` for `viewer`. `unannounced` reports content that changed for a
+   * viewer seen before with no announced mutation since, such as a restored holding
+   * or repeated activity: the caller must notify that viewer's other connections.
+   */
+  assign(
+    viewer: string,
+    input: BrowserTabCatalog,
+  ): { catalog: BrowserTabCatalog; unannounced: boolean } {
     const validated = BrowserTabCatalogSchema.parse(input);
     const { generation, revision: suppliedRevision, ...content } = validated;
     const digest = createHash("sha256").update(canonicalJson(content)).digest("hex");
@@ -35,13 +47,23 @@ export class BrowserCatalogRevisions {
     }
     this.#revision = Math.max(this.#revision, suppliedRevision);
     const previous = this.#viewers.get(viewer);
-    // A forgotten viewer always gets a fresh global revision, so eviction
-    // cannot reuse a revision that viewer has already received.
-    if (!previous || (previous.digest !== digest && this.#revision <= previous.revision))
-      this.advance();
+    // An unchanged read keeps the viewer's revision. A forgotten viewer always gets
+    // a fresh global revision, so eviction cannot reuse one it has already received.
+    const revision =
+      previous?.digest === digest
+        ? previous.revision
+        : !previous || this.#revision <= previous.revision
+          ? ++this.#revision
+          : this.#revision;
     this.#viewers.delete(viewer);
-    this.#viewers.set(viewer, { digest, revision: this.#revision });
+    this.#viewers.set(viewer, { digest, revision, announced: this.#announced });
     if (this.#viewers.size > 256) this.#viewers.delete(this.#viewers.keys().next().value!);
-    return { ...validated, revision: this.#revision };
+    return {
+      catalog: { ...validated, revision },
+      unannounced:
+        previous !== undefined &&
+        previous.digest !== digest &&
+        previous.announced === this.#announced,
+    };
   }
 }
