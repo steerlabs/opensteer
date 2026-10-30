@@ -254,6 +254,18 @@ func TestOpenSSHExecLifecycleAndPolicy(t *testing.T) {
 			t.Fatalf("missing %s record: %#v", kind, records)
 		}
 	}
+	exitIndex, closeIndex := -1, -1
+	for index, record := range records {
+		switch record["kind"] {
+		case "process.exited":
+			exitIndex = index
+		case "channel.closed":
+			closeIndex = index
+		}
+	}
+	if exitIndex >= closeIndex {
+		t.Fatalf("channel closed before process exit record: %#v", records)
+	}
 	started := recordWithKind(records, "process.started")
 	exited := recordWithKind(records, "process.exited")
 	if started["processGroupId"] != exited["processGroupId"] || started["channel"] != exited["channel"] {
@@ -2063,7 +2075,9 @@ func (fixture *shellSSHFixture) goSSHClient(t *testing.T) (*ssh.Client, func()) 
 		t.Fatal(err)
 	}
 	_ = recordWriter.Close()
+	recordDone := make(chan struct{})
 	go func() {
+		defer close(recordDone)
 		file, openErr := os.OpenFile(fixture.recordPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if openErr == nil {
 			_, _ = io.Copy(file, recordReader)
@@ -2091,6 +2105,7 @@ func (fixture *shellSSHFixture) goSSHClient(t *testing.T) (*ssh.Client, func()) 
 		once.Do(func() {
 			_ = sshClient.Close()
 			_ = command.Wait()
+			<-recordDone
 		})
 	}
 	t.Cleanup(closeClient)

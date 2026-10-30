@@ -33,6 +33,7 @@ const (
 	maxShellChannels  = 64
 	defaultIdleTime   = 30 * time.Minute
 	processKillDelay  = 5 * time.Second
+	shellCleanupGrace = 2 * time.Second
 )
 
 type shellAuthority struct {
@@ -145,6 +146,9 @@ func runShellServe(input io.Reader, output io.Writer) error {
 	transport := &shellStdioConn{reader: buffered, writer: output}
 	if closer, ok := input.(io.Closer); ok {
 		transport.closer = closer
+	}
+	if closer, ok := output.(io.Closer); ok {
+		transport.outputCloser = closer
 	}
 	session.setConnection(transport)
 	config := &ssh.ServerConfig{
@@ -516,19 +520,23 @@ func (session *shellSession) runCommand(channelID uint32, channel ssh.Channel, r
 
 	waitErr := cmd.Wait()
 	close(process.done)
-	if process.channelClosed.Load() {
-		session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID})
-	} else {
-		if status, signalName := shellExitResult(waitErr); signalName != "" {
-			session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID, "exitSignal": signalName})
+	status, signalName := shellExitResult(waitErr)
+	if !process.channelClosed.Load() {
+		if signalName != "" {
 			session.sendExitSignal(channel, signalName)
 		} else {
-			session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID, "exitStatus": status})
 			session.sendExitStatus(channel, status)
 		}
 	}
 	// The channel must remain open until the lifecycle writer acknowledges exit.
 	session.finishShellProcess(process)
+	if process.channelClosed.Load() {
+		session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID})
+	} else if signalName != "" {
+		session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID, "exitSignal": signalName})
+	} else {
+		session.emitter.audit(map[string]any{"kind": "channel.closed", "channel": channelID, "exitStatus": status})
+	}
 	return nil
 }
 
@@ -805,27 +813,19 @@ func (session *shellSession) cleanupSession() {
 		close(session.cleanupDone)
 		session.idle.stop()
 		session.closeForwards()
-		// Keep the transport open until tracked processes finish writing their exits.
+		// A stalled client must not prevent closing the transport indefinitely.
 		defer session.closeConnection()
 		processes := session.snapshotProcesses()
 		for _, process := range processes {
 			process.channelClosed.Store(true)
-			_ = syscall.Kill(-process.pgid, syscall.SIGTERM)
+			go terminateShellProcessGroup(process)
 		}
-		deadline := time.NewTimer(processKillDelay)
+		deadline := time.NewTimer(shellCleanupGrace)
 		defer deadline.Stop()
 		for _, process := range processes {
 			select {
 			case <-process.sweepDone:
 			case <-deadline.C:
-				for _, remaining := range processes {
-					if !processDone(remaining.sweepDone) {
-						_ = syscall.Kill(-remaining.pgid, syscall.SIGKILL)
-					}
-				}
-				for _, remaining := range processes {
-					<-remaining.sweepDone
-				}
 				return
 			}
 		}
@@ -843,10 +843,11 @@ func (session *shellSession) snapshotProcesses() []*trackedShellProcess {
 }
 
 type shellStdioConn struct {
-	closed atomic.Bool
-	closer io.Closer
-	reader io.Reader
-	writer io.Writer
+	closed       atomic.Bool
+	closer       io.Closer
+	outputCloser io.Closer
+	reader       io.Reader
+	writer       io.Writer
 }
 
 func (connection *shellStdioConn) Read(target []byte) (int, error) {
@@ -857,6 +858,9 @@ func (connection *shellStdioConn) Write(content []byte) (int, error) {
 }
 func (connection *shellStdioConn) Close() error {
 	connection.closed.Store(true)
+	if connection.outputCloser != nil {
+		_ = connection.outputCloser.Close()
+	}
 	if connection.closer != nil {
 		return connection.closer.Close()
 	}

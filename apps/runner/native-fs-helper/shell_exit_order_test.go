@@ -4,6 +4,9 @@ package main
 
 import (
 	"encoding/json"
+	"time"
+
+	"golang.org/x/crypto/ssh"
 	"testing"
 )
 
@@ -28,4 +31,28 @@ func TestShellProcessRemainsTrackedUntilExitRecordWritten(t *testing.T) {
 	if !tracked {
 		t.Fatal("process removed before exit record was written")
 	}
+}
+
+func TestShellCleanupUnblocksClientNotReadingOutput(t *testing.T) {
+	fixture := newShellSSHFixtureWithIdle(t, shellPolicy{Reach: "deployment", Commands: true}, 100*time.Millisecond)
+	client, closeClient := fixture.goSSHClient(t)
+	defer closeClient()
+	channel, _, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := channel.SendRequest("exec", true, ssh.Marshal(struct{ Command string }{"yes"}))
+	if err != nil || !accepted {
+		t.Fatalf("exec accepted=%t error=%v", accepted, err)
+	}
+	done := make(chan struct{})
+	go func() { _ = client.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		_ = client.Close()
+		<-done
+		t.Fatal("cleanup did not close a client that stopped reading")
+	}
+	closeClient()
 }
