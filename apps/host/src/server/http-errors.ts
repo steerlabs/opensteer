@@ -17,6 +17,12 @@ export interface NormalizedHostError {
 }
 
 export function normalizeHostError(error: unknown): NormalizedHostError {
+  if (error instanceof Error && "code" in error && error.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+    return {
+      error: { code: "bad_request", message: "Request body is too large", retryable: false },
+      status: 413,
+    };
+  }
   // A malformed body reaches the handler as a parse failure, not as a fault of
   // this Deployment; both spellings of that failure are the caller's mistake.
   if (error instanceof z.ZodError || error instanceof SyntaxError) {

@@ -338,7 +338,12 @@ export class AgentToolsMcpService {
       ? await this.#store.getThreadForOwner(input.anchor.threadId, input.anchor.ownerId)
       : null;
     if (input.scope !== "run" && !anchor) throw new Error("Program anchor Thread is unavailable");
-    const server = new McpServer({ name: "opensteer", version: "1.0.0" });
+    // The largest catalog array has 63 place records; this leaves substantial
+    // headroom while bounding work before Zod validates the request.
+    const server = new McpServer(
+      { name: "opensteer", version: "1.0.0" },
+      { maxToolInputElements: 10_000 },
+    );
     // A Run's engine accepts exactly the tools its Runner's release knows, read
     // once per session: it keeps that inventory while its Runner reconnects, and
     // a forgotten session asks again. A session without a Run gets today's.

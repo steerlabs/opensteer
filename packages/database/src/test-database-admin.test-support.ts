@@ -233,8 +233,10 @@ export async function createTestDatabaseRun(
       }
       // No runtime has booted: templates contain schema, never an installation.
       await pools[authority].query(`alter database "${name}" allow_connections false`);
+      // Autovacuum may still be analyzing the fresh schema; it is no leak, and
+      // cloning the template signals it to stop.
       const sessions = await pools[authority].query(
-        "select 1 from pg_stat_activity where datname = $1",
+        "select 1 from pg_stat_activity where datname = $1 and backend_type = 'client backend'",
         [name],
       );
       if (sessions.rowCount) throw new Error(`Template ${name} still has connections`);

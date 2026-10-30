@@ -8,6 +8,7 @@ import {
 } from "@opensteer/access/host";
 import {
   createIntegrationId,
+  IntegrationConnectionIdSchema,
   IntegrationServerIdSchema,
   McpOAuthAttemptIdSchema,
   type IntegrationConnectionId,
@@ -69,6 +70,12 @@ const McpOAuthAttemptPayloadSchema = z.strictObject({
   displayName: z.string().min(1).max(640),
   oauthState: StoredOAuthStateSchema,
   requestId: RequestIdSchema,
+  reconnect: z
+    .strictObject({
+      connectionId: IntegrationConnectionIdSchema,
+      revision: z.number().int().positive(),
+    })
+    .optional(),
   returnPath: z.string().min(1).max(8_192),
   serverId: IntegrationServerIdSchema,
 });
@@ -81,7 +88,17 @@ interface StoredOAuthState {
 }
 
 export interface RedactingOAuthClientProvider extends OAuthClientProvider {
+  credentialRevision(): number | null;
   responseRedactor(): CredentialResponseRedactor;
+}
+
+export class McpOAuthReauthorizationError extends UnauthorizedError {
+  readonly credentialRevision: number;
+
+  constructor(credentialRevision: number) {
+    super("MCP account requires renewed user authorization");
+    this.credentialRevision = credentialRevision;
+  }
 }
 
 export class McpOAuthService {
@@ -196,6 +213,7 @@ export class McpOAuthService {
             requestId: input.requestId,
             returnPath: input.returnPath,
             serverId: context.server.id,
+            ...(context.reconnect ? { reconnect: context.reconnect } : {}),
           }),
         };
       },
@@ -233,6 +251,7 @@ export class McpOAuthService {
     let connected: IntegrationConnectionId;
     try {
       const mutable = attempt.oauthState;
+      requireBoundCredentials(mutable);
       const clientId = mutable.clientInformation?.client_id;
       const discovery = mutable.discovery;
       const issuer =
@@ -276,7 +295,7 @@ export class McpOAuthService {
           maxTotalTimeout: connectionTimeoutMilliseconds,
           timeout: connectionTimeoutMilliseconds,
         });
-        const connectionId = createIntegrationId("connection");
+        const connectionId = attempt.reconnect?.connectionId ?? createIntegrationId("connection");
         const tools = normalizeTools(connectionId, await client.listTools());
         const sealed = await this.#vault.seal(
           serializeState(mutable),
@@ -289,6 +308,14 @@ export class McpOAuthService {
           encryptedState: sealed.envelope,
           encryptionKeyVersion: sealed.keyVersion,
           ownerUserId: attempt.ownerUserId,
+          ...(attempt.reconnect
+            ? {
+                reconnect: {
+                  expectedRevision: attempt.reconnect.revision,
+                  requestId: attempt.requestId,
+                },
+              }
+            : {}),
           serverId: attempt.server.id,
           tools,
         });
@@ -341,9 +368,17 @@ export class McpOAuthService {
       ),
     );
     const mutable = deserializeState(opened);
+    try {
+      requireBoundCredentials(mutable);
+    } catch (error) {
+      if (error instanceof UnauthorizedError)
+        throw new McpOAuthReauthorizationError(connection.revision);
+      throw error;
+    }
     let revision = connection.revision;
     return this.#provider({
       mutable,
+      credentialRevision: () => revision,
       onChange: async () => {
         const sealed = await this.#vault.seal(
           serializeState(mutable),
@@ -389,19 +424,33 @@ export class McpOAuthService {
         message: "MCP OAuth authorization is invalid, expired, or already used",
       });
     }
-    const payload = deserializeAttempt(claimed.payload);
-    const context = await this.#store.getMcpOAuthServer({
-      ownerUserId: claimed.ownerUserId,
-      requestId: payload.requestId,
-      serverId: payload.serverId,
-    });
-    return {
-      ...context,
-      ...payload,
-      id: McpOAuthAttemptIdSchema.parse(claimed.id),
-      ownerUserId: claimed.ownerUserId,
-      surface: claimed.surface,
-    };
+    try {
+      const payload = deserializeAttempt(claimed.payload);
+      const context = await this.#store.getMcpOAuthServer({
+        ownerUserId: claimed.ownerUserId,
+        requestId: payload.requestId,
+        serverId: payload.serverId,
+      });
+      if (
+        context.reconnect?.connectionId !== payload.reconnect?.connectionId ||
+        context.reconnect?.revision !== payload.reconnect?.revision
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "MCP account changed; restart authorization",
+        });
+      }
+      return {
+        ...context,
+        ...payload,
+        id: McpOAuthAttemptIdSchema.parse(claimed.id),
+        ownerUserId: claimed.ownerUserId,
+        surface: claimed.surface,
+      };
+    } catch (error) {
+      await this.#attempts.fail(claimed.id, "exchange-failed");
+      throw error;
+    }
   }
 
   #client(server: IntegrationServer, provider: OAuthClientProvider) {
@@ -423,9 +472,7 @@ export class McpOAuthService {
         message: "Hosted Opensteer cannot use loopback MCP",
       });
     }
-    const secureFetch: typeof fetch = loopback
-      ? fetch
-      : (target, init) => this.#publicFetch(target, { ...init, redirect: "manual" });
+    const secureFetch: typeof fetch = (target, init) => this.#oauthFetch(target, init);
     const transport = new StreamableHTTPClientTransport(url, {
       authProvider: provider,
       fetch: secureFetch,
@@ -436,6 +483,7 @@ export class McpOAuthService {
 
   #provider(input: {
     readonly mutable: StoredOAuthState;
+    readonly credentialRevision?: () => number;
     readonly onAuthorization?: (url: URL) => void;
     readonly onChange?: () => Promise<void>;
     readonly server: IntegrationServer;
@@ -443,8 +491,12 @@ export class McpOAuthService {
   }): RedactingOAuthClientProvider {
     const changed = async () => input.onChange?.();
     return {
+      credentialRevision: () => input.credentialRevision?.() ?? null,
       ...(this.#clientMetadataUrl ? { clientMetadataUrl: this.#clientMetadataUrl.toString() } : {}),
-      clientInformation: () => input.mutable.clientInformation,
+      clientInformation: () => {
+        requireBoundCredentials(input.mutable);
+        return input.mutable.clientInformation;
+      },
       clientMetadata: this.#clientMetadata,
       codeVerifier: () => {
         if (!input.mutable.codeVerifier) throw new Error("MCP OAuth verifier is unavailable");
@@ -482,6 +534,18 @@ export class McpOAuthService {
             : [],
         ),
       saveClientInformation: async (clientInformation) => {
+        const issuer =
+          (input.mutable.clientInformation?.issuer
+            ? normalizeIssuer(input.mutable.clientInformation.issuer)
+            : undefined) ??
+          (input.mutable.discovery ? discoveryIssuer(input.mutable.discovery) : undefined);
+        if (
+          !issuer ||
+          (clientInformation.issuer && normalizeIssuer(clientInformation.issuer) !== issuer)
+        ) {
+          throw new UnauthorizedError("MCP account requires renewed user authorization");
+        }
+        clientInformation = { ...clientInformation, issuer };
         input.mutable.clientInformation = clientInformation;
         await changed();
       },
@@ -490,15 +554,35 @@ export class McpOAuthService {
         await changed();
       },
       saveDiscoveryState: async (discovery) => {
+        const issuer = discoveryIssuer(discovery);
+        if (
+          (discovery.authorizationServerMetadata &&
+            normalizeIssuer(discovery.authorizationServerMetadata.issuer) !== issuer) ||
+          (input.mutable.clientInformation?.issuer &&
+            normalizeIssuer(input.mutable.clientInformation.issuer) !== issuer) ||
+          (input.mutable.tokens?.issuer && normalizeIssuer(input.mutable.tokens.issuer) !== issuer)
+        ) {
+          throw new UnauthorizedError("MCP account requires renewed user authorization");
+        }
         input.mutable.discovery = discovery;
         await changed();
       },
       saveTokens: async (tokens) => {
+        const issuer =
+          input.mutable.clientInformation?.issuer &&
+          normalizeIssuer(input.mutable.clientInformation.issuer);
+        if (!issuer || (tokens.issuer && normalizeIssuer(tokens.issuer) !== issuer)) {
+          throw new UnauthorizedError("MCP account requires renewed user authorization");
+        }
+        tokens = { ...tokens, issuer };
         input.mutable.tokens = tokens;
         await changed();
       },
       state: () => input.state,
-      tokens: () => input.mutable.tokens,
+      tokens: () => {
+        requireBoundCredentials(input.mutable);
+        return input.mutable.tokens;
+      },
     };
   }
 
@@ -521,6 +605,16 @@ export class McpOAuthService {
         code: "conflict",
         message: "MCP OAuth authorization server metadata is unavailable",
       });
+    }
+    const issuer = new URL(authorizationServerUrl).toString();
+    if (normalizeIssuer(authorizationServer.metadata.issuer) !== issuer) {
+      throw new UnauthorizedError("MCP account requires renewed user authorization");
+    }
+    if (
+      mutable.clientInformation?.issuer &&
+      normalizeIssuer(mutable.clientInformation.issuer) !== issuer
+    ) {
+      throw new UnauthorizedError("MCP account requires renewed user authorization");
     }
     const discovery = {
       authorizationServerMetadata: {
@@ -586,7 +680,7 @@ export class McpOAuthService {
         ...registered,
       });
     }
-    mutable.clientInformation = clientInformation;
+    mutable.clientInformation = { ...clientInformation, issuer };
     mutable.discovery = discovery;
   }
 
@@ -647,6 +741,33 @@ function objectValue(value: unknown): Readonly<Record<string, unknown>> {
   return value as Readonly<Record<string, unknown>>;
 }
 
+function requireBoundCredentials(state: StoredOAuthState): void {
+  const { clientInformation, tokens } = state;
+  const boundIssuer = clientInformation?.issuer && normalizeIssuer(clientInformation.issuer);
+  if (
+    (clientInformation || tokens) &&
+    (!boundIssuer ||
+      (tokens && (!tokens.issuer || normalizeIssuer(tokens.issuer) !== boundIssuer)) ||
+      (state.discovery && discoveryIssuer(state.discovery) !== boundIssuer) ||
+      (state.discovery?.authorizationServerMetadata &&
+        normalizeIssuer(state.discovery.authorizationServerMetadata.issuer) !== boundIssuer))
+  ) {
+    throw new UnauthorizedError("MCP account requires renewed user authorization");
+  }
+}
+
+function discoveryIssuer(discovery: OAuthDiscoveryState): string {
+  return normalizeIssuer(discovery.authorizationServerUrl);
+}
+
+function normalizeIssuer(issuer: string | URL): string {
+  try {
+    return new URL(issuer).toString();
+  } catch {
+    throw new UnauthorizedError("MCP account requires renewed user authorization");
+  }
+}
+
 function serializeState(state: StoredOAuthState): Readonly<Record<string, string>> {
   return { state: JSON.stringify(StoredOAuthStateSchema.parse(state)) };
 }
@@ -671,7 +792,10 @@ function deserializeAttempt(value: Readonly<Record<string, string>>) {
     throw new OpensteerError({ code: "forbidden", message: "MCP OAuth state is invalid" });
   }
   const parsed = McpOAuthAttemptPayloadSchema.parse(JSON.parse(payload));
-  return { ...parsed, oauthState: parsed.oauthState as unknown as StoredOAuthState };
+  return {
+    ...parsed,
+    oauthState: parsed.oauthState as unknown as StoredOAuthState,
+  };
 }
 
 function connectionSecretContext(
