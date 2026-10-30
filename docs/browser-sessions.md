@@ -363,8 +363,9 @@ bytes return unchanged; Opensteer never stores a passkey private key.
 
 macOS requires 13.5 or later and Apple's browser passkey entitlement; security keys
 require 14.4 or later. The OS manager handles local passkeys, installed credential
-providers and nearby-phone options. Current builds lack the entitlement and opt in
-as notice viewers, as do web, iPhone, Linux and Windows viewers. A person using a
+providers and nearby-phone options. Releases without the channel-specific passkey
+signing inputs omit the native addon and entitlement and opt in as notice viewers,
+as do web, iPhone, Linux and Windows viewers. A person using a
 notice viewer gets an immediate refusal and a message to open the tab on a Mac.
 Cross-origin frames are refused, even when the site's Permissions Policy permits
 them. Headless Shell lacks the browser security evidence the provider needs, so it
@@ -435,8 +436,12 @@ site inspection cannot prove a currently valid website sign-in.
 
 The Profile Vault is the only durable state; Runtime disk profiles are disposable.
 A profile lease and final-save grace fence ownership and revision commits. Stop
-saves before disconnecting; failed saves keep unsaved ownership and connections
-available for retry. Lease/revision refusals stop automatic retries. A late native
+saves before disconnecting. Periodic checkpoints preserve the existing final-save
+grace deadline without extending it; only a final commit retires grace. The optional
+profile-checkpoint header distinguishes periodic saves while the JSON body stays
+compatible with previous releases; an absent header retains final-save semantics.
+A refused or transport-failed final commit disposes the quiesced browser and reports
+the typed failure; a later attachment restores the last durable revision. A late native
 export retains its lock until settled but must never commit after its deadline.
 A final save drains admitted imports before export; it is not a transaction over
 later autonomous page/worker writes.

@@ -1,3 +1,4 @@
+import { browserProfileCheckpointHeader } from "@opensteer/protocol";
 import { isIP } from "node:net";
 import type { BrowserAttachTicketClaims, BrowserAttachTicketIdentity } from "@opensteer/protocol";
 import {
@@ -39,6 +40,7 @@ export interface BrowserProfileStateClient {
     claims: BrowserProfileAttachTicketClaims,
     expectedRevision: number,
     snapshot: BrowserProfileSnapshot,
+    periodic?: boolean,
   ): Promise<number>;
   load(
     claims: BrowserProfileAttachTicketClaims,
@@ -79,6 +81,7 @@ export class HttpBrowserProfileStateClient implements BrowserProfileStateClient 
     claims: BrowserProfileAttachTicketClaims,
     expectedRevision: number,
     snapshot: BrowserProfileSnapshot,
+    periodic?: boolean,
   ): Promise<number> {
     const body = JSON.stringify({
       expectedRevision,
@@ -91,7 +94,10 @@ export class HttpBrowserProfileStateClient implements BrowserProfileStateClient 
       claims,
       {
         body,
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(periodic ? { [browserProfileCheckpointHeader]: "periodic" } : {}),
+        },
         method: "PUT",
       },
       CommitResponseSchema,

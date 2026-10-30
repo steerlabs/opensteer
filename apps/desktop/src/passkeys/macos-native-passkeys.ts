@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -252,6 +253,7 @@ function loadAddon(): unknown {
   const filename = path
     .resolve(path.dirname(fileURLToPath(import.meta.url)), "passkeys/opensteer-passkeys.node")
     .replace(/app\.asar\//u, "app.asar.unpacked/");
+  if (!existsSync(filename)) return undefined;
   return createRequire(import.meta.url)(filename);
 }
 

@@ -25,7 +25,8 @@ async function verifySignedDesktopContents(context) {
     appPath,
     true,
     process.env.OPENSTEER_APPLE_TEAM_ID,
-    isDesktopRelease(),
+    isDesktopRelease() && Boolean(passkeys.releasePasskeyInputs(process.env)),
+    isDesktopRelease() && !passkeys.releasePasskeyInputs(process.env),
   );
   passkeys.verifyNoInheritedPasskeyCapability(appPath);
   if (!isDesktopRelease()) {

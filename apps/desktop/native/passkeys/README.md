@@ -50,7 +50,10 @@ compiles arm64 and x86_64, verifies the universal product and stages it into
 `dist/passkeys`. N-API avoids an Electron/V8 ABI dependency. The host test loads the
 real binary in an unentitled Node process; it never requests a sheet.
 
-Release bundling builds the addon. Development bundling stages an explicitly built
+Release bundling builds and stages the addon only when the selected channel supplies
+both passkey signing inputs. Otherwise it removes any stale staged addon and the
+packaging checks require it to be absent. The pinned toolchain remains required
+for opt-in builds. Development bundling stages an explicitly built
 addon if present and otherwise works without Xcode or an addon. Neither development
 case adds a provisioning profile or the browser entitlement, so availability is
 false. Non-macOS bundling does not build or load this code.

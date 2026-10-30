@@ -8,6 +8,7 @@ import {
   profileRevision,
   waitFor,
 } from "./browser-deployment.test-support.js";
+import { gate } from "../packages/shared/src/observation.test-support.js";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { injectRpcRequest } from "../apps/host/src/server/test-host-api-request.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -606,6 +607,99 @@ run("Browser Sessions through a whole deployment", () => {
     );
   }, 120_000);
 
+  it("preserves final-save grace when a periodic commit overlaps session closure", async () => {
+    const periodic = gate({ label: "periodic host commit", deadlineMs: 10_000 });
+    const final = gate({ label: "final host commit", deadlineMs: 10_000 });
+    const closed = gate({ label: "Host session closed", deadlineMs: 10_000 });
+    let commits = 0;
+    const statuses: number[] = [];
+    const snapshot = {
+      cookies: [
+        {
+          domain: "example.test",
+          expires: -1,
+          httpOnly: true,
+          name: "identity",
+          path: "/",
+          sameSite: "Lax" as const,
+          secure: true,
+          value: "retained",
+        },
+      ],
+      origins: [],
+    };
+    const browser = await startBrowser({
+      idleProfileHostTimeoutMs: 0,
+      onLaunch: (launched) => {
+        vi.spyOn(launched, "exportSnapshot").mockResolvedValue(snapshot);
+      },
+      profileStateFetch: async (input, init) => {
+        if (init?.method !== "PUT") return fetch(input, init);
+        const index = ++commits;
+        if (index === 1) await periodic.enter();
+        if (index === 2) await final.enter();
+        const response = await fetch(input, init);
+        statuses.push(response.status);
+        return response;
+      },
+    });
+    addCleanup("race Browser Runtime", () => browser.close());
+    const stack = await deployment(browser);
+    await browserAvailable(stack);
+    const owner = await stack.host.store.firstUser();
+    if (!owner) throw new Error("Missing owner");
+    const profile = await stack.host.browser.createProfile({
+      name: "Race",
+      ownerId: owner.id,
+      idempotencyKey: randomUUID(),
+      workspaceId: stack.mainWorkspaceId,
+    });
+    const open = () =>
+      stack.host.browser.start({
+        ownerId: owner.id,
+        workspaceId: stack.mainWorkspaceId,
+        profileId: profile.id,
+        origin: "agent",
+      });
+    const first = await open();
+    const transition = stack.host.store.transitionBrowserSession.bind(stack.host.store);
+    const spy = vi
+      .spyOn(stack.host.store, "transitionBrowserSession")
+      .mockImplementation(async (input) => {
+        const result = await transition(input);
+        if (input.sessionId === first.session.id && input.state === "closed") void closed.enter();
+        return result;
+      });
+    let stopping: Promise<void> | undefined;
+    let next: ReturnType<typeof open> | undefined;
+    try {
+      await periodic.entered;
+      stopping = stack.host.browser.stop(owner.id, first.session.id);
+      await closed.entered;
+      periodic.release();
+      await final.entered;
+      next = open();
+      void next.catch(() => undefined);
+      final.release();
+      await withTimeout(stopping, 10_000, {
+        timeoutError: () => new Error("first stop did not finish"),
+      });
+      const second = await withTimeout(next, 10_000, {
+        timeoutError: () => new Error("next start did not finish"),
+      });
+      expect(statuses.slice(0, 2)).toEqual([200, 200]);
+      expect(second.session.state).toBe("ready");
+      expect(await profileRevision(stack, profile.id)).toBeGreaterThanOrEqual(2);
+    } finally {
+      periodic.release();
+      final.release();
+      closed.release();
+      spy.mockRestore();
+      await stopping?.catch(() => undefined);
+      await next?.catch(() => undefined);
+    }
+  }, 60_000);
+
   it("reports a refused final-save lease promptly with its typed reason", async () => {
     const logged = vi.spyOn(console, "error");
     const release = Promise.withResolvers<void>();
@@ -639,23 +733,19 @@ run("Browser Sessions through a whole deployment", () => {
       throw new Error(JSON.stringify(opened));
     const sessionId = opened.data.sessionId;
     stack.network.block();
-    stack.network.drop();
+    const closing = browser.close().catch((error: unknown) => error);
     let failure: unknown;
     const started = performance.now();
     try {
-      await waitFor(
-        async () =>
-          (await stack.host.store.getBrowserSessionForOwner(sessionId, owner.id))?.state ===
-            "failed" && requests > 0,
-        10_000,
-      );
+      await waitFor(async () => requests > 0, 10_000);
+      await stack.host.store.transitionBrowserSession({ sessionId, state: "failed" });
       await stack.host.store.database
         .updateTable("browserSessions")
         .set({ profileLeaseExpiresAt: new Date(0) })
         .where("id", "=", sessionId)
         .execute();
       release.resolve();
-      failure = await browser.close().catch((error: unknown) => error);
+      failure = await closing;
       expect(failure).toMatchObject({
         errors: [
           expect.objectContaining({
