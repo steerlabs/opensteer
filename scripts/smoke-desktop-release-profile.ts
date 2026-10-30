@@ -53,3 +53,20 @@ export function personalSelectionReady(serialized: string, deploymentId: string)
     )
   );
 }
+
+/** Normal HOME is permitted only on disposable test infrastructure. */
+export function assertEphemeralRunner(
+  environment: Readonly<Record<string, string | undefined>>,
+  guest: boolean,
+): void {
+  if (
+    guest ||
+    (environment.CI === "true" &&
+      !!environment.RUNNER_TEMP?.trim() &&
+      path.isAbsolute(environment.RUNNER_TEMP))
+  )
+    return;
+  throw Error(
+    "External desktop launch check requires an ephemeral CI runner (CI=true and RUNNER_TEMP) or the test:vm guest marker; refusing to use the host HOME",
+  );
+}

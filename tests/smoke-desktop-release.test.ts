@@ -72,3 +72,20 @@ it("requires the supervisor's matching Personal selection rather than an empty o
   expect(personalSelectionReady(JSON.stringify(catalog), intent.deploymentId)).toBe(true);
   expect(personalSelectionReady(JSON.stringify(catalog), "unrelated")).toBe(false);
 });
+
+import { assertEphemeralRunner } from "../scripts/smoke-desktop-release-profile.js";
+it("fails closed before normal HOME can be used outside disposable CI or a marked guest", () => {
+  for (const environment of [
+    {},
+    { CI: "true" },
+    { RUNNER_TEMP: "/tmp/job" },
+    { CI: "true", RUNNER_TEMP: "" },
+    { CI: "true", RUNNER_TEMP: "relative" },
+  ]) {
+    expect(() => assertEphemeralRunner(environment, false)).toThrow(/ephemeral/);
+  }
+  expect(() =>
+    assertEphemeralRunner({ CI: "true", RUNNER_TEMP: "/private/tmp/job" }, false),
+  ).not.toThrow();
+  expect(() => assertEphemeralRunner({}, true)).not.toThrow();
+});

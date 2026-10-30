@@ -37,9 +37,11 @@ mid-notarization. A coalesced stable dispatch may need redispatch. Never publish
 an older insider after a newer one: the updater selects the first eligible feed entry.
 
 Each final signed and notarized build is launched as an ordinary child process
-in the ephemeral release VM, from a disposable copy in Applications. A fresh
-profile contains only Personal setup intent; the app creates its own database
-and credentials. The external check observes the supervisor's published Personal
+in the ephemeral release VM, from a disposable copy in Applications. The normal HOME is retained only on these disposable runners, so macOS can
+use its existing Keychain. The checker refuses other machines unless they have
+`CI=true` and `RUNNER_TEMP` or the repository test-VM guest marker. A fresh data
+directory and temporary Workspace contain only Personal setup intent; the app
+creates its own database and credentials. The external check observes the supervisor's published Personal
 selection, loopback health and visible loaded window, then sends the app's normal
 SIGTERM quit and waits for its captured children to exit. The three-minute check
 retains logs and an optional VM screenshot on failure. It changes no shipped-app
