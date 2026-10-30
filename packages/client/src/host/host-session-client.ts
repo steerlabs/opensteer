@@ -3343,6 +3343,7 @@ export class HttpHostClient {
   async #performBootstrap(): Promise<void> {
     const generation = this.#viewerGeneration;
     const presenceMark = this.#presenceCounter;
+    const ownerViewRevision = this.#ownerViews.revision;
     if (this.#snapshot.session === "checking" || this.#snapshot.connection === "offline") {
       this.#update({ ...this.#snapshot, connection: "connecting" });
     }
@@ -3590,6 +3591,8 @@ export class HttpHostClient {
       machines: payload.machines.map((machine) =>
         this.#ownerViews.reread(
           withNewerComputerPresence(machine, this.#snapshot.machines, patchedSince),
+          this.#snapshot.machines.find((current) => current.id === machine.id),
+          ownerViewRevision,
         ),
       ),
       ownerName: payload.user.displayName,

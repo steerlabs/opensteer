@@ -1522,6 +1522,8 @@ explicit reopen. Owner-only machine metadata lists at most 64 views; changed/rem
 notices carry exact generation identities, and a removed generation never returns from a
 command answer or reread that left before the removal
 ([records](../packages/client/src/host/owner-view-records.ts)).
+Command answers and view notices accepted during a reread also survive its older
+snapshot. A subsequent reread can still remove views the Host no longer lists.
 
 Workspace native destinations use an explicit task-session or owner-view source.
 Owner app rows key by machine, app and resolved window id; task rows key by machine,

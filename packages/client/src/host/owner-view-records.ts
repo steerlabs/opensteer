@@ -12,9 +12,25 @@ const removedLimit = 256;
 export class OwnerViewRecords {
   /** Each removed view's newest removed generation. */
   readonly #removed = new Map<string, number>();
+  #accepted = new WeakMap<ComputerView, number>();
+  #revision = 0;
+
+  get revision(): number {
+    return this.#revision;
+  }
 
   #gone(view: Pick<ComputerView, "viewId" | "generation">): boolean {
     return (this.#removed.get(view.viewId) ?? 0) >= view.generation;
+  }
+
+  #canReplace(current: ComputerView | undefined, view: ComputerView): boolean {
+    return (
+      !current ||
+      (current.generation <= view.generation &&
+        (current.generation !== view.generation ||
+          !["closed", "expired"].includes(current.state) ||
+          ["closed", "expired"].includes(view.state)))
+    );
   }
 
   accept(machines: readonly MachineSummary[], view: ComputerView): readonly MachineSummary[] {
@@ -23,14 +39,8 @@ export class OwnerViewRecords {
       if (machine.id !== view.machineId || !machine.computerUse) return machine;
       const previous = machine.computerUse.ownerViews ?? [];
       const current = previous.find((held) => held.viewId === view.viewId);
-      if (
-        current &&
-        (current.generation > view.generation ||
-          (current.generation === view.generation &&
-            ["closed", "expired"].includes(current.state) &&
-            !["closed", "expired"].includes(view.state)))
-      )
-        return machine;
+      if (!this.#canReplace(current, view)) return machine;
+      this.#accepted.set(view, ++this.#revision);
       return {
         ...machine,
         computerUse: {
@@ -66,15 +76,28 @@ export class OwnerViewRecords {
     );
   }
 
-  /** A reread's machine, without the generations removed while it was on its way. */
-  reread(machine: MachineSummary): MachineSummary {
-    const views = machine.computerUse?.ownerViews;
-    if (!views?.some((view) => this.#gone(view))) return machine;
+  /** A reread cannot undo command answers or notices accepted after it began. */
+  reread(
+    machine: MachineSummary,
+    current: MachineSummary | undefined,
+    revision: number,
+  ): MachineSummary {
+    if (!machine.computerUse) return machine;
+    const views = machine.computerUse.ownerViews;
+    const updates = (current?.computerUse?.ownerViews ?? []).filter(
+      (view) => (this.#accepted.get(view) ?? 0) > revision && !this.#gone(view),
+    );
+    if (!updates.length && !views?.some((view) => this.#gone(view))) return machine;
+    const merged = new Map(
+      (views ?? []).filter((view) => !this.#gone(view)).map((view) => [view.viewId, view]),
+    );
+    for (const view of updates)
+      if (this.#canReplace(merged.get(view.viewId), view)) merged.set(view.viewId, view);
     return {
       ...machine,
       computerUse: {
-        ...machine.computerUse!,
-        ownerViews: views.filter((view) => !this.#gone(view)),
+        ...machine.computerUse,
+        ownerViews: [...merged.values()],
       },
     };
   }
@@ -82,5 +105,6 @@ export class OwnerViewRecords {
   /** Another viewer remembers nothing of this one's views. */
   clear(): void {
     this.#removed.clear();
+    this.#accepted = new WeakMap();
   }
 }
