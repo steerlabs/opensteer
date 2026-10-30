@@ -16,7 +16,6 @@ import {
 } from "react";
 import type { NativeViewerSource, HostClient, HostSnapshot } from "@opensteer/client/host";
 import {
-  phoneControlNote,
   DisplayEditingSession,
   displayEditingAbilities,
   computerDisplayScope,
@@ -57,7 +56,7 @@ const idleSnapshot: DisplaySnapshot = {
   connection: "connecting",
   closeCode: null,
   display: null,
-  control: { state: "released", reason: null },
+  input: "unavailable",
   keyframeFailed: false,
 };
 const idlePicture: PhoneDisplayPictureState = {
@@ -93,7 +92,7 @@ export interface ComputerDisplayView {
   readonly lease: DisplayLease | null;
   readonly media: PhoneDisplayPicture | null;
   reopen(): void;
-  /** This view's input while it holds control. */
+  /** This view's input when input is available. */
   readonly input: PhoneDisplayInput | null;
   readonly editing: DisplayEditingSession | null;
   readonly editingContext: EditingContext | null;
@@ -104,7 +103,7 @@ export interface ComputerDisplayView {
  * Holds the computer's live display while enabled: decoder support is asked
  * before any socket opens, the socket and decoder are shared with other views
  * of the session, and disabling — a hidden page, an unmount — ends any stroke,
- * gives control back and lets go of both.
+ * resets input and lets go of both.
  */
 export function useComputerDisplay({
   enabled,
@@ -183,10 +182,10 @@ export function useComputerDisplay({
     editing?.subscribe ?? noStore.subscribe,
     editing?.getSnapshot ?? noStore.getSnapshot,
   );
-  const holding = snapshot?.control.state === "held";
+  const holding = snapshot?.input === "available";
 
   // Declared before the socket's effect so its cleanup runs first: a stroke
-  // ends before control is given back.
+  // ends before input is reset.
   useEffect(() => {
     if (!enabled || !holding || !lease) return;
     const controller = new PhoneDisplayInput({
@@ -200,7 +199,10 @@ export function useComputerDisplay({
         return () => cancelAnimationFrame(request);
       },
     });
-    const cancel = () => controller.cancel(performance.now());
+    const cancel = () => {
+      controller.cancel(performance.now());
+      lease.resetInput();
+    };
     const hidden = () => {
       if (document.visibilityState === "hidden") cancel();
     };
@@ -211,6 +213,7 @@ export function useComputerDisplay({
       window.removeEventListener("blur", cancel);
       document.removeEventListener("visibilitychange", hidden);
       controller.dispose(performance.now());
+      lease.resetInput();
       setInput(null);
     };
   }, [enabled, holding, lease, editing]);
@@ -269,6 +272,7 @@ export function useComputerDisplay({
       });
       unsubscribe();
       editing.dispose();
+      current.resetInput();
       current.release();
       shared.release();
       setHeld(null);
@@ -344,7 +348,7 @@ export function useComputerDisplay({
 
 /**
  * The phone's screen: a canvas the shared decoder draws into. While this
- * view holds control the canvas takes the owner's pointer, wheel and keys,
+ * view accepts input the canvas takes the owner's pointer, wheel and keys,
  * mapped into the picture drawn inside it; otherwise it is only a picture,
  * enlarged by pressing it when the view can enlarge.
  */
@@ -358,7 +362,7 @@ export function ComputerDisplayScreen({
 }: {
   readonly dim: boolean;
   readonly display: ComputerDisplayView;
-  /** Input reaches the phone from here while control is held. */
+  /** Input reaches the phone from here when input is available. */
   readonly interactive: boolean;
   readonly label: string;
   readonly onEnlarge: (() => void) | null;
@@ -366,7 +370,10 @@ export function ComputerDisplayScreen({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const media = display.media;
-  const input = interactive ? display.input : null;
+  const input =
+    interactive && shown && display.geometry !== null && display.snapshot.input === "available"
+      ? display.input
+      : null;
   const geometry = useRef(display.geometry);
   geometry.current = display.geometry;
   const pointer = useRef<number | null>(null);
@@ -389,17 +396,35 @@ export function ComputerDisplayScreen({
         input?.flush();
         return display.editing
           ? display.editing.send(operation)
-          : Promise.reject(new Error("Take over to edit."));
+          : Promise.reject(new Error("Input unavailable."));
       },
     }),
     [display.editing, input],
   );
   const leave = () => {
+    proxy.current?.cancel();
     const focused = document.activeElement;
     if (focused instanceof HTMLElement && pictureRef.current?.contains(focused)) focused.blur();
     input?.cancel(performance.now());
-    display.lease?.giveBack();
+    display.lease?.resetInput();
   };
+  useEffect(() => {
+    const reset = () => {
+      proxy.current?.cancel();
+      pointer.current = null;
+      if (keyboardRef.current) keyboardRef.current.value = "";
+    };
+    const hide = () => {
+      if (document.visibilityState === "hidden") reset();
+    };
+    window.addEventListener("blur", reset);
+    document.addEventListener("visibilitychange", hide);
+    return () => {
+      reset();
+      window.removeEventListener("blur", reset);
+      document.removeEventListener("visibilitychange", hide);
+    };
+  }, []);
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -426,16 +451,15 @@ export function ComputerDisplayScreen({
       window.removeEventListener("resize", update);
     };
   }, [display.editingContext, display.picture]);
-  useLayoutEffect(() => {
-    if (editingEnabled) proxy.current?.focus();
-  }, [editingEnabled]);
   useLayoutEffect(
     () => () => {
+      proxy.current?.cancel();
       const focused = document.activeElement;
       if (focused instanceof HTMLElement && pictureRef.current?.contains(focused)) focused.blur();
       input?.cancel(performance.now());
+      display.lease?.resetInput();
     },
-    [input],
+    [input, display.lease],
   );
 
   useLayoutEffect(() => {
@@ -464,7 +488,7 @@ export function ComputerDisplayScreen({
   }, [display.lease, display.viewportEnabled]);
 
   // A stroke this view started ends with it: the enlarged picture can close,
-  // or control can go, while the finger is still down on the phone.
+  // or input can become unavailable, while the finger is still down on the phone.
   useEffect(() => {
     if (!input) return;
     return () => {
@@ -478,7 +502,6 @@ export function ComputerDisplayScreen({
   useEffect(() => {
     const keyboard = keyboardRef.current;
     if (!keyboard || !input || negotiated) return;
-    keyboard.focus({ preventScroll: true });
     const type = (key: DisplayKey) => {
       const at = geometry.current;
       if (at !== null) input.key(at, key);
@@ -491,7 +514,7 @@ export function ComputerDisplayScreen({
     };
     const compositionEnd = (event: CompositionEvent) => {
       keyboard.value = "";
-      if (event.data) type({ insert: event.data });
+      if (event.data && document.activeElement === keyboard) type({ insert: event.data });
     };
     const paste = (event: ClipboardEvent) => {
       event.preventDefault();
@@ -651,6 +674,13 @@ export function ComputerDisplayScreen({
       className={
         shown ? "computer-watch__picture" : "computer-watch__picture phone-display__picture--hidden"
       }
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          proxy.current?.cancel();
+          input?.cancel(performance.now());
+          display.lease?.resetInput();
+        }
+      }}
       onKeyDown={(event) => {
         if (
           input &&
@@ -689,18 +719,19 @@ export function ComputerDisplayScreen({
       ) : null}
       {negotiated ? (
         <RemoteEditingProxy
+          cancelCompositionOnBlur
           abilities={displayEditingAbilities}
           caret={caret}
           context={display.editingContext}
           enabled={editingEnabled}
-          label={`Type on ${label}. You’re controlling it.`}
+          label={`Type on ${label}.`}
           onLeave={leave}
           ref={proxy}
           wire={wire}
         />
       ) : input ? (
         <textarea
-          aria-label={`Type on ${label}. You’re controlling it.`}
+          aria-label={`Type on ${label}.`}
           autoCapitalize="off"
           autoComplete="off"
           autoCorrect="off"
@@ -744,65 +775,24 @@ function drawnPicture(canvas: HTMLCanvasElement) {
   });
 }
 
-/** Take over, or give back, from the Watch's header. */
-export function PhoneControlButton({
-  display,
-  phoneName,
-}: {
-  readonly display: ComputerDisplayView;
-  readonly phoneName: string;
-}) {
-  const control = display.snapshot.control;
-  const lease = display.lease;
-  switch (control.state) {
-    case "held":
-      return (
-        <button
-          className="btn btn--small"
-          onClick={() => lease?.giveBack()}
-          title={`The agent can use ${display.viewportEnabled ? "the app" : "the phone"} again`}
-          type="button"
-        >
-          Give back
-        </button>
-      );
-    case "acquiring":
-    case "releasing":
-      return (
-        <button className="btn btn--small" disabled type="button">
-          {control.state === "acquiring" ? "Taking over…" : "Giving back…"}
-        </button>
-      );
-    default:
-      return lease && display.geometry !== null && display.snapshot.connection === "open" ? (
-        <button
-          className="btn btn--small"
-          onClick={() => lease.takeOver()}
-          title={`Use ${phoneName} yourself; the agent waits until you give it back`}
-          type="button"
-        >
-          Take over
-        </button>
-      ) : null;
-  }
-}
-
 const navigation = [
   { to: "back", label: "Back", icon: "chevron-left" },
   { to: "home", label: "Home", icon: "home" },
   { to: "recents", label: "Recent apps", icon: "recents" },
 ] as const;
 
-/** Who has the phone, and while it is the owner, the phone's own navigation. */
+/** The phone’s navigation whenever shared input is available. */
 export function PhoneControlBar({ display }: { readonly display: ComputerDisplayView }) {
-  const note = phoneControlNote(display.snapshot.control, display.viewportEnabled);
-  if (!note) return null;
-  const input = display.snapshot.control.state === "held" ? display.input : null;
+  const input =
+    display.snapshot.input === "available" && display.geometry !== null ? display.input : null;
+  if ((!input || display.viewportEnabled) && !display.receipt) return null;
   return (
     <div className="phone-display__control surface-row">
-      <span className="phone-display__note" role="status">
-        {display.snapshot.control.state === "held" ? (display.receipt ?? note) : note}
-      </span>
+      {display.receipt ? (
+        <span className="phone-display__note" role="status">
+          {display.receipt}
+        </span>
+      ) : null}
       {input && !display.viewportEnabled ? (
         <span className="phone-display__nav">
           {navigation.map(({ icon, label, to }) => (

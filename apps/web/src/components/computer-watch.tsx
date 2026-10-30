@@ -19,12 +19,7 @@ import type { ComputerAppIdentity, MachineSummary } from "@opensteer/protocol";
 import { AppMark } from "./computer-apps/computer-use-section.js";
 import { handleModalKeyDown } from "./dialog.js";
 import { Icon } from "./icon.js";
-import {
-  PhoneControlBar,
-  PhoneControlButton,
-  ComputerDisplayScreen,
-  useComputerDisplay,
-} from "./phone-display.js";
+import { PhoneControlBar, ComputerDisplayScreen, useComputerDisplay } from "./phone-display.js";
 import { SurfaceMenu, type SurfaceMenuItem } from "./surface-menu.js";
 import { useToastToolbar } from "./toast.js";
 
@@ -148,13 +143,13 @@ export function ComputerWatchView({
       });
   };
   const idle = phone ? { ...idleStatus, words: "Not using a phone right now" } : idleStatus;
-  const controlling = phone && !compact && display.snapshot.control.state === "held";
+  const inputAvailable = phone && !compact && display.snapshot.input === "available";
   const screen = (onEnlarge: (() => void) | null) =>
     display.media ? (
       <ComputerDisplayScreen
         dim={status !== null}
         display={display}
-        interactive={controlling && (!enlarged || onEnlarge === null)}
+        interactive={inputAvailable && (!enlarged || onEnlarge === null)}
         label={label}
         onEnlarge={onEnlarge}
         shown={showing}
@@ -203,7 +198,6 @@ export function ComputerWatchView({
       phone={phone}
     />
   );
-  const takeover = phone ? <PhoneControlButton display={display} phoneName={machineName} /> : null;
   const control = phone ? <PhoneControlBar display={display} /> : null;
   return (
     <section aria-label={label} className="computer-watch">
@@ -215,7 +209,6 @@ export function ComputerWatchView({
           <span className="computer-watch__state">{status.words}</span>
         ) : null}
         <span className="computer-watch__spacer" />
-        {takeover}
         {canStop ? (
           <button
             aria-label={`Stop the agent using ${phone ? machineName : (shownApp?.displayName ?? "this app")}`}
@@ -237,12 +230,7 @@ export function ComputerWatchView({
       {control}
       {enlarged ? (
         <WatchTheater
-          header={
-            <header className="computer-watch__bar surface-row">
-              {names}
-              {takeover}
-            </header>
-          }
+          header={<header className="computer-watch__bar surface-row">{names}</header>}
           failure={failure}
           footer={control}
           onClose={() => setEnlarged(false)}

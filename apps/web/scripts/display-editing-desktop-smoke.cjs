@@ -105,15 +105,8 @@ void app.whenReady().then(async () => {
     await window.loadURL("app://opensteer/");
     const js = (source) => window.webContents.executeJavaScript(source);
     await wait(
-      () => js('!![...document.querySelectorAll("button")].find(b=>b.textContent === "Take over")'),
-      "live display",
-    );
-    await js(
-      '[...document.querySelectorAll("button")].find(b=>b.textContent === "Take over").click()',
-    );
-    await wait(
       () => js('!!document.querySelector("textarea.remote-keyboard-input:not(:disabled)")'),
-      "phone control",
+      "shared input",
     );
     await js('document.querySelector("textarea.remote-keyboard-input").focus()');
     app.focus({ steal: true });
@@ -222,14 +215,12 @@ void app.whenReady().then(async () => {
       path.join(output, "wire.json"),
       JSON.stringify(await js("displayEditingSmoke.events()"), null, 2),
     );
+    const resetsBefore = await js("displayEditingSmoke.resets()");
     await js(
-      '[...document.querySelectorAll("button")].find(b=>b.textContent === "Give back").click()',
+      'document.querySelector("textarea.remote-keyboard-input").dispatchEvent(new KeyboardEvent("keydown", {key: "F6", bubbles: true}))',
     );
-    await wait(
-      () => js('!document.querySelector("textarea.remote-keyboard-input:not(:disabled)")'),
-      "give back",
-    );
-    records.push({ name: "Give back disables remote input", passed: true });
+    await wait(() => js(`displayEditingSmoke.resets() > ${resetsBefore}`), "input reset");
+    records.push({ name: "F6 resets remote input", passed: true });
     await js("displayEditingSmoke.close()");
   } catch (error) {
     records.push({ name: "suite", passed: false, error: String(error) });

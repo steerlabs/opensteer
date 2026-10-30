@@ -274,7 +274,7 @@ export function ComputerDisplay({
     if (!phone) lease.viewport(viewport.current);
     changed();
     return () => {
-      controls.current?.giveBack();
+      controls.current?.resetInput();
       setInputLease(null);
       viewportChanged.current = null;
       disposed = true;

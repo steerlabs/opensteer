@@ -31,6 +31,7 @@ const nativeBrowserAbilities: EditingTargetAbilities = {
 };
 
 export interface NativeEditingProxyHandle {
+  cancel(): void;
   interrupt(type?: "pointerdown" | "blur"): void;
 }
 
@@ -39,12 +40,14 @@ export function NativeEditingProxy({
   context,
   sendOperation,
   onDone,
+  cancelCompositionOnBlur = false,
   abilities = nativeBrowserAbilities,
   label = "Type into the page",
   ref,
 }: {
   readonly context: EditingContext | null;
   readonly sendOperation: (operation: EditingOperation) => boolean;
+  readonly cancelCompositionOnBlur?: boolean;
   readonly onDone: () => void;
   readonly abilities?: EditingTargetAbilities;
   readonly label?: string;
@@ -68,6 +71,12 @@ export function NativeEditingProxy({
   useImperativeHandle(
     ref,
     () => ({
+      cancel() {
+        step({ type: "context", context: null });
+        nativeComposing.current = false;
+        setPreedit("");
+        setInstruction({});
+      },
       interrupt(type = "pointerdown") {
         const result = step({ type });
         for (const operation of result.operations) latest.current.sendOperation(operation);
@@ -111,6 +120,8 @@ export function NativeEditingProxy({
               nativeComposing.current = true;
             else if (event.type === "compositionend" || event.type === "blur")
               nativeComposing.current = false;
+            if (event.type === "blur" && cancelCompositionOnBlur)
+              step({ type: "context", context: null });
             const result = step(event);
             if (!abilities.composition && !context?.field?.sensitive) {
               if (event.type === "compositionupdate") setPreedit(event.data);
