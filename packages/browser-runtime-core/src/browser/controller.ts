@@ -557,6 +557,11 @@ export class BrowserController {
       !this.clipboardParts.stage(message)
     )
       return Promise.resolve();
+    if (message.type === "stream.demand")
+      return (
+        this.targetedCasts.get(message.surfaceId)?.cast.setRasterDemand(message.density) ??
+        Promise.resolve()
+      );
     if (message.type === "cdp.command") this.clipboard?.invalidate();
 
     if (

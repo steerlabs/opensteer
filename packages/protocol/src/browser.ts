@@ -23,6 +23,15 @@ import {
   browserTabOrderMaxTabs,
   BrowserTabWriteInputSchema,
 } from "@opensteer/core";
+export const BrowserRasterDensitySchema = z.union([
+  z.literal(0.75),
+  z.literal(1),
+  z.literal(1.25),
+  z.literal(1.5),
+  z.literal(2),
+]);
+export type BrowserRasterDensity = z.infer<typeof BrowserRasterDensitySchema>;
+
 export {
   BrowserTabGroupColorSchema,
   browserTabGroupTitleMaxLength,
@@ -322,6 +331,12 @@ export const browserPasteTextMaxLength = 1_000_000;
 const BaselineBrowserClientMessageSchema = z
   .discriminatedUnion("type", [
     PasskeyResultSchema,
+    z.strictObject({
+      ...browserBase,
+      type: z.literal("stream.demand"),
+      surfaceId: BrowserSurfaceIdSchema,
+      density: BrowserRasterDensitySchema,
+    }),
     PasskeyClaimSchema,
     PasskeyRespondSchema,
     z.strictObject({
