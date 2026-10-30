@@ -21,7 +21,9 @@ const artifacts = path.resolve(
 await mkdir(artifacts, { recursive: true });
 // Playwright can reject additional launch-output promises when an executable
 // exits before opening its debugging ports. Preserve those diagnostics too.
+let asynchronousError: unknown;
 const asyncFailure = (error: unknown) => {
+  asynchronousError = error;
   process.exitCode = 1;
   appendFileSync(path.join(artifacts, "failure.txt"), `${String(error)}\n`);
 };
@@ -79,7 +81,6 @@ try {
       OPENSTEER_DESKTOP_RELEASE_SMOKE: "1",
       TMPDIR: home,
       OPENSTEER_DESKTOP_DATA_DIR: data,
-      OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT: path.join(home, "workspace"),
     },
   });
   launched = app.process();
@@ -97,6 +98,15 @@ try {
   if (actualData !== data) throw Error("Packaged app ignored isolated userData");
   step = "desktop window never opened";
   page = await app.firstWindow({ timeout: 30_000 });
+  const mainWindow = await bounded(app.browserWindow(page), 5_000);
+  await bounded(
+    mainWindow.evaluate(
+      (window) =>
+        window.isVisible() ||
+        new Promise<boolean>((resolve) => window.once("show", () => resolve(true))),
+    ),
+    5_000,
+  );
   const fatal: string[] = [];
   page.on("pageerror", (error) => fatal.push(error.message));
   step = "first screen never rendered";
@@ -150,6 +160,8 @@ try {
   step = "desktop children survived quit";
   const survivors = children.filter(alive);
   if (survivors.length) throw Error(`Child PIDs still running: ${survivors.join(", ")}`);
+  if (asynchronousError !== undefined)
+    throw Error(`Asynchronous launch failure: ${String(asynchronousError)}`);
   console.log(
     `Desktop launch check passed in ${((performance.now() - started) / 1000).toFixed(1)}s`,
   );

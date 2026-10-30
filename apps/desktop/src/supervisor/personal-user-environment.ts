@@ -145,7 +145,7 @@ export class NativePersonalUserEnvironment implements PersonalUserEnvironmentPor
 export class FixedPersonalUserEnvironment implements PersonalUserEnvironmentPort {
   readonly #environment: Readonly<Record<string, string>>;
 
-  constructor(environment: Readonly<Record<string, string>>) {
+  constructor(environment: Readonly<NodeJS.ProcessEnv>) {
     this.#environment = requireUsablePath(filterUserEnvironment(environment), "configured account");
   }
 

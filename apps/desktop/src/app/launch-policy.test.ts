@@ -85,7 +85,6 @@ it("admits only ephemeral Playwright ports in a fresh private smoke profile", ()
     OPENSTEER_DESKTOP_RELEASE_SMOKE: "1",
     HOME: home,
     OPENSTEER_DESKTOP_DATA_DIR: path.join(home, "userdata"),
-    OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT: path.join(home, "workspace"),
   };
   try {
     expect(() => launch(["--inspect=0", "--remote-debugging-port=0"], environment)).not.toThrow();
