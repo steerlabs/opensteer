@@ -12,6 +12,38 @@ import { describe, expect, it, vi } from "vitest";
 import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";
 
 describe("snapshot-before-live synchronization", () => {
+  it.each([undefined, "omit"] as const)(
+    "passes snapshotMessages=%s to the store",
+    async (snapshotMessages) => {
+      const workspaceId = createId("workspace");
+      const userId = createId("user");
+      const workspaceSnapshot = vi.fn(async () => snapshot(workspaceId, "0"));
+      const store = {
+        notificationState: viewerState(),
+        workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+        workspaceSnapshot,
+      } as unknown as OpensteerStore;
+      const hub = new RealtimeHub({ store });
+      const sink = new MemorySink();
+      const unsubscribe = await hub.subscribe({
+        afterSequence: sequence("0"),
+        sink,
+        userId,
+        workspaceId,
+        ...(snapshotMessages ? { snapshotMessages } : {}),
+      });
+      try {
+        expect(workspaceSnapshot).toHaveBeenCalledWith(workspaceId, {
+          listedOnly: true,
+          viewerId: userId,
+          ...(snapshotMessages ? { omitMessages: true } : {}),
+        });
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
+
   it("buffers an event committed while the snapshot is being read", async () => {
     const workspaceId = createId("workspace");
     const userId = createId("user");

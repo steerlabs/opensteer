@@ -163,6 +163,8 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     // is answered with the epoch refusal a person can act on, rather than
     // rejected as malformed JSON. The Host requires it either way.
     apiVersion: z.number().int().positive().optional(),
+    /** Requires `snapshot-messages-omit-v1`; absence retains message history. */
+    snapshotMessages: z.literal("omit").optional(),
     threadId: ThreadIdSchema.nullable(),
     workspaceId: WorkspaceIdSchema,
   }),
@@ -179,23 +181,35 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-export const WorkspaceSnapshotSchema = z.object({
-  readStates: z.array(ThreadReadStateSchema).max(workspaceSnapshotMaxThreads),
-  notificationPreferences: z.array(WorkspaceNotificationPreferenceSchema).max(1),
-  messages: z.array(MessageViewSchema).max(workspaceSnapshotMaxMessages),
-  messageWindows: z.array(ThreadMessageWindowSchema).max(workspaceSnapshotMaxThreads),
-  pendingRequests: readableRequestList(
-    PendingRequestViewSchema,
-    workspaceSnapshotMaxPendingRequests,
-  ),
-  pendingRequestWindow: DurableWindowSchema,
-  runQueue: z.array(ThreadRunQueueEntryViewSchema).max(workspaceSnapshotMaxRunQueueEntries),
-  sequence: SequenceSchema,
-  serializedBytes: z.number().int().positive().max(workspaceSnapshotMaxSerializedBytes),
-  threadWindow: DurableWindowSchema,
-  threads: z.array(ThreadViewSchema).max(workspaceSnapshotMaxThreads),
-  workspace: WorkspaceViewSchema,
-});
+export const WorkspaceSnapshotSchema = z
+  .object({
+    readStates: z.array(ThreadReadStateSchema).max(workspaceSnapshotMaxThreads),
+    notificationPreferences: z.array(WorkspaceNotificationPreferenceSchema).max(1),
+    messages: z.array(MessageViewSchema).max(workspaceSnapshotMaxMessages),
+    messageWindows: z.array(ThreadMessageWindowSchema).max(workspaceSnapshotMaxThreads),
+    /** History was not loaded; the empty arrays do not mean an empty conversation. */
+    messagesOmitted: z.literal(true).optional(),
+    pendingRequests: readableRequestList(
+      PendingRequestViewSchema,
+      workspaceSnapshotMaxPendingRequests,
+    ),
+    pendingRequestWindow: DurableWindowSchema,
+    runQueue: z.array(ThreadRunQueueEntryViewSchema).max(workspaceSnapshotMaxRunQueueEntries),
+    sequence: SequenceSchema,
+    serializedBytes: z.number().int().positive().max(workspaceSnapshotMaxSerializedBytes),
+    threadWindow: DurableWindowSchema,
+    threads: z.array(ThreadViewSchema).max(workspaceSnapshotMaxThreads),
+    workspace: WorkspaceViewSchema,
+  })
+  .refine(
+    (snapshot) =>
+      !snapshot.messagesOmitted ||
+      (snapshot.messages.length === 0 && snapshot.messageWindows.length === 0),
+    {
+      message: "Omitted history cannot include messages or message windows",
+      path: ["messagesOmitted"],
+    },
+  );
 export type WorkspaceSnapshot = z.infer<typeof WorkspaceSnapshotSchema>;
 
 /** The most characters of a task's last reply or failure a task list carries. */

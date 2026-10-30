@@ -147,6 +147,16 @@ history cursor until a history read succeeds. A snapshot that overtakes an ongoi
 read invalidates its coverage and requires another read. History failures remain
 visible and retryable without clearing the last readable conversation.
 
+Hosts advertising `snapshot-messages-omit-v1` accept `client.subscribe` with
+`snapshotMessages: "omit"`. The shared client opts in only after that advertisement.
+The snapshot carries `messagesOmitted: true` and empty `messages` and
+`messageWindows`: history is not loaded, rather than known empty. The Host skips
+history rows and counts, retaining Thread, run queue, pending Request and viewer
+metadata. No message totals are needed until the durable page supplies its window.
+Unshown Threads lose any snapshot-seeded transcript and window; shown and historical
+reading keeps its existing recovery behavior. Without the option, Hosts still send
+the original snapshot, so this additive contract needs no API epoch change.
+
 Streaming text is live progress (`host.live`), never a durable event. A Runner
 coalesces its engine's deltas and sends appends that name the offset they
 continue; the Host keeps each active Run's streams in memory

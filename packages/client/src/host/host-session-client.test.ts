@@ -11764,7 +11764,7 @@ describe("HttpHostClient overnight transcript residency", () => {
     };
   }
 
-  async function residentFixture(hydrate = true) {
+  async function residentFixture(hydrate = true, omitSnapshotMessages = false) {
     const workspace = makeWorkspace();
     const thread = makeThread(workspace.id);
     const other = makeThread(workspace.id);
@@ -11804,6 +11804,7 @@ describe("HttpHostClient overnight transcript residency", () => {
     let boot = bootstrap([workspace]);
     const client = createHttpHostClient({
       refreshIntervalMs: 0,
+      capabilities: omitSnapshotMessages ? ["snapshot-messages-omit-v1"] : [],
       webSocketFactory: () => socket,
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : String(input));
@@ -11850,6 +11851,7 @@ describe("HttpHostClient overnight transcript residency", () => {
       other,
       reads,
       runId,
+      replyId,
       socket,
       thread,
       workspace,
@@ -11870,6 +11872,101 @@ describe("HttpHostClient overnight transcript residency", () => {
   function emptyDurableWindow() {
     return { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
   }
+
+  it.each([false, true])(
+    "negotiates omitted snapshot messages only with a capable Host (%s)",
+    async (capable) => {
+      const f = await residentFixture(false, capable);
+      try {
+        const subscription = parseSent(f.socket, 0);
+        if (capable) expect(subscription).toHaveProperty("snapshotMessages", "omit");
+        else expect(subscription).not.toHaveProperty("snapshotMessages");
+      } finally {
+        f.client.dispose();
+      }
+    },
+  );
+
+  it.each(["activate", "observe"] as const)(
+    "leaves omitted history unloaded until %s reads its first durable page",
+    async (mode) => {
+      const f = await residentFixture(false, true);
+      const pending = f.holdHistory();
+      let release: (() => void) | undefined;
+      try {
+        // A previous full snapshot may have seeded a message window. It is not
+        // coverage for this new snapshot's omitted history.
+        f.socket.receive({
+          type: "host.snapshot",
+          snapshot: {
+            ...workspaceSnapshot(f.workspace, "5"),
+            threads: [f.thread, f.other],
+            messages: [makeMessage(f.thread.id, "assistant", "Snapshot-only seed")],
+            messageWindows: [{ ...emptyDurableWindow(), threadId: f.thread.id }],
+          },
+        });
+        expect(f.client.getSnapshot().transcripts[f.thread.id]).toContainEqual(
+          expect.objectContaining({ body: "Snapshot-only seed" }),
+        );
+        f.socket.receive({
+          type: "host.snapshot",
+          snapshot: {
+            ...workspaceSnapshot(f.workspace, "5"),
+            threads: [f.thread, f.other],
+            messagesOmitted: true,
+          },
+        });
+        expect(f.client.getSnapshot().transcripts[f.thread.id]).toBeUndefined();
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBeUndefined();
+        expect(f.reads).toEqual([]);
+        if (mode === "activate") f.client.activateThread(f.thread.id);
+        else release = f.client.observeThread(f.thread.id);
+        await pending.asked.promise;
+        expect(f.client.getSnapshot().threadLookups[f.thread.id]).toBe("loading");
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBeUndefined();
+        pending.answer.resolve(json(page(f.thread, f.events, "5")));
+        await vi.waitFor(() =>
+          expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toMatchObject({
+            hasMore: true,
+            nextBefore: "1",
+            totalItems: 1_000,
+          }),
+        );
+        expect(f.client.getSnapshot().transcripts[f.thread.id]).toContainEqual(
+          expect.objectContaining({ body: "An already loaded answer." }),
+        );
+        expect(f.client.getSnapshot().threadLookups[f.thread.id]).toBeUndefined();
+        expect(f.reads).toEqual([f.thread.id]);
+      } finally {
+        pending.answer.resolve(json(page(f.thread, f.events, "5")));
+        release?.();
+        f.client.dispose();
+      }
+    },
+  );
+
+  it("keeps historical reading and its cursor through an omitted-history snapshot", async () => {
+    const f = await residentFixture(true, true);
+    try {
+      await f.client.loadTranscriptAround(f.thread.id, f.replyId);
+      const entries = f.client.getSnapshot().transcripts[f.thread.id];
+      const window = f.client.getSnapshot().transcriptWindows[f.thread.id];
+      const reads = f.reads.length;
+      f.socket.receive({
+        type: "host.snapshot",
+        snapshot: {
+          ...workspaceSnapshot(f.workspace, "10"),
+          threads: [f.thread, f.other],
+          messagesOmitted: true,
+        },
+      });
+      expect(f.client.getSnapshot().transcripts[f.thread.id]).toBe(entries);
+      expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBe(window);
+      expect(f.reads).toHaveLength(reads);
+    } finally {
+      f.client.dispose();
+    }
+  });
 
   it("does not retain an unopened Thread's overnight output while keeping its current state", async () => {
     const f = await residentFixture(false);
@@ -12045,79 +12142,93 @@ describe("HttpHostClient overnight transcript residency", () => {
     }
   });
 
-  it("keeps active history and its event cursor through a failed reconnect read, then replaces them atomically", async () => {
-    const f = await residentFixture();
-    const first = f.holdHistory();
-    try {
-      const entries = f.client.getSnapshot().transcripts[f.thread.id];
-      const window = f.client.getSnapshot().transcriptWindows[f.thread.id];
-      const installed: ReadonlyArray<{ readonly id: string }>[] = [];
-      const unsubscribe = f.client.subscribe(() =>
-        installed.push(f.client.getSnapshot().transcripts[f.thread.id] ?? []),
-      );
-      f.socket.receive({
-        type: "host.snapshot",
-        snapshot: {
-          ...workspaceSnapshot(f.workspace, "10"),
-          threads: [f.thread, f.other],
-          messageWindows: [{ ...emptyDurableWindow(), threadId: f.thread.id }],
-        },
-      });
-      await first.asked.promise;
-      expect.soft(f.client.getSnapshot().transcripts[f.thread.id]).toBe(entries);
-      expect.soft(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBe(window);
-      first.answer.resolve(
-        json(
-          {
-            error: {
-              code: "internal",
-              message: "History temporarily unavailable",
-              retryable: true,
-            },
+  it.each([false, true])(
+    "keeps active history and its event cursor through a failed reconnect read, then replaces them atomically (omitted=%s)",
+    async (omitted) => {
+      const f = await residentFixture(true, omitted);
+      const first = f.holdHistory();
+      try {
+        const entries = f.client.getSnapshot().transcripts[f.thread.id];
+        const window = f.client.getSnapshot().transcriptWindows[f.thread.id];
+        const installed: ReadonlyArray<{ readonly id: string }>[] = [];
+        const unsubscribe = f.client.subscribe(() =>
+          installed.push(f.client.getSnapshot().transcripts[f.thread.id] ?? []),
+        );
+        f.socket.receive({
+          type: "host.snapshot",
+          snapshot: {
+            ...workspaceSnapshot(f.workspace, "10"),
+            threads: [f.thread, f.other],
+            ...(omitted
+              ? { messagesOmitted: true }
+              : { messageWindows: [{ ...emptyDurableWindow(), threadId: f.thread.id }] }),
           },
-          503,
-        ),
-      );
-      await vi.waitFor(() =>
-        expect(f.client.getSnapshot().threadLookups[f.thread.id]).toBe("failed"),
-      );
-      expect(f.client.getSnapshot().transcripts[f.thread.id]).toBe(entries);
-      expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBe(window);
-      const retry = f.holdHistory();
-      f.client.activateThread(f.thread.id);
-      await retry.asked.promise;
-      const missed = agentEvent(f.workspace.id, f.thread.id, f.runId, "9", "reasoning.completed", {
-        blockId: "missed-reconnect",
-        text: "Recorded while disconnected.",
-      });
-      const arrived = agentEvent(
-        f.workspace.id,
-        f.thread.id,
-        f.runId,
-        "11",
-        "reasoning.completed",
-        { blockId: "during-read", text: "Arrived during the replacement read." },
-      );
-      f.socket.receive({ type: "host.events", events: [arrived] });
-      retry.answer.resolve(json(page(f.thread, [...f.events, missed], "10")));
-      await vi.waitFor(() =>
+        });
+        await first.asked.promise;
+        expect.soft(f.client.getSnapshot().transcripts[f.thread.id]).toBe(entries);
+        expect.soft(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBe(window);
+        first.answer.resolve(
+          json(
+            {
+              error: {
+                code: "internal",
+                message: "History temporarily unavailable",
+                retryable: true,
+              },
+            },
+            503,
+          ),
+        );
+        await vi.waitFor(() =>
+          expect(f.client.getSnapshot().threadLookups[f.thread.id]).toBe("failed"),
+        );
+        expect(f.client.getSnapshot().transcripts[f.thread.id]).toBe(entries);
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBe(window);
+        const retry = f.holdHistory();
+        f.client.activateThread(f.thread.id);
+        await retry.asked.promise;
+        const missed = agentEvent(
+          f.workspace.id,
+          f.thread.id,
+          f.runId,
+          "9",
+          "reasoning.completed",
+          {
+            blockId: "missed-reconnect",
+            text: "Recorded while disconnected.",
+          },
+        );
+        const arrived = agentEvent(
+          f.workspace.id,
+          f.thread.id,
+          f.runId,
+          "11",
+          "reasoning.completed",
+          { blockId: "during-read", text: "Arrived during the replacement read." },
+        );
+        f.socket.receive({ type: "host.events", events: [arrived] });
+        retry.answer.resolve(json(page(f.thread, [...f.events, missed], "10")));
+        await vi.waitFor(() =>
+          expect(f.client.getSnapshot().transcripts[f.thread.id]).toContainEqual(
+            expect.objectContaining({ id: `reasoning:${f.runId}:missed-reconnect` }),
+          ),
+        );
         expect(f.client.getSnapshot().transcripts[f.thread.id]).toContainEqual(
-          expect.objectContaining({ id: `reasoning:${f.runId}:missed-reconnect` }),
-        ),
-      );
-      expect(f.client.getSnapshot().transcripts[f.thread.id]).toContainEqual(
-        expect.objectContaining({ id: `reasoning:${f.runId}:during-read` }),
-      );
-      expect(f.client.getSnapshot().threadLookups[f.thread.id]).toBeUndefined();
-      expect(
-        installed.every((value) => value.some(({ id }) => id === "tool:" + f.runId + ":kept-step")),
-      ).toBe(true);
-      unsubscribe();
-    } finally {
-      first.answer.resolve(json(page(f.thread, f.events, "10")));
-      f.client.dispose();
-    }
-  });
+          expect.objectContaining({ id: `reasoning:${f.runId}:during-read` }),
+        );
+        expect(f.client.getSnapshot().threadLookups[f.thread.id]).toBeUndefined();
+        expect(
+          installed.every((value) =>
+            value.some(({ id }) => id === "tool:" + f.runId + ":kept-step"),
+          ),
+        ).toBe(true);
+        unsubscribe();
+      } finally {
+        first.answer.resolve(json(page(f.thread, f.events, "10")));
+        f.client.dispose();
+      }
+    },
+  );
 
   it("rereads an outstanding transcript after a snapshot even when Thread state did not change", async () => {
     const f = await residentFixture();

@@ -1,6 +1,10 @@
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { HostToClientMessageSchema, WorkspaceSnapshotSchema } from "./index.js";
+import {
+  ClientToHostMessageSchema,
+  HostToClientMessageSchema,
+  WorkspaceSnapshotSchema,
+} from "./index.js";
 
 const now = "2026-08-22T12:00:00.000Z";
 
@@ -95,6 +99,34 @@ describe("Request protocol", () => {
       },
     } as const;
     expect(WorkspaceSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(WorkspaceSnapshotSchema.parse({ ...snapshot, messagesOmitted: true })).toEqual({
+      ...snapshot,
+      messagesOmitted: true,
+    });
+    expect(WorkspaceSnapshotSchema.safeParse({ ...snapshot, messagesOmitted: false }).success).toBe(
+      false,
+    );
+    expect(
+      WorkspaceSnapshotSchema.safeParse({
+        ...snapshot,
+        messagesOmitted: true,
+        messageWindows: [{ ...emptyWindow, threadId: thread.id }],
+      }).success,
+    ).toBe(false);
+    const subscription = {
+      type: "client.subscribe",
+      afterSequence: "0",
+      threadId: null,
+      workspaceId: thread.workspaceId,
+    } as const;
+    expect(ClientToHostMessageSchema.parse(subscription)).toEqual(subscription);
+    expect(ClientToHostMessageSchema.parse({ ...subscription, snapshotMessages: "omit" })).toEqual({
+      ...subscription,
+      snapshotMessages: "omit",
+    });
+    expect(
+      ClientToHostMessageSchema.safeParse({ ...subscription, snapshotMessages: "unknown" }).success,
+    ).toBe(false);
     expect(
       WorkspaceSnapshotSchema.parse({
         ...snapshot,
