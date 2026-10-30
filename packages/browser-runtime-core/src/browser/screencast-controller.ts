@@ -226,6 +226,7 @@ export class ScreencastController {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser stream is closed.");
     if (this.rasterDemand === density) return Promise.resolve();
     this.rasterDemand = density;
+    this.active?.castAbort?.abort();
     return this.mutex.run(async () => {
       const active = this.active;
       if (this.closed || !active || !this.streaming) return;
@@ -661,7 +662,10 @@ export class ScreencastController {
         active.geometryRevision =
           this.ledger.binding(active.surfaceId)?.surface.geometryRevision ?? 0;
         const region = capture ?? size;
-        const raster = screencastRaster(region, Math.min(this.rasterDemand, capture?.rasterScale ?? 2));
+        const raster = screencastRaster(
+          region,
+          Math.min(this.rasterDemand, capture?.rasterScale ?? 2),
+        );
         this.diagnose({
           stage: "cast-start",
           reason,

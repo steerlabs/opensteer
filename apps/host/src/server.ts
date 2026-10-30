@@ -3071,6 +3071,7 @@ export function advertisedCapabilities(
     "browser-target-control-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
     "browser-frame-window-v1",
+    "browser-raster-demand-v1",
     "browser-capture-region-v1",
     "browser-search-suggestions-v1",
     "workspace-tab-reopen-v1",

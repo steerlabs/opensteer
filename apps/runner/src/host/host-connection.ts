@@ -675,6 +675,7 @@ export class ReconnectingHostConnection {
                 navigationVersion: 1,
                 workspaceTabRestoreVersion: 1,
                 captureRegion: 1,
+                rasterDemand: 1,
                 editing: 2,
                 clipboard: false,
                 ...(agents.browserBridge.signIn ? { signIn: { version: 3 } } : {}),

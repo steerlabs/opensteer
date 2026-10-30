@@ -83,6 +83,7 @@ import {
   type BrowserProfileAccess,
   type BrowserClientMessage,
   type BrowserBinaryFrameHeader,
+  type BrowserRasterDensity,
   type BrowserPlacement,
   type BrowserPlacementSelector,
   type BrowserProfile,
@@ -483,6 +484,7 @@ export interface BrowserRuntimeTarget {
   readonly navigationVersion?: boolean;
   readonly workspaceTabRestoreVersion?: boolean;
   readonly captureRegion?: boolean;
+  readonly rasterDemand?: boolean;
   readonly passkeys?: boolean;
   readonly editing?: 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
@@ -3415,6 +3417,7 @@ export class BrowserService {
       navigation: target.navigationVersion === true,
       targetControl: target.targetControl === true,
       captureRegion: target.captureRegion === true,
+      rasterDemand: target.rasterDemand === true,
       passkeys: target.passkeys === true && this.#passkeys,
       passkeyOwnOrigins: this.#passkeyOwnOrigins,
       editing: target.editing,
@@ -3899,6 +3902,7 @@ interface HostedBrowserBrokerOptions {
   readonly sharedControl: boolean;
   readonly targetControl: boolean;
   readonly captureRegion: boolean;
+  readonly rasterDemand: boolean;
   readonly editing: 1 | 2 | undefined;
   readonly passkeys: boolean;
   readonly passkeyOwnOrigins: () => readonly string[];
@@ -3966,6 +3970,15 @@ class HostedBrowserBroker {
   readonly #catalogGeneration = Date.now();
   readonly #catalogRevisions = new BrowserCatalogRevisions();
   readonly #runtimeTargets = new Map<string, boolean>();
+  readonly #runtimeRaster = new Map<
+    string,
+    {
+      density: BrowserRasterDensity;
+      wanted: BrowserRasterDensity;
+      lowerAt: number;
+      timer: NodeJS.Timeout | null;
+    }
+  >();
   readonly #latestFrames = new Map<string, { frame: Buffer; header: BrowserBinaryFrameHeader }>();
   readonly #frameIds = new Map<string, number>();
   readonly #onPageChanged: () => void;
@@ -4037,6 +4050,7 @@ class HostedBrowserBroker {
   readonly sharedControl: boolean;
   readonly targetControl: boolean;
   readonly captureRegion: boolean;
+  readonly rasterDemand: boolean;
   readonly editing: 1 | 2 | undefined;
   readonly passkeys: boolean;
   readonly passkeyOwnOrigins: () => readonly string[];
@@ -4086,6 +4100,7 @@ class HostedBrowserBroker {
     this.sharedControl = options.sharedControl;
     this.targetControl = options.targetControl;
     this.captureRegion = options.captureRegion;
+    this.rasterDemand = options.rasterDemand;
     this.editing = options.editing;
     this.clipboard = options.clipboard;
     this.computer = options.computer;
@@ -5226,7 +5241,9 @@ class HostedBrowserBroker {
         surfaceId: outlet.surfaceId,
         captureRegion: outlet.captureRegion,
         frameWindow: outlet.frameWindow,
+        rasterDensity: outlet.rasterDensity,
       };
+      if (outlet.surfaceId !== surfaceId || outlet.subscription === null) outlet.rasterDensity = 2;
       outlet.surfaceId = surfaceId;
       outlet.subscription = subscription;
       this.#passkeys?.refresh();
@@ -5261,10 +5278,23 @@ class HostedBrowserBroker {
           outlet.subscription = previous.subscription;
           outlet.captureRegion = previous.captureRegion;
           outlet.frameWindow = previous.frameWindow;
+          outlet.rasterDensity = previous.rasterDensity;
           outlet.surfaceId = previous.surfaceId;
         }
         throw error;
       });
+    }
+    if (message.type === "stream.demand") {
+      if (outlet.subscription !== "frames" || outlet.surfaceId !== message.surfaceId)
+        return Promise.reject(
+          new OpensteerError({
+            code: "conflict",
+            message: "Raster demand must name this viewer's picture.",
+          }),
+        );
+      if (outlet.rasterDensity === message.density) return Promise.resolve();
+      outlet.rasterDensity = message.density;
+      return this.#reconcileStreaming();
     }
     if (message.type === "stream.ack")
       return message.surfaceId && message.surfaceId !== outlet.surfaceId
@@ -5274,7 +5304,7 @@ class HostedBrowserBroker {
       return Promise.reject(
         new OpensteerError({
           code: "forbidden",
-          message: "Watch can only subscribe, acknowledge, or unsubscribe.",
+          message: "Watch can only manage its picture subscription and receipts.",
         }),
       );
     }
@@ -5425,6 +5455,7 @@ class HostedBrowserBroker {
 
   #reconcileStreaming(): Promise<void> {
     const operation = this.#streamReconcileTail.then(async () => {
+      if (this.#settled) return;
       const surfaces = new Set<string>(this.#snapshot?.surfaces.map((surface) => surface.id));
       const targets = new Set(
         [...this.#consumers.values()].flatMap((consumer) =>
@@ -5458,6 +5489,9 @@ class HostedBrowserBroker {
             surfaceId: BrowserSurfaceIdSchema.parse(target),
           });
           this.#runtimeTargets.delete(target);
+          const raster = this.#runtimeRaster.get(target);
+          if (raster?.timer) clearTimeout(raster.timer);
+          this.#runtimeRaster.delete(target);
         }
       for (const [target, frames] of wanted)
         if (this.#runtimeTargets.get(target) !== frames) {
@@ -5469,6 +5503,53 @@ class HostedBrowserBroker {
           });
           this.#runtimeTargets.set(target, frames);
         }
+      if (this.rasterDemand && this.targetedStreaming) {
+        for (const [target, frames] of wanted) {
+          let raster = this.#runtimeRaster.get(target);
+          if (!raster) {
+            raster = { density: 2, wanted: 2, lowerAt: 0, timer: null };
+            this.#runtimeRaster.set(target, raster);
+          }
+          if (!frames) {
+            if (raster.timer) clearTimeout(raster.timer);
+            raster.timer = null;
+            raster.wanted = raster.density;
+            raster.lowerAt = 0;
+            continue;
+          }
+          let density: BrowserRasterDensity = 0.75;
+          for (const viewer of this.#consumers.values())
+            if (
+              viewer.subscription === "frames" &&
+              (viewer.surfaceId === target || (viewer.surfaceId === null && active === target))
+            )
+              density = Math.max(density, viewer.rasterDensity) as BrowserRasterDensity;
+          const now = performance.now();
+          if (density !== raster.wanted) {
+            if (raster.timer) clearTimeout(raster.timer);
+            raster.timer = null;
+            raster.wanted = density;
+            raster.lowerAt = now + 1_000;
+          }
+          if (density === raster.density) continue;
+          if (density < raster.density && now < raster.lowerAt) {
+            raster.timer ??= setTimeout(() => {
+              raster.timer = null;
+              void this.#reconcileStreaming().catch(() => undefined);
+            }, raster.lowerAt - now);
+            raster.timer.unref();
+            continue;
+          }
+          if (raster.timer) clearTimeout(raster.timer);
+          raster.timer = null;
+          await this.#sendCommand({
+            type: "stream.demand",
+            surfaceId: BrowserSurfaceIdSchema.parse(target),
+            density,
+          });
+          raster.density = density;
+        }
+      }
       for (const target of this.#frameIds.keys())
         if (!admitted.has(target)) this.#frameIds.delete(target);
       if (!legacy) {
@@ -5640,6 +5721,8 @@ class HostedBrowserBroker {
   ): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
     this.#settled = true;
+    for (const raster of this.#runtimeRaster.values()) if (raster.timer) clearTimeout(raster.timer);
+    this.#runtimeRaster.clear();
     this.#passkeys?.close();
     if (state === "failed") {
       console.error("browser.session.failed", this.#sessionId, this.#failure ?? "unknown");
@@ -5744,6 +5827,7 @@ export class BrowserConsumerOutlet {
   frameWindow = false;
   #window = 1;
   #baselineDelay = Infinity;
+  readonly #receiptDelays: number[] = [];
   #deliveryRate: { bytesPerMs: number; at: number } | null = null;
   #lastReceipt: { sentAt: number; acknowledgedAt: number } | null = null;
   #paceAt = 0;
@@ -5796,6 +5880,7 @@ export class BrowserConsumerOutlet {
   subscription: null | "frames" | "control" = null;
   surfaceId: string | null = null;
   captureRegion = false;
+  rasterDensity: BrowserRasterDensity = 2;
   editing: 1 | 2 | undefined;
   clipboard = false;
   #captureRefusal: number | null = null;
@@ -5948,7 +6033,13 @@ export class BrowserConsumerOutlet {
     this.#diagnose({ stage: "credit", durationMs: delay });
     clearTimeout(receipt.timer);
     this.#outstanding.delete(token);
-    this.#baselineDelay = Math.min(this.#baselineDelay, delay);
+    // A path change must be able to retire the old minimum. The bounded
+    // recent window also keeps one delayed receipt from defining the baseline.
+    const previousBaseline = this.#baselineDelay;
+    this.#receiptDelays.push(delay);
+    if (this.#receiptDelays.length > 16) this.#receiptDelays.shift();
+    this.#baselineDelay = Math.min(...this.#receiptDelays);
+    if (this.#baselineDelay > previousBaseline * 1.25) this.#deliveryRate = null;
     const now = performance.now();
     if (this.frameWindow) {
       const previous = this.#lastReceipt;
@@ -5999,6 +6090,7 @@ export class BrowserConsumerOutlet {
     this.#outstanding.clear();
     this.#window = 1;
     this.#baselineDelay = Infinity;
+    this.#receiptDelays.length = 0;
     this.#deliveryRate = null;
     this.#lastReceipt = null;
     this.#paceAt = 0;
@@ -6031,6 +6123,7 @@ export class BrowserConsumerOutlet {
     this.#outstanding.clear();
     this.#window = 1;
     this.#baselineDelay = Infinity;
+    this.#receiptDelays.length = 0;
     this.#deliveryRate = null;
     this.#lastReceipt = null;
     this.#paceAt = 0;

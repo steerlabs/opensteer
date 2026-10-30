@@ -190,6 +190,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       navigationVersion: browser.navigationVersion === 1,
       workspaceTabRestoreVersion: browser.workspaceTabRestoreVersion === 1,
       captureRegion: browser.captureRegion === 1,
+      rasterDemand: browser.rasterDemand === 1,
       computer: { name: stream.identity.name, runnerId: placement.runnerId },
       connect: (ticket) => {
         const connection = new RunnerBrowserConnection(this);

@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { BrowserConsumerOutlet } from "./browser-service.js";
-import type { BrowserBinaryFrameHeader } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema, type BrowserBinaryFrameHeader } from "@opensteer/protocol";
 
 afterEach(() => vi.useRealTimers());
 const measurements: unknown[] = [];
@@ -12,9 +12,10 @@ afterAll(() => {
 
 async function simulatedLink(
   windowed: boolean,
-  rtt: number,
-  bitsPerSecond: number,
+  roundTrip: number | ((at: number) => number),
+  bandwidth: number | ((at: number) => number),
   imageBytes: number,
+  steadyFrom = 2_000,
 ) {
   vi.useFakeTimers();
   const captures = new Map<number, number>();
@@ -34,6 +35,9 @@ async function simulatedLink(
           watchToken: string;
           frameId: number;
         };
+        const rtt = typeof roundTrip === "number" ? roundTrip : roundTrip(performance.now());
+        const bitsPerSecond =
+          typeof bandwidth === "number" ? bandwidth : bandwidth(performance.now());
         linkFreeAt =
           Math.max(linkFreeAt, performance.now()) + (bytes.byteLength * 8_000) / bitsPerSecond;
         setTimeout(
@@ -63,7 +67,7 @@ async function simulatedLink(
     const header: BrowserBinaryFrameHeader = {
       encoding: "jpeg",
       frameId,
-      surfaceId: "page",
+      surfaceId: BrowserSurfaceIdSchema.parse("page"),
       geometryRevision: 1,
       viewportWidth: 800,
       viewportHeight: 600,
@@ -81,10 +85,10 @@ async function simulatedLink(
   clearInterval(producer);
   outlet.close();
   vi.clearAllTimers();
-  const steady = pictures.filter((picture) => picture.at >= 2_000 && picture.at < 12_000);
+  const steady = pictures.filter((picture) => picture.at >= steadyFrom && picture.at < 12_000);
   const ages = steady.map((picture) => picture.age).sort((a, b) => a - b);
   return {
-    fps: steady.length / 10,
+    fps: steady.length / ((12_000 - steadyFrom) / 1000),
     p95: ages[Math.floor(ages.length * 0.95)]!,
     bytes: steady.reduce((sum, picture) => sum + picture.bytes, 0),
   };
@@ -163,4 +167,12 @@ it("keeps legacy credit fixed and negotiates growth, exact receipts and reset", 
   expect(frames).toHaveLength(6);
   outlet.close();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("recovers useful frame credit after moving to a higher-latency connection", async () => {
+  const path = (at: number) => (at < 4_000 ? 20 : 200);
+  const legacy = await simulatedLink(false, path, 10_000_000, 8_000, 8_000);
+  const windowed = await simulatedLink(true, path, 10_000_000, 8_000, 8_000);
+  expect(windowed.fps).toBeGreaterThan(legacy.fps * 2);
+  expect(windowed.p95).toBeLessThanOrEqual(legacy.p95 + 40);
 });

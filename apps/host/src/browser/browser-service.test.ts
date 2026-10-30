@@ -71,6 +71,7 @@ function runnerTarget(options: {
   readonly passkeys?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
+  readonly rasterDemand?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly workspaceTabRestoreVersion?: boolean;
@@ -114,6 +115,7 @@ function runnerTarget(options: {
             editing: options.editing === true ? 1 : options.editing || undefined,
             clipboard: options.clipboard,
             targetControl: options.targetControl ?? false,
+            rasterDemand: options.rasterDemand ?? false,
             placementKey: `runner:${runnerId}:${runtimeId}`,
             runtimeId,
           }
@@ -3628,6 +3630,7 @@ function freshService(options: {
   readonly passkeys?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
+  readonly rasterDemand?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly actorMetadataTimeoutMs?: number;
@@ -3655,6 +3658,7 @@ function freshService(options: {
       url: options.runtime.url,
       sharedControl: options.sharedControl ?? true,
       targetControl: options.targetControl ?? false,
+      rasterDemand: options.rasterDemand ?? false,
       passkeys: options.passkeys === true,
       editing: options.editing,
       clipboard: options.clipboard,
@@ -4684,7 +4688,22 @@ async function startFakeRuntime(
       const command = commands.shift();
       return command
         ? Promise.resolve(command)
-        : new Promise<Record<string, unknown>>((resolve) => waiters.push(resolve));
+        : new Promise<Record<string, unknown>>((resolve, reject) => {
+            const accept = (message: Record<string, unknown>) => {
+              clearTimeout(timer);
+              resolve(message);
+            };
+            const timer = setTimeout(() => {
+              const index = waiters.indexOf(accept);
+              if (index >= 0) waiters.splice(index, 1);
+              reject(
+                new Error(
+                  "The fake browser runtime did not receive the expected command within 3 seconds.",
+                ),
+              );
+            }, 3_000);
+            waiters.push(accept);
+          });
     },
     releaseInitialSnapshots: () => {
       for (const send of pendingInitialSnapshots.splice(0)) send();
@@ -5051,3 +5070,99 @@ it("runs the next control socket command after a passkey authorization deadline"
     attachment.close();
   }
 });
+
+it.each([true, false])(
+  "aggregates picture density without resubscribing or sending unsupported runtime commands (capability %s)",
+  async (rasterDemand) => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const service = freshService({
+      keys,
+      runtime,
+      rasterDemand,
+      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+    });
+    const opened = await service.openAgentSession({
+      ownerId,
+      workspaceId,
+      agentBindingId: "raster-demand",
+      fresh: true,
+    });
+    const phone = await service.attach(ownerId, opened.session.id, new RecordingPeer("phone"), {
+      ...consumerOptions(),
+      mode: "watch",
+    });
+    const desktop = await service.attach(
+      ownerId,
+      opened.session.id,
+      new RecordingPeer("desktop"),
+      consumerOptions(),
+    );
+    const send = (viewer: typeof phone, message: object) =>
+      viewer.handle(Buffer.from(JSON.stringify(message)), false);
+    await send(phone, { type: "stream.subscribe", surfaceId: "page-1" });
+    expect(await runtime.nextCommand()).toMatchObject({
+      type: "stream.subscribe",
+      surfaceId: "page-1",
+    });
+    await send(desktop, { type: "stream.subscribe", surfaceId: "page-1" });
+    await expect(
+      send(phone, { type: "stream.demand", surfaceId: "wrong-page", density: 1 }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await send(phone, { type: "stream.demand", surfaceId: "page-1", density: 0.75 });
+    await send(desktop, { type: "stream.demand", surfaceId: "page-1", density: 1.5 });
+    if (rasterDemand) {
+      expect(await runtime.nextCommand()).toEqual({
+        type: "stream.demand",
+        surfaceId: "page-1",
+        density: 1.5,
+      });
+      // The small preview cannot reduce the picture required by the larger pane.
+      await send(phone, { type: "stream.demand", surfaceId: "page-1", density: 1 });
+      await send(desktop, { type: "stream.demand", surfaceId: "page-1", density: 2 });
+      expect(await runtime.nextCommand()).toEqual({
+        type: "stream.demand",
+        surfaceId: "page-1",
+        density: 2,
+      });
+      // A legacy picture holder stays at the released density.
+      const legacy = await service.attach(
+        ownerId,
+        opened.session.id,
+        new RecordingPeer("legacy"),
+        consumerOptions(),
+      );
+      await send(legacy, { type: "stream.subscribe" });
+      await send(desktop, { type: "stream.demand", surfaceId: "page-1", density: 1 });
+      await send(legacy, { type: "stream.unsubscribe" });
+      expect(await runtime.nextCommand()).toEqual({
+        type: "stream.demand",
+        surfaceId: "page-1",
+        density: 1,
+      });
+      await send(phone, { type: "stream.demand", surfaceId: "page-1", density: 0.75 });
+      await send(desktop, { type: "stream.unsubscribe", surfaceId: "page-1" });
+      await send(phone, { type: "stream.unsubscribe", surfaceId: "page-1" });
+      expect(await runtime.nextCommand()).toMatchObject({ type: "stream.unsubscribe" });
+    } else {
+      // An ordered command provides the barrier for preceding writes.
+      await send(desktop, { type: "navigation.reload", surfaceId: "page-1" });
+      expect(await runtime.nextCommand()).toMatchObject({ type: "navigation.reload" });
+    }
+    expect(
+      runtime.receivedCommands().filter((command) => command.type === "stream.subscribe"),
+    ).toHaveLength(1);
+    expect(runtime.receivedCommands().some((command) => command.type === "input.cancel")).toBe(
+      false,
+    );
+    if (!rasterDemand)
+      expect(runtime.receivedCommands().some((command) => command.type === "stream.demand")).toBe(
+        false,
+      );
+    await service.close();
+  },
+);
