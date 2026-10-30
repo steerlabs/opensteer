@@ -304,7 +304,10 @@ Updates run only from Applications; the move prompt precedes supervised children
 Checks run after 30 seconds and every four hours, downloading automatically.
 **Restart to Update** appears in the app menu and tray only after Electron's
 native `update-downloaded` confirms Squirrel validated and staged the bundle.
-Errors clear readiness. Restart and ordinary quit stop children and destroy
+Errors clear readiness and log `desktop.update.failed` with a fixed `reason`:
+`signature` (Squirrel's designated-requirement refusal), `downgrade` (its
+downgrade guard) or `other`; the native message, which carries URLs and paths, is
+never logged. Restart and ordinary quit stop children and destroy
 windows before handing installation to electron-updater, with a bounded exit.
 Both channels refuse downgrades. Packaging keeps bundle entries owner-writable
 for ShipIt, and the stable About panel retains its Alpha marker.

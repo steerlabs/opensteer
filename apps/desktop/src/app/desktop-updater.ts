@@ -2,6 +2,28 @@ import { app, autoUpdater as nativeUpdater } from "electron";
 import { autoUpdater } from "electron-updater";
 import type { DesktopUpdates } from "../config.js";
 import type { ShutdownLog } from "./desktop-shutdown.js";
+import { z } from "zod";
+
+const NativeUpdateErrorSchema = z.object({
+  domain: z.string().optional(),
+  message: z.string().optional(),
+});
+
+/** A fixed cause for the log; native messages carry URLs and local paths. */
+function updateFailureReason(error: unknown): "downgrade" | "other" | "signature" {
+  const parsed = NativeUpdateErrorSchema.safeParse(error);
+  if (!parsed.success) return "other";
+  // Squirrel.Mac's designated-requirement check for the downloaded bundle.
+  if (parsed.data.domain === "SQRLCodeSignatureErrorDomain") return "signature";
+  const message = parsed.data.message ?? "";
+  // Squirrel.Mac's ElectronSquirrelPreventDowngrades refusal for an older bundle.
+  if (
+    message.includes("ElectronSquirrelPreventDowngrades") &&
+    message.includes("appears to be a downgrade")
+  )
+    return "downgrade";
+  return "other";
+}
 
 /** Squirrel owns staging; electron-updater's earlier download event is insufficient. */
 export function startDesktopUpdater(options: {
@@ -30,10 +52,10 @@ export function startDesktopUpdater(options: {
   autoUpdater.autoInstallOnAppQuit = true;
   let checking = false;
   let downloaded = false;
-  const failed = () => {
+  const failed = (error?: unknown) => {
     checking = false;
     downloaded = false;
-    options.log("desktop.update.failed", {});
+    options.log("desktop.update.failed", { reason: updateFailureReason(error) });
     options.readinessChanged(false);
   };
   const ready = () => {
@@ -57,8 +79,8 @@ export function startDesktopUpdater(options: {
     try {
       const result = await autoUpdater.checkForUpdates();
       await result?.downloadPromise;
-    } catch {
-      failed();
+    } catch (error) {
+      failed(error);
     } finally {
       checking = false;
     }
