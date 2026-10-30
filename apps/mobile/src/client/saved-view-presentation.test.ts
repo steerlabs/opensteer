@@ -235,6 +235,38 @@ it("never writes a partial view when tasks answer before the disk load and Home 
   f.dispose();
 });
 
+it("writes nothing after retrying a ready Deployment until the new attachment answers both surfaces", async () => {
+  const f = await fixture(),
+    store = createMemorySavedViews(),
+    write = vi.spyOn(store, "write");
+  const controller = presentation({ store });
+  controller.select(f.s.hostIdentity.deploymentId, f.s, () => true);
+  controller.attach(f.client);
+  const answered = {
+    tasksReady: true,
+    home: { status: "absent", workspaceId: f.snapshot().homeWorkspaceId! },
+    workspaceRefusal: 0,
+  } as const;
+  f.publish({ savedViewReadiness: answered });
+  await controller.flush();
+  expect(write).toHaveBeenCalledTimes(1);
+  // Retry the same Deployment; the new attachment authenticates before answering.
+  f.publish({ savedViewReadiness: { tasksReady: false, home: pendingHome, workspaceRefusal: 0 } });
+  controller.select(f.s.hostIdentity.deploymentId, f.s, () => true);
+  controller.attach(f.client);
+  await controller.flush();
+  expect(write).toHaveBeenCalledTimes(1);
+  f.publish({ savedViewReadiness: answered });
+  await controller.flush();
+  expect(write).toHaveBeenCalledTimes(2);
+  expect(write.mock.calls[1]![0]).toMatchObject({
+    tasks: expect.any(Array),
+    home: expect.any(Object),
+  });
+  controller.dispose();
+  f.dispose();
+});
+
 it("discards a late disk read wholesale even when only one fresh surface arrived", async () => {
   const f = await fixture(),
     gate = deferred<SavedHostView | null>();

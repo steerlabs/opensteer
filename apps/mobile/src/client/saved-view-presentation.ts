@@ -265,10 +265,10 @@ export class SavedViewPresentation {
       this.#blocked ||
       this.#invalidating() ||
       // A write replaces the whole saved view, which may hold a surface this
-      // session never loaded, so it waits until both surfaces have answered.
-      // An empty or absent answer counts.
-      !this.#fresh.home ||
-      !this.#fresh.tasks
+      // session never loaded, so it waits until this attachment has captured
+      // both surfaces from fresh answers. An empty or absent answer counts.
+      this.#home === undefined ||
+      this.#tasks === undefined
     )
       return;
     const snapshot = client.getSnapshot();
