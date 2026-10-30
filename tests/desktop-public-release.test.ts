@@ -268,7 +268,7 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
 
 // Publication must ship exactly the zip the gate certified, even when a later swap
 // rewrote release.json and SHA256SUMS to match the new bytes.
-it("publishes only the certified zip and never publishes stable without certification", async () => {
+it("honors optional zip pinning and publishes stable without certification", async () => {
   const certified = await releaseFixture("beta");
   const swapped = await releaseFixture("beta");
   const zip = "Opensteer-Beta-mac-arm64.zip";
@@ -311,10 +311,10 @@ it("publishes only the certified zip and never publishes stable without certific
   await publish("steerlabs/opensteer", tag, provider(certified), expected);
   expect(patches).toBe(1);
   const stable = await releaseFixture("stable");
-  await expect(
-    publish("steerlabs/opensteer", stable.manifest.tag, provider(stable), { channel: "stable" }),
-  ).rejects.toThrow(/certified/u);
-  expect(patches).toBe(1);
+  await publish("steerlabs/opensteer", stable.manifest.tag, provider(stable), {
+    channel: "stable",
+  });
+  expect(patches).toBe(2);
 });
 
 it("publishes only verified drafts through a fake provider and rechecks anonymous asset hashes", async () => {

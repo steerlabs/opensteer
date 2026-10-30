@@ -443,10 +443,8 @@ export async function publish(
   // The update journey certifies one exact zip. verifyDraftAssets has just checked
   // the freshly downloaded zip against the manifest, so comparing the manifest's
   // hash refuses a later swap even when release.json and SHA256SUMS were rewritten.
-  if (certifiedZipSha256 === undefined) {
-    if (manifest.channel === "stable")
-      throw new Error("Stable publication requires the certified zip sha256");
-  } else if (
+  if (
+    certifiedZipSha256 !== undefined &&
     manifest.assets[channelConfig(manifest.channel).zip] !== hashSchema.parse(certifiedZipSha256)
   )
     throw new Error("Draft zip is not the certified build");

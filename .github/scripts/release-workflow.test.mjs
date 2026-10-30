@@ -529,18 +529,8 @@ test("insiders auto-publish on push, dispatch stops at draft unless publish, sta
   assert.equal(workflow.jobs["publish-stable"].environment, "publish");
 });
 
-// Publication ships exactly the zip the update journey certified. A dispatch without
-// a certified hash fails before building; automatic insiders on push stay unbound.
-test("publish=true requires the certified zip sha256; this run's publisher checks it against the source", () => {
-  assert.equal(workflow.on.workflow_dispatch.inputs.certified_zip_sha256.type, "string");
-  const guard = workflow.jobs.preflight.steps.find((s) => s.if?.includes("certified_zip_sha256"));
-  const refused = (inputs) =>
-    Boolean(runInNewContext(guard.if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), { inputs }));
-  assert.equal(refused({ publish: true, certified_zip_sha256: "" }), true);
-  assert.equal(refused({ publish: true, certified_zip_sha256: "a".repeat(64) }), false);
-  assert.equal(refused({ publish: false, certified_zip_sha256: "" }), false);
-  assert.equal(refused({}), false);
-  assert.throws(() => execFileSync("bash", ["-c", guard.run], { stdio: "pipe" }));
+test("publication needs no certificate and verifies the resolved source", () => {
+  assert.equal(workflow.on.workflow_dispatch.inputs.certified_zip_sha256, undefined);
   const dir = mkdtempSync(path.join(tmpdir(), "opensteer-publish-step-"));
   try {
     const calls = path.join(dir, "calls");
@@ -562,7 +552,7 @@ test("publish=true requires the certified zip sha256; this run's publisher check
         context.github.sha,
       );
       const step = steps.find((s) => s.run?.includes("publish --repo"));
-      assert.equal(step.env.CERTIFIED_ZIP_SHA256, "${{ inputs.certified_zip_sha256 }}");
+      assert.equal(step.env.CERTIFIED_ZIP_SHA256, undefined);
       assert.equal(step.env.SOURCE_SHA, "${{ needs.preflight.outputs.sha }}");
       for (const hash of ["a".repeat(64), ""]) {
         execFileSync("bash", ["-c", step.run], {
@@ -575,7 +565,7 @@ test("publish=true requires the certified zip sha256; this run's publisher check
         });
         assert.equal(
           readFileSync(calls, "utf8").trim(),
-          `desktop:public-release publish --repo steerlabs/opensteer --tag t --source-sha ${source} --certified-zip-sha256=${hash}`,
+          `desktop:public-release publish --repo steerlabs/opensteer --tag t --source-sha ${source}`,
         );
       }
     }
