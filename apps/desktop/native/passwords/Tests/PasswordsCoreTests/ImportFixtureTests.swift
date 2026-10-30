@@ -208,8 +208,8 @@ final class ImportFixtureTests: XCTestCase {
       let imported = try candidate(try importFixture(name), row: row)
       assertBytes(imported.password, password)
       try fixture.withUnlocked { try $0.add([imported.draft]) }
-      let stored = try XCTUnwrap(try fixture.items().first { $0.password.utf8.elementsEqual(password.utf8) }, "\(name) row \(row)")
-      assertBytes(stored.password, password)
+      let stored = try XCTUnwrap(try fixture.items().first { $0.password?.utf8.elementsEqual(password.utf8) == true }, "\(name) row \(row)")
+      assertBytes(try XCTUnwrap(stored.password), password)
     }
     XCTAssertEqual(try fixture.items().count, expected.count)
   }
