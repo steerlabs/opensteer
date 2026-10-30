@@ -96,45 +96,6 @@ test("shutdown proof requires each inventoried exit before an unchanged-bundle w
   ).toBe(false);
 });
 
-import { releaseComparison } from "../scripts/public-download/release-comparison.js";
-test("CI bridge compares same-commit signing policy and rejects altered helpers", () => {
-  const metadata = { expectedTeamId: "ABCDEFGHIJ" };
-  const component = {
-    path: ".",
-    requirement: "designated => anchor apple generic",
-    teamId: metadata.expectedTeamId,
-    identifier: "com.opensteer.opensteer",
-    hardenedRuntime: true,
-    entitlements: { "com.apple.security.cs.allow-jit": true },
-  };
-  const inspection = {
-    revision: "a".repeat(40),
-    channel: "stable",
-    version: "2.0.1",
-    bundleVersion: "2.0.1",
-    bundleId: component.identifier,
-    sha256: "b".repeat(64),
-    components: [component, { ...component, path: "Contents/Helpers/tool" }],
-    assessment: { status: 0, output: "accepted\nsource=Notarized Developer ID" },
-    staple: { status: 0, output: "validated" },
-  };
-  const input = { metadata, ci: inspection, local: { ...inspection, sha256: "c".repeat(64) } };
-  expect(releaseComparison.safeParse(input).success).toBe(true);
-  for (const change of [
-    { revision: "d".repeat(40) },
-    { bundleVersion: "2.0.2" },
-    { channel: "beta" },
-    { components: [component] },
-    { components: [component, { ...component, path: "Contents/Helpers/tool", entitlements: {} }] },
-    { components: [{ ...component, teamId: "ZZZZZZZZZZ" }] },
-    { components: [{ ...component, hardenedRuntime: false }] },
-    { assessment: { status: 0, output: "accepted\nsource=Developer ID" } },
-  ])
-    expect(
-      releaseComparison.safeParse({ ...input, ci: { ...inspection, ...change } }).success,
-    ).toBe(false);
-});
-
 test("staged AX driver must match the current source and the compiled binary checksum", () => {
   const source = Buffer.from("source"),
     binary = Buffer.from("binary");

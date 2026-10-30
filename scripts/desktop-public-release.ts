@@ -47,7 +47,7 @@ const absolutePath = z
     "Use a normalized absolute non-root path",
   );
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
-function assetsFor(channel: Channel): string[] {
+export function assetsFor(channel: Channel): string[] {
   const config = channelConfig(channel);
   return [
     config.zip,
@@ -98,7 +98,7 @@ export const manifestSchema = z
   });
 type Manifest = z.infer<typeof manifestSchema>;
 type Run = typeof runBounded;
-const releaseSchema = z.object({
+export const releaseSchema = z.object({
   id: z.number().int(),
   draft: z.boolean(),
   prerelease: z.boolean(),
@@ -295,13 +295,16 @@ export async function prepare(
   }
 }
 
-async function verifyAssets(dir: string, manifest: Manifest) {
+export async function verifyAssets(dir: string, manifest: Manifest) {
   for (const name of Object.keys(manifest.assets)) {
     if ((await sha256File(path.join(dir, name))) !== manifest.assets[name])
       throw new Error(`Asset differs: ${name}`);
   }
 }
-function releaseManifest(release: z.infer<typeof releaseSchema>, manifest: Manifest): Manifest {
+export function releaseManifest(
+  release: z.infer<typeof releaseSchema>,
+  manifest: Manifest,
+): Manifest {
   if (
     release.body !== manifest.notes ||
     release.tag_name !== manifest.tag ||
@@ -322,7 +325,7 @@ function checkChannel(manifest: Manifest, channel?: string) {
     throw new Error("Requested channel disagrees with release.json channel");
 }
 
-function publicGuard(repo: string, manifest: Manifest) {
+export function publicGuard(repo: string, manifest: Manifest) {
   if (
     repo.toLowerCase() === "steerlabs/opensteer" &&
     (manifest.privateFeed || manifest.feedURL !== channelConfig(manifest.channel).feed)

@@ -47,6 +47,7 @@ export async function githubJourney(c: {
   screenshot: (name: string) => void;
   observe: (child: ReturnType<typeof spawn>) => void;
   record: (name: string, output?: string) => void;
+  installed: (sha256: string) => void;
 }) {
   const { channel, input, root, out, app, product } = c;
   const asset = channel === "stable" ? "Opensteer-mac-arm64.zip" : "Opensteer-Beta-mac-arm64.zip";
@@ -81,6 +82,7 @@ export async function githubJourney(c: {
   };
   const zip = verifiedArchive(input.n);
   c.run("ditto", ["-x", "-k", zip, "/Applications"]);
+  c.installed(createHash("sha256").update(readFileSync(zip)).digest("hex"));
   assert(!c.run("xattr", ["-r", app]).output.includes("com.apple.quarantine"));
   c.run("open", ["-n", app]);
   await c.verify(input.n.version);
@@ -120,8 +122,9 @@ export async function githubJourney(c: {
           .parse(JSON.parse(line)),
       );
   const downloads = () =>
-    requests().filter((x) => x.host === "objects.opensteer.test" && x.path?.endsWith(".zip"))
-      .length;
+    requests().filter(
+      (x) => x.host === "release-assets.githubusercontent.com" && x.path?.endsWith(".zip"),
+    ).length;
   const noOffer = async (name: string) => {
     const before = c.readLog().length,
       count = downloads();

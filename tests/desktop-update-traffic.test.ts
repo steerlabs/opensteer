@@ -85,3 +85,46 @@ test("each capture must expose an explicit drop counter, including failure count
   );
   expect(() => captureCounters("100 packets captured")).toThrow();
 });
+
+import { containmentRules } from "../scripts/public-download/containment.js";
+import { validateMirrorRequests } from "../scripts/public-download/update-traffic.js";
+test("PF blocks both IP families and proxies with only loopback and the SSH controller exception", () => {
+  const rules = containmentRules("192.168.64.1", 50000, "192.168.64.2");
+  expect(rules).toContain('block drop log all label "opensteer-egress-deny"');
+  expect(rules).toContain("set skip on lo0");
+  expect(rules.split("\n").filter((r) => r.startsWith("pass"))).toEqual([
+    "pass in quick on en0 proto tcp from 192.168.64.1 port 50000 to 192.168.64.2 port 22 flags any keep state",
+    "pass out quick on en0 proto tcp from 192.168.64.2 port 22 to 192.168.64.1 port 50000 flags any keep state",
+  ]);
+  expect(() => containmentRules("1.2.3.4\npass all", 50000, "192.168.64.2")).toThrow();
+});
+test("observed public-provider requests require loopback addresses, no token/API and real metadata plus ZIP delivery", () => {
+  const base = {
+    host: "github.com",
+    localAddress: "127.0.0.1",
+    remoteAddress: "127.0.0.1",
+    authenticated: false,
+  };
+  const rows = [
+    { ...base, path: "/steerlabs/opensteer/releases.atom" },
+    { ...base, path: "/steerlabs/opensteer/releases/latest", accept: "application/json" },
+    { ...base, path: "/steerlabs/opensteer/releases/download/desktop-v1.0.1/latest-mac.yml" },
+    { transferComplete: "/desktop-v1.0.1/Opensteer-mac-arm64.zip" },
+  ];
+  const log = (events: unknown[]) => events.map((r) => JSON.stringify(r)).join("\n");
+  expect(validateMirrorRequests(log(rows), "stable").passed).toBe(true);
+  for (const change of [
+    { host: "api.github.com" },
+    { authenticated: true },
+    { remoteAddress: "8.8.8.8" },
+    { localAddress: "2001:db8::1" },
+  ])
+    expect(() =>
+      validateMirrorRequests(log([{ ...rows[0], ...change }, ...rows.slice(1)]), "stable"),
+    ).toThrow();
+  expect(() => validateMirrorRequests(log(rows.slice(0, -1)), "stable")).toThrow();
+  expect(() =>
+    validateMirrorRequests(log([...rows, { tlsSni: "api.github.com" }]), "stable"),
+  ).toThrow();
+  expect(() => validateMirrorRequests(log([]), "stable")).toThrow();
+});
