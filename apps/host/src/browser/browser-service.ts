@@ -98,6 +98,8 @@ import {
 } from "@opensteer/protocol";
 import { z } from "zod";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
+import { PasskeyService, type PasskeyViewer } from "./passkey-service.js";
+import type { PasskeyMode } from "@opensteer/protocol/passkeys";
 import { LegacyBrowserClipboard } from "./browser-legacy-clipboard.js";
 import {
   BrowserProfileSnapshotSchema,
@@ -481,6 +483,7 @@ export interface BrowserRuntimeTarget {
   readonly navigationVersion?: boolean;
   readonly workspaceTabRestoreVersion?: boolean;
   readonly captureRegion?: boolean;
+  readonly passkeys?: boolean;
   readonly editing?: 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   /** The computer whose Runner relays this Runtime, as this Deployment names it. */
@@ -570,6 +573,7 @@ type BrowserCdpWireResponse = Extract<
 >;
 
 interface BrowserServiceOptions {
+  readonly passkeyOwnOrigins?: () => readonly string[];
   readonly onProfilesChanged?: (ownerId: UserId, workspaceId: WorkspaceId) => void;
   readonly workspaceTabs?: WorkspaceTabStore;
   readonly tabGroups?: BrowserTabGroupStore;
@@ -673,6 +677,7 @@ export class BrowserService {
         workspaceId: WorkspaceId;
       }) => boolean)
     | undefined;
+  readonly #passkeyOwnOrigins: () => readonly string[];
   readonly #authConsumers = new Map<AuthSessionId, Set<BrowserConsumerPeer>>();
   readonly #connectTimeoutMs: number;
   readonly #onSessionsChanged: (
@@ -703,6 +708,8 @@ export class BrowserService {
   #operationTail = Promise.resolve();
 
   constructor(options: BrowserServiceOptions) {
+    this.#passkeyOwnOrigins =
+      options.passkeyOwnOrigins ?? (() => [options.profileStateBaseUrl.origin]);
     this.#workspaceTabs = options.workspaceTabs;
     this.#tabGroups = options.tabGroups;
     this.#onCatalogChanged = options.onCatalogChanged ?? (() => undefined);
@@ -3024,6 +3031,7 @@ export class BrowserService {
     options: {
       readonly authSessionId: AuthSessionId;
       readonly mode: BrowserConsumerMode;
+      readonly passkeys?: PasskeyMode | undefined;
       readonly editing?: 1 | 2 | undefined;
       /**
        * Whether the login that opened the socket is still signed in. Read once,
@@ -3073,7 +3081,16 @@ export class BrowserService {
       // Workspace; the outlet rereads it on a clock rather than per frame.
       const stillVisible = async () =>
         Boolean(await this.#repository.getBrowserSessionForOwner(sessionId, ownerId));
-      return await broker.attach(peer, options.mode, stillVisible, detachAuth, options.editing);
+      return await broker.attach(
+        peer,
+        options.mode,
+        stillVisible,
+        detachAuth,
+        options.editing,
+        options.passkeys,
+        ownerId,
+        options.signedIn,
+      );
     } catch (error) {
       detachAuth();
       throw error;
@@ -3320,6 +3337,7 @@ export class BrowserService {
     leaseToken?.fill(0);
     const ticket = this.#signer.issue({
       access: "full-control",
+      ...(target.passkeys && process.env.OPENSTEER_PASSKEYS === "1" ? { passkeys: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.editing
         ? {
@@ -3392,6 +3410,8 @@ export class BrowserService {
       navigation: target.navigationVersion === true,
       targetControl: target.targetControl === true,
       captureRegion: target.captureRegion === true,
+      passkeys: target.passkeys === true && process.env.OPENSTEER_PASSKEYS === "1",
+      passkeyOwnOrigins: this.#passkeyOwnOrigins,
       editing: target.editing,
       clipboard: target.editing === 1 || target.clipboard === true,
       computer: target.computer ?? null,
@@ -3875,6 +3895,8 @@ interface HostedBrowserBrokerOptions {
   readonly targetControl: boolean;
   readonly captureRegion: boolean;
   readonly editing: 1 | 2 | undefined;
+  readonly passkeys: boolean;
+  readonly passkeyOwnOrigins: () => readonly string[];
   readonly clipboard: boolean;
   readonly computer: { readonly name: string; readonly runnerId: RunnerId } | null;
   readonly connectTimeoutMs: number;
@@ -4011,6 +4033,8 @@ class HostedBrowserBroker {
   readonly targetControl: boolean;
   readonly captureRegion: boolean;
   readonly editing: 1 | 2 | undefined;
+  readonly passkeys: boolean;
+  readonly passkeyOwnOrigins: () => readonly string[];
   readonly clipboard: boolean;
   readonly computer: { readonly name: string; readonly runnerId: RunnerId } | null;
   readonly fileStaging: boolean;
@@ -4018,7 +4042,36 @@ class HostedBrowserBroker {
   readonly stateImport: boolean;
   readonly workspaceId: WorkspaceId;
 
+  readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
+    this.passkeys = options.passkeys;
+    this.passkeyOwnOrigins = options.passkeyOwnOrigins;
+    this.#passkeys = options.passkeys
+      ? new PasskeyService({
+          ownOrigins: options.passkeyOwnOrigins,
+          viewers: () =>
+            [...this.#consumers.values()].map((outlet): PasskeyViewer => ({
+              token: outlet.clipboardToken,
+              userId: outlet.userId,
+              fullControl: outlet.mode === "control",
+              mode: outlet.passkeys,
+              surfaceId:
+                outlet.subscription === null
+                  ? null
+                  : (outlet.surfaceId ??
+                    this.#snapshot?.surfaces.find((surface) => surface.active)?.id ??
+                    null),
+              live: outlet.peer.isOpen(),
+              authorized: outlet.authorized,
+              send: (message) => {
+                void outlet.sendText(JSON.stringify(message)).catch(() => outlet.close());
+              },
+            })),
+          result: (message) => {
+            void this.#sendCommand(message).catch(() => undefined);
+          },
+        })
+      : undefined;
     this.#navigation = options.navigation;
     this.#onTabsChanged = options.onTabsChanged;
     this.#onActivity = options.onActivity;
@@ -4178,6 +4231,9 @@ class HostedBrowserBroker {
     stillVisible: () => Promise<boolean>,
     onClose: () => void,
     editing: 1 | 2 | undefined = undefined,
+    passkeys: PasskeyMode | undefined = undefined,
+    userId: UserId,
+    signedIn: () => Promise<boolean>,
   ): Promise<BrowserConsumerAttachment> {
     if (this.#settled) throw new OpensteerError({ code: "conflict", message: "Browser closed." });
     if (!this.#snapshot || !this.#runtimeReady) {
@@ -4191,6 +4247,7 @@ class HostedBrowserBroker {
       onClose();
       const wasSubscribed = outlet.subscription !== null;
       this.#consumers.delete(peer.id);
+      this.#passkeys?.refresh();
       if (
         outlet.mode === "control" &&
         this.#runtimeReady &&
@@ -4205,6 +4262,9 @@ class HostedBrowserBroker {
         void this.#reconcileStreaming().catch(() => undefined);
       }
     });
+    outlet.userId = userId;
+    outlet.passkeys = this.passkeys ? passkeys : undefined;
+    outlet.authorized = async () => (await stillVisible()) && (await signedIn());
     this.#consumers.set(peer.id, outlet);
     try {
       const version = this.#snapshot.editingVersion;
@@ -4212,7 +4272,16 @@ class HostedBrowserBroker {
       outlet.clipboard = Boolean(
         outlet.editing && (version === 1 || this.#snapshot.clipboard === true),
       );
-      await outlet.sendText(JSON.stringify(browserViewerMessage(this.#snapshot, outlet.editing)));
+      await outlet.sendText(
+        JSON.stringify(
+          browserViewerMessage(
+            this.#snapshot,
+            outlet.editing,
+            outlet.passkeys,
+            outlet.clipboardToken,
+          ),
+        ),
+      );
     } catch (error) {
       outlet.close();
       throw error;
@@ -4613,6 +4682,23 @@ class HostedBrowserBroker {
       };
     }
     const message = BrowserServerMessageSchema.parse(decoded);
+    if (message.type === "passkey.ceremony" || message.type === "passkey.cancel") {
+      if (!this.#passkeys || !this.#runtimeReady)
+        throw new Error("Browser passkeys were not negotiated.");
+      if (message.type === "passkey.ceremony") {
+        if (!this.#snapshot?.surfaces.some((surface) => surface.id === message.surfaceId))
+          throw new Error("Unknown passkey surface.");
+        this.#passkeys.ceremony(message);
+      } else this.#passkeys.cancel(message.ceremonyId);
+      return false;
+    }
+    if (
+      message.type === "browser.passkey.request" ||
+      message.type === "browser.passkey.offer" ||
+      message.type === "browser.passkey.withdrawn" ||
+      message.type === "browser.passkey.notice"
+    )
+      throw new Error("Runtime cannot send viewer passkey messages.");
     if (!this.#snapshot && message.type === "browser.error") {
       throw agentProtocolError(message.error);
     }
@@ -4692,6 +4778,11 @@ class HostedBrowserBroker {
       const previousActive = this.#snapshot.surfaces.find((surface) => surface.active)?.id ?? null;
       assertBrowserDialogSurface(this.#snapshot.dialog, message.surfaces);
       const previousSurfaces = this.#snapshot.surfaces;
+      for (const surface of previousSurfaces) {
+        const next = message.surfaces.find((candidate) => candidate.id === surface.id);
+        if (!next || next.documentId !== surface.documentId)
+          this.#passkeys?.documentChanged(surface.id);
+      }
       const previousIcons = this.#durableIconRefs();
       const inventoryChanged =
         JSON.stringify(previousSurfaces.map(({ id, order }) => [id, order])) !==
@@ -4884,7 +4975,16 @@ class HostedBrowserBroker {
       )
         continue;
       void consumer
-        .sendText(JSON.stringify(browserViewerMessage(message, consumer.editing)))
+        .sendText(
+          JSON.stringify(
+            browserViewerMessage(
+              message,
+              consumer.editing,
+              consumer.passkeys,
+              consumer.clipboardToken,
+            ),
+          ),
+        )
         .catch(() => undefined);
     }
     if (message.type === "browser.surfaces.changed" && this.#latestFrame) {
@@ -5007,6 +5107,17 @@ class HostedBrowserBroker {
         }),
       );
     }
+    if (
+      message.type === "passkey.claim" ||
+      message.type === "passkey.respond" ||
+      (message.type === "passkey.cancel" && "requestId" in message)
+    ) {
+      if (!outlet.passkeys || outlet.mode !== "control")
+        return Promise.reject(new Error("Browser passkeys were not negotiated."));
+      return this.#passkeys?.viewer(outlet.clipboardToken, message) ?? Promise.resolve();
+    }
+    if (message.type === "passkey.result" || message.type === "passkey.cancel")
+      return Promise.reject(new Error("Viewer cannot answer a runtime ceremony."));
     outlet.recordEditing(message.type);
     if (
       message.type === "clipboard.part" &&
@@ -5108,6 +5219,8 @@ class HostedBrowserBroker {
         captureRegion: outlet.captureRegion,
       };
       outlet.surfaceId = surfaceId;
+      outlet.subscription = subscription;
+      this.#passkeys?.refresh();
       // Editing reaches a viewer only once it names what it shows, so each
       // subscription starts from that surface's current field.
       const shown =
@@ -5516,6 +5629,7 @@ class HostedBrowserBroker {
   ): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
     this.#settled = true;
+    this.#passkeys?.close();
     if (state === "failed") {
       console.error("browser.session.failed", this.#sessionId, this.#failure ?? "unknown");
     }
@@ -5612,6 +5726,9 @@ const watchAcknowledgementTimeoutMs = 15_000;
  * not the outstanding one is simply late and changes nothing.
  */
 class BrowserConsumerOutlet {
+  userId: UserId | null = null;
+  passkeys: PasskeyMode | undefined;
+  authorized: () => Promise<boolean> = async () => false;
   readonly clipboardToken = randomUUID();
   readonly legacyClipboard = new LegacyBrowserClipboard(this.clipboardToken, maxBrowserTextBytes);
   readonly legacyClipboardKeys = new Set<string>();

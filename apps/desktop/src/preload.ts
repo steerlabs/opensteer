@@ -1,4 +1,5 @@
 import { DesktopWebLinkDeliverySchema, DesktopWebLinkSchema } from "@opensteer/protocol/desktop";
+import type { DictationPort } from "@opensteer/protocol/dictation";
 import type { ViewerClipboardBridge } from "@opensteer/client/editing";
 import {
   DesktopDownloadsSnapshotSchema,
@@ -159,6 +160,11 @@ import {
   CreateCloudDeploymentRequestSchema,
   ListCloudDeploymentsResponseSchema,
 } from "@opensteer/control-plane-protocol";
+import {
+  DictationAvailabilitySchema,
+  DictationEventSchema,
+  DictationSessionInputSchema,
+} from "@opensteer/protocol/dictation";
 import { PasswordsBridgeResultSchema } from "./bridge/passwords-result.js";
 import { desktopBridgeChannels } from "./bridge/desktop-bridge-channels.js";
 
@@ -305,6 +311,15 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ipcRenderer.on(desktopBridgeChannels.workspaceTabCommand, receive);
     return () => ipcRenderer.removeListener(desktopBridgeChannels.workspaceTabCommand, receive);
   },
+  passkeys: Object.freeze({
+    available: async () => z.boolean().parse(await invoke(desktopBridgeChannels.passkeyAvailable)),
+    present: async (input: { readonly requestId: string }) => {
+      await invoke(
+        desktopBridgeChannels.passkeyPresent,
+        z.strictObject({ requestId: z.uuid() }).parse(input),
+      );
+    },
+  }),
   browserPresentation,
   reportDisplayDiagnostic: async (record: z.input<typeof DisplayClientDiagnosticSchema>) => {
     await invoke(
@@ -363,6 +378,43 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
         ),
       ),
   } satisfies DesktopDownloadsBridge,
+  dictation: {
+    availability: async () =>
+      DictationAvailabilitySchema.parse(await invoke(desktopBridgeChannels.dictationAvailability)),
+    start: async (session) => {
+      await invoke(
+        desktopBridgeChannels.dictationStart,
+        DictationSessionInputSchema.parse({ session }),
+      );
+    },
+    download: async (session) => {
+      await invoke(
+        desktopBridgeChannels.dictationDownload,
+        DictationSessionInputSchema.parse({ session }),
+      );
+    },
+    stop: async (session) => {
+      await invoke(
+        desktopBridgeChannels.dictationStop,
+        DictationSessionInputSchema.parse({ session }),
+      );
+    },
+    cancel: async (session) => {
+      await invoke(
+        desktopBridgeChannels.dictationCancel,
+        DictationSessionInputSchema.parse({ session }),
+      );
+    },
+    openMicrophoneSettings: async () => {
+      await invoke(desktopBridgeChannels.dictationSettings);
+    },
+    subscribe: (listener) => {
+      const receive = (_event: unknown, value: unknown) =>
+        listener(DictationEventSchema.parse(value));
+      ipcRenderer.on(desktopBridgeChannels.dictationEvent, receive);
+      return () => ipcRenderer.removeListener(desktopBridgeChannels.dictationEvent, receive);
+    },
+  } satisfies DictationPort,
   passwordsStatus: async () =>
     DesktopPasswordsStatusSchema.parse(
       await invokePasswords<DesktopPasswordsStatus>(desktopBridgeChannels.getPasswordsStatus),

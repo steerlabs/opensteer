@@ -162,6 +162,37 @@ function reviewed(file: string, tool: string, span: string, source: string): boo
     source.includes("signing-input.cjs")
   )
     return true;
+  if (
+    file === "scripts/public-download/eu-journey.ts" &&
+    tool === "codesign" &&
+    span.replace(/\s+/gu, "") === '["--force","--deep","--sign","-",badApp]'
+  )
+    return true;
+  // These exact ad-hoc invocations consume no certificate or keychain credential.
+  if (tool === "codesign") {
+    const compact = span.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\s+/gu, (part) =>
+      part.startsWith('"') || part.startsWith("'") ? part : "",
+    );
+    if (
+      file === "apps/desktop/scripts/build-passkeys-addon.ts" &&
+      compact === '["--force","--sign","-",universal]'
+    )
+      return true;
+    if (
+      file === "apps/desktop/native/passkeys/check-addon.cjs" &&
+      compact ===
+        '["--force","--sign","-","--timestamp=none",...(entitlements?["--entitlements",entitlements]:[]),app,]'
+    )
+      return true;
+  }
+  if (
+    file === "apps/desktop/scripts/passkeys-signing.cjs" &&
+    tool === "find-identity" &&
+    span.includes("...(signing.keychain ? [signing.keychain] : [])") &&
+    source.includes("signing-input.cjs") &&
+    source.includes("readSigningMode")
+  )
+    return true;
   // Short reviewed routing list; each exception is invocation-specific, so a
   // second bare call in the same file is still rejected.
   if (file === "scripts/release-beta-mac.ts") {

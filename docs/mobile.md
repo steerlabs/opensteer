@@ -104,9 +104,9 @@ shows from Chat without opening the sidebar. Choosing a destination, a task, a l
 another Deployment closes it, as does the Host attachment being released or replaced or another
 person signing in to the same Deployment; so do the scrim, Android Back and the VoiceOver escape
 gesture. While it covers the screen it isolates itself for screen readers, and Chat counts as not
-being read: no read marker advances and alerts about Chat are still presented. The tasks and the
-count come only from the attached Host of the Deployment underneath, never from one the selection
-is leaving, and the sidebar reads its tasks only while it is on screen.
+being read: no read marker advances and alerts about Chat are still presented. Live task state and attention counts come only from the attached Host of the Deployment underneath,
+never from one the selection is leaving. The sidebar subscribes to live tasks only while on screen;
+saved subjects are separately labelled (§1, Saved launch views).
 
 `apps/mobile/src/navigation.tsx` is the route table alone; screens reach the root through
 `navigation-ref.ts` and set their bars through `navigation-header.tsx`, so no screen imports the
@@ -119,6 +119,13 @@ be declined on the phone. For an agent phone, the Computer page offers the same 
 as web/desktop and Stop for the holding task; pending phone access Requests offer Allow and
 Decline. It has no app list or App approvals policy. [Agent Phone](agent-phone.md#7-access-and-stop)
 owns those controls and their owner-command contract.
+
+**Saved launch views.** After local hydration, Chat and the sidebar can show the remembered
+Deployment's last published text and task subjects from an encrypted device cache while attachment
+connects in parallel. Each surface says “Updating…”, or “Offline · Saved view” / “Unavailable · Saved
+view” from real connection evidence, and switches wholesale when its fresh answer arrives, including
+an empty answer. Saved text and task rows offer no actions, media, links, read marks or attention
+counts. Tabs are live-only. A held first-message draft stays in front once its live owner is known.
 
 **A Deployment is persistent context.** The phone remembers one explicit selection in
 `selection.json`; the catalog is not the everyday home screen. Opening another Deployment clears
@@ -458,6 +465,15 @@ The phone sets `prefetchHome`, so authenticated bootstrap starts Home history th
 joins that read when activated; prefetch neither claims Chat nor marks it read, including
 while the sidebar covers it.
 
+Saved views live outside Host models. Their load starts alongside attachment after local selection,
+credentials and sign-out suppression settle; a late disk answer cannot replace a fresh surface.
+Viewer-scoped readiness follows accepted task/read-state installation and an explicit Home answer;
+connection alone is insufficient. The shared hydration owner starts Home's initial read even while
+saved Chat is in front; readiness follows the accepted current-Home window, never prefetch start. A new login replaces a healthy attachment too; cancellation requires a fresh confirmation.
+The cache binds Host identity, API epoch, login ID and, for Account-source rows, the Account login
+and issuer/subject. Manual entries remain independent. Legacy credentials acquire a login ID only
+through their owner's serialized mutation after a current successful bootstrap.
+
 **The Host's answer outranks the record.** A credential this device holds is not a credential the
 Host still accepts: a session revoked from a browser leaves the record untouched, so a row reads
 `Needs sign-in` while the attachment reports `authentication-required`. That state is latched — the
@@ -517,6 +533,26 @@ needs from a platform: `getSnapshot`, `onBackground`, `onForeground`, `onNetwork
 - **The cursor is retained.** A replaced Workspace channel resubscribes from its existing
   `afterSequence`, so the Host sends the delta. A full resync happens only on
   `host.resync-required`, which is the Host's word and the one thing that resets the cursor.
+
+Saved-view capture debounces ready installed models for two seconds and flushes best-effort on
+background; it starts no cache-driven reads. Only published Chat text and bounded historical task
+subjects/groups are retained; browsing history preserves the last eligible latest tail. The cache
+contains no cursor, Requests, queue, streams, media or capability. A killed flush can leave an older
+view. One native AES-GCM envelope (at most 1 MiB) per Deployment lives under `Paths.cache`, with four
+committed files and oldest-write eviction; journalled replacement may temporarily use one extra
+MiB. Its single SecureStore key slot uses `WHEN_UNLOCKED_THIS_DEVICE_ONLY`, independently of the
+existing credential accessibility. Native linking and OS backup/device-transfer protection require
+separate device qualification; unit tests with real Node AES-GCM qualify adapter logic only.
+
+Sign-out, removal, login replacement and explicit authorization refusal hide saved presentation
+synchronously and delete its key before asynchronous revocation/cleanup, including Account UI push
+unregistration. Any explicit Workspace
+refusal invalidates the entire saved view; fresh authorized reads can capture again. Key deletion
+makes surviving encrypted files unrecoverable. A failed key deletion is reported as incomplete,
+keeps presentation/capture blocked and retries on foreground; failed ciphertext cleanup after key
+deletion does not restore access. Offline views cannot reveal a server revocation the phone has not
+yet learned. Selection and disposal fence callbacks and release timers/listeners. Mock mode uses
+the same controller with synthetic login IDs and memory storage.
 
 ### This iPhone's apps
 
@@ -810,3 +846,12 @@ If marker creation fails, key erasure is still attempted, memory remains blocked
 and cleanup reports failure and retries the marker on foreground. Content can
 resurface after restart only if both the private-file marker write and the secure
 key deletion fail and the app is terminated before a retry succeeds.
+
+### Message dictation
+
+On supported iOS 26+ hardware, the composer offers on-device dictation beside
+Attach. The optional Expo module owns microphone capture through the shared Swift
+engine; audio stays in native memory. Send finishes recognition before delivering
+the message, typing keeps the displayed edit, and leaving saves words into the
+original draft. Android and unsupported iOS devices hide the mic. See
+[Dictation](dictation.md#iphone) for lifecycle and verification details.

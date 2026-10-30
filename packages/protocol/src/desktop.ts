@@ -1614,6 +1614,10 @@ export interface DesktopBrowserPresentationBridge {
 }
 
 export interface OpensteerDesktopBridge {
+  readonly passkeys?: {
+    available(): Promise<boolean>;
+    present(input: { readonly requestId: string }): Promise<void>;
+  };
   /** Present only in the desktop app. */
   browserPresentation?: DesktopBrowserPresentationBridge;
   /** Present only in the desktop app. */

@@ -1191,3 +1191,145 @@ function socket() {
     send: vi.fn(),
   };
 }
+
+it("keeps a passkey request's origin, options and client data in main", async () => {
+  const selected = deployment("Example", "https://deployment.example.test");
+  let events: HostNetworkSocketEvents | undefined;
+  const transport = desktopHostTransport({
+    catalog: catalogStore([selected], selected.authority.document.deploymentId),
+    network: {
+      openWebSocket: (_input, value) => {
+        events = value;
+        return socket();
+      },
+      request: async () => new Response("{}"),
+    },
+  });
+  const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
+  const requestId = "00000000-0000-4000-8000-000000000003";
+  const main: unknown[] = [];
+  const renderer: unknown[] = [];
+  const unsubscribe = transport.observeBrowserControl((event) => {
+    if (event.type === "message") main.push(event.message);
+  });
+  try {
+    await transport.openWebSocket(
+      7,
+      { path: `/v1/browser-sessions/${sessionId}/connect?passkeys=native` },
+      (event) => {
+        if (event.type === "text") renderer.push(JSON.parse(event.data));
+      },
+    );
+    events!.message(
+      JSON.stringify({
+        type: "browser.snapshot",
+        access: "full-control",
+        dialog: null,
+        sessionId,
+        state: "ready",
+        surfaces: [
+          { id: "tab", active: true, title: "Example", url: "https://login.example.test" },
+        ],
+        passkeys: "native",
+        passkeyConsumerToken: requestId,
+      }),
+    );
+    const request = {
+      type: "browser.passkey.request",
+      requestId,
+      ceremonyId: requestId,
+      surfaceId: "tab",
+      documentId: "document",
+      op: "get",
+      origin: "https://login.example.test",
+      rpId: "example.test",
+      options: {
+        challenge: "AQID",
+        allowCredentials: [],
+        userVerification: "preferred",
+        extensions: {},
+      },
+      clientDataJSON: "AQID",
+      cause: { person: requestId },
+      deadline: Date.now() + 10_000,
+    };
+    events!.message(JSON.stringify(request));
+    expect(main.at(-1)).toMatchObject({ type: "browser.passkey.request", requestId });
+    // The renderer learns only that this request's offer ended; main presents it.
+    expect(renderer.at(-1)).toEqual({ type: "browser.passkey.withdrawn", requestId });
+  } finally {
+    unsubscribe();
+    transport.closeAllSockets();
+  }
+});
+
+it("holds passkey messages in main before renderer delivery and binds native input to the admitted surface", async () => {
+  const selected = deployment("Example", "https://deployment.example.test");
+  let events: HostNetworkSocketEvents | undefined;
+  const wire = socket();
+  const send = vi.spyOn(wire, "send");
+  const transport = desktopHostTransport({
+    catalog: catalogStore([selected], selected.authority.document.deploymentId),
+    network: {
+      openWebSocket: (_input, value) => {
+        events = value;
+        return wire;
+      },
+      request: async () => new Response("{}"),
+    },
+  });
+  const trace: string[] = [];
+  const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
+  const token = "00000000-0000-4000-8000-000000000002";
+  const unsubscribe = transport.observeBrowserControl((event) => {
+    if (event.type === "message") trace.push("main");
+  });
+  try {
+    const { connectionId } = await transport.openWebSocket(
+      7,
+      { path: `/v1/browser-sessions/${sessionId}/connect?passkeys=native` },
+      (event) => {
+        if (event.type === "text") trace.push("renderer");
+      },
+    );
+    events!.message(
+      JSON.stringify({
+        type: "browser.snapshot",
+        access: "full-control",
+        dialog: null,
+        sessionId,
+        state: "ready",
+        surfaces: [
+          { id: "tab", active: true, title: "Example", url: "https://login.example.test" },
+        ],
+        passkeys: "native",
+        passkeyConsumerToken: token,
+      }),
+    );
+    expect(trace).toEqual(["main", "renderer"]);
+    expect(transport.passkeyConsumerToken(7, connectionId, "tab")).toBeNull();
+    transport.sendWebSocket(7, {
+      connectionId,
+      type: "text",
+      data: JSON.stringify({ type: "stream.subscribe", surfaceId: "tab" }),
+    });
+    expect(transport.passkeyConsumerToken(7, connectionId, "tab")).toBe(token);
+    expect(transport.passkeyConsumerToken(8, connectionId, "tab")).toBeNull();
+    expect(transport.passkeyConsumerToken(7, connectionId, "other")).toBeNull();
+    const claim = { type: "passkey.claim" as const, requestId: token };
+    expect(() =>
+      transport.sendWebSocket(7, { connectionId, type: "text", data: JSON.stringify(claim) }),
+    ).toThrow("desktop main");
+    transport.sendBrowserControl(7, connectionId, claim);
+    expect(send).toHaveBeenLastCalledWith(JSON.stringify(claim));
+    transport.sendWebSocket(7, {
+      connectionId,
+      type: "text",
+      data: JSON.stringify({ type: "stream.unsubscribe", surfaceId: "tab" }),
+    });
+    expect(transport.passkeyConsumerToken(7, connectionId, "tab")).toBeNull();
+  } finally {
+    unsubscribe();
+    transport.closeAllSockets();
+  }
+});

@@ -759,6 +759,10 @@ export async function createHostRuntime(
     };
     const browserTabGroups = new BrowserTabGroupStore(database);
     const browser = new BrowserService({
+      passkeyOwnOrigins: () => [
+        config.canonicalOrigin.origin,
+        ...(config.account ? [config.account.issuer.origin] : []),
+      ],
       ...(options.browserActivityClock ? { activityClock: options.browserActivityClock } : {}),
       // The viewer rereads its whole browser bootstrap, profiles included;
       // reusing this notice keeps older clients working.

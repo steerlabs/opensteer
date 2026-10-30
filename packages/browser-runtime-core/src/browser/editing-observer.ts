@@ -180,8 +180,12 @@ export class PageEditingObserver {
         .catch(() => undefined);
   }
 
-  async edit(edit: EditingComposition | EditingTextEdit, composition: boolean): Promise<boolean> {
-    if (this.#activeChild) return this.#activeChild.edit(edit, composition);
+  async edit(
+    edit: EditingComposition | EditingTextEdit,
+    composition: boolean,
+    admitted?: () => void,
+  ): Promise<boolean> {
+    if (this.#activeChild) return this.#activeChild.edit(edit, composition, admitted);
     const focus = this.#focused;
     if (!focus || edit.contextId !== this.#context.contextId) return this.#stale();
     const generation = this.#generation;
@@ -213,6 +217,7 @@ export class PageEditingObserver {
       return this.#stale();
     }
     try {
+      admitted?.();
       if (composition && "selectionStart" in edit) {
         await this.#cdp.send("Input.imeSetComposition", {
           text: edit.text,

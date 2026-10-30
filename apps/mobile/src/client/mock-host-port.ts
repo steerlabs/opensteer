@@ -23,6 +23,7 @@ export function createMockHostPort(
     readonly onCommand?: (command: HostApiCommandInput) => void;
   } = {},
 ): MobileHostPortFactory {
+  const loginIds = new Map<string, string>();
   const signedIn = (connection: DeploymentConnection): boolean =>
     connection.authority.document.deploymentId !== mockSignedOutDeploymentId;
   const attach = (connection: DeploymentConnection): HostClient => {
@@ -56,6 +57,16 @@ export function createMockHostPort(
       // One seeded row is deliberately without a credential, so the row that
       // needs one — and the action that leads out of it — is on screen in mock
       // mode rather than only reachable with a real Host.
+      viewLoginId: async (connection) => {
+        if (!signedIn(connection)) return undefined;
+        const id = connection.authority.document.deploymentId;
+        let loginId = loginIds.get(id);
+        if (!loginId) {
+          loginId = globalThis.crypto.randomUUID();
+          loginIds.set(id, loginId);
+        }
+        return loginId;
+      },
       authorization: async (connection) => (signedIn(connection) ? "Bearer mock" : null),
       held: async (connection) => signedIn(connection),
     },

@@ -61,7 +61,9 @@
     "test:electron-idle:run": "OPENSTEER_IDLE_CPU_SMOKE=1 electron .electron-smoke/electron-browser-smoke.js",
     "test:electron-downloads:run": "tsx scripts/test-electron-downloads.ts",
     "test:electron-quit:run": "tsx scripts/test-electron-quit.ts",
-    "package:mac:contributor": "tsx scripts/package-contributor-macos.ts"
+    "package:mac:contributor": "tsx scripts/package-contributor-macos.ts",
+    "build:dictation-helper": "tsx scripts/build-dictation-helper.ts",
+    "build:passkeys-addon": "tsx scripts/build-passkeys-addon.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "catalog:",

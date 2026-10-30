@@ -668,6 +668,7 @@ export class ReconnectingHostConnection {
                 // this Runner, so it parses every frame this Runner relays.
                 stateImport: true,
                 fileStaging: true,
+                passkeys: 1,
                 cdpBoundary: 1,
                 sharedControl: 1,
                 targetControl: 1,

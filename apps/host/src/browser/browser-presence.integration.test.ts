@@ -236,6 +236,7 @@ integration("Browser presence and conversation usage", () => {
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Maximum catalog",
+      maxConcurrentRuns: 16,
       token: await enrollmentToken(host, {
         allowedModules: ["agents"],
         idempotencyKey: "maximum-caller",
@@ -299,42 +300,16 @@ integration("Browser presence and conversation usage", () => {
     const source = (await host.store.getThreadForOwner(firstRun.threadId, host.ownerId))!;
     const threadIds = [firstRun.threadId];
     const runIds = [firstRun.runId];
+    // Manual claims race the live dispatcher and can fail a competing binding.
+    // Each helper returns only after the Runner is acknowledged and running.
     for (let index = 1; index < 16; index++) {
-      const { thread } = await host.store.createThread({
-        createdBy: host.ownerId,
-        environmentId: source.environmentId,
-        harnessInstanceId: source.harnessInstanceId,
-        idempotencyKey: `maximum-thread-${index}`,
-        modelSelection: source.modelSelection,
+      const run = await dispatchCallerRun(host, caller, {
+        key: `maximum-${index}`,
         title: `Occupant ${index}`,
         workspaceId: source.workspaceId,
       });
-      const admitted = await host.store.enqueueThreadInput({
-        requestedBy: host.ownerId,
-        threadId: thread.id,
-        content: [{ type: "text", text: "Hold this inventory" }],
-        idempotencyKey: `maximum-input-${index}`,
-        policy: "queue",
-        source: { kind: "human" },
-      });
-      if (!admitted.run || !admitted.command) throw new Error("No maximum-inventory Run");
-      await host.store.claimCommand(admitted.command.id, `maximum-dispatch-${index}`);
-      await host.store.acquireExecutionBinding({
-        bindingLeaseExpiresAt: new Date(Date.now() + 120_000),
-        continuationIdentity: {
-          continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-          driverKind: (await host.store.getHarnessInstance(source.harnessInstanceId))!.driverKind,
-        },
-        harnessInstanceId: source.harnessInstanceId,
-        leaseTokenHash: `maximum-${index}`,
-        membershipGeneration: 1,
-        runnerBootId: caller.primary.bootId,
-        runnerId: caller.runnerId,
-        runId: admitted.run.id,
-        threadId: thread.id,
-      });
-      threadIds.push(thread.id);
-      runIds.push(admitted.run.id);
+      threadIds.push(run.threadId);
+      runIds.push(run.runId);
     }
     // Seed the maximal durable holding projection, rather than requiring a tool to visit
     // 1,024 pages during the activity TTL. Every subject and Run is real PostgreSQL state.

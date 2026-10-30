@@ -35,3 +35,6 @@ apps/desktop/native/*/build/
 
 # Written and checked byte for byte by the dictation engine's Swift fixture test.
 packages/apple-dictation/Tests/Fixtures/dictation-wire.json
+
+# Written by the dictation helper's Swift wire test.
+apps/desktop/native/dictation/Tests/Fixtures/request.json

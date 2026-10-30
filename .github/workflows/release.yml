@@ -153,6 +153,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release-keys"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$OPENSTEER_AGENT_PHONE_KEYSTORE"
           pnpm build:agent-phone --release
+      - name: Select Xcode 26 SDK
+        run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
       - name: Sign, notarize and staple desktop
         env:
           CERTIFICATE_BASE64: ${{ secrets.CSC_LINK }}

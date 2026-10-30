@@ -1,144 +1,60 @@
 # Builds and releases
 
-Changes land through pull requests after the required `Check` succeeds. Release
-builders consume a green main commit and supply their own signing, publication
-and deployment configuration.
+Release builders consume a green main SHA; there is no local release
+requalification. The source contracts are [release.yml](../.github/workflows/release.yml),
+[release-plan.mjs](../.github/scripts/release-plan.mjs),
+[release-version.cjs](../scripts/release-version.cjs) and
+[desktop-public-release.ts](../scripts/desktop-public-release.ts).
 
 ## Release evidence
 
-Use the CI run for the exact main SHA. There is no local release requalification.
-Real desktop journeys run in a VM after merge or on maintainer request. Record the
-commands, results and artifact digests for the build you distribute.
+Use the CI run for the exact main SHA. Record commands, results and artifact
+digests for the build distributed. Real desktop journeys run in a VM after merge
+or on maintainer request. Use [prepare-release](../.agents/skills/prepare-release/SKILL.md)
+for dispatch and evidence collection.
 
-## Contributor desktop packages
+## Build inputs and local proof
 
-Contributors can build a desktop package without a Developer ID identity or
-notarization credentials. Follow the prerequisites, command and output locations
-in [the desktop README](../apps/desktop/README.md). Contributor packages do not
-claim signed distribution readiness.
-
-## Signed local installation
-
-For a signed local Beta installation, use the root Node/pnpm versions, Go, Xcode
-command-line tools and the Android/JDK prerequisites in
-[the Agent Phone README](../apps/agent-phone/README.md). Start from a clean
-checkout and an explicit full commit SHA:
-
-```sh
-pnpm desktop:install-local --source-sha FULL_40_CHARACTER_COMMIT_SHA \
-  --config /absolute/install-beta-mac-local.json
-```
-
-The default configuration is `~/.config/opensteer/install-beta-mac-local.json`.
-The validated input contract is
-[localInstallConfigSchema](../scripts/install-beta-mac-local.ts), which composes
-[the Mac build/sign/install inputs](../scripts/release-beta-mac.ts) and
-[the Agent Phone signing inputs](../scripts/release-agent-phone.ts).
-Supply your own signing identity, provisioning profile, runtime binaries and
-Android signing inputs.
-
-The command creates a detached source snapshot outside the checkout, installs
-frozen dependencies and builds the embedded runtime, web assets, helpers and
-signed Agent Phone APK. It signs the Beta application with deferred notarization,
-replaces the configured installation and uses its existing Personal data and
-permission identity. Close other Beta copies before running it; never run two
-copies against the same Personal data. Installing an older app does not undo
-database migrations.
-
-Evidence under `<stateDirectory>/<SHA>` includes `local-install.json`,
-`mac-local.json`, `commands.jsonl`, `app-tree.json` and `journey.json`.
-Resume with the same SHA and configuration. Receipt or artifact drift fails
-closed. The command verifies code signatures and attempts a normal Launch
-Services launch; it does not submit to Apple or claim notarized distribution
-readiness. Diagnose any reported launch error before proceeding.
+Contributor builds need no Developer ID or notarization credentials and claim no
+distribution readiness. See [the desktop README](../apps/desktop/README.md) and
+[install-desktop](../.agents/skills/install-desktop/SKILL.md). Signed local installs
+reuse Personal data and permission identity; never run two copies against it.
+Downgrading the app does not undo migrations. Receipt drift fails closed.
 
 ## Public desktop releases
 
-[Desktop release](../.github/workflows/release.yml) builds macOS arm64 on GitHub's
-public-repository hosted runner. On every merge to main that changes an eligible
-path, it resolves main HEAD and waits up to one hour for that exact SHA's newest
-main CI run and `Check` to succeed. It skips if the newest published insider
-already targets it. A cancelled CI run also skips release work when the selected
-source is an ancestor of the now-advanced main and a newer main push CI run exists.
-Other CI failures still block release. Once qualified, it builds **Opensteer Beta**
-(`com.steerlabs.opensteer.beta`), signs, notarizes and publishes `vX.Y.Z-insider` automatically as a prerelease, never Latest. Insiders
-use updater channel `insider` and product build channel `beta`.
+Eligible main pushes resolve main HEAD and wait for that exact SHA's newest main
+CI and Check. Main CI runs coalesce, so if that run was cancelled, main has moved
+past the SHA and a newer main push run exists, the release skips as superseded;
+any other CI failure still blocks it. Insiders are signed, notarized Beta
+prereleases, never Latest. See the workflow's exact path exclusions: shipped
+notices and agent skills are build inputs, so a blanket Markdown exclusion is
+wrong. There are no schedule, tag-push or PR triggers. GITHUB_TOKEN-created tags
+do not retrigger releases.
 
-Documentation and CI-only paths are excluded; there is no blanket Markdown
-exclusion because notices and agent skills are shipped build inputs. The exact
-`paths-ignore` list is in the workflow, with a contract guarding all tracked app,
-package, build-script, deployment and patch sources plus root build inputs.
-There are no schedule, tag-push or pull-request triggers. Draft creation targets
-the built SHA; tags created with GITHUB_TOKEN do not start another release workflow.
-Per-channel concurrency keeps one running and at most one pending run. Bursts
-coalesce: the newest pending run replaces older pending runs. A running build is
-never canceled mid-notarization. A coalesced manual stable dispatch can be
-re-dispatched.
-
-Never backfill an older insider after a newer one: the updater selects the first
-eligible feed entry.
+Per-channel concurrency coalesces pending runs but never cancels a running build
+mid-notarization. A coalesced stable dispatch may need redispatch. Never publish
+an older insider after a newer one: the updater selects the first eligible feed entry.
 
 ### Derived versions
 
-Both channels use plain numeric `X.Y.Z`. No version commit or bump PR is needed.
-In a full-history checkout, infra and maintainers can recompute a source's version:
-
-```sh
-node scripts/release-version.cjs FULL_40_CHARACTER_SHA
-```
-
-The root manifest at that SHA supplies base `M.m.p`. Find the most recent
-first-parent commit that changed the **version value**, or the root commit.
-For N first-parent commits after it, the release is `M.m.(p+N)`. Non-version
-manifest edits count as commits. A new base must exceed the preceding derived
-version; nonlinear or shallow history, invalid versions and unreadable manifests
-fail closed. The CommonJS export is
-`deriveReleaseVersion({ repositoryRoot, revision })`.
-
-The build stamps only its workspace's root package.json, never committing it.
-The canonical identity guard accepts that one byte-exact generated change only
-when its version is derived for HEAD; any other field/file change is refused.
-Desktop packaging and the Personal runtime use the same guard. Infra must use it before building the container release-record stage, which retains its existing Git-free manifest validation.
-The APK receipt and release.json bind the derived version to the exact source.
-
-### Insider practice run
-
-`workflow_dispatch` needs the workflow on the default branch. From main:
-
-```sh
-gh workflow run release.yml --repo steerlabs/opensteer --ref main \
-  -f channel=insider -f publish=false
-```
-
-`publish=false` is the manual insider default. The build ends at a complete draft,
-invisible to anonymous users and `releases/latest`. Inspect its artifact,
-SHA256SUMS and release.json. Dispatch with `-f publish=true` to publish. When main
-still has the same SHA, discovery validates and reuses the exact draft instead
-of rebuilding; publication rechecks all its bytes. If main has advanced, the run
-builds its new derived version. An unchanged already-published insider is skipped.
-Insider signing and publication have no reviewer approval gate.
+Both channels use numeric X.Y.Z derived from the base manifest version plus
+first-parent commits since its last version-value change. A new base must exceed
+the preceding derived version; shallow/nonlinear history fails closed. Only the
+byte-exact generated root version stamp is allowed by the source identity guard.
+Desktop and Personal runtime use that guard; infra must use it before the
+container release-record stage, which retains Git-free manifest validation.
+APK receipts and release.json bind version to exact source.
 
 ### Stable promotion
 
-Choose an already **published** insider prerelease:
-
-```sh
-gh workflow run release.yml --repo steerlabs/opensteer --ref main \
-  -f channel=stable -f insider_tag=v0.1.230-insider
-```
-
-Preflight requires its tag, release target and release.json to agree on source
-and derived version, checks that exact main SHA's push CI, and requires the latest
-completed full CI run on main to be green and include that source on first-parent main.
-Before promoting, run `gh workflow run ci.yml --repo steerlabs/opensteer --ref main`
-and wait for its `Check` to pass, or wait for the scheduled full run.
-It rebuilds **Opensteer**
-(`com.opensteer.opensteer`) from that commit with the same numeric version,
-prepares `desktop-vX.Y.Z` and creates a draft. Tim then approves the separate
-`publish` environment job to undraft those verified bytes and mark Latest.
-The `publish` boolean controls manual insider publication; stable always requests
-this approval after drafting. Discovery reuses only a matching draft; already
-published stable versions and mismatched targets/assets fail closed.
+Stable rebuilds an already published insider's exact source with the same numeric
+version and its distinct stable bundle identity. Tag, target and release.json
+must agree; exact-source push CI and the latest completed full main CI must be
+green and include the source on first-parent main. Tim approves only publication
+of the verified draft via `publish`. The manual `publish` boolean applies to
+insiders, not stable approval. Matching drafts are reused; mismatches and already
+published stable versions fail closed.
 
 ### Hosted build and keyless proof
 
@@ -159,21 +75,6 @@ signing-file contract. API-key notarization uses `APPLE_API_KEY`,
 staples, and the workflow explicitly validates the staple and Gatekeeper before
 preparing its ZIP. `build:agent-phone --release` produces the trusted receipt;
 staging and after-pack reverify it. Android builds disable persistent daemons.
-
-For an arm64 Mac with JDK 17+, Android SDK, Go, Node/pnpm and Xcode tools:
-
-```sh
-pnpm install --frozen-lockfile
-pnpm desktop:build-release --unsigned --out /absolute/proof-inputs
-```
-
-This builds a debug APK and ad-hoc contributor app under
-`apps/desktop/release/contributor/mac-arm64/`, with development trust, version
-0.0.0 and no updater metadata. It never notarizes or launches the app and cannot
-be prepared as a distribution: public preparation checks the real Developer ID
-team, deep-strict signature and staple. On the shared Mac, use its existing
-private checkout's `pnpm heavy --` wrapper; that machinery is not part of this repo.
-Never set any `OPENSTEER_DESKTOP_UPDATE_*` variable.
 
 ## Tim's one-time setup and rotation
 
@@ -236,59 +137,28 @@ printing it, and always deletes those files and its temporary keychain.
 
 ## Public Mac download
 
-Both channels use numeric `X.Y.Z` app and bundle versions. Stable uses
-`desktop-vX.Y.Z`, title `Opensteer X.Y.Z (Alpha)`, and GitHub Latest
-(`prerelease=false`). Beta uses `vX.Y.Z-insider`, title `Opensteer Beta X.Y.Z`,
-and `prerelease=true, make_latest=false`; one beta per numeric version.
+Prepare verifies bundle/channel identity, source, numeric version, arm64 executable,
+Developer ID team/signature, notarization, Gatekeeper and embedded updater policy.
+Draft tags target the built source, never current main. Identical draft bytes may
+be reused; differing bytes fail. Publication verifies every asset before changing
+visibility/Latest and checks anonymous downloads. Published reruns only verify.
 
-Stable assets: `Opensteer-mac-arm64.zip`, `Opensteer-mac-arm64.zip.blockmap`,
-`latest-mac.yml`, `install.sh`, `SHA256SUMS`, `release.json`.
-Beta assets: `Opensteer-Beta-mac-arm64.zip`, `Opensteer-Beta-mac-arm64.zip.blockmap`,
-`insider-mac.yml`, `SHA256SUMS`, `release.json`. The channel YAML carries
-electron-updater SHA-512 and size metadata; SHA256SUMS covers all assets except
-itself and release.json. Blockmaps use app-builder-lib pinned to electron-builder's
-26.15.3 version so the producer matches the updater format.
-
-```sh
-pnpm desktop:public-release prepare --channel stable --app-zip <absolute.zip> --version X.Y.Z --source-sha <40hex> --out <new-absolute-dir>
-pnpm desktop:public-release draft --dir <absolute-dir> --repo steerlabs/opensteer --channel stable
-pnpm desktop:public-release publish --repo steerlabs/opensteer --tag desktop-vX.Y.Z --channel stable
-```
-
-Use `--channel beta` and `--tag vX.Y.Z-insider` for beta. Prepare checks the
-channel's bundle identity, numeric versions, source, arm64 executable, Developer ID
-signature/team, notarization, Gatekeeper, `OpensteerUpdateFeed` and the embedded
-`app-update.yml` GitHub provider/cache configuration. `--notes-file <absolute-file>`
-appends human release notes. Draft/publish infer the channel from the attached
-`release.json`; an explicit mismatch is refused. A draft targets `sourceSha`, so
-publication creates a missing tag at the built commit rather than the current main;
-a draft with another target is refused. Identical draft bytes are reused,
-differing drafts refused. Publication verifies every draft
-asset before changing visibility and Latest status, then checks anonymous downloads.
-A published-release rerun only verifies.
-
-Install with:
+Install the public stable app with:
 
 ```sh
 curl -fsSL https://github.com/steerlabs/opensteer/releases/latest/download/install.sh | sh
 ```
 
-The installer requires Apple silicon and macOS 13+, pins Latest once, verifies the
-archive checksum, stable bundle identity, version, arm64 executable, Developer ID
-team and signature, and Gatekeeper assessment. It serializes installs, refuses
-symlinks and conflicting identities, waits for graceful app/ShipIt shutdown, and
-replaces the app with rename/restore protection without touching app data.
-An installed copy counts only if it is an intact Opensteer-signed build; an equal
-or newer one is opened without replacement. The check repeats after the app quits,
-because ShipIt may have installed a newer update meanwhile.
+The installer requires Apple silicon and macOS 13+, pins Latest once and checks
+checksum, identity, version, executable, signer and Gatekeeper. It serializes
+installation, rejects symlinks/conflicting identities and waits for app/ShipIt
+shutdown before rename/restore replacement without touching data. An intact equal
+or newer signed copy opens without replacement; recheck after quit because ShipIt
+may have installed an update. See [install.sh](../scripts/install.sh).
 
-For VM mirrors, use `OPENSTEER_RELEASE_REPOSITORY_URL` (repository root),
-`OPENSTEER_INSTALL_DIRECTORY` (absolute physical target, without symlink ancestors), and `OPENSTEER_INSTALL_NO_OPEN=1`
-to suppress launch. `prepare --download-base <mirror>/releases/download
---allow-private-feed` accepts a test build's embedded private feed. URLs require
-HTTPS, except loopback HTTP. YAML asset URLs remain filenames because the
-GitHub provider derives download paths from its embedded host. Private-feed assets cannot be drafted or published
-to the public repository.
+Mirror overrides require HTTPS except loopback HTTP. Private-feed assets cannot
+be published to the public repository. YAML asset URLs remain filenames because
+the GitHub provider derives paths from its embedded host.
 
 ## Automatic updates
 
@@ -305,26 +175,38 @@ highest version. Publish in version order, with all channel assets ready and the
 visible in Atom. A missing channel file falls back to `latest-mac.yml` on the
 same tag; publish `latest-mac.yml` for stable and `insider-mac.yml` for Beta.
 
-Updates run only from Applications; the move prompt precedes supervised children.
-Checks run after 30 seconds and every four hours, downloading automatically.
-**Restart to Update** appears in the app menu and tray only after Electron's
-native `update-downloaded` confirms Squirrel validated and staged the bundle.
-Errors clear readiness and log `desktop.update.failed` with a fixed `reason`:
-`signature` (Squirrel's designated-requirement refusal), `downgrade` (its
-downgrade guard) or `other`; the native message, which carries URLs and paths, is
-never logged. Restart and ordinary quit stop children and destroy
-windows before handing installation to electron-updater, with a bounded exit.
-Both channels refuse downgrades. Packaging keeps bundle entries owner-writable
-for ShipIt, and the stable About panel retains its Alpha marker.
+Updates run only from Applications; the move prompt precedes supervised children. Readiness requires native `update-downloaded`, proving Squirrel staged
+and validated the bundle. Never log native errors carrying URLs/paths; log only
+the fixed reason. Stop children and destroy windows before handing off installation.
+Both channels refuse downgrades. Bundle entries must remain owner-writable for
+ShipIt. See [updater](../apps/desktop/src/app/desktop-updater.ts),
+[shutdown](../apps/desktop/src/app/desktop-shutdown.ts) and
+[policy](../apps/desktop/src/releases/desktop-update-policy.ts).
+Development omits updates. Mirror overrides are release-only and forbidden in CI;
+the embedded feed records them for verification.
 
-Release staging derives `app-update.yml` and channel-specific cache names from
-the embedded policy. Development builds omit updates. The build-time
-`OPENSTEER_DESKTOP_UPDATE_GITHUB_HOST` mirror override is allowed only for
-release builds outside CI; `OpensteerUpdateFeed` records
-`https://<host>/<owner>/<repo>#<channel>` for release verification.
-See the [updater](../apps/desktop/src/app/desktop-updater.ts),
-[shutdown](../apps/desktop/src/app/desktop-shutdown.ts), and
-[build policy](../apps/desktop/src/releases/desktop-update-policy.ts).
+## Personal database snapshots
+
+Before migrating on a new app version, snapshot the stopped PostgreSQL cluster.
+This is a migration safety net, not a disk backup or a startup gate: failures
+must not prevent launch. APFS clones share disk failure risk. A completed snapshot
+has `snapshot.json`; retain the newest three. See
+[snapshot implementation](../apps/desktop/src/supervisor/personal-database-snapshot.ts).
+
+Restore manually with Opensteer and its PostgreSQL stopped: set aside the current
+PostgreSQL data directory, clone the chosen snapshot's `postgres` directory into
+its place (`cp -cRp` on macOS), set the deployment manifest's `release` to
+`snapshot.json`'s `fromRelease`, then start that matching older app. Retain the
+set-aside data: work after the snapshot is absent from the restored database.
+Follow [the restore journey](../apps/desktop/scripts/personal-database-snapshot-journey.ts)
+for exact paths and ordering. Installing an older binary alone is not a restore.
+
+## Release gates
+
+Signing alone proves no notarization. Distribution requires hardened runtime,
+secure timestamps, reviewed entitlements, accepted notarization and a validated
+staple/Gatekeeper assessment. Passwords also requires its matching provisioning
+profile; see [SIGNING.md](../apps/desktop/SIGNING.md#passwords-provisioning-and-distribution).
 
 ## Stable channel without an Account
 

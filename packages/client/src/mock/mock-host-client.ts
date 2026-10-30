@@ -1,3 +1,5 @@
+import { BrowserPasskeys } from "../host/browser-passkeys.js";
+import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
 
 import { WorkspaceTabActivations } from "../host/workspace-tab-activations.js";
@@ -3343,6 +3345,7 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  readonly browserPasskeys = new BrowserPasskeys();
   readonly recentSites: RecentSitesStore;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: HostClient["retainComputerView"];
@@ -4099,11 +4102,32 @@ export class MockHostClient implements HostClient {
     });
     if (!result.ok) throw new Error(result.error.message);
     // The preview keeps the whole transcript resident, including the requested source.
+    this.#state.updatePlaces({
+      ...this.getSnapshot(),
+      savedViewReadiness: {
+        ...(this.getSnapshot().savedViewReadiness ?? emptySavedViewReadiness()),
+        home: {
+          status: "window",
+          threadId,
+          workspaceId: this.getSnapshot().threads.find(({ id }) => id === threadId)!.workspaceId,
+          latest: false,
+        },
+      },
+    });
   }
 
   async loadLatestTranscript(threadId: string): Promise<void> {
     if (!this.getSnapshot().threads.some((thread) => thread.id === threadId))
       throw new Error("Thread not found.");
+    const snapshot = this.getSnapshot();
+    if (threadId === snapshot.homeThreadId && snapshot.homeWorkspaceId)
+      this.#state.updatePlaces({
+        ...snapshot,
+        savedViewReadiness: {
+          ...(snapshot.savedViewReadiness ?? emptySavedViewReadiness()),
+          home: { status: "window", threadId, workspaceId: snapshot.homeWorkspaceId, latest: true },
+        },
+      });
   }
 
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void {
@@ -10432,6 +10456,32 @@ class MockHostState {
       waitingRequests: this.waitingRequests(),
       workspaceTasks: this.workspaceTaskLists(tasks, this.snapshot.workspaceTasks),
     };
+    if (
+      this.snapshot.connection === "connected" &&
+      this.snapshot.user &&
+      this.snapshot.session === "authenticated"
+    ) {
+      const held = this.snapshot.savedViewReadiness ?? emptySavedViewReadiness();
+      const main = this.snapshot.workspaces.find(
+        ({ id, kind }) => kind === "main" && id === this.snapshot.homeWorkspaceId,
+      );
+      const home = !main
+        ? { status: "unknown" as const }
+        : !this.snapshot.homeThreadId
+          ? { status: "absent" as const, workspaceId: main.id }
+          : held.home.status === "window" && held.home.threadId === this.snapshot.homeThreadId
+            ? held.home
+            : {
+                status: "window" as const,
+                threadId: this.snapshot.homeThreadId,
+                workspaceId: main.id,
+                latest: true,
+              };
+      this.snapshot = {
+        ...this.snapshot,
+        savedViewReadiness: { tasksReady: true, workspaceRefusal: held.workspaceRefusal, home },
+      };
+    }
     this.emit();
   }
 

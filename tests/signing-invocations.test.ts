@@ -89,3 +89,42 @@ test("native sources, package scripts and extensionless build scripts cannot hid
   ])
     expect(auditSigningInvocations([fixture])).toHaveLength(1);
 });
+
+test("only the update journey's exact ad-hoc fixture signer is credential-free", () => {
+  const file = "scripts/public-download/eu-journey.ts";
+  const source = 'run("codesign", ["--force", "--deep", "--sign", "-", badApp]);';
+  expect(auditSigningInvocations([{ file, source }])).toEqual([]);
+  expect(
+    auditSigningInvocations([{ file, source: source.replace('"-"', "identity") }]),
+  ).toHaveLength(1);
+  expect(auditSigningInvocations([{ file: "scripts/other.ts", source }])).toHaveLength(1);
+});
+
+test.each([
+  "apps/desktop/scripts/build-passkeys-addon.ts",
+  "apps/desktop/native/passkeys/check-addon.cjs",
+])("passkey ad-hoc exceptions stay specific to their invocation in %s", (file) => {
+  const source = readFileSync(path.join(root, file), "utf8");
+  expect(auditSigningInvocations([{ file, source }])).toEqual([]);
+  const paddedIdentity = source.replace(/("--sign",\s*)"-"/u, '$1"- "');
+  expect(auditSigningInvocations([{ file, source: paddedIdentity }])).toHaveLength(1);
+  const certificateSigner = source.replace(/("--sign",\s*)"-"/u, "$1identity");
+  expect(certificateSigner).not.toBe(source);
+  expect(auditSigningInvocations([{ file, source: certificateSigner }])).toHaveLength(1);
+  expect(
+    auditSigningInvocations([
+      {
+        file,
+        source: `${source}\nspawn("/usr/bin/codesign", ["--sign", identity, otherArtifact]);`,
+      },
+    ]),
+  ).toHaveLength(1);
+});
+
+test("the passkey certificate lookup cannot omit its selected keychain", () => {
+  const file = "apps/desktop/scripts/passkeys-signing.cjs";
+  const source = readFileSync(path.join(root, file), "utf8");
+  expect(auditSigningInvocations([{ file, source }])).toEqual([]);
+  const omitted = source.replace("...(signing.keychain ? [signing.keychain] : [])", "");
+  expect(auditSigningInvocations([{ file, source: omitted }])).toHaveLength(1);
+});
