@@ -326,7 +326,13 @@ export function Composer(props: {
   }, [readOnly, textHidden, dictation, owner]);
   const phase = dictationState.owner === owner ? dictationState.phase : "idle";
   const notice = dictationState.notice?.owner === owner ? dictationState.notice.message : null;
+  const previousPhase = useRef(phase);
   useEffect(() => {
+    const previous = previousPhase.current;
+    previousPhase.current = phase;
+    if (!visible.current) return;
+    if (phase === "idle" && previous !== "idle" && previous !== "downloading" && notice === null)
+      AccessibilityInfo.announceForAccessibility(dictationLabels.stopped);
     if (phase === "listening") {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       AccessibilityInfo.announceForAccessibility("Dictation started");
@@ -338,7 +344,7 @@ export function Composer(props: {
       AccessibilityInfo.announceForAccessibility("Downloading language for dictation");
   }, [phase]);
   useEffect(() => {
-    if (notice) AccessibilityInfo.announceForAccessibility(notice);
+    if (notice && visible.current) AccessibilityInfo.announceForAccessibility(notice);
   }, [notice]);
   const startDictation = (): void =>
     dictation.start({
