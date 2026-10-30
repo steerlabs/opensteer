@@ -6124,11 +6124,12 @@ export const personAskedThreadsMigration: Migration = {
       update public.threads as thread set listed = listing.listed
       from listing where thread.id = listing.id and thread.listed is distinct from listing.listed;
 
+      -- Clients apply the whole Thread any event carries (created, listed or
+      -- execution-updated), so every stored snapshot must agree on replay.
       update public.workspace_events as event
       set data = jsonb_set(event.data, '{thread,listed}', to_jsonb(thread.listed), true)
       from public.threads as thread
       where event.thread_id = thread.id
-        and event.type in ('thread.created', 'thread.listed')
         and jsonb_typeof(event.data -> 'thread') = 'object'
         and event.data #>> '{thread,id}' = thread.id
         and event.data #> '{thread,listed}' is distinct from to_jsonb(thread.listed);

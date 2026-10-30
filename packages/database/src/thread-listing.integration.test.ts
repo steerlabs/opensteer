@@ -130,16 +130,20 @@ describeStore("person-asked Thread listing", (it) => {
       .execute();
     const oldWorker = await store.getThreadForOwner(automation, f.userId);
     if (!oldWorker) throw new Error("Expected automation worker");
-    await database.transaction().execute((tx) =>
-      appendHostWorkspaceEvent(tx, {
-        data: { thread: oldWorker },
-        environmentId: f.environmentId,
-        runId: null,
-        threadId: automation,
-        type: "thread.listed",
-        workspaceId: f.workspace.id,
-      }),
-    );
+    // Clients apply the whole Thread these events carry, so a stale flag in any of them
+    // would list the worker again on replay.
+    await database.transaction().execute(async (tx) => {
+      for (const type of ["thread.listed", "thread.execution-updated"] as const) {
+        await appendHostWorkspaceEvent(tx, {
+          data: { thread: oldWorker },
+          environmentId: f.environmentId,
+          runId: null,
+          threadId: automation,
+          type,
+          workspaceId: f.workspace.id,
+        });
+      }
+    });
     await sql`update public.workspace_events set data = jsonb_set(data, '{thread,listed}', 'true'::jsonb)
       where thread_id = ${automation} and type = 'thread.created'`.execute(database);
     await personAskedThreadsMigration.up(database);
@@ -150,11 +154,12 @@ describeStore("person-asked Thread listing", (it) => {
       database
         .selectFrom("workspaceEvents")
         .select(["eventId", "data"])
-        .where("type", "in", ["thread.created", "thread.listed"])
+        .where("type", "in", ["thread.created", "thread.listed", "thread.execution-updated"])
         .orderBy("sequence")
         .execute();
     const once = await state();
     expect(once.filter(({ data }) => JSON.stringify(data).includes(automation))).toMatchObject([
+      { data: { thread: { listed: false } } },
       { data: { thread: { listed: false } } },
       { data: { thread: { listed: false } } },
     ]);

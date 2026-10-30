@@ -782,7 +782,7 @@ was authored by a `human`. Delegation must have origin `run`; trigger and watch 
 list work. The same rule promotes an existing unlisted Thread and publishes `thread.listed`.
 Work another task delegates stays inside that task, even when a person woke its Run. Nothing
 at runtime unlists a Thread. Migration 0113 recomputes existing listing from delegation seed
-inputs (keeping roots listed), and rewrites durable `thread.created` and `thread.listed` snapshots.
+inputs (keeping roots listed), and rewrites every durable Thread snapshot an event carries.
 `parentThreadId` stays lineage only. Workspace snapshots and `tasks.list` filter on `listed`
 before pagination; clients apply the event's flag on replay. Direct navigation and authorized
 agent searches reach unlisted work. Questions in unlisted work roll up to the nearest listed
