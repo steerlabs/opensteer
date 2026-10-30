@@ -47,8 +47,8 @@ of body silence, renewed by each nonempty chunk;
 timeouts abort the fetch and return a retryable operation error without replay,
 while caller cancellation takes precedence. Binary uploads and buffered adapters
 allow an additional second per accepted KiB (desktop enforces headers and byte
-progress before buffering across IPC); per-call header and stall overrides support
-deliberately waiting operations. Decoded JSON is limited to 16 MiB, with existing
+progress before buffering across IPC). A 401 asks for sign-in as soon as its
+headers arrive, and session recovery after a refusal runs on its own deadlines. Decoded JSON is limited to 16 MiB, with existing
 attachment and preview limits preserved. The initial bootstrap
 sets availability when no synchronized channel can establish a usable session.
 Cancellation and an attachment fence discard stale work without claiming that

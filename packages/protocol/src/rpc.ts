@@ -41,10 +41,6 @@ export type RpcHandlers<Api extends RpcGroup, Context> = {
 export interface RpcCallOptions {
   readonly body?: Blob | Uint8Array;
   readonly signal?: AbortSignal;
-  /** Override for binary uploads or operations that deliberately wait before headers. */
-  readonly responseHeadersTimeoutMs?: number;
-  /** Maximum silence between response bytes, never a whole-body duration cap. */
-  readonly bodyStallTimeoutMs?: number;
 }
 
 export type RpcClient<Api extends RpcGroup> = {

@@ -1,4 +1,5 @@
 import { HostTransportError } from "./host-transport-error.js";
+import { unrefTimer } from "./operation-error.js";
 
 /** A phase deadline; body readers renew it only when nonempty bytes arrive. */
 export class HostResponseDeadline {
@@ -19,6 +20,14 @@ export class HostResponseDeadline {
     this.#timer = setTimeout(() => {
       this.controller.abort(new HostTransportError("timed-out"));
     }, milliseconds);
+    // A pending Host request must not keep a Node process alive on its own.
+    unrefTimer(this.#timer);
+  }
+
+  /** Stops the clock while work with its own deadline (session recovery) runs. */
+  pause(): void {
+    clearTimeout(this.#timer);
+    this.#timer = undefined;
   }
 
   async wait<Value>(pending: Promise<Value>): Promise<Value> {

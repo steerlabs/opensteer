@@ -167,18 +167,16 @@ async function request<Name extends keyof typeof hostApi>(
       ? attachmentMaxBytes
       : workspaceFilePreviewMaxBytes
     : 16 * 1_024 * 1_024;
-  const headersTimeoutMs =
-    call?.responseHeadersTimeoutMs ??
-    (options.bufferedResponses
-      ? bufferedHostResponseTimeoutMs(maximumBytes)
-      : "binaryRequest" in declaration
-        ? bufferedHostResponseTimeoutMs(
-            call?.body instanceof Uint8Array
-              ? call.body.byteLength
-              : (call?.body?.size ?? attachmentMaxBytes),
-          )
-        : hostResponseHeadersTimeoutMs);
-  const stallTimeoutMs = call?.bodyStallTimeoutMs ?? hostResponseStallTimeoutMs;
+  const headersTimeoutMs = options.bufferedResponses
+    ? bufferedHostResponseTimeoutMs(maximumBytes)
+    : "binaryRequest" in declaration
+      ? bufferedHostResponseTimeoutMs(
+          call?.body instanceof Uint8Array
+            ? call.body.byteLength
+            : (call?.body?.size ?? attachmentMaxBytes),
+        )
+      : hostResponseHeadersTimeoutMs;
+  const stallTimeoutMs = hostResponseStallTimeoutMs;
   try {
     call?.signal?.throwIfAborted();
     deadline.reset(headersTimeoutMs);
@@ -212,6 +210,9 @@ async function request<Name extends keyof typeof hostApi>(
       }),
     );
     deadline.controller.signal.throwIfAborted();
+    // The refusal is known from its status; a body that then stalls must not
+    // turn a sign-in prompt into a transport error.
+    if (response.status === 401) options.onAuthenticationRequired();
     deadline.reset(response.body ? stallTimeoutMs : bufferedHostResponseTimeoutMs(maximumBytes));
     const bytes = await deadline.wait(
       readBoundedResponse(response, {
@@ -222,7 +223,6 @@ async function request<Name extends keyof typeof hostApi>(
       }),
     );
     call?.signal?.throwIfAborted();
-    if (response.status === 401) options.onAuthenticationRequired();
     if (declaration.stream && response.ok) {
       const modified = response.headers.get("last-modified");
       const metadata =

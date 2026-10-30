@@ -926,6 +926,39 @@ describe("DesktopHostTransport", () => {
     ]);
   });
 
+  it("gives session recovery its own time after reading a refusal", async () => {
+    vi.useFakeTimers();
+    try {
+      const selected = deployment("Home", "https://home.connect.opensteer.test");
+      let requests = 0;
+      const recoverUnauthorized = vi.fn(
+        () => new Promise<"recovered">((resolve) => setTimeout(() => resolve("recovered"), 25_000)),
+      );
+      const transport = desktopHostTransport({
+        catalog: catalogStore([selected], selected.authority.document.deploymentId),
+        network: {
+          openWebSocket: () => socket(),
+          request: async () =>
+            ++requests === 1
+              ? new Response('{"error":"unauthorized"}', { status: 401 })
+              : new Response('{"ok":true}'),
+        },
+        sessions: { recoverUnauthorized },
+      });
+      const pending = transport.request({
+        headers: {},
+        method: "GET",
+        path: "/v1/rpc/auth.config",
+      });
+      const outcome = pending.catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(await outcome).toMatchObject({ body: '{"ok":true}', status: 200 });
+      expect(recoverUnauthorized).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns a refused Host response untouched instead of retrying it", async () => {
     const fixture = cloudFixture({ redemptionStatus: 403 });
 

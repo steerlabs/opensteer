@@ -247,42 +247,23 @@ describe("Host RPC slow-link deadlines", () => {
   });
 });
 
-it("honors per-operation header and body stall overrides for binary previews", async () => {
+it("asks for sign-in as soon as a refusal's headers arrive, even if its body stalls", async () => {
   vi.useFakeTimers();
   try {
-    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const onAuthenticationRequired = vi.fn();
     const client = createHttpHostApiClient({
       baseUrl: new URL("https://host.example"),
-      onAuthenticationRequired: vi.fn(),
-      fetch: () =>
-        new Promise((resolve) => {
-          setTimeout(
-            () =>
-              resolve(
-                new Response(
-                  new ReadableStream({
-                    start(controller) {
-                      stream = controller;
-                    },
-                  }),
-                ),
-              ),
-            25_000,
-          );
-        }),
+      onAuthenticationRequired,
+      fetch: async () => new Response(new ReadableStream({ start() {} }), { status: 401 }),
     });
-    const pending = client["workspace.files.preview"](
-      { workspaceId: createId("workspace"), fileKey: "file" },
-      { responseHeadersTimeoutMs: 30_000, bodyStallTimeoutMs: 40_000 },
-    );
-    await vi.advanceTimersByTimeAsync(60_000);
-    stream.enqueue(new Uint8Array([1, 2, 3]));
-    stream.close();
+    const pending = client["auth.config"]({});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onAuthenticationRequired).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(20_000);
     await expect(pending).resolves.toMatchObject({
-      ok: true,
-      data: { bytes: new Uint8Array([1, 2, 3]) },
+      ok: false,
+      error: { reason: "transport-timed-out", retryable: true },
     });
-    expect(vi.getTimerCount()).toBe(0);
   } finally {
     vi.useRealTimers();
   }

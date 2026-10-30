@@ -330,6 +330,9 @@ export class HostTransport {
       headers: unauthorized.headers,
       status: unauthorized.status,
     });
+    // Recovery carries its own deadlines (token refresh, session exchange); the
+    // refusal's body-stall clock must not cut it short.
+    deadline.pause();
     let abortRecovery: (() => void) | undefined;
     try {
       const abandoned = new Promise<never>((_resolve, reject) => {
