@@ -108,7 +108,7 @@ function requireSourceChecks(source, pages, git) {
   if (source.channel === "stable") requireFullChecks(source, pages, git);
 }
 function requireFullChecks(source, pages, git) {
-  // Full scheduled/manual runs cover native tasks that push CI may select out.
+  // Full runs cover native tasks that push CI may select out.
   const latest = pages(
     "actions/workflows/ci.yml/runs?branch=main&status=completed&per_page=100",
     "workflow_runs",
@@ -122,10 +122,13 @@ function requireFullChecks(source, pages, git) {
     .sort((a, b) => b.run_number - a.run_number)[0];
   const refuse = () => {
     throw Error(
-      `stable needs a green full CI run that includes ${source.sha}; dispatch CI on main or wait for the scheduled run`,
+      `stable needs a green full CI run that includes ${source.sha}; dispatch a full CI run on main (gh workflow run ci.yml --ref main) or wait for the scheduled run`,
     );
   };
   if (!latest || latest.conclusion !== "success" || !Number.isSafeInteger(latest.id)) refuse();
+  // Push qualification may have waited while main and its full CI advanced.
+  // Refresh ancestry without resolving or changing the selected release source.
+  git("fetch", "origin", "main", "--no-tags");
   const main = git("rev-list", "--first-parent", "refs/remotes/origin/main").split("\n");
   const sourceIndex = main.indexOf(source.sha);
   const fullIndex = main.indexOf(latest.head_sha);

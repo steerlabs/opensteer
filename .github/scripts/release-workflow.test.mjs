@@ -251,7 +251,9 @@ test("stable also needs the latest completed green full CI including its source 
       assert.throws(() => preflight(options, f.run), message);
     }
     f.state.fullRuns = [];
-    assert.throws(() => preflight(options, f.run), message);
+    assert.throws(() => preflight(options, f.run), {
+      message: `stable needs a green full CI run that includes ${f.source.sha}; dispatch a full CI run on main (gh workflow run ci.yml --ref main) or wait for the scheduled run`,
+    });
     // Do not fall back to an older green full run when the latest completed one failed.
     f.state.fullRuns = [full, { ...full, run_number: 9, conclusion: "failure" }];
     assert.throws(() => preflight(options, f.run), message);
@@ -315,6 +317,74 @@ test("stable cannot bypass full CI after waiting for its exact-SHA push Check", 
       }),
       /stable needs a green full CI run/,
     );
+  } finally {
+    f.close();
+  }
+});
+test("stable refreshes main for a full run completed after its initial fetch without moving the release source", async () => {
+  const f = fixture();
+  const upstream = mkdtempSync(path.join(tmpdir(), "release-main-upstream-"));
+  try {
+    f.git("clone", "--no-hardlinks", f.root, upstream);
+    const upstreamGit = (...args) => f.git("-C", upstream, ...args);
+    upstreamGit("config", "user.name", "Release Test");
+    upstreamGit("config", "user.email", "release@opensteer.invalid");
+    upstreamGit("config", "commit.gpgsign", "false");
+    f.git("remote", "add", "origin", upstream);
+    f.state.releases = [published(f.source)];
+    f.state.runs[0].status = "in_progress";
+    let clock = 0;
+    let fetches = 0;
+    let later;
+    const run = (exe, args) => {
+      if (exe === "git" && args[0] === "fetch") {
+        fetches++;
+        return f.git(...args);
+      }
+      return f.run(exe, args);
+    };
+    const result = await qualifiedPreflight(
+      { root: f.root, channel: "stable", insiderTag: f.source.tag },
+      run,
+      {
+        now: () => clock,
+        timeoutMs: 30,
+        sleep: async (milliseconds) => {
+          clock += milliseconds;
+          writeFileSync(path.join(upstream, "change"), "new main during push CI");
+          upstreamGit("commit", "-am", "new main during push CI");
+          later = upstreamGit("rev-parse", "HEAD");
+          assert.throws(() => f.git("cat-file", "-e", `${later}^{commit}`));
+          f.state.runs[0].status = "completed";
+          f.state.fullRuns[0].head_sha = later;
+          assert.equal(f.git("rev-parse", "refs/remotes/origin/main"), f.source.sha);
+        },
+      },
+    );
+    assert.deepEqual(result, { ...f.source, channel: "stable", tag: "desktop-v1.2.4" });
+    assert.equal(fetches, 2);
+    assert.equal(f.git("rev-parse", "refs/remotes/origin/main"), later);
+    assert.notEqual(result.sha, later);
+  } finally {
+    rmSync(upstream, { recursive: true, force: true });
+    f.close();
+  }
+});
+test("stable fails closed when refreshing main history fails", () => {
+  const f = fixture();
+  try {
+    f.state.releases = [published(f.source)];
+    let fetches = 0;
+    const run = (exe, args) => {
+      if (exe === "git" && args[0] === "fetch" && ++fetches === 2)
+        throw Error("Main history refresh failed");
+      return f.run(exe, args);
+    };
+    assert.throws(
+      () => preflight({ root: f.root, channel: "stable", insiderTag: f.source.tag }, run),
+      /Main history refresh failed/,
+    );
+    assert.equal(fetches, 2);
   } finally {
     f.close();
   }
