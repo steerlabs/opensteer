@@ -35,6 +35,7 @@ export function ProfileChip({
         className={open ? "profile-chip is-open" : "profile-chip"}
         onClick={() => setOpen((value) => !value)}
         ref={chipRef}
+        title={presentation.identity.name}
         type="button"
       >
         <ProfileAvatar identity={presentation.identity} size={16} />

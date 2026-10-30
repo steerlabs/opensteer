@@ -16,6 +16,7 @@ import {
   history,
   goTo,
   mount,
+  resize,
   settle,
   element,
   click,
@@ -287,7 +288,7 @@ describe("tabs that read like a browser's", () => {
     expect(main(place.key).title).toBe(`${place.title} — Personal · Mac mini\nresy.com`);
     expect(main(place.key).getAttribute("aria-label")).toBe(`${place.title} — Personal · Mac mini`);
     const chip = element<HTMLButtonElement>(".profile-chip");
-    expect(chip.title).toBe("");
+    expect(chip.title).toBe("Personal");
     expect(chip.getAttribute("aria-label")).toBe("Using Personal. Profile options");
     expect(element(".profile-chip__name", chip).textContent).toBe("Personal");
     expect(chip.textContent).toBe("PPersonal");
@@ -313,7 +314,7 @@ describe("tabs that read like a browser's", () => {
       await click(main(place!.key));
       const chip = element<HTMLButtonElement>(".profile-chip");
       expect(chip.textContent).toBe("Guest");
-      expect(chip.title).toBe("");
+      expect(chip.title).toBe("Guest");
       expect(element<HTMLElement>(".profile-chip__name", chip).title).toBe("Guest");
       expect(chip.getAttribute("aria-label")).toBe("Using Guest. Profile options");
       expect(chip.getAttribute("aria-expanded")).toBe("false");
@@ -324,6 +325,13 @@ describe("tabs that read like a browser's", () => {
       await escape();
       expect(document.querySelector(".chip-menu__where")).toBeNull();
     }
+    await resize(600);
+    expect(element(".browser-toolbar").classList.contains("browser-toolbar--compact")).toBe(true);
+    const compactChip = element<HTMLButtonElement>(".profile-chip");
+    expect(compactChip.title).toBe("Guest");
+    expect(document.querySelector(".chip-menu__where")).toBeNull();
+    await click(compactChip);
+    expect(element(".chip-menu__where").textContent).toBe("Studio Mac");
   });
 
   it("middle-click closes a web tab through the Host, asking first when work holds it; app rows ignore it", async () => {
