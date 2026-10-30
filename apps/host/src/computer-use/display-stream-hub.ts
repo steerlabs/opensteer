@@ -15,7 +15,6 @@ import {
   decodeDisplayMediaFrame,
   encodeDisplayViewerFrame,
   DisplayStreamIdSchema,
-  DisplayControlIdSchema,
   displayDefaultMaxFps,
   displayDefaultMaxLongSide,
   displayDemandGraceMs,
@@ -27,7 +26,10 @@ import {
   type DisplayDataTicketClaims,
   type DisplayViewerClientMessage,
   type DisplayViewerState,
-  type DisplayControlId,
+  type DisplayInputEvent,
+  type DisplayInputResult,
+  type DisplayClipboard,
+  type DisplayEditing,
   type DisplayStreamId,
   type DisplayStreamReason,
   type HostIntegrationsOperation,
@@ -49,8 +51,6 @@ const displayGopCacheBytes = 4 * 1_024 * 1_024;
 const displayGopCacheFrames = 600;
 // Eight tabs cover ordinary watching while bounding per-session fan-out work.
 const displayMaxViewers = 8;
-// A lost phone answer must not reserve control for the stream's lifetime.
-const displayControlTimeoutMs = 5_000;
 // Credit is decoder feedback, not proof that the network drained its writes.
 const displaySocketBufferedBytes = 8 * 1_024 * 1_024;
 
@@ -68,12 +68,17 @@ type PhoneEvent = Extract<
       | "runner.integrations.display.clipboard"
       | "runner.integrations.mac-owner.event"
       | "runner.integrations.display.state"
-      | "runner.integrations.display.control-state"
       | "runner.integrations.display.source-ended"
       | "runner.integrations.display.source-changed";
   }
 >;
 interface Viewer {
+  readonly sharedInput: boolean;
+  authorized: boolean;
+  inputSequence: number;
+  sentInput: boolean;
+  checkedAt: number;
+  checking: boolean;
   readonly editing: boolean;
   readonly displayCut: boolean;
   readonly inputCounters: {
@@ -98,26 +103,20 @@ interface Viewer {
   slowSince: number | null;
   removalTrigger?: string;
 }
-interface Control {
-  readonly sessionId: ComputerUseSessionId;
-  readonly id: DisplayControlId;
+interface PendingInput {
   readonly viewer: Viewer;
-  state: "acquiring" | "held" | "releasing";
-  sequence: number;
-  deadline: number | null;
-  readonly pending: Map<number, { result: boolean; copy: boolean; cut?: boolean }>;
-}
-interface MacControl {
-  readonly id: DisplayControlId;
-  readonly viewer: Viewer;
-  readonly source: Extract<DisplaySource, { kind: "owner-view" }>;
-  state: "authorizing" | "acquiring" | "held" | "releasing";
-  sequence: number;
-  checkedAt: number;
-  checking: boolean;
-  deadline: number;
+  readonly sequence: number;
+  readonly geometry: number;
+  result: boolean;
+  copy: boolean;
+  readonly cut: boolean;
 }
 interface Stream {
+  readonly sharedInput?: 1;
+  holder: Viewer | null;
+  readonly held: Set<string>;
+  inputSequence: number;
+  readonly pending: Map<number, PendingInput>;
   readonly editingVersion?: 1;
   readonly displayCut?: 1;
   readonly authorities: Map<string, { source: DisplaySource; actor: UserId }>;
@@ -125,7 +124,6 @@ interface Stream {
   profileAt: number | null;
   readonly key: string;
   readonly target: MacWindowTarget | undefined;
-  macControl?: MacControl | undefined;
   readonly firstFrameDeadline: number;
   firstKey: boolean;
   revision: number;
@@ -154,7 +152,6 @@ interface Stream {
   refreshAt: number;
   refreshPending: boolean;
   stopAt: number | null;
-  control: Control | null;
 }
 export interface DisplayStreamHubOptions {
   readonly authenticator: Pick<
@@ -170,7 +167,7 @@ export interface DisplayStreamHubOptions {
     ComputerViewService,
     "authorizeDisplay" | "isDisplayLive" | "endDisplaySource"
   > &
-    Partial<Pick<ComputerViewService, "authorizeControl">>;
+    Partial<Pick<ComputerViewService, "authorizeInput">>;
   readonly onState?: (
     runnerId: RunnerId,
     streamId: DisplayStreamId,
@@ -211,7 +208,11 @@ export class DisplayStreamHub {
     source: DisplaySource,
     actor: UserId,
     socket: WebSocket,
-    options: { readonly editing?: boolean; readonly displayCut?: boolean } = {},
+    options: {
+      readonly editing?: boolean;
+      readonly displayCut?: boolean;
+      readonly sharedInput?: boolean;
+    } = {},
   ): Promise<{
     handle: (message: DisplayViewerClientMessage) => void;
     close: (trigger?: string, code?: number) => void;
@@ -348,6 +349,7 @@ export class DisplayStreamHub {
         streamId,
       });
       stream = {
+        ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
         ...(live.displayCut === 1 && !target ? { displayCut: 1 as const } : {}),
         authorities: new Map(),
@@ -377,7 +379,10 @@ export class DisplayStreamHub {
         refreshAt: -Infinity,
         refreshPending: false,
         stopAt: null,
-        control: null,
+        holder: null,
+        held: new Set(),
+        inputSequence: 0,
+        pending: new Map(),
       };
       this.#streams.set(streamId, stream);
       this.#byTarget.set(key, stream);
@@ -385,6 +390,7 @@ export class DisplayStreamHub {
       start = {
         ...stream.fence,
         type: "host.integrations.display.start",
+        ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
         ...(live.displayCut === 1 && !target ? { displayCut: 1 as const } : {}),
         ...(target
@@ -407,7 +413,30 @@ export class DisplayStreamHub {
     }
     const attached = stream;
     attached.stopAt = null;
+    let authorized = !target && source.kind === "task-session";
+    if (target && source.kind === "owner-view" && target.editingVersion === 1) {
+      try {
+        authorized =
+          (await this.#options.computerViews.authorizeInput?.(source, actor)) === runnerId;
+      } catch {
+        authorized = false;
+      }
+    }
+    if (
+      this.#streams.get(attached.streamId) !== attached ||
+      socket.readyState !== socket.OPEN ||
+      !this.#sourceLive(source, actor, runnerId)
+    ) {
+      socket.close(displayViewerCloseCodes.ended, "Display authority ended");
+      return { handle: () => undefined, close: () => undefined };
+    }
     const viewer: Viewer = {
+      sharedInput: options.sharedInput === true,
+      authorized,
+      inputSequence: -1,
+      sentInput: false,
+      checkedAt: this.#now(),
+      checking: false,
       editing: options.editing === true,
       displayCut: options.editing === true && options.displayCut === true && !target,
       inputCounters: { operations: {}, refusals: {}, clipboard: {}, contextUpdates: 0 },
@@ -439,8 +468,6 @@ export class DisplayStreamHub {
     const close = (trigger = "detach", code?: number) => {
       if (!attached.viewers.delete(viewer)) return;
       this.#viewerRemoved(attached, viewer, viewer.removalTrigger ?? trigger, code);
-      if (attached.control?.viewer === viewer) this.#release(attached);
-      if (attached.macControl?.viewer === viewer) this.#releaseMac(attached);
       this.#demand(attached);
       if (!attached.target && attached.viewers.size === 0)
         attached.stopAt = this.#now() + displayDemandGraceMs;
@@ -612,99 +639,44 @@ export class DisplayStreamHub {
       this.#endUnavailable(stream, "Display fence ended");
       return;
     }
-    if (
-      event.type === "runner.integrations.display.input-result" ||
-      event.type === "runner.integrations.display.editing" ||
-      event.type === "runner.integrations.display.clipboard"
-    ) {
-      const control = stream.control;
-      if (
-        stream.target ||
-        stream.editingVersion !== 1 ||
-        !control ||
-        control.state !== "held" ||
-        !control.viewer.editing ||
-        !stream.viewers.has(control.viewer) ||
-        !this.#viewerLive(stream, control.viewer) ||
-        control.id !== event.controlId ||
-        control.sessionId !== event.sessionId ||
-        event.geometry !== stream.generation ||
-        stream.state.state !== "live"
-      )
-        return;
-      if (event.type === "runner.integrations.display.editing") {
-        this.#json(control.viewer.socket, {
-          type: "display.editing",
-          generation: event.geometry,
-          context: event.context,
-        });
-        control.viewer.inputCounters.contextUpdates++;
-        return;
-      }
-      const pending = control.pending.get(event.sequence);
-      if (!pending) return;
-      if (event.type === "runner.integrations.display.input-result") {
-        if (!pending.result) return;
-        pending.result = false;
-        this.#json(control.viewer.socket, {
-          type: "display.input.result",
-          sequence: event.sequence,
-          outcome: event.outcome,
-          ...(event.reason ? { reason: event.reason } : {}),
-        });
-        if (event.outcome !== "dispatched") pending.copy = false;
-        if (event.reason)
-          control.viewer.inputCounters.refusals[event.reason] =
-            (control.viewer.inputCounters.refusals[event.reason] ?? 0) + 1;
-      } else {
-        if (!pending.copy) return;
-        if (
-          event.outcome === "cut" &&
-          (!pending.cut || stream.displayCut !== 1 || !control.viewer.displayCut)
-        )
-          return;
-        pending.copy = false;
-        this.#json(control.viewer.socket, {
-          type: "display.clipboard",
-          sequence: event.sequence,
-          outcome: event.outcome,
-          ...(event.text !== undefined ? { text: event.text } : {}),
-        });
-        control.viewer.inputCounters.clipboard[event.outcome] =
-          (control.viewer.inputCounters.clipboard[event.outcome] ?? 0) + 1;
-      }
-      if (!pending.result && !pending.copy) control.pending.delete(event.sequence);
+    if (event.type === "runner.integrations.mac-owner.event") {
+      if (!stream.target) return;
+      this.#inputEvent(stream, event.message, undefined, event.source);
       return;
     }
-    if (event.type === "runner.integrations.mac-owner.event") {
-      const control = stream.macControl;
-      if (
-        (event.message.type === "display.clipboard" && event.message.outcome === "cut") ||
-        !control ||
-        event.controlId !== control.id ||
-        displaySourceKey(event.source) !== displaySourceKey(control.source) ||
-        !control.viewer.editing
-      )
-        return;
-      if (
-        event.message.type === "display.editing" &&
-        event.message.generation !== stream.generation
-      )
-        return;
-      if (event.message.type === "display.control") {
-        if (
-          event.message.state === "held" &&
-          control.state !== "acquiring" &&
-          control.state !== "held"
-        )
-          return;
-        if (control.state === "releasing" && event.message.state === "held") return;
-        if (event.message.state === "held") {
-          control.state = "held";
-          control.deadline = Infinity;
-        } else stream.macControl = undefined;
-      } else if (control.state !== "held") return;
-      if (stream.viewers.has(control.viewer)) this.#json(control.viewer.socket, event.message);
+    if (event.type === "runner.integrations.display.editing") {
+      if (!stream.target && stream.editingVersion === 1)
+        this.#inputEvent(
+          stream,
+          { type: "display.editing", generation: event.geometry, context: event.context },
+          event.geometry,
+          { kind: "task-session", sessionId: event.sessionId },
+        );
+      return;
+    }
+    if (
+      event.type === "runner.integrations.display.input-result" ||
+      event.type === "runner.integrations.display.clipboard"
+    ) {
+      if (stream.target) return;
+      const message =
+        event.type === "runner.integrations.display.input-result"
+          ? {
+              type: "display.input.result" as const,
+              sequence: event.sequence,
+              outcome: event.outcome,
+              ...(event.reason ? { reason: event.reason } : {}),
+            }
+          : {
+              type: "display.clipboard" as const,
+              sequence: event.sequence,
+              outcome: event.outcome,
+              ...(event.text !== undefined ? { text: event.text } : {}),
+            };
+      this.#inputEvent(stream, message, event.geometry, {
+        kind: "task-session",
+        sessionId: event.sessionId,
+      });
       return;
     }
     if (event.type === "runner.integrations.display.source-changed") {
@@ -730,29 +702,6 @@ export class DisplayStreamHub {
       if (event.source.kind === "owner-view")
         this.#options.computerViews.endDisplaySource(event.source, runnerId, event.reason);
       this.#endSource(stream, event.source, event.reason);
-      return;
-    }
-    if (event.type === "runner.integrations.display.control-state") {
-      const control = stream.control;
-      if (
-        !control ||
-        control.id !== event.controlId ||
-        control.viewer.source.kind !== "task-session" ||
-        control.viewer.source.sessionId !== event.sessionId
-      )
-        return;
-      if (control.state === "releasing" && event.state === "held") return;
-      if (event.state === "held") {
-        control.state = "held";
-        control.deadline = null;
-      } else stream.control = null;
-      if (stream.viewers.has(control.viewer))
-        this.#json(control.viewer.socket, {
-          type: "display.control",
-          controlId: event.controlId,
-          state: event.state,
-          ...(event.reason === undefined ? {} : { reason: event.reason }),
-        });
       return;
     }
     if (event.streamId !== stream.streamId) return;
@@ -823,31 +772,25 @@ export class DisplayStreamHub {
       current.reason === next.reason
     )
       return;
-    if (current.generation !== next.generation && stream.control) {
-      const control = stream.control;
-      if (control.viewer.editing && stream.editingVersion === 1)
-        for (const [sequence, pending] of control.pending) {
-          if (pending.result) {
-            this.#json(control.viewer.socket, {
-              type: "display.input.result",
-              sequence,
-              outcome: "stale",
-              reason: "stale",
-            });
-            control.viewer.inputCounters.refusals.stale =
-              (control.viewer.inputCounters.refusals.stale ?? 0) + 1;
-          }
-          if (pending.copy) {
-            this.#json(control.viewer.socket, {
-              type: "display.clipboard",
-              sequence,
-              outcome: "refused",
-            });
-            control.viewer.inputCounters.clipboard.refused =
-              (control.viewer.inputCounters.clipboard.refused ?? 0) + 1;
-          }
-        }
-      control.pending.clear();
+    if (current.generation !== next.generation || next.state !== "live") {
+      this.#resetInput(stream);
+      for (const pending of stream.pending.values()) {
+        if (!stream.viewers.has(pending.viewer)) continue;
+        if (pending.result)
+          this.#json(pending.viewer.socket, {
+            type: "display.input.result",
+            sequence: pending.sequence,
+            outcome: "stale",
+            reason: "stale",
+          });
+        if (pending.copy)
+          this.#json(pending.viewer.socket, {
+            type: "display.clipboard",
+            sequence: pending.sequence,
+            outcome: "refused",
+          });
+      }
+      stream.pending.clear();
     }
     stream.state = next;
     this.#options.onState?.(stream.runnerId, stream.streamId, next);
@@ -864,9 +807,15 @@ export class DisplayStreamHub {
   }
 
   #viewerState(stream: Stream, viewer: Viewer, state: DisplayViewerState): void {
-    const { editingVersion: _editingVersion, displayCut: _displayCut, ...baseline } = state;
+    const {
+      editingVersion: _editingVersion,
+      displayCut: _displayCut,
+      sharedInput: _sharedInput,
+      ...baseline
+    } = state;
     this.#json(viewer.socket, {
       ...baseline,
+      ...(this.#inputAvailable(stream, viewer) ? { sharedInput: 1 } : {}),
       ...(viewer.displayCut && stream.displayCut === 1 && !stream.target ? { displayCut: 1 } : {}),
       ...(viewer.editing &&
       (stream.editingVersion === 1 ||
@@ -942,247 +891,204 @@ export class DisplayStreamHub {
       if (viewer.replayIndex !== null) this.#drainCache(stream, viewer);
       return;
     }
-    if (stream.target) {
-      this.#macMessage(stream, viewer, message);
-      return;
-    }
-    if (viewer.source.kind !== "task-session") return;
     if (message.type === "display.control") {
-      if (message.action === "release") {
-        if (stream.control?.viewer === viewer) this.#release(stream);
-        return;
-      }
-      if (stream.control) {
-        this.#json(viewer.socket, { type: "display.control", state: "busy" });
-        return;
-      }
-      const controlId = DisplayControlIdSchema.parse(`dcl_${randomUUID()}`);
-      stream.control = {
-        id: controlId,
-        sessionId: viewer.source.sessionId,
-        viewer,
-        state: "acquiring",
-        sequence: -1,
-        deadline: this.#now() + displayControlTimeoutMs,
-        pending: new Map(),
-      };
-      this.#send(stream, {
-        ...stream.fence,
-        type: "host.integrations.display.control",
-        sessionId: viewer.source.sessionId,
-        streamId: stream.streamId,
-        controlId,
-        action: "acquire",
-      });
-      return;
-    }
-    const held = stream.control;
-    if (
-      held?.viewer === viewer &&
-      held.state === "held" &&
-      held.id === message.controlId &&
-      viewer.editing &&
-      stream.editingVersion === 1 &&
-      message.sequence > held.sequence &&
-      message.geometry !== stream.generation
-    ) {
-      held.sequence = message.sequence;
-      viewer.inputCounters.refusals.stale = (viewer.inputCounters.refusals.stale ?? 0) + 1;
-      this.#json(viewer.socket, {
-        type: "display.input.result",
-        sequence: message.sequence,
-        outcome: "stale",
-        reason: "stale",
-      });
-      return;
-    }
-    const control = stream.control;
-    if (
-      !control ||
-      control.viewer !== viewer ||
-      control.state !== "held" ||
-      control.id !== message.controlId ||
-      message.sequence <= control.sequence ||
-      message.geometry !== stream.generation ||
-      stream.state.state !== "live"
-    )
-      return;
-    if (
-      viewer.socket.readyState !== viewer.socket.OPEN ||
-      !stream.viewers.has(viewer) ||
-      !this.#viewerLive(stream, viewer) ||
-      !this.#current(stream) ||
-      stream.control !== control ||
-      control.state !== "held" ||
-      message.geometry !== stream.generation ||
-      stream.state.state !== "live"
-    )
-      return;
-    control.sequence = message.sequence;
-    const extended = message.events.some(
-      (event) => !["pointer", "scroll", "nav", "text"].includes(event.kind),
-    );
-    const refused =
-      message.events.some(
-        (event) => event.kind === "mouse" || (event.kind === "paste" && "items" in event),
-      ) ||
-      (extended && (!viewer.editing || stream.editingVersion !== 1)) ||
-      (message.events.some((event) => event.kind === "cut") &&
-        (!viewer.displayCut || stream.displayCut !== 1));
-    if (refused || control.pending.size >= 128) {
-      const reason = refused ? "unsupported" : "too-large";
-      viewer.inputCounters.refusals[reason] = (viewer.inputCounters.refusals[reason] ?? 0) + 1;
-      if (viewer.editing)
-        this.#json(viewer.socket, {
-          type: "display.input.result",
-          sequence: message.sequence,
-          outcome: "refused",
-          reason: refused ? "unsupported" : "too-large",
-        });
-      return;
-    }
-    if (viewer.editing && stream.editingVersion === 1)
-      control.pending.set(message.sequence, {
-        result: true,
-        copy: message.events.some((event) => event.kind === "copy" || event.kind === "cut"),
-        cut: message.events.some((event) => event.kind === "cut"),
-      });
-    for (const event of message.events)
-      viewer.inputCounters.operations[event.kind] =
-        (viewer.inputCounters.operations[event.kind] ?? 0) + 1;
-    // Admission and the five-second recheck own database authority. Input only
-    // checks the held session/phone-confirmed lease, then renews without yielding.
-    this.#options.computerUse.noteOwnerActivity(viewer.source.sessionId);
-    const { type: _type, ...input } = message;
-    // Submissions are synchronous and retain the socket's message order; no retry of input.
-    this.#send(stream, {
-      ...stream.fence,
-      ...input,
-      type: "host.integrations.display.input",
-      sessionId: viewer.source.sessionId,
-      streamId: stream.streamId,
-    });
-  }
-
-  #macMessage(stream: Stream, viewer: Viewer, message: DisplayViewerClientMessage): void {
-    if (message.type !== "display.control" && message.type !== "display.input") return;
-    const negotiated =
-      viewer.editing && stream.target?.editingVersion === 1 && viewer.source.kind === "owner-view";
-    if (!negotiated || !this.#options.computerViews.authorizeControl) {
-      if (message.type === "display.control")
+      if (message.action === "acquire")
         this.#json(viewer.socket, {
           type: "display.control",
           state: "refused",
-          reason: "stream-lost",
+          reason: "released-by-owner",
         });
       return;
     }
-    const source = viewer.source;
-    if (source.kind !== "owner-view") return;
-    if (message.type === "display.control") {
-      if (message.action === "release") {
-        if (stream.macControl?.viewer === viewer) this.#releaseMac(stream);
-        return;
-      }
-      if (stream.macControl) {
-        this.#json(viewer.socket, { type: "display.control", state: "busy" });
-        return;
-      }
-      const control: MacControl = {
-        id: DisplayControlIdSchema.parse(`dcl_${randomUUID()}`),
-        viewer,
-        source,
-        state: "authorizing",
-        sequence: -1,
-        deadline: this.#now() + displayControlTimeoutMs,
-        checkedAt: this.#now(),
-        checking: false,
-      };
-      stream.macControl = control;
-      void this.#options.computerViews
-        .authorizeControl(source, viewer.actor)
-        .then((runnerId) => {
-          if (
-            stream.macControl !== control ||
-            control.state !== "authorizing" ||
-            runnerId !== stream.runnerId ||
-            !this.#viewerLive(stream, viewer) ||
-            !this.#current(stream) ||
-            this.#now() >= control.deadline
-          )
-            return;
-          control.state = "acquiring";
-          this.#send(stream, {
-            ...stream.fence,
-            type: "host.integrations.mac-owner.control",
-            streamId: stream.streamId,
-            source,
-            controlId: control.id,
-            action: "acquire",
-            access: "read-write",
-          });
-        })
-        .catch(() => {
-          if (stream.macControl !== control) return;
-          stream.macControl = undefined;
-          this.#json(viewer.socket, {
-            type: "display.control",
-            state: "refused",
-            reason: "stream-lost",
-          });
-        });
+    if (message.type === "display.input-reset") {
+      if (stream.holder === viewer) this.#resetInput(stream);
       return;
     }
-    const control = stream.macControl;
+    if (message.type !== "display.input" || "controlId" in message) return;
+    if (!viewer.sharedInput || message.sequence <= viewer.inputSequence) return;
+    viewer.inputSequence = message.sequence;
+    const extended = message.events.some(
+      (event) => !["pointer", "scroll", "nav", "text"].includes(event.kind),
+    );
+    const editing =
+      viewer.editing && (stream.editingVersion === 1 || stream.target?.editingVersion === 1);
     const reason =
-      !control ||
-      control.viewer !== viewer ||
-      control.state !== "held" ||
-      control.id !== message.controlId
-        ? "not-held"
+      !this.#inputAvailable(stream, viewer) || stream.state.state !== "live"
+        ? "unavailable"
         : message.geometry !== stream.generation
           ? "stale"
-          : message.sequence <= control.sequence || stream.state.state !== "live"
-            ? "unsupported"
-            : message.events.some((event) => event.kind === "cut")
+          : stream.holder && stream.holder !== viewer
+            ? "contended"
+            : (extended && !editing) ||
+                (!stream.target &&
+                  message.events.some(
+                    (event) =>
+                      event.kind === "mouse" || (event.kind === "paste" && "items" in event),
+                  )) ||
+                (message.events.some((event) => event.kind === "cut") &&
+                  (!viewer.displayCut || stream.displayCut !== 1))
               ? "unsupported"
-              : null;
-    if (reason || !control) {
+              : stream.pending.size >= 128
+                ? "too-large"
+                : null;
+    if (reason) {
+      viewer.inputCounters.refusals[reason] = (viewer.inputCounters.refusals[reason] ?? 0) + 1;
       this.#json(viewer.socket, {
         type: "display.input.result",
         sequence: message.sequence,
         outcome: reason === "stale" ? "stale" : "refused",
-        reason: reason ?? "not-held",
+        reason,
       });
       return;
     }
-    control.sequence = message.sequence;
-    const { type: _type, ...input } = message;
-    this.#send(stream, {
-      ...stream.fence,
-      ...input,
-      type: "host.integrations.mac-owner.input",
-      streamId: stream.streamId,
-      source,
-    });
-  }
-  #releaseMac(stream: Stream): void {
-    const control = stream.macControl;
-    if (!control || control.state === "releasing") return;
-    const acquired = control.state !== "authorizing";
-    control.state = "releasing";
-    control.deadline = this.#now() + displayControlTimeoutMs;
-    if (acquired)
+    const sequence = stream.inputSequence++;
+    if (editing)
+      stream.pending.set(sequence, {
+        viewer,
+        sequence: message.sequence,
+        geometry: message.geometry,
+        result: true,
+        copy: message.events.some((event) => event.kind === "copy" || event.kind === "cut"),
+        cut: message.events.some((event) => event.kind === "cut"),
+      });
+    viewer.sentInput = true;
+    for (const event of message.events) {
+      viewer.inputCounters.operations[event.kind] =
+        (viewer.inputCounters.operations[event.kind] ?? 0) + 1;
+      this.#trackHeld(stream, event);
+    }
+    stream.holder = stream.held.size ? viewer : null;
+    if (stream.target && viewer.source.kind === "owner-view") {
       this.#send(stream, {
         ...stream.fence,
-        type: "host.integrations.mac-owner.control",
+        type: "host.integrations.mac-owner.input",
         streamId: stream.streamId,
-        source: control.source,
-        controlId: control.id,
-        action: "release",
-        access: "read-write",
+        source: viewer.source,
+        geometry: message.geometry,
+        sequence,
+        events: message.events,
       });
-    else stream.macControl = undefined;
+    } else if (viewer.source.kind === "task-session") {
+      this.#options.computerUse.noteOwnerActivity(viewer.source.sessionId);
+      this.#send(stream, {
+        ...stream.fence,
+        type: "host.integrations.display.input",
+        sessionId: viewer.source.sessionId,
+        streamId: stream.streamId,
+        geometry: message.geometry,
+        sequence,
+        events: message.events,
+      });
+    }
+  }
+
+  #inputAuthorization(stream: Stream, viewer: Viewer, authorized: boolean): void {
+    if (
+      !stream.viewers.has(viewer) ||
+      this.#streams.get(stream.streamId) !== stream ||
+      viewer.authorized === authorized
+    )
+      return;
+    viewer.authorized = authorized;
+    if (!authorized && stream.holder === viewer) this.#resetInput(stream);
+    this.#viewerState(stream, viewer, stream.state);
+  }
+
+  #inputAvailable(stream: Stream, viewer: Viewer): boolean {
+    return (
+      viewer.sharedInput &&
+      viewer.authorized &&
+      (stream.target
+        ? stream.target.editingVersion === 1 && viewer.source.kind === "owner-view"
+        : stream.sharedInput === 1 && viewer.source.kind === "task-session")
+    );
+  }
+
+  #trackHeld(stream: Stream, event: DisplayInputEvent): void {
+    if (event.kind === "pointer" || event.kind === "mouse") {
+      const key = event.kind === "pointer" ? "pointer" : `mouse:${event.button}`;
+      if (event.phase === "down") stream.held.add(key);
+      else if (event.phase === "up") stream.held.delete(key);
+      else if (event.phase === "cancel") {
+        for (const held of stream.held)
+          if (event.kind === "pointer" ? held === "pointer" : held.startsWith("mouse:"))
+            stream.held.delete(held);
+      }
+    } else if (event.kind === "key") {
+      if (event.action === "down") stream.held.add(`key:${event.code}`);
+      else stream.held.delete(`key:${event.code}`);
+    }
+  }
+
+  #resetInput(stream: Stream): void {
+    const holder = stream.holder;
+    if (!holder) return;
+    stream.holder = null;
+    stream.held.clear();
+    if (stream.target && holder.source.kind === "owner-view")
+      this.#send(stream, {
+        ...stream.fence,
+        type: "host.integrations.mac-owner.input-reset",
+        streamId: stream.streamId,
+        source: holder.source,
+      });
+    else if (holder.source.kind === "task-session")
+      this.#send(stream, {
+        ...stream.fence,
+        type: "host.integrations.display.input-reset",
+        sessionId: holder.source.sessionId,
+        streamId: stream.streamId,
+      });
+  }
+
+  #inputEvent(
+    stream: Stream,
+    message: DisplayInputResult | DisplayClipboard | DisplayEditing,
+    geometry?: number,
+    source?: DisplaySource,
+  ): void {
+    if (stream.state.state !== "live" || (geometry !== undefined && geometry !== stream.generation))
+      return;
+    if (message.type === "display.editing") {
+      if (message.generation !== stream.generation) return;
+      for (const viewer of stream.viewers)
+        if (
+          this.#inputAvailable(stream, viewer) &&
+          viewer.editing &&
+          this.#viewerLive(stream, viewer)
+        ) {
+          this.#json(viewer.socket, message);
+          viewer.inputCounters.contextUpdates++;
+        }
+      return;
+    }
+    const pending = stream.pending.get(message.sequence);
+    if (
+      !pending ||
+      pending.geometry !== stream.generation ||
+      !stream.viewers.has(pending.viewer) ||
+      !this.#inputAvailable(stream, pending.viewer) ||
+      !this.#viewerLive(stream, pending.viewer)
+    )
+      return;
+    if (
+      source &&
+      (source.kind === "task-session"
+        ? pending.viewer.source.kind !== "task-session" ||
+          source.sessionId !== pending.viewer.source.sessionId
+        : displaySourceKey(source) !== displaySourceKey(pending.viewer.source))
+    )
+      return;
+    if (message.type === "display.input.result") {
+      if (!pending.result) return;
+      pending.result = false;
+      if (message.outcome !== "dispatched") pending.copy = false;
+    } else {
+      if (!pending.copy || (message.outcome === "cut" && !pending.cut)) return;
+      pending.copy = false;
+    }
+    this.#json(pending.viewer.socket, { ...message, sequence: pending.sequence });
+    if (!pending.result && !pending.copy) stream.pending.delete(message.sequence);
   }
 
   #clearCache(stream: Stream): void {
@@ -1249,20 +1155,6 @@ export class DisplayStreamHub {
     }
   }
 
-  #release(stream: Stream): void {
-    const control = stream.control;
-    if (!control || control.state === "releasing") return;
-    control.state = "releasing";
-    control.deadline = this.#now() + displayControlTimeoutMs;
-    this.#send(stream, {
-      ...stream.fence,
-      type: "host.integrations.display.control",
-      sessionId: control.sessionId,
-      streamId: stream.streamId,
-      controlId: control.id,
-      action: "release",
-    });
-  }
   #refresh(stream: Stream): void {
     if (this.#now() - stream.refreshAt < displayRefreshCoalescingMs) {
       stream.refreshPending = true;
@@ -1335,27 +1227,24 @@ export class DisplayStreamHub {
         continue;
       }
       for (const viewer of stream.viewers) this.#viewerLive(stream, viewer);
-      const mac = stream.macControl;
-      if (mac && this.#now() >= mac.deadline) {
-        this.#releaseMac(stream);
-        stream.macControl = undefined;
-        if (stream.viewers.has(mac.viewer))
-          this.#json(mac.viewer.socket, {
-            type: "display.control",
-            state: "released",
-            controlId: mac.id,
-            reason: "timed-out",
-          });
-      } else if (mac?.state === "held" && !mac.checking && this.#now() - mac.checkedAt >= 5_000) {
-        mac.checking = true;
+      for (const viewer of stream.viewers) {
+        if (
+          !stream.target ||
+          viewer.source.kind !== "owner-view" ||
+          !viewer.sharedInput ||
+          !viewer.sentInput ||
+          viewer.checking ||
+          this.#now() - viewer.checkedAt < 5_000
+        )
+          continue;
+        viewer.checking = true;
         void this.#options.computerViews
-          .authorizeControl?.(mac.source, mac.viewer.actor)
-          .then(() => {
-            mac.checkedAt = this.#now();
-          })
-          .catch(() => this.#releaseMac(stream))
+          .authorizeInput?.(viewer.source, viewer.actor)
+          .then((runner) => this.#inputAuthorization(stream, viewer, runner === stream.runnerId))
+          .catch(() => this.#inputAuthorization(stream, viewer, false))
           .finally(() => {
-            mac.checking = false;
+            viewer.checkedAt = this.#now();
+            viewer.checking = false;
           });
       }
       for (const { source, actor } of stream.authorities.values())
@@ -1385,27 +1274,6 @@ export class DisplayStreamHub {
       if (stream.stopAt !== null && this.#now() >= stream.stopAt) {
         this.#end(stream, displayViewerCloseCodes.ended, "Display demand ended");
         continue;
-      }
-      const control = stream.control;
-      if (control && control.deadline !== null && this.#now() >= control.deadline) {
-        // Release again even if the first release response was lost. Old answers
-        // cannot acquire the replacement lease because each attempt has a new id.
-        this.#send(stream, {
-          ...stream.fence,
-          type: "host.integrations.display.control",
-          sessionId: control.sessionId,
-          streamId: stream.streamId,
-          controlId: control.id,
-          action: "release",
-        });
-        stream.control = null;
-        if (stream.viewers.has(control.viewer))
-          this.#json(control.viewer.socket, {
-            type: "display.control",
-            controlId: control.id,
-            state: "released",
-            reason: "timed-out",
-          });
       }
       for (const viewer of stream.viewers)
         if (
@@ -1522,7 +1390,9 @@ export class DisplayStreamHub {
     reason?: string,
   ): void {
     const source = viewer.source;
-    if (stream.macControl?.viewer === viewer) this.#releaseMac(stream);
+    if (stream.holder === viewer) this.#resetInput(stream);
+    for (const [sequence, pending] of stream.pending)
+      if (pending.viewer === viewer) stream.pending.delete(sequence);
     this.#options.log?.("computer.display.viewer-removed", {
       streamId: stream.streamId,
       mediaGeneration: stream.generation,
@@ -1542,7 +1412,6 @@ export class DisplayStreamHub {
     let removed = stream.authorities.delete(displaySourceKey(source));
     for (const viewer of stream.viewers) {
       if (displaySourceKey(viewer.source) !== displaySourceKey(source)) continue;
-      if (stream.control?.viewer === viewer) this.#release(stream);
       this.#viewerState(stream, viewer, { ...stream.state, state: "stopped", reason });
       removed = true;
       stream.viewers.delete(viewer);
@@ -1659,8 +1528,7 @@ export class DisplayStreamHub {
       });
     this.#streams.delete(stream.streamId);
     if (this.#byTarget.get(stream.key) === stream) this.#byTarget.delete(stream.key);
-    this.#release(stream);
-    this.#releaseMac(stream);
+    this.#resetInput(stream);
     this.#send(stream, {
       ...stream.fence,
       type: "host.integrations.display.stop",

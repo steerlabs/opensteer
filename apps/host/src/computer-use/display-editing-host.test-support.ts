@@ -10,7 +10,6 @@ import {
   RunnerAuxiliaryFrameFenceSchema,
   type HostIntegrationsOperation,
   type HostIntegrationsDisplayStart,
-  type DisplayControlId,
   type DisplayViewerServerMessage,
 } from "@opensteer/protocol";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
@@ -58,13 +57,14 @@ export async function displayEditingHost(options: {
         integrations: {
           platform: options.mac ? "darwin" : "android",
           protocolVersion: options.mac ? 5 : 4,
+          ...(!options.mac && options.editing ? { sharedInput: 1 } : {}),
           ...(options.editing ? { editing: 1 } : {}),
           ...(options.mac
             ? {
                 computerUseVersion: 2,
                 ownerViewVersion: 3,
                 macWindowVideoVersion: 1,
-                macOwnerInputVersion: 1,
+                macOwnerInputVersion: 2,
               }
             : {}),
         },
@@ -90,7 +90,7 @@ export async function displayEditingHost(options: {
     onRunnerDetached: (id, reason) => hub.forgetRunner(id, reason),
     onDisplayEvent: (id, event) => hub.handlePhoneEvent(id, event),
   });
-  const emit = async (controlId: DisplayControlId, message: DisplayViewerServerMessage) => {
+  const emit = async (message: DisplayViewerServerMessage) => {
     if (!start) throw new Error("No producer stream");
     if (options.mac) {
       await apps.handleMessage(peer, stream, {
@@ -98,19 +98,12 @@ export async function displayEditingHost(options: {
         type: "runner.integrations.mac-owner.event",
         streamId: start.streamId,
         source,
-        controlId,
         message,
       } as never);
       return;
     }
-    const base = { ...fence, streamId: start.streamId, sessionId, controlId, geometry: 1 };
-    if (message.type === "display.control")
-      await apps.handleMessage(peer, stream, {
-        ...base,
-        type: "runner.integrations.display.control-state",
-        state: message.state,
-      } as never);
-    else if (message.type === "display.editing")
+    const base = { ...fence, streamId: start.streamId, sessionId, geometry: 1 };
+    if (message.type === "display.editing")
       await apps.handleMessage(peer, stream, {
         ...base,
         type: "runner.integrations.display.editing",
@@ -146,7 +139,7 @@ export async function displayEditingHost(options: {
           target: {
             kind: "mac-window",
             bindingId,
-            ...(options.editing && message.ownerInputVersion === 1 ? { editingVersion: 1 } : {}),
+            ...(options.editing && message.ownerInputVersion === 2 ? { editingVersion: 1 } : {}),
           },
         });
       } else if (message.type === "host.integrations.display.start") {
@@ -170,6 +163,7 @@ export async function displayEditingHost(options: {
               height: 780,
               rotation: 0,
             });
+            if (options.editing) await emit({ type: "display.editing", generation: 1, context });
             data.send(
               encodeDisplayMediaFrame(
                 {
@@ -188,18 +182,6 @@ export async function displayEditingHost(options: {
           })().catch((error) => failures.push(String(error)));
         }, 0);
       } else if (
-        message.type === "host.integrations.display.control" ||
-        message.type === "host.integrations.mac-owner.control"
-      ) {
-        if (message.action === "release") released = true;
-        await emit(message.controlId, {
-          type: "display.control",
-          controlId: message.controlId,
-          state: message.action === "acquire" ? "held" : "released",
-        });
-        if (message.action === "acquire" && options.editing)
-          await emit(message.controlId, { type: "display.editing", generation: 1, context });
-      } else if (
         message.type === "host.integrations.display.input" ||
         message.type === "host.integrations.mac-owner.input"
       ) {
@@ -207,21 +189,25 @@ export async function displayEditingHost(options: {
           (event) => event.kind === "paste" && "items" in event,
         );
         if (options.editing) {
-          await emit(message.controlId, {
+          await emit({
             type: "display.input.result",
             sequence: message.sequence,
             outcome: unsupported ? "refused" : "dispatched",
             ...(unsupported ? { reason: "unsupported" as const } : {}),
           });
           if (message.events.some((event) => event.kind === "copy"))
-            await emit(message.controlId, {
+            await emit({
               type: "display.clipboard",
               sequence: message.sequence,
               outcome: "copied",
               text: "fixture selection",
             });
         }
-      }
+      } else if (
+        message.type === "host.integrations.display.input-reset" ||
+        message.type === "host.integrations.mac-owner.input-reset"
+      )
+        released = true;
     },
   };
   hub = new DisplayStreamHub({
@@ -236,7 +222,7 @@ export async function displayEditingHost(options: {
       authorizeDisplay: async () => runnerId,
       isDisplayLive: () => true,
       endDisplaySource: () => undefined,
-      authorizeControl: async () => runnerId,
+      authorizeInput: async () => runnerId,
     },
   });
   apps.attach(peer, stream);
@@ -277,6 +263,7 @@ export async function displayEditingHost(options: {
       if (request.url) {
         const url = new URL(request.url, "http://fixture");
         url.searchParams.delete("editing");
+        url.searchParams.delete("sharedInput");
         request.url = url.pathname + url.search;
       }
     });
@@ -296,7 +283,7 @@ export async function displayEditingHost(options: {
       const route =
         source.kind === "owner-view" ? `views/${source.viewId}/1` : `sessions/${source.sessionId}`;
       const socket = new WebSocket(
-        `${base}/v1/computer-use/${route}/display${editing ? "?editing=1" : ""}`,
+        `${base}/v1/computer-use/${route}/display${editing ? "?editing=1&sharedInput=1" : ""}`,
       );
       sockets.add(socket);
       return socket;

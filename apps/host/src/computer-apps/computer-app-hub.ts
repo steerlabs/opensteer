@@ -256,7 +256,6 @@ export interface ComputerAppHubOptions {
           | "runner.integrations.display.clipboard"
           | "runner.integrations.mac-owner.event"
           | "runner.integrations.display.state"
-          | "runner.integrations.display.control-state"
           | "runner.integrations.display.source-ended"
           | "runner.integrations.display.source-changed";
       }
@@ -542,7 +541,6 @@ export class ComputerAppHub {
       message.type === "runner.integrations.display.clipboard" ||
       message.type === "runner.integrations.mac-owner.event" ||
       message.type === "runner.integrations.display.state" ||
-      message.type === "runner.integrations.display.control-state" ||
       message.type === "runner.integrations.display.source-ended" ||
       message.type === "runner.integrations.display.source-changed"
     ) {
@@ -948,6 +946,7 @@ export class ComputerAppHub {
         readonly mac?: true;
         readonly editingVersion?: 1;
         readonly displayCut?: 1;
+        readonly sharedInput?: 1;
       }
     | "unsupported"
     | null {
@@ -970,6 +969,9 @@ export class ComputerAppHub {
       return "unsupported";
     return {
       fence: { ...stream.fence, module: stream.fence.module },
+      ...(module.platform === "android" && module.sharedInput === 1
+        ? { sharedInput: 1 as const }
+        : {}),
       ...(module.platform === "darwin" ? { mac: true as const } : {}),
       ...(module.platform === "android" && module.editing === 1 && module.displayCut === 1
         ? { displayCut: 1 as const }
@@ -1008,8 +1010,8 @@ export class ComputerAppHub {
       void this.#sendControl(entry, {
         ...live.fence,
         type: "host.integrations.display.resolve",
-        ...(entry.stream.identity.modules.integrations?.macOwnerInputVersion === 1
-          ? { ownerInputVersion: 1 as const }
+        ...(entry.stream.identity.modules.integrations?.macOwnerInputVersion === 2
+          ? { ownerInputVersion: 2 as const }
           : {}),
         requestId,
         source,
