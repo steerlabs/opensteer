@@ -525,7 +525,9 @@ function lastUsed(entry: string): number | undefined {
   }
 }
 
-const runIdReference = /\d{8}T\d{6}Z-[0-9a-f]{8}/gu;
+// A lookahead captures overlapping IDs: one that starts inside another's hex
+// suffix must still count, or a referenced run would be deleted.
+const runIdReference = /(?=(\d{8}T\d{6}Z-[0-9a-f]{8}))/gu;
 
 /**
  * Run IDs named by any file in the state tree that may name a run: notes,
@@ -550,7 +552,7 @@ export function referencedRunIds(state: string): { runIds: Set<string>; unreadab
     "sweep",
   ]);
   const collect = (text: string) => {
-    for (const match of text.matchAll(runIdReference)) runIds.add(match[0]);
+    for (const match of text.matchAll(runIdReference)) runIds.add(match[1]!);
   };
   const read = (filename: string) => {
     const stats = statSync(filename);

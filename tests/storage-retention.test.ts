@@ -445,6 +445,8 @@ describe("storage retention safety", () => {
     const notes = path.join(f.state, "work", "notes");
     mkdirSync(notes, { recursive: true });
     writeFileSync(path.join(notes, "note.md"), "kept 20261020T000000Z-aaaaaaaa for review");
+    // The digits of the second ID are hex, so a non-overlapping match would swallow them.
+    writeFileSync(path.join(notes, "pair.txt"), "20261019T120000Z-20261020T000000Z-eeeeeeee");
     writeFileSync(
       path.join(notes, "suite.log"),
       Buffer.concat([Buffer.alloc(5 * 1024 ** 2, "x"), Buffer.from("20261020T000000Z-bbbbbbbb")]),
@@ -459,6 +461,8 @@ describe("storage retention safety", () => {
         "20261020T000000Z-aaaaaaaa",
         "20261020T000000Z-bbbbbbbb",
         "20261020T000000Z-cccccccc",
+        "20261019T120000Z-20261020",
+        "20261020T000000Z-eeeeeeee",
       ]),
     });
   });
