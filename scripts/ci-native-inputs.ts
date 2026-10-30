@@ -1,26 +1,39 @@
 /**
  * Writes .github/scripts/ci-native-inputs.json: for each native-mac task that runs
- * node scripts, what those scripts statically import. A workspace package counts
+ * node, what its scripts and Vitest files statically import (the lane task also runs
+ * the Darwin-only files, and Vitest loads its config). A workspace package counts
  * whole, manifest included, so a new module in it needs no regeneration. The
  * `changes` job stays dependency-free by reading this list;
  * tests/ci-native-inputs.test.ts fails when it is stale.
  *   pnpm exec tsx scripts/ci-native-inputs.ts
  */
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { z } from "zod";
+import { darwinOnlyTests, defaultTestExclude } from "../.github/scripts/ci-test-files.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const configSchema = z.object({
-  tasks: z.array(z.object({ task: z.string(), scripts: z.array(z.string()).optional() })),
+  tasks: z.array(
+    z.object({
+      task: z.string(),
+      scripts: z.array(z.string()).optional(),
+      vitest: z.array(z.string()).optional(),
+      lane: z.boolean().optional(),
+    }),
+  ),
 });
 export const nativeInputsPath = path.join(root, ".github/scripts/ci-native-inputs.json");
 
-async function imports(entry: string): Promise<string[]> {
+/** Everything `entries` statically import, from one build. */
+async function imports(entries: readonly string[]): Promise<string[]> {
   const result = await build({
-    entryPoints: [path.join(root, entry)],
+    entryPoints: entries.map((entry) => path.join(root, entry)),
+    // Several entries need an output directory; nothing is written.
+    outdir: path.join(root, ".ci-native-inputs"),
     absWorkingDir: root,
     bundle: true,
     format: "esm",
@@ -49,13 +62,44 @@ export async function nativeInputs(): Promise<Record<string, string[]>> {
   const config = configSchema.parse(
     JSON.parse(readFileSync(path.join(root, ".github/scripts/ci-native-mac.json"), "utf8")),
   );
+  const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" })
+    .split("\0")
+    .filter(Boolean);
+  // An entry ending in "/" names the Vitest files `vitest run <directory>/` runs there.
+  const testsIn = (entry: string) =>
+    entry.endsWith("/")
+      ? tracked.filter(
+          (file) =>
+            file.startsWith(entry) &&
+            /\.test\.tsx?$/u.test(file) &&
+            !defaultTestExclude.some((glob) => path.matchesGlob(file, glob)),
+        )
+      : [entry];
+  // Vite transforms each module with the tsconfig files above it.
+  const tsconfigs = (file: string) =>
+    path
+      .dirname(file)
+      .split("/")
+      .map((_, index, parts) => path.join(...parts.slice(0, index + 1), "tsconfig.json"))
+      .concat("tsconfig.json")
+      .filter((candidate) => tracked.includes(candidate));
   const inputs: Record<string, string[]> = {};
-  for (const { task, scripts = [] } of config.tasks) {
-    if (!scripts.length) continue;
+  for (const { task, scripts = [], vitest = [], lane } of config.tasks) {
+    const entries = [
+      ...scripts,
+      ...vitest.flatMap(testsIn),
+      ...(lane ? darwinOnlyTests : []),
+      ...(vitest.length || lane ? ["vitest.config.ts"] : []),
+    ];
+    if (!entries.length) continue;
     const files = new Set<string>();
-    for (const script of scripts)
-      for (const file of await imports(script))
-        files.add(/^packages\/[^/]+\//u.test(file) ? file.split("/").slice(0, 2).join("/") : file);
+    const collapse = (file: string) =>
+      /^packages\/[^/]+\//u.test(file) ? file.split("/").slice(0, 2).join("/") : file;
+    for (const file of await imports(entries)) {
+      files.add(collapse(file));
+      if (vitest.length || lane)
+        for (const tsconfig of tsconfigs(file)) files.add(collapse(tsconfig));
+    }
     inputs[task] = [...files].sort((left, right) => left.localeCompare(right, "en"));
   }
   return inputs;

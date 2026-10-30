@@ -1,5 +1,7 @@
 import { allNativeMacTasks, lanes } from "./ci-changes.mjs";
-export function validateResults(plan, needs, event) {
+const events = new Set(["pull_request", "push", "schedule", "workflow_dispatch"]);
+export function validateResults(plan, needs, event, sha) {
+  if (!events.has(event)) throw new Error(`Unknown CI event: ${event}`);
   if (needs.changes?.result !== "success" || plan?.version !== 1 || plan.detectionError === true)
     throw new Error("Change detection failed");
   const tasks = plan.nativeMac;
@@ -16,15 +18,29 @@ export function validateResults(plan, needs, event) {
     plan.lanes?.["native-mac"] !== tasks.length > 0
   )
     throw new Error("Missing/invalid plan output: native-mac-tasks");
-  if (event !== "pull_request" && tasks.length !== allNativeMacTasks.length)
-    throw new Error("Main/manual forbids skipping native-mac tasks");
+  // Only a scheduled run may find nothing new on main since its last full run.
+  const unchanged = plan.unchangedSince !== undefined;
+  if (
+    unchanged &&
+    (event !== "schedule" ||
+      plan.unchangedSince !== sha ||
+      tasks.length ||
+      Object.values(plan.lanes).some(Boolean))
+  )
+    throw new Error("Only a scheduled run on an unchanged main may skip everything");
+  // The scheduled and manual runs back up main's per-push macOS selection.
+  const full = !unchanged && (event === "schedule" || event === "workflow_dispatch");
+  if (full && tasks.length !== allNativeMacTasks.length)
+    throw new Error("Scheduled/manual runs forbid skipping native-mac tasks");
   for (const lane of lanes) {
     const flag = plan.lanes?.[lane];
     const output = needs.changes.outputs?.[lane];
     if (typeof flag !== "boolean" || output !== String(flag))
       throw new Error(`Missing/invalid plan output: ${lane}`);
-    if (lane === "lint" && !flag) throw new Error("Lint must run");
-    if (event !== "pull_request" && !flag) throw new Error("Main/manual forbids skips");
+    if (lane === "lint" && !flag && !unchanged) throw new Error("Lint must run");
+    // Main selects its macOS tasks per push; every other lane runs there.
+    if (!flag && (full || (event === "push" && lane !== "native-mac")))
+      throw new Error("Main/scheduled/manual forbids skips");
     const result = needs[lane]?.result;
     if (result !== "success" && !(flag === false && result === "skipped"))
       throw new Error(`${lane}: ${result}`);

@@ -96,9 +96,62 @@ test("Check holds the native-mac task list to the plan, and main to every task",
     main.changes.outputs[lane] = "true";
     main[lane] = { result: "success" };
   }
+  // Main picks its macOS tasks per push; the scheduled and manual runs take them all.
+  assert.doesNotThrow(() => validateResults({ ...iphone, lanes: all }, main, "push"));
+  for (const event of ["schedule", "workflow_dispatch"])
+    assert.throws(
+      () => validateResults({ ...iphone, lanes: all }, main, event),
+      /forbid skipping native-mac tasks/,
+    );
+  const noMac = structuredClone(main);
+  noMac.changes.outputs["native-mac"] = "false";
+  noMac.changes.outputs["native-mac-tasks"] = "[]";
+  noMac["native-mac"] = { result: "skipped" };
+  const linuxOnly = { ...iphone, nativeMac: [], lanes: { ...all, "native-mac": false } };
+  assert.doesNotThrow(() => validateResults(linuxOnly, noMac, "push"));
+  assert.throws(() => validateResults(linuxOnly, noMac, "schedule"), /forbid/);
+  // Every other lane still runs on main.
+  const noTests = structuredClone(noMac);
+  noTests.changes.outputs.tests = "false";
+  noTests.tests = { result: "skipped" };
   assert.throws(
-    () => validateResults({ ...iphone, lanes: all }, main, "push"),
-    /forbids skipping native-mac tasks/,
+    () =>
+      validateResults(
+        { ...linuxOnly, lanes: { ...linuxOnly.lanes, tests: false } },
+        noTests,
+        "push",
+      ),
+    /forbids skips/,
+  );
+});
+
+test("only a scheduled run with nothing new on main may skip everything", () => {
+  const none = Object.fromEntries(lanes.map((k) => [k, false]));
+  const unchanged = { version: 1, unchangedSince: "a".repeat(40), nativeMac: [], lanes: none };
+  const needs = {
+    changes: {
+      result: "success",
+      outputs: { ...Object.fromEntries(lanes.map((k) => [k, "false"])), "native-mac-tasks": "[]" },
+    },
+    ...Object.fromEntries(lanes.map((k) => [k, { result: "skipped" }])),
+  };
+  const sha = "a".repeat(40);
+  assert.doesNotThrow(() => validateResults(unchanged, needs, "schedule", sha));
+  // The commit it vouches for must be the one this run is on.
+  assert.throws(
+    () => validateResults(unchanged, needs, "schedule", "b".repeat(40)),
+    /Only a scheduled run/,
+  );
+  for (const event of ["push", "workflow_dispatch", "pull_request"])
+    assert.throws(() => validateResults(unchanged, needs, event, sha), /Only a scheduled run/);
+  assert.throws(() => validateResults(plan, results, undefined), /Unknown CI event/);
+  const partly = structuredClone(needs);
+  partly.changes.outputs.lint = "true";
+  partly.lint = { result: "success" };
+  assert.throws(
+    () =>
+      validateResults({ ...unchanged, lanes: { ...none, lint: true } }, partly, "schedule", sha),
+    /Only a scheduled run/,
   );
 });
 

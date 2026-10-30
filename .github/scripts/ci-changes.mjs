@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import {
-  darwinOnlyTests,
   defaultTestInclude,
   defaultTestExclude,
   integrationTestInclude,
@@ -106,24 +105,33 @@ const nativeInputs = JSON.parse(
 );
 const under = (file, prefix) => file === prefix || file.startsWith(`${prefix}/`);
 /**
- * Swift tasks depend only on their Swift packages, what their node scripts import
- * (ci-native-inputs.json) and the CI definition, so a global edit elsewhere does not
- * rebuild them. The `lane` task carries the Darwin-only TypeScript tests, which keep
- * the Mac lane's broad rule. Main and manual runs select every task.
+ * What can change a native-mac task's result: its Swift packages, the CI definition,
+ * files its Swift tests read, and for a task that runs node (scripts or Vitest
+ * files) what that code imports (ci-native-inputs.json) and the installed packages.
+ * The iphone task's Vitest runs also prove it reads and launches nothing else
+ * (ci-native-access.mjs).
  */
-export function nativeMacTasks(files, { full = false, darwin = false } = {}) {
+export function nativeMacInputs(name) {
+  const task = nativeMac.tasks.find((entry) => entry.task === name);
+  if (!task) throw new Error(`Unknown native-mac task: ${name}`);
+  return [
+    ...nativeMac.ciInputs,
+    ...task.swift,
+    ...(task.extra ?? []),
+    ...(task.scripts?.length || task.vitest?.length
+      ? [...nativeMac.nodeInputs, ...(nativeInputs[task.task] ?? [])]
+      : []),
+  ];
+}
+/**
+ * The tasks whose inputs `files` touch, so a global edit elsewhere runs none of
+ * them. Scheduled and manual runs, and detector errors, select every task.
+ */
+export function nativeMacTasks(files, { full = false } = {}) {
   return nativeMac.tasks
-    .filter((task) => {
+    .filter(({ task }) => {
       if (full) return true;
-      if (task.lane) return darwin;
-      const inputs = [
-        ...nativeMac.ciInputs,
-        ...task.swift,
-        ...(task.extra ?? []),
-        ...(task.scripts?.length
-          ? [...nativeMac.nodeInputs, ...(nativeInputs[task.task] ?? [])]
-          : []),
-      ];
+      const inputs = nativeMacInputs(task);
       return files.some((file) => inputs.some((input) => under(file, input)));
     })
     .map(({ task }) => task);
@@ -145,7 +153,11 @@ export const darwinTask = nativeMac.tasks.find((task) => task.lane).task;
 // test typecheck in build-types, not every lane. Other files under tests/ (support
 // modules, fixtures, quarantine) stay global.
 const rootTest = (p) => /^tests\/.*\.test\.tsx?$/.test(p);
-export function decide(files, graph, baseGraph = graph, full = false) {
+/**
+ * `full` runs every lane, as main does; `fullMac` also runs every native-mac task,
+ * as scheduled and manual runs do. A main push picks its macOS tasks from `files`.
+ */
+export function decide(files, graph, baseGraph = graph, full = false, { fullMac = full } = {}) {
   const reasons = [];
   const affected = new Set();
   const combined = new Map();
@@ -158,15 +170,14 @@ export function decide(files, graph, baseGraph = graph, full = false) {
     });
   }
   let all = full;
-  const rootTests = { any: false, integration: false, darwin: false };
+  const rootTests = { any: false, integration: false };
   let androidSource = false;
   if (full) reasons.push("main/manual full run");
   for (const file of files) {
     if (docs(file)) continue;
     if (rootTest(file)) {
       rootTests.any = true;
-      if (darwinOnlyTests.includes(file)) rootTests.darwin = true;
-      else if (/\.integration\.test\./.test(file)) rootTests.integration = true;
+      if (/\.integration\.test\./.test(file)) rootTests.integration = true;
       continue;
     }
     if (global(file)) {
@@ -221,10 +232,7 @@ export function decide(files, graph, baseGraph = graph, full = false) {
     }
     return false;
   };
-  // It also runs the root darwin-only tests, which can read any workspace like
-  // the root tests below.
-  const darwin = all || reaches("native-mac") || affected.size > 0 || rootTests.darwin;
-  const macTasks = nativeMacTasks(files, { full, darwin });
+  const macTasks = nativeMacTasks(files, { full: fullMac });
   return {
     version: 1,
     full: all,
@@ -244,19 +252,39 @@ export function decide(files, graph, baseGraph = graph, full = false) {
     },
   };
 }
+/** A scheduled run with nothing new on main since the last full run. */
+export function unchangedPlan(sha) {
+  return {
+    version: 1,
+    full: false,
+    unchangedSince: sha,
+    reasons: [`main has not changed since the full run of ${sha}`],
+    affected: [],
+    nativeMac: [],
+    lanes: Object.fromEntries(lanes.map((lane) => [lane, false])),
+  };
+}
 export function detect({
   root = process.cwd(),
   event = process.env.EVENT_NAME,
   base = "HEAD^1",
+  before = process.env.BEFORE_SHA,
+  unchangedSince,
 } = {}) {
   try {
     const graph = readGraph(root);
-    if (event !== "pull_request") return decide([], graph, graph, true);
-    return decide(
-      parseDiff(git(root, ["diff", "--name-only", "-z", "--no-renames", base, "HEAD"])),
-      graph,
-      readGraph(root, base),
-    );
+    const changed = () =>
+      parseDiff(git(root, ["diff", "--name-only", "-z", "--no-renames", base, "HEAD"]));
+    if (event === "pull_request") return decide(changed(), graph, readGraph(root, base));
+    if (event === "push") {
+      // A push of one commit, as a merge is, picks macOS tasks from that commit;
+      // anything else (several commits, a new branch) runs them all.
+      const single = before === git(root, ["rev-parse", "HEAD^1"]).trim();
+      if (!single) return decide([], graph, graph, true);
+      return decide(changed(), graph, readGraph(root, base), true, { fullMac: false });
+    }
+    if (event === "schedule" && unchangedSince) return unchangedPlan(unchangedSince);
+    return decide([], graph, graph, true);
   } catch (error) {
     return {
       version: 1,
@@ -269,8 +297,47 @@ export function detect({
     };
   }
 }
+/**
+ * The commit of the newest earlier scheduled or manual main run that passed. A
+ * failed, cancelled or unfinished run qualified nothing, so the next scheduled run
+ * takes everything again; a later run cannot vouch for a re-run of an earlier one.
+ */
+export async function lastFullRunSha({
+  repository = process.env.GITHUB_REPOSITORY,
+  runNumber = process.env.GITHUB_RUN_NUMBER,
+  token = process.env.GITHUB_TOKEN,
+  request = fetch,
+} = {}) {
+  const runs = [];
+  for (const event of ["schedule", "workflow_dispatch"]) {
+    const response = await request(
+      `https://api.github.com/repos/${repository}/actions/workflows/ci.yml/runs?branch=main&event=${event}&status=success&per_page=20`,
+      { headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}` } },
+    );
+    if (!response.ok) throw new Error(`Listing ${event} runs failed: HTTP ${response.status}`);
+    runs.push(...(await response.json()).workflow_runs);
+  }
+  return runs
+    .filter(
+      (run) =>
+        run.head_branch === "main" &&
+        run.status === "completed" &&
+        run.conclusion === "success" &&
+        run.run_number < Number(runNumber),
+    )
+    .sort((left, right) => right.run_number - left.run_number)[0]?.head_sha;
+}
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const plan = detect();
+  let unchangedSince;
+  if (process.env.EVENT_NAME === "schedule") {
+    // A failed lookup runs the full plan rather than skip it.
+    const last = await lastFullRunSha().catch((error) => {
+      console.warn(`Running the full plan: ${error.message}`);
+      return undefined;
+    });
+    if (last && last === git(process.cwd(), ["rev-parse", "HEAD"]).trim()) unchangedSince = last;
+  }
+  const plan = detect({ unchangedSince });
   writeFileSync(process.env.CI_PLAN_PATH ?? "ci-plan.json", JSON.stringify(plan, null, 2) + "\n");
   const shards = JSON.parse(readFileSync(new URL("./ci-shards.json", import.meta.url), "utf8"));
   for (const [lane, count] of Object.entries(shards)) {

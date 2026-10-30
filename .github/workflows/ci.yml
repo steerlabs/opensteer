@@ -9,16 +9,24 @@ on:
   push:
     branches:
       - main
+  # Main picks its macOS tasks per push; this full run backs that up, and skips
+  # when main has not changed since the last full run.
+  schedule:
+    - cron: "23 */4 * * *"
   workflow_dispatch: null
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 3
+    permissions:
+      contents: read
+      # A scheduled run reads which commit the last full run covered.
+      actions: read
     outputs:
       tests-shards: ${{ steps.changes.outputs.tests-shards }}
       integration-shards: ${{ steps.changes.outputs.integration-shards }}
@@ -261,11 +269,17 @@ jobs:
           CI_INVENTORY_PATH: ${{ runner.temp }}/evidence/darwin-1.inventory.json
           # tests/iphone-apps-wire.test.ts, a Darwin-only file, runs the Swift wire core built above.
           OPENSTEER_IPHONE_APPS_NATIVE_TESTS: "1"
+          # This task runs only when its inputs change; the trace proves its tests
+          # read and launch nothing else.
+          CI_ACCESS_TRACE: ${{ runner.temp }}/evidence/darwin-1.access.jsonl
         run: |
-          pnpm exec vitest run tests/helper-data-contracts.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords
+          export NODE_OPTIONS="--import $GITHUB_WORKSPACE/.github/scripts/ci-access-trace.mjs"
+          pnpm exec vitest run tests/helper-data-contracts.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use/ apps/desktop/src/passwords/
           darwin_only=$(node .github/scripts/ci-test-files.mjs darwin-only)
           pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH" $darwin_only
           pnpm exec vitest run $darwin_only --reporter=default --reporter=./scripts/ci-inventory-reporter.ts
+          unset NODE_OPTIONS
+          node .github/scripts/ci-native-access.mjs "$CI_ACCESS_TRACE" "${{ matrix.task }}"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

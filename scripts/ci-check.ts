@@ -11,7 +11,12 @@ const plan = read("ci-plan.json");
 const shards = JSON.parse(
   readFileSync(new URL("../.github/scripts/ci-shards.json", import.meta.url), "utf8"),
 ) as { tests: number; integration: number };
-validateResults(plan, JSON.parse(process.env.CI_NEEDS!), process.env.CI_EVENT);
+validateResults(
+  plan,
+  JSON.parse(process.env.CI_NEEDS!),
+  process.env.CI_EVENT,
+  process.env.GITHUB_SHA,
+);
 for (const [lane, count] of [
   ["tests", shards.tests],
   ["integration", shards.integration],
