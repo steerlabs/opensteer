@@ -974,8 +974,8 @@ export class HttpHostClient {
   /** The Host's pending count each Thread's last Request read was asked under. */
   readonly #requestReads = new Map<string, number>();
   readonly #threadHydrations = new Map<string, Promise<void>>();
-  /** A reconnect snapshot overtook a history read, so its transcript must be read again. */
-  readonly #invalidatedHydrations = new Set<string>();
+  /** The newest snapshot a history read must cover before it can be installed. */
+  readonly #invalidatedHydrations = new Map<string, Sequence>();
   readonly #threadInputQueueLoads = new Map<string, Promise<ThreadInputQueue>>();
   /** Threads whose queue an event touched while a read of it was in flight. */
   readonly #threadInputQueueRereads = new Set<string>();
@@ -984,7 +984,8 @@ export class HttpHostClient {
    * retry after a lost answer repeats the mutation instead of adding one.
    */
   readonly #threadInputMutationKeys = new Map<string, string>();
-  readonly #hydratedThreads = new Set<string>();
+  /** The Workspace head covered by each installed durable history page. */
+  readonly #hydratedThreads = new Map<string, Sequence>();
   readonly #historicalThreads = new Set<string>();
   readonly #readStateLoads = new Set<Map<string, Sequence>>();
   readonly #notificationPreferences = new Map<string, WorkspaceNotificationPreference>();
@@ -2139,8 +2140,8 @@ export class HttpHostClient {
     if (hydration) await hydration;
     const pageLoad = this.#messagePageLoads.get(threadId);
     if (pageLoad) await pageLoad;
+    if (generation !== this.#viewerGeneration) return;
     await this.#hydrateThread(threadId, true);
-    if (generation === this.#viewerGeneration) this.#hydratedThreads.add(threadId);
   }
 
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void {
@@ -2245,9 +2246,6 @@ export class HttpHostClient {
       threadLookups: { ...this.#snapshot.threadLookups, [threadId]: "loading" },
     });
     const operation = this.#hydrateThread(threadId)
-      .then(() => {
-        if (generation === this.#viewerGeneration) this.#hydratedThreads.add(threadId);
-      })
       .catch((error: unknown) => {
         // A failed refresh leaves the last readable transcript in place. Its
         // failure is visible for known Threads too; activation retries it.
@@ -2289,23 +2287,24 @@ export class HttpHostClient {
     const markers = new Map<string, Sequence>();
     this.#readStateLoads.add(markers);
     try {
-      this.#invalidatedHydrations.delete(threadId);
       let page = await this.#readThreadHistory(threadId);
       if (!this.#viewerStillCurrent(generation, userId)) return;
+      const overtaken = () => {
+        const sequence = this.#invalidatedHydrations.get(threadId);
+        return sequence !== undefined && compareSequence(page.readState.asOfSequence, sequence) < 0;
+      };
       for (
         let attempt = 0;
         attempt < 3 &&
-        (this.#invalidatedHydrations.has(threadId) ||
-          this.#threadState.needsRead(page.thread, page.readState.asOfSequence));
+        (overtaken() || this.#threadState.needsRead(page.thread, page.readState.asOfSequence));
         attempt += 1
       ) {
-        this.#invalidatedHydrations.delete(threadId);
         const fresh = await this.#readThreadHistory(threadId);
         if (compareSequence(fresh.readState.asOfSequence, page.readState.asOfSequence) >= 0)
           page = fresh;
         if (!this.#viewerStillCurrent(generation, userId)) return;
       }
-      if (this.#invalidatedHydrations.has(threadId))
+      if (overtaken())
         throw new Error("The connection changed while loading this conversation. Try again.");
       this.#allowWorkspace(page.thread.workspaceId, generation);
       let entries = page.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
@@ -2336,6 +2335,7 @@ export class HttpHostClient {
       const threadLookups = { ...this.#snapshot.threadLookups };
       delete threadLookups[threadId];
       if (restoreLatest) this.#historicalThreads.delete(threadId);
+      this.#hydratedThreads.set(threadId, page.readState.asOfSequence);
       this.#update({
         ...this.#snapshot,
         assignments: withAssignmentsFrom(this.#snapshot.assignments, [...page.events, ...replayed]),
@@ -4443,6 +4443,15 @@ export class HttpHostClient {
 
   #applyWorkspaceSnapshot(snapshot: WorkspaceSnapshot): void {
     const workspace = this.#toWorkspaceSummary(snapshot.workspace);
+    const inFlight = [...this.#hydrationBuffers.keys()];
+    const coversSnapshot = (threadId: string) => {
+      const sequence = this.#hydratedThreads.get(threadId);
+      return sequence !== undefined && compareSequence(sequence, snapshot.sequence) >= 0;
+    };
+    const retainsHistory = (threadId: string) =>
+      this.#historicalThreads.has(threadId) ||
+      this.#showsThread(threadId) ||
+      coversSnapshot(threadId);
     this.#threadState.cover(workspace.id, snapshot.sequence);
     this.#runQueue.reconcile({
       runQueue: snapshot.runQueue,
@@ -4459,7 +4468,7 @@ export class HttpHostClient {
       if (existing.workspaceId !== workspace.id || incomingThreadIds.has(existing.id)) continue;
       // An active conversation or open task detail stays outside the default
       // visible Thread page; both were hydrated from durable history.
-      if (existing.id === this.#activeThreadId || this.#observedThreads.has(existing.id)) continue;
+      if (this.#showsThread(existing.id)) continue;
       this.#historicalThreads.delete(existing.id);
       this.#hydratedThreads.delete(existing.id);
       delete transcripts[existing.id];
@@ -4472,7 +4481,7 @@ export class HttpHostClient {
         (request) => request.originatingThreadId === thread.id,
       );
       this.#requestReads.delete(thread.id);
-      if (!this.#historicalThreads.has(thread.id) && !this.#showsThread(thread.id)) {
+      if (!retainsHistory(thread.id)) {
         if (snapshot.messagesOmitted) {
           delete transcripts[thread.id];
           delete transcriptWindows[thread.id];
@@ -4483,12 +4492,10 @@ export class HttpHostClient {
       }
     }
     for (const window of snapshot.messageWindows) {
-      if (!this.#historicalThreads.has(window.threadId) && !this.#showsThread(window.threadId))
-        transcriptWindows[window.threadId] = window;
+      if (!retainsHistory(window.threadId)) transcriptWindows[window.threadId] = window;
     }
     for (const message of snapshot.messages) {
-      if (this.#historicalThreads.has(message.threadId) || this.#showsThread(message.threadId))
-        continue;
+      if (retainsHistory(message.threadId)) continue;
       const entry = toTranscriptEntry(message);
       if (!entry) continue;
       transcripts[message.threadId] = upsertEntry(transcripts[message.threadId] ?? [], entry);
@@ -4505,8 +4512,7 @@ export class HttpHostClient {
       ...this.#snapshot.threads.filter(
         (thread) =>
           (thread.workspaceId !== workspace.id ||
-            ((thread.id === this.#activeThreadId || this.#observedThreads.has(thread.id)) &&
-              !incomingThreadIds.has(thread.id))) &&
+            (this.#showsThread(thread.id) && !incomingThreadIds.has(thread.id))) &&
           !workspaceThreadIds.has(thread.id),
       ),
     ];
@@ -4560,28 +4566,29 @@ export class HttpHostClient {
     this.#refreshInputQueues(
       threads.filter((thread) => thread.workspaceId === workspace.id).map(({ id }) => id),
     );
-    // Events this Workspace sent while the stream was down are gone. An
-    // observed Thread keeps what it shows until its history is read again, and
-    // every held Thread reads its assignments again.
-    for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
-      if (threadId === null || this.#threadWorkspace.get(threadId) !== workspace.id) continue;
-      if (!this.#historicalThreads.has(threadId)) {
-        this.#hydratedThreads.delete(threadId);
-        if (this.#hydrationBuffers.has(threadId)) this.#invalidatedHydrations.add(threadId);
-        this.#ensureThreadHydration(threadId);
-      }
-      this.#ensureAssignments(threadId, true);
-    }
-    // A read still in flight for a Thread nobody shows yet, such as Home's
-    // warm read, began before this snapshot: it reads again rather than
-    // install an older page over what the snapshot carried.
-    for (const threadId of this.#hydrationBuffers.keys()) {
+    // Include reads nobody shows yet, such as Home's prefetch. Request timing
+    // alone cannot say whether their database snapshot already covers this cut.
+    for (const threadId of inFlight) {
       if (this.#historicalThreads.has(threadId)) continue;
       if (
         this.#threadWorkspace.get(threadId) === workspace.id ||
         workspace.homeThreadId === threadId
       )
-        this.#invalidatedHydrations.add(threadId);
+        this.#invalidatedHydrations.set(
+          threadId,
+          maxSequence(this.#invalidatedHydrations.get(threadId) ?? zeroSequence, snapshot.sequence),
+        );
+    }
+    // A page covering this snapshot already includes events missed while the
+    // stream was down. Older shown history stays readable until its replacement
+    // succeeds; assignments have no sequence coverage and must be read again.
+    for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
+      if (threadId === null || this.#threadWorkspace.get(threadId) !== workspace.id) continue;
+      if (!this.#historicalThreads.has(threadId) && !coversSnapshot(threadId)) {
+        this.#hydratedThreads.delete(threadId);
+        this.#ensureThreadHydration(threadId);
+      }
+      this.#ensureAssignments(threadId, true);
     }
   }
 
