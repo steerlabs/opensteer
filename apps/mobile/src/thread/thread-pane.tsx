@@ -236,15 +236,82 @@ export interface ConversationSheetMode {
   readonly page: BrowserPageContentPart | null;
 }
 
+/** The pane's complete read set; maps and run entries are scoped to this Thread. */
+function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
+  return {
+    assignments: snapshot.assignments,
+    browserSessions: snapshot.browserSessions,
+    browserProfiles: snapshot.browserProfiles,
+    connection: snapshot.connection,
+    network: snapshot.network,
+    session: snapshot.session,
+    user: snapshot.user,
+    homeThreadId: snapshot.homeThreadId,
+    environments: snapshot.environments,
+    harnesses: snapshot.harnesses,
+    machines: snapshot.machines,
+    waitingRequests: snapshot.waitingRequests,
+    workspaces: snapshot.workspaces,
+    thread: snapshot.threads.find(({ id }) => id === threadId) ?? null,
+    entries: snapshot.transcripts[threadId],
+    window: snapshot.transcriptWindows[threadId],
+    ownRequests: snapshot.requests[threadId],
+    lookup: snapshot.threadLookups[threadId],
+    readState: snapshot.threadReadStates[threadId],
+    runQueue: snapshot.runQueue.filter((run) => run.threadId === threadId),
+    // These helpers read requester/worker Threads and delegated work. Select their
+    // answers against the full store so unrelated transcript maps cannot go stale.
+    task: snapshot.homeThreadId === threadId ? null : taskHeading(snapshot, threadId),
+    outcomes: taskOutcomes(snapshot, threadId),
+  };
+}
+
+type ThreadPaneSelection = ReturnType<typeof selectThreadPane>;
+
+function sameThreadPaneSelection(left: ThreadPaneSelection, right: ThreadPaneSelection): boolean {
+  return (Object.keys(left) as (keyof ThreadPaneSelection)[]).every((key) => {
+    switch (key) {
+      case "task":
+        return sameTaskHeading(left.task, right.task);
+      case "outcomes":
+        return sameTaskOutcomes(left.outcomes, right.outcomes);
+      case "runQueue":
+        return sameEntries(left.runQueue, right.runQueue);
+      case "workspaces":
+        return sameWorkspaceMarks(left.workspaces, right.workspaces);
+      default:
+        return left[key] === right[key];
+    }
+  });
+}
+
 export function ThreadPane(props: ThreadPaneProps): ReactNode {
-  const state = useHostSnapshot(props.hostClient);
+  const threadId = props.threadId;
+  const select = useMemo(() => {
+    const selections = new WeakMap<HostSnapshot, ThreadPaneSelection>();
+    return (snapshot: HostSnapshot): ThreadPaneSelection => {
+      const held = selections.get(snapshot);
+      if (held !== undefined) return held;
+      const next = selectThreadPane(snapshot, threadId);
+      selections.set(snapshot, next);
+      return next;
+    };
+  }, [threadId]);
+  const isEqual = useCallback(
+    (left: HostSnapshot, right: HostSnapshot) =>
+      sameThreadPaneSelection(select(left), select(right)),
+    [select],
+  );
+  // Keep the shared hook's load/retry lifecycle, using its store equality support.
+  const state = useHostSnapshot(props.hostClient, isEqual);
+  const selection = useMemo(() => select(state.snapshot), [select, state.snapshot]);
   return (
     <ThreadPaneForUser
       {...props}
       key={`${props.deploymentId}:${state.snapshot.user?.id ?? "signed-out"}:${props.threadId}`}
       loadError={state.loadError}
       reload={state.reload}
-      snapshot={state.snapshot}
+      snapshot={selection}
     />
   );
 }
@@ -253,7 +320,7 @@ function ThreadPaneForUser(
   props: ThreadPaneProps & {
     readonly loadError: string | null;
     readonly reload: () => Promise<void>;
-    readonly snapshot: HostSnapshot;
+    readonly snapshot: ThreadPaneSelection;
   },
 ): ReactNode {
   const client = useMobileClient();
@@ -370,7 +437,7 @@ function ThreadPaneForUser(
     onQuoteTaken?.();
   }, [handedQuote, onQuoteTaken]);
 
-  const thread = snapshot.threads.find((candidate) => candidate.id === threadId) ?? null;
+  const thread = snapshot.thread;
   const connection = describeHostConnection(snapshot);
   const canRespond = canRespondToRequests(snapshot);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
@@ -382,10 +449,7 @@ function ThreadPaneForUser(
       : null;
   const canRetry = connection.action === "retry";
 
-  const entries = useMemo(
-    () => snapshot.transcripts[threadId] ?? [],
-    [snapshot.transcripts, threadId],
-  );
+  const entries = useMemo(() => snapshot.entries ?? [], [snapshot.entries, threadId]);
   // The Host names the subagent behind each Request waiting on this reader;
   // the loaded transcript names the ones behind a Request someone else answers.
   const subagentTitles = useMemo(() => {
@@ -460,7 +524,7 @@ function ThreadPaneForUser(
         : groups.map((group) => ({ group, key: group.key })),
     [computers, conversational, groups, live],
   );
-  const canLoadEarlier = snapshot.transcriptWindows[threadId]?.hasMore ?? false;
+  const canLoadEarlier = snapshot.window?.hasMore ?? false;
 
   // Where the divider goes is decided from the read marker as it stood on
   // arrival. Letting it follow the marker would move it out from under a
@@ -469,7 +533,7 @@ function ThreadPaneForUser(
     sequence: null,
     threadId: "",
   });
-  const arrivalReadState = snapshot.threadReadStates?.[threadId] ?? null;
+  const arrivalReadState = snapshot.readState ?? null;
   if (arrivalReadState !== null && boundary.current.threadId !== threadId) {
     boundary.current = { sequence: arrivalReadState.readSequence, threadId };
   }
@@ -569,8 +633,7 @@ function ThreadPaneForUser(
   }, [canLoadEarlier, hostClient, threadId]);
 
   const pendingRequest =
-    requestId !== null &&
-    (snapshot.requests[threadId] ?? []).some((request) => request.id === requestId);
+    requestId !== null && (snapshot.ownRequests ?? []).some((request) => request.id === requestId);
   // An answer on a page not loaded yet is paged back to. Whether it has a row
   // is not the question: in a conversation it never does.
   useEffect(() => {
@@ -620,7 +683,7 @@ function ThreadPaneForUser(
   // Held while it reads the same, so the bar rebuilds only when the task moves.
   const heldTask = useRef<TaskHeading | null>(null);
   const task = useMemo(() => {
-    const next = isHome ? null : taskHeading(snapshot, threadId);
+    const next = snapshot.task;
     if (!sameTaskHeading(heldTask.current, next)) heldTask.current = next;
     return heldTask.current;
   }, [isHome, snapshot, threadId]);
@@ -939,7 +1002,7 @@ function ThreadPaneForUser(
   // How each task this Thread finished ended, held while it reads the same.
   const heldOutcomes = useRef<ReadonlyMap<string, TaskOutcome>>(new Map());
   const outcomes = useMemo(() => {
-    const next = taskOutcomes(snapshot, threadId);
+    const next = snapshot.outcomes;
     if (!sameTaskOutcomes(heldOutcomes.current, next)) heldOutcomes.current = next;
     return heldOutcomes.current;
   }, [snapshot, threadId]);
@@ -984,7 +1047,7 @@ function ThreadPaneForUser(
   // Read is marked for what this reader actually reached: the foot of the
   // conversation, on the screen in front of them, with the app in front of
   // them. A background subscription observes nothing, and marks nothing.
-  const readState = snapshot.threadReadStates?.[threadId] ?? null;
+  const readState = snapshot.readState ?? null;
   // What this screen has actually shown as published here. The Host's
   // `unreadSequence` is not that: it names content no page may have rendered,
   // so marking it would swallow history nobody saw.
@@ -1052,13 +1115,13 @@ function ThreadPaneForUser(
             detail={loadError}
             action={{ label: "Try again", onPress: () => void reload().catch(() => undefined) }}
           />
-        ) : snapshot.threadLookups[threadId] === "failed" ? (
+        ) : snapshot.lookup === "failed" ? (
           <Notice
             title="This thread could not be loaded"
             detail="Check your connection and try again."
             action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
           />
-        ) : snapshot.threadLookups[threadId] === "missing" ? (
+        ) : snapshot.lookup === "missing" ? (
           <Notice
             detail="It may have been deleted, or it belongs to another deployment."
             title="This thread is not here"
@@ -1288,7 +1351,7 @@ function ThreadPaneForUser(
             detail={loadError}
             title="This thread could not be loaded"
           />
-        ) : snapshot.threadLookups[threadId] === "failed" ? (
+        ) : snapshot.lookup === "failed" ? (
           <Notice
             action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
             detail="Check your connection and try again."
@@ -1302,7 +1365,7 @@ function ThreadPaneForUser(
             {collapsed ? (
               <FoldedRequest
                 onReview={() => sheet.onExpand(true)}
-                ownRequests={snapshot.requests[thread.id] ?? []}
+                ownRequests={snapshot.ownRequests ?? []}
                 threadId={thread.id}
                 user={snapshot.user}
                 waitingRequests={snapshot.waitingRequests}
@@ -1400,7 +1463,7 @@ function ThreadPaneForUser(
                     ? "Ask anything…"
                     : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
                 }
-                requests={snapshot.requests[thread.id] ?? []}
+                requests={snapshot.ownRequests ?? []}
                 requestFolded={collapsed}
                 restore={restoredDraft}
                 running={stopTarget !== null}
@@ -1614,6 +1677,7 @@ function sameWorkspaceMarks(
       const other = right[index];
       return (
         workspace.id === other?.id &&
+        workspace.kind === other.kind &&
         workspace.icon === other.icon &&
         workspace.name === other.name &&
         workspace.color === other.color
