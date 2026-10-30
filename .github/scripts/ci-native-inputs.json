@@ -5,6 +5,7 @@
     "apps/desktop/scripts/native-build-cache.ts",
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/signed-helpers/metadata.ts",
+    "apps/desktop/tsconfig.json",
     "packages/browser-core",
     "packages/browser-profile",
     "packages/channel-core",
@@ -19,7 +20,10 @@
     "packages/triggers",
     "packages/workspace",
     "scripts/command-runner.ts",
-    "scripts/generate-apple-data-contracts.ts"
+    "scripts/generate-apple-data-contracts.ts",
+    "tsconfig.base.json",
+    "tsconfig.json",
+    "tsconfig.package.json"
   ],
   "passwords-helper": [
     "apps/desktop/scripts/build-passwords-broker.ts",
@@ -27,10 +31,14 @@
     "apps/desktop/scripts/native-build-cache.ts",
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/signed-helpers/metadata.ts",
+    "apps/desktop/tsconfig.json",
     "packages/core",
     "packages/protocol",
     "packages/shared",
-    "scripts/command-runner.ts"
+    "scripts/command-runner.ts",
+    "tsconfig.base.json",
+    "tsconfig.json",
+    "tsconfig.package.json"
   ],
   "iphone": [
     ".github/scripts/ci-sharding.mjs",
@@ -126,7 +134,9 @@
     "tests/release-phone-cache.test.ts",
     "tests/storage-retention.test.ts",
     "tests/vm-slot-queue.test.ts",
+    "tsconfig.base.json",
     "tsconfig.json",
+    "tsconfig.package.json",
     "vitest.config.ts"
   ],
   "computer-tests": [
@@ -138,6 +148,9 @@
     "packages/integration-core",
     "packages/protocol",
     "packages/shared",
-    "scripts/generate-apple-data-contracts.ts"
+    "scripts/generate-apple-data-contracts.ts",
+    "tsconfig.base.json",
+    "tsconfig.json",
+    "tsconfig.package.json"
   ]
 }

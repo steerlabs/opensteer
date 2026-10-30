@@ -371,6 +371,17 @@ test("required-but-dynamic and directory-boundary inputs select exactly", () => 
     assert.deepEqual(swiftOnly(decide([file], realGraph)), ["computer-helper", "passwords-helper"]);
   // A script beside them that no build loads runs neither helper.
   assert.deepEqual(swiftOnly(decide(["apps/desktop/scripts/after-pack.cjs"], realGraph)), []);
+  // tsx compiles a task's node scripts with the tsconfig files above them and what
+  // those extend, so each selects the tasks whose scripts it compiles.
+  assert.deepEqual(swiftOnly(decide(["apps/desktop/tsconfig.json"], realGraph)), [
+    "computer-helper",
+    "passwords-helper",
+  ]);
+  assert.deepEqual(swiftOnly(decide(["tsconfig.base.json"], realGraph)), [
+    "computer-helper",
+    "passwords-helper",
+    "computer-tests",
+  ]);
   assert.deepEqual(
     swiftOnly(decide(["apps/desktop/native/computer-use-x/a.swift"], realGraph)),
     [],
