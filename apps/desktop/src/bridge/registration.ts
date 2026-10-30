@@ -1,3 +1,5 @@
+import { personalWebLinksAvailable, WebLinkDeliveryOwner } from "./methods/web-links.js";
+import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { viewerClipboardHandlers } from "./methods/viewer-clipboard.js";
 import { downloadsHandlers } from "./methods/downloads.js";
 import { browserPresentationHandlers } from "./methods/browser-presentation.js";
@@ -303,6 +305,19 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.installPortableFs, handleInstallPortableFs(context));
   register(desktopBridgeChannels.issuePersonalPairingCode, handleIssuePersonalPairingCode(context));
   register(desktopBridgeChannels.linkPersonal, handleLinkPersonal(context));
+  const webLinkOwner = options.webLinks
+    ? new WebLinkDeliveryOwner(
+        options.webLinks,
+        (sender) => options.isWorkspaceContents?.(sender) === true,
+        (deploymentId) => personalWebLinksAvailable(options.access.snapshot(), deploymentId),
+      )
+    : null;
+  register(desktopBridgeChannels.webLinkDelivery, (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    return (
+      webLinkOwner?.handle(event.sender, DesktopWebLinkDeliverySchema.parse(envelope.input)) ?? null
+    );
+  });
   register(desktopBridgeChannels.openExternalUrl, handleOpenExternalUrl(context));
   register(desktopBridgeChannels.getNotificationSupport, handleGetNotificationSupport(context));
   register(desktopBridgeChannels.showNotification, handleShowNotification(context));
@@ -330,6 +345,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.unlinkPersonal, handleUnlinkPersonal(context));
 
   return () => {
+    webLinkOwner?.dispose();
     unsubscribeDownloads();
     context.downloadsSenders.clear();
     unsubscribeVisibility();
