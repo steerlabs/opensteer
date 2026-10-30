@@ -20,6 +20,7 @@ import {
   integrationCredentialRejectedDetail,
   integrationProviderIdentityAlreadyConnectedDetail,
   integrationDefinitionsToProviderManifests,
+  oauthSourceFinishesOnHostComputer,
   sameIntegrationOAuthApplicationSource,
   type AuthMethod,
   type ConnectIntegrationApiKey,
@@ -316,6 +317,7 @@ export class IntegrationService {
       isAdministrator,
       providerAuthorizations,
       providers: this.#providerManifests,
+      remoteAccountSignIn: true,
     });
   }
 
@@ -513,9 +515,18 @@ export class IntegrationService {
     if (!applicationSource) {
       throw new OpensteerError({ code: "conflict", message: authorization.detail });
     }
-    if (input.requestSurface === "personal-remote") throw canonicalAuthorizationRequired();
+    if (
+      input.requestSurface === "personal-remote" &&
+      oauthSourceFinishesOnHostComputer(applicationSource)
+    ) {
+      throw canonicalAuthorizationRequired();
+    }
+    // A browser on another device cannot open the loopback canonical origin, so
+    // the Account service ends its sign-in on its own completion page instead.
+    const brokerReturnPath =
+      input.requestSurface === "personal-remote" ? undefined : input.returnPath;
     if (applicationSource.kind === "hosted-oauth") {
-      return this.#beginHostedAuthorization(input, definition, method);
+      return this.#beginHostedAuthorization({ ...input, brokerReturnPath }, definition, method);
     }
     const application = await this.#repository.getProviderApplication(
       applicationSource.providerApplicationId,
@@ -580,7 +591,7 @@ export class IntegrationService {
                 provider: definition.provider,
                 providerApplicationId: application.id,
                 providerApplicationRevision: application.revision,
-                returnPath: input.returnPath,
+                ...(brokerReturnPath === undefined ? {} : { returnPath: brokerReturnPath }),
               })
             : null;
         return {
@@ -624,6 +635,7 @@ export class IntegrationService {
 
   async #beginHostedAuthorization(
     input: {
+      readonly brokerReturnPath: string | undefined;
       readonly definitionId: string;
       readonly ownerUserId: UserId;
       readonly returnPath: string;
@@ -674,7 +686,7 @@ export class IntegrationService {
           hostPublicKey: hostKeyPair.publicKey,
           provider: definition.provider,
           providerApplicationRevision: revision,
-          returnPath: input.returnPath,
+          ...(input.brokerReturnPath === undefined ? {} : { returnPath: input.brokerReturnPath }),
         });
         return {
           authorizationUrl: created.launchUrl,
@@ -2410,8 +2422,10 @@ export class IntegrationService {
 }
 
 /**
- * A non-canonical surface cannot launch authorization, but the resolved sources stay descriptive:
- * the administrator picker renders from them and admin mutations accept these sessions.
+ * A remote session can launch any source whose provider returns to the Account service. When the
+ * selected source, or every source with none selected, returns to this computer's loopback
+ * address, the provider reports that it must be finished here. Sources stay descriptive: clients
+ * offer the others by explicit choice, never as a fallback, and older clients keep the refusal.
  */
 function projectProviderAuthorizationsForSurface(
   authorizations: Readonly<Record<string, IntegrationProviderAuthorization>>,
@@ -2419,14 +2433,22 @@ function projectProviderAuthorizationsForSurface(
 ): Readonly<Record<string, IntegrationProviderAuthorization>> {
   if (surface === "canonical") return authorizations;
   return Object.fromEntries(
-    Object.entries(authorizations).map(([provider, authorization]) => [
-      provider,
-      IntegrationProviderAuthorizationSchema.parse({
-        ...authorization,
-        code: "CANONICAL_SURFACE_REQUIRED",
-        detail: canonicalAuthorizationRepair,
-      }),
-    ]),
+    Object.entries(authorizations).map(([provider, authorization]) => {
+      const finishesHere = authorization.selectedSource
+        ? oauthSourceFinishesOnHostComputer(authorization.selectedSource)
+        : authorization.availableSources.length > 0 &&
+          authorization.availableSources.every(oauthSourceFinishesOnHostComputer);
+      return [
+        provider,
+        finishesHere
+          ? IntegrationProviderAuthorizationSchema.parse({
+              ...authorization,
+              code: "CANONICAL_SURFACE_REQUIRED",
+              detail: canonicalAuthorizationRepair,
+            })
+          : authorization,
+      ];
+    }),
   );
 }
 

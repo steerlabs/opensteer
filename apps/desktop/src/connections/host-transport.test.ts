@@ -619,7 +619,7 @@ describe("DesktopHostTransport", () => {
     );
   });
 
-  it("does not pretend a remote Personal route is its loopback OAuth authority", async () => {
+  it("opens a remote Personal route's sign-in on that route, not another computer's loopback", async () => {
     const selected = {
       ...deployment("Remote Personal", "http://127.0.0.1:4310"),
       endpoints: [
@@ -658,8 +658,8 @@ describe("DesktopHostTransport", () => {
       },
     });
 
-    await expect(transport.integrationAuthorizationOrigin()).rejects.toThrow(
-      "computer that hosts this Personal Opensteer",
+    await expect(transport.integrationAuthorizationOrigin()).resolves.toBe(
+      "https://personal.connect.opensteer.test",
     );
   });
 

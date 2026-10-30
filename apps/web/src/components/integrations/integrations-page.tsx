@@ -5,6 +5,7 @@ import { Link, useSearchParams } from "react-router";
 import type {
   CreateIntegrationGrant,
   IntegrationAccess,
+  IntegrationAuthorizationStart,
   IntegrationConnectionSummary,
   IntegrationDashboard,
   IntegrationGrant,
@@ -24,7 +25,15 @@ import {
   waitForIntegrationAuthorization,
 } from "../../integrations/integration-authorization.js";
 import { ConnectFlow, RepositoryAccessSetup } from "./connect-flow.js";
-import { authorizationConnection, repositoryAccountStep } from "@opensteer/client/integrations";
+import {
+  authorizationConnection,
+  connectAvailability,
+  initialConnectSource,
+  integrationAccountTitle,
+  repositoryAccountStep,
+} from "@opensteer/client/integrations";
+import { selectedDeploymentFrom } from "../../desktop/desktop-deployment-selection.js";
+import { settingsDeploymentName } from "../settings/copy.js";
 import { createConnectOperations } from "./connect-operations.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -39,7 +48,7 @@ import {
   InstalledServicesSection,
   PluginsAndMcpSection,
 } from "./catalog-section.js";
-import { GrantsSection } from "./grants-section.js";
+import { GrantsSection, workspaceAccessSectionId } from "./grants-section.js";
 import { message, platformIntegrations, providerLabel } from "./helpers.js";
 import { IntegrationDetail } from "./integration-detail.js";
 import {
@@ -67,6 +76,7 @@ interface IntegrationResult {
 /** Routed integrations surface: catalog, accounts, and Workspace grants. */
 export function IntegrationsPage({ embedded = false }: { readonly embedded?: boolean }) {
   const {
+    deploymentAccess,
     desktopBridge,
     desktopDeployment,
     hostClient: client,
@@ -84,6 +94,10 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
           localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
           machines: snapshot.machines,
         });
+  const hostName = settingsDeploymentName({
+    deployment: selectedDeploymentFrom(deploymentAccess, desktopDeployment),
+    identityConfig: snapshot.identityConfig,
+  });
   const [searchParams, setSearchParams] = useSearchParams();
   const homeWorkspaceId =
     snapshot.homeWorkspaceId ??
@@ -120,9 +134,17 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
   const [view, setView] = useState<View>({ kind: "overview" });
   const rootRef = useRef<HTMLDivElement>(null);
   const page = view.kind === "detail" ? view.definitionId : null;
+  /** A section of the overview the next view change opens at, rather than its top. */
+  const openAt = useRef<string | null>(null);
   // The overview and each integration's page are one Connected apps scroll
   // owner, so a page opens at its top, not at the offset the last one was left.
   useLayoutEffect(() => {
+    const anchor = openAt.current === null ? null : document.getElementById(openAt.current);
+    openAt.current = null;
+    if (anchor) {
+      anchor.scrollIntoView({ block: "start" });
+      return;
+    }
     const scroller = rootRef.current?.closest(".connected-apps__inner, .page");
     if (scroller) scroller.scrollTop = 0;
   }, [page]);
@@ -140,6 +162,8 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
    */
   const [connecting, setConnecting] = useState<{
     readonly account: IntegrationConnectionSummary | null;
+    /** The sign-in the click began, which the sheet follows; absent, the sheet asks first. */
+    readonly begun: Promise<IntegrationAuthorizationStart> | null;
     readonly definitionId: string;
   } | null>(null);
   const [repositorySetup, setRepositorySetup] = useState<{
@@ -614,10 +638,35 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
     setView({ definitionId, kind: "detail" });
   };
 
-  const signIn = (definitionId: string, account: IntegrationConnectionSummary | null) => {
+  /**
+   * Connect or reconnect goes straight to the provider when the Host has an app
+   * selected that this device can finish with. It begins inside the click, the
+   * only moment a browser tab may open, and the sheet follows it from there.
+   * Anything left to choose opens the sheet on that choice instead.
+   */
+  const signIn = (
+    definitionId: string,
+    account: IntegrationConnectionSummary | null,
+    choose = false,
+  ) => {
     setError(null);
     setResult(null);
-    setConnecting({ account, definitionId });
+    const provider = integrations.find(({ definition }) => definition.id === definitionId)
+      ?.definition.provider;
+    const source =
+      !choose && dashboard && provider && connectAvailability(dashboard, provider).kind === "ready"
+        ? initialConnectSource(dashboard, provider)
+        : null;
+    const begun = source
+      ? connectOperations.beginAuthorization({
+          applicationSource: source,
+          definitionId,
+          returnPath: authorizationReturnPath,
+        })
+      : null;
+    // The sheet observes the outcome once it mounts; until then nothing is unhandled.
+    begun?.catch(() => undefined);
+    setConnecting({ account, begun, definitionId });
   };
 
   /** GitHub finishes connecting once its app can reach the repositories chosen. */
@@ -814,6 +863,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
             dashboard={dashboard}
             error={error}
             hostConnected={canRespondToRequests(snapshot)}
+            hostName={hostName}
             integration={detailIntegration}
             localMachineId={localMachineId}
             machines={snapshot.machines}
@@ -827,7 +877,13 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
             reconnectConnectionId={
               view.kind === "detail" ? (view.reconnectConnectionId ?? null) : null
             }
+            onChooseSignIn={() => signIn(detailIntegration.definition.id, null, true)}
             onConnectOauth={(account) => signIn(detailIntegration.definition.id, account)}
+            onWorkspaceAccess={() => {
+              openAt.current = workspaceAccessSectionId;
+              setError(null);
+              setView({ kind: "overview" });
+            }}
             onDisconnect={(connectionId) => disconnectConnection(connectionId)}
             onDisconnectMcp={(connectionId) => disconnectMcpConnection(connectionId)}
             onInstall={(digest) =>
@@ -865,20 +921,27 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
 
         {connectIntegration && dashboard ? (
           <ConnectFlow
+            begun={connecting?.begun ?? null}
             dashboard={dashboard}
             definition={connectIntegration.definition}
+            key={connecting?.definitionId}
             onClose={() => {
               setConnecting(null);
               // The sheet can change an account without connecting it: a
               // sign-in GitHub rejected now needs Reconnect, not repositories.
               void reload().catch(() => undefined);
             }}
-            onConnected={() => {
-              void reload().catch(() => undefined);
-              setResult({
-                name: providerLabel(connectIntegration.definition.provider),
-                status: "connected",
-              });
+            onConnected={(connectionId) => {
+              // The account's own row says it is connected; the sheet has nothing left to show.
+              setConnecting(null);
+              void reload()
+                .then((loaded) => {
+                  const connection = loaded?.connections.find(({ id }) => id === connectionId);
+                  toast.success(
+                    `${connection ? integrationAccountTitle(connection) : connectIntegration.definition.name} is connected`,
+                  );
+                })
+                .catch(() => undefined);
             }}
             operations={connectOperations}
             purpose={
@@ -886,9 +949,9 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
                 ? `Sign in to ${connectIntegration.definition.name} as ${
                     connecting.account.accountIdentifier?.trim() || connecting.account.displayName
                   } to reconnect it.`
-                : `Connect your ${connectIntegration.definition.name} account to Opensteer. Giving a Workspace access to it is a separate step.`
+                : `Sign in with the ${connectIntegration.definition.name} account you want agents to use.`
             }
-            returnPath="/settings/apps/tools"
+            returnPath={authorizationReturnPath}
           />
         ) : null}
       </div>
@@ -943,3 +1006,6 @@ function integrationResultDetail(status: IntegrationResult["status"]): string {
       return "The provider could not complete authorization. Start the connection again.";
   }
 }
+
+/** Where a canonical browser sign-in returns to; the Host omits it for another device. */
+const authorizationReturnPath = "/settings/apps/tools";

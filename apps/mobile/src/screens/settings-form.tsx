@@ -8,6 +8,7 @@ import { Symbol } from "../ui/symbol.js";
 import {
   chromeSettingsFooter,
   chromeSettingsRow,
+  connectedAppsSettingsRow,
   type SettingsActionModel,
 } from "./settings-model.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
@@ -82,6 +83,32 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
             <AppText role="caption" tone="muted">
               {props.computersFooter}
             </AppText>
+          </View>
+        )}
+
+        {props.onConnectedAppsAction === undefined ? null : (
+          <View style={styles.section}>
+            <SectionLabel>Apps</SectionLabel>
+            <RowGroup>
+              {[
+                <Pressable
+                  accessibilityLabel={`${connectedAppsSettingsRow.title}, ${connectedAppsSettingsRow.detail}`}
+                  accessibilityRole="button"
+                  key="connected-apps"
+                  onPress={props.onConnectedAppsAction}
+                  style={({ pressed }) => [styles.linkRow, pressed && styles.pressed]}
+                >
+                  <Symbol name="puzzlepiece.extension" size={20} tint={color.textSoft} />
+                  <View style={[styles.identityText, styles.computerText]}>
+                    <AppText role="bodyMedium">{connectedAppsSettingsRow.title}</AppText>
+                    <AppText role="secondary" tone="soft">
+                      {connectedAppsSettingsRow.detail}
+                    </AppText>
+                  </View>
+                  <Symbol name="chevron.right" size={13} tint={color.muted} />
+                </Pressable>,
+              ]}
+            </RowGroup>
           </View>
         )}
 

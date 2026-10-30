@@ -11,6 +11,7 @@ import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
 import { AddServerScreen } from "./screens/add-server.js";
 import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
+import { ConnectedAppsScreen, type ConnectedAppsDestination } from "./screens/connected-apps.js";
 import type { SurfacesRoute } from "./browser/surface-route.js";
 import { AddIphoneScreen } from "./iphone-apps/add-iphone.js";
 import { ComputerScreen } from "./screens/computer.js";
@@ -245,6 +246,18 @@ const RootStack = createNativeStackNavigator({
         title: "Chrome",
       }),
     },
+    // The accounts agents use, a modal over Settings like Chrome: a sign-in it
+    // starts finishes in the system browser sheet and returns here.
+    ConnectedApps: {
+      screen: ConnectedAppsScreen,
+      options: ({ navigation }) => ({
+        ...headerActions({
+          right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
+        }),
+        presentation: "modal",
+        title: "Connected apps",
+      }),
+    },
     Computer: {
       screen: ComputerScreen,
       options: ({ navigation }) => ({
@@ -337,6 +350,7 @@ type OpensteerRootParamList = {
   readonly AddPersonal: undefined;
   readonly AddServer: undefined;
   readonly Chrome: ChromeDestination;
+  readonly ConnectedApps: ConnectedAppsDestination;
   readonly Computer: { readonly deploymentId: string; readonly machineId: string };
   readonly ConversationActivity: {
     readonly deploymentId: string;

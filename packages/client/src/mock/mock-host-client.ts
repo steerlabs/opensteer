@@ -7647,6 +7647,7 @@ class MockHostState {
       isAdministrator: true,
       providerAuthorizations: { ...this.integrations.providerAuthorizations },
       providers: [...this.integrations.providers],
+      remoteAccountSignIn: true,
     };
   }
 

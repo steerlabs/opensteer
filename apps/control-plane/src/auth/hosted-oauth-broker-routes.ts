@@ -295,10 +295,18 @@ function firstHeader(value: string | readonly string[] | undefined): string | un
   return typeof value === "string" ? value : value?.[0];
 }
 
+/**
+ * Where a sign-in started on another device ends. A sealed result is not yet a
+ * connection: the Host commits it when Opensteer next checks the attempt, so
+ * the page sends the person back rather than announcing an account.
+ */
 function callbackPage(completed: boolean): string {
-  const title = completed ? "Authorization received" : "Authorization not completed";
+  const title = completed ? "You’re signed in" : "Sign-in didn’t finish";
   const detail = completed
-    ? "Return to Opensteer. Your encrypted authorization result is waiting to be claimed."
-    : "Return to Opensteer for details or to try again.";
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>html{color-scheme:dark;font:16px system-ui;background:#0b0b0b;color:#f5f5f5}main{max-width:36rem;margin:18vh auto;padding:2rem}p{color:#b8b8b8;line-height:1.55}</style></head><body><main><h1>${title}</h1><p>${detail}</p></main></body></html>`;
+    ? "Go back to Opensteer to finish connecting. You can close this tab."
+    : "Go back to Opensteer to try again. You can close this tab.";
+  const mark = completed
+    ? '<path d="M7 12.5l3.2 3.2L17 9" stroke="#71c6a5"/>'
+    : '<path d="M12 7.5v5.5M12 16.5v.01" stroke="#dfb36b"/>';
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>html{color-scheme:dark;background:#080808;color:#f5f4f2;font:15px/1.5 system-ui,sans-serif}main{max-width:22rem;margin:22vh auto 0;padding:0 1.5rem;text-align:center}svg{width:44px;height:44px;margin-bottom:1rem}h1{font-size:1.35rem;font-weight:600;margin:0 0 .4rem}p{color:#8e8a86;margin:0}</style></head><body><main><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10.5" stroke="#2a2a2a"/>${mark}</svg><h1>${title}</h1><p>${detail}</p></main></body></html>`;
 }
