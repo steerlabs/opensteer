@@ -1,105 +1,61 @@
 # Message attachments
 
-The Host owns uploaded bytes. PostgreSQL stores the reservation, checksum, state,
-uploader, workspace, and eventual message binding. The Host data directory stores
-immutable originals at `attachments/originals/<attachment-id>`; user-supplied
-filenames never become paths. Back up the database and Host data directory as one
-deployment. A database restore without matching originals makes affected files
-unavailable; the Host checks length and SHA-256 before every download.
+## Storage and ownership
 
-An uploader reserves an ID through `commands.dispatch` with
-`attachment.upload.create`, transfers exactly the reserved byte count through the
-typed `attachment.upload` RPC, and sends that ID as an `artifact` content part.
-The Host validates image bytes and computes the checksum before marking the row
-ready. Finalization links a temporary file to the canonical path while holding
-the attachment row lock. A ready original is never overwritten. The send claims
-ready rows inside the same transaction that creates the message, after exact
-idempotency replay has already returned. A claimed original belongs to one
-human message and cannot be discarded.
+The Host owns immutable originals; PostgreSQL owns authorization and message
+binding. Back up the database and Host data directory together. A database-only
+restore leaves files unavailable; downloads verify length and checksum.
+User filenames never become Host paths. Sources: `packages/database/src/attachment-store.ts`
+and `apps/host/src/attachments`.
 
-Editing a queued message withdraws it and creates a new send. The new send may
-transfer the same attachment IDs only when the old input was explicitly
-withdrawn while pending, with no confirmed delivery or unresolved claim. The
-original bytes and old cancelled message stay immutable. A refused steer can
-return a queued input to pending before withdrawal; a delivery with an unknown
-outcome cannot. The new send rechecks the current engine's attachment support.
+Only ready originals can be claimed, atomically with message creation and after
+idempotency replay. One original belongs to one human message; a claimed original
+cannot be discarded or overwritten. Editing queued input may transfer IDs only
+after explicit withdrawal while pending, with no confirmed delivery or unresolved
+claim. Unknown delivery cannot be treated as withdrawal. Recheck the new engine's
+support; old cancelled messages and bytes stay immutable.
 
-Upload reservations expire after 24 hours. Discard and expiry first mark an
-unbound row deleting, then remove its bytes. Startup and periodic cleanup finish
-interrupted deletion and remove old temporary files. A bound attachment is kept
-with its message. Pending reservations count against the workspace pending-byte
-quota of 250 MiB, and all retained originals count against a 2 GiB workspace
-limit. One message has its own count and byte limits. The cleanup pass also
-removes canonical files with no database row after a 24-hour grace period, so
-workspace deletion and interrupted finalization do not leak bytes forever.
+Cleanup cannot delete bound originals. Reservation/deletion state and row locking
+must survive interrupted finalization and cleanup. Quotas include pending bytes;
+see the source for limits rather than maintaining a second list here.
 
-Web, desktop, and mobile use the same `@opensteer/client` operations. Desktop
-spools bounded binary chunks through its authenticated preload bridge; mobile
-uses its authenticated Expo fetch port and keeps picked files in private draft
-storage. Neither sends a client filesystem path to a remote Host. Uploads are
-limited to 25 MiB each, 10 files and 50 MiB per message. Other files are
-delivered as readable files for the engine's tools; uploading a document does
-not promise that every model or engine can interpret its format.
+Clients upload bytes, never a local filesystem path to the remote Host. Mobile
+keeps picked files in private draft storage. Pending-send identity and retry rules
+follow [mobile drafts](mobile.md).
 
-Images are stored at full resolution. The Host accepts single-frame PNG, JPEG,
-and WebP of at most 100 million decoded pixels, a bound on its own resources
-rather than on any model. It refuses other image types at reservation, before
-any bytes move, and checks an upload from its header outward: a label its bytes
-contradict, an animated image (including APNG), or an oversized one is refused
-with the reason, and an image that passes is proven to decode completely. The
-stored width and height are the upright size. Clients name a file by its bytes
-before reserving it (`detectImageMediaType` in `@opensteer/core`). The web and
-desktop composer converts HEIC to JPEG in the page at full resolution with
-`heic-to` (LGPL-3.0), whose decoder runs in a blob worker; the web and desktop
-content security policies allow `worker-src blob:` for it and nothing else. The
-iOS photo picker converts HEIC itself; the mobile app refuses other HEIC with
-the reason.
+## Image admission and engine delivery
 
-An image needs both a native image transport in the selected engine and a
-catalog-confirmed image-capable model. The Host checks the selected Run's
-capabilities again when dispatching or steering. Unknown capability is a clear
-refusal, not an implicit conversion or model switch. Codex, Claude, Pi and
-OpenCode have native image adapters; Cursor's print interface currently accepts
-file paths only, so image input is refused.
+Keep full-resolution originals. Validate actual bytes, complete decoding and
+resource bounds; refuse mislabeled, animated or unsupported images before delivery.
+Web/desktop convert HEIC locally; iOS photo picker converts it, while other mobile
+HEIC input is refused. The web decoder uses `heic-to` (LGPL-3.0) in a blob worker;
+CSP permits blob workers for this reason.
 
-Each driver guarantees every stored image reaches its engine on every path it
-offers, and fits what it sends to that engine's own input limits with
-`prepareNativeImage` in `@opensteer/harness`. An image already inside them is
-delivered as the original; any other becomes an upright sRGB copy without photo
-metadata. Engines still fit images to each model themselves, so Opensteer keeps
-no model tables. The limits, and why, live beside each driver: Claude Code and
-Pi fit a turn's first prompt but send images added to a running turn as they
-are, and Pi's and Codex's protocol lines carry at most 4 MiB, so a delivery's
-images share one byte budget. `pnpm test:engines` sends full-resolution photos
-through every engine on both paths.
+Image support requires both native engine transport and catalog-confirmed model
+support, rechecked at Run dispatch/steer. Unknown capability refuses, never converts
+silently or switches models. A document upload does not promise format support.
+`packages/harness` and engine drivers own limits and `prepareNativeImage`.
 
-The exact send command is persisted before dispatch, partitioned by the stable
-Deployment ID, signed-in user and Thread. An unanswered send retains its key and
-content across retries; a definite Host refusal returns it to the draft. The
-bootstrap Deployment ID is mandatory in Host API epoch 19, so mixed app/Host
-versions receive the normal upgrade message rather than guessing identity from
-a URL. Upgrade the Host and apps together.
+Each engine path must deliver every admitted image within its own limits, including
+images added during a Run. Preserve originals when already within those limits;
+otherwise send an upright sRGB copy without metadata. Opensteer maintains no
+per-model size tables because engines perform their own model fitting.
 
-Session RPCs enforce current workspace membership. Runner downloads use a signed
-capability for the current Run and recheck its live execution binding. Inventory
-contains delivered historical message references and current Run inputs that
-have been selected or admitted for steering. Pending queue entries and unselected
-reports remain invisible. Runner inventory is paged independently of bounded
-transcript history, so a later Run can restore older admitted files.
+## Runner boundary
 
-Runner copies are disposable and checksum-verified in the Runner OS user's
-cache, partitioned by canonical Runner data directory and Thread. Each file is
-`<Thread>/<attachment ID>/<name>`: the immutable ID keeps paths unique, and the
-leaf keeps the uploaded name, reduced to one safe path segment, because upload
-forms, models and commands take a file's name and type from its path. They stay
-outside the private Runner data directory, Workspace and temporary directories:
-provider sandboxes deny private state, and sandbox temporary directories are
-remapped. Custom data-volume mounts therefore do not require a writable sibling
-directory. The cache is cleared after a Run and rebuilt from the Host for the
-next one; its stable paths also survive provider continuation.
+Session downloads enforce current workspace membership. Runner downloads use a
+signed capability and recheck the current Run's execution binding. Inventory exposes
+only delivered history and admitted current inputs, never pending queue items or
+unselected reports. Its pagination is independent of transcript history.
 
-Linux service Runners expose only the current Thread's cache as a read-only
-mount. Codex and Claude on macOS service Runners use verified provider sandbox
-rules for the same scope. Windows service Runners do not advertise attachment
-support until that boundary is verified there. Personal desktop Runners retain
-their existing native-user access boundary.
+Runner copies are disposable and checksum-verified, partitioned by canonical Runner
+data directory and Thread. Immutable attachment IDs make paths unique; a sanitized
+filename leaf preserves the name/type models and upload forms infer from paths.
+Keep the cache outside private Runner state, Workspaces and remapped sandbox temp
+folders. Stable paths survive continuation; clear copies after a Run and restore
+from the Host for the next one.
+
+Linux service Runners mount only the current Thread cache read-only. macOS Codex
+and Claude service Runners require verified provider sandbox rules for the same
+scope. Windows service Runners must not advertise attachment support until that
+boundary is verified. Personal desktop Runners retain native-user access.
