@@ -2240,7 +2240,6 @@ export class HttpHostClient {
         if (this.#threadHydrations.get(threadId) === operation) {
           this.#threadHydrations.delete(threadId);
         }
-        this.#hydrationBuffers.delete(threadId);
       });
     this.#threadHydrations.set(threadId, operation);
   }
@@ -3636,6 +3635,9 @@ export class HttpHostClient {
       workspaceWindow: payload.workspaceWindow,
       workspaces,
     });
+    // Warm Home through the hydration owner without claiming a conversation
+    // or marking it read. A later activation joins this same read.
+    if (this.#snapshot.homeThreadId) this.#ensureThreadHydration(this.#snapshot.homeThreadId);
     // A patch older than this read is already in what it answered.
     for (const [sessionId, mark] of this.#presenceMarks) {
       if (mark > presenceMark) continue;
@@ -4480,6 +4482,17 @@ export class HttpHostClient {
       }
       this.#ensureAssignments(threadId, true);
     }
+    // A read still in flight for a Thread nobody shows yet, such as Home's
+    // warm read, began before this snapshot: it reads again rather than
+    // install an older page over what the snapshot carried.
+    for (const threadId of this.#hydrationBuffers.keys()) {
+      if (this.#historicalThreads.has(threadId)) continue;
+      if (
+        this.#threadWorkspace.get(threadId) === workspace.id ||
+        workspace.homeThreadId === threadId
+      )
+        this.#invalidatedHydrations.add(threadId);
+    }
   }
 
   #applyLive(input: LiveProgressInput): void {
@@ -5139,6 +5152,8 @@ export class HttpHostClient {
     this.#deniedAssignments.clear();
     this.#observedThreads.clear();
     this.#historicalThreads.clear();
+    this.#threadHydrations.clear();
+    this.#hydrationBuffers.clear();
     this.#hydratedThreads.clear();
     this.#invalidatedHydrations.clear();
     this.#readStateLoads.clear();
