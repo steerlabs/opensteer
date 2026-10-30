@@ -27,7 +27,7 @@ export type NullableTimestamp = ColumnType<
 >;
 export type BigInteger<T extends number = number> = ColumnType<string, T | string, T | string>;
 /**
- * Better Auth 1.6's Kysely adapter writes array fields as serialized JSON when
+ * Better Auth's Kysely adapter writes array fields as serialized JSON when
  * `supportsArrays` is false. Direct control-plane writes use the same storage
  * representation explicitly; PostgreSQL returns parsed arrays on reads.
  */
@@ -93,12 +93,22 @@ export interface AuthJwkTable {
   privateKey: string;
   createdAt: Timestamp;
   expiresAt: NullableTimestamp;
+  alg: Generated<string | null>;
+  crv: Generated<string | null>;
 }
 
 export interface OAuthClientTable {
   id: string;
   clientId: string;
   clientSecret: string | null;
+  clientDiscoveryId: Generated<string | null>;
+  clientCredentialsScopes: Generated<JsonStringArray | null>;
+  backchannelLogoutUri: Generated<string | null>;
+  backchannelLogoutSessionRequired: Generated<boolean | null>;
+  applicationType: Generated<string | null>;
+  jwks: Generated<string | null>;
+  jwksUri: Generated<string | null>;
+  dpopBoundAccessTokens: Generated<boolean | null>;
   disabled: boolean;
   skipConsent: boolean | null;
   enableEndSession: boolean | null;
@@ -121,11 +131,40 @@ export interface OAuthClientTable {
   tokenEndpointAuthMethod: string | null;
   grantTypes: JsonStringArray | null;
   responseTypes: JsonStringArray | null;
-  public: boolean | null;
-  type: string | null;
   requirePkce: boolean | null;
   referenceId: string | null;
   metadata: JsonValue | null;
+}
+
+interface OAuthResourceTable {
+  id: string;
+  identifier: string;
+  name: string;
+  accessTokenTtl: number | null;
+  refreshTokenTtl: number | null;
+  signingAlgorithm: string | null;
+  signingKeyId: string | null;
+  allowedScopes: JsonStringArray | null;
+  customClaims: JsonValue | null;
+  dpopBoundAccessTokensRequired: boolean | null;
+  disabled: boolean | null;
+  createdAt: NullableTimestamp;
+  updatedAt: NullableTimestamp;
+  policyVersion: number | null;
+  metadata: JsonValue | null;
+}
+
+interface OAuthClientResourceTable {
+  id: string;
+  clientId: string;
+  resourceId: string;
+  metadata: JsonValue | null;
+  createdAt: NullableTimestamp;
+}
+
+interface OAuthClientAssertionTable {
+  id: string;
+  expiresAt: Timestamp;
 }
 
 interface OAuthRefreshTokenTable {
@@ -135,6 +174,13 @@ interface OAuthRefreshTokenTable {
   sessionId: string | null;
   userId: ControlPlaneAccountId;
   referenceId: string | null;
+  authorizationCodeId: Generated<string | null>;
+  resources: Generated<JsonStringArray | null>;
+  requestedUserInfoClaims: Generated<JsonStringArray | null>;
+  rotatedAt: NullableTimestamp;
+  rotationReplayResponse: Generated<string | null>;
+  rotationReplayExpiresAt: NullableTimestamp;
+  confirmation: Generated<JsonValue | null>;
   expiresAt: Timestamp;
   createdAt: Timestamp;
   revoked: NullableTimestamp;
@@ -150,12 +196,19 @@ interface OAuthAccessTokenTable {
   userId: ControlPlaneAccountId | null;
   referenceId: string | null;
   refreshId: string | null;
+  authorizationCodeId: Generated<string | null>;
+  resources: Generated<JsonStringArray | null>;
+  requestedUserInfoClaims: Generated<JsonStringArray | null>;
+  revoked: NullableTimestamp;
+  confirmation: Generated<JsonValue | null>;
   expiresAt: Timestamp;
   createdAt: Timestamp;
   scopes: JsonStringArray;
 }
 
 interface OAuthConsentTable {
+  resources: Generated<JsonStringArray | null>;
+  requestedUserInfoClaims: Generated<JsonStringArray | null>;
   id: string;
   clientId: string;
   userId: ControlPlaneAccountId | null;
@@ -442,8 +495,9 @@ export interface ControlPlaneDatabaseSchema {
   authRateLimits: AuthRateLimitTable;
   authJwks: AuthJwkTable;
   oauthClients: OAuthClientTable;
-  // Better Auth OAuth Provider 1.6.26 does not expose modelName for this one
-  // plugin table, so its logical and physical table name remains singular.
+  oauthResource: OAuthResourceTable;
+  oauthClientResource: OAuthClientResourceTable;
+  oauthClientAssertion: OAuthClientAssertionTable;
   oauthRefreshToken: OAuthRefreshTokenTable;
   oauthAccessTokens: OAuthAccessTokenTable;
   oauthConsents: OAuthConsentTable;

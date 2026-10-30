@@ -4662,6 +4662,7 @@ export function migrationProvider() {
         "0112_task_done": taskDoneMigration,
         "0113_person_asked_threads": personAskedThreadsMigration,
         "0114_run_started_by": runStartedByMigration,
+        "0115_better_auth_17": betterAuth17Migration,
       };
     },
   };
@@ -6173,6 +6174,99 @@ export const runStartedByMigration: Migration = {
         and event.type in ('run.started', 'run.status', 'run.restarted', 'run.phase',
                            'run.completed', 'run.failed', 'run.interrupted')
         and not event.data @> context.data
+    `.execute(database);
+  },
+};
+
+/**
+ * Columns and tables Better Auth 1.7's JWT and OAuth provider plugins read and
+ * write. The provider replaced a client's `public`/`type` pair with
+ * `application_type`; every Host-managed client is a public native app.
+ */
+export const betterAuth17Migration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.auth_jwks add column alg text, add column crv text;
+
+      alter table public.host_oauth_clients
+        add column client_discovery_id text,
+        add column client_credentials_scopes jsonb default '[]'::jsonb,
+        add column backchannel_logout_uri text,
+        add column backchannel_logout_session_required boolean,
+        add column application_type text,
+        add column jwks text,
+        add column jwks_uri text,
+        add column dpop_bound_access_tokens boolean default false,
+        drop constraint host_oauth_public_client_check;
+      update public.host_oauth_clients set application_type = case
+        when type = 'native' then 'native'
+        when type in ('web', 'user-agent-based') then 'web'
+      end;
+      alter table public.host_oauth_clients
+        drop column public,
+        drop column type,
+        add constraint host_oauth_public_client_check check (
+          token_endpoint_auth_method is distinct from 'none'
+          or (coalesce(require_pkce, false) and application_type in ('native', 'web'))
+        );
+
+      alter table public.host_oauth_refresh_tokens
+        add column authorization_code_id text,
+        add column resources jsonb,
+        add column requested_user_info_claims jsonb,
+        add column rotated_at timestamptz,
+        add column rotation_replay_response text,
+        add column rotation_replay_expires_at timestamptz,
+        add column confirmation jsonb;
+      create index host_oauth_refresh_tokens_authorization_code_id
+        on public.host_oauth_refresh_tokens (authorization_code_id);
+
+      alter table public.host_oauth_access_tokens
+        add column authorization_code_id text,
+        add column resources jsonb,
+        add column requested_user_info_claims jsonb,
+        add column revoked timestamptz,
+        add column confirmation jsonb;
+      create index host_oauth_access_tokens_authorization_code_id
+        on public.host_oauth_access_tokens (authorization_code_id);
+
+      alter table public.host_oauth_consents
+        add column resources jsonb,
+        add column requested_user_info_claims jsonb;
+
+      create table public.host_oauth_resources (
+        id text primary key,
+        identifier text not null unique,
+        name text not null,
+        access_token_ttl integer,
+        refresh_token_ttl integer,
+        signing_algorithm text,
+        signing_key_id text,
+        allowed_scopes jsonb,
+        custom_claims jsonb,
+        dpop_bound_access_tokens_required boolean default false,
+        disabled boolean default false,
+        created_at timestamptz,
+        updated_at timestamptz,
+        policy_version integer default 1,
+        metadata jsonb
+      );
+      create table public.host_oauth_client_resources (
+        id text primary key,
+        client_id text not null
+          references public.host_oauth_clients (client_id) on delete cascade,
+        resource_id text not null
+          references public.host_oauth_resources (identifier) on delete cascade,
+        metadata jsonb,
+        created_at timestamptz,
+        unique (client_id, resource_id)
+      );
+      create index host_oauth_client_resources_resource_id
+        on public.host_oauth_client_resources (resource_id);
+      create table public.host_oauth_client_assertions (
+        id text primary key,
+        expires_at timestamptz not null
+      );
     `.execute(database);
   },
 };
