@@ -27,14 +27,14 @@ if (ciInstall && (process.env.GITHUB_ACTIONS !== "true" || process.env.CI !== "t
 const runnerHome = await realpath(homedir());
 assertEphemeralRunner(process.env, guestAllowed(runnerHome));
 const started = performance.now();
-const home = await realpath(
+const scratch = await realpath(
   await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "opensteer-launch-")),
 );
-const data = path.join(home, "userdata");
-const artifacts = path.resolve(values["artifacts-dir"] ?? path.join(home, "artifacts"));
+const data = path.join(scratch, "userdata");
+const artifacts = path.resolve(values["artifacts-dir"] ?? path.join(scratch, "artifacts"));
 await mkdir(artifacts, { recursive: true });
 await mkdir(data, { mode: 0o700 });
-await mkdir(path.join(home, "tmp"), { mode: 0o700 });
+await mkdir(path.join(scratch, "tmp"), { mode: 0o700 });
 const roots = new Set<number>();
 const children = new Set<number>();
 let app: ChildProcess | undefined;
@@ -190,7 +190,7 @@ try {
     copy = path.join(installed, path.basename(bundle));
     await command("sudo", ["-n", "/usr/bin/ditto", bundle, copy], 20_000);
   } else {
-    copy = path.join(home, path.basename(bundle));
+    copy = path.join(scratch, path.basename(bundle));
     await command("/usr/bin/ditto", [bundle, copy], 20_000);
   }
   const observer = path.join(import.meta.dirname, "smoke-desktop-release-observer.py");
@@ -203,7 +203,7 @@ try {
     path.join(copy, "Contents/Resources/personal-runtime/release.json"),
     "utf8",
   );
-  const intent = personalSetupIntent(releaseBytes, home, hostPort, postgresPort);
+  const intent = personalSetupIntent(releaseBytes, scratch, hostPort, postgresPort);
   await writeFile(path.join(data, "personal-deployment.v1.json"), JSON.stringify(intent), {
     mode: 0o600,
   });
@@ -215,7 +215,7 @@ try {
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
         HOME: runnerHome,
-        TMPDIR: path.join(home, "tmp"),
+        TMPDIR: path.join(scratch, "tmp"),
         OPENSTEER_DESKTOP_DATA_DIR: data,
       },
       stdio: ["ignore", stdout, stderr],
@@ -294,7 +294,7 @@ try {
   killCaptured();
   if (installed) await command("sudo", ["-n", "rm", "-rf", installed], 10_000);
   // Preserve evidence when the caller did not provide an external artifacts directory.
-  if (values["artifacts-dir"]) await rm(home, { recursive: true, force: true });
+  if (values["artifacts-dir"]) await rm(scratch, { recursive: true, force: true });
   clearTimeout(hardDeadline);
 }
 

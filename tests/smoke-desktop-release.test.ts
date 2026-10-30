@@ -81,6 +81,8 @@ it("fails closed before normal HOME can be used outside disposable CI or a marke
     { RUNNER_TEMP: "/tmp/job" },
     { CI: "true", RUNNER_TEMP: "" },
     { CI: "true", RUNNER_TEMP: "relative" },
+    { CI: "false", RUNNER_TEMP: "/private/tmp/job" },
+    { CI: "1", RUNNER_TEMP: "/private/tmp/job" },
   ]) {
     expect(() => assertEphemeralRunner(environment, false)).toThrow(/ephemeral/);
   }
