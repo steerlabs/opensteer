@@ -511,7 +511,13 @@ export function Composer(props: {
   }, [deliverExclusively, pending, props.canRespond, readOnly]);
 
   const sendMessage = async (sourceText: string): Promise<void> => {
-    if (!canSend || inFlight.current) return;
+    if (
+      !canSend ||
+      inFlight.current ||
+      drafts.readPending(deploymentId, userId, threadId) !== null ||
+      (sourceText.trim() === "" && staged.items.length === 0)
+    )
+      return;
     // Every file is on the Host, or Send is not offered: words never go on
     // without the files meant to travel with them.
     const carried = staged.items;

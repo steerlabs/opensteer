@@ -2965,3 +2965,14 @@ it("hides an unsupported mic and disables it while another composer owns dictati
   expect(button(container, "Start dictation (English)").disabled).toBe(true);
   await act(async () => dictation.cancel());
 });
+
+it("does not send an empty message when Send finishes a microphone with no speech", async () => {
+  const speech = await enableDictation();
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const { container } = await mount(host, workId);
+  await press(container, "Start dictation (English)");
+  await press(container, "Send message");
+  await speech.emit({ type: "ended", reason: "completed", error: null });
+  expect(sent(host.dispatch)).toHaveLength(0);
+  expect(text(container)).toContain("No speech detected");
+});
