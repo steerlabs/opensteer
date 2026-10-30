@@ -26,6 +26,17 @@ config.cacheVersion = JSON.stringify([
 // here rather than by rewriting the repository's 700-odd source files. Existing
 // JavaScript still wins, and a genuinely missing module still fails.
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // Metro bundles every module it can reach, used or not. A build made without
+  // mock mode gets a stub in place of the mock Host, so the ~16k-line simulation
+  // is neither shipped nor evaluated at startup. A build made with it keeps the
+  // real module; src/config.ts still refuses to run it outside development.
+  if (
+    moduleName === "./client/mock-host-port.js" &&
+    context.originModulePath === resolve(import.meta.dirname, "src/app.tsx") &&
+    process.env.EXPO_PUBLIC_OPENSTEER_MOCK !== "1"
+  ) {
+    return context.resolveRequest(context, "./client/mock-host-port-disabled", platform);
+  }
   if (/^\.\.?\//.test(moduleName) && /\.jsx?$/.test(moduleName)) {
     const target = resolve(dirname(context.originModulePath), moduleName);
 
