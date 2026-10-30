@@ -25,8 +25,9 @@ A simulator or Metro export does not prove them. Keep credentials and device IDs
    Tap from background and terminated states; verify the exact Deployment and
    message/request, including a settled Request. Check foreground suppression
    only while actually reading that destination. Provider acceptance is not display.
-5. Sign out and verify withdrawal before credential revocation. Reopen and verify
-   registration recovery. For lifecycle changes also check cold/warm links, OAuth
+5. Sign out of the Account and verify withdrawal before credential revocation.
+   Reopen and verify the device stays unregistered while signed out. Sign back in
+   to the Account, then verify registration recovery. For lifecycle changes also check cold/warm links, OAuth
    completion/cancellation and foreground callbacks; exports do not test callbacks.
 
 Record only evidence for the affected flow; report unavailable device checks as
