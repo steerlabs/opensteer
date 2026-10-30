@@ -7,6 +7,8 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { createRequire } from "node:module";
 import { journeySigning } from "./signing.js";
+import { createHash } from "node:crypto";
+import { pruneCompletedBuild } from "./build-cleanup.js";
 import { numericVersion } from "./evidence.js";
 import { buildAgentPhoneRelease, preflightAgentPhone } from "../release-agent-phone.js";
 import { localInstallConfigSchema } from "../install-beta-mac-local.js";
@@ -188,6 +190,20 @@ try {
       2,
     ),
   );
+  await writeFile(
+    path.join(directory, "archive-check.json"),
+    JSON.stringify(
+      {
+        sha256: createHash("sha256")
+          .update(await readFile(zip))
+          .digest("hex"),
+        ownerWriteCheck: { passed: true, stdout: ownerWrite },
+      },
+      null,
+      2,
+    ),
+  );
+  await pruneCompletedBuild(directory);
   console.log(directory);
 } catch (error) {
   await writeFile(

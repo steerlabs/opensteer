@@ -16,6 +16,11 @@ const selected = process.argv[3]
 if (process.argv[4] !== undefined && process.argv[4] !== "--rehearsal")
   throw Error("Expected --rehearsal or no final argument");
 const evidenceKind = process.argv[4] === "--rehearsal" ? "rehearsal" : "certification";
+const workerCount = Number(
+  z.enum(["1", "2"]).default("2").parse(process.env.OPENSTEER_UPDATE_JOURNEY_WORKERS),
+);
+const startedAt = new Date().toISOString();
+let finishedAt: string | undefined;
 const metadata = journeySigning().metadata;
 const work = journeyWorkDirectory();
 const out = path.join(work, "e2e", new Date().toISOString().replaceAll(":", "-"));
@@ -44,6 +49,7 @@ for (const item of [input.older, input.n, input.next])
     );
     for (const file of [
       "notary.json",
+      "cleanup.json",
       "archive-check.json",
       "build-verification.json",
       "prepare-verification.json",
@@ -63,6 +69,9 @@ const save = () =>
       {
         scope: "electron-updater-github-two-channels",
         evidenceKind,
+        workers: workerCount,
+        startedAt,
+        finishedAt,
         input,
         metadata,
         builds,
@@ -131,7 +140,7 @@ const one = async (name: (typeof names)[number]) => {
 try {
   const pending = [...selected];
   const workers = await Promise.allSettled(
-    Array.from({ length: 2 }, async () => {
+    Array.from({ length: workerCount }, async () => {
       while (pending.length && !stop.signal.aborted) {
         const name = pending.shift();
         if (name) await one(name);
@@ -140,6 +149,7 @@ try {
   );
   for (const worker of workers) if (worker.status === "rejected") throw worker.reason;
 } finally {
+  finishedAt = new Date().toISOString();
   save();
   process.removeListener("SIGINT", interrupt);
   process.removeListener("SIGTERM", interrupt);

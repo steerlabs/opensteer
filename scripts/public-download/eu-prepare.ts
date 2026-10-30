@@ -67,7 +67,7 @@ for (const revision of revisions) {
         "https://github.opensteer.test/steerlabs/opensteer/releases/download",
         "--allow-private-feed",
       ],
-      { cwd: path.join(directory, "source"), encoding: "utf8" },
+      { cwd: path.resolve(import.meta.dirname, "../.."), encoding: "utf8" },
     );
     writeFileSync(
       path.join(directory, "prepare-verification.json"),

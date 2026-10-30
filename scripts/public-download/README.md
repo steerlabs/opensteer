@@ -17,7 +17,9 @@ request receipts and embedded provider configuration separately establish that
 the exercised feed, metadata and ZIP requests reached the mirror. Captures must have zero dropped packets.
 
 Everything that launches Electron, changes trust or drives UI runs in disposable
-`pnpm test:vm` clones. The runner uses the existing two-guest queue and deletes
+`pnpm test:vm` clones. Set `OPENSTEER_UPDATE_JOURNEY_WORKERS=1` to run sequentially; the receipt records
+worker count, overall timestamps and each VM job’s phase timings.
+The runner uses the existing two-guest queue and deletes
 owned clones after failures too. Nothing installs or launches an app on the host.
 No command here publishes releases or pushes a branch.
 
@@ -52,6 +54,16 @@ or pass `--config /absolute/local-install.json`. Never export credentials or wor
 around a noninteractive signing failure.
 
 Outputs stay under `$OPENSTEER_UPDATE_JOURNEY_DIR/builds/<sha>/<channel>/`.
+After successful final verification, the builder verifies the ZIP checksum and
+removes its source worktree, extracted app trees, compiled runtime and redundant
+raw APK. ZIPs, receipts, manifests, provenance and verification logs remain.
+Preparation runs the current release tool without depending on source snapshots.
+Existing completed build directories can be pruned the same way:
+
+```sh
+pnpm exec tsx scripts/public-download/prune-builds.ts FULL_SHA [ANOTHER_FULL_SHA]
+```
+
 Each app carries the reserved `github.opensteer.test` provider override, is signed,
 notarized, stapled and zipped with `ditto -c -k --sequesterRsrc --keepParent`.
 Preparation extracts each final zip only to verify owner-write permissions, then
