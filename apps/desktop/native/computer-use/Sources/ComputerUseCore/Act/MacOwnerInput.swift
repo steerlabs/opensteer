@@ -102,8 +102,8 @@ enum MacOwnerInput {
       }
     }
   }
-  struct ControlParams: Decodable { let streamId: String; let source: MacVideoSource; let controlId: String; let action: String; let access: String }
-  struct InputParams: Decodable, Sendable { let streamId: String; let source: MacVideoSource; let controlId: String; let geometry: Int; let sequence: Int; let events: [Event] }
+  struct ResetParams: Decodable { let streamId: String; let source: MacVideoSource }
+  struct InputParams: Decodable, Sendable { let streamId: String; let source: MacVideoSource; let geometry: Int; let sequence: Int; let events: [Event] }
   struct Batch: Sendable {
     let params: InputParams
     let reservation: OwnerInputAdmission.Reservation
@@ -111,7 +111,6 @@ enum MacOwnerInput {
     let reply: CheckedContinuation<Result, Never>
   }
   struct Result: Encodable, Sendable { let sequence: Int; let outcome: String; var reason: String? = nil }
-  struct Control: Encodable, Sendable { let state: String; let controlId: String; var reason: String? = nil }
   struct Field: Encodable, Sendable { let kind: String; let multiline: Bool; let sensitive: Bool }
   struct Caret: Encodable, Sendable { let x: Double; let y: Double; let height: Double }
   struct Context: Encodable, Sendable {
@@ -128,7 +127,6 @@ enum MacOwnerInput {
     let type: String
     var state: String? = nil
     var reason: String? = nil
-    var controlId: String? = nil
     var sequence: Int? = nil
     var outcome: String? = nil
     var generation: Int? = nil
@@ -136,7 +134,7 @@ enum MacOwnerInput {
     var text: String? = nil
   }
   struct Publication: Encodable, Sendable {
-    let streamId: String; let source: MacVideoSource; let controlId: String; let message: Message
+    let streamId: String; let source: MacVideoSource; let message: Message
   }
   static let commands: [String: String] = [
     "selectAll": "cmd+a", "undo": "cmd+z", "redo": "cmd+shift+z",
@@ -157,17 +155,24 @@ enum MacOwnerInput {
   ]
 }
 
-final class MacOwnerLease: @unchecked Sendable {
+final class MacOwnerAttachment: @unchecked Sendable {
   let id: String
   let streamID: String
   let source: MacVideoSource
   let connection: IPCConnection
   let binding: MacVideoBinding
   let producer: any MacVideoProducing
-  let fence: OwnerInputFence
-  let epoch: Int
-  let path: String
-  let front: pid_t?
+  let mutations: AppMutationCoordinator
+  let generation: Int?
+  private let pathValue: Locked<String>
+  private let verification: (@Sendable () async throws -> String)?
+  private let verified = Locked(false)
+  var path: String { pathValue.current }
+  func verifyPath() async throws {
+    if verified.current { return }
+    if let verification { let path = try await verification(); pathValue.withLock { $0 = path } }
+    verified.withLock { $0 = true }
+  }
   let focus = FocusSlot()
   let admission = OwnerInputAdmission()
   let queue = SerialTaskChain()
@@ -175,30 +180,28 @@ final class MacOwnerLease: @unchecked Sendable {
   let guardFailed = Locked(false)
   let burstActive = Locked(false)
   let active = Locked(true)
-  let lastIntent = Locked(ProcessInfo.processInfo.systemUptime)
   let heldDeadline = Locked<TimeInterval?>(nil)
-  let heldGeneration = Locked<Int?>(nil)
   let contextPending = Locked(false)
   let worker = MacOwnerInputWorker()
   let counters = Locked<[String: Int]>([:])
   func count(_ kind: String) { counters.withLock { $0[kind, default: 0] += 1 } }
 
   init(id: String, streamID: String, source: MacVideoSource, connection: IPCConnection,
-       binding: MacVideoBinding, producer: any MacVideoProducing, fence: OwnerInputFence,
-       epoch: Int, path: String) {
+       binding: MacVideoBinding, producer: any MacVideoProducing, mutations: AppMutationCoordinator,
+       path: String, verification: (@Sendable () async throws -> String)? = nil) {
     self.id = id; self.streamID = streamID; self.source = source; self.connection = connection
-    self.binding = binding; self.producer = producer; self.fence = fence; self.epoch = epoch; self.path = path
-    front = PrivateAPI.focusPID(front: true)
+    self.binding = binding; self.producer = producer; self.mutations = mutations; self.generation = producer.inputMap?.generation; self.pathValue = Locked(path); self.verification = verification
   }
   func emit(_ message: MacOwnerInput.Message) {
     guard !connection.closedFlag else { return }
     connection.send(event: EventEnvelope(event: "display.owner-input", params: MacOwnerInput.Publication(
-      streamId: streamID, source: source, controlId: id, message: message)))
+      streamId: streamID, source: source, message: message)))
   }
   func check(_ map: MacOwnerInputMap, secureMetadata: Bool = false) throws {
     if !secureMetadata, IsSecureEventInputEnabled() { throw MacOwnerInput.Refusal("sensitive") }
-    guard active.current, !guardFailed.current, fence.isHeld(id, epoch: epoch), !connection.closedFlag,
-      binding.target.process.isCurrent, binding.unavailable == nil, AXIsProcessTrusted(),
+    guard active.current, !guardFailed.current, !connection.closedFlag,
+      binding.target.process.isCurrent, binding.unavailable == nil, AXIsProcessTrusted(), producer.inputVisible,
+      producer.inputMap?.generation == generation,
       producer.inputMap?.generation == map.generation,
       binding.window.lifecycleRevision == map.revision,
       (try? HelperRuntime.requireUnlocked()) != nil,
@@ -238,6 +241,7 @@ final class MacOwnerInputWorker {
   private var keys: [String: HeldKey] = [:]
   private var buttons: [String: HeldButton] = [:]
   private var generation: Int?
+  private var contextRevision = -1
   private var contextID = UUID().uuidString
   private var element: AXUIElement?
   private var selection: CFRange?
@@ -245,12 +249,12 @@ final class MacOwnerInputWorker {
 
   nonisolated init() {}
 
-  func cleanup(_ lease: MacOwnerLease) async {
+  func cleanup(_ lease: MacOwnerAttachment) async {
     let keys = keys, buttons = buttons
     self.keys.removeAll(); self.buttons.removeAll(); element = nil; selection = nil
     contextID = UUID().uuidString
     lease.heldDeadline.withLock { $0 = nil }
-    lease.heldGeneration.withLock { $0 = nil }
+    defer { lease.mutations.setHeld(false, attachment: lease.id) }
     guard lease.binding.target.process.isCurrent else { return }
     for key in keys.values where !key.menuHandled {
       guard KeyWindow.windowID(of: key.token.element) == key.target.windowID else { continue }
@@ -264,28 +268,24 @@ final class MacOwnerInputWorker {
     }
   }
 
-  func prepare(_ lease: MacOwnerLease) async throws {
-    guard let map = lease.producer.inputMap,
-      let enforcer = lease.focus.personEnforcer(for: lease.binding.target.process.processIdentifier)
-    else { throw MacOwnerInput.Refusal("unsupported") }
-    _ = try await enforcer.guardedPerson(window: lease.binding.window.element, prepare: true, keys: true,
-      finalCheck: { try lease.check(map) }, check: { try lease.check(map) }
-    ) { proceed in try proceed() }
-  }
-
-  func drain(_ lease: MacOwnerLease) async {
+  func drain(_ lease: MacOwnerAttachment) async {
     repeat {
       guard let batch = lease.mailbox.pop() else {
         if lease.mailbox.finishIfEmpty() { return }
         continue
       }
       let current = Locked<MacOwnerInput.Batch?>(batch)
+      await lease.mutations.beginPerson()
       lease.burstActive.withLock { $0 = true }
       var enteredFocus = false
       do {
+        guard lease.active.current, lease.admission.isCurrent(batch.reservation) else { throw MacOwnerInput.Refusal("unavailable") }
+        try await lease.verifyPath()
+        guard lease.active.current, lease.admission.isCurrent(batch.reservation) else { throw MacOwnerInput.Refusal("unavailable") }
         guard let map = lease.producer.inputMap,
           let enforcer = lease.focus.personEnforcer(for: lease.binding.target.process.processIdentifier)
         else { throw MacOwnerInput.Refusal("stale") }
+        guard lease.active.current, lease.admission.isCurrent(batch.reservation) else { throw MacOwnerInput.Refusal("unavailable") }
         try lease.check(map)
         enteredFocus = true
         _ = try await enforcer.guardedPerson(window: lease.binding.window.element, prepare: true, keys: true,
@@ -300,8 +300,9 @@ final class MacOwnerInputWorker {
         MacVideoDiagnostic.write(["event": "owner-input-preparation-refused", "streamId": lease.streamID,
           "reason": refusal?.reason ?? "focus-guard", "focusEntered": enteredFocus])
         if let pending = current.withLock({ value in defer { value = nil }; return value }) {
+          let reason = !lease.active.current || !lease.admission.isCurrent(pending.reservation)
+            ? "unavailable" : (error as? MacOwnerInput.Refusal)?.reason ?? "unsupported"
           lease.admission.complete(pending.reservation)
-          let reason = (error as? MacOwnerInput.Refusal)?.reason ?? "unsupported"
           pending.reply.resume(returning: .init(sequence: pending.params.sequence,
             outcome: reason == "stale" ? "stale" : "refused", reason: reason))
         }
@@ -310,10 +311,11 @@ final class MacOwnerInputWorker {
         await cleanup(lease)
       }
       lease.burstActive.withLock { $0 = false }
+      lease.mutations.endPerson()
     } while !lease.mailbox.finishIfEmpty()
   }
 
-  private func consumeBurst(_ lease: MacOwnerLease, current: Locked<MacOwnerInput.Batch?>,
+  private func consumeBurst(_ lease: MacOwnerAttachment, current: Locked<MacOwnerInput.Batch?>,
                             proceed: @escaping @Sendable () throws -> Void) async {
     let burstEnd = ProcessInfo.processInfo.systemUptime + 5
     while let batch = current.withLock({ value in defer { value = nil }; return value }) {
@@ -329,12 +331,7 @@ final class MacOwnerInputWorker {
         if !lease.active.current { await cleanup(lease) }
         return
       }
-      let quietEnd = min(burstEnd, ProcessInfo.processInfo.systemUptime + 0.2)
-      var next = lease.mailbox.pop()
-      while next == nil, lease.active.current, ProcessInfo.processInfo.systemUptime < quietEnd {
-        try? await Task.sleep(nanoseconds: 10_000_000)
-        next = lease.mailbox.pop()
-      }
+      let next = lease.mailbox.pop()
       guard let next else {
         if !lease.active.current { await cleanup(lease) }
         return
@@ -343,12 +340,12 @@ final class MacOwnerInputWorker {
     }
   }
 
-  func run(_ params: MacOwnerInput.InputParams, lease: MacOwnerLease,
+  func run(_ params: MacOwnerInput.InputParams, lease: MacOwnerAttachment,
            reservation: OwnerInputAdmission.Reservation,
            proceed: @escaping @Sendable () throws -> Void) async -> MacOwnerInput.Result {
     defer { lease.admission.complete(reservation) }
     do {
-      guard lease.active.current, lease.fence.isHeld(lease.id, epoch: lease.epoch) else { throw MacOwnerInput.Refusal("not-held") }
+      guard lease.active.current, lease.admission.isCurrent(reservation) else { throw MacOwnerInput.Refusal("unavailable") }
       guard lease.admission.isCurrent(reservation), let map = lease.producer.inputMap,
         params.geometry == map.generation else { throw MacOwnerInput.Refusal("stale") }
       if generation != map.generation { await cleanup(lease); generation = map.generation }
@@ -358,6 +355,8 @@ final class MacOwnerInputWorker {
         "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
       try proceed()
       try await dispatch(params, lease: lease, map: map, proceed: proceed)
+      lease.mutations.notePersonEdit()
+      contextID = UUID().uuidString
       await publishContext(lease, map: map, ownChange: true)
       lease.count("outcome.dispatched")
       return MacOwnerInput.Result(sequence: params.sequence, outcome: "dispatched")
@@ -374,7 +373,7 @@ final class MacOwnerInputWorker {
     }
   }
 
-  private func dispatch(_ params: MacOwnerInput.InputParams, lease: MacOwnerLease,
+  private func dispatch(_ params: MacOwnerInput.InputParams, lease: MacOwnerAttachment,
                         map: MacOwnerInputMap, proceed: @escaping @Sendable () throws -> Void) async throws {
     for event in params.events {
       try proceed(); try lease.check(map)
@@ -406,13 +405,13 @@ final class MacOwnerInputWorker {
       default: throw MacOwnerInput.Refusal("unsupported")
       }
     }
+    lease.mutations.setHeld(!keys.isEmpty || !buttons.isEmpty, attachment: lease.id)
     if !keys.isEmpty || !buttons.isEmpty {
       lease.heldDeadline.withLock { $0 = ProcessInfo.processInfo.systemUptime + 5 }
-      lease.heldGeneration.withLock { $0 = map.generation }
     } else { lease.heldDeadline.withLock { $0 = nil } }
   }
 
-  private func mouse(_ event: MacOwnerInput.Event, lease: MacOwnerLease, map: MacOwnerInputMap,
+  private func mouse(_ event: MacOwnerInput.Event, lease: MacOwnerAttachment, map: MacOwnerInputMap,
                      proceed: @escaping @Sendable () throws -> Void) async throws {
     let phase = event.phase!
     let name = phase == "move" && event.button == "none"
@@ -441,7 +440,7 @@ final class MacOwnerInputWorker {
     if phase == "move", let held { buttons[name] = HeldButton(target: target, token: held.token) }
   }
 
-  private func key(_ event: MacOwnerInput.Event, lease: MacOwnerLease, map: MacOwnerInputMap,
+  private func key(_ event: MacOwnerInput.Event, lease: MacOwnerAttachment, map: MacOwnerInputMap,
                    proceed: @escaping @Sendable () throws -> Void) async throws {
     let identity = event.code!, down = event.action == "down"
     if !down {
@@ -498,7 +497,7 @@ final class MacOwnerInputWorker {
       characters: event.text ?? VirtualKeys.characters(for: combo))
   }
 
-  private func chord(_ combo: KeyCombo, target: EventTarget, lease: MacOwnerLease,
+  private func chord(_ combo: KeyCombo, target: EventTarget, lease: MacOwnerAttachment,
                      map: MacOwnerInputMap, proceed: @escaping @Sendable () throws -> Void) async throws {
     if try await menuShortcut(combo, target: target, lease: lease, map: map, proceed: proceed) { return }
     guard let code = await VirtualKeys.code(for: combo) else { throw MacOwnerInput.Refusal("unsupported") }
@@ -506,7 +505,7 @@ final class MacOwnerInputWorker {
       target: target, gate: { try proceed(); try lease.check(map) })
   }
 
-  private func menuShortcut(_ combo: KeyCombo, target: EventTarget, lease: MacOwnerLease,
+  private func menuShortcut(_ combo: KeyCombo, target: EventTarget, lease: MacOwnerAttachment,
                             map: MacOwnerInputMap, proceed: @escaping @Sendable () throws -> Void) async throws -> Bool {
     guard case .menuItem(let item) = try shortcutPolicy.route(combo, pid: target.processIdentifier) else { return false }
     // A background app may receive the key without running its menu equivalent.
@@ -525,7 +524,7 @@ final class MacOwnerInputWorker {
   }
 
   private struct Focused { let element: AXUIElement; let target: EventTarget; let secure: Bool; let role: String; let token: AXWindowToken }
-  private func keyboard(_ lease: MacOwnerLease, map: MacOwnerInputMap, secureMetadata: Bool = false) throws -> Focused {
+  private func keyboard(_ lease: MacOwnerAttachment, map: MacOwnerInputMap, secureMetadata: Bool = false) throws -> Focused {
     try lease.check(map, secureMetadata: secureMetadata)
     let app = AXUIElementCreateApplication(lease.binding.target.process.processIdentifier)
     AXUIElementSetMessagingTimeout(app, 0.1)
@@ -541,7 +540,7 @@ final class MacOwnerInputWorker {
       secure: ActionReceipt.isSecure(role: role, subrole: subrole), role: role, token: AXWindowToken(element: window))
   }
 
-  private func token(for target: EventTarget, lease: MacOwnerLease) throws -> AXWindowToken {
+  private func token(for target: EventTarget, lease: MacOwnerAttachment) throws -> AXWindowToken {
     if target.windowID == lease.binding.target.windowID { return AXWindowToken(element: lease.binding.window.element) }
     let app = AXUIElementCreateApplication(target.processIdentifier)
     AXUIElementSetMessagingTimeout(app, 0.1)
@@ -559,7 +558,9 @@ final class MacOwnerInputWorker {
     guard AXValueGetValue(ax, .cfRange, &range), range.location >= 0, range.length >= 0 else { return nil }
     return range
   }
-  private func refresh(_ focused: Focused, ownChange: Bool = false) {
+  private func refresh(_ focused: Focused, revision: Int, ownChange: Bool = false) {
+    if !ownChange, revision != contextRevision { contextID = UUID().uuidString }
+    contextRevision = revision
     let next = focused.secure ? nil : range(focused.element)
     if element.map({ !CFEqual($0, focused.element) }) ?? true {
       contextID = UUID().uuidString
@@ -568,11 +569,11 @@ final class MacOwnerInputWorker {
     }
     element = focused.element; selection = next
   }
-  func publishContext(_ lease: MacOwnerLease, map: MacOwnerInputMap, ownChange: Bool = false) async {
+  func publishContext(_ lease: MacOwnerAttachment, map: MacOwnerInputMap, ownChange: Bool = false) async {
     guard lease.active.current else { return }
     do {
       let focused = try keyboard(lease, map: map, secureMetadata: true)
-      refresh(focused, ownChange: ownChange)
+      refresh(focused, revision: lease.mutations.revision, ownChange: ownChange)
       var caret: MacOwnerInput.Caret?
       if !focused.secure, var selected = selection {
         selected.length = 0
@@ -602,25 +603,25 @@ final class MacOwnerInputWorker {
     }
   }
 
-  private func verifyFocus(_ focused: Focused, lease: MacOwnerLease, map: MacOwnerInputMap) throws {
+  private func verifyFocus(_ focused: Focused, lease: MacOwnerAttachment, map: MacOwnerInputMap) throws {
     let current = try keyboard(lease, map: map)
     guard CFEqual(current.element, focused.element), !current.secure else { throw MacOwnerInput.Refusal("stale") }
   }
-  private func insert(_ text: String, lease: MacOwnerLease, map: MacOwnerInputMap,
+  private func insert(_ text: String, lease: MacOwnerAttachment, map: MacOwnerInputMap,
                       proceed: @escaping @Sendable () throws -> Void) async throws {
     let focused = try keyboard(lease, map: map)
     guard !focused.secure else { throw MacOwnerInput.Refusal("sensitive") }
     try await insert(text, focused: focused, lease: lease, map: map, proceed: proceed)
   }
   private enum InsertRoute { case accessibility, unicode }
-  private func insertionRoute(_ focused: Focused, lease: MacOwnerLease) throws -> InsertRoute {
+  private func insertionRoute(_ focused: Focused, lease: MacOwnerAttachment) throws -> InsertRoute {
     let chromium = ChromiumDetection.isChromiumLike(bundlePath: lease.path, bundleId: lease.binding.target.app.bundleId)
     var settable: DarwinBoolean = false
     let ax = !chromium && AXUIElementIsAttributeSettable(focused.element, kAXSelectedTextAttribute as CFString, &settable) == .success && settable.boolValue
     guard ax || chromium else { throw MacOwnerInput.Refusal("unsupported") }
     return ax ? .accessibility : .unicode
   }
-  private func insert(_ text: String, focused: Focused, lease: MacOwnerLease, map: MacOwnerInputMap,
+  private func insert(_ text: String, focused: Focused, lease: MacOwnerAttachment, map: MacOwnerInputMap,
                       route: InsertRoute? = nil, proceed: @escaping @Sendable () throws -> Void) async throws {
     let chosen = try route ?? insertionRoute(focused, lease: lease)
     try verifyFocus(focused, lease: lease, map: map); try proceed(); try lease.check(map)
@@ -638,11 +639,11 @@ final class MacOwnerInputWorker {
       }
     }
   }
-  private func edit(_ edit: MacOwnerInput.Edit, lease: MacOwnerLease, map: MacOwnerInputMap,
+  private func edit(_ edit: MacOwnerInput.Edit, lease: MacOwnerAttachment, map: MacOwnerInputMap,
                     proceed: @escaping @Sendable () throws -> Void) async throws {
     let focused = try keyboard(lease, map: map)
     guard !focused.secure else { throw MacOwnerInput.Refusal("sensitive") }
-    refresh(focused)
+    refresh(focused, revision: lease.mutations.revision)
     // Choose and qualify the insertion route before selecting any range.
     let route = try insertionRoute(focused, lease: lease)
     guard contextID == edit.contextId, let selected = selection else { throw MacOwnerInput.Refusal("stale") }
@@ -661,7 +662,7 @@ final class MacOwnerInputWorker {
     }
     try await insert(edit.text, focused: focused, lease: lease, map: map, route: route, proceed: proceed)
   }
-  private func copy(sequence: Int, lease: MacOwnerLease, map: MacOwnerInputMap) throws {
+  private func copy(sequence: Int, lease: MacOwnerAttachment, map: MacOwnerInputMap) throws {
     let focused = try keyboard(lease, map: map)
     guard !focused.secure else {
       throw MacOwnerInput.Refusal("sensitive")

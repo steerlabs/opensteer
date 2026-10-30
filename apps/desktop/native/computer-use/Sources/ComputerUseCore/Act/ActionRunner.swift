@@ -107,11 +107,6 @@ public enum ActionRunner {
     requireUnlocked: @escaping @Sendable () throws -> Void = { try HelperRuntime.requireUnlocked() }
   ) async throws -> RunResult {
     try cancellation.check()
-    let ownerTicket = try app.ownerInputFence.beginAgent()
-    defer { app.ownerInputFence.endAgent(ownerTicket) }
-    if app.observationControlEpoch != ownerTicket.epoch {
-      throw HelperError(.staleObservation, "The person used this app; observe this window again before acting.")
-    }
     if actions.contains(where: \.requiresSnapshot), app.latest?.observationId != observationId {
       throw HelperError(
         .staleObservation,
@@ -122,8 +117,7 @@ public enum ActionRunner {
     let context = Context(
       app: app, cancellation: cancellation, monitor: monitor, overlay: overlay, budget: budget,
       accessibility: accessibility, feedback: overlay, requireUnlocked: requireUnlocked,
-      stamp: stamp, isHidden: isHidden,
-      ownerCheck: { try app.ownerInputFence.checkAgent(ownerTicket) })
+      stamp: stamp, isHidden: isHidden)
 
     let inputWindow = app.currentWindow
     let inputRevision = inputWindow.map { monitor.helperInputRevision(processIdentifier: $0.process.processIdentifier) }
@@ -149,7 +143,14 @@ public enum ActionRunner {
         try cancellation.check()
         try budget.check()
         try context.requireUnlocked()
-        performed.append(try await perform(action, context, savedBatch: savedBatch, index: index))
+        try await app.mutations.beginAgent()
+        do {
+          performed.append(try await perform(action, context, savedBatch: savedBatch, index: index))
+          app.mutations.endAgent()
+        } catch {
+          app.mutations.endAgent()
+          throw error
+        }
       } catch let error as HelperError {
         failure = failureAfter(
           error, performed: performed, delivered: context.deliveryProgress.current)
@@ -167,7 +168,7 @@ public enum ActionRunner {
   nonisolated static func failureAfter(
     _ error: HelperError, performed: [String], delivered: Bool = false
   ) -> HelperError {
-    if delivered && (error.code == .staleObservation || error.code == .ownerInControl) {
+    if delivered && error.code == .staleObservation {
       return HelperError(
         .outcomeUnknown,
         "Input started before the target changed; some input may have arrived. " + error.message)
@@ -196,7 +197,6 @@ public enum ActionRunner {
     var keyOwner: @WorkActor (pid_t, CGWindowID) throws -> (id: CGWindowID, element: AXUIElement) =
       { try WindowKey.owner(pid: $0, destination: $1) }
     var input: InputCalls = .live
-    var ownerCheck: @Sendable () throws -> Void = {}
     let deliveryProgress = Locked(false)
     var elementCheck: (@WorkActor (AXUIElement, Binding) throws -> Void)? = nil
 
@@ -217,13 +217,13 @@ public enum ActionRunner {
     @WorkActor func deliveryGate(
       _ binding: Binding, restarted: String, markDelivery: Bool = true, event: Bool = false
     ) -> @Sendable () throws -> Void {
-      let cancellation = cancellation, budget = budget, saved = savedCheck, owner = ownerCheck
+      let cancellation = cancellation, budget = budget, saved = savedCheck
       let unlocked = requireUnlocked, stamp = binding.stamp, readStamp = self.stamp
       let lifetime = binding.bound?.liveness, progress = deliveryProgress
       let isHidden = isHidden
       let monitor = monitor, pid = binding.processIdentifier, id = binding.keyWindow.windowID
       return {
-        try cancellation.check(); try owner(); try budget.check(); try saved(); try unlocked()
+        try cancellation.check(); try budget.check(); try saved(); try unlocked()
         try AppProcess.requireSame(stamp, restarted, readStamp: readStamp)
         if monitor.staleReason(processIdentifier: pid, windowID: id) == .closed {
           lifetime?.close()
@@ -239,15 +239,14 @@ public enum ActionRunner {
     /// While an action's input is going out: only what ends the session or
     /// makes posting impossible stops it — `Stop`, the clocks, a locked screen,
     /// the saved-login lease and the process. Nothing the person does to the
-    /// app or its windows does: the rest goes wherever it naturally goes. An
-    /// explicit remote take-over still revokes this batch's authority.
+    /// app or its windows does: the rest goes wherever it naturally goes.
     @WorkActor func deliveryCheck(_ binding: Binding, restarted: String)
       -> @Sendable () throws -> Void
     {
-      let cancellation = cancellation, budget = budget, saved = savedCheck, owner = ownerCheck
+      let cancellation = cancellation, budget = budget, saved = savedCheck
       let unlocked = requireUnlocked, stamp = binding.stamp, readStamp = self.stamp
       return {
-        try cancellation.check(); try owner(); try budget.check(); try saved(); try unlocked()
+        try cancellation.check(); try budget.check(); try saved(); try unlocked()
         try AppProcess.requireSame(stamp, restarted, readStamp: readStamp)
       }
     }
@@ -287,7 +286,6 @@ public enum ActionRunner {
     /// route was still looking is honoured before anything is changed.
     @WorkActor func checkStep(_ binding: Binding, restarted: String) throws {
       try cancellation.check()
-      try ownerCheck()
       try budget.check()
       try savedCheck()
       try requireUnlocked()
@@ -521,7 +519,7 @@ public enum ActionRunner {
       binding.group?.members.contains(where: { $0.window.windowID == id }) == true
     else {
       throw HelperError(
-        .ownerInControl, "The person is using another window of this app; no keys were sent.")
+        .failed, "The person is using another window of this app; no keys were sent.")
     }
   }
 

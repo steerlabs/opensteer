@@ -34,7 +34,7 @@ public final class HelperRuntime {
   /// the connection itself, before any of these.
   nonisolated static let outOfBandMethods: Set<String> = [
     "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
-    "display.attach", "display.control", "display.input",
+    "display.attach", "display.input-reset", "display.input",
     "view.open", "view.activate", "view.renew", "view.close",
     "permissions.get", "session.open", "session.close",
     "data.status", "data.request", "data.invoke",
@@ -57,8 +57,8 @@ public final class HelperRuntime {
   nonisolated let executor = SerialTaskChain()
   private let captureTargets = CaptureTargetStore()
   private let ownerViews = OwnerViewRegistry()
-  private var ownerInputFences: [String: OwnerInputFence] = [:]
-  private(set) var ownerControls: [String: MacOwnerLease] = [:]
+  private var appMutations: [String: AppMutationCoordinator] = [:]
+  private(set) var ownerAttachments: [String: MacOwnerAttachment] = [:]
   var videoProducerFactory: MacWindowVideoRegistry.ProducerFactory?
   private lazy var video = MacWindowVideoRegistry(
     makeProducer: videoProducerFactory,
@@ -354,14 +354,14 @@ public final class HelperRuntime {
     connection.markGreeted(
       protocolVersion: params.protocolVersion,
       ownerViewVersion: params.ownerViewVersion == 3 ? 3 : nil, loginText: params.loginText,
-      ownerInputVersion: params.ownerInputVersion == 1 ? 1 : nil)
+      ownerInputVersion: params.ownerInputVersion == 2 ? 2 : nil)
     connection.send(
       response: .success(
         id: envelope.id,
         result: Wire.HelloResult(
           loginText: connection.loginReceiver?.key,
           ownerViewVersion: params.ownerViewVersion == 3 ? 3 : nil,
-          ownerInputVersion: params.ownerInputVersion == 1 ? 1 : nil,
+          ownerInputVersion: params.ownerInputVersion == 2 ? 2 : nil,
           helperVersion: helperVersion,
           minProtocolVersion: Self.minProtocolVersion,
           permissions: permissions(),
@@ -405,14 +405,19 @@ public final class HelperRuntime {
       let params = try envelope.decodeParams(Wire.ResolveParams.self, method: method)
       let record = try await catalog.resolve(query: params.app)
       return Wire.ResolveAppResult(app: AppResolver.resolved(record))
-    case "display.control":
-      return try await ownerControl(envelope, connection: connection, budget: budget)
+    case "display.input-reset":
+      return try await resetOwnerInput(envelope, connection: connection)
     case "display.input":
       return try await ownerInput(envelope, connection: connection, budget: budget)
     case "display.start":
       return try await video.start(envelope, connection: connection, budget: budget)
     case "display.resolve", "display.demand", "display.refresh", "display.stop", "display.attach":
-      return try video.perform(envelope, connection: connection)
+      let result = try video.perform(envelope, connection: connection)
+      tickOwnerInput()
+      for attachment in ownerAttachments.values where !attachment.active.current {
+        await waitForOwnerCleanup(attachment)
+      }
+      return result
     case "view.windows":
       let params = try envelope.decodeParams(Wire.OwnerWindowsParams.self, method: method)
       let verdict = AppPolicy.verdict(for: params.app.bundleId)
@@ -695,7 +700,7 @@ public final class HelperRuntime {
   func isMonitoring(_ pid: pid_t) -> Bool { monitor.isWatching(pid) }
 
   private func updateOverlay(ending: OverlayModel.Ending = .ended) {
-    let ownerInput = ownerControls.values.filter { $0.active.current }.map { lease in
+    let ownerInput = ownerAttachments.values.filter { $0.active.current }.map { lease in
       OverlayModel.Session(id: lease.id, threadTitle: nil,
         apps: [.init(key: lease.binding.target.app.bundleId.lowercased(), name: lease.binding.target.app.displayName,
           access: .readWrite, path: lease.path)], ownerInput: true)
@@ -757,7 +762,12 @@ public final class HelperRuntime {
 
   func stopFromOverlay() {
     Log.session.notice("The person pressed Stop.")
-    releaseAllOwnerInput(reason: "released-by-owner")
+    for attachment in ownerAttachments.values {
+      if let id = attachment.source.viewId, let generation = attachment.source.generation {
+        try? ownerViews.close(id, generation: generation, connectionID: attachment.connection.id)
+      }
+    }
+    releaseAllOwnerInput(reason: "stopped")
     closeAllSessions(reason: .user)
   }
 
@@ -811,7 +821,7 @@ public final class HelperRuntime {
       throw HelperError(.noSession, "That session is no longer open on this Mac.")
     }
     let state = AppSessionState(identity: record.identity, path: record.path,
-      ownerInputFence: ownerInputFence(for: key))
+      mutations: mutations(for: key))
     if let replaced = session.app(key) {
       if let processIdentifier = session.processIdentifiers[key] {
         monitor.forget(processIdentifier: processIdentifier)
@@ -933,15 +943,10 @@ public final class HelperRuntime {
     overlay?.workStarted(on: state)
     defer { overlay?.workEnded(on: state) }
     let cancellation = opened.cancellation
-    let controlEpoch = state.ownerInputFence.epoch
     let observation = try await AppObserver.observe(
       app: state, window: params.window, monitor: monitor, budget: budget,
       includeScreenshot: includeScreenshot, cancellation: cancellation,
       check: { try cancellation.check() })
-    guard controlEpoch == state.ownerInputFence.epoch else {
-      await state.invalidateOwnerInputObservations()
-      throw HelperError(.staleObservation, "The app's control changed while observing it.")
-    }
     try await commit(observation, of: state, in: opened, connectionID: connection.id)
     return observation
   }
@@ -1130,84 +1135,44 @@ public final class HelperRuntime {
 
   // MARK: - Independent person input
 
-  private func ownerInputFence(for key: String) -> OwnerInputFence {
-    if let fence = ownerInputFences[key] { return fence }
-    let fence = OwnerInputFence()
-    ownerInputFences[key] = fence
+  private func mutations(for key: String) -> AppMutationCoordinator {
+    if let fence = appMutations[key] { return fence }
+    let fence = AppMutationCoordinator()
+    appMutations[key] = fence
     return fence
   }
 
-  private func invalidateOwnerObservations(_ key: String) async {
-    let apps = registry.sessions.values.compactMap { $0.app(key) }
-    for app in apps { await app.invalidateOwnerInputObservations() }
+  private func attachmentKey(streamID: String, source: MacVideoSource) -> String {
+    "\(streamID):\(source.viewId ?? ""):l\(source.generation ?? 0)"
   }
 
-  private func ownerControl(_ envelope: RequestEnvelope, connection: IPCConnection, budget: WorkBudget)
-    async throws -> MacOwnerInput.Control {
-    guard connection.negotiatedOwnerInputVersion == 1 else {
-      throw HelperError(.unsupported, "Negotiate Mac owner input before taking control.")
-    }
-    let params = try envelope.decodeParams(MacOwnerInput.ControlParams.self, method: envelope.method)
-    guard params.source.kind == "owner-view", params.access == "read-write",
-      params.controlId.hasPrefix("dcl_"), UUID(uuidString: String(params.controlId.dropFirst(4))) != nil
-    else { throw HelperError(.unsupported, "Owner input needs a read-write approval.") }
-    if params.action == "release" {
-      if let lease = ownerControls[params.controlId], lease.connection === connection,
-        lease.streamID == params.streamId, lease.source == params.source {
-        releaseOwnerInput(lease, reason: "released-by-owner")
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-          lease.queue.enqueue { continuation.resume() }
-        }
-      }
-      return MacOwnerInput.Control(state: "released", controlId: params.controlId, reason: "released-by-owner")
-    }
-    guard params.action == "acquire", ownerControls[params.controlId] == nil else {
-      return MacOwnerInput.Control(state: "refused", controlId: params.controlId, reason: "busy")
-    }
-    try budget.check(); try Self.requireUnlocked()
-    let (binding, producer) = try video.ownerInputTarget(streamID: params.streamId, source: params.source, connection: connection)
-    let record = try await catalog.verifiedRecord(for: binding.target.app)
-    guard binding.target.process.isCurrent, !connection.closedFlag,
-      PrivateAPI.focusPID(front: true) != binding.target.process.processIdentifier else {
-      return MacOwnerInput.Control(state: "refused", controlId: params.controlId, reason: "busy")
-    }
-    guard let lease = installOwnerControl(params, connection: connection, binding: binding,
-      producer: producer, path: record.path) else {
-      return MacOwnerInput.Control(state: "refused", controlId: params.controlId, reason: "busy")
-    }
-    let key = binding.target.app.bundleId.lowercased()
-    let fence = lease.fence
-    let epoch = lease.epoch
-    await fence.drain()
-    await invalidateOwnerObservations(key)
-    do {
-      try budget.check(); try Self.requireUnlocked()
-      _ = try video.ownerInputTarget(streamID: params.streamId, source: params.source, connection: connection)
-      guard ownerControls[lease.id] === lease, lease.active.current, !connection.closedFlag else { throw OwnerInputFence.refusal }
-      try fence.hold(lease.id, epoch: epoch)
-      updateOverlay()
-      try await lease.worker.prepare(lease)
-      try budget.check()
-      guard lease.active.current else { throw OwnerInputFence.refusal }
-      if let map = producer.inputMap { await lease.worker.publishContext(lease, map: map) }
-      return MacOwnerInput.Control(state: "held", controlId: lease.id)
-    } catch {
-      releaseOwnerInput(lease, reason: "stream-lost")
-      throw error
-    }
+  func installOwnerAttachment(streamID: String, source: MacVideoSource, connection: IPCConnection,
+    binding: MacVideoBinding, producer: any MacVideoProducing, path: String,
+    verification: (@Sendable () async throws -> String)? = nil) -> MacOwnerAttachment? {
+    let id = attachmentKey(streamID: streamID, source: source)
+    guard ownerAttachments[id] == nil else { return nil }
+    let attachment = MacOwnerAttachment(id: id, streamID: streamID, source: source,
+      connection: connection, binding: binding, producer: producer,
+      mutations: mutations(for: binding.target.app.bundleId.lowercased()), path: path, verification: verification)
+    ownerAttachments[id] = attachment
+    updateOverlay()
+    return attachment
   }
 
-  func installOwnerControl(_ params: MacOwnerInput.ControlParams, connection: IPCConnection,
-    binding: MacVideoBinding, producer: any MacVideoProducing, path: String) -> MacOwnerLease? {
-    guard ownerControls[params.controlId] == nil else { return nil }
-    let fence = ownerInputFence(for: binding.target.app.bundleId.lowercased())
-    let epoch: Int
-    do { epoch = try fence.acquire(params.controlId) }
-    catch { return nil }
-    let lease = MacOwnerLease(id: params.controlId, streamID: params.streamId, source: params.source,
-      connection: connection, binding: binding, producer: producer, fence: fence, epoch: epoch, path: path)
-    ownerControls[lease.id] = lease
-    return lease
+  private func resetOwnerInput(_ envelope: RequestEnvelope, connection: IPCConnection) async throws -> Wire.EmptyResult {
+    let params = try envelope.decodeParams(MacOwnerInput.ResetParams.self, method: envelope.method)
+    let id = attachmentKey(streamID: params.streamId, source: params.source)
+    if let attachment = ownerAttachments[id], attachment.connection === connection {
+      releaseOwnerInput(attachment, reason: "reset")
+      await waitForOwnerCleanup(attachment)
+    }
+    return Wire.EmptyResult()
+  }
+
+  private func waitForOwnerCleanup(_ attachment: MacOwnerAttachment) async {
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+      attachment.queue.enqueue { continuation.resume() }
+    }
   }
 
   private func ownerInput(_ envelope: RequestEnvelope, connection: IPCConnection, budget: WorkBudget)
@@ -1217,19 +1182,31 @@ public final class HelperRuntime {
       params.geometry > 0, params.geometry <= 9_007_199_254_740_991 else {
       throw HelperError(.failed, "Owner input needs a valid generation and sequence.")
     }
-    guard connection.negotiatedOwnerInputVersion == 1, let lease = ownerControls[params.controlId],
-      lease.connection === connection, lease.streamID == params.streamId, lease.source == params.source,
-      lease.active.current, lease.fence.isHeld(lease.id, epoch: lease.epoch)
-    else { return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "not-held") }
+    guard connection.negotiatedOwnerInputVersion == 2, params.source.kind == "owner-view"
+    else { return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unavailable") }
+    tickOwnerInput()
+    let id = attachmentKey(streamID: params.streamId, source: params.source)
+    if let previous = ownerAttachments[id], !previous.active.current {
+      await waitForOwnerCleanup(previous)
+    }
     do {
       try budget.check()
-      guard (1...64).contains(params.events.count), params.geometry > 0, params.sequence >= 0 else { throw MacOwnerInput.Refusal("unsupported") }
+      try Self.requireUnlocked()
+      guard (1...64).contains(params.events.count) else { throw MacOwnerInput.Refusal("unsupported") }
       for event in params.events { try event.validate() }
-      guard params.geometry == lease.producer.inputMap?.generation else { throw MacOwnerInput.Refusal("stale") }
-      _ = try video.ownerInputTarget(streamID: params.streamId, source: params.source, connection: connection)
+      let (binding, producer) = try video.ownerInputTarget(streamID: params.streamId, source: params.source, connection: connection)
+      guard params.geometry == producer.inputMap?.generation else { throw MacOwnerInput.Refusal("stale") }
+      if ownerAttachments[id] == nil {
+        let catalog = catalog, identity = binding.target.app
+        _ = installOwnerAttachment(streamID: params.streamId, source: params.source, connection: connection,
+          binding: binding, producer: producer,
+          path: NSRunningApplication(processIdentifier: binding.target.process.processIdentifier)?.bundleURL?.path ?? "",
+          verification: { try await catalog.verifiedRecord(for: identity).path })
+      }
+      guard let lease = ownerAttachments[id], lease.connection === connection, lease.active.current
+      else { throw MacOwnerInput.Refusal("unavailable") }
       let bytes = try JSONCoding.encoder.encode(envelope.params).count
       let reservation = try lease.admission.admit(sequence: params.sequence, bytes: bytes)
-      lease.lastIntent.withLock { $0 = ProcessInfo.processInfo.systemUptime }
       let deadline = ProcessInfo.processInfo.systemUptime + budget.remaining()
       return await withCheckedContinuation { continuation in
         if lease.mailbox.append(.init(params: params, reservation: reservation, deadline: deadline, reply: continuation)) {
@@ -1240,49 +1217,42 @@ public final class HelperRuntime {
       return MacOwnerInput.Result(sequence: params.sequence,
         outcome: refusal.reason == "stale" ? "stale" : "refused", reason: refusal.reason)
     } catch {
-      return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unsupported")
+      return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unavailable")
     }
   }
 
-  private func releaseOwnerInput(_ lease: MacOwnerLease, reason: String) {
+  private func releaseOwnerInput(_ lease: MacOwnerAttachment, reason: String) {
     guard lease.active.withLock({ value in let old = value; value = false; return old }) else { return }
     lease.admission.invalidate()
-    _ = lease.fence.release(lease.id)
-    // Cleanup-only releases need not wait for another app's focus round. The
-    // queued cleanup below also catches a down already crossing an actor hop.
-    Task { await lease.worker.cleanup(lease) }
     lease.queue.enqueue { [self] in
+      await lease.mutations.beginPerson()
       await lease.worker.cleanup(lease)
       lease.focus.stop()
-      await lease.fence.drain()
-      await invalidateOwnerObservations(lease.binding.target.app.bundleId.lowercased())
-      lease.fence.finishRelease(lease.id)
+      lease.mutations.endPerson()
       await finishOwnerRelease(lease, reason: reason)
     }
   }
-  private func finishOwnerRelease(_ lease: MacOwnerLease, reason: String) {
-    if ownerControls[lease.id] === lease { ownerControls[lease.id] = nil }
+  private func finishOwnerRelease(_ lease: MacOwnerAttachment, reason: String) {
+    if ownerAttachments[lease.id] === lease { ownerAttachments[lease.id] = nil }
     let counts = lease.counters.current.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
     Log.session.notice("Owner input released: reason=\(reason, privacy: .public) counters=\(counts, privacy: .public)")
-    lease.emit(.init(type: "display.control", state: "released", reason: reason, controlId: lease.id))
     updateOverlay()
   }
   private func releaseAllOwnerInput(reason: String) {
-    for lease in ownerControls.values { releaseOwnerInput(lease, reason: reason) }
+    for lease in ownerAttachments.values { releaseOwnerInput(lease, reason: reason) }
   }
   private func tickOwnerInput() {
     let now = ProcessInfo.processInfo.systemUptime
-    for lease in ownerControls.values where lease.active.current {
-      let source = try? resolveVideo(lease.source, connection: lease.connection)
+    for lease in ownerAttachments.values where lease.active.current {
+      let source = try? video.ownerInputTarget(streamID: lease.streamID, source: lease.source, connection: lease.connection)
       let reason: String?
       if (try? Self.requireUnlocked()) == nil { reason = "secure-lock" }
-      else if !AXIsProcessTrusted() || lease.guardFailed.current || source?.allowed() != true || !lease.producer.inputVisible || !lease.binding.target.process.isCurrent || lease.binding.unavailable != nil { reason = "stream-lost" }
-      else if lease.heldDeadline.current != nil && lease.producer.inputMap?.generation != lease.heldGeneration.current { reason = "stream-lost" }
-      else if now - lease.lastIntent.current >= 60 || lease.heldDeadline.current.map({ now >= $0 }) == true { reason = "timed-out" }
-      else if PrivateAPI.focusPID(front: true) != lease.front { reason = "released-by-owner" }
+      else if !AXIsProcessTrusted() || lease.guardFailed.current || source == nil || !lease.producer.inputVisible || !lease.binding.target.process.isCurrent || lease.binding.unavailable != nil { reason = "stream-lost" }
+      else if lease.producer.inputMap?.generation != lease.generation { reason = "stream-lost" }
+      else if lease.heldDeadline.current.map({ now >= $0 }) == true { reason = "timed-out" }
       else { reason = nil }
       if let reason { releaseOwnerInput(lease, reason: reason) }
-      else if lease.fence.isHeld(lease.id, epoch: lease.epoch), lease.admission.pendingBatches == 0, !lease.burstActive.current,
+      else if lease.admission.pendingBatches == 0, !lease.burstActive.current,
         let map = lease.producer.inputMap,
         lease.contextPending.withLock({ value in if value { return false }; value = true; return true }) {
         Task {
@@ -1296,7 +1266,7 @@ public final class HelperRuntime {
   // MARK: - Connections and clocks
 
   func connectionClosed(_ connection: IPCConnection) {
-    for lease in ownerControls.values where lease.connection === connection { releaseOwnerInput(lease, reason: "viewer-gone") }
+    for lease in ownerAttachments.values where lease.connection === connection { releaseOwnerInput(lease, reason: "viewer-gone") }
     video.disconnected(connection)
     closedConnectionIDs.insert(connection.id)
     connections[connection.id] = nil
