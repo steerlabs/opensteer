@@ -13,7 +13,10 @@ input authority. The lease reports batch sequences before send, including each
 split frame. Context and pending operations retire on connection or display
 generation changes. Input uses the currently drawn generation; clipboard results only
 settle an awaited copy or Cut. Empty/refused results leave the viewer clipboard alone.
-The proxy owns the browser gesture/native desktop clipboard port.
+The proxy owns the browser gesture/native desktop clipboard port. Producer lanes are
+bounded (the Mac helper admits four pending batches per window) and answer slower than a
+frame, so movement and wheel turns wait, merged, while the view awaits a receipt;
+everything else goes at once, after them.
 
 Phone and Mac targets show preedit locally, then receive one text edit on commit.
 The phone verifies ranges on API 33+; API 30–32 refusals appear in the control bar.

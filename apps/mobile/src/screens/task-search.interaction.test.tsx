@@ -41,7 +41,7 @@ vi.mock("@react-navigation/native", () => ({
     setOptions: harness.setOptions,
   }),
 }));
-vi.mock("../navigation-header.js", () => ({ useSidebarToggle: () => undefined }));
+
 vi.mock("../threads/tasks-pane.js", () => ({
   TasksPane: (props: { onOpenTask: (threadId: string) => void; query: string }) => {
     harness.queries.push(props.query);

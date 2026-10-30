@@ -5,7 +5,6 @@ import {
   conversationActivities,
   conversationTurn,
   formatClockTime,
-  formatElapsed,
   hasRunOutcome,
   silentRunLabel,
   incomingMessagePreview,
@@ -13,6 +12,7 @@ import {
   messageFoldLines,
   turnFolds,
   turnState,
+  turnWords,
   workRows,
   workSummary,
   type ActivityIcon,
@@ -30,7 +30,7 @@ import {
   type WorkSummary,
   type WorkspaceSummary,
 } from "@opensteer/client/host";
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated from "react-native-reanimated";
 import { Markdown, PlainProse } from "../markdown/markdown.js";
@@ -38,9 +38,7 @@ import { color, radius, space, touchTarget, type } from "../theme.js";
 import { appear, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
-import { ChatOrb } from "../ui/chat-orb.js";
-import { WorkspaceMark } from "../ui/workspace-mark.js";
-import { AssignmentLines, DelegationLine } from "./task-line.js";
+import { AssignmentLines, DelegationLine, ThreadMark } from "./task-line.js";
 import { MessageAttachments } from "./attachment-views.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
 import { MessageMenu } from "./message-menu.js";
@@ -197,7 +195,7 @@ function TurnView(props: {
   readonly live?: boolean;
 }): ReactNode {
   const { onToggle, turn, turnKey } = props;
-  const folds = useMemo(() => turnFolds(turn), [turn]);
+  const folds = turnFolds(turn);
   return (
     <View style={styles.turn}>
       <TurnContent
@@ -230,32 +228,27 @@ function WorkStatus(props: {
   const unsettled = summary.state !== "settled";
   const live = props.live !== false && unsettled;
   const label = summary.state === "live" && restarting(turn.run) ? restartingLabel : summary.label;
+  // On the reader's Mac the line says where the agent is, and still opens its steps.
+  const toggle =
+    props.onToggle === undefined ? null : { onToggle: props.onToggle, open: props.open === true };
   if (line?.kind === "now")
-    return <ComputerUseLine key={line.now.session.sessionId} now={line.now} />;
+    return <ComputerUseLine key={line.now.session.sessionId} now={line.now} toggle={toggle} />;
   if (line?.kind === "kept")
-    return <KeptComputerStopLine key={line.stop.sessionId} stop={line.stop} />;
+    return <KeptComputerStopLine key={line.stop.sessionId} stop={line.stop} toggle={toggle} />;
   const content = (
     <>
       {unsettled ? (
         <StatusDot live={live} tone={summary.state === "waiting" ? "amber" : "muted"} />
       ) : null}
-      <View style={styles.headText}>
-        <AppText
-          {...(live ? { accessibilityLabel: `${label}, in progress` } : {})}
-          numberOfLines={1}
-          role="secondaryMedium"
-          tone="soft"
-        >
-          {label}
-        </AppText>
-        {unsettled || summary.meta === "" ? null : (
-          <AppText numberOfLines={1} role="caption" style={styles.headMeta} tone="muted">
-            {summary.meta}
-          </AppText>
-        )}
-      </View>
-      {summary.errors > 0 && !unsettled ? <ErrorCount count={summary.errors} /> : null}
-      {live && summary.startedAt !== null ? <LiveClock startedAt={summary.startedAt} /> : null}
+      <AppText
+        {...(live ? { accessibilityLabel: `${label}, in progress` } : {})}
+        numberOfLines={1}
+        role="secondaryMedium"
+        style={styles.headLabel}
+        tone="soft"
+      >
+        {label}
+      </AppText>
       {props.onToggle === undefined ? null : (
         <Symbol
           name={props.open === true ? "chevron.down" : "chevron.right"}
@@ -509,58 +502,57 @@ function TurnContent(props: {
   readonly fold?: { readonly onToggle: () => void; readonly open: boolean };
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
-  /** Whether the stream ends with its status line; a conversation's steps have none. */
+  /**
+   * Whether the turn leads with its status line, which stays put while the
+   * turn runs and when it ends; a conversation's steps have none.
+   */
   readonly status?: boolean;
   readonly turn: Turn;
   readonly live: boolean;
 }): ReactNode {
-  const active = turnState(props.turn) !== "settled";
+  const { fold, turn } = props;
+  const active = turnState(turn) !== "settled";
   const status = props.status !== false;
-  const work = props.entries ?? props.turn.work;
-  const { reply } = props.turn;
-  const summary = useMemo(() => (status ? workSummary(props.turn) : null), [status, props.turn]);
-  // Closed, the reply is the turn's one row and its steps are not mounted at
-  // all, which is what keeps a long night of turns light to scroll.
-  const closed = props.fold?.open === false && reply !== null;
+  const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
+  // Closed, the agent's words are the turn's rows and its steps are not
+  // mounted at all, which is what keeps a long night of turns light to scroll.
+  const closed = fold?.open === false;
   const rows = useMemo(
-    () => [
-      ...workRows(closed ? [reply] : work),
-      ...(summary === null ? [] : [{ kind: "status" as const, key: "status", summary }]),
-    ],
-    [work, closed, reply, summary],
+    () => workRows(closed ? turnWords(turn) : (props.entries ?? turn.work)),
+    [closed, props.entries, turn],
   );
-  const { fold } = props;
-  return rows.map((row) => {
-    if (row.kind === "status") {
-      return (
+  return (
+    <>
+      {summary === null ? null : (
         <WorkStatus
-          key={row.key}
-          summary={row.summary}
-          turn={props.turn}
+          summary={summary}
+          turn={turn}
           live={props.live}
           {...(fold === undefined ? {} : fold)}
         />
-      );
-    }
-    const view = (
-      <WorkRowView
-        active={active}
-        highlightRequestId={props.highlightRequestId}
-        key={row.key}
-        onOpenStep={props.onOpenStep}
-        row={row}
-        subagentWork={props.turn.subagentWork}
-      />
-    );
-    // A folding turn's steps come and go as any opened row's do; its reply stays put.
-    return fold === undefined || (row.kind === "note" && row.entry === reply) ? (
-      view
-    ) : (
-      <Animated.View entering={appear} exiting={exit} key={row.key}>
-        {view}
-      </Animated.View>
-    );
-  });
+      )}
+      {rows.map((row) => {
+        const view = (
+          <WorkRowView
+            active={active}
+            highlightRequestId={props.highlightRequestId}
+            key={row.key}
+            onOpenStep={props.onOpenStep}
+            row={row}
+            subagentWork={turn.subagentWork}
+          />
+        );
+        // A folding turn's steps come and go as any opened row's do; its words stay put.
+        return fold === undefined || row.kind === "note" ? (
+          view
+        ) : (
+          <Animated.View entering={appear} exiting={exit} key={row.key}>
+            {view}
+          </Animated.View>
+        );
+      })}
+    </>
+  );
 }
 
 /** One row of a turn's work, or of a subagent's inside it. */
@@ -820,22 +812,6 @@ function ErrorCount(props: { readonly count: number }): ReactNode {
   );
 }
 
-/** Seconds since the turn began, redrawn once a second and nothing else with it. */
-function LiveClock(props: { readonly startedAt: string }): ReactNode {
-  const started = Date.parse(props.startedAt);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, []);
-  if (!Number.isFinite(started)) return null;
-  return (
-    <AppText role="caption" style={styles.figures} tone="muted">
-      {formatElapsed(now - started)}
-    </AppText>
-  );
-}
-
 const iconSymbol: Record<ActivityIcon, SFSymbolName> = {
   "alert-circle": "exclamationmark.circle",
   asterisk: "lightbulb",
@@ -1013,14 +989,19 @@ function Message(props: {
     <View style={update ? styles.updateColumn : styles.inputColumn}>
       {mine ? null : (
         <Attribution
-          createdAt={message.createdAt}
+          mark={
+            author.kind === "agent" ? (
+              <ThreadMark threadId={author.threadId} />
+            ) : author.kind === "trigger" || author.kind === "watch" ? (
+              <Symbol name="bolt" size={13} tint={color.muted} />
+            ) : null
+          }
           name={messageAuthorName(author, message.messageKind, props.homeThreadId)}
           // Only a Thread the reader can open is a way there: someone else's
           // Chat, behind a Workspace they are not in, is named and left at that.
           {...(author.kind === "agent" && workspace !== null
             ? { onOpen: () => props.onOpenThread(author.threadId) }
             : {})}
-          {...(workspace === null ? {} : { workspace })}
         />
       )}
       <MessagePages pages={message.pages ?? []} />
@@ -1256,42 +1237,26 @@ function UpdateLine(props: {
 }
 
 /**
- * Who sent an input this reader did not, and — when it was another Thread's
- * agent — the way to that Thread. A trigger's own page is a computer-sized
- * screen this app does not have, so a trigger is named and not linked.
+ * Who sent an input this reader did not, by the mark and name the task list
+ * gives it, and — when it was another Thread's agent — the way to that
+ * Thread. A trigger's own page is a computer-sized screen this app does not
+ * have, so a trigger is named and not linked.
  */
 function Attribution(props: {
-  readonly createdAt: string;
+  readonly mark: ReactNode;
   readonly name: string;
   readonly onOpen?: () => void;
-  readonly workspace?: {
-    readonly kind: WorkspaceSummary["kind"];
-    readonly icon: WorkspaceSummary["icon"];
-    readonly name: string;
-    readonly color: WorkspaceSummary["color"];
-  };
 }): ReactNode {
   const content = (
     <>
-      {props.workspace === undefined ? null : props.workspace.kind === "main" ? (
-        <ChatOrb size={16} />
-      ) : (
-        <WorkspaceMark
-          icon={props.workspace.icon}
-          name={props.workspace.name}
-          size="small"
-          color={props.workspace.color}
-        />
-      )}
+      {props.mark}
       <AppText
+        numberOfLines={1}
         role="caption"
         style={{ flexShrink: 1 }}
         tone={props.onOpen === undefined ? "muted" : "emberDim"}
       >
         {props.name}
-      </AppText>
-      <AppText role="caption" tone="muted">
-        {formatClockTime(props.createdAt)}
       </AppText>
     </>
   );
@@ -1529,8 +1494,7 @@ const styles = StyleSheet.create({
     minHeight: touchTarget,
     paddingHorizontal: space[8],
   },
-  headMeta: { flexShrink: 1 },
-  headText: { alignItems: "baseline", flexDirection: "row", flexShrink: 1, gap: space[8] },
+  headLabel: { flexShrink: 1 },
   highlighted: { backgroundColor: color.emberWash },
   icon: { alignItems: "center", width: space[20] },
   inputColumn: { alignItems: "flex-end", alignSelf: "flex-end", gap: space[4], maxWidth: "82%" },

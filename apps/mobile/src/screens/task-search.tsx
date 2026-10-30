@@ -3,7 +3,6 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { StyleSheet, View, type NativeSyntheticEvent } from "react-native";
 import type { SearchBarCommands, SearchBarTextEventData } from "react-native-screens";
-import { useSidebarToggle } from "../navigation-header.js";
 import type { RootParamList } from "../navigation.js";
 import { color } from "../theme.js";
 import { TasksPane } from "../threads/tasks-pane.js";
@@ -24,8 +23,6 @@ export type TaskSearchScreenProps = StaticScreenProps<{ readonly deploymentId: s
  * never opens or closes anything here.
  */
 export function TaskSearchScreen(props: TaskSearchScreenProps): ReactNode {
-  // Over a task, the docked sidebar's own Show and Hide stay beside Back.
-  useSidebarToggle();
   const { deploymentId } = props.route.params;
   const navigation = useNavigation<NativeStackNavigationProp<RootParamList>>();
   const client = useMobileClient();

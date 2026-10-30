@@ -34,15 +34,9 @@ describe("integration authorization transaction routes", () => {
     }));
     const app = Fastify();
     apps.push(app);
-    const requireCanonicalSurface = vi.fn((headers: { readonly host?: string }) => {
-      if (headers.host !== "host.example.test") throw new Error("canonical surface required");
-    });
     registerIntegrationAuthorizationRoutes(app, {
       attempts: { launch } as unknown as IntegrationAuthAttemptLifecycle,
-      authenticator: {
-        publicOrigin: "https://host.example.test",
-        requireCanonicalSurface,
-      } as unknown as HostAuthenticator,
+      authenticator: launchAuthenticator(),
       deploymentId,
     });
 
@@ -61,14 +55,49 @@ describe("integration authorization transaction routes", () => {
       browserBinding,
     );
     expect(launch).toHaveBeenCalledWith({ id: attemptId, launchTicket });
+  });
+
+  // The ways it could fail: a phone or another computer cannot open a sign-in
+  // through the Account service because it does not reach the Host by its
+  // canonical name; or one returning to the Host's own callback is sent to the
+  // provider from an origin whose browser can never finish it.
+  it.each([
+    {
+      authorizationUrl: "https://account.example.test/v1/oauth-broker/launch/hoa_1?ticket=t",
+      launches: true,
+      name: "through the Account service",
+    },
+    {
+      authorizationUrl: `https://accounts.example.test/authorize?state=s&redirect_uri=${encodeURIComponent(
+        "https://host.example.test/v1/integrations/oauth/callback/google",
+      )}`,
+      launches: false,
+      name: "back to this Host's callback",
+    },
+  ])("launches a sign-in $name from a Personal route: $launches", async (input) => {
+    const launch = vi.fn(async () => ({
+      authorizationUrl: input.authorizationUrl,
+      browserBinding,
+      flow: "provider-oauth" as const,
+      id: attemptId,
+      surface: "native" as const,
+    }));
+    const app = Fastify();
+    apps.push(app);
+    registerIntegrationAuthorizationRoutes(app, {
+      attempts: { launch } as unknown as IntegrationAuthAttemptLifecycle,
+      authenticator: launchAuthenticator(),
+      deploymentId,
+    });
 
     const remote = await app.inject({
       headers: { host: "personal-route.example.test" },
       method: "GET",
       url: `/v1/integration-authorizations/${attemptId}/launch?ticket=${launchTicket}`,
     });
-    expect(remote.statusCode).toBe(500);
-    expect(launch).toHaveBeenCalledOnce();
+
+    expect(remote.statusCode).toBe(input.launches ? 303 : 500);
+    expect(remote.headers.location).toBe(input.launches ? input.authorizationUrl : undefined);
   });
 
   it("exposes status and cancellation only to the authenticated owner", async () => {
@@ -215,3 +244,13 @@ describe("integration authorization transaction routes", () => {
     expect(response.body).toContain("your own provider app");
   });
 });
+
+/** The canonical Host the launch tests answer as: a request named otherwise is not it. */
+function launchAuthenticator(): HostAuthenticator {
+  return {
+    publicOrigin: "https://host.example.test",
+    requireCanonicalSurface: (headers: { readonly host?: string }) => {
+      if (headers.host !== "host.example.test") throw new Error("canonical surface required");
+    },
+  } as unknown as HostAuthenticator;
+}

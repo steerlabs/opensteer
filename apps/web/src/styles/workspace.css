@@ -1321,7 +1321,7 @@ button.side-needs:hover {
   outline: none;
 }
 
-.conv-header__switcher {
+.conv-header__menu {
   display: inline-flex;
   align-items: center;
   gap: var(--space-4);
@@ -1334,8 +1334,8 @@ button.side-needs:hover {
   color: var(--text);
 }
 
-.conv-header__switcher:hover,
-.conv-header__switcher[aria-expanded="true"] {
+.conv-header__menu:hover,
+.conv-header__menu[aria-expanded="true"] {
   background: rgb(255 255 255 / 5%);
 }
 
@@ -1450,11 +1450,11 @@ button.side-needs:hover {
   max-width: 100%;
 }
 
-/* ---- Switcher ---- */
+/* ---- The menu under a conversation's name ---- */
 
-/* Only the list scrolls: the search above it and the task's own actions below
-   it stay in view however many tasks there are. */
-.popover--switcher {
+/* Only the tasks scroll: what can be done here stays in view below them
+   however many are going. */
+.popover--conversation-menu {
   display: flex;
   flex-direction: column;
   width: min(340px, calc(100vw - 24px));
@@ -1462,28 +1462,35 @@ button.side-needs:hover {
   overflow: hidden;
 }
 
-.switcher {
+.conversation-menu {
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 
-.switcher__search {
-  flex: none;
-  margin: var(--space-8);
+/* Its groups part with a rule between them, never above the first. */
+.conversation-menu > * + * {
+  border-top: 1px solid var(--line);
 }
 
-.switcher__list {
+.conversation-menu__tasks {
   display: grid;
   align-content: start;
   gap: 1px;
   min-height: 0;
-  padding: 0 var(--space-6) var(--space-6);
+  padding: var(--space-6);
   overflow-y: auto;
 }
 
-.switcher__row {
-  --ring-bg: var(--surface-elevated);
+.conversation-menu__label {
+  margin: 0;
+  padding: var(--space-4) var(--space-10) var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+
+.conversation-menu__task {
   display: flex;
   align-items: center;
   gap: var(--space-10);
@@ -1495,18 +1502,13 @@ button.side-needs:hover {
   text-align: left;
 }
 
-.switcher__row:hover,
-.switcher__row:focus-visible {
-  --ring-bg: var(--surface-hover);
+.conversation-menu__task:hover,
+.conversation-menu__task:focus-visible {
   background: var(--surface-hover);
   color: var(--text);
 }
 
-.switcher__row[aria-current] {
-  color: var(--text);
-}
-
-.switcher__title {
+.conversation-menu__title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1514,31 +1516,17 @@ button.side-needs:hover {
   white-space: nowrap;
 }
 
-.switcher__row > svg {
-  width: 14px;
-  height: 14px;
-  color: var(--muted);
-}
-
-.switcher__empty {
-  padding: var(--space-8) var(--space-10);
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-/* The open task's own actions, under the list that switches away from it. */
-.switcher__actions {
+.conversation-menu__actions {
   display: grid;
   flex: none;
   padding: var(--space-6);
-  border-top: 1px solid var(--line);
 }
 
-.switcher__actions .kbd {
+.conversation-menu__actions .kbd {
   margin-left: auto;
 }
 
-.switcher__confirm {
+.conversation-menu__confirm {
   padding: var(--space-16);
 }
 
@@ -2425,7 +2413,7 @@ button.start-apps__row--away:focus-visible {
   .side-task__main,
   .side-tab__main,
   .side-new__main,
-  .switcher__row {
+  .conversation-menu__task {
     min-height: var(--touch-target);
   }
 

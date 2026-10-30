@@ -10,26 +10,28 @@ import { TaskIconEditor } from "../task-icon-editor.js";
 import { WorkspaceOrb } from "../workspace-orb.js";
 import { ThreadTitleEditor } from "../thread-title-editor.js";
 import { useHostSelector } from "@opensteer/client/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
+  assignmentMark,
   assignmentPresentation,
   assignmentRequester,
-  conversationName,
+  assignmentTitle,
   placeList,
+  tasksUnderWay,
   threadRequester,
   threadStopTarget,
   workerAssignment,
   type HostClient,
   type HostSnapshot,
   type RequesterLink,
-  type TaskRow,
 } from "@opensteer/client/host";
 import { useActionReview } from "@opensteer/client/react";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
-import { TaskBadge, TaskMark, TaskState, ChatOrb, taskStateWords } from "./task-mark.js";
+import { TaskLineState } from "../task-line.js";
+import { TaskBadge, TaskMark, ChatOrb, taskStateWords } from "./task-mark.js";
 import { AreaLink } from "./area-link.js";
 import { destinationPlaceKey } from "./navigation.js";
 import { DrawerButton } from "./place-stage.js";
@@ -38,8 +40,8 @@ import { useWorkspace } from "./workspace-context.js";
 
 /**
  * The conversation's head: the way back to the conversation it works for, its
- * mark, which also shows how the task is doing, its name, switching and
- * renaming, why it is not plainly working when that is known, and the
+ * mark, which also shows how the task is doing, its name and the menu under
+ * it, why it is not plainly working when that is known, and the
  * conversation's own controls. Docked beside the computer, the name gets the
  * width: the dock keeps only Expand and Close, and Find joins the name's menu,
  * where ⌘F still reaches it.
@@ -65,7 +67,7 @@ export function ConversationHeader({
   const homeKind = homeThreadKind(threadId, directory.snapshot);
   const home = homeKind === "main";
   const row = directory.rows.get(threadId);
-  const [switching, setSwitching] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [changingIcon, setChangingIcon] = useState(false);
   const canChangeIcon = homeKind === null && directory.snapshot.taskMarksAvailable;
@@ -77,7 +79,7 @@ export function ConversationHeader({
     hostClient,
     (snapshot) => homeThreadKind(threadId, snapshot) === null && snapshot.threadRenameAvailable,
   );
-  const switcherRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLButtonElement | null>(null);
   const toggleComputer = () => {
     if (work) {
       nav.hideComputer();
@@ -97,6 +99,14 @@ export function ConversationHeader({
     [threadId],
   );
   const requester = useHostSelector(hostClient, selectRequester, sameRequester);
+  const selectUnderWay = useCallback(
+    (snapshot: HostSnapshot) => tasksUnderWay(threadId, snapshot.assignments).length > 0,
+    [threadId],
+  );
+  const underWay = useHostSelector(hostClient, selectUnderWay);
+  // Chat has nothing to rename or mark Done: its menu is the tasks it started
+  // and, docked, Find.
+  const menu = !home || underWay || docked;
   return (
     <header className={requester ? "conv-header conv-header--trail" : "conv-header"}>
       {requester ? (
@@ -108,6 +118,11 @@ export function ConversationHeader({
             to={nav.threadPath(requester.threadId)}
           >
             <Icon name="arrow-left" />
+            {requester.threadId === directory.homeThreadId ? (
+              <ChatOrb size={16} />
+            ) : (
+              <TaskMark size={16} mark={threadMark(requester.threadId, directory.snapshot)} />
+            )}
             <span className="conv-header__back-title">{requester.title}</span>
           </AreaLink>
         </nav>
@@ -139,23 +154,27 @@ export function ConversationHeader({
               title={title}
               onClose={() => {
                 setEditing(false);
-                requestAnimationFrame(() => switcherRef.current?.focus());
+                requestAnimationFrame(() => menuRef.current?.focus());
               }}
             />
-          ) : (
+          ) : menu ? (
             <button
-              aria-expanded={switching}
+              aria-expanded={menuOpen}
               aria-haspopup="dialog"
-              aria-label={`${title}${tone ? `, ${taskStateWords(tone)}` : ""}. Switch conversation`}
-              className="conv-header__switcher"
-              onClick={() => setSwitching((value) => !value)}
-              ref={switcherRef}
+              aria-label={`${title}${tone ? `, ${taskStateWords(tone)}` : ""}`}
+              className="conv-header__menu"
+              onClick={() => setMenuOpen((value) => !value)}
+              ref={menuRef}
               title={title}
               type="button"
             >
               <span className="conv-header__name">{title}</span>
               <Icon className="conv-header__chevron" name="chevron-down" />
             </button>
+          ) : (
+            <span className="conv-header__name conv-header__name--static" title={title}>
+              {title}
+            </span>
           )}
         </h1>
         {(cause ?? (row?.tone === "failed" ? row.line : null)) ? (
@@ -233,16 +252,16 @@ export function ConversationHeader({
           </button>
         ) : null}
       </div>
-      {changingIcon && switcherRef.current && canChangeIcon ? (
+      {changingIcon && menuRef.current && canChangeIcon ? (
         <TaskIconEditor
-          anchor={switcherRef.current}
+          anchor={menuRef.current}
           hostClient={hostClient}
           threadId={threadId}
           onClose={() => setChangingIcon(false)}
         />
       ) : null}
-      {switching && switcherRef.current ? (
-        <TaskSwitcher
+      {menuOpen && menuRef.current ? (
+        <ConversationMenu
           actions={
             home
               ? null
@@ -250,11 +269,11 @@ export function ConversationHeader({
                   <TaskActions
                     key={threadId}
                     onConfirming={confirming}
-                    onDone={() => setSwitching(false)}
+                    onDone={() => setMenuOpen(false)}
                     onChangeIcon={
                       canChangeIcon
                         ? () => {
-                            setSwitching(false);
+                            setMenuOpen(false);
                             setChangingIcon(true);
                           }
                         : null
@@ -262,7 +281,7 @@ export function ConversationHeader({
                     onRename={
                       canRename
                         ? () => {
-                            setSwitching(false);
+                            setMenuOpen(false);
                             setEditing(true);
                           }
                         : null
@@ -272,27 +291,22 @@ export function ConversationHeader({
                   />
                 )
           }
-          anchor={switcherRef.current}
-          current={threadId}
+          anchor={menuRef.current}
+          label={title}
           onFind={
             docked
               ? () => {
-                  setSwitching(false);
+                  setMenuOpen(false);
                   onFind();
                 }
               : null
           }
-          onChoose={(next) => {
-            setSwitching(false);
-            if (next !== threadId) nav.openConversation(nav.threadPath(next));
+          onOpen={(task) => {
+            setMenuOpen(false);
+            nav.openConversation(nav.threadPath(task));
           }}
-          onClose={() => setSwitching(false)}
-          rows={[
-            ...(directory.list.chat ? [directory.list.chat] : []),
-            ...directory.list.working,
-            ...directory.list.ready,
-          ]}
-          homeThreadId={directory.homeThreadId}
+          onClose={() => setMenuOpen(false)}
+          threadId={threadId}
         />
       ) : null}
     </header>
@@ -350,7 +364,7 @@ function TaskActions({
   if (review) {
     return (
       <div
-        className="switcher__confirm"
+        className="conversation-menu__confirm"
         role="group"
         aria-label={review.action.kind === "task-done" ? "Stop and mark Done?" : `Stop ${title}?`}
       >
@@ -384,7 +398,7 @@ function TaskActions({
     );
   }
   return (
-    <div aria-label="This task" className="switcher__actions" role="group">
+    <div aria-label="This task" className="conversation-menu__actions" role="group">
       {onRename ? (
         <button
           aria-label="Rename task"
@@ -461,92 +475,75 @@ function TaskActions({
   );
 }
 
-/** The Tasks list in a popover, with search; choosing changes only the conversation. */
-function TaskSwitcher({
+/**
+ * The menu under a conversation's name, all about that conversation: the
+ * tasks it started that are still going, each opening where it is, then what
+ * can be done here. Another conversation is the sidebar's to open.
+ */
+function ConversationMenu({
   actions,
   anchor,
-  current,
-  homeThreadId,
-  onChoose,
+  label,
   onClose,
   onFind,
-  rows,
+  onOpen,
+  threadId,
 }: {
-  /** The open task's own actions, under the list; told when one asks first. */
+  /** The open task's own actions, last; told when one asks first. */
   readonly actions: ((asking: (on: boolean) => void) => ReactNode) | null;
   readonly anchor: HTMLElement;
-  readonly current: string;
-  readonly homeThreadId: string | null;
-  readonly onChoose: (threadId: string) => void;
+  readonly label: string;
   readonly onClose: () => void;
   /** Given where the header has no room for Find: it is offered here instead. */
   readonly onFind: (() => void) | null;
-  readonly rows: readonly TaskRow[];
+  readonly onOpen: (threadId: string) => void;
+  readonly threadId: string;
 }) {
-  const [query, setQuery] = useState("");
+  const { snapshot } = useShell();
   const [asking, setAsking] = useState(false);
-  const shown = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
-    return needle
-      ? rows.filter((row) =>
-          conversationName(row.threadId, row.title, homeThreadId)
-            .toLocaleLowerCase()
-            .includes(needle),
-        )
-      : rows;
-  }, [homeThreadId, query, rows]);
+  const tasksLabel = useId();
+  const tasks = tasksUnderWay(threadId, snapshot.assignments);
   return (
     <Popover
       anchor={anchor}
-      className="popover--switcher"
-      label="Switch conversation"
+      className="popover--conversation-menu"
+      label={label}
       onClose={onClose}
       role="dialog"
     >
-      <div className="switcher">
+      <div className="conversation-menu">
         {asking ? null : (
           <>
-            <input
-              aria-label="Search tasks"
-              autoFocus
-              className="text-input switcher__search"
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && shown[0]) {
-                  event.preventDefault();
-                  onChoose(shown[0].threadId);
-                }
-              }}
-              placeholder="Search tasks…"
-              type="search"
-              value={query}
-            />
-            <div className="switcher__list" role="list">
-              {shown.map((row) => {
-                const home = row.threadId === homeThreadId;
-                const name = conversationName(row.threadId, row.title, homeThreadId);
-                const words = taskStateWords(row.tone);
-                return (
-                  <button
-                    aria-current={row.threadId === current ? "true" : undefined}
-                    aria-label={`${name}${words && !home ? `, ${words}` : ""}`}
-                    className="switcher__row"
-                    key={row.threadId}
-                    onClick={() => onChoose(row.threadId)}
-                    role="listitem"
-                    type="button"
-                  >
-                    {home ? <ChatOrb size={20} /> : <TaskMark size={20} mark={taskMark(row)} />}
-                    <span className="switcher__title">{name}</span>
-                    {home ? null : <TaskState state={row.tone} unread={row.unread} />}
-                    {row.threadId === current ? <Icon name="check" /> : null}
-                  </button>
-                );
-              })}
-              {shown.length === 0 ? <p className="switcher__empty">No tasks match.</p> : null}
-            </div>
+            {tasks.length > 0 ? (
+              <section aria-labelledby={tasksLabel} className="conversation-menu__tasks">
+                <h2 className="conversation-menu__label" id={tasksLabel}>
+                  Started here
+                </h2>
+                {tasks.map((assignment) => {
+                  const title = assignmentTitle(assignment, snapshot);
+                  const { moving, tone, word } = assignmentPresentation(assignment, snapshot);
+                  return (
+                    <button
+                      aria-label={`${title}, ${word}`}
+                      className="conversation-menu__task"
+                      key={assignment.id}
+                      onClick={() => onOpen(assignment.workerThread.id)}
+                      type="button"
+                    >
+                      <TaskMark size={20} mark={assignmentMark(assignment, snapshot)} />
+                      <span className="conversation-menu__title">{title}</span>
+                      <TaskLineState moving={moving} tone={tone} word={word} />
+                    </button>
+                  );
+                })}
+              </section>
+            ) : null}
             {onFind ? (
-              <div aria-label="This conversation" className="switcher__actions" role="group">
+              <div
+                aria-label="This conversation"
+                className="conversation-menu__actions"
+                role="group"
+              >
                 <button className="picker__row" onClick={onFind} type="button">
                   <span className="picker__glyph">
                     <Icon name="search" />

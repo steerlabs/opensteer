@@ -1,9 +1,12 @@
 import type {
   AssignmentSummary,
+  BrowserTabWriteInput,
   WaitingRequest,
   MessageAuthor,
   IntegrationCallSubject,
+  ThreadWriteInput,
 } from "@opensteer/core";
+import type { TriggerWriteInput } from "@opensteer/triggers";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
 import type {
@@ -387,18 +390,6 @@ export function hasRunOutcome(run: RunEntry): boolean {
   );
 }
 
-/**
- * Whether all a turn did, besides talk, was start tasks. The cards the turn
- * handed out already stand for those steps, so there is nothing to unfold.
- */
-export function onlyStartedTasks(turn: Turn): boolean {
-  const steps = turn.work.filter((entry) => entry.kind !== "message");
-  return (
-    steps.length > 0 &&
-    steps.every((entry) => entry.kind === "tool" && toolPresentation(entry).kind === "task")
-  );
-}
-
 /* ---- The turn's head ---- */
 
 export type TurnState = "live" | "settled" | "stopping" | "waiting";
@@ -420,19 +411,17 @@ export function turnState(turn: Turn): TurnState {
 }
 
 /**
- * Whether a task's turn folds its steps behind its "Worked for" line. Once its
- * Run completed with an answer, the answer is what the reader came for and the
- * steps open on request. A turn still working, waiting, stopped, failed or
- * without an answer keeps its steps in view: they are what explains it.
+ * Whether a task's turn has steps to fold behind its status line. The line
+ * leads the turn whether it is live or settled, so finishing changes only its
+ * words; what the agent wrote is never folded, only what it did.
  */
 export function turnFolds(turn: Turn): boolean {
-  return (
-    turn.reply !== null &&
-    turn.continued !== true &&
-    turn.run?.status === "completed" &&
-    turnState(turn) === "settled" &&
-    stepsOf(turn).length > 0
-  );
+  return turn.work.some((entry) => entry.kind !== "message");
+}
+
+/** What a folded turn still shows: everything the agent wrote, where it wrote it. */
+export function turnWords(turn: Turn): readonly WorkEntry[] {
+  return turn.work.filter((entry) => entry.kind === "message");
 }
 
 /** Why a live turn's Run is still queued, when the client knows; otherwise null. */
@@ -837,47 +826,39 @@ function isProducing(entry: WorkEntry): boolean {
   );
 }
 
+/**
+ * A turn's status line, in words alone. What the work consisted of, and which
+ * of its steps failed, is in the steps the line opens: the agent reads a
+ * failed step and carries on, so a count of them beside the line would only
+ * alarm. A Run that failed says so below the turn.
+ */
 export interface WorkSummary {
-  /** Steps whose tone is `error`, for a quiet count beside the head. */
-  readonly errors: number;
   /** While live, what the agent is doing now; once settled, how long it took. */
   readonly label: string;
-  /** What the work consisted of, once settled ("6 commands, 3 files read"). */
-  readonly meta: string;
-  /** When the turn began, for a live elapsed clock. */
-  readonly startedAt: string | null;
   readonly state: TurnState;
 }
 
 /**
- * A task's turn's status line, or null when it has none: a turn that settled
- * on its reply alone did no work to sum up.
+ * A task's turn's status line, or null when it has none. The line stands while
+ * the turn is under way, when it has steps to open, and when its Run ended
+ * without a reply, which only the line can say; a turn that settled on its
+ * words alone did no work to sum up.
  */
 export function workSummary(turn: Turn): WorkSummary | null {
   const { run } = turn;
   const state = turnState(turn);
+  const silent = run?.status === "completed" && run.replyMessageId === null;
+  if (state === "settled" && !turnFolds(turn) && !silent) return null;
+  if (run?.status === "queued" && turn.inputQueuePaused) return { label: "Queued", state };
+  if (state !== "settled") return { label: liveLabel(turn, state), state };
   // The work is what came before the reply: writing the answer is not more of it.
   const steps = stepsOf(turn);
-  const silent = run?.status === "completed" && run.replyMessageId === null;
-  if (state === "settled" && steps.length === 0 && !silent) return null;
-  const tools = steps.filter((entry): entry is ToolEntry => entry.kind === "tool");
-  const errors = errorCount(tools);
-  const startedAt = run?.createdAt ?? turn.work[0]?.createdAt ?? null;
-  if (run?.status === "queued" && turn.inputQueuePaused) {
-    return { errors, label: "Queued", meta: "", startedAt: null, state };
-  }
-  if (state !== "settled") {
-    return { errors, label: liveLabel(turn, state), meta: "", startedAt, state };
-  }
-  const onlyThinking = steps.length > 0 && steps.every((entry) => entry.kind === "reasoning");
   const duration = workDuration(steps);
+  const onlyThinking = steps.length > 0 && steps.every((entry) => entry.kind === "reasoning");
   const verb = onlyThinking ? "Thought" : "Worked";
   return {
-    errors,
     label:
       silent && run.endedAt ? silentRunLabel(run) : duration ? `${verb} for ${duration}` : verb,
-    meta: workMeta(steps),
-    startedAt,
     state,
   };
 }
@@ -998,87 +979,9 @@ function workDuration(work: readonly WorkEntry[]): string | null {
   return formatDuration(completed - started - waited);
 }
 
-/** The nouns a settled head counts, in the order the work first did them. */
-function workMeta(work: readonly WorkEntry[]): string {
-  const counts = new Map<string, number>();
-  const editedPaths = new Set<string>();
-  for (const entry of work) {
-    if (entry.kind === "request") {
-      bump(counts, "decision");
-      continue;
-    }
-    if (entry.kind === "node") {
-      bump(counts, "subagent");
-      continue;
-    }
-    if (entry.kind !== "tool") continue;
-    const presentation = toolPresentation(entry);
-    if (isComputerUseCall(entry)) {
-      const place = computerPlace(entry);
-      bump(
-        counts,
-        place?.kind === "phone" ? `step on ${place.computer}` : `step in ${place?.app ?? "an app"}`,
-      );
-      continue;
-    }
-    // Reading how to act in an app sits in that app's row, but it is a lookup.
-    if (presentation.kind === "computer") {
-      bump(counts, metaNoun["integration-lookup"]);
-      continue;
-    }
-    if (presentation.kind === "edit") {
-      const paths = presentation.paths;
-      if (paths.length === 0) bump(counts, "edit");
-      for (const path of paths) {
-        if (!editedPaths.has(path)) bump(counts, "edit");
-        editedPaths.add(path);
-      }
-      continue;
-    }
-    bump(counts, metaNoun[presentation.kind]);
-  }
-  const parts = [...counts].map(([noun, count]) => countNoun(count, noun));
-  if (parts.length <= 3) return parts.join(", ");
-  const rest = [...counts].slice(2).reduce((sum, [, count]) => sum + count, 0);
-  return [...parts.slice(0, 2), `${rest} more`].join(", ");
-}
-
-/**
- * A gateway call reads by what it did with an integration: searching and
- * describing only look an integration up, a call uses it, and a request or
- * proposal asks a person for one. A Computer use step counts where it happened
- * instead, because that is what the turn did.
- */
-const metaNoun: Record<Exclude<StepKind, "computer">, string> = {
-  browser: "browser step",
-  command: "command",
-  delegate: "subagent",
-  edit: "edit",
-  "integration-call": "integration call",
-  "integration-lookup": "integration lookup",
-  "integration-request": "integration request",
-  list: "search",
-  plan: "plan update",
-  read: "file read",
-  search: "search",
-  task: "task",
-  tool: "tool call",
-  "web-page": "page",
-  "web-search": "web search",
-};
-
-function bump(counts: Map<string, number>, noun: string): void {
-  counts.set(noun, (counts.get(noun) ?? 0) + 1);
-}
-
 function countNoun(count: number, noun: string): string {
-  if (noun === "file read") return `${count} ${count === 1 ? "file" : "files"} read`;
-  if (noun === "edit") return `${count} ${count === 1 ? "file" : "files"} edited`;
-  if (noun === "search") return `${count} ${count === 1 ? "search" : "searches"}`;
-  if (noun === "web search") return `${count} web ${count === 1 ? "search" : "searches"}`;
-  if (noun.startsWith("step in ") || noun.startsWith("step on "))
-    return `${count} ${count === 1 ? noun : `steps${noun.slice(4)}`}`;
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+  const plural = noun === "search" ? "searches" : `${noun}s`;
+  return `${count} ${count === 1 ? noun : plural}`;
 }
 
 /* ---- The digest ---- */
@@ -1624,18 +1527,6 @@ export function formatDuration(milliseconds: number): string {
   return hoursLeft ? `${days}d ${hoursLeft}h` : `${days}d`;
 }
 
-/** A live clock: "0:42", "12:05", "1:02:03" — and past a day, just the days and hours. */
-export function formatElapsed(milliseconds: number): string {
-  if (milliseconds >= 86_400_000) return formatDuration(milliseconds);
-  const total = Math.max(0, Math.floor(milliseconds / 1_000));
-  const hours = Math.floor(total / 3_600);
-  const minutes = Math.floor((total % 3_600) / 60);
-  const seconds = String(total % 60).padStart(2, "0");
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`
-    : `${minutes}:${seconds}`;
-}
-
 /* ---- Tools ---- */
 
 export type StepKind =
@@ -1703,36 +1594,8 @@ export function toolPresentation(tool: ToolEntry): ToolPresentation {
   const kind = identity ? toolKinds.get(`${identity.namespace}/${identity.name}`) : undefined;
 
   if (identity?.namespace === "opensteer") {
-    switch (identity.name) {
-      case "thread_delegate":
-        return step({
-          activeLabel: "Starting a task",
-          hint: stringField(args, "title") ?? stringField(args, "task") ?? "",
-          icon: "share",
-          kind: "task",
-          label: "Started a task",
-        });
-      case "browser_session_open":
-        return step({
-          activeLabel: "Opening a browser",
-          hint: browserSessionHint(args),
-          icon: "browser",
-          kind: "browser",
-          label: "Opened a browser",
-          surface: "browser",
-        });
-      case "browser_session_close":
-        return step({
-          activeLabel: "Closing the browser",
-          hint: "",
-          icon: "browser",
-          kind: "browser",
-          label: "Closed the browser",
-        });
-      case "browser_sign_in":
-      case "sign_in":
-        return signInPresentation(tool, args);
-    }
+    const present = opensteerSteps.get(identity.name);
+    if (present) return present(tool, args);
   }
 
   if (identity?.namespace === "opensteer.integrations") {
@@ -1833,6 +1696,150 @@ function step(
 ): ToolPresentation {
   return { command: null, describes: false, hintKind: "code", paths: [], ...presentation };
 }
+
+type OpensteerStep = (tool: ToolEntry, args: unknown) => ToolPresentation;
+type StepWords = readonly [active: string, done: string];
+
+/** A step that reads the same whatever it was given. */
+function said([activeLabel, label]: StepWords, icon: ActivityIcon): OpensteerStep {
+  return () => step({ activeLabel, hint: "", icon, kind: "tool", label });
+}
+
+/**
+ * A step that says which of its tool's actions it took, and the name it gave
+ * when there is one. An action only a newer Runner offers reads as `otherwise`.
+ */
+function saidByAction<Action extends string>(
+  words: Readonly<Record<Action, StepWords>>,
+  otherwise: StepWords,
+  icon: ActivityIcon,
+  named: string | null = null,
+): OpensteerStep {
+  const byAction = new Map<string, StepWords>(Object.entries<StepWords>(words));
+  return (_tool, args) => {
+    const [activeLabel, label] = byAction.get(stringField(args, "action") ?? "") ?? otherwise;
+    const hint = named === null ? "" : (stringField(args, named) ?? "");
+    return step({ activeLabel, hint, hintKind: "prose", icon, kind: "tool", label });
+  };
+}
+
+const tabActions: Record<BrowserTabWriteInput["action"], StepWords> = {
+  close: ["Closing tabs", "Closed tabs"],
+  group: ["Grouping tabs", "Grouped tabs"],
+  move: ["Moving tabs", "Moved tabs"],
+  restore: ["Restoring tabs", "Restored tabs"],
+  ungroup: ["Ungrouping tabs", "Ungrouped tabs"],
+  update_group: ["Updating a tab group", "Updated a tab group"],
+};
+
+const taskActions: Record<ThreadWriteInput["action"], StepWords> = {
+  done: ["Marking a task done", "Marked a task done"],
+  rename: ["Renaming a task", "Renamed a task"],
+  reopen: ["Reopening a task", "Reopened a task"],
+  set_icon: ["Changing a task’s icon", "Changed a task’s icon"],
+};
+
+const automationActions: Record<TriggerWriteInput["action"], StepWords> = {
+  cancel: ["Cancelling an automation run", "Cancelled an automation run"],
+  create: ["Creating an automation", "Created an automation"],
+  run: ["Running an automation", "Ran an automation"],
+  set_next_fire: ["Rescheduling an automation", "Rescheduled an automation"],
+  set_status: ["Changing an automation", "Changed an automation"],
+  update: ["Changing an automation", "Changed an automation"],
+};
+
+/**
+ * Opensteer's own tools, by what each step did and never by the tool's name.
+ * It holds every tool the agent catalog offers and the names older Runners
+ * still report; `tests/opensteer-tool-steps.test.ts` keeps it that way.
+ */
+const opensteerSteps = new Map<string, OpensteerStep>([
+  ["assignment_cancel", said(["Stopping a task", "Stopped a task"], "stop")],
+  [
+    "browser_access_request",
+    said(["Asking for browser access", "Asked for browser access"], "browser"),
+  ],
+  [
+    "browser_profile_create",
+    said(["Creating a browser profile", "Created a browser profile"], "browser"),
+  ],
+  [
+    "browser_profile_list",
+    said(["Looking up browser profiles", "Looked up browser profiles"], "browser"),
+  ],
+  [
+    "browser_profile_save",
+    said(["Saving the browser profile", "Saved the browser profile"], "browser"),
+  ],
+  ["browser_session_close", said(["Closing the browser", "Closed the browser"], "browser")],
+  ["browser_session_list", said(["Looking up browsers", "Looked up browsers"], "browser")],
+  [
+    "browser_session_open",
+    (_tool, args) =>
+      step({
+        activeLabel: "Opening a browser",
+        hint: browserSessionHint(args),
+        icon: "browser",
+        kind: "browser",
+        label: "Opened a browser",
+        surface: "browser",
+      }),
+  ],
+  ["browser_sign_in", signInPresentation],
+  ["browser_tab_read", said(["Looking at saved tabs", "Looked at saved tabs"], "browser")],
+  ["browser_tab_write", saidByAction(tabActions, ["Arranging tabs", "Arranged tabs"], "browser")],
+  ["environment_list", said(["Looking up computers", "Looked up computers"], "laptop")],
+  [
+    "machine_full_disk_access_request",
+    said(["Asking for full access to a Mac", "Asked for full access to a Mac"], "laptop"),
+  ],
+  ["request_list", said(["Checking its requests", "Checked its requests"], "list")],
+  ["request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
+  ["sign_in", signInPresentation],
+  [
+    "thread_delegate",
+    (_tool, args) =>
+      step({
+        activeLabel: "Starting a task",
+        hint: stringField(args, "title") ?? stringField(args, "task") ?? "",
+        hintKind: "prose",
+        icon: "share",
+        kind: "task",
+        label: "Started a task",
+      }),
+  ],
+  ["thread_list", said(["Looking up conversations", "Looked up conversations"], "list")],
+  ["thread_message", said(["Sending a message", "Sent a message"], "share")],
+  ["thread_read", said(["Reading a conversation", "Read a conversation"], "list")],
+  [
+    "thread_write",
+    saidByAction(taskActions, ["Changing a task", "Changed a task"], "pencil", "title"),
+  ],
+  ["trigger_read", said(["Looking up automations", "Looked up automations"], "list")],
+  [
+    "trigger_write",
+    saidByAction(
+      automationActions,
+      ["Changing an automation", "Changed an automation"],
+      "pencil",
+      "name",
+    ),
+  ],
+  [
+    "workspace_create",
+    (_tool, args) =>
+      step({
+        activeLabel: "Creating a workspace",
+        hint: stringField(args, "name") ?? "",
+        hintKind: "prose",
+        icon: "folder",
+        kind: "tool",
+        label: "Created a workspace",
+      }),
+  ],
+  ["workspace_list", said(["Looking up workspaces", "Looked up workspaces"], "folder")],
+  ["workspace_mount", said(["Opening a workspace", "Opened a workspace"], "folder")],
+]);
 
 /** Every engine's name for each kind of step it shares with the others. */
 const toolKinds = new Map<string, StepKind>(

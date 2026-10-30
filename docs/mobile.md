@@ -80,7 +80,9 @@ Chat neither claims the active Thread nor marks content read; an overlaid sideba
 also makes Chat unread. Mark only published content actually shown at latest.
 Layout changes preserve drafts, scroll, streams and navigation. Use measured pane
 geometry, reserved folds and text size, not device names; cancel a pointer gesture
-if its target geometry changes. Sources: `apps/mobile/src/layout.ts`, `src/sidebar`
+if its target geometry changes. Room alone decides whether the sidebar docks: it
+stays beside a page and has no hide control, because it is the one place to
+switch between tasks and tabs. Sources: `apps/mobile/src/layout.ts`, `src/sidebar`
 and `src/screens/workspace-browser*`.
 
 Integration OAuth browser return is only a wake-up: read the durable attempt back
@@ -190,7 +192,10 @@ picture credit even on decode failure, discarded slots or navigation before a ca
 See `apps/mobile/src/browser` and `src/computers`.
 
 Routes select exact tabs or exact owner-view IDs and generations. Closed targets
-stay closed; never substitute a sibling or a task holding the same app. Owner
+stay closed; never substitute a sibling or a task holding the same app. A tab
+chosen from Tabs or the sidebar belongs to no conversation and is shown alone;
+never attach the one in front or the tab's occupant. Only a task's own tabs open
+over its conversation. Owner
 metadata does not advance Workspace event cursors or enter conversation context.
 Saved tabs restore through the shared activation owner; a late result after leaving
 or switching users must not navigate. Older Hosts retain the live-session listing

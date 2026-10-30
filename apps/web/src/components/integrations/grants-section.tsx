@@ -20,6 +20,9 @@ import {
 } from "./helpers.js";
 import { IntegrationIcon } from "./integration-icon.js";
 
+/** Where an integration's own page sends a person to decide its Workspace access. */
+export const workspaceAccessSectionId = "workspace-access";
+
 export function GrantsSection({
   dashboard,
   grants,
@@ -50,7 +53,7 @@ export function GrantsSection({
   const [editing, setEditing] = useState(false);
   const liveGrants = grants?.filter(({ status }) => status === "active") ?? [];
   return (
-    <section className="section">
+    <section className="section" id={workspaceAccessSectionId}>
       <div className="section__head">
         <h2 className="section__title">Workspace access</h2>
         <span className="section__hint">Access is reviewed per Workspace and account.</span>

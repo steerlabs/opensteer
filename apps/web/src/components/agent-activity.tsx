@@ -27,7 +27,6 @@ import {
   conversationRows,
   conversationTurn,
   formatClockTime,
-  formatElapsed,
   groupTranscriptEntries,
   hasRunOutcome,
   silentRunLabel,
@@ -46,6 +45,7 @@ import {
   messageAuthorName,
   messageFoldLines,
   turnFolds,
+  turnWords,
   type ActivityStepHead,
   type ActivityTone,
   type ConversationActivity as ReplyActivity,
@@ -346,11 +346,7 @@ export function AgentTranscript({
                                     <Fragment key={key}>
                                       {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
                                       {group.kind === "turn" ? (
-                                        <TurnView
-                                          reveal={revealMessage}
-                                          turn={group.turn}
-                                          turnKey={group.key}
-                                        />
+                                        <TurnView turn={group.turn} turnKey={group.key} />
                                       ) : group.kind === "delegation" ? (
                                         <DelegationNotice delegation={group.entry} />
                                       ) : group.kind === "assignment" ? (
@@ -403,29 +399,12 @@ export function AgentTranscript({
 
 /* ---- A turn ---- */
 
-function TurnView({
-  reveal,
-  turn,
-  turnKey,
-}: {
-  /** A message the reader is being taken to: a fold holding it opens first. */
-  reveal: { readonly id: string } | null;
-  turn: Turn;
-  turnKey: string;
-}) {
+function TurnView({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const live = useContext(TranscriptLive);
   const conversation = useContext(ConversationMode);
   const renderTask = useContext(TaskViews);
-  // Open for as long as the reader is on the task: a fold they opened stays open.
+  // Open for as long as the reader is on the task: steps they opened stay open.
   const [opened, setOpened] = useState(false);
-  useLayoutEffect(() => {
-    if (
-      reveal !== null &&
-      turn.work.some((entry) => entry.kind === "message" && entry.id === reveal.id) &&
-      reveal.id !== turn.reply?.id
-    )
-      setOpened(true);
-  }, [reveal, turn.reply, turn.work]);
   if (conversation) return <ConversationTurn turn={turn} turnKey={turnKey} />;
   const spoken = turn.reply ?? turn.work.find((entry) => entry.kind === "message");
   const outcome = turn.run !== null && showsRunOutcome(turn.run);
@@ -522,20 +501,16 @@ function WorkStatus({
   const requestShown = useContext(RequestShown);
   const now = useComputerUseNow(turn);
   const kept = useKeptComputerStop(turn, now);
-  const unsettled = summary.state !== "settled";
-  const live = connected && unsettled;
-  if (now) return <ComputerUseLine key={now.session.sessionId} now={now} />;
-  if (kept) return <KeptComputerStopLine key={kept.sessionId} stop={kept} />;
+  const live = connected && summary.state !== "settled";
+  // On the reader's Mac the line says where the agent is, and still opens its steps.
+  const toggle = onToggle ? { onToggle, open: open === true } : null;
+  if (now) return <ComputerUseLine key={now.session.sessionId} now={now} toggle={toggle} />;
+  if (kept) return <KeptComputerStopLine key={kept.sessionId} stop={kept} toggle={toggle} />;
   if (summary.state === "waiting" && requestShown && !onToggle) return null;
   const head = (
-    <>
-      <span className="work__label">
-        {summary.state === "live" && restartPending(turn.run) ? restartingLabel : summary.label}
-      </span>
-      {!unsettled && summary.meta ? <span className="work__meta">{summary.meta}</span> : null}
-      {!unsettled && summary.errors > 0 ? <ErrorCount count={summary.errors} /> : null}
-      {live && summary.startedAt ? <LiveClock startedAt={summary.startedAt} /> : null}
-    </>
+    <span className="work__label">
+      {summary.state === "live" && restartPending(turn.run) ? restartingLabel : summary.label}
+    </span>
   );
   return (
     <div aria-label="Agent status" className={live ? "work work--live" : "work"}>
@@ -574,13 +549,50 @@ function useComputerUseNow(turn: Turn): ComputerUseNow | null {
   );
 }
 
+/** A task turn's folded steps, which its status line opens and closes. */
+interface StepsToggle {
+  readonly onToggle: () => void;
+  readonly open: boolean;
+}
+
+/** Where a turn on the reader's Mac is, and — for a task's turn — the way into its steps. */
+function ComputerUseWhere({
+  children,
+  toggle,
+}: {
+  children: ReactNode;
+  toggle: StepsToggle | null;
+}) {
+  return toggle ? (
+    <button
+      aria-expanded={toggle.open}
+      className="computer-now__where"
+      onClick={toggle.onToggle}
+      type="button"
+    >
+      {children}
+      <span aria-hidden className="work__chevron">
+        <Icon name="chevron-right" />
+      </span>
+    </button>
+  ) : (
+    <span className="computer-now__where">{children}</span>
+  );
+}
+
 /**
  * The turn's status while it works on the reader's Mac: what it is doing,
  * then where, and the Stop. The app's chip under the reply is the one way to
  * the app itself. Screen readers hear the Mac once, when the line arrives, not
  * every step it takes there.
  */
-function ComputerUseLine({ now }: { now: ComputerUseNow }) {
+function ComputerUseLine({
+  now,
+  toggle = null,
+}: {
+  now: ComputerUseNow;
+  toggle?: StepsToggle | null;
+}) {
   const computers = useContext(ReaderComputers);
   const hostClient = computers?.hostClient ?? null;
   // The outcome belongs to the session, not to this line: the line leaves
@@ -598,19 +610,21 @@ function ComputerUseLine({ now }: { now: ComputerUseNow }) {
   };
   return (
     <div className="computer-now">
-      <span aria-hidden className="computer-now__glyph">
-        <Icon name={now.kind === "phone" ? "phone" : "laptop"} />
-      </span>
-      <span className="computer-now__text">
-        <span className="computer-now__action">{now.action}</span>
-        {failure ? (
-          <span className="computer-now__failure" role="alert">
-            {failure.message ?? computerUseStopSentence(failure)}
-          </span>
-        ) : (
-          <span className="computer-now__place">{now.place}</span>
-        )}
-      </span>
+      <ComputerUseWhere toggle={toggle}>
+        <span aria-hidden className="computer-now__glyph">
+          <Icon name={now.kind === "phone" ? "phone" : "laptop"} />
+        </span>
+        <span className="computer-now__text">
+          <span className="computer-now__action">{now.action}</span>
+          {failure ? (
+            <span className="computer-now__failure" role="alert">
+              {failure.message ?? computerUseStopSentence(failure)}
+            </span>
+          ) : (
+            <span className="computer-now__place">{now.place}</span>
+          )}
+        </span>
+      </ComputerUseWhere>
       <span className="visually-hidden" role="status">
         {computerUseNowSummary(now)}
       </span>
@@ -687,18 +701,26 @@ function useKeptComputerStop(
 }
 
 /** The line a Stop leaves behind while its answer is on the way or just in. */
-function KeptComputerStopLine({ stop }: { stop: ComputerUseStop }) {
+function KeptComputerStopLine({
+  stop,
+  toggle = null,
+}: {
+  stop: ComputerUseStop;
+  toggle?: StepsToggle | null;
+}) {
   return (
     <div className="computer-now">
-      <span aria-hidden className="computer-now__glyph">
-        <Icon name="laptop" />
-      </span>
-      <span aria-atomic="true" className="computer-now__text" role="status">
-        <span className="computer-now__action">{computerUseStopSentence(stop)}</span>
-        {stop.phase === "stopping" ? (
-          <span className="computer-now__place">On {stop.machineName}</span>
-        ) : null}
-      </span>
+      <ComputerUseWhere toggle={toggle}>
+        <span aria-hidden className="computer-now__glyph">
+          <Icon name="laptop" />
+        </span>
+        <span aria-atomic="true" className="computer-now__text" role="status">
+          <span className="computer-now__action">{computerUseStopSentence(stop)}</span>
+          {stop.phase === "stopping" ? (
+            <span className="computer-now__place">On {stop.machineName}</span>
+          ) : null}
+        </span>
+      </ComputerUseWhere>
     </div>
   );
 }
@@ -1238,45 +1260,39 @@ function TurnContent({
   /** What of the turn to draw; all of its work unless a conversation keeps its reply apart. */
   entries?: readonly WorkEntry[];
   /**
-   * Given, the turn's steps fold behind its status line, which leads the turn
-   * and opens them in place. Folded, only the reply is drawn: the steps are
-   * not mounted at all.
+   * Given, the turn's steps fold behind its status line, which opens them in
+   * place. Folded, only what the agent wrote is drawn: the steps are not
+   * mounted at all.
    */
   fold?: { readonly open: boolean; readonly onToggle: () => void } | undefined;
   live: boolean;
-  /** Whether the stream ends with its status line; a conversation's steps have none. */
+  /**
+   * Whether the turn leads with its status line, which stays put while the
+   * turn runs and when it ends; a conversation's steps have none.
+   */
   status?: boolean;
   turn: Turn;
 }) {
   const active = turnState(turn) !== "settled";
-  const work = entries ?? turn.work;
-  const folded = fold === undefined ? null : !fold.open;
+  const folded = fold !== undefined && !fold.open;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
-  const rows = useMemo(() => {
-    const statusRows =
-      summary === null ? [] : [{ kind: "status" as const, key: "status", summary }];
-    // The reply keeps its row's key either way, so folding never redraws it.
-    if (folded !== null)
-      return [
-        ...statusRows,
-        ...workRows(folded ? work.filter((entry) => entry === turn.reply) : work),
-      ];
-    return [...workRows(work), ...statusRows];
-  }, [work, folded, summary, turn.reply]);
+  // A note keeps its row's key folded or not, so opening the steps never redraws it.
+  const rows = useMemo(
+    () => workRows(folded ? turnWords(turn) : (entries ?? turn.work)),
+    [entries, folded, turn],
+  );
   return (
     <div className="turn__content">
-      {rows.map((row) =>
-        row.kind === "status" ? (
-          <WorkStatus
-            key={row.key}
-            summary={row.summary}
-            turn={turn}
-            {...(fold ? { onToggle: fold.onToggle, open: fold.open } : {})}
-          />
-        ) : (
-          <WorkRowView active={active} key={row.key} live={live} row={row} turn={turn} />
-        ),
+      {summary === null ? null : (
+        <WorkStatus
+          summary={summary}
+          turn={turn}
+          {...(fold ? { onToggle: fold.onToggle, open: fold.open } : {})}
+        />
       )}
+      {rows.map((row) => (
+        <WorkRowView active={active} key={row.key} live={live} row={row} turn={turn} />
+      ))}
     </div>
   );
 }
@@ -1645,22 +1661,6 @@ function ErrorCount({ count }: { count: number }) {
   return <span className="trace-errors">{count === 1 ? "1 error" : `${count} errors`}</span>;
 }
 
-/** Time since the turn began, redrawn once a second and nothing else with it. */
-function LiveClock({ startedAt }: { startedAt: string }) {
-  const started = Date.parse(startedAt);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  if (!Number.isFinite(started)) return null;
-  return (
-    <time className="work__clock" dateTime={startedAt}>
-      {formatElapsed(now - started)}
-    </time>
-  );
-}
-
 /* ---- Messages ---- */
 
 function Reply({ message, streaming }: { message: MessageEntry; streaming: boolean }) {
@@ -2017,10 +2017,10 @@ function updateSource(
 }
 
 /**
- * What someone or something else sent this task, as one card: a single line
- * says who and when, the name of what sent it titles the card, and the words
- * fold to a few lines until opened. The card fills its column whatever it
- * holds, so a long address or a code line can never widen it.
+ * What someone or something else sent this task, as one card: one line names
+ * who sent it, by the mark and name the sidebar shows, and leads to it; the
+ * words fold to a few lines until opened. The card fills its column whatever
+ * it holds, so a long address or a code line can never widen it.
  */
 function InputMessage({
   message,
@@ -2043,62 +2043,44 @@ function InputMessage({
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;
   const source = inputSource(message, workspaces, useContext(HomeThread));
-
+  const sender = (
+    <>
+      {source.glyph}
+      <span className="input-card__name">{source.name}</span>
+    </>
+  );
   // Quoting is offered for updates another agent published: those are the ones
   // a reader answers by reference. Their own collaborators' messages already
   // sit in the conversation they are replying in.
   const quotable = askAbout !== undefined && message.author.kind === "agent" && message.body !== "";
-  // Like a reply's More, the action shows where a pointer rests or focus
-  // lands; touch has no hover, so a tap on the message shows it.
-  const [tapped, setTapped] = useState(false);
 
   return (
     <div
-      className={[
-        "msg--input",
-        conversation ? "msg--input--conversation" : "",
-        quotable ? "msg--input--quotable" : "",
-        tapped ? "msg--input--tapped" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      className={conversation ? "msg--input msg--input--conversation" : "msg--input"}
       data-message-id={message.id}
-      onPointerUp={
-        quotable
-          ? (event) => {
-              if (event.pointerType !== "touch") return;
-              if (event.target instanceof Element && event.target.closest("a, button")) return;
-              setTapped(!tapped);
-            }
-          : undefined
-      }
     >
       <article className="input-card">
-        <header className="input-card__meta">
-          {source.glyph}
-          <span className="input-card__sender" title={source.sender}>
-            {source.sender}
-          </span>
-          <span aria-hidden className="input-card__sep">
-            ·
-          </span>
-          <time dateTime={message.createdAt}>{formatClockTime(message.createdAt)}</time>
-          {source.open ? (
-            <AreaLink
-              aria-label={source.open.label}
-              className="input-card__open"
-              title={source.open.label}
-              to={source.open.href}
-            >
-              <Icon name="chevron-right" />
+        <header
+          className="input-card__from"
+          title={`${source.name} · ${formatClockTime(message.createdAt)}`}
+        >
+          {source.href ? (
+            <AreaLink className="input-card__sender" to={source.href}>
+              {sender}
             </AreaLink>
+          ) : (
+            <span className="input-card__sender">{sender}</span>
+          )}
+          {quotable ? (
+            <button
+              className="input-card__ask"
+              onClick={() => askAbout.quote(message)}
+              type="button"
+            >
+              {askAbout.label}
+            </button>
           ) : null}
         </header>
-        {source.title ? (
-          <p className="input-card__title" title={source.title}>
-            {source.title}
-          </p>
-        ) : null}
         <MessageAttachments attachments={message.attachments ?? []} />
         {message.body ? (
           <MessageFold
@@ -2122,59 +2104,33 @@ function InputMessage({
           {message.delivery.reason}
         </p>
       ) : null}
-      {quotable ? (
-        <div className="msg--input__actions">
-          <button
-            className="btn btn--ghost btn--small"
-            onClick={() => askAbout?.quote(message)}
-            type="button"
-          >
-            {askAbout?.label}
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 }
 
 /**
- * Who sent a message and where it leads. `sender` is one short word or name,
- * so the card's top line never wraps; what sent it by name, when it is a
- * thing rather than someone, is the card's `title`, which may take two lines.
+ * Who sent a message, as the reader knows them, and where they are: Chat, a
+ * task or an automation by its own mark and name, a person by theirs.
  */
 function inputSource(
   message: MessageEntry,
   workspaces: readonly WorkspaceSummary[],
   homeThreadId: string | null,
-): {
-  glyph: ReactNode;
-  markdown: boolean;
-  open: { href: string; label: string } | null;
-  sender: string;
-  title: string | null;
-} {
+): { glyph: ReactNode; href: string | null; markdown: boolean; name: string } {
   const { author } = message;
   const name = messageAuthorName(author, message.messageKind, homeThreadId);
   switch (author.kind) {
     case "agent": {
-      if (author.threadId === homeThreadId) {
-        return {
-          glyph: <ChatOrb size={16} />,
-          markdown: true,
-          open: { href: "/", label: `Open ${name}` },
-          sender: name,
-          title: null,
-        };
-      }
+      if (author.threadId === homeThreadId)
+        return { glyph: <ChatOrb size={16} />, href: "/", markdown: true, name };
       const workspace = workspaces.find(({ id }) => id === author.workspaceId);
       return {
         glyph: <SenderTaskMark threadId={author.threadId} workspace={workspace ?? null} />,
-        markdown: true,
         // Only a Thread the reader can open is a link: someone else's task,
         // behind a Workspace they are not in, is named and left at that.
-        open: workspace ? { href: `/threads/${author.threadId}`, label: "Open task" } : null,
-        sender: workspace && workspace.kind !== "main" ? workspace.name : "From a task",
-        title: name,
+        href: workspace ? `/threads/${author.threadId}` : null,
+        markdown: true,
+        name,
       };
     }
     case "trigger":
@@ -2185,10 +2141,9 @@ function inputSource(
             <Icon name="bolt" />
           </span>
         ),
+        href: automationPath(author.triggerId),
         markdown: true,
-        open: { href: automationPath(author.triggerId), label: "Open automation" },
-        sender: "Automation",
-        title: name,
+        name,
       };
     case "human":
       return {
@@ -2197,14 +2152,13 @@ function inputSource(
             <span>{workspaceMonogram(author.displayName)}</span>
           </span>
         ),
+        href: null,
         markdown: false,
-        open: null,
-        sender: name,
-        title: null,
+        name,
       };
     case "platform":
       // The schema forbids platform-authored input; typed for exhaustiveness.
-      return { glyph: null, markdown: false, open: null, sender: name, title: null };
+      return { glyph: null, href: null, markdown: false, name };
   }
 }
 

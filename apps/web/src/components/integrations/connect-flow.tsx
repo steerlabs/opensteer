@@ -27,12 +27,12 @@ import {
   connectChoiceAvailable,
   connectOption,
   connectProviderManifest,
-  connectRequestedScopes,
   connectSavedSource,
   connectSignInOptions,
   connectedAccount,
   hostedOAuthOutage,
   initialConnectSource,
+  integrationAccountTitle,
   manageableApplication,
   repositoryAccountStep,
   type ConnectAvailability,
@@ -42,6 +42,8 @@ import type { ConnectOperations } from "./connect-operations.js";
 
 type Step =
   | { readonly kind: "choose" }
+  /** A sign-in the click already began, before the Host has answered with its attempt. */
+  | { readonly kind: "opening" }
   | { readonly editing: IntegrationProviderApplication | null; readonly kind: "setup" }
   | { readonly kind: "authorizing"; readonly started: IntegrationAuthorizationStart }
   | {
@@ -61,6 +63,7 @@ type Step =
  * who made it.
  */
 export function ConnectFlow({
+  begun = null,
   dashboard,
   definition,
   onClose,
@@ -70,6 +73,11 @@ export function ConnectFlow({
   requestedBy = null,
   returnPath,
 }: {
+  /**
+   * A sign-in already begun from the click that opened this sheet, which alone
+   * may open its browser tab. The sheet follows it instead of asking first.
+   */
+  readonly begun?: Promise<IntegrationAuthorizationStart> | null;
   readonly dashboard: IntegrationDashboard;
   readonly definition: IntegrationDefinitionSummaryView;
   readonly onClose: () => void;
@@ -85,7 +93,7 @@ export function ConnectFlow({
     initialConnectSource(dashboard, provider),
   );
   const [changing, setChanging] = useState(false);
-  const [step, setStep] = useState<Step>({ kind: "choose" });
+  const [step, setStep] = useState<Step>(begun ? { kind: "opening" } : { kind: "choose" });
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -129,7 +137,6 @@ export function ConnectFlow({
   const chosenOption = connectOption(options, chosen);
   const choiceLost = !connectChoiceAvailable(options, chosen);
   const editable = manageableApplication(chosenOption);
-  const scopes = connectRequestedScopes(definition);
   // Opensteer's service can be down while another eligible app still works, so
   // this is a note beside a working chooser, not a blocked flow.
   const hostedOutage = hostedOAuthOutage(live, provider) && availability.kind === "ready";
@@ -225,15 +232,12 @@ export function ConnectFlow({
     }
   };
 
-  const connect = async () => {
+  /** Follows one sign-in from its start to a connection or the reason it has none. */
+  const follow = async (starting: Promise<IntegrationAuthorizationStart>) => {
     setNotice(null);
     const controller = start();
     try {
-      const started = await operations.beginAuthorization({
-        applicationSource: chosen,
-        definitionId: definition.id,
-        returnPath,
-      });
+      const started = await starting;
       if (!owns(controller)) return;
       setStep({ kind: "authorizing", started });
       const status = await operations.awaitAuthorization(started, controller.signal);
@@ -251,6 +255,22 @@ export function ConnectFlow({
       settle(controller);
     }
   };
+
+  // Called from the click, so the browser tab opens while it still may.
+  const connect = () =>
+    follow(
+      operations.beginAuthorization({
+        applicationSource: chosen,
+        definitionId: definition.id,
+        returnPath,
+      }),
+    );
+
+  // Strict mode mounts twice; the second mount follows the same attempt again.
+  const initial = useRef(begun);
+  useEffect(() => {
+    if (initial.current) void follow(initial.current);
+  }, []);
 
   /**
    * Cancel belongs to the operation that shows it, the sign-in or the
@@ -387,8 +407,13 @@ export function ConnectFlow({
   };
 
   const footer =
-    step.kind === "authorizing" ? (
-      <button className="btn" onClick={() => void cancel(step.started)} type="button">
+    step.kind === "authorizing" || step.kind === "opening" ? (
+      <button
+        className="btn"
+        disabled={step.kind === "opening"}
+        onClick={() => step.kind === "authorizing" && void cancel(step.started)}
+        type="button"
+      >
         Cancel
       </button>
     ) : step.kind === "repository-access" ? (
@@ -478,39 +503,26 @@ export function ConnectFlow({
         </div>
       ) : null}
 
+      {/* Said while signing in too: which account to pick is the provider's question. */}
+      {step.kind === "choose" || step.kind === "opening" || step.kind === "authorizing" ? (
+        <div className="connect-sheet__lede">
+          <IntegrationIcon
+            icon={definition.icon}
+            id={definition.id}
+            name={definition.name}
+            size="lg"
+          />
+          <div className="connect-sheet__lede-copy">
+            <p>{purpose}</p>
+            {requestedBy ? (
+              <p className="field__hint">{requestedBy} asked for this connection.</p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {step.kind === "choose" ? (
         <>
-          <div className="connect-sheet__lede">
-            <IntegrationIcon
-              icon={definition.icon}
-              id={definition.id}
-              name={definition.name}
-              size="lg"
-            />
-            <div className="connect-sheet__lede-copy">
-              <p>{purpose}</p>
-              {requestedBy ? (
-                <p className="field__hint">{requestedBy} asked for this connection.</p>
-              ) : null}
-            </div>
-          </div>
-
-          {scopes.length > 0 ? (
-            <details className="intg-permissions">
-              <summary>
-                Permissions requested at {definition.name}
-                <span>{scopes.length}</span>
-              </summary>
-              <div className="intg-tool-cloud">
-                {scopes.map((scope) => (
-                  <span className="chip chip--scope" key={scope}>
-                    {scope}
-                  </span>
-                ))}
-              </div>
-            </details>
-          ) : null}
-
           {hostedOutage ? (
             <div className="notice notice--warn" role="status">
               <Icon name="alert-circle" />
@@ -563,15 +575,12 @@ export function ConnectFlow({
         />
       ) : null}
 
-      {step.kind === "authorizing" ? (
+      {step.kind === "authorizing" || step.kind === "opening" ? (
         <div className="notice notice--accent" role="status">
           <Icon name="external-link" />
           <div>
-            <strong>Finish signing in at {definition.name}</strong>
-            <p>
-              Finish authorization in the browser tab. Opensteer will update automatically when the
-              connection is ready.
-            </p>
+            <strong>Finish signing in to {definition.name}</strong>
+            <p>Use the sign-in page that opened. This updates by itself when you’re done.</p>
           </div>
         </div>
       ) : null}
@@ -979,41 +988,11 @@ export function ConnectedFacts({
   readonly name: string;
 }) {
   return (
-    <>
-      <div className="notice notice--accent" role="status">
-        <Icon name="check-circle" />
-        <span>
-          {name} is connected as {connection.displayName}.
-        </span>
-      </div>
-      <dl className="connect-sheet__facts">
-        <div className="connect-sheet__fact">
-          <dt>Account</dt>
-          <dd>{connection.accountIdentifier ?? connection.displayName}</dd>
-        </div>
-        {connection.externalTenantId ? (
-          <div className="connect-sheet__fact">
-            <dt>{name} workspace</dt>
-            <dd>{connection.externalTenantId}</dd>
-          </div>
-        ) : null}
-        <div className="connect-sheet__fact">
-          <dt>Sign-in app</dt>
-          <dd>
-            {connection.applicationSource?.kind === "hosted-oauth"
-              ? "Opensteer"
-              : connection.applicationSource?.kind === "deployment-oauth"
-                ? "Your own app"
-                : "Not applicable"}
-          </dd>
-        </div>
-        {connection.grantedScopes.length > 0 ? (
-          <div className="connect-sheet__fact">
-            <dt>Granted</dt>
-            <dd>{connection.grantedScopes.join(", ")}</dd>
-          </div>
-        ) : null}
-      </dl>
-    </>
+    <div className="notice notice--accent" role="status">
+      <Icon name="check-circle" />
+      <span>
+        {name} is connected as {integrationAccountTitle(connection)}.
+      </span>
+    </div>
   );
 }

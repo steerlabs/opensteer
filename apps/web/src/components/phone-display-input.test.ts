@@ -244,6 +244,38 @@ describe("owner input batching", () => {
     expect(sent).toHaveLength(2);
   });
 
+  it("merges same-button mouse moves in a frame and preserves modifier, button and press boundaries", () => {
+    const { input, sent, frame } = harness();
+    const move: Extract<DisplayInputEvent, { kind: "mouse" }> = {
+      kind: "mouse",
+      phase: "move",
+      button: "none",
+      modifiers: [],
+      x: 0.1,
+      y: 0.5,
+    };
+    input.mouse(1, move);
+    input.mouse(1, { ...move, x: 0.2 });
+    input.mouse(1, { ...move, x: 0.3 });
+    frame();
+    expect(sent[0]?.events).toEqual([{ ...move, x: 0.3 }]);
+    const shifted: typeof move = { ...move, modifiers: ["shift"] };
+    const left: typeof move = { ...shifted, button: "left" };
+    input.mouse(1, move);
+    input.mouse(1, shifted);
+    input.mouse(1, left);
+    input.mouse(1, { ...left, phase: "down", clickCount: 1 });
+    input.mouse(1, left);
+    frame();
+    expect(sent.slice(1).flatMap((batch) => batch.events)).toEqual([
+      move,
+      shifted,
+      left,
+      { ...left, phase: "down", clickCount: 1 },
+      left,
+    ]);
+  });
+
   it("cancels at the last point it sent, once", () => {
     const { input, sent, frame } = harness();
     input.down(1, at(0.1), 1);
@@ -288,13 +320,20 @@ describe("owner input batching", () => {
     expect(sent.map(({ events }) => (events.at(-1) as { t: number }).t)).toEqual([0, 0]);
   });
 
-  it("merges a frame's wheel turns into one scroll at the newest point", () => {
+  it("merges a frame's wheel turns at the newest point without losing distance", () => {
     const { input, sent, frame } = harness();
     input.scroll(1, at(0.2), { dx: 0, dy: 0.25 });
-    input.scroll(1, at(0.3), { dx: 0.1, dy: 0.9 });
+    input.scroll(1, at(0.3), { dx: 0.1, dy: 0.5 });
+    input.scroll(1, at(0.4), { dx: 0, dy: 0.5 });
     frame();
     expect(sent).toEqual([
-      { geometry: 1, events: [{ kind: "scroll", x: 0.3, y: 0.5, dx: 0.1, dy: 1 }] },
+      {
+        geometry: 1,
+        events: [
+          { kind: "scroll", x: 0.3, y: 0.5, dx: 0.1, dy: 0.75 },
+          { kind: "scroll", x: 0.4, y: 0.5, dx: 0, dy: 0.5 },
+        ],
+      },
     ]);
   });
 

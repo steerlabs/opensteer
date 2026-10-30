@@ -7,7 +7,6 @@ import {
   currentAssignment,
   delegationPresentation,
   requestWaitingOnAssignment,
-  taskGroupSummary,
   taskRowNote,
   threadMark,
   type AssignmentEntry,
@@ -20,11 +19,12 @@ import {
 } from "@opensteer/client/host";
 import { useActionReview, useHostSelector } from "@opensteer/client/react";
 import { MenuView } from "@expo/ui/community/menu";
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useEffect, useRef, type ReactNode } from "react";
 import { AccessibilityInfo, Alert, Pressable, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ActionReviewSheet } from "../ui/action-review.js";
+import { ChatOrb } from "../ui/chat-orb.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
@@ -49,8 +49,7 @@ const selectSnapshot = (snapshot: HostSnapshot): HostSnapshot => snapshot;
  * Work handed to other Threads, under the turn that handed it out: one quiet
  * line per task — its mark, its title, a dot and a word for where it stands —
  * that changes in place. A tap opens the task's own screen, and back returns
- * here; a long press offers what else it can do. Tasks one turn handed out
- * together read as one line until opened in place. Lines read the Host
+ * here; a long press offers what else it can do. Lines read the Host
  * themselves, since transcript rows are memoized on their entries and a task
  * moves without touching its entry.
  */
@@ -58,14 +57,47 @@ export function AssignmentLines(props: {
   readonly entries: readonly AssignmentEntry[];
 }): ReactNode {
   const scope = useContext(TaskScopeContext);
-  if (scope === null || props.entries.length === 0) return null;
-  return props.entries.length === 1 ? (
-    <>
-      <ObservedWorker entry={props.entries[0]!} scope={scope} />
-      <AssignmentLine entry={props.entries[0]!} scope={scope} />
-    </>
-  ) : (
-    <LineGroup entries={props.entries} scope={scope} />
+  if (scope === null) return null;
+  return props.entries.map((entry) => (
+    <Fragment key={entry.id}>
+      <ObservedWorker entry={entry} scope={scope} />
+      <AssignmentLine entry={entry} scope={scope} />
+    </Fragment>
+  ));
+}
+
+/**
+ * A Thread's own mark, as the task list draws it: Chat's orb, or the task's
+ * subject. Nothing without the Host to read it from.
+ */
+export function ThreadMark(props: { readonly threadId: string }): ReactNode {
+  const scope = useContext(TaskScopeContext);
+  return scope === null ? null : (
+    <HeldThreadMark hostClient={scope.hostClient} threadId={props.threadId} />
+  );
+}
+
+function HeldThreadMark(props: {
+  readonly hostClient: HostClient;
+  readonly threadId: string;
+}): ReactNode {
+  const { threadId } = props;
+  const mark = useHostSelector(
+    props.hostClient,
+    (snapshot) => (snapshot.homeThreadId === threadId ? null : threadMark(threadId, snapshot)),
+    sameMark,
+  );
+  return mark === null ? <ChatOrb size={16} /> : <TaskMark mark={mark} size={16} />;
+}
+
+function sameMark(left: ResolvedTaskMark | null, right: ResolvedTaskMark | null): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.icon === right.icon &&
+      left.color === right.color &&
+      left.pending === right.pending)
   );
 }
 
@@ -266,89 +298,6 @@ function dotTone(tone: AssignmentTone): "amber" | "ember" | "muted" | "red" {
   }
 }
 
-/** Only these say anything in a group's counts; the rest are the quiet default. */
-const signalTones = new Set<AssignmentTone>(["failed", "waiting", "working"]);
-
-/**
- * Tasks one turn handed out together, as one line: their marks stacked, how
- * many, and how many read each word. A tap opens it in place to a line for
- * each; every open one stays observed while it is closed.
- */
-function LineGroup(props: {
-  readonly entries: readonly AssignmentEntry[];
-  readonly scope: TaskScope;
-}): ReactNode {
-  const snapshot = useHostSelector(props.scope.hostClient, selectSnapshot);
-  const [open, setOpen] = useState(false);
-  const lines = props.entries.map((entry) =>
-    linePresentation(snapshot, entry, props.scope.dockedRequestId),
-  );
-  const summary = taskGroupSummary(lines.map(({ presentation }) => presentation));
-  const counts = summary.parts.map(({ text }) => text).join(", ");
-  return (
-    <View>
-      {props.entries.map((entry) => (
-        <ObservedWorker entry={entry} key={entry.id} scope={props.scope} />
-      ))}
-      <Pressable
-        accessibilityHint={open ? "Hides the tasks" : "Shows the tasks"}
-        accessibilityLabel={`${summary.label}: ${counts}`}
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        onPress={() => setOpen((value) => !value)}
-        style={({ pressed }) => [styles.line, pressed && styles.linePressed]}
-      >
-        <View style={styles.lineRow}>
-          <View style={styles.stack}>
-            {lines.slice(0, 3).map(({ assignment }, index) => (
-              <View
-                key={assignment.id}
-                style={[styles.stackMark, index > 0 && styles.stackMarkOverlap]}
-              >
-                <TaskMark mark={assignmentMark(assignment, snapshot)} size={16} />
-              </View>
-            ))}
-          </View>
-          <AppText numberOfLines={1} role="secondaryMedium" tone="soft">
-            {summary.label}
-          </AppText>
-          <View style={styles.groupCounts}>
-            {summary.parts.map((part, index) => (
-              <View key={part.text} style={styles.state}>
-                {index > 0 ? (
-                  <AppText role="caption" tone="muted">
-                    ·
-                  </AppText>
-                ) : null}
-                {signalTones.has(part.tone) ? (
-                  <TaskDot moving={part.moving} tone={part.tone} />
-                ) : null}
-                <AppText numberOfLines={1} role="caption" tone="muted">
-                  {part.text}
-                </AppText>
-              </View>
-            ))}
-          </View>
-          <View style={styles.chevron}>
-            <Symbol
-              name={open ? "chevron.down" : "chevron.right"}
-              size={11}
-              tint={color.mutedDim}
-            />
-          </View>
-        </View>
-      </Pressable>
-      {open ? (
-        <View style={styles.groupLines}>
-          {props.entries.map((entry) => (
-            <AssignmentLine entry={entry} key={entry.id} scope={props.scope} />
-          ))}
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
 /**
  * Work handed out before Assignments existed, in the same line. Its task,
  * its result and the pages its Run used are all in its own Thread, which a
@@ -443,17 +392,6 @@ export function useLifecycleNews(text: string): void {
 
 const styles = StyleSheet.create({
   chevron: { marginLeft: "auto" },
-  // A narrow pane wraps a group's counts between parts, keeping its label and chevron in view.
-  groupCounts: {
-    alignItems: "center",
-    columnGap: space[6],
-    flexDirection: "row",
-    flexShrink: 1,
-    flexWrap: "wrap",
-    minWidth: 0,
-    rowGap: space[2],
-  },
-  groupLines: { paddingLeft: space[28] },
   line: {
     borderRadius: radius.sm,
     gap: space[2],
@@ -467,18 +405,6 @@ const styles = StyleSheet.create({
   linePressed: { backgroundColor: color.surfacePressed },
   menu: { alignSelf: "stretch" },
   note: { marginLeft: space[28] },
-  stack: { flexDirection: "row" },
-  stackMark: {
-    alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.background,
-    borderRadius: radius.full,
-    borderWidth: 2,
-    height: 24,
-    justifyContent: "center",
-    width: 24,
-  },
-  stackMarkOverlap: { marginLeft: -space[6] },
   state: { alignItems: "center", flexDirection: "row", flexShrink: 0, gap: space[6] },
   title: { flexShrink: 1 },
 });

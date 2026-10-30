@@ -13,6 +13,7 @@ import {
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { useShell } from "./app-shell.js";
+import { VoiceButton, VoiceDock } from "./voice.js";
 import { BrandMark } from "./brand.js";
 import { Composer, type ComposerQuote, type ComposerSubmission } from "./composer.js";
 import { ExecutionControls } from "./execution-controls.js";
@@ -255,7 +256,9 @@ export function HomeIntro({
               write here is kept while you do.
             </p>
           ) : null}
+          <VoiceDock />
           <Composer
+            voice={<VoiceButton />}
             dictationScope={`${deploymentId}/${userId}/home/${workspace.id}`}
             placeContext={placeContext}
             variant="conversation"
