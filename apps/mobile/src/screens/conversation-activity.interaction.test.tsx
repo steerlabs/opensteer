@@ -132,11 +132,9 @@ vi.mock("../thread/attachment-views.js", async () => {
     MessageAttachments: () => null,
   };
 });
-vi.mock("../thread/assignment-card.js", async () => ({
-  ...(await vi.importActual<typeof import("../thread/assignment-card.js")>(
-    "../thread/assignment-card.js",
-  )),
-  AssignmentCard: () => null,
+vi.mock("../thread/task-line.js", async () => ({
+  ...(await vi.importActual<typeof import("../thread/task-line.js")>("../thread/task-line.js")),
+  AssignmentLines: () => null,
 }));
 vi.mock("../thread/computer-use-line.js", () => ({
   ComputerUseLine: () => null,

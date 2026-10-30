@@ -271,7 +271,7 @@ same decision, in
 `thread/computer-app-picker.tsx`. Agent Phone is a separate Android Runner app; the mobile client
 can decide its access as described above. See [Computer apps](computers.md#computer-apps).
 
-**Tabs and apps.** A conversation's Tabs (the bar's Tabs, a delegation card's) lists its tabs,
+**Tabs and apps.** A conversation's Tabs (the bar's Tabs) lists its tabs,
 Mac apps and phone displays from the shared model (`conversationSurfaces`): every tab of the
 sessions whose durable use records name the conversation, and apps on a Mac the reader owns that a
 Run of the conversation, or of work it handed out, holds now — one tile per tab, app per Mac or

@@ -674,25 +674,6 @@ div.trace-step__head .trace-step__detail {
   white-space: pre-wrap;
 }
 
-.delegation {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: var(--space-8) 0;
-  padding: var(--space-6) var(--space-10);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-}
-
-.delegation__open {
-  align-self: flex-start;
-  margin-left: var(--space-24);
-  color: var(--ember);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-}
-
 /* A subagent is a step with work of its own, so it reads as one card; a
    subagent it started nests inside, one step in. */
 .subagent {
@@ -894,131 +875,256 @@ div.trace-step__head .trace-step__detail {
 
 /* ---- Tasks ---- */
 
-/* A task in the conversation that handed it out is one bubble from that
-   conversation's side: its state as a round mark, its title, and one line
-   saying where it is. It changes in place and opens the task; what else it
-   offers waits behind the button beside it. */
-.task-bubble-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  align-self: flex-start;
-  max-width: min(100%, 440px);
-  margin: var(--space-6) 0 var(--space-2);
-}
-
-.turn > .task-bubble-row + .task-bubble-row {
-  margin-top: 0;
-}
-
-.task-bubble {
-  display: flex;
-  align-items: center;
-  gap: var(--space-12);
-  min-width: 240px;
-  min-height: 52px;
-  max-width: 100%;
-  padding: var(--space-10) var(--space-12);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface-elevated);
-  color: var(--text);
-  text-decoration: none;
-  transition:
-    background var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
-  animation: rise-in var(--duration-med) var(--ease-out);
-}
-
-.task-bubble:hover {
-  border-color: var(--line-hover);
-  background: var(--surface-raised);
-}
-
-.task-bubble:focus-visible {
-  outline: 2px solid var(--ember);
-  outline-offset: 3px;
-}
-
-/* Waiting on the reader is the one state the bubble itself says. */
-.task-bubble--waiting {
-  border-color: var(--amber-line);
-}
-
-.task-bubble__text {
+/* A task where it was handed out is one quiet line: its mark, its title, and a
+   dot and a word for where it stands. Only the dot and the word change as it
+   moves; what it asks of the reader sits under its title. The link covers
+   the whole line, so anything on it opens the task, and the menu's button
+   sits above it. */
+.task-lines {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  align-self: stretch;
+  margin: 0 calc(-1 * var(--space-8));
 }
 
-.task-bubble__title,
-.task-bubble__status {
+.transcript > .task-lines {
+  margin-block: var(--space-6);
+}
+
+.task-line {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 30px;
+  padding: var(--space-4) var(--space-8);
+  /* A deliberate one-off: a line's wash, softer than a surface's corners. */
+  border-radius: 8px;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.task-line:hover,
+.task-line--menu {
+  background: rgb(255 255 255 / 4%);
+}
+
+.task-line__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: 22px;
+}
+
+.task-line__open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.task-line__open:hover {
+  text-decoration: none;
+}
+
+.task-line__open::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.task-line__open:focus-visible {
+  outline: none;
+}
+
+.task-line__open:focus-visible::after {
+  outline: 2px solid var(--ember);
+  outline-offset: 1px;
+}
+
+.task-line__title {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.task-bubble__title {
-  font-size: var(--text-xl);
-  font-weight: var(--weight-medium);
-  line-height: 1.35;
-}
-
-.task-bubble__status {
+.task-line__state,
+.task-line__part {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
   color: var(--muted);
   font-size: var(--text-sm);
   line-height: 1.35;
+  white-space: nowrap;
 }
 
-.task-bubble--waiting .task-bubble__status {
-  color: var(--amber-text);
+.task-line__sep {
+  color: var(--muted-dim);
 }
 
-.task-bubble--failed .task-bubble__status {
-  color: var(--red-text);
+.task-line__chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--muted-dim);
+  pointer-events: none;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.task-line:hover .task-line__chevron {
+  color: var(--text-soft);
+}
+
+.task-line__chevron--open {
+  transform: rotate(90deg);
+}
+
+/* What the task asks, or what keeps it from going on, under its title. */
+.task-line__note {
+  /* Under the title: past the mark's 20px column and the gap after it. */
+  margin: var(--space-2) 0 var(--space-2) var(--space-28);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.task-line__note[data-kind="decision"] {
+  color: var(--text);
+  font-size: var(--text-lg);
 }
 
 /* Out of the way until the reader reaches for the task; a touch screen has no
    hover to reach with, so there it always shows. */
-.task-bubble__more {
+.task-line__more {
+  position: relative;
+  z-index: var(--layer-base);
   display: grid;
   flex: none;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-  background: var(--surface-elevated);
-  color: var(--text-soft);
+  width: 24px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--muted);
   opacity: 0;
   transition: opacity var(--duration-fast) var(--ease-out);
 }
 
-.task-bubble-row:hover .task-bubble__more,
-.task-bubble-row:focus-within .task-bubble__more,
-.task-bubble-row--menu .task-bubble__more {
+.task-line:hover .task-line__more,
+.task-line:focus-within .task-line__more,
+.task-line--menu .task-line__more {
   opacity: 1;
 }
 
-.task-bubble__more:hover {
+.task-line__more:hover {
   color: var(--text);
 }
 
-.task-bubble__more .icon {
+.task-line__more .icon {
   width: 16px;
   height: 16px;
 }
 
 @media (hover: none) and (pointer: coarse) {
-  .task-bubble__more {
-    width: var(--touch-target);
-    height: var(--touch-target);
-    border-color: transparent;
-    background: none;
+  .task-line__more {
     opacity: 1;
   }
+}
+
+/* Only the dot changes colour; a task working now breathes. */
+.task-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.task-dot[data-tone="completed"] {
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+.task-dot[data-tone="working"] {
+  background: var(--ember);
+}
+
+.task-dot[data-tone="working"][data-moving="true"] {
+  animation: task-dot-pulse 1.9s ease-out infinite;
+}
+
+.task-dot[data-tone="waiting"] {
+  background: var(--amber);
+}
+
+.task-dot[data-tone="failed"] {
+  background: var(--red);
+}
+
+@keyframes task-dot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ember) 55%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--ember) 0%, transparent);
+  }
+}
+
+/* A group's marks overlap, each on a disc cut out of the ground. */
+.task-stack {
+  display: flex;
+  flex: none;
+}
+
+.task-stack__mark {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--surface-elevated);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+.task-stack__mark + .task-stack__mark {
+  margin-left: -5px;
+}
+
+.task-stack__mark .task-mark,
+.task-stack__mark .task-mark > svg {
+  width: 11px;
+  height: 11px;
+}
+
+.task-stack__mark .task-mark > svg {
+  stroke-width: 2.4;
+}
+
+.task-line-group__lines {
+  display: flex;
+  flex-direction: column;
+  padding-left: var(--space-28);
 }
 
 .task-menu {
@@ -1052,8 +1158,12 @@ div.trace-step__head .trace-step__detail {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .task-bubble {
+  .task-dot[data-tone="working"][data-moving="true"] {
     animation: none;
+  }
+
+  .task-line__chevron {
+    transition: none;
   }
 }
 
@@ -1199,27 +1309,6 @@ div.trace-step__head .trace-step__detail {
 
 .selection-marker__text {
   overflow-wrap: anywhere;
-}
-
-.task-bubble__attribution {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: var(--text-sm);
-}
-.task-bubble__attribution > span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.task-bubble__byline {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 5px;
-  color: var(--muted);
-}
-.task-bubble__text {
-  flex: 1;
 }
 
 /* The silent turn's line opens its Activity, so it is a button drawn as text. */

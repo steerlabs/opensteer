@@ -1,5 +1,6 @@
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
+  listedRowThreadId,
   mainWorkspace,
   sameTaskListSource,
   taskList,
@@ -287,6 +288,14 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
 
   const list = model?.list ?? null;
   const taskWorkspaceId = model?.taskWorkspaceId ?? null;
+  // A helper has no row, so the task it works for, or Chat, is the one marked open.
+  const selectedRow = useMemo(() => {
+    if (hostClient === null || model === null || selectedThreadId === null)
+      return { chat: false, threadId: selectedThreadId };
+    const snapshot = hostClient.getSnapshot();
+    const threadId = listedRowThreadId(snapshot, selectedThreadId);
+    return { chat: threadId === snapshot.homeThreadId, threadId };
+  }, [hostClient, model, selectedThreadId]);
   // Times are read as the list draws, so a row that has not changed still ages.
   const now = Date.now();
   const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf) =>
@@ -296,7 +305,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         onOpen={openTask}
         onSetDone={moveTask}
         row={task}
-        selected={task.threadId === selectedThreadId}
+        selected={task.threadId === selectedRow.threadId}
         shelf={shelf}
         time={taskTime(task, now)}
       />
@@ -356,7 +365,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                 : taskRowLabel(list.chat, { chat: true })
             }
             accessory={list === null ? null : <ChatAccessory row={list.chat} />}
-            current={destination === "Home"}
+            current={destination === "Home" || selectedRow.chat}
             icon="bubble.left"
             mark={<ChatOrb size={20} />}
             label={CHAT_THREAD_TITLE}

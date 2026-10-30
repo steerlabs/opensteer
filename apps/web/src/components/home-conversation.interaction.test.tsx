@@ -532,12 +532,12 @@ describe("Home conversation", () => {
     // Home's composer carries its real execution pill in place.
     expect(node.querySelector(".composer .exec-controls .exec-pill")).not.toBeNull();
     expect(node.querySelector('[aria-label="AI settings"]')).toBeNull();
-    const task = node.querySelector<HTMLAnchorElement>("a.task-bubble");
+    const task = node.querySelector<HTMLAnchorElement>("a.task-line__open");
     expect(task).not.toBeNull();
     const workerThreadId = task?.getAttribute("href")?.replace("/threads/", "");
     expect(workerThreadId).not.toBe(initialHome);
     await act(async () => task?.click());
-    // The bubble opens the task itself, whose brief says who asked for it.
+    // The line opens the task itself, whose brief says who asked for it.
     expect(node.querySelector(".input-card__meta")?.textContent).toMatch(/^Chat·/u);
     expect(node.querySelector(".assignment-strip")).toBeNull();
     expect(activate).toHaveBeenLastCalledWith(workerThreadId);
@@ -593,10 +593,10 @@ describe("Home conversation", () => {
         </ToastProvider>,
       ),
     );
-    expect(node.querySelector(".task-bubble__status")?.textContent).toBe(
-      "Codex 2 is getting ready.",
-    );
-    await act(async () => node.querySelector<HTMLAnchorElement>("a.task-bubble")?.click());
+    // The line keeps its word and says under its title why it has not started.
+    expect(node.querySelector(".task-line__state")?.textContent).toBe("Waiting to start");
+    expect(node.querySelector(".task-line__note")?.textContent).toBe("Codex 2 is getting ready.");
+    await act(async () => node.querySelector<HTMLAnchorElement>("a.task-line__open")?.click());
     // The task's head says why it has not started, under its name.
     expect(node.querySelector(".conv-header__cause")?.textContent).toBe(
       "Codex 2 is getting ready.",

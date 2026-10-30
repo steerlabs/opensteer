@@ -31,7 +31,7 @@ import { color, headerFontScaleLimit, space } from "../theme.js";
 import { appear } from "../ui/motion.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { useAssignmentStop, useLifecycleNews } from "./assignment-card.js";
+import { useAssignmentStop, useLifecycleNews } from "./task-line.js";
 
 /**
  * What a task's own Thread says about the work another conversation handed

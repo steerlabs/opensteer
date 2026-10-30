@@ -59,7 +59,7 @@ import {
   reviewFreshStart,
   type ReviewedChoice,
 } from "./execution-review.js";
-import { TaskView } from "./assignment-card.js";
+import { TaskLines } from "./task-line.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
@@ -948,7 +948,7 @@ function ThreadView({
                     }
                   : {})}
                 onReply={replyWith}
-                renderTask={(entry) => <TaskView entry={entry} />}
+                renderTask={(entries) => <TaskLines entries={entries} />}
                 requestShown={dockedRequests.length > 0}
                 startHold={startHold}
                 threadId={thread.id}

@@ -97,7 +97,16 @@ try {
       placeholder: await page
         .getByRole("textbox", { name: "Message", exact: true })
         .getAttribute("placeholder"),
-      owners: [...new Set(await text(page, ".thread--home .task-bubble__byline"))],
+      // A task's line names who does it in its tooltip: title, owner, then where it stands.
+      owners: [
+        ...new Set(
+          await page
+            .locator(".thread--home a.task-line__open")
+            .evaluateAll((links) =>
+              links.map((link) => link.getAttribute("title")?.split(" · ")[1] ?? null),
+            ),
+        ),
+      ],
       windowTitle: await page.title(),
     };
     await capture(page, "chat");
@@ -114,7 +123,7 @@ try {
     );
     expectThat(
       observed,
-      observed.owners.length > 0 && observed.owners.every((name) => name === "Opensteer·"),
+      observed.owners.length > 0 && observed.owners.every((name) => name === "Opensteer"),
       "the tasks Chat handed out are not Opensteer's",
     );
     expectThat(observed, observed.windowTitle === "Opensteer", "the window lost the product name");
@@ -145,7 +154,7 @@ try {
   await check(
     "a task handed out from Chat says it came from Chat, in place and in Find",
     async () => {
-      await page.locator(".thread--home a.task-bubble").first().click();
+      await page.locator(".thread--home a.task-line__open").first().click();
       await page.locator(".msg--input__from").first().waitFor();
       const brief = (await text(page, ".msg--input__bubble"))[0] ?? "";
       const observed = {

@@ -170,12 +170,10 @@ function setup(conversation = false) {
   roots.push(root);
   const onOpenStep = vi.fn();
   const onOpenActivity = vi.fn();
-  const onOpenBrowsers = vi.fn();
   const onOpenThread = vi.fn();
   return {
     container,
     onOpenActivity,
-    onOpenBrowsers,
     onOpenThread,
     onOpenStep,
     render(
@@ -195,7 +193,6 @@ function setup(conversation = false) {
             highlightRequestId={null}
             onOpenActivity={onOpenActivity}
             onOpenStep={onOpenStep}
-            onOpenBrowsers={onOpenBrowsers}
             onOpenThread={onOpenThread}
             spacingTop={0}
             homeThreadId={null}
@@ -518,9 +515,12 @@ describe("native transcript prose", () => {
   });
 });
 
-describe("delegation browser navigation", () => {
-  it("opens the exact delegated conversation's browsers from a settlement card", () => {
-    const { container, render, onOpenBrowsers, onOpenThread } = setup();
+// Ways an old delegation's line can fail: it opens the conversation that
+// handed the work out instead of the one that did it, where the task, its
+// result and the pages it used are; or a failure reads like a finish.
+describe("a delegation's line", () => {
+  it("opens exactly the delegated conversation, in the words a task's line uses", () => {
+    const { container, render, onOpenThread } = setup();
     const delegation: DelegationEntry = {
       id: "delegation:one",
       kind: "delegation",
@@ -536,20 +536,17 @@ describe("delegation browser navigation", () => {
       taskPreview: "Investigate",
     };
     render([delegation], [{ id: "workspace-child", name: "Research Lab" } as WorkspaceSummary]);
-    expect(container.querySelector('[aria-label="Open browsers for Research"]')).not.toBeNull();
-    press(container, "Open browsers");
-    expect(onOpenBrowsers).toHaveBeenCalledWith("thread-child");
-    expect(onOpenThread).not.toHaveBeenCalled();
+    const line = () => container.querySelector('[aria-label^="Research, "]')!;
+    expect(line().getAttribute("aria-label")).toBe("Research, Done");
+    expect(container.textContent).toBe("ResearchDone");
+    act(() => (line() as HTMLElement).click());
+    expect(onOpenThread).toHaveBeenCalledExactlyOnceWith("thread-child");
 
     render([{ ...delegation, outcome: "failed", resultPreview: "Could not finish." }]);
-    expect(
-      [...container.querySelectorAll("button")].find(
-        (button) => button.getAttribute("aria-label") === "Open browsers for Research",
-      ),
-    ).toBeDefined();
-    press(container, "Open browsers");
-    expect(onOpenBrowsers).toHaveBeenCalledTimes(2);
-    expect(onOpenBrowsers).toHaveBeenLastCalledWith("thread-child");
+    expect(line().getAttribute("aria-label")).toBe("Research, Couldn’t finish");
+    act(() => (line() as HTMLElement).click());
+    expect(onOpenThread).toHaveBeenCalledTimes(2);
+    expect(onOpenThread).toHaveBeenLastCalledWith("thread-child");
   });
 });
 

@@ -1,4 +1,4 @@
-import { assignmentTitle } from "./assignment-presentation.js";
+import { assignmentTitle, workerAssignment } from "./assignment-presentation.js";
 import {
   CHAT_THREAD_TITLE,
   requestTitleText,
@@ -139,6 +139,52 @@ export function heldThread(snapshot: TaskListSource, threadId: string): ThreadSu
     ].find(({ thread }) => thread.id === threadId)?.thread ??
     null
   );
+}
+
+/**
+ * The row a list shows for a Thread: its own when it is listed, otherwise its
+ * nearest listed ancestor's, Chat's for work under Chat. A helper has no row,
+ * so the task it works for stands in for it. A chain this client cannot
+ * follow, through a parent it does not hold or round a loop, leaves the
+ * Thread itself, which then matches no row.
+ */
+export function listedRowThreadId(snapshot: TaskListSource, threadId: string): string {
+  const seen = new Set<string>();
+  let current = heldThread(snapshot, threadId);
+  while (current !== null && !current.listed && current.id !== snapshot.homeThreadId) {
+    const parent = current.parentThreadId;
+    if (parent === null || seen.has(current.id)) return threadId;
+    seen.add(current.id);
+    if (parent === snapshot.homeThreadId) return parent;
+    current = heldThread(snapshot, parent);
+  }
+  return current?.id ?? threadId;
+}
+
+/** A conversation a reader can go back to, by the name they know it by. */
+export interface RequesterLink {
+  readonly threadId: string;
+  readonly title: string;
+}
+
+/**
+ * The conversation a Thread works for, as a way back: the one that handed it
+ * its task, else the one it was started from. Only what this client holds is
+ * offered, so a link never leads to a Thread the reader cannot open.
+ */
+export function threadRequester(snapshot: TaskListSource, threadId: string): RequesterLink | null {
+  const parent =
+    workerAssignment(snapshot.assignments, threadId)?.parentThreadId ??
+    heldThread(snapshot, threadId)?.parentThreadId ??
+    null;
+  return parent === null || parent === threadId ? null : requesterLink(snapshot, parent);
+}
+
+/** A Thread as a way back, when this reader can open it: Chat by name, else a Thread it holds. */
+export function requesterLink(snapshot: TaskListSource, threadId: string): RequesterLink | null {
+  if (threadId === snapshot.homeThreadId) return { threadId, title: CHAT_THREAD_TITLE };
+  const held = heldThread(snapshot, threadId);
+  return held === null ? null : { threadId, title: held.title };
 }
 
 /**

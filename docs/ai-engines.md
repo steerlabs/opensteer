@@ -73,8 +73,8 @@ discover all of its offered models, call `environment_list` with
 `harnessInstanceId` and follow `modelsNextCursor`. A model cursor is
 bound to that profile's catalog and is rejected if its models or readiness
 change; start that profile's listing again. Delegation checks the current
-catalog at admission. A task card names its latest Run's model when it differs
-from the assigning Run's pinned model; Trigger and watch tasks always name it.
+catalog at admission. A task's line names its latest Run's model, in its tooltip and accessible
+name, when it differs from the assigning Run's pinned model; Trigger and watch tasks always name it.
 
 Canonical `(providerId, modelId)` pairs group models; the selected catalog
 descriptor's `nativeModelId` preserves the endpoint's spelling. The Host copies

@@ -18,7 +18,6 @@ import {
   type ActivityIcon,
   type ActivityStepHead,
   type ActivityTone,
-  type DelegationEntry,
   type MessageEntry,
   type ReasoningEntry,
   type RunEntry,
@@ -40,7 +39,7 @@ import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { ChatOrb } from "../ui/chat-orb.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
-import { AssignmentCard } from "./assignment-card.js";
+import { AssignmentLines, DelegationLine } from "./task-line.js";
 import { MessageAttachments } from "./attachment-views.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
 import { MessageMenu } from "./message-menu.js";
@@ -89,8 +88,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly onOpenStep: (entryId: string) => void;
   /** Opens another Thread this one points at: a delegation, or an agent's message. */
   readonly onOpenThread: (threadId: string) => void;
-  /** Opens the exact conversation's browser inventory. */
-  readonly onOpenBrowsers: (threadId: string) => void;
   /** Given, every update another agent published offers it. */
   readonly askAbout?: AskAbout | undefined;
   /** Names the engine behind a recorded selection; without it the model alone. */
@@ -134,16 +131,9 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           />
         )
       ) : group.kind === "assignment" ? (
-        <AssignmentCard entry={group.entry} />
+        <AssignmentLines entries={[group.entry]} />
       ) : group.kind === "delegation" ? (
-        <DelegationCard
-          delegation={group.entry}
-          onOpenBrowsers={props.onOpenBrowsers}
-          onOpenThread={props.onOpenThread}
-          workspaceName={
-            props.workspaces.find(({ id }) => id === group.entry.childThread.workspaceId)?.name
-          }
-        />
+        <DelegationLine delegation={group.entry} onOpenThread={props.onOpenThread} />
       ) : group.kind === "selection" ? (
         <SelectionMarker
           engineName={props.engineName?.(group.entry.harnessInstanceId) ?? null}
@@ -218,9 +208,7 @@ function TurnView(props: {
       />
       {/* A Run split by a message that joined it shows its pages once, on its latest stretch. */}
       {turn.continued === true ? null : <ReplySurfaces turn={turn} turnKey={props.turnKey} />}
-      {turn.assignments.map((entry) => (
-        <AssignmentCard entry={entry} key={entry.id} />
-      ))}
+      <AssignmentLines entries={turn.assignments} />
       {turn.run !== null && (hasRunOutcome(turn.run) || restarted(turn.run)) ? (
         <RunOutcome run={turn.run} />
       ) : null}
@@ -405,9 +393,7 @@ function ConversationTurn(props: {
           </AppText>
         </Animated.View>
       ) : null}
-      {turn.assignments.map((entry) => (
-        <AssignmentCard entry={entry} key={entry.id} />
-      ))}
+      <AssignmentLines entries={turn.assignments} />
       {/* A turn that ended without a reply says how, and its Activity opens
           from that line's menu as a reply's would. */}
       {outcome !== null && view.reply === null && onActivity !== undefined ? (
@@ -1320,96 +1306,6 @@ function Attribution(props: {
     >
       {content}
     </Pressable>
-  );
-}
-
-/* ---- Another Thread's result ---- */
-
-function DelegationCard(props: {
-  readonly delegation: DelegationEntry;
-  readonly onOpenBrowsers: (threadId: string) => void;
-  readonly onOpenThread: (threadId: string) => void;
-  readonly workspaceName: string | undefined;
-}): ReactNode {
-  const { delegation } = props;
-  const head = useMemo(() => activityStepHead(delegation), [delegation]);
-  const result = delegation.failure?.message ?? delegation.resultPreview;
-  const [open, setOpen] = useState(false);
-  const expandable = Boolean(delegation.taskPreview || result);
-  return (
-    <View style={styles.card}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        disabled={!expandable}
-        onPress={() => setOpen(!open)}
-        style={({ pressed }) => [styles.step, pressed && styles.pressed]}
-      >
-        <View style={styles.icon}>
-          <Symbol
-            name={iconSymbol[head.icon]}
-            size={14}
-            tint={toneColor(head.tone)}
-            weight="medium"
-          />
-        </View>
-        <View style={styles.stepText}>
-          <AppText {...(open ? {} : { numberOfLines: 1 })} role="secondaryMedium" tone="soft">
-            {head.label}
-          </AppText>
-          {head.detail && !open ? (
-            <AppText numberOfLines={1} role="caption" tone="muted">
-              {head.detail}
-            </AppText>
-          ) : null}
-        </View>
-        {expandable ? (
-          <Symbol name={open ? "chevron.down" : "chevron.right"} size={11} tint={color.muted} />
-        ) : null}
-      </Pressable>
-      {open ? (
-        <Animated.View entering={appear} exiting={exit} style={styles.cardBody}>
-          {delegation.taskPreview ? (
-            <>
-              <AppText role="caption" tone="muted">
-                Task
-              </AppText>
-              <AppText role="secondary" selectable tone="soft">
-                {delegation.taskPreview}
-              </AppText>
-            </>
-          ) : null}
-          {result ? (
-            <>
-              <AppText role="caption" tone="muted">
-                Result
-              </AppText>
-              <Markdown text={result} />
-            </>
-          ) : null}
-        </Animated.View>
-      ) : null}
-      <Pressable
-        accessibilityHint={`Opens ${delegation.childThread.title}`}
-        accessibilityRole="button"
-        onPress={() => props.onOpenThread(delegation.childThread.id)}
-        style={styles.openThread}
-      >
-        <AppText role="secondaryMedium" tone="ember">
-          Open {delegation.childThread.title}
-        </AppText>
-      </Pressable>
-      <Pressable
-        accessibilityLabel={`Open browsers for ${delegation.childThread.title}`}
-        accessibilityRole="button"
-        onPress={() => props.onOpenBrowsers(delegation.childThread.id)}
-        style={styles.openThread}
-      >
-        <AppText role="secondaryMedium" tone="ember">
-          Open browsers
-        </AppText>
-      </Pressable>
-    </View>
   );
 }
 

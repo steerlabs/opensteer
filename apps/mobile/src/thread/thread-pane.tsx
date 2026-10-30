@@ -15,6 +15,7 @@ import {
   threadPlacementOptions,
   threadComposerPlaceholder,
   threadStartHold,
+  threadRequester,
   threadStopTarget,
   turnFolds,
   visibleTranscript,
@@ -23,6 +24,7 @@ import {
   type HostSnapshot,
   type ConversationRow,
   type MessageEntry,
+  type RequesterLink,
   type SurfaceDestination,
   type ThreadActivityIndicator,
   type TranscriptGroup,
@@ -69,7 +71,7 @@ import { AppText, Notice, TypingDots } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
-import { TaskScopeContext, type TaskScope } from "./assignment-card.js";
+import { TaskScopeContext, type TaskScope } from "./task-line.js";
 import {
   sameTaskHeading,
   sameTaskOutcomes,
@@ -263,6 +265,7 @@ function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
     // answers against the full store so unrelated transcript maps cannot go stale.
     task: snapshot.homeThreadId === threadId ? null : taskHeading(snapshot, threadId),
     outcomes: taskOutcomes(snapshot, threadId),
+    requester: snapshot.homeThreadId === threadId ? null : threadRequester(snapshot, threadId),
   };
 }
 
@@ -275,6 +278,11 @@ function sameThreadPaneSelection(left: ThreadPaneSelection, right: ThreadPaneSel
         return sameTaskHeading(left.task, right.task);
       case "outcomes":
         return sameTaskOutcomes(left.outcomes, right.outcomes);
+      case "requester":
+        return (
+          left.requester?.threadId === right.requester?.threadId &&
+          left.requester?.title === right.requester?.title
+        );
       case "runQueue":
         return sameEntries(left.runQueue, right.runQueue);
       case "workspaces":
@@ -693,6 +701,17 @@ function ThreadPaneForUser(
     if (!sameTaskHeading(heldTask.current, next)) heldTask.current = next;
     return heldTask.current;
   }, [isHome, snapshot, threadId]);
+  // Held while it names the same conversation, so the list's header is not rebuilt as it streams.
+  const found = snapshot.requester;
+  const requesterThreadId = found?.threadId ?? null;
+  const requesterTitle = found?.title ?? null;
+  const requester = useMemo(
+    () =>
+      requesterThreadId === null || requesterTitle === null
+        ? null
+        : { threadId: requesterThreadId, title: requesterTitle },
+    [requesterThreadId, requesterTitle],
+  );
   useEffect(() => {
     onHeader?.({
       surfaceCount,
@@ -789,14 +808,6 @@ function ThreadPaneForUser(
     revealed.current = requestId;
     reveal(receipt);
   }, [focused, pendingRequest, receipt, requestId, reveal]);
-  // A delegation's tabs are its own conversation's collection.
-  const openBrowsers = useCallback(
-    (targetThreadId: string) =>
-      navigation.dispatch(
-        StackActions.push("WorkspaceBrowser", { deploymentId, threadId: targetThreadId }),
-      ),
-    [deploymentId, navigation],
-  );
   // A chip opens exactly the page or app it names, pushed so Back returns to
   // where it was opened; one already in front is left as it is.
   const surfaceTurns = useMemo(
@@ -962,7 +973,6 @@ function ThreadPaneForUser(
               highlightRequestId={requestId}
               askAbout={askAbout}
               onOpenStep={openStep}
-              onOpenBrowsers={openBrowsers}
               onOpenThread={openSource}
               spacingTop={item.spacingTop}
               unreadBoundary={item.unreadBoundary}
@@ -984,7 +994,6 @@ function ThreadPaneForUser(
       hostClient,
       live,
       openActivity,
-      openBrowsers,
       openLatestActivity,
       openSource,
       openStep,
@@ -1218,6 +1227,8 @@ function ThreadPaneForUser(
             earlier={canLoadEarlier}
             loadingEarlier={loadingEarlier}
             onLoadEarlier={loadEarlier}
+            onOpenRequester={openSource}
+            requester={requester}
           />
         }
         // Paging upward inserts entries above what is being read; this is
@@ -1535,9 +1546,27 @@ function ThreadHeader(props: {
   readonly earlier: boolean;
   readonly loadingEarlier: boolean;
   readonly onLoadEarlier: () => void;
+  readonly onOpenRequester: (threadId: string) => void;
+  /** The conversation this Thread works for, when the reader can open it. */
+  readonly requester: RequesterLink | null;
 }): ReactNode {
+  const { requester } = props;
   return (
     <View style={styles.header}>
+      {/* Above everything it did: the way back to the work it was for. */}
+      {requester === null ? null : (
+        <Pressable
+          accessibilityLabel={`Back to ${requester.title}`}
+          accessibilityRole="link"
+          onPress={() => props.onOpenRequester(requester.threadId)}
+          style={({ pressed }) => [styles.requester, pressed && styles.requesterPressed]}
+        >
+          <Symbol name="chevron.left" size={11} tint={color.muted} />
+          <AppText numberOfLines={1} role="caption" style={styles.requesterTitle} tone="muted">
+            {requester.title}
+          </AppText>
+        </Pressable>
+      )}
       {props.earlier ? (
         <View style={styles.earlier}>
           {props.loadingEarlier ? (
@@ -1723,6 +1752,19 @@ const styles = StyleSheet.create({
   loadEarlier: { minHeight: touchTarget, justifyContent: "center", paddingHorizontal: space[12] },
   empty: { gap: space[12], paddingVertical: space[48] },
   header: { gap: space[8] },
+  requester: {
+    alignItems: "center",
+    alignSelf: "flex-start",
+    borderRadius: radius.xs,
+    flexDirection: "row",
+    gap: space[4],
+    marginLeft: -space[6],
+    maxWidth: "100%",
+    minHeight: touchTarget,
+    paddingHorizontal: space[6],
+  },
+  requesterPressed: { backgroundColor: color.surfacePressed },
+  requesterTitle: { flexShrink: 1 },
   jump: {
     alignItems: "center",
     backgroundColor: color.surfaceElevated,

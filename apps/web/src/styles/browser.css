@@ -931,10 +931,6 @@ button.surface-chip:hover {
   max-width: min(30rem, 100%);
 }
 
-.delegation .surface-chips {
-  margin-top: var(--space-6);
-}
-
 /* ---- Watch (/live) ---- */
 
 /* Where the top bar already says "Watch", the heading is there for screen readers only. */

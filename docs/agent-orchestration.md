@@ -800,10 +800,23 @@ completion shows “Worked for” with elapsed time from `startedAt` (or “Work
 stops and failures keep their outcomes. Older Hosts omit `startedBy`, preserving
 the prior presentation ([compatibility](host-boundaries.md#compatibility)).
 
-In the conversation that handed it out, a task is one bubble that changes in place and opens the
-task's own Thread. Its result draws nothing more: the bubble shows how the task ended, and the reply
-it starts says what came back. There is no separate task panel: every client opens the Thread
-itself.
+Wherever another Thread's work appears in a conversation, it is one quiet line: the task's mark,
+its title, and a dot and a word for where it stands, from `assignmentPresentation` in
+`@opensteer/client`, which web and mobile share. The line changes in place and opens the task's own
+Thread; its menu opens or stops it. Only the dot and the word change: Working (ember, breathing
+only while a Run works now), Done, Needs you (amber), Couldn't finish (red), Stopped, and the
+existing words for a task that waits. A task waiting on its reader keeps the same line and says
+its question under the title; the question is answered where Chat docks its tasks' questions, or in
+the task. Tasks one turn handed out together read as one line of stacked marks and counts, such as
+"3 tasks", then "2 done · 1 working", that opens in place to a line for each. Delegations recorded
+before Assignments read in the same words; their task, result and pages are in the Thread the line
+opens. A task's result draws nothing more: the line shows how the task ended, and the reply it
+starts says what came back. There is no separate task panel: every client opens the Thread itself.
+
+A Thread that works for another conversation leads back to it from the top of its page: the
+conversation that handed it its task, else the one it was started from, named Chat for the reader's
+Chat, and only when the reader can open it. A Thread with no row of its own marks its nearest listed
+ancestor in the sidebar (`listedRowThreadId`), Chat for work under Chat.
 
 A result is copied into the assigning conversation only while its requester can still read the
 worker's Workspace; otherwise the return is undeliverable. A handoff from someone's Chat is

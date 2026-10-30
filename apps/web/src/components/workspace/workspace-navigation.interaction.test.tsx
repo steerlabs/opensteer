@@ -308,10 +308,10 @@ describe("selection actions own exactly their axis, one history entry each", () 
     expect(element(".place")).toBe(middle);
   });
 
-  it("task card in Chat: only the conversation", async () => {
+  it("task line in Chat: only the conversation", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
-    const card = element<HTMLAnchorElement>(".task-bubble");
+    const card = element<HTMLAnchorElement>(".task-line__open");
     const before = history.length;
     await click(card);
     expect(history.length).toBe(before + 1);

@@ -35,7 +35,6 @@ import {
   incomingMessagePreview,
   messagePages,
   replyPlaces,
-  runPages,
   runPlace,
   threadActivityIndicator,
   toolBody,
@@ -103,6 +102,7 @@ import { TaskMark, ChatOrb } from "./workspace/task-mark.js";
 import { useRunPicture, Viewfinder } from "./workspace/viewfinder.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
 import { AreaLink } from "./workspace/area-link.js";
+import { DelegationLine } from "./task-line.js";
 
 const Markdown = lazy(() => import("./markdown.js"));
 
@@ -150,8 +150,8 @@ export interface ReplyActivityOwner {
 }
 /** Activity reads as sentences: what each step did, not how long it took. */
 const QuietSteps = createContext(false);
-/** Draws a task where it was handed out. */
-type TaskRenderer = (entry: AssignmentEntry) => ReactNode;
+/** Draws the tasks one turn handed out, where they were handed out. */
+type TaskRenderer = (entries: readonly AssignmentEntry[]) => ReactNode;
 const TaskViews = createContext<TaskRenderer | undefined>(undefined);
 /** The reader's Home: a message from it leads to Home itself, not to a Thread page. */
 const HomeThread = createContext<string | null>(null);
@@ -353,7 +353,7 @@ export function AgentTranscript({
                                       ) : group.kind === "delegation" ? (
                                         <DelegationNotice delegation={group.entry} />
                                       ) : group.kind === "assignment" ? (
-                                        renderTask?.(group.entry)
+                                        renderTask?.([group.entry])
                                       ) : group.kind === "selection" ? (
                                         <SelectionMarker
                                           entry={group.entry}
@@ -440,9 +440,7 @@ function TurnView({
       {turn.continued || placesUnderOutcome ? null : (
         <ReplySurfaces turn={turn} turnKey={turnKey} />
       )}
-      {turn.assignments.map((entry) => (
-        <Fragment key={entry.id}>{renderTask?.(entry)}</Fragment>
-      ))}
+      {renderTask?.(turn.assignments)}
       {turn.run && outcome ? <RunOutcome run={turn.run} /> : null}
       {placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
     </div>
@@ -760,9 +758,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       {(view.reply || view.composing || working) && !placesUnderOutcome ? (
         <ReplySurfaces turn={turn} turnKey={turnKey} />
       ) : null}
-      {tasks.map((entry) => (
-        <Fragment key={entry.id}>{renderTask?.(entry)}</Fragment>
-      ))}
+      {tasks.length > 0 ? renderTask?.(tasks) : null}
       {turn.run && outcome ? (
         turn.run.status === "completed" && turn.run.replyMessageId === null ? (
           <button
@@ -2229,48 +2225,27 @@ function SenderTaskMark({
 
 /* ---- Another Thread's work ---- */
 
+/** Work handed out before Assignments, as every task reads: one line that opens it. */
 function DelegationNotice({ delegation }: { delegation: DelegationEntry }) {
-  const [open, setOpen] = useState(false);
-  const head = useMemo(() => activityStepHead(delegation), [delegation]);
-  const result = delegation.failure?.message ?? delegation.resultPreview;
-  const hasBody = Boolean(delegation.taskPreview || result);
-  const sessions = useContext(TranscriptBrowsers);
-  // The pages the task's own Run used, each opening exactly where it was.
-  const pages = useMemo(
-    () => runPages(sessions, [delegation.childRunId]).map((page) => pageChip(page, sessions)),
-    [delegation.childRunId, sessions],
-  );
-
-  return (
-    <div className="delegation">
-      <div className={open ? "trace-step trace-step--open" : "trace-step"}>
-        <StepHead head={head} {...(hasBody ? { onToggle: () => setOpen(!open), open } : {})} />
-        {open ? (
-          <div className="trace-step__body">
-            {delegation.taskPreview ? (
-              <>
-                <span className="eyebrow eyebrow--micro">Task</span>
-                <p className="trace-step__task">{delegation.taskPreview}</p>
-              </>
-            ) : null}
-            {result ? (
-              <>
-                <span className="eyebrow eyebrow--micro">Result</span>
-                <Suspense fallback={<p className="md-prose md-prose--plain">{result}</p>}>
-                  <Markdown text={result} />
-                </Suspense>
-              </>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-      <AreaLink className="delegation__open" to={`/threads/${delegation.childThread.id}`}>
-        Open {delegation.childThread.title}
-      </AreaLink>
-      <SurfaceChips label={`Pages ${delegation.childThread.title} used`} surfaces={pages} />
-    </div>
+  const reader = useContext(AttachmentReader);
+  return reader ? (
+    <HeldDelegationNotice delegation={delegation} reader={reader} />
+  ) : (
+    <DelegationLine delegation={delegation} snapshot={nothingHeld} />
   );
 }
+
+function HeldDelegationNotice({
+  delegation,
+  reader,
+}: {
+  delegation: DelegationEntry;
+  reader: HostClient;
+}) {
+  return <DelegationLine delegation={delegation} snapshot={useTaskSnapshot(reader)} />;
+}
+
+const nothingHeld = { activeTasks: [], tasks: null, threads: [], workspaceTasks: {} };
 
 /* ---- Run outcomes ---- */
 
