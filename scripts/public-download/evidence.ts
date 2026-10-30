@@ -34,20 +34,18 @@ export function verifyPreparedArchives(
 }
 
 /** A local archive is certified only by a passing receipt for its exact bytes and all cases. */
-export function requireCertifiedJourneys(
-  receipt: {
-    builds: readonly { channel: Channel; sha256: string }[];
-    results: readonly { name: string; passed: true }[];
-  },
+export function requireCertifiedJourneys<Build extends { channel: Channel; sha256: string }>(
+  receipt: { builds: readonly Build[]; results: readonly { name: string; passed: true }[] },
   channel: Channel,
   localSha256: string,
-) {
-  if (!receipt.builds.some((b) => b.channel === channel && b.sha256 === localSha256))
-    throw Error("Local ZIP is not a certified build of this channel");
+): Build {
+  const certified = receipt.builds.find((b) => b.channel === channel && b.sha256 === localSha256);
+  if (!certified) throw Error("Local ZIP is not a certified build of this channel");
   const missing = certificationCases[channel].filter(
     (name) => !receipt.results.some((r) => r.name === name),
   );
   if (missing.length) throw Error(`Certification lacks ${missing.join(", ")}`);
+  return certified;
 }
 
 export const journeyMetadata = z.object({ expectedTeamId: z.string().regex(/^[A-Z0-9]{10}$/u) });

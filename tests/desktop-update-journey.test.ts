@@ -249,19 +249,27 @@ test("prepared archives must be the recorded builds before any VM starts", () =>
 // Certification is the release's whole journey set, never a selected subset.
 test("the byte bridge accepts only a channel's complete certification", () => {
   const receipt = (names: string[]) => ({
-    builds: [{ channel: "stable" as const, sha256: "a".repeat(64) }],
+    builds: [
+      {
+        channel: "stable" as const,
+        sha256: "a".repeat(64),
+        revision: "c".repeat(40),
+        version: "0.1.317",
+      },
+    ],
     results: names.map((name) => ({ name, passed: true as const })),
   });
   expect(() =>
     requireCertifiedJourneys(receipt(["stable:menu"]), "stable", "a".repeat(64)),
   ).toThrow(/stable:tray/u);
-  expect(() =>
+  // The bridge compares the local bundle with the certified build's source and version.
+  expect(
     requireCertifiedJourneys(
       receipt(["stable:menu", "stable:tray", "stable:quit"]),
       "stable",
       "a".repeat(64),
     ),
-  ).not.toThrow();
+  ).toMatchObject({ revision: "c".repeat(40), version: "0.1.317" });
   expect(() =>
     requireCertifiedJourneys(
       receipt(["stable:menu", "stable:tray", "stable:quit"]),

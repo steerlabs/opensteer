@@ -31,9 +31,9 @@ cpSync(share, root, { recursive: true });
 const steps: {
   name: string;
   seconds: number;
-  output?: string;
-  error?: string;
-  signal?: NodeJS.Signals | null;
+  output?: string | undefined;
+  error?: string | undefined;
+  signal?: NodeJS.Signals | null | undefined;
   passed: boolean;
 }[] = [];
 const log = path.join(out, "network.jsonl");

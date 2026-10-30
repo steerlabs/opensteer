@@ -46,7 +46,7 @@ const certification = z
   })
   .parse(JSON.parse(readFileSync(z.string().parse(values.certification), "utf8")));
 const hash = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
-requireCertifiedJourneys(certification, channel, hash(localZip));
+const certified = requireCertifiedJourneys(certification, channel, hash(localZip));
 const temporary = mkdtempSync(path.join(tmpdir(), "opensteer-release-bridge-"));
 const command = (exe: string, args: string[], input?: string) => {
   const r = spawnSync(exe, args, { encoding: "utf8", input, timeout: 120_000 });
