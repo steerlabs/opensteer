@@ -14,14 +14,8 @@ scripts require a valid input and propagate `OPENSTEER_DESKTOP_RELEASE=1`.
 Release mode never selects development trust. The old development environment
 flag is not a mode selector.
 
-Both Swift packages build and discover tests on a clean clone without a signing
-file or preparation script. Host-safe checks are `swift test --package-path
-apps/desktop/native/computer-use --filter ComputerUseCoreTests` and `swift test
---package-path apps/desktop/native/passwords --skip 'SecureEnclaveTests|SnapshotTests'`.
-Tests inject fixture teams through the policy seam; ordinary unsigned test runners
-receive no release trust. Run GUI/Electron suites through `pnpm test:vm`.
-The [build boundary journey](scripts/verify-signing-build.cjs) and
-[bundle journey](scripts/verify-signing-bundles.cjs) need no signing keys.
+Use [install-desktop](../../.agents/skills/install-desktop/SKILL.md) for build and
+local proof procedures. GUI/Electron verification belongs in the disposable VM.
 
 The separate [contributor package command](README.md) uses explicit runtime
 inputs and development trust, with ad-hoc signatures and packaged resource
@@ -46,22 +40,10 @@ agree with that file. The signing keychain does not imply a notarization profile
 The release environment and rotation procedure are documented in
 [Releases](../../docs/releases.md#tims-one-time-setup-and-rotation).
 
-`package:mac --unsigned` explicitly invokes contributor packaging; it rejects
-signing input and release mode, uses ad-hoc signatures and development trust,
-writes to release/contributor, and stamps no release build or updater metadata.
-This path cannot produce a publishable archive.
-
-Keep the signing JSON outside the checkout and set
-`OPENSTEER_DESKTOP_SIGNING_FILE` to its absolute path. Its strict shape is:
-
-```json
-{
-  "teamId": "ABCDE12345",
-  "identity": "Developer ID Application: Example Company (ABCDE12345)",
-  "notarizationProfile": "contributor-notary",
-  "keychain": "/absolute/path/release.keychain-db"
-}
-```
+Unsigned contributor packages reject signing/release inputs and cannot produce a
+publishable archive. Keep signing JSON outside the checkout; use the strict schema
+in [signing-input.cjs](scripts/signing-input.cjs) for inputs. The operator supplies
+its absolute `OPENSTEER_DESKTOP_SIGNING_FILE` path.
 
 `teamId` has ten uppercase letters/digits. The identity must name a Developer ID
 Application certificate for that team; its private key must be available in the
@@ -79,27 +61,18 @@ default keychain. When omitted, existing default-keychain behavior is unchanged.
 Unlocking the keychain and granting Apple tools access to its
 private key remain the build operator's responsibility.
 
-Raw test/integration consumers use a checked-in mode reader and need no generated
-module. Every bundling entry replaces that reader with immutable TypeScript
-metadata from the current input, including smoke/native-browser builds and cached
-rebuilds. Release mode requires a valid input. Swift signing policy has no generated sources: each helper reads its own
-signature with Security.framework and requires the peer to carry that team.
-Unsigned/ad-hoc self signatures refuse trust. Unsigned non-release helper builds pass the
-`OPENSTEER_DEV_TRUST` Swift compilation condition, which enables same-user trust
-and the separate development Passwords store. Runtime environment variables cannot
-enable it. All peer checks retain Apple's anchor, Developer ID intermediate and
-leaf markers, exact bundle IDs and audit tokens. Apple Development cannot replace
-Developer ID Application.
+Release trust must come from immutable build inputs and the helper's own Security.framework
+signature, never runtime environment variables. Unsigned/ad-hoc self signatures
+refuse release trust. Development trust is a Swift compilation condition and uses
+a separate Passwords store. Peer checks retain Apple's anchor, Developer ID
+intermediate/leaf markers, exact bundle IDs and audit tokens. Apple Development
+cannot replace Developer ID Application.
 
-Use the existing helper build scripts and `package:mac`; the latter retains the
-resource preparation and nested signing gates in
+Keep resource preparation and nested-signing gates in
 [prepare-release-resources.ts](scripts/prepare-release-resources.ts) and
-[after-sign.cjs](scripts/after-sign.cjs). The current release entry point also
-requires its existing release/runtime inputs, and its configured signing identity
-must match the validated signing input. Packaging derives `OPENSTEER_APPLE_TEAM_ID` and `CSC_NAME`
-from the validated input. A notarization profile in the JSON supplies
-`APPLE_KEYCHAIN_PROFILE`; otherwise configure one complete credential strategy
-accepted by [package-macos.ts](scripts/package-macos.ts).
+[after-sign.cjs](scripts/after-sign.cjs). The configured identity must match validated
+inputs; notarization needs one complete credential strategy accepted by
+[package-macos.ts](scripts/package-macos.ts).
 
 Forks should use their own bundle IDs. Change the Electron builder `appId`, the
 channel identities in `macos-release-identity.cjs`, helper bundle IDs and their
