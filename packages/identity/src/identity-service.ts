@@ -400,7 +400,7 @@ export class IdentityService {
               name: client.displayName,
               policy: null,
               postLogoutRedirectUris: null,
-              public: true,
+              applicationType: "native",
               redirectUris: sqlJson(client.redirectUris),
               referenceId: nativeOAuthReference(client.clientId),
               requirePkce: true,
@@ -413,7 +413,6 @@ export class IdentityService {
               subjectType: "public",
               tokenEndpointAuthMethod: "none",
               tos: null,
-              type: "native",
               updatedAt: now,
               uri: null,
               userId: null,
@@ -647,8 +646,7 @@ export class IdentityService {
     if (!client) return nativeOAuthError(400, "invalid_client", "client is invalid");
     let payload: JWTPayload;
     try {
-      // Better Auth's logout handler fetches its internal JWKS URL over HTTP,
-      // but that implementation route is intentionally not exposed by Host.
+      // The internal JWKS route is intentionally not exposed by Host.
       // Verify against its in-process key set. Logout deliberately accepts an
       // expired ID token: its signed sid remains the session being ended after
       // the ten-minute ID-token lifetime, while refresh sessions last 30 days.
@@ -2608,10 +2606,6 @@ function createOpensteerAuth(
               idTokenExpiresIn: 10 * 60,
               loginPage: "/",
               refreshTokenExpiresIn: 30 * 24 * 60 * 60,
-              silenceWarnings: {
-                oauthAuthServerConfig: true,
-                openidConfig: true,
-              },
               schema: {
                 oauthAccessToken: { modelName: "hostOAuthAccessTokens" },
                 oauthClient: {
@@ -2619,12 +2613,16 @@ function createOpensteerAuth(
                   modelName: "hostOAuthClients",
                 },
                 oauthConsent: { modelName: "hostOAuthConsents" },
+                oauthResource: { modelName: "hostOAuthResources" },
+                oauthClientResource: { modelName: "hostOAuthClientResources" },
+                oauthClientAssertion: { modelName: "hostOAuthClientAssertions" },
                 oauthRefreshToken: { modelName: "hostOAuthRefreshTokens" },
               },
               scopes: [...nativeOAuthScopes],
               storeClientSecret: "hashed",
               storeTokens: "hashed",
-              validAudiences: [options.publicOrigin.origin],
+              resources: [options.publicOrigin.origin],
+              enforcePerClientResources: false,
             }),
           ]
         : []),

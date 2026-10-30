@@ -1,5 +1,5 @@
 import { delay } from "@opensteer/shared/delay";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -128,6 +128,19 @@ integration("IdentityService", () => {
     expect(stored.absoluteExpiresAt.getTime() - stored.createdAt.getTime()).toBe(
       30 * 24 * 60 * 60 * 1_000,
     );
+    // Frozen 1.6 cookie format: URL-encoded token + base64 HMAC-SHA256.
+    const signature = createHmac("sha256", "identity-test-secret-that-is-at-least-thirty-two-bytes")
+      .update(stored.token)
+      .digest("base64");
+    const upgraded = identityService({ publicOrigin: new URL("https://host.example.com") });
+    await expect(
+      upgraded.authenticate(
+        new Headers({
+          cookie: `__Host-opensteer.session=${encodeURIComponent(`${stored.token}.${signature}`)}`,
+          origin: "https://host.example.com",
+        }),
+      ),
+    ).resolves.toMatchObject({ id: stored.id, user: { id: stored.userId } });
     // The stored label is what a person would call the device, not the header.
     expect(stored.deviceLabel).toBe("Chrome on Mac");
     expect(stored).toMatchObject({
@@ -907,6 +920,78 @@ integration("IdentityService", () => {
       sessionId: login.session.id,
       subject: login.session.user.id,
     });
+
+    // A 1.6 refresh row has no resource/code binding or rotation metadata.
+    const legacyRefreshToken = "legacy-refresh-token-created-before-upgrade";
+    await database
+      .updateTable("hostOAuthRefreshTokens")
+      .set({
+        token: createHash("sha256").update(legacyRefreshToken).digest("base64url"),
+        resources: null,
+        authorizationCodeId: null,
+        requestedUserInfoClaims: null,
+      })
+      .where("sessionId", "=", login.session.id)
+      .execute();
+    const refreshed = await identity.handleNativeOAuthRequest(
+      new Request(`${origin}/v1/auth/native/oauth2/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: clientId,
+          grant_type: "refresh_token",
+          refresh_token: legacyRefreshToken,
+          resource: origin,
+          scope: "openid profile email offline_access host:access",
+        }),
+      }),
+    );
+    expect(refreshed.status, await refreshed.clone().text()).toBe(200);
+    const refreshedTokens = (await refreshed.json()) as {
+      access_token: string;
+      refresh_token: string;
+      id_token: string;
+    };
+    await expect(
+      identity.authenticateNativeAccessToken(refreshedTokens.access_token),
+    ).resolves.toMatchObject({ sessionId: login.session.id });
+    const claims = JSON.parse(
+      Buffer.from(refreshedTokens.id_token.split(".")[1]!, "base64url").toString(),
+    );
+    expect(claims).toMatchObject({
+      sub: login.session.user.id,
+      sid: login.session.id,
+      aud: clientId,
+    });
+    expect(claims).not.toHaveProperty("email");
+    expect(claims).not.toHaveProperty("name");
+    const userinfo = await identity.handleNativeOAuthRequest(
+      new Request(`${origin}/v1/auth/native/oauth2/userinfo`, {
+        headers: { authorization: `Bearer ${refreshedTokens.access_token}` },
+      }),
+    );
+    expect(userinfo.status, await userinfo.clone().text()).toBe(200);
+    expect(await userinfo.json()).toMatchObject({
+      sub: login.session.user.id,
+      email: "native@example.com",
+      name: "Native User",
+    });
+    const revokeJwt = await identity.handleNativeOAuthRequest(
+      new Request(`${origin}/v1/auth/native/oauth2/revoke`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: clientId,
+          token: refreshedTokens.access_token,
+          token_type_hint: "access_token",
+        }),
+      }),
+    );
+    expect(revokeJwt.status).toBe(400);
+    expect(await revokeJwt.json()).toMatchObject({ error: "unsupported_token_type" });
+    await expect(
+      identity.authenticateNativeAccessToken(refreshedTokens.access_token),
+    ).resolves.toMatchObject({ sessionId: login.session.id });
 
     await identity.revokeSession(login.session, login.session.id);
     expect(endedSessions).toEqual([login.session.id]);

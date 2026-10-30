@@ -15,6 +15,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { OpensteerStore } from "./store.js";
 import {
   advertisedAgentsCapacityMigration,
+  betterAuth17Migration,
   agentPhoneOwnerAccessMigration,
   browserSourcesMigration,
   browserSourcesRetirementMigration,
@@ -7343,5 +7344,85 @@ integration.sequential("Agent Phone owner access migration", () => {
       (await sql<Record<string, unknown>>`select * from requests order by id`.execute(database))
         .rows,
     ).toEqual(after.rows);
+  });
+});
+
+integration("Better Auth 1.7 migration", () => {
+  const databaseName = `opensteer_auth17_${randomUUID().replaceAll("-", "")}`;
+  let maintenance: Pool;
+  let database: Kysely<DatabaseSchema>;
+  beforeAll(async () => {
+    const url = new URL(databaseUrl ?? "postgres://unconfigured");
+    url.pathname = "/postgres";
+    maintenance = new Pool({ connectionString: url.toString() });
+    await maintenance.query(`create database ${databaseName}`);
+    url.pathname = `/${databaseName}`;
+    database = createDatabase({ connectionString: url.toString() });
+  });
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${databaseName}`);
+    await maintenance?.end();
+  });
+  it("preserves pre-upgrade clients, refresh grants, sessions and signing keys", async () => {
+    await sql`
+      create table auth_sessions (id text primary key, token text not null);
+      create table auth_jwks (id text primary key, public_key text, private_key text);
+      create table host_oauth_clients (id text primary key, client_id text unique, public boolean,
+        type text, require_pkce boolean, token_endpoint_auth_method text);
+      create table host_oauth_refresh_tokens (id text primary key, token text unique,
+        client_id text references host_oauth_clients(client_id), session_id text references auth_sessions(id), scopes jsonb);
+      create table host_oauth_access_tokens (id text primary key);
+      create table host_oauth_consents (id text primary key);
+      insert into auth_sessions values ('session-before', 'signed-cookie-token-before');
+      insert into auth_jwks values ('key-before', 'public-key-before', 'encrypted-private-key-before');
+      insert into host_oauth_clients values ('client-before', 'opensteer-desktop', true, 'native', true, 'none');
+      insert into host_oauth_refresh_tokens values ('refresh-before', 'token-hash-before',
+        'opensteer-desktop', 'session-before', '["openid", "offline_access", "host:access"]');
+    `.execute(database);
+    await betterAuth17Migration.up(database);
+    const client = await database
+      .selectFrom("hostOAuthClients")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    expect(client).toMatchObject({
+      id: "client-before",
+      clientId: "opensteer-desktop",
+      applicationType: "native",
+      tokenEndpointAuthMethod: "none",
+      requirePkce: true,
+      clientCredentialsScopes: [],
+      clientDiscoveryId: null,
+    });
+    expect(client).not.toHaveProperty("public");
+    expect(client).not.toHaveProperty("type");
+    await expect(
+      database.selectFrom("hostOAuthRefreshTokens").selectAll().execute(),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        token: "token-hash-before",
+        sessionId: "session-before",
+        resources: null,
+        authorizationCodeId: null,
+        rotatedAt: null,
+        scopes: ["openid", "offline_access", "host:access"],
+      }),
+    ]);
+    const sessions = await sql`select * from auth_sessions`.execute(database);
+    expect(sessions.rows).toEqual([{ id: "session-before", token: "signed-cookie-token-before" }]);
+    await expect(database.selectFrom("authJwks").selectAll().execute()).resolves.toEqual([
+      {
+        id: "key-before",
+        publicKey: "public-key-before",
+        privateKey: "encrypted-private-key-before",
+        alg: null,
+        crv: null,
+      },
+    ]);
+    await expect(
+      sql`insert into host_oauth_clients (id, client_id, application_type, token_endpoint_auth_method, require_pkce)
+      values ('unsafe', 'unsafe', 'native', 'none', false)`.execute(database),
+    ).rejects.toThrow(/host_oauth_public_client_check/);
+    await betterAuth17Migration.up(database);
   });
 });
