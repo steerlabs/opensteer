@@ -133,3 +133,12 @@ and stapling: submit the signed archive, wait for acceptance, staple the resulti
 ticket and validate it before installation. Signing alone does not prove
 notarization. Keep credentials in the protected `release` environment; the public
 [release workflow](../../.github/workflows/release.yml) handles automation.
+
+`Opensteer Dictation.app` is another separately signed LaunchServices helper.
+Its release identity is `com.opensteer.dictation`; development uses
+`com.opensteer.dictation.dev`. It requires macOS 26 and arm64, with hardened
+runtime and exactly `com.apple.security.device.audio-input`. The helper alone
+has `NSMicrophoneUsageDescription`; it has no speech-recognition permission.
+The desktop application's entitlement gate is unchanged. Build with
+`build:dictation-helper`; packaged digest and entitlement checks retain its
+signature rather than signing it again through electron-builder.

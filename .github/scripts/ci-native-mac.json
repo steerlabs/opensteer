@@ -90,6 +90,19 @@
       "swift": ["packages/apple-dictation"],
       "tests": ["packages/apple-dictation"],
       "xcode": "/Applications/Xcode_26.3.app/Contents/Developer"
+    },
+    {
+      "task": "dictation-helper",
+      "timeout": 8,
+      "xcode": "/Applications/Xcode_26.3.app/Contents/Developer",
+      "swift": [
+        "apps/desktop/native/dictation",
+        "packages/apple-dictation",
+        "packages/macos-signing"
+      ],
+      "tests": ["apps/desktop/native/dictation"],
+      "scripts": ["apps/desktop/scripts/build-dictation-helper.ts"],
+      "extra": ["apps/desktop/scripts", "apps/desktop/package.json"]
     }
   ]
 }

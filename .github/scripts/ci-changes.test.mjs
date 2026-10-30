@@ -347,6 +347,7 @@ test("Swift sources, node manifests and the CI definition select their tasks", (
     "computer-helper",
     "passwords-helper",
     "computer-tests",
+    "dictation-helper",
   ]);
   assert.deepEqual(decide([".github/workflows/ci.yml"], realGraph).nativeMac, allNativeMacTasks);
   assert.deepEqual(decide([], realGraph, realGraph, true).nativeMac, allNativeMacTasks);
@@ -377,6 +378,7 @@ test("required-but-dynamic and directory-boundary inputs select exactly", () => 
   assert.deepEqual(swiftOnly(decide(["apps/desktop/tsconfig.json"], realGraph)), [
     "computer-helper",
     "passwords-helper",
+    "dictation-helper",
   ]);
   assert.deepEqual(swiftOnly(decide(["tsconfig.base.json"], realGraph)), [
     "computer-helper",
