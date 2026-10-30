@@ -69,28 +69,7 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
     await kit.selectNativePage(kit.context.sessionId, result.data.tabId);
     return result.data.tabId;
   }
-  async function nativeClick(selector: string, page = true) {
-    await kit.foregroundApp();
-    await kit.inputReady();
-    const contents = page ? kit.pageContents() : shell!.webContents;
-    const point = await kit.elementPoint(contents, selector);
-    const view = page ? electronPagePresentation(kit.activeSurface().page)!.view : shell!.appView;
-    const offset = view.getBounds(),
-      bounds = shell!.getContentBounds(),
-      zoom = contents.getZoomFactor();
-    await runFile(
-      kit.inputHelper,
-      [
-        "mouse",
-        String(process.pid),
-        shell!.getMediaSourceId().split(":")[1]!,
-        String(bounds.x + offset.x + point.x * zoom),
-        String(bounds.y + offset.y + point.y * zoom),
-        "left",
-      ],
-      { timeout: 5000 },
-    );
-  }
+  const nativeClick = (selector: string, page = true) => nativeJourneyClick(kit, selector, page);
   async function painted(name: string, purple: boolean) {
     let attempt = 0;
     await kit.until(
@@ -566,5 +545,30 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
   assert(
     steps.every((step) => step.status === "PASS"),
     "Native browser journey failed; see summary.json",
+  );
+}
+
+export async function nativeJourneyClick(kit: NativeBrowserE2EKit, selector: string, page = true) {
+  const shell = kit.shell;
+  assert(shell);
+  await kit.foregroundApp();
+  await kit.inputReady();
+  const contents = page ? kit.pageContents() : shell!.webContents;
+  const point = await kit.elementPoint(contents, selector);
+  const view = page ? electronPagePresentation(kit.activeSurface().page)!.view : shell!.appView;
+  const offset = view.getBounds(),
+    bounds = shell!.getContentBounds(),
+    zoom = contents.getZoomFactor();
+  await runFile(
+    kit.inputHelper,
+    [
+      "mouse",
+      String(process.pid),
+      shell!.getMediaSourceId().split(":")[1]!,
+      String(bounds.x + offset.x + point.x * zoom),
+      String(bounds.y + offset.y + point.y * zoom),
+      "left",
+    ],
+    { timeout: 5000 },
   );
 }

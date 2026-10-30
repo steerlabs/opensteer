@@ -95,9 +95,8 @@ export class DesktopBrowserPresentationManager {
   readonly #authority = new Map<number, Map<BrowserSessionId, Authority>>();
   readonly #transport: Pick<
     DesktopHostTransport,
-    "observeBrowserSockets" | "closeSocketsForOwner" | "openBrowserSurface"
-  > &
-    Partial<Pick<DesktopHostTransport, "passkeyConsumerToken">>;
+    "observeBrowserSockets" | "closeSocketsForOwner" | "openBrowserSurface" | "passkeyConsumerToken"
+  >;
   readonly #glassPreload: string;
   readonly #onError: (error: unknown) => void;
   readonly #quit: () => void;
@@ -106,9 +105,11 @@ export class DesktopBrowserPresentationManager {
   constructor(options: {
     transport: Pick<
       DesktopHostTransport,
-      "observeBrowserSockets" | "closeSocketsForOwner" | "openBrowserSurface"
-    > &
-      Partial<Pick<DesktopHostTransport, "passkeyConsumerToken">>;
+      | "observeBrowserSockets"
+      | "closeSocketsForOwner"
+      | "openBrowserSurface"
+      | "passkeyConsumerToken"
+    >;
     glassPreload: string;
     onError: (error: unknown) => void;
     quit: () => void;
@@ -537,7 +538,7 @@ export class DesktopBrowserPresentationManager {
       if (!current()) return;
       const tokens = new Set<string>();
       for (const connectionId of presentation.authority.sockets) {
-        const token = this.#transport.passkeyConsumerToken?.(
+        const token = this.#transport.passkeyConsumerToken(
           presentation.owner.contents.id,
           connectionId,
           page.surface.surfaceId,

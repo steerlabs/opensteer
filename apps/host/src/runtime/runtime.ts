@@ -759,6 +759,7 @@ export async function createHostRuntime(
     };
     const browserTabGroups = new BrowserTabGroupStore(database);
     const browser = new BrowserService({
+      passkeys: config.passkeys === true,
       passkeyOwnOrigins: () => [
         config.canonicalOrigin.origin,
         ...(config.account ? [config.account.issuer.origin] : []),
@@ -2302,6 +2303,7 @@ export async function createHostRuntime(
     });
     const app = await createHostServer(
       {
+        passkeys: config.passkeys === true,
         ...(accountAdoptionControlClient
           ? {
               accountAdoption: {

@@ -460,3 +460,15 @@ function baseEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     ...overrides,
   };
 }
+
+it.each([false, true])("passes the passkey preference to the Personal Host (%s)", (enabled) => {
+  const config = readDesktopConfiguration({
+    appDataDirectory,
+    defaultMode: "production",
+    packaged: true,
+    releaseManifestPath: packagedDesktopManifest(resourcesDirectory),
+    resourcesDirectory,
+    environment: { OPENSTEER_PASSKEYS: enabled ? "1" : "0" },
+  }).config;
+  expect(config.personal.passkeys).toBe(enabled);
+});

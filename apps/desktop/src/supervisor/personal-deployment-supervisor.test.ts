@@ -1261,6 +1261,7 @@ function supervisorFixture(
   } = { assertAvailable: async () => undefined },
   restarts: {
     readonly restartBackoffMs?: number;
+    readonly passkeys?: boolean;
   } = {},
 ) {
   const lifecycle: string[] = [];
@@ -1342,6 +1343,7 @@ function supervisorFixture(
   let nextPort = 4310;
   const logs: Record<string, unknown>[] = [];
   const supervisor = new PersonalDeploymentSupervisor({
+    passkeys: restarts.passkeys === true,
     allocatePort: async () => nextPort++,
     log: (event, fields) => logs.push({ event, ...fields }),
     baseEnvironment: { HOME: "/Users/test", PATH: "/usr/bin" },
@@ -1763,3 +1765,25 @@ function deferred<T>() {
   });
   return { promise, reject, resolve };
 }
+
+it.each([false, true])(
+  "starts the Personal Host with its configured passkey flag (%s)",
+  async (passkeys) => {
+    const fixture = supervisorFixture(
+      null,
+      undefined,
+      verifiedRelease(),
+      { assertAvailable: async () => undefined },
+      { passkeys },
+    );
+    try {
+      await fixture.supervisor.start();
+      expect(
+        fixture.processes.specs.find(({ component }) => component === "host")?.environment
+          .OPENSTEER_PASSKEYS,
+      ).toBe(passkeys ? "1" : "0");
+    } finally {
+      await fixture.supervisor.stop();
+    }
+  },
+);

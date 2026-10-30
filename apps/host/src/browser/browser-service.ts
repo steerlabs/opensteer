@@ -573,6 +573,7 @@ type BrowserCdpWireResponse = Extract<
 >;
 
 interface BrowserServiceOptions {
+  readonly passkeys?: boolean;
   readonly passkeyOwnOrigins?: () => readonly string[];
   readonly onProfilesChanged?: (ownerId: UserId, workspaceId: WorkspaceId) => void;
   readonly workspaceTabs?: WorkspaceTabStore;
@@ -677,6 +678,7 @@ export class BrowserService {
         workspaceId: WorkspaceId;
       }) => boolean)
     | undefined;
+  readonly #passkeys: boolean;
   readonly #passkeyOwnOrigins: () => readonly string[];
   readonly #authConsumers = new Map<AuthSessionId, Set<BrowserConsumerPeer>>();
   readonly #connectTimeoutMs: number;
@@ -708,6 +710,7 @@ export class BrowserService {
   #operationTail = Promise.resolve();
 
   constructor(options: BrowserServiceOptions) {
+    this.#passkeys = options.passkeys === true;
     this.#passkeyOwnOrigins =
       options.passkeyOwnOrigins ?? (() => [options.profileStateBaseUrl.origin]);
     this.#workspaceTabs = options.workspaceTabs;
@@ -3337,7 +3340,7 @@ export class BrowserService {
     leaseToken?.fill(0);
     const ticket = this.#signer.issue({
       access: "full-control",
-      ...(target.passkeys && process.env.OPENSTEER_PASSKEYS === "1" ? { passkeys: 1 } : {}),
+      ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.editing
         ? {
@@ -3410,7 +3413,7 @@ export class BrowserService {
       navigation: target.navigationVersion === true,
       targetControl: target.targetControl === true,
       captureRegion: target.captureRegion === true,
-      passkeys: target.passkeys === true && process.env.OPENSTEER_PASSKEYS === "1",
+      passkeys: target.passkeys === true && this.#passkeys,
       passkeyOwnOrigins: this.#passkeyOwnOrigins,
       editing: target.editing,
       clipboard: target.editing === 1 || target.clipboard === true,
