@@ -1227,7 +1227,7 @@ public final class HelperRuntime {
     lease.queue.enqueue { [self] in
       await lease.mutations.beginPerson()
       await lease.worker.cleanup(lease)
-      lease.focus.stop()
+      await MainActor.run { lease.focus.stop() }
       lease.mutations.endPerson()
       await finishOwnerRelease(lease, reason: reason)
     }
