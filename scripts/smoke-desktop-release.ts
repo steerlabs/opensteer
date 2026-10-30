@@ -1,10 +1,11 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { _electron, type ElectronApplication, type Page } from "playwright-core";
+import { z } from "zod";
 import { descendantPids } from "./smoke-desktop-release-processes.js";
 
 const { values } = parseArgs({
@@ -28,8 +29,12 @@ const asyncFailure = (error: unknown) => {
   appendFileSync(path.join(artifacts, "failure.txt"), `${String(error)}\n`);
 };
 process.on("unhandledRejection", asyncFailure);
-const home = await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "opensteer-launch-"));
+const home = await realpath(
+  await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "opensteer-launch-")),
+);
 const data = path.join(home, "userdata");
+const temporary = path.join(home, "tmp");
+await mkdir(temporary, { mode: 0o700 });
 let app: ElectronApplication | undefined;
 let page: Page | undefined;
 let launched: ChildProcess | undefined;
@@ -79,7 +84,7 @@ try {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: home,
       OPENSTEER_DESKTOP_RELEASE_SMOKE: "1",
-      TMPDIR: home,
+      TMPDIR: temporary,
       OPENSTEER_DESKTOP_DATA_DIR: data,
     },
   });
@@ -133,11 +138,10 @@ try {
     80_000,
   );
   children = descendantPids(processTable(), launched!.pid!);
-  const deployments = await readdir(path.join(data, "deployments"));
-  const manifest = JSON.parse(
-    await readFile(path.join(data, "deployments", deployments[0]!, "deployment.v1.json"), "utf8"),
-  ) as { hostPort: number };
   step = "Personal Host health endpoint did not respond";
+  const manifest = z
+    .object({ hostPort: z.number().int().min(1).max(65535) })
+    .parse(JSON.parse(await readFile(path.join(data, "personal-deployment.v1.json"), "utf8")));
   const health = await fetch(`http://127.0.0.1:${manifest.hostPort}/healthz`, {
     signal: AbortSignal.timeout(5_000),
   });
