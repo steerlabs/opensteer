@@ -153,10 +153,9 @@ function securityHeaders(contentType: string): HeadersInit {
     "content-security-policy": contentSecurityPolicy,
     "cross-origin-opener-policy": "same-origin",
     "cross-origin-resource-policy": "same-origin",
-    // WebUSB is the one device API the app uses — setting a phone up over its
-    // ADB interface — and only its own top-level page may ask for it.
+    // Voice and phone setup are restricted to the app’s own origin.
     "permissions-policy":
-      "camera=(), microphone=(), geolocation=(), display-capture=(), usb=(self), serial=(), hid=(), bluetooth=(), payment=(), publickey-credentials-create=(), publickey-credentials-get=()",
+      "camera=(), microphone=(self), geolocation=(), display-capture=(), usb=(self), serial=(), hid=(), bluetooth=(), payment=(), publickey-credentials-create=(), publickey-credentials-get=()",
     "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
     "content-type": contentType,

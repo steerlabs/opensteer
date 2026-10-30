@@ -100,7 +100,11 @@ file-backed vault does not need this profile or a paid account.
 
 For distribution, retain hardened runtime, secure timestamps and the reviewed
 entitlements. The computer-use helper claims Apple events, Contacts and Calendars;
-the Electron app retains only its reviewed JIT entitlement. Follow the existing
+the Electron app and its inherited helpers retain JIT and audio-input entitlements.
+Voice captures audio in Chromium’s helper process, so both signing inputs need
+[audio input](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.audio-input);
+[helper entitlements](https://github.com/electron-userland/electron-builder/blob/master/website/docs/mac.md)
+are signed independently of the main app. Follow the existing
 release entry point for [notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
 and stapling: submit the signed archive, wait for acceptance, staple the resulting
 ticket and validate it before installation. Signing alone does not prove
@@ -110,8 +114,7 @@ notarization. Keep credentials in the protected `release` environment; the publi
 `Opensteer Dictation.app` is another separately signed LaunchServices helper.
 Its release identity is `com.opensteer.dictation`; development uses
 `com.opensteer.dictation.dev`. It requires macOS 26 and arm64, with hardened
-runtime and exactly `com.apple.security.device.audio-input`. The helper alone
-has `NSMicrophoneUsageDescription`; it has no speech-recognition permission.
-The desktop application's entitlement gate is unchanged. Build with
+runtime and exactly `com.apple.security.device.audio-input`. Both the helper and the desktop app
+have `NSMicrophoneUsageDescription`; neither requests speech-recognition permission. Build with
 `build:dictation-helper`; packaged digest and entitlement checks retain its
 signature rather than signing it again through electron-builder.

@@ -1,9 +1,10 @@
 const { spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
-const { existsSync, lstatSync, readFileSync } = require("node:fs");
+const { existsSync, lstatSync, readFileSync, readdirSync } = require("node:fs");
 const { join } = require("node:path");
 const {
   desktopReleaseIdentity,
+  validateReleaseEntitlements,
   verifyPackagedMacReleaseIdentity,
 } = require("./macos-release-identity.cjs");
 const { shippedHarnessArtifactModes } = require("./harness-artifact-modes.cjs");
@@ -295,6 +296,7 @@ async function verifySignedDesktopContents(context) {
     }
   }
   verifyReleasePasswordsBroker(passwordsAppPath, passwordsWorkerPath, expectedTeamId);
+  verifyElectronHelperEntitlements(appPath);
   verifyPackagedMacReleaseIdentity(appPath, identity);
 }
 
@@ -516,3 +518,13 @@ function run(executable, arguments_, capture = false) {
   }
   return `${result.stdout ?? ""}${result.stderr ?? ""}`;
 }
+
+function verifyElectronHelperEntitlements(appPath, readEntitlements = signedEntitlements) {
+  const frameworks = join(appPath, "Contents", "Frameworks");
+  for (const entry of readdirSync(frameworks)) {
+    if (/ Helper(?: \(.*\))?\.app$/u.test(entry)) {
+      validateReleaseEntitlements(readEntitlements(join(frameworks, entry)));
+    }
+  }
+}
+module.exports.verifyElectronHelperEntitlements = verifyElectronHelperEntitlements;

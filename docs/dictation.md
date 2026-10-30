@@ -81,8 +81,8 @@ macOS 26 or newer. Electron main installs and starts it lazily through the
 signed-helper lifecycle; release and ad-hoc development builds have separate
 bundle identities, install roots and sockets.
 
-- Microphone consent belongs to the helper, launched through LaunchServices.
-  Opensteer itself holds no microphone grant.
+- Dictation microphone consent belongs to the helper, launched through LaunchServices.
+  Voice mode separately requests microphone consent for the Electron app.
 - Both socket peers authenticate with audit tokens and code requirements.
   Frames are bounded length-prefixed JSON
   ([`@opensteer/protocol/dictation-helper`](../packages/protocol/src/dictation-helper.ts)); a

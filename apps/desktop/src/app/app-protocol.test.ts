@@ -52,6 +52,9 @@ describe("Desktop app protocol", () => {
     expect(await document.text()).toContain("id=root");
     expect(document.headers.get("content-security-policy")).toContain("connect-src 'none'");
     expect(document.headers.get("content-security-policy")).toContain("object-src 'none'");
+    expect(document.headers.get("content-security-policy")).toContain("media-src 'none'");
+    expect(document.headers.get("permissions-policy")).toContain("microphone=(self)");
+    expect(document.headers.get("permissions-policy")).toContain("camera=()");
     expect(document.headers.get("cross-origin-opener-policy")).toBe("same-origin");
 
     const script = await handle(new Request(`${desktopAppEntryUrl}assets/app.js`));
