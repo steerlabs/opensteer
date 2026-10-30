@@ -1,146 +1,87 @@
-# Signed desktop update journeys
+# Certify a draft's actual Mac ZIP
 
-These on-demand journeys exercise electron-updater's GitHub provider for stable
-and Beta: app-menu restart, stable tray restart, ordinary quit, channel isolation,
-signer and downgrade refusal, health and data preservation.
-The mirror includes opposite-channel releases and a legacy stable decoy. Captures
-retain DNS plus client-to-server TCP HTTP/TLS flights, including fragmented
-ClientHello and SYN attempts, with positive controls through relaunch and idle.
-Bulk ZIP response traffic is excluded. Each interface records captured/received/
-dropped counts; missing counters or any drop fail the case. UDP/QUIC and encrypted
-DNS are not certified.
-Stable forbids Account traffic; Beta records it without signing in or enabling
-Connect. Both check for named public GitHub/Opensteer update hosts in guest-wide captures.
-This is not process-attributed destination enforcement: arbitrary external hosts
-and Apple OCSP/notarization requests are not covered by that assertion. Mirror
-request receipts and embedded provider configuration separately establish that
-the exercised feed, metadata and ZIP requests reached the mirror. Captures must have zero dropped packets.
+The release gate installs the CI practice draft itself. It never rebuilds N,
+rewrites its updater metadata or compares a locally rebuilt N with CI bytes.
+Publishing binds this receipt to the draft in the release workflow; this harness
+only reads drafts and records their exact assets.
 
-Everything that launches Electron, changes trust or drives UI runs in disposable
-`pnpm test:vm` clones. Set `OPENSTEER_UPDATE_JOURNEY_WORKERS=1` to run sequentially; the receipt records
-worker count, overall timestamps and each VM job’s phase timings.
-The runner compiles the AX test driver once on the host (without executing it),
-using the local module cache, then stages it through the read-only input share.
-The guest checks both source and binary hashes before running it; GUI control
-remains entirely inside the VM.
-The runner uses the existing two-guest queue and deletes
-owned clones after failures too. Nothing installs or launches an app on the host.
-No command here publishes releases or pushes a branch.
-
-## Prepare signed builds
-
-Use a clean committed checkout. Set an absolute physical output directory outside
-it, with no symlink components:
+From a clean public-main checkout with full history, Node/pnpm, Go, Tart and the
+local signing prerequisites:
 
 ```sh
-export OPENSTEER_UPDATE_JOURNEY_DIR=/absolute/journey-work
-node scripts/release-version.cjs FULL_SOURCE_SHA
+export OPENSTEER_UPDATE_JOURNEY_DIR=/absolute/physical/journey-work
+pnpm exec tsx scripts/public-download/eu-run.ts \
+  --draft v1.2.3-insider --expect-version 1.2.3 --expect-sha FULL_40_HEX_SOURCE_SHA \
+  --older v1.2.2-insider
 ```
 
-Certification is per source commit and channel. Choose two source commits whose
-derived versions increase, and build each in both channels. Full Git history is
-required. The build snapshot uses the workflow-owned `stampReleaseVersion`; its
-root manifest edit is never committed. `--version X.Y.Z` optionally asserts the
-expected derived version; it cannot invent a release version.
+The authenticated `gh` CLI must be able to read the draft. Intake checks draft
+status before and after download, the operator's version/source expectations,
+the release tool's manifest/channel/tag and exact asset set, every manifest hash
+and the complete `SHA256SUMS`. Downloaded assets stay under a fresh input directory.
+An insider draft runs Beta menu/refusals and ordinary quit only. A stable draft
+runs stable menu/refusals, tray restart and ordinary quit. Partial selections do
+not certify a release. Each passing case must report the SHA-256 of the N ZIP it
+actually extracted into the guest, matching the draft's recorded ZIP hash.
 
-```sh
-pnpm exec tsx scripts/public-download/build.ts --revision FULL_SHA --channel stable
-pnpm exec tsx scripts/public-download/build.ts --revision FULL_SHA --channel beta
-```
+N+1 uses one local path, `build-next.ts`: a throwaway root-version-only commit
+on the draft source, stamped by the workflow's release-version helper and built
+through `desktop:build-release`. It uses the existing local Agent Phone signing
+configuration/receipt stages and a signing **file** accepted by
+`apps/desktop/scripts/signing-input.cjs`, with the local Developer ID and its
+`notarizationProfile`. `package:mac` owns signing, notarization and stapling.
+Configure these with the [local build skill](../../.agents/skills/install-desktop/SKILL.md).
+The subject's pinned Xcode/SDK must be available; an unavailable toolchain or
+noninteractive signing failure stops the run. No keychains are created and no
+key material is exported. This task does not provision Xcode or bypass its pin.
+The scratch branch is local only and must never be pushed or merged.
 
-The build-only path reuses the repository's local-install configuration and Agent
-Phone signing/receipt stages. It uses the local Developer ID keychain and the
-`notarizationProfile` from `apps/desktop/scripts/signing-input.cjs` configuration
-(`OPENSTEER_DESKTOP_SIGNING_FILE`). Team identity is carried as validated journey
-metadata; no credentials enter guest metadata. Configure these as described in
-[signed local installation](../../.agents/skills/install-desktop/SKILL.md),
-or pass `--config /absolute/local-install.json`. Never export credentials or work
-around a noninteractive signing failure.
+On PASS, `journey.json` records `certifiedZipSha256`, the downloaded channel ZIP’s
+hash verified against the draft manifest. The final stdout lines print
+`certified_zip_sha256=<hash>` and the exact `gh workflow run release.yml` command
+for the operator, including `publish=true` and that hash. Failure prints neither.
+The harness never executes publication.
 
-Outputs stay under `$OPENSTEER_UPDATE_JOURNEY_DIR/builds/<sha>/<channel>/`.
-After successful final verification, the builder verifies the ZIP checksum and
-removes its source worktree, extracted app trees, compiled runtime and redundant
-raw APK. ZIPs, receipts, manifests, provenance and verification logs remain.
-Preparation runs the current release tool without depending on source snapshots.
-Existing completed build directories can be pruned the same way:
+`--older` names the downgrade payload, a signed bundle of the draft's channel
+below N. It is a release tag (published or draft), downloaded and verified like
+the draft, or an absolute local build directory that `build-next.ts` wrote, whose
+archive must still match its recorded checksum. Until the channel has an older
+release, only a local build exists, so a fresh machine can certify only once one
+does. The run verifies it before building N+1. It is never launched. The wrong-signer
+payload is an ad-hoc copy. Both native refusals must follow completed ZIP delivery
+and carry the matching classified reason (`signature` or `downgrade`). N remains
+healthy with its marker intact, followed by one genuine N→N+1 recovery.
 
-```sh
-pnpm exec tsx scripts/public-download/prune-builds.ts FULL_SHA [ANOTHER_FULL_SHA]
-```
+All app builds carry the public GitHub provider with no token or host override.
+Inside each disposable guest, a guest-trusted CA covers github.com,
+api.github.com and both GitHub asset CDN hosts, mapped to loopback. The mirror
+requires `Accept: application/json` for public Latest, serves Atom with legacy
+and opposite-channel decoys, and redirects downloads cross-origin with range
+support. API-host attempts fail the case. Requests must use the mirror's actual
+loopback socket addresses and include the expected feed, channel metadata and
+completed ZIP transfers.
 
-Each app carries the reserved `github.opensteer.test` provider override, is signed,
-notarized, stapled and zipped with `ditto -c -k --sequesterRsrc --keepParent`.
-Preparation extracts each final zip only to verify owner-write permissions, then
-cleans the extraction. The real release tool verifies identity, signature, staple
-and Gatekeeper; its verification output and archive hashes are retained:
+PF is installed before the first app launch and held through update, relaunch,
+idle and capture shutdown. It blocks all non-loopback IPv4/IPv6 traffic, including
+UDP, encrypted DNS and external proxies. The sole off-loopback exception is the
+existing SSH connection’s exact address/port four-tuple. Proxy settings
+and proxy environment must be absent. An external-address negative control must
+increment the PF deny counter; PF must remain enabled with identical rules until
+measurement finishes. The guest restores its disabled PF configuration afterward.
+If the control connection or the run ends first (a cancellation or the suite
+timeout), a detached root watchdog restores it, so evidence export still connects.
+No host firewall or trust settings are touched.
 
-```sh
-pnpm exec tsx scripts/public-download/eu-prepare.ts FULL_N_SHA FULL_NEXT_SHA FULL_OLDER_FIXTURE_SHA
-```
+DNS/HTTP Host/TLS SNI capture and the Account sinkhole have positive controls;
+both capture interfaces must report zero dropped packets. Stable forbids any
+Account-host attempt, including failed ones. Beta records Account attempts as
+informational, without signing in or enabling Connect. PF containment covers all
+guest processes and protocols; capture supplies named-host and mirror evidence.
 
-## Run and inspect
-
-Use the input directory printed by preparation:
-
-```sh
-pnpm exec tsx scripts/public-download/eu-run.ts /absolute/prepared-inputs
-```
-
-An optional comma-separated selection follows it, such as
-`stable:menu,beta:menu`. Menu cases include equal/channel isolation, wrong-signer
-refusal and misleading-metadata downgrade refusal while N stays healthy, then
-one genuine N→N+1 recovery. The downgrade fixture is an older, genuinely signed
-bundle of the same channel, with its archive hash verified. Preparation requires
-`older < N < N+1`; reuse an existing signed older build rather than resetting a
-newer app or its Personal runtime backward.
-The default set has five clones: both menu cases, stable tray, and both quit cases.
-Each case uses a fresh clone and a short-lived guest-trusted CA. Archives are checksum-verified and extracted directly
-into the guest's Applications directory without removing quarantine or disabling
-assessment. These journeys qualify updates; installer and quarantined
-browser-download acceptance are separate flows.
-
-`$OPENSTEER_UPDATE_JOURNEY_DIR/e2e/<run-id>/journey.json` records all four archive
-hashes and per-case results. Each case includes the VM receipt, timings,
-codesign/stapler output, native refusal logs, ordered child-exit observer,
-marker check, screenshots, traffic captures and ShipIt/updater logs. Missing
-receipts and incomplete captures fail the run. The VM's original run directory
-also retains its evidence.
-
-The journey waits for the real restart menu but does not claim to distinguish a
-finished download from native staging. The updater unit test owns the event-source
-contract. Negative cases require a fully delivered fixture followed by a validated
-`desktop.update.failed` event whose classified `reason` matches `signature` or
-`downgrade`. Generic failures, `other`, missing reasons and earlier events fail.
-These fixed classifications are the product contract for native Squirrel causes;
-no raw URL-bearing native error text is required.
-
-For a pre-merge rehearsal, append the complete selection and `--rehearsal`:
-
-```sh
-pnpm exec tsx scripts/public-download/eu-run.ts /absolute/prepared-inputs \
-  stable:menu,beta:menu,stable:tray,stable:quit,beta:quit --rehearsal
-```
-
-The receipt is marked `rehearsal` and the CI bridge refuses it. Release gate
-evidence must be rebuilt and rerun from the merged main source commit.
-
-## Bridge to a CI archive
-
-After downloading a draft asset separately, compare it to the locally certified
-ZIP from the same source commit and channel:
-
-```sh
-pnpm exec tsx scripts/public-download/compare-release-bytes.ts \
-  --ci /absolute/ci.zip --local /absolute/certified.zip --channel beta \
-  --certification /absolute/journey.json --out /absolute/comparison.json
-```
-
-This gate never launches either app. It extracts temporarily, checks both apps'
-strict signatures, notarized Gatekeeper acceptance and staples, and compares
-source, versions, designated requirements, TeamIdentifiers, hardened runtime and
-entitlements for the main app, nested apps and Mach-O executables (including universal helpers). Temporary
-extractions are removed on success or failure. This is signing-policy parity,
-not byte-for-byte equality: the host override, signatures and notarization differ.
-No GitHub identities or CI receipts are fabricated. A comparison is valid only
-with the referenced passing per-commit journey; legacy prepared fixtures reused
-for harness regression testing do not certify a newer source commit.
+Artifacts live under `$OPENSTEER_UPDATE_JOURNEY_DIR/e2e/<run>/journey.json` and
+the VM run directories: draft provenance/hashes, installed hash per case, identity
+and signature checks, native updater/ShipIt logs, ordered supervised child exits
+before bundle swap, marker/health/About checks, PF rules/counters, network
+captures and window screenshots. The runner uses the existing two-guest queue
+(`OPENSTEER_UPDATE_JOURNEY_WORKERS=1` selects sequential execution). It stops its
+processes and deletes its clones on failure too. No command pushes or publishes.

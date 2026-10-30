@@ -1,5 +1,6 @@
+import assert from "node:assert/strict";
 /** Build only: deliberately imports no install, stage or launch entry point. */
-import { readFile, mkdir, writeFile, access } from "node:fs/promises";
+import { readFile, mkdir, writeFile, access, copyFile } from "node:fs/promises";
 import { journeyWorkDirectory } from "./work-directory.js";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -8,22 +9,23 @@ import { z } from "zod";
 import { createRequire } from "node:module";
 import { journeySigning } from "./signing.js";
 import { createHash } from "node:crypto";
-import { pruneCompletedBuild } from "./build-cleanup.js";
+import { commandEvidence, pruneCompletedBuild } from "./build-cleanup.js";
+import { compareStableVersions } from "../engines.js";
 import { numericVersion } from "./evidence.js";
-import { buildAgentPhoneRelease, preflightAgentPhone } from "../release-agent-phone.js";
-import { localInstallConfigSchema } from "../install-beta-mac-local.js";
 import {
-  buildSignedMac,
-  submitMacArchiveForNotarization,
-  type MacContext,
-} from "../release-beta-mac.js";
+  buildAgentPhoneRelease,
+  preflightAgentPhone,
+  stageAgentPhoneRelease,
+} from "../release-agent-phone.js";
+import { localInstallConfigSchema } from "../install-beta-mac-local.js";
 import { acquireReleaseLock, runBounded, timedCommands } from "../command-runner.js";
 
 const { values } = parseArgs({
   options: {
     revision: { type: "string" },
     version: { type: "string" },
-    "github-host": { type: "string" },
+    "base-sha": { type: "string" },
+    "base-version": { type: "string" },
     channel: { type: "string", default: "stable" },
     config: { type: "string" },
   },
@@ -33,9 +35,12 @@ const revision = z
   .regex(/^[a-f0-9]{40}$/u)
   .parse(values.revision);
 const channel = z.enum(["stable", "beta"]).parse(values.channel);
-const githubHost = values["github-host"] ?? "github.opensteer.test";
-if (githubHost !== "github.opensteer.test") throw new Error("Use the journey's reserved test host");
-const feed = `https://${githubHost}/steerlabs/opensteer#${channel === "stable" ? "latest" : "insider"}`;
+const baseSha = z
+  .string()
+  .regex(/^[a-f0-9]{40}$/u)
+  .parse(values["base-sha"]);
+const baseVersion = numericVersion.parse(values["base-version"]);
+const feed = `https://github.com/steerlabs/opensteer#${channel === "stable" ? "latest" : "insider"}`;
 process.env.OPENSTEER_DESKTOP_SIGNING_FILE ??= path.join(
   homedir(),
   ".config/opensteer/desktop-signing.json",
@@ -52,12 +57,6 @@ const config = localInstallConfigSchema.parse(
     ),
   ),
 );
-const mac = {
-  ...config.mac,
-  signingIdentity: signing.identity,
-  keychainProfile: signing.notarizationProfile,
-  keychain: signing.keychain,
-};
 const stop = new AbortController();
 const interrupt = () => stop.abort(new Error("Build interrupted"));
 process.once("SIGINT", interrupt);
@@ -68,7 +67,7 @@ const phoneArtifacts = path.join(directory, "agent-phone");
 const run = (
   exe: string,
   args: readonly string[],
-  options: Parameters<MacContext["run"]>[2] = {},
+  options: Parameters<typeof runBounded>[2] = {},
 ) =>
   timed(exe, args, {
     ...options,
@@ -79,9 +78,8 @@ const run = (
       OPENSTEER_DESKTOP_SIGNING_FILE:
         process.env.OPENSTEER_DESKTOP_SIGNING_FILE ??
         path.join(homedir(), ".config/opensteer/desktop-signing.json"),
-      OPENSTEER_DESKTOP_UPDATE_GITHUB_HOST: githubHost,
-      OPENSTEER_PERSONAL_RUNTIME_POSTGRES_SOURCE: config.runtimeInputs.postgres,
-      OPENSTEER_PERSONAL_RUNTIME_NODE_SOURCE: config.runtimeInputs.node,
+      OPENSTEER_PASSWORDS_PROVISIONING_PROFILE: config.mac.passwordsProvisioningProfile,
+      OPENSTEER_DESKTOP_DEFER_NOTARIZATION: undefined,
     },
   });
 const started = Date.now();
@@ -97,6 +95,30 @@ try {
     await run("git", ["worktree", "add", "--detach", source, revision], { cwd: root });
   if ((await run("git", ["rev-parse", "HEAD"], { cwd: source })) !== revision)
     throw new Error("Frozen build source changed");
+  assert.equal(
+    await run("git", ["rev-parse", "HEAD^"], { cwd: source }),
+    baseSha,
+    "N+1 must be a direct scratch bump",
+  );
+  assert.equal(
+    await run("git", ["diff", "--name-only", baseSha, revision], { cwd: source }),
+    "package.json",
+  );
+  const parent = z
+    .record(z.string(), z.unknown())
+    .parse(JSON.parse(await run("git", ["show", `${baseSha}:package.json`], { cwd: source })));
+  const bumped = z
+    .record(z.string(), z.unknown())
+    .parse(JSON.parse(await readFile(path.join(source, "package.json"), "utf8")));
+  assert(
+    compareStableVersions(numericVersion.parse(bumped.version), baseVersion) > 0,
+    "Scratch version must advance the draft",
+  );
+  assert.deepEqual(
+    { ...bumped, version: parent.version },
+    parent,
+    "Scratch commit may change only root version",
+  );
   const helperPath = path.join(source, "scripts/release-version.cjs");
   const { deriveReleaseVersion, stampReleaseVersion } = createRequire(import.meta.url)(
     helperPath,
@@ -104,33 +126,42 @@ try {
   const version = numericVersion.parse(
     values.version ?? deriveReleaseVersion({ repositoryRoot: source, revision }),
   );
+  assert(compareStableVersions(version, baseVersion) > 0);
   stampReleaseVersion(source, revision, version);
   await run("pnpm", ["install", "--frozen-lockfile", "--prefer-offline"], {
     cwd: source,
     timeoutMs: 300_000,
   });
-  const context: MacContext = {
+  const phone = {
     sourceDirectory: source,
-    stateDirectory: directory,
+    artifactDirectory: phoneArtifacts,
     identity: { sourceRevision: revision, version },
     signal: stop.signal,
     run,
-    runtimeInputs: config.runtimeInputs,
-    agentPhoneSigning: config.agentPhone,
-    agentPhoneArtifactDirectory: phoneArtifacts,
-    prepareAgentPhone: async (signal) => {
-      const phone = {
-        sourceDirectory: source,
-        artifactDirectory: phoneArtifacts,
-        identity: { sourceRevision: revision, version },
-        signal,
-        run,
-      };
-      await preflightAgentPhone(config.agentPhone, phone);
-      return buildAgentPhoneRelease(config.agentPhone, phone);
-    },
   };
-  await buildSignedMac(mac, context, channel);
+  await preflightAgentPhone(config.agentPhone, phone);
+  const phoneReceipt = await buildAgentPhoneRelease(config.agentPhone, phone);
+  await stageAgentPhoneRelease(
+    config.agentPhone,
+    phone,
+    phoneReceipt,
+    path.join(source, "apps/desktop/generated-resources/agent-phone"),
+  );
+  const scratch = path.join(directory, "ci-build");
+  await run("pnpm", ["desktop:build-release", "--out", scratch], {
+    cwd: source,
+    timeoutMs: 45 * 60_000,
+    outputFile: path.join(directory, "ci-build.log"),
+    env: {
+      OPENSTEER_DESKTOP_RELEASE_CHANNEL: channel,
+      OPENSTEER_RELEASE_VERSION: version,
+      OPENSTEER_SOURCE_REVISION: revision,
+    },
+  });
+  await copyFile(
+    path.join(scratch, "build-inputs.json"),
+    path.join(directory, "build-inputs.json"),
+  );
   const app = path.join(
     source,
     channel === "beta"
@@ -146,33 +177,31 @@ try {
   );
   const ownerWrite = await run("find", [app, "!", "-perm", "-u+w"]);
   if (ownerWrite) throw new Error(`Bundle entries lack owner-write: ${ownerWrite}`);
-  const archive = () =>
-    run("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", app, zip], {
-      timeoutMs: 300_000,
-    });
-  await archive();
-  const notary = await submitMacArchiveForNotarization(mac, context, zip);
-  if (z.object({ status: z.string() }).parse(JSON.parse(notary)).status !== "Accepted")
-    throw new Error("Notarization refused");
-  await writeFile(path.join(directory, "notary.json"), notary);
   const evidence: Record<string, string> = {};
-  evidence.staple = await run("/usr/bin/xcrun", ["stapler", "staple", app]);
-  evidence.stapler = await run("/usr/bin/xcrun", ["stapler", "validate", app]);
-  evidence.codesign = await run("/usr/bin/codesign", [
+  const record = (name: string, exe: string, args: readonly string[]) =>
+    commandEvidence(run, path.join(directory, `${name}.log`), exe, args);
+  evidence.stapler = await record("stapler-validate", "/usr/bin/xcrun", [
+    "stapler",
+    "validate",
+    app,
+  ]);
+  evidence.codesign = await record("codesign-verify", "/usr/bin/codesign", [
     "--verify",
     "--deep",
     "--strict",
     "--verbose=2",
     app,
   ]);
-  evidence.spctl = await run("/usr/sbin/spctl", [
+  evidence.spctl = await record("spctl-assess", "/usr/sbin/spctl", [
     "--assess",
     "--type",
     "execute",
     "--verbose=4",
     app,
   ]);
-  await archive();
+  await run("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", app, zip], {
+    timeoutMs: 300_000,
+  });
   await writeFile(
     path.join(directory, "build.json"),
     JSON.stringify(

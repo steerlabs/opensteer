@@ -1,3 +1,4 @@
+import { browserProfileCheckpointHeader } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { HttpBrowserProfileStateClient } from "./profile-state-client.js";
 import { validProfileClaims } from "./test-support/fakes.js";
@@ -40,6 +41,21 @@ describe("HttpBrowserProfileStateClient", () => {
         },
         method: "PUT",
         redirect: "error",
+      }),
+    );
+  });
+
+  it("marks periodic commits without changing the strict request body", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ revision: 2 }));
+    const client = new HttpBrowserProfileStateClient({ fetch });
+    await client.commit(validProfileClaims(), 1, { cookies: [], origins: [] }, true);
+    expect(fetch).toHaveBeenCalledWith(
+      expect.any(URL),
+      expect.objectContaining({
+        headers: expect.objectContaining({ [browserProfileCheckpointHeader]: "periodic" }),
+        body: JSON.stringify({ expectedRevision: 1, snapshot: { cookies: [], origins: [] } }),
       }),
     );
   });

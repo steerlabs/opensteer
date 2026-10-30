@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { SurfaceLedger } from "@opensteer/browser-runtime-core";
 import { validClaims } from "@opensteer/browser-runtime-core/test-support";
 import { BrowserFaviconSchema, browserFaviconMaxBytes } from "@opensteer/protocol/browser";
@@ -36,6 +36,8 @@ it("resolves and refreshes real page icons as decodable bounded rasters", async 
   const active = ledger.active();
   if (!active) throw new Error("Expected a live page.");
   const pendingCommands = new Set<Promise<unknown>>();
+  let privateFetches = 0;
+  let privateAcquisitionFinished = false;
   let iconEvaluations = 0;
   let maximumIconEvaluations = 0;
   let rejectSetup: "binding" | "bootstrap" | null = null;
@@ -51,6 +53,14 @@ it("resolves and refreshes real page icons as decodable bounded rasters", async 
       return Promise.reject(new Error("Injected transient favicon setup failure."));
     }
     const operation = send<Result>(method, parameters);
+    if (method === "Network.disable" && privateFetches >= 2) {
+      void operation.then(
+        () => {
+          privateAcquisitionFinished = true;
+        },
+        () => undefined,
+      );
+    }
     const iconEvaluation =
       method === "Runtime.evaluate" &&
       String(parameters?.expression).startsWith("globalThis.iconOwner.");
@@ -110,7 +120,10 @@ it("resolves and refreshes real page icons as decodable bounded rasters", async 
   const fetches: string[] = [];
   active.cdp.on("Network.requestWillBeSent", (value: unknown) => {
     const event = value as { type?: string; request?: { url?: string } };
-    if (event.type === "Fetch" && event.request?.url) fetches.push(event.request.url);
+    if (event.type === "Fetch" && event.request?.url) {
+      fetches.push(event.request.url);
+      if (event.request.url.endsWith("/private.svg")) privateFetches++;
+    }
   });
   const cdn = createServer((request, response) => {
     if (request.url === "/red.png" || request.url === "/red.ico")
@@ -480,12 +493,16 @@ it("resolves and refreshes real page icons as decodable bounded rasters", async 
     await waitForBrowserState(
       () => fetches.filter((url) => url === `${origin}/private.svg`).length >= 2,
     );
-    await settleCommands();
-    const cooldown = Date.now() + 5_100;
-    await waitForBrowserState(() => Date.now() >= cooldown);
+    await waitForBrowserState(() => privateAcquisitionFinished);
     privateReady = true;
     await active.cdp.send("Network.setCookie", { name: "session", value: "yes", url: origin });
-    await ledger.refresh(active.surface.id);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 5_001);
+    try {
+      await ledger.refresh(active.surface.id);
+    } finally {
+      clock.mockRestore();
+    }
     await check("credentialed-retry", [0, 0, 255]);
     await active.cdp.send("Emulation.setEmulatedMedia", {
       features: [{ name: "prefers-color-scheme", value: "light" }],

@@ -34,9 +34,12 @@ on:
         description: Published insider tag to rebuild as stable
         type: string
       publish:
-        description: Publish insider (false stops at draft; stable uses approval)
+        description: Publish the draft (false stops at draft; stable also needs approval)
         type: boolean
         default: false
+      certified_zip_sha256:
+        description: The update journey's certified zip sha256 (required when publish=true)
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -60,6 +63,10 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       superseded: ${{ steps.resolve.outputs.superseded }}
     steps:
+      - if: ${{ inputs.publish && inputs.certified_zip_sha256 == '' }}
+        run: |
+          echo "::error::certified_zip_sha256 is required when publish=true"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: main
@@ -103,10 +110,11 @@ jobs:
   build:
     needs: [preflight, discover]
     if: needs.discover.outputs.skip == 'false' && needs.discover.outputs.reuse == 'false'
-    runs-on: macos-15
+    runs-on: macos-26
     environment: release
     timeout-minutes: 90
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       OPENSTEER_DESKTOP_RELEASE_CHANNEL: ${{ needs.preflight.outputs.channel }}
       OPENSTEER_DESKTOP_TARGET_ARCH: arm64
       OPENSTEER_RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
@@ -140,6 +148,39 @@ jobs:
           test "$(uname -m)" = arm64
           pnpm install --frozen-lockfile
           node -e 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.env.OPENSTEER_SOURCE_REVISION, process.env.OPENSTEER_RELEASE_VERSION)'
+      - name: Fingerprint release cache inputs
+        id: release-cache
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-version
+          xcrun clang++ --version
+          { xcodebuild -version; xcrun --show-sdk-version; xcrun clang++ --version; swift --version; uname -m; sw_vers; } > "$RUNNER_TEMP/release-toolchain"
+          echo "toolchain=$(shasum -a 256 "$RUNNER_TEMP/release-toolchain" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "swift=$(git ls-tree -r HEAD -- apps/desktop/native apps/desktop/scripts packages scripts/generate-apple-data-contracts.ts package.json pnpm-lock.yaml | shasum -a 256 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          java -version 2> "$RUNNER_TEMP/release-java"
+          echo "java=$(shasum -a 256 "$RUNNER_TEMP/release-java" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      # No restore prefixes: PR caches and other toolchains cannot supply release products.
+      - name: Cache unsigned PostgreSQL distribution
+        id: postgres-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/macos-build/postgres
+          key: release-only-postgres-v1-${{ runner.arch }}-${{ steps.release-cache.outputs.toolchain }}-${{ hashFiles('scripts/build-desktop-macos.ts', '.github/workflows/release.yml') }}
+      - name: Cache release SwiftPM objects
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            apps/desktop/native/computer-use/.build
+            apps/desktop/native/passwords/.build
+            apps/desktop/native/dictation/.build
+          key: release-only-swift-v1-${{ runner.arch }}-${{ steps.release-cache.outputs.toolchain }}-${{ steps.release-cache.outputs.swift }}
+      - name: Cache Gradle dependencies for releases
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: release-only-gradle-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.release-cache.outputs.java }}-${{ hashFiles('apps/agent-phone/**', 'scripts/build-agent-phone.ts', '.github/workflows/release.yml') }}
       - name: Build signed Agent Phone
         env:
           KEYSTORE_BASE64: ${{ secrets.OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64 }}
@@ -153,10 +194,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release-keys"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$OPENSTEER_AGENT_PHONE_KEYSTORE"
           pnpm build:agent-phone --release
-      - name: Select Xcode 26 SDK
-        run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
       - name: Sign, notarize and staple desktop
         env:
+          OPENSTEER_RELEASE_POSTGRES_CACHE_HIT: ${{ steps.postgres-cache.outputs.cache-hit }}
           CERTIFICATE_BASE64: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -247,9 +287,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Publishing tooling comes from this run's commit, not the release source, so a
+      # source that predates a publisher flag can still be published. The publisher
+      # verifies the draft against the source preflight resolved.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ needs.preflight.outputs.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -260,18 +303,23 @@ jobs:
       - env:
           GITHUB_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
-        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG"
+          SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
+          CERTIFIED_ZIP_SHA256: ${{ inputs.certified_zip_sha256 }}
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA" --certified-zip-sha256="$CERTIFIED_ZIP_SHA256"
   publish-stable:
     needs: [preflight, discover, draft]
-    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'stable' && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'stable' && inputs.publish && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
     runs-on: ubuntu-latest
     environment: publish
     permissions:
       contents: write
     steps:
+      # Publishing tooling comes from this run's commit, not the release source, so a
+      # source that predates a publisher flag can still be published. The publisher
+      # verifies the draft against the source preflight resolved.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ needs.preflight.outputs.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -282,4 +330,6 @@ jobs:
       - env:
           GITHUB_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
-        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG"
+          SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
+          CERTIFIED_ZIP_SHA256: ${{ inputs.certified_zip_sha256 }}
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA" --certified-zip-sha256="$CERTIFIED_ZIP_SHA256"

@@ -362,6 +362,7 @@ export async function commitBrowserProfileRevision(
     readonly ciphertext: Uint8Array;
     readonly ciphertextSha256: string;
     readonly expectedRevision: number;
+    readonly periodic?: boolean;
     readonly profileId: BrowserProfileId;
   },
 ): Promise<BrowserProfileRevisionRecord> {
@@ -416,7 +417,7 @@ export async function commitBrowserProfileRevision(
       .execute();
     // A session may end during this checkpoint. Release grace only for the rows
     // locked before the profile, never acquire a new session lock underneath it.
-    if (closingSessions.length > 0)
+    if (!input.periodic && closingSessions.length > 0)
       await transaction
         .updateTable("browserSessions")
         .set({ profileLeaseExpiresAt: new Date(), updatedAt: new Date() })
@@ -1716,7 +1717,7 @@ export async function transitionBrowserSession(
       // A session ends cleanly or because its Runtime's connection dropped; in
       // both the Runtime may hold newer profile state than the vault, so its
       // lease outlives the session long enough to hand that state back, as it
-      // does when the Host restarts. Its first commit ends the grace early.
+      // does when the Host restarts. Its final commit ends the grace early.
       const profileLeaseExpiresAt =
         input.state === "closed" || input.state === "failed"
           ? new Date(now.getTime() + browserProfileCheckpointGraceMs)

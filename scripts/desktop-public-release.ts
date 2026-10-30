@@ -47,7 +47,7 @@ const absolutePath = z
     "Use a normalized absolute non-root path",
   );
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
-function assetsFor(channel: Channel): string[] {
+export function assetsFor(channel: Channel): string[] {
   const config = channelConfig(channel);
   return [
     config.zip,
@@ -98,7 +98,7 @@ export const manifestSchema = z
   });
 type Manifest = z.infer<typeof manifestSchema>;
 type Run = typeof runBounded;
-const releaseSchema = z.object({
+export const releaseSchema = z.object({
   id: z.number().int(),
   draft: z.boolean(),
   prerelease: z.boolean(),
@@ -295,13 +295,16 @@ export async function prepare(
   }
 }
 
-async function verifyAssets(dir: string, manifest: Manifest) {
+export async function verifyAssets(dir: string, manifest: Manifest) {
   for (const name of Object.keys(manifest.assets)) {
     if ((await sha256File(path.join(dir, name))) !== manifest.assets[name])
       throw new Error(`Asset differs: ${name}`);
   }
 }
-function releaseManifest(release: z.infer<typeof releaseSchema>, manifest: Manifest): Manifest {
+export function releaseManifest(
+  release: z.infer<typeof releaseSchema>,
+  manifest: Manifest,
+): Manifest {
   if (
     release.body !== manifest.notes ||
     release.tag_name !== manifest.tag ||
@@ -322,7 +325,7 @@ function checkChannel(manifest: Manifest, channel?: string) {
     throw new Error("Requested channel disagrees with release.json channel");
 }
 
-function publicGuard(repo: string, manifest: Manifest) {
+export function publicGuard(repo: string, manifest: Manifest) {
   if (
     repo.toLowerCase() === "steerlabs/opensteer" &&
     (manifest.privateFeed || manifest.feedURL !== channelConfig(manifest.channel).feed)
@@ -411,7 +414,15 @@ export async function publish(
   repoInput: string,
   tagInput: string,
   run: Run = runBounded,
-  channel?: string,
+  {
+    channel,
+    sourceSha,
+    certifiedZipSha256,
+  }: {
+    channel?: string | undefined;
+    sourceSha?: string | undefined;
+    certifiedZipSha256?: string | undefined;
+  } = {},
 ) {
   const repo = repoSchema.parse(repoInput);
   const tag = tagSchema.parse(tagInput);
@@ -422,6 +433,20 @@ export async function publish(
   releaseManifest(release, manifest);
   checkChannel(manifest, channel);
   publicGuard(repo, manifest);
+  // The workflow runs this publisher from its own commit, not the release source,
+  // so it names the source it resolved instead of trusting the draft's claim.
+  if (sourceSha !== undefined && manifest.sourceSha !== sourceSha)
+    throw new Error("Draft was built from another source");
+  // The update journey certifies one exact zip. verifyDraftAssets has just checked
+  // the freshly downloaded zip against the manifest, so comparing the manifest's
+  // hash refuses a later swap even when release.json and SHA256SUMS were rewritten.
+  if (certifiedZipSha256 === undefined) {
+    if (manifest.channel === "stable")
+      throw new Error("Stable publication requires the certified zip sha256");
+  } else if (
+    manifest.assets[channelConfig(manifest.channel).zip] !== hashSchema.parse(certifiedZipSha256)
+  )
+    throw new Error("Draft zip is not the certified build");
   // Installers and updaters follow Latest immediately, so nothing becomes public
   // until the draft's stored bytes match its manifest. A rerun after publication
   // only repeats the anonymous check below.
@@ -487,6 +512,7 @@ export async function main(args = process.argv.slice(2)) {
       dir: { type: "string" },
       repo: { type: "string" },
       tag: { type: "string" },
+      "certified-zip-sha256": { type: "string" },
     },
   });
   const required = (key: keyof typeof values) => z.string().min(1).parse(values[key]);
@@ -504,7 +530,11 @@ export async function main(args = process.argv.slice(2)) {
   else if (subcommand === "draft")
     await draft(required("dir"), required("repo"), runBounded, values.channel);
   else if (subcommand === "publish")
-    await publish(required("repo"), required("tag"), runBounded, values.channel);
+    await publish(required("repo"), required("tag"), runBounded, {
+      channel: values.channel,
+      sourceSha: values["source-sha"] || undefined,
+      certifiedZipSha256: values["certified-zip-sha256"] || undefined,
+    });
   else throw new Error("Usage: desktop:public-release prepare|draft|publish [options]");
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

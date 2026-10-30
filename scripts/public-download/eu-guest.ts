@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { verifyAXDriver } from "./ax-driver-artifact.js";
 import { journeyMetadata, journeyInput } from "./evidence.js";
-import { forbiddenPublicUpdateHosts } from "./update-traffic.js";
+import { validateMirrorRequests } from "./update-traffic.js";
+import { containGuest } from "./containment.js";
+import { parse as parseYaml } from "yaml";
+import { draftReceipt } from "./draft.js";
 import { githubJourney } from "./eu-journey.js";
 import { personalEndpoint } from "./personal-endpoint.js";
 import { captureTraffic } from "./traffic.js";
@@ -23,7 +26,12 @@ const bundleId =
   githubChannel === "beta" ? "com.steerlabs.opensteer.beta" : "com.opensteer.opensteer";
 process.env.OPENSTEER_JOURNEY_BUNDLE_ID = bundleId;
 const scenario = z.enum(["eu-menu", "eu-tray", "eu-quit"]).parse(process.argv[2]);
-const input = journeyInput.parse(JSON.parse(readFileSync(path.join(share, "input.json"), "utf8")));
+const inputBytes = JSON.parse(readFileSync(path.join(share, "input.json"), "utf8"));
+const input = journeyInput.parse(inputBytes);
+const draft = draftReceipt.parse(inputBytes.draft);
+assert.equal(draft.channel, githubChannel);
+assert.equal(input.n.version, draft.version);
+assert.equal(input.n.revision, draft.sourceSha);
 const out = path.join(homedir(), "opensteer-job/artifacts/public-download");
 const root = path.join(homedir(), "public-download-mirror");
 mkdirSync(out, { recursive: true });
@@ -113,14 +121,20 @@ const verify = async (version: string, target = app) => {
   assert.equal(plist("CFBundleVersion", target), version);
   assert.equal(
     plist("OpensteerUpdateFeed", target),
-    `https://github.opensteer.test/steerlabs/opensteer#${githubChannel === "stable" ? "latest" : "insider"}`,
+    `https://github.com/steerlabs/opensteer#${githubChannel === "stable" ? "latest" : "insider"}`,
   );
   assert.equal(plist("ElectronSquirrelPreventDowngrades", target), "true");
-  const policy = readFileSync(path.join(target, "Contents/Resources/app-update.yml"), "utf8");
-  assert(
-    policy.includes(githubChannel === "stable" ? "opensteer-updater" : "opensteer-beta-updater"),
-  );
-  assert(policy.includes("github.opensteer.test"));
+  const policy = z
+    .strictObject({
+      provider: z.literal("github"),
+      owner: z.literal("steerlabs"),
+      repo: z.literal("opensteer"),
+      updaterCacheDirName: z.literal(
+        githubChannel === "stable" ? "opensteer-updater" : "opensteer-beta-updater",
+      ),
+    })
+    .parse(parseYaml(readFileSync(path.join(target, "Contents/Resources/app-update.yml"), "utf8")));
+  assert.equal(policy.provider, "github");
   assert.equal(
     plist("OpensteerSourceRevision", target),
     version === input.n.version ? input.n.revision : input.next.revision,
@@ -161,6 +175,9 @@ let updateObserver: ReturnType<typeof spawn> | undefined;
 let error: string | undefined;
 let finishCapture: Awaited<ReturnType<typeof captureTraffic>> | undefined;
 let trafficSince = 0;
+let installedSha256: string | undefined;
+let releaseContainment: ReturnType<typeof containGuest> | undefined;
+let containmentPassed = false;
 try {
   run("csrutil", ["status"]);
   run("sudo", ["spctl", "--global-enable"]);
@@ -174,14 +191,14 @@ try {
   cpSync(driver, path.join(out, "ax-driver"));
   writeFileSync(path.join(out, "ax-driver.json"), JSON.stringify(driverManifest, null, 2));
   sh(
-    "echo '127.0.0.1 github.opensteer.test objects.opensteer.test' | sudo tee -a /etc/hosts; sudo mkdir -p /etc/resolver; printf 'nameserver 127.0.0.1\n' | sudo tee /etc/resolver/opensteer.com",
+    "echo '127.0.0.1 github.com api.github.com objects.githubusercontent.com release-assets.githubusercontent.com' | sudo tee -a /etc/hosts; sudo mkdir -p /etc/resolver; printf 'nameserver 127.0.0.1\n' | sudo tee /etc/resolver/opensteer.com",
   );
   const cert = path.join(root, "cert.pem"),
     key = path.join(root, "key.pem");
   const opensslConfig = path.join(root, "openssl.cnf");
   writeFileSync(
     opensslConfig,
-    "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=Opensteer private journey CA\n[ext]\nsubjectAltName=DNS:github.opensteer.test,DNS:objects.opensteer.test\nbasicConstraints=critical,CA:TRUE\n",
+    "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=Opensteer private journey CA\n[ext]\nsubjectAltName=DNS:github.com,DNS:api.github.com,DNS:objects.githubusercontent.com,DNS:release-assets.githubusercontent.com\nbasicConstraints=critical,CA:TRUE\n",
   );
   run("openssl", [
     "req",
@@ -246,7 +263,9 @@ try {
     () =>
       spawnSync("curl", [
         "-fsSL",
-        "https://github.opensteer.test/api/v3/repos/steerlabs/opensteer/releases/latest",
+        "-H",
+        "Accept: application/json",
+        "https://github.com/steerlabs/opensteer/releases/latest",
       ]).status === 0,
     20,
   );
@@ -270,6 +289,7 @@ try {
   );
   writeFileSync(path.join(out, "positive-control.jsonl"), controlLog);
   writeFileSync(log, "");
+  releaseContainment = containGuest(out, run);
   trafficSince = Date.now() / 1000;
   await githubJourney({
     channel: githubChannel,
@@ -295,31 +315,49 @@ try {
       updateObserver = child;
     },
     record: (name, output) => steps.push({ name, output, seconds: 0, passed: true }),
+    installed: (hash) => {
+      installedSha256 = hash;
+      assert.equal(
+        hash,
+        draft.assets[
+          githubChannel === "stable" ? "Opensteer-mac-arm64.zip" : "Opensteer-Beta-mac-arm64.zip"
+        ],
+      );
+    },
   });
   await delay(60_000);
 } catch (e) {
   error = e instanceof Error ? e.stack : String(e);
   process.exitCode = 1;
 } finally {
-  if (updateObserver && updateObserver.exitCode === null && updateObserver.signalCode === null) {
-    const done = new Promise<void>((resolve) => updateObserver!.once("close", () => resolve()));
-    updateObserver.kill("SIGTERM");
-    await done;
+  // Teardown failures are recorded, never thrown: PF must be released below, or the
+  // VM runner's export connection is blocked and the evidence is lost.
+  let network = "";
+  try {
+    if (updateObserver && updateObserver.exitCode === null && updateObserver.signalCode === null) {
+      const done = new Promise<void>((resolve) => updateObserver!.once("close", () => resolve()));
+      updateObserver.kill("SIGTERM");
+      await done;
+    }
+    if (running()) run("osascript", ["-e", `tell application "${product}" to quit`], true);
+    if (mirror?.pid) {
+      run("sudo", ["pkill", "-TERM", "-P", String(mirror.pid)], true);
+      mirror.kill("SIGTERM");
+      if (mirror.exitCode === null && mirror.signalCode === null)
+        await new Promise<void>((resolve) => mirror!.once("close", () => resolve()));
+    }
+    const shipIt = path.join(homedir(), `Library/Caches/${bundleId}.ShipIt`);
+    for (const name of ["ShipIt_stderr.log", "ShipIt_stdout.log", "ShipItState.plist"]) {
+      if (existsSync(path.join(shipIt, name)))
+        cpSync(path.join(shipIt, name), path.join(out, name));
+    }
+    network = readFileSync(log, "utf8");
+  } catch (e) {
+    error ??= e instanceof Error ? e.stack : String(e);
+    process.exitCode = 1;
   }
-  if (running()) run("osascript", ["-e", `tell application "${product}" to quit`], true);
-  if (mirror?.pid) {
-    run("sudo", ["pkill", "-TERM", "-P", String(mirror.pid)], true);
-    mirror.kill("SIGTERM");
-    if (mirror.exitCode === null && mirror.signalCode === null)
-      await new Promise<void>((resolve) => mirror!.once("close", () => resolve()));
-  }
-  const shipIt = path.join(homedir(), `Library/Caches/${bundleId}.ShipIt`);
-  for (const name of ["ShipIt_stderr.log", "ShipIt_stdout.log", "ShipItState.plist"]) {
-    if (existsSync(path.join(shipIt, name))) cpSync(path.join(shipIt, name), path.join(out, name));
-  }
-  const network = readFileSync(log, "utf8");
   let packetPassed = false;
-  let publicUpdateHostsAbsent = false;
+  let mirrorTrafficPassed = false;
   let accountHostRequests: string[] = [];
   let trafficError: string | undefined;
   try {
@@ -327,60 +365,40 @@ try {
     packetPassed = !!result && (githubChannel === "beta" || result.forbidden.length === 0);
     accountHostRequests = result?.forbidden ?? [];
     if (result) {
-      const outside = forbiddenPublicUpdateHosts(
-        result.records,
-        trafficSince,
-        githubChannel === "beta",
-      );
-      const updatePolicy = readFileSync(
-        path.join(app, "Contents/Resources/app-update.yml"),
-        "utf8",
-      );
-      publicUpdateHostsAbsent =
-        outside.length === 0 && updatePolicy.includes("github.opensteer.test");
-      writeFileSync(
-        path.join(out, "update-traffic.json"),
-        JSON.stringify(
-          {
-            passed: publicUpdateHostsAbsent,
-            forbiddenPublicUpdateHosts: outside,
-            claim:
-              "Guest-wide capture excludes named public GitHub/Opensteer update hosts; it does not attribute arbitrary destinations to the updater or enforce a destination allowlist.",
-            permittedBetaAccountHosts:
-              githubChannel === "beta"
-                ? ["accounts.beta.opensteer.com", "beta.opensteer.com", "portal.beta.opensteer.com"]
-                : [],
-            mirrorHosts: ["github.opensteer.test", "objects.opensteer.test"],
-            providerConfiguration: updatePolicy,
-            mirrorRequests: network
-              .split("\n")
-              .filter((x) => /releases|\.zip|\.yml|blockmap/iu.test(x)),
-            betaAccountTrafficInformational: githubChannel === "beta",
-          },
-          null,
-          2,
-        ),
-      );
+      const policy = validateMirrorRequests(network, githubChannel);
+      mirrorTrafficPassed = policy.passed;
+      writeFileSync(path.join(out, "update-traffic.json"), JSON.stringify(policy, null, 2));
     }
   } catch (e) {
     trafficError = String(e);
     error ??= trafficError;
+  }
+  try {
+    if (releaseContainment) {
+      releaseContainment();
+      containmentPassed = true;
+    }
+  } catch (e) {
+    error ??= String(e);
+    process.exitCode = 1;
   }
   const noAccountTraffic =
     packetPassed &&
     !network.includes('"forbiddenDns":') &&
     !network.includes('"sinkholeConnection":true') &&
     !/"(?:httpHost|tlsSni)":"[^" ]*opensteer\.com"/iu.test(network);
-  if ((githubChannel !== "beta" && !noAccountTraffic) || !publicUpdateHostsAbsent)
-    process.exitCode = 1;
+  if ((githubChannel !== "beta" && !noAccountTraffic) || !mirrorTrafficPassed) process.exitCode = 1;
   writeFileSync(path.join(out, "desktop.log"), readLog());
   writeFileSync(
     path.join(out, "journey.json"),
     JSON.stringify(
       {
         scenario,
+        draft,
+        installedSha256,
+        containmentPassed,
         channel: githubChannel,
-        publicUpdateHostsAbsent,
+        mirrorTrafficPassed,
         trafficError,
         accountHostRequests,
         noAccountTrafficRequired: githubChannel !== "beta",
@@ -390,7 +408,12 @@ try {
         steps,
         error,
         noAccountTraffic,
-        passed: !error && (githubChannel === "beta" || noAccountTraffic) && publicUpdateHostsAbsent,
+        passed:
+          !!installedSha256 &&
+          containmentPassed &&
+          !error &&
+          (githubChannel === "beta" || noAccountTraffic) &&
+          mirrorTrafficPassed,
         updaterEvents: readLog()
           .split("\n")
           .filter((x) => /updat|ShipIt/iu.test(x)),

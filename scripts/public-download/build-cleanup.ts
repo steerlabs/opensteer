@@ -13,7 +13,19 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import type { runBounded } from "../command-runner.js";
 
+/** spctl and codesign report on stderr, so evidence keeps both streams, from this run only. */
+export async function commandEvidence(
+  run: typeof runBounded,
+  file: string,
+  exe: string,
+  args: readonly string[],
+) {
+  writeFileSync(file, "", { mode: 0o600 });
+  await run(exe, args, { outputFile: file });
+  return readFileSync(file, "utf8");
+}
 export async function pruneCompletedBuild(directory: string) {
   assert(
     path.isAbsolute(directory) && realpathSync(directory) === directory,
@@ -32,9 +44,18 @@ export async function pruneCompletedBuild(directory: string) {
     build.channel === "stable" ? "Opensteer-mac-arm64.zip" : "Opensteer-Beta-mac-arm64.zip";
   assert.equal(build.zip, path.join(directory, asset));
   assert(lstatSync(build.zip).isFile() && realpathSync(build.zip) === build.zip);
-  z.object({ status: z.literal("Accepted") }).parse(
-    JSON.parse(readFileSync(path.join(directory, "notary.json"), "utf8")),
-  );
+  if (existsSync(path.join(directory, "notary.json"))) {
+    z.object({ status: z.literal("Accepted") }).parse(
+      JSON.parse(readFileSync(path.join(directory, "notary.json"), "utf8")),
+    );
+  } else {
+    z.object({
+      evidence: z.object({
+        stapler: z.string().regex(/The validate action worked!/u),
+        spctl: z.string().regex(/accepted[\s\S]*source=Notarized Developer ID/u),
+      }),
+    }).parse(JSON.parse(readFileSync(path.join(directory, "build.json"), "utf8")));
+  }
   const expected = z
     .object({ sha256: z.string().regex(/^[a-f0-9]{64}$/u) })
     .parse(JSON.parse(readFileSync(path.join(directory, "archive-check.json"), "utf8")));
@@ -46,6 +67,7 @@ export async function pruneCompletedBuild(directory: string) {
   const trees = readdirSync(directory).filter(
     (name) =>
       name === "personal-runtime" ||
+      name === "ci-build" ||
       name.startsWith("archive-verification-") ||
       name === "Opensteer.app" ||
       name === "Opensteer Beta.app",

@@ -3014,6 +3014,7 @@ export class BrowserService {
 
   async commitProfileState(input: {
     readonly expectedRevision: number;
+    readonly periodic?: boolean;
     readonly leaseToken: string;
     readonly profileId: BrowserProfileId;
     readonly sessionId: BrowserSessionId;
@@ -3022,6 +3023,7 @@ export class BrowserService {
     await this.#authorizeProfileLease(input);
     return this.#profileVault.commit({
       expectedRevision: input.expectedRevision,
+      periodic: input.periodic ?? false,
       profileId: input.profileId,
       snapshot: BrowserProfileSnapshotSchema.parse(input.snapshot),
     });

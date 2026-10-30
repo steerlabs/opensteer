@@ -1,10 +1,16 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { copyFile, mkdir, readFile, writeFile, lstat } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile, lstat, rm } from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
+// tsup bundles its config, and this module, as ESM; a static import would inline
+// the CommonJS signing helper, whose require() of Node built-ins fails there.
+const { releasePasskeyInputs } = createRequire(import.meta.url)(
+  "./passkeys-signing.cjs",
+) as typeof import("./passkeys-signing.cjs");
 const desktop = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const toolchainSchema = z.object({
   xcode: z.string(),
@@ -35,12 +41,19 @@ export async function buildPasskeysAddon(
   const pin = toolchainSchema.parse(
     JSON.parse(await readFile(path.join(source, "toolchain.json"), "utf8")),
   );
+  const actual = {
+    xcode: run("/usr/bin/xcodebuild", ["-version"]),
+    sdk: run("/usr/bin/xcrun", ["--show-sdk-version"]),
+    clang: run("/usr/bin/xcrun", ["clang++", "--version"]),
+  };
   if (
-    run("/usr/bin/xcodebuild", ["-version"]) !== pin.xcode ||
-    run("/usr/bin/xcrun", ["--show-sdk-version"]) !== pin.sdk ||
-    !run("/usr/bin/xcrun", ["clang++", "--version"]).includes(`(${pin.clang})`)
+    actual.xcode !== pin.xcode ||
+    actual.sdk !== pin.sdk ||
+    !actual.clang.includes(`(${pin.clang})`)
   )
-    throw new Error("Passkey addon requires its pinned Xcode, SDK and clang toolchain");
+    throw new Error(
+      `Passkey addon requires its pinned toolchain. Expected: ${JSON.stringify({ xcode: pin.xcode, sdk: pin.sdk, clang: pin.clang })}; actual: ${JSON.stringify(actual)}`,
+    );
   await mkdir(headers, { recursive: true });
   for (const [name, digest] of Object.entries(pin.headers)) {
     const filename = path.join(headers, name);
@@ -108,10 +121,13 @@ export async function buildPasskeysAddon(
   await copyFile(universal, path.join(stageDirectory, "opensteer-passkeys.node"));
 }
 /** Development bundling can run without Xcode; an explicit build supplies its optional addon. */
-export async function stagePasskeysAddon(): Promise<void> {
+export async function stagePasskeysAddon(
+  stageDirectory = path.join(desktop, "dist/passkeys"),
+): Promise<void> {
   if ((process.env.OPENSTEER_DESKTOP_TARGET_OS ?? process.platform) !== "darwin") return;
   if (process.env.OPENSTEER_DESKTOP_RELEASE === "1") {
-    await buildPasskeysAddon();
+    if (releasePasskeyInputs(process.env)) await buildPasskeysAddon(stageDirectory);
+    else await rm(path.join(stageDirectory, "opensteer-passkeys.node"), { force: true });
     return;
   }
   const source = path.join(desktop, "generated-native/passkeys/opensteer-passkeys.node");
@@ -123,9 +139,8 @@ export async function stagePasskeysAddon(): Promise<void> {
   }
   if (run("/usr/bin/lipo", ["-archs", source]).split(/\s+/u).sort().join(" ") !== "arm64 x86_64")
     throw new Error("Passkey addon must include both architectures");
-  const directory = path.join(desktop, "dist/passkeys");
-  await mkdir(directory, { recursive: true });
-  await copyFile(source, path.join(directory, "opensteer-passkeys.node"));
+  await mkdir(stageDirectory, { recursive: true });
+  await copyFile(source, path.join(stageDirectory, "opensteer-passkeys.node"));
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
   await buildPasskeysAddon();

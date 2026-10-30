@@ -118,11 +118,12 @@ for VM-only GUI execution and process ownership. Reuse one journey per native
 flow. VM runs are post-merge or on demand, never a pre-merge gate.
 See [VM constraints and operation](../scripts/test-vm/README.md).
 
-Signed desktop updates for stable and Beta are proven by
-`pnpm exec tsx scripts/public-download/eu-run.ts /absolute/prepared-inputs`,
-which runs the GitHub-provider journeys in fresh clones. Set
-`OPENSTEER_UPDATE_JOURNEY_DIR` to an absolute work directory; see
-[build preparation and evidence](../scripts/public-download/README.md).
+A draft's actual desktop ZIP is certified with
+`pnpm exec tsx scripts/public-download/eu-run.ts --draft <tag> --expect-version X.Y.Z --expect-sha <40hex> --older <older tag or build directory>`.
+The draft channel selects its full journey set; each case must install the exact
+draft ZIP. See [draft certification](../scripts/public-download/README.md) for
+signing prerequisites, guest containment and evidence. No local rebuild of N or
+CI-byte comparison is involved.
 
 ## Agent context budget
 

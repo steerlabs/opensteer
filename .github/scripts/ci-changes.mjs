@@ -142,9 +142,10 @@ export function nativeMacTasks(files, { full = false } = {}) {
 export function nativeMacMatrix(tasks) {
   return nativeMac.tasks
     .filter(({ task }) => tasks.includes(task))
-    .map(({ task, timeout, swift, lane, xcode }) => ({
+    .map(({ task, timeout, swift, lane, xcode, runner }) => ({
       task,
       timeout,
+      runner: runner ?? "macos-15",
       swift: swift.join(" "),
       darwin: lane === true,
       xcode: xcode ?? "/Applications/Xcode.app/Contents/Developer",

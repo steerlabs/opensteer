@@ -1,3 +1,5 @@
+import { buildSwiftProducts } from "./build-swift-products.js";
+import { arch } from "node:os";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, rm, writeFile, rename } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -17,20 +19,13 @@ const identity = signingMode.mode === "signed" ? signingMode.signing.identity : 
 const requested = process.argv.indexOf("--sign");
 if (requested >= 0 && process.argv[requested + 1] !== identity)
   throw new Error("--sign must match the validated signing input.");
-const flags = [
-  "build",
-  "--package-path",
+const bin = buildSwiftProducts(
   directory,
-  "-c",
+  ["DictationHelper"],
+  signed ? ["arm64", "x86_64"] : [arch() === "x64" ? "x86_64" : "arm64"],
   signed ? "release" : "debug",
-  "--arch",
-  "arm64",
-  ...(!signed ? ["-Xswiftc", "-DOPENSTEER_DEV_TRUST"] : []),
-];
-execFileSync("/usr/bin/swift", [...flags, "--product", "DictationHelper"], { stdio: "inherit" });
-const bin = execFileSync("/usr/bin/swift", [...flags, "--show-bin-path"], {
-  encoding: "utf8",
-}).trim();
+  !signed ? ["-Xswiftc", "-DOPENSTEER_DEV_TRUST"] : [],
+);
 const name = "Opensteer Dictation";
 const output = path.join(directory, "dist", `${name}.app`);
 const staging = `${output}.tmp-${process.pid}`;

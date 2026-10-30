@@ -5,8 +5,8 @@ import { createSocket } from "node:dgram";
 import { createReadStream, readFileSync, appendFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 const [root, cert, key, log] = process.argv.slice(2) as [string, string, string, string];
-const github = "https://github.opensteer.test";
-const objects = "https://objects.opensteer.test";
+const github = "https://github.com";
+const objects = "https://release-assets.githubusercontent.com";
 const prefix = "/steerlabs/opensteer/releases";
 const assets = new Set([
   "Opensteer-mac-arm64.zip",
@@ -26,15 +26,28 @@ const server = createServer({ cert: readFileSync(cert), key: readFileSync(key) }
       path: url.pathname,
       range: req.headers.range,
       accept: req.headers.accept,
+      authenticated: Boolean(req.headers.authorization),
+      localAddress: req.socket.localAddress,
+      remoteAddress: req.socket.remoteAddress,
     }) + "\n",
   );
+  if (req.headers.authorization || req.headers.host === "api.github.com") {
+    res.writeHead(421);
+    res.end("Unexpected API/authenticated provider request");
+    return;
+  }
   const latest = readFileSync(path.join(root, "latest"), "utf8").trim();
   const redirect = (location: string) => {
     res.writeHead(302, { location });
     res.end();
   };
-  if (req.headers.host === "github.opensteer.test") {
-    if (url.pathname === "/api/v3/repos/steerlabs/opensteer/releases/latest") {
+  if (req.headers.host === "github.com") {
+    if (url.pathname === `${prefix}/latest`) {
+      if (req.headers.accept !== "application/json") {
+        res.writeHead(406);
+        res.end("Require Accept: application/json");
+        return;
+      }
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ tag_name: latest }));
       return;
@@ -56,7 +69,13 @@ const server = createServer({ cert: readFileSync(cert), key: readFileSync(key) }
     if (match && assets.has(match[2]!)) return redirect(`${objects}/${match[1]}/${match[2]}`);
   }
   const match = /^\/((?:desktop-v|v)[0-9.]+(?:-insider)?)\/([^/]+)$/u.exec(url.pathname);
-  if (req.headers.host === "objects.opensteer.test" && match && assets.has(match[2]!)) {
+  if (
+    ["release-assets.githubusercontent.com", "objects.githubusercontent.com"].includes(
+      req.headers.host ?? "",
+    ) &&
+    match &&
+    assets.has(match[2]!)
+  ) {
     const file = path.join(root, match[1]!, match[2]!);
     if (!existsSync(file)) {
       res.writeHead(404);

@@ -335,6 +335,24 @@ export async function nativeToolchainIdentity(
   return { xcode, sdkVersion, sdkBuild, swift, developerDirectory };
 }
 
+/** Changes to compilation recipes must invalidate cached executable products. */
+export function nativeBuildRecipeInputs(root: string, kind: "computer-use" | "passwords"): Root[] {
+  return [
+    {
+      name: "builder",
+      path: path.join(
+        root,
+        `apps/desktop/scripts/build-${kind === "computer-use" ? "computer-use-helper" : "passwords-broker"}.ts`,
+      ),
+    },
+    {
+      name: "swift-builder",
+      path: path.join(root, "apps/desktop/scripts/build-swift-products.ts"),
+    },
+    { name: "cache-recipe", path: path.join(root, "apps/desktop/scripts/native-build-cache.ts") },
+  ];
+}
+
 /** Cache errors/unknown overrides are misses. Sources and declared non-SDK
  * include roots still bind actual bytes, not declared versions or mtimes. */
 export async function nativeReleaseInputs(
@@ -386,14 +404,7 @@ export async function nativeReleaseInputs(
     { name: "self-signing-package", path: path.join(root, "packages/macos-signing/Package.swift") },
     { name: "sources", path: path.join(native, "Sources") },
     { name: "package", path: path.join(native, "Package.swift") },
-    {
-      name: "builder",
-      path: path.join(
-        root,
-        `apps/desktop/scripts/build-${kind === "computer-use" ? "computer-use-helper" : "passwords-broker"}.ts`,
-      ),
-    },
-    { name: "cache-recipe", path: path.join(root, "apps/desktop/scripts/native-build-cache.ts") },
+    ...nativeBuildRecipeInputs(root, kind),
     { name: "host-os", path: "/System/Library/CoreServices/SystemVersion.plist" },
     ...includeFlags.map((flag, index) => ({ name: `include-${index}`, path: flag.slice(2) })),
   ];
