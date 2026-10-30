@@ -63,6 +63,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          # The test-lint baseline must be compared with its merge base on main.
+          fetch-depth: 0
       - uses: ./.github/actions/ci-setup
       - run: mkdir -p "$RUNNER_TEMP/evidence"
       - shell: bash
