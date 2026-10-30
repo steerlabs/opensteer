@@ -1,4 +1,5 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -49,6 +50,10 @@ async function bounded<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   }
 }
 const deadline = setTimeout(() => {
+  writeFileSync(
+    path.join(artifacts, "failure.txt"),
+    `Launch check exceeded 180 seconds: ${step}\n`,
+  );
   console.error(`Launch check exceeded 180 seconds: ${step}`);
   if (launched?.pid) children.push(...descendantPids(processTable(), launched.pid));
   for (const pid of [...children.reverse(), launched?.pid]) {
@@ -70,13 +75,11 @@ try {
     },
   });
   launched = app.process();
-  launched.stdout?.on(
-    "data",
-    (chunk: Buffer) => void writeFile(path.join(artifacts, "stdout.log"), chunk, { flag: "a" }),
+  launched.stdout?.on("data", (chunk: Buffer) =>
+    appendFileSync(path.join(artifacts, "stdout.log"), chunk),
   );
-  launched.stderr?.on(
-    "data",
-    (chunk: Buffer) => void writeFile(path.join(artifacts, "stderr.log"), chunk, { flag: "a" }),
+  launched.stderr?.on("data", (chunk: Buffer) =>
+    appendFileSync(path.join(artifacts, "stderr.log"), chunk),
   );
   // Decline the first-run move prompt without touching the installed application.
   await bounded(
@@ -152,6 +155,13 @@ try {
   await cp(path.join(data, "logs"), path.join(artifacts, "logs"), { recursive: true }).catch(
     () => {},
   );
+  for (const deployment of await readdir(path.join(data, "deployments")).catch(() => [])) {
+    await cp(
+      path.join(data, "deployments", deployment, "logs"),
+      path.join(artifacts, "deployments", deployment),
+      { recursive: true },
+    ).catch(() => {});
+  }
   process.exitCode = 1;
 } finally {
   if (launched?.pid) children.push(...descendantPids(processTable(), launched!.pid!));
