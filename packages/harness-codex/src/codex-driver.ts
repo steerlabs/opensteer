@@ -1,3 +1,4 @@
+import { startCodexVoiceCall, type CodexVoiceInput, type CodexVoiceCall } from "./voice.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -840,6 +841,58 @@ class CodexHarnessAdapter implements HarnessAdapter {
     this.#source = source;
   }
 
+  async startVoiceCall(input: CodexVoiceInput): Promise<CodexVoiceCall> {
+    this.#sessions.assertOpen();
+    return startCodexVoiceCall({
+      input,
+      prepare: async (directory) => {
+        const environment = {
+          ...(await codexProcessEnvironment(input.environment, input.providerState, this.#source)),
+          CODEX_SQLITE_HOME: directory,
+        };
+        const features = Object.fromEntries(
+          Object.entries(await codexFeatureBoundary(this.#launch)).map(([name, approved]) => [
+            name,
+            name === "unified_exec" && approved,
+          ]),
+        );
+        return {
+          process: {
+            config: this.#config,
+            launch: this.#launch,
+            environment,
+            appServerArgs: [
+              ...codexProcessBoundaryArgs(
+                features,
+                input.runtimeBoundary,
+                input.providerState,
+                environment,
+                [],
+              ),
+              "-c",
+              `log_dir=${JSON.stringify(directory)}`,
+              "-c",
+              `sqlite_home=${JSON.stringify(directory)}`,
+              "-c",
+              "project_doc_max_bytes=0",
+              "-c",
+              'developer_instructions=""',
+            ],
+          },
+          threadConfig: async (client) => {
+            await assertCodexFeatureBoundary(client, features, this.#config.startupTimeoutMs);
+            return codexPrivateThreadConfig(
+              client,
+              directory,
+              features,
+              this.#config.startupTimeoutMs,
+            );
+          },
+        };
+      },
+    });
+  }
+
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertFreshProviderSessionContext(context);
@@ -1056,38 +1109,12 @@ class CodexHarnessSession implements HarnessSession {
         });
         await client.notify("initialized", {});
         await assertCodexFeatureBoundary(client, features, this.#config.startupTimeoutMs);
-        const effective = requireObject(
-          requireObject(
-            await client.request("config/read", { cwd: directory, includeLayers: false }),
-            "title config",
-          ).config,
-          "effective title config",
-        );
-        const servers =
-          effective.mcp_servers === undefined
-            ? {}
-            : requireObject(effective.mcp_servers, "title MCP servers");
-        const config: JsonObject = {
+        const config = await codexPrivateThreadConfig(
+          client,
+          directory,
           features,
-          project_doc_max_bytes: 0,
-          developer_instructions: "",
-          "skills.bundled.enabled": false,
-          "skills.config": await codexSkillRules(
-            client,
-            directory,
-            [],
-            this.#config.startupTimeoutMs,
-          ),
-          "cloud.skills.enabled": false,
-          "skills.include_instructions": false,
-          "tools.experimental_request_user_input.enabled": false,
-          "tools.update_plan.enabled": false,
-          web_search: "disabled",
-          default_permissions: ":read-only",
-          mcp_servers: Object.fromEntries(
-            Object.keys(servers).map((name) => [name, { enabled: false }]),
-          ),
-        };
+          this.#config.startupTimeoutMs,
+        );
         // A short Run's end waits for its name, and the Run's own model can
         // take most of a minute to say one word. A fast model the account
         // lists names it instead, as Codex's own thread titles do.
@@ -4298,4 +4325,37 @@ function toSteerError(error: unknown): OpensteerError | HarnessSteerDeliveryUnkn
     details,
     message: failure.message,
   });
+}
+
+async function codexPrivateThreadConfig(
+  client: CodexStdioClient,
+  directory: string,
+  features: CodexFeatureBoundary,
+  timeoutMs: number,
+): Promise<JsonObject> {
+  const effective = requireObject(
+    requireObject(
+      await client.request("config/read", { cwd: directory, includeLayers: false }),
+      "private config",
+    ).config,
+    "effective private config",
+  );
+  const servers =
+    effective.mcp_servers === undefined
+      ? {}
+      : requireObject(effective.mcp_servers, "private MCP servers");
+  return {
+    features,
+    project_doc_max_bytes: 0,
+    developer_instructions: "",
+    "skills.bundled.enabled": false,
+    "skills.config": await codexSkillRules(client, directory, [], timeoutMs),
+    "cloud.skills.enabled": false,
+    "skills.include_instructions": false,
+    "tools.experimental_request_user_input.enabled": false,
+    "tools.update_plan.enabled": false,
+    web_search: "disabled",
+    default_permissions: ":read-only",
+    mcp_servers: Object.fromEntries(Object.keys(servers).map((name) => [name, { enabled: false }])),
+  };
 }
