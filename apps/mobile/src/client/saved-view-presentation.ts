@@ -30,6 +30,9 @@ const pending = { source: "pending" } as const;
 const live = { source: "live" } as const;
 const blocked = { source: "blocked" } as const;
 
+/** A saved Chat whose fresh history read failed, while the connection itself is healthy. */
+export const homeReadFailedLabel = "Couldn't update · Saved view";
+
 /** Display-only owner. It never installs saved data in a Host model or initiates a Host read. */
 export class SavedViewPresentation {
   readonly #cache: SavedViewCache;
@@ -47,6 +50,8 @@ export class SavedViewPresentation {
   #detach: (() => void) | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #fresh = { home: false, tasks: false };
+  /** Surfaces shown from disk; each is rewritten only by its own fresh answer. */
+  #loaded = { home: false, tasks: false };
   #diskAllowed = true;
   #disposed = false;
   #blocked = false;
@@ -56,6 +61,8 @@ export class SavedViewPresentation {
   #home: SavedChat | undefined;
   #tasks: SavedTask[] | undefined;
   #label = "Updating…";
+  /** Home's history read failed while its saved copy shows; the live pane is not mounted. */
+  #homeFailed = false;
 
   constructor(options: { readonly cache: SavedViewCache; readonly now?: () => Date }) {
     this.#cache = options.cache;
@@ -92,6 +99,7 @@ export class SavedViewPresentation {
     this.#userId = null;
     if (!same) {
       this.#fresh = { home: false, tasks: false };
+      this.#loaded = { home: false, tasks: false };
       this.#diskAllowed = true;
       this.#blocked = false;
       this.#home = undefined;
@@ -147,13 +155,14 @@ export class SavedViewPresentation {
           return;
         }
         this.#savedUserId = view.userId;
+        this.#loaded = { home: view.home !== undefined, tasks: view.tasks !== undefined };
         this.#publish({
           home: view.home
             ? {
                 source: "saved",
                 content: view.home,
                 capturedAt: view.capturedAt,
-                label: this.#label,
+                label: this.#homeLabel(),
               }
             : pending,
           tasks: view.tasks
@@ -199,6 +208,7 @@ export class SavedViewPresentation {
     this.#blocked = true;
     this.#scope = null;
     this.#diskAllowed = false;
+    this.#loaded = { home: false, tasks: false };
     this.#cancelTimer();
     this.#detach?.();
     this.#detach = null;
@@ -218,12 +228,18 @@ export class SavedViewPresentation {
           : "Updating…";
     if (label === this.#label) return;
     this.#label = label;
+    this.#relabel();
+  }
+  #homeLabel(): string {
+    return this.#homeFailed && this.#label === "Updating…" ? homeReadFailedLabel : this.#label;
+  }
+  #relabel(): void {
     const home = this.#state.home,
       tasks = this.#state.tasks;
     this.#publish({
       ...this.#state,
-      home: home.source === "saved" ? { ...home, label } : home,
-      tasks: tasks.source === "saved" ? { ...tasks, label } : tasks,
+      home: home.source === "saved" ? { ...home, label: this.#homeLabel() } : home,
+      tasks: tasks.source === "saved" ? { ...tasks, label: this.#label } : tasks,
     });
   }
   retryInvalidation(): Promise<void> {
@@ -253,7 +269,11 @@ export class SavedViewPresentation {
       !this.#userId ||
       this.#blocked ||
       this.#invalidating() ||
-      (!this.#home && !this.#tasks)
+      (!this.#home && !this.#tasks) ||
+      // A surface still shown from disk keeps it until its own answer arrives:
+      // a tasks-only refresh must not write over the saved Chat.
+      (this.#loaded.home && !this.#fresh.home) ||
+      (this.#loaded.tasks && !this.#fresh.tasks)
     )
       return;
     const snapshot = client.getSnapshot();
@@ -295,6 +315,12 @@ export class SavedViewPresentation {
     const snapshot = client.getSnapshot();
     const connection = describeHostConnection(snapshot);
     this.connection(snapshot.network, connection.label === "Unavailable");
+    const homeFailed =
+      snapshot.homeThreadId !== null && snapshot.threadLookups[snapshot.homeThreadId] === "failed";
+    if (homeFailed !== this.#homeFailed) {
+      this.#homeFailed = homeFailed;
+      this.#relabel();
+    }
     if (snapshot.session === "authentication-required") {
       this.#invalidate();
       this.#detach?.();
@@ -364,6 +390,7 @@ export class SavedViewPresentation {
     if (id === null) return;
     this.#generation += 1;
     this.#diskAllowed = false;
+    this.#loaded = { home: false, tasks: false };
     this.#taskSource = null;
     this.#cancelTimer();
     this.#home = undefined;

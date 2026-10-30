@@ -1,6 +1,6 @@
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import { SavedViewCache } from "./saved-view-cache.js";
-import { createId, WorkspaceIdSchema } from "@opensteer/core";
+import { createId, ThreadIdSchema, WorkspaceIdSchema } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
@@ -14,7 +14,7 @@ import {
   type WebSocketClient,
 } from "@opensteer/client/host";
 import { afterEach, expect, it, vi } from "vitest";
-import { SavedViewPresentation } from "./saved-view-presentation.js";
+import { homeReadFailedLabel, SavedViewPresentation } from "./saved-view-presentation.js";
 function presentation(options: { readonly store: SavedViewStore; readonly now?: () => Date }) {
   return new SavedViewPresentation({
     cache: new SavedViewCache({
@@ -122,6 +122,81 @@ it("loads in parallel, replaces surfaces independently with fresh-empty and neve
   controller.dispose();
   f.dispose();
 });
+it("keeps the saved Chat on disk until Home's own answer arrives, even when tasks refresh", async () => {
+  const f = await fixture(),
+    store = createMemorySavedViews(),
+    write = vi.spyOn(store, "write");
+  const threadId = ThreadIdSchema.parse(f.snapshot().homeThreadId);
+  await store.write(
+    {
+      ...f.saved,
+      home: { ...f.saved.home!, threadId, messages: [{ voice: "agent", text: "Saved reply" }] },
+    },
+    () => true,
+  );
+  write.mockClear();
+  const controller = presentation({ store });
+  controller.select(f.s.hostIdentity.deploymentId, f.s, () => true);
+  controller.attach(f.client);
+  await vi.waitFor(() => expect(controller.getSnapshot().home.source).toBe("saved"));
+  // Tasks answer while Home's history is still pending (or failed).
+  f.publish({ savedViewReadiness: { tasksReady: true, home: pendingHome, workspaceRefusal: 0 } });
+  expect(controller.getSnapshot().tasks.source).toBe("live");
+  await controller.flush();
+  expect(write).not.toHaveBeenCalled();
+  expect(controller.getSnapshot().home.source).toBe("saved");
+  // Home's own answer lets both surfaces be written together.
+  f.publish({
+    savedViewReadiness: {
+      tasksReady: true,
+      home: {
+        status: "window",
+        workspaceId: f.snapshot().homeWorkspaceId!,
+        threadId,
+        latest: true,
+      },
+      workspaceRefusal: 0,
+    },
+  });
+  await controller.flush();
+  expect(write).toHaveBeenCalledTimes(1);
+  expect(write.mock.calls[0]![0].home?.threadId).toBe(threadId);
+  expect(write.mock.calls[0]![0].tasks).toBeDefined();
+  controller.dispose();
+  f.dispose();
+});
+
+it("labels a failed Home history read on the saved Chat only, until a read succeeds", async () => {
+  const f = await fixture(),
+    store = createMemorySavedViews();
+  await store.write(f.saved, () => true);
+  const controller = presentation({ store });
+  controller.select(f.s.hostIdentity.deploymentId, f.s, () => true);
+  controller.attach(f.client);
+  await vi.waitFor(() => expect(controller.getSnapshot().home.source).toBe("saved"));
+  const homeThreadId = f.snapshot().homeThreadId!;
+  const labels = () => {
+    const { home, tasks } = controller.getSnapshot();
+    return [
+      home.source === "saved" ? home.label : home.source,
+      tasks.source === "saved" ? tasks.label : tasks.source,
+    ];
+  };
+  expect(labels()).toEqual(["Updating…", "Updating…"]);
+  f.publish({ threadLookups: { ...f.snapshot().threadLookups, [homeThreadId]: "failed" } });
+  expect(labels()).toEqual([homeReadFailedLabel, "Updating…"]);
+  // Offline outranks a read failure: the person can act on the network first.
+  f.publish({ network: "offline" });
+  expect(labels()).toEqual(["Offline · Saved view", "Offline · Saved view"]);
+  f.publish({
+    network: "online",
+    threadLookups: { ...f.snapshot().threadLookups, [homeThreadId]: "loading" },
+  });
+  expect(labels()).toEqual(["Updating…", "Updating…"]);
+  controller.dispose();
+  f.dispose();
+});
+
 it("discards a late disk read wholesale even when only one fresh surface arrived", async () => {
   const f = await fixture(),
     gate = deferred<SavedHostView | null>();
@@ -305,7 +380,13 @@ it("debounces projection changes for two seconds and distinguishes offline/unava
   controller.connection("online", false);
   expect(controller.getSnapshot().home).toMatchObject({ label: "Updating…" });
   vi.useFakeTimers();
-  f.publish({ savedViewReadiness: { tasksReady: true, home: pendingHome, workspaceRefusal: 0 } });
+  f.publish({
+    savedViewReadiness: {
+      tasksReady: true,
+      home: { status: "absent", workspaceId: f.snapshot().homeWorkspaceId! },
+      workspaceRefusal: 0,
+    },
+  });
   await vi.advanceTimersByTimeAsync(1_999);
   expect(write).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);

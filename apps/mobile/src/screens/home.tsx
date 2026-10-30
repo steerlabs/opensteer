@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { homeReadFailedLabel } from "../client/saved-view-presentation.js";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import { useSidebarMenu } from "../navigation-header.js";
 import { color, space } from "../theme.js";
@@ -76,7 +77,16 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
                     void mobile.retrySelection();
                   },
                 }
-              : {}),
+              : saved.label === homeReadFailedLabel && hostClient !== null
+                ? {
+                    // The live pane is not mounted, so Retry reads Home's history again
+                    // the way opening it would, keeping the saved text on screen.
+                    onRetry: () => {
+                      const homeThreadId = hostClient.getSnapshot().homeThreadId;
+                      if (homeThreadId) hostClient.activateThread(homeThreadId);
+                    },
+                  }
+                : {}),
           },
         }
       : {}),
