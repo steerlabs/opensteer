@@ -1428,6 +1428,7 @@ function ThreadPaneForUser(
               )}
               <Composer
                 variant={conversational ? "conversation" : "work"}
+                voice={isHome}
                 accessMode={thread.accessMode}
                 accessModes={placement?.accessModes ?? null}
                 canRespond={canRespond}

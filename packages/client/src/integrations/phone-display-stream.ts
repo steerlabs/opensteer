@@ -23,7 +23,7 @@ import { canStreamComputerDisplay } from "./computer-use.js";
 import type { DisplayUnavailableReason } from "./computer-watch-status.js";
 
 /** The contract's bound on one input batch (`DisplayInputEventsSchema`). */
-const maxInputEvents = 64;
+export const maxDisplayInputEvents = 64;
 const maxInputBytes = 256 * 1_024;
 /** Viewer JSON is a state or editing line; anything near this is not one. */
 const maxServerTextCharacters = 256 * 1_024;
@@ -679,7 +679,7 @@ export class DisplayStreams {
     for (const event of parsed) {
       const candidate = [...batch, event];
       if (
-        candidate.length > maxInputEvents ||
+        candidate.length > maxDisplayInputEvents ||
         new TextEncoder().encode(serialize(candidate)).byteLength > maxInputBytes
       ) {
         if (batch.length === 0) throw new Error("Display input event exceeds its byte limit.");

@@ -29,6 +29,7 @@ import type { DeploymentMark } from "../threads/deployment-switcher-model.js";
 import {
   chromeSettingsFooter,
   chromeSettingsRow,
+  connectedAppsSettingsRow,
   type SettingsActionModel,
 } from "./settings-model.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
@@ -102,6 +103,17 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
                 </Button>
               );
             })}
+          </Section>
+        )}
+
+        {props.onConnectedAppsAction === undefined ? null : (
+          <Section title="Apps">
+            <LinkRow
+              detail={connectedAppsSettingsRow.detail}
+              onPress={props.onConnectedAppsAction}
+              symbol="puzzlepiece.extension"
+              title={connectedAppsSettingsRow.title}
+            />
           </Section>
         )}
 
@@ -264,7 +276,7 @@ function IdentityRow(props: {
 function LinkRow(props: {
   readonly detail: string;
   readonly onPress: () => void;
-  readonly symbol: "globe" | "lock";
+  readonly symbol: "globe" | "lock" | "puzzlepiece.extension";
   readonly title: string;
 }): ReactNode {
   return (

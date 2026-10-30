@@ -79,12 +79,27 @@ describe("Desktop release policy", () => {
     "allows only Opensteer's reviewed hardened-runtime entitlements for %s",
     () => {
       expect(() =>
-        validateReleaseEntitlements({ "com.apple.security.cs.allow-jit": true }),
+        validateReleaseEntitlements({
+          "com.apple.security.cs.allow-jit": true,
+          "com.apple.security.device.audio-input": true,
+        }),
       ).not.toThrow();
+      for (const value of [false, undefined, "true"]) {
+        expect(() =>
+          validateReleaseEntitlements({
+            "com.apple.security.cs.allow-jit": true,
+            "com.apple.security.device.audio-input": value,
+          }),
+        ).toThrow();
+      }
+      expect(() =>
+        validateReleaseEntitlements({ "com.apple.security.cs.allow-jit": true }),
+      ).toThrow();
       expect(() => validateReleaseEntitlements({})).toThrow(/reviewed hardened-runtime/u);
       expect(() =>
         validateReleaseEntitlements({
           "com.apple.security.cs.allow-jit": true,
+          "com.apple.security.device.audio-input": true,
           "com.apple.security.get-task-allow": true,
         }),
       ).toThrow(/reviewed hardened-runtime/u);
@@ -94,6 +109,7 @@ describe("Desktop release policy", () => {
         validateReleaseEntitlements({
           "com.apple.security.automation.apple-events": true,
           "com.apple.security.cs.allow-jit": true,
+          "com.apple.security.device.audio-input": true,
         }),
       ).toThrow(/reviewed hardened-runtime/u);
     },

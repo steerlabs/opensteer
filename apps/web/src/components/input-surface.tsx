@@ -18,6 +18,7 @@ import { AreaLink } from "./workspace/area-link.js";
 import { useComposerContext } from "./workspace/composer-context.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
 import { sendMessageCommand, usePendingSends } from "./pending-sends.js";
+import { VoiceButton, VoiceDock } from "./voice.js";
 import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
 import { ThreadBrowserSignInAction } from "./thread-browser-sign-in-action.js";
 import { ThreadComputerAppAccessAction } from "./thread-computer-app-access-action.js";
@@ -54,6 +55,7 @@ export function InputSurface({
   stopLabel,
   stopping = false,
   threadId,
+  voice = false,
 }: {
   /** Chat follows the place in front while its draft is untouched; a task's reply never does. */
   autoContext?: boolean;
@@ -85,6 +87,8 @@ export function InputSurface({
   /** See `Composer`'s `stopping`. */
   stopping?: boolean;
   threadId: string;
+  /** Chat's composer, which offers the voice button beside Send. */
+  voice?: boolean;
 }) {
   const { hostClient, snapshot, reportActionError } = useShell();
   const context = useComposerContext({ auto: autoContext, hostClient });
@@ -153,6 +157,7 @@ export function InputSurface({
           threadId={threadId}
         />
       ) : null}
+      {composerHidden || (docked && dock.composerHidden) ? null : <VoiceDock />}
       <div hidden={composerHidden || (docked && dock.composerHidden)}>
         <Composer
           dictationScope={`${deploymentId}/${userId}/${threadId}`}
@@ -180,6 +185,7 @@ export function InputSurface({
           stopping={stopping}
           {...(stopLabel === undefined ? {} : { stopLabel })}
           sendBlocked={"unavailable" in durable ? durable.unavailable : null}
+          voice={voice ? <VoiceButton /> : undefined}
         />
       </div>
     </div>

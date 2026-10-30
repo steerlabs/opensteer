@@ -184,7 +184,7 @@ describe("hosted OAuth provider callback", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.body).toContain("Authorization received");
+    expect(response.body).toContain("You’re signed in");
     expect(response.body).not.toContain("Connection ready");
     const parameters = (
       completeAuthorization.mock.calls[0]![0] as {
@@ -221,7 +221,7 @@ describe("hosted OAuth provider callback", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.headers["content-type"]).toContain("text/html");
-    expect(response.body).toContain("Authorization not completed");
+    expect(response.body).toContain("Sign-in didn’t finish");
     expect(response.body).not.toContain("secret-code");
     expect(response.body).not.toContain("secret marker");
   });

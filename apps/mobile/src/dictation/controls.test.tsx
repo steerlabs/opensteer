@@ -7,6 +7,12 @@ import "../screens/thread-settings.test-support.js";
 import { DictationBar } from "./controls.js";
 
 vi.mock("react-native-reanimated", () => ({ useReducedMotion: () => false }));
+vi.mock("../ui/motion.js", () => ({
+  appear: undefined,
+  duration: { enter: 0, exit: 0 },
+  enter: undefined,
+  exit: undefined,
+}));
 let cleanup: (() => void) | undefined;
 afterEach(async () => {
   await act(async () => cleanup?.());

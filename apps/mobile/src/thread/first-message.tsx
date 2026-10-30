@@ -1,4 +1,5 @@
 import { UsageNotice } from "./usage-notice.js";
+import { VoiceDock, VoiceMic } from "../voice/controls.js";
 import {
   accountGettingReady,
   accessModeConflict,
@@ -394,6 +395,8 @@ export function FirstMessageComposer(props: {
   readonly text: string;
   /** Set where a transparent navigation bar lies over the top of the screen. */
   readonly underHeader: boolean;
+  /** Chat's first message: voice can say it, and it creates Chat. */
+  readonly voice?: boolean;
 }): ReactNode {
   const gutter = useGutter();
   const column = useReadingColumn();
@@ -614,6 +617,7 @@ export function FirstMessageComposer(props: {
           selection={selection}
           onSwitch={() => props.onChooseAI(undefined, true)}
         />
+        <VoiceDock />
         <ComposerBar
           accessory={
             <ComposerPills
@@ -674,16 +678,19 @@ export function FirstMessageComposer(props: {
             </Pressable>
           }
           leading={
-            <NativeMenu
-              accessibilityHint="Attach files or choose which AI this starts on"
-              accessibilityLabel="Message actions"
-              onPresent={noop}
-              onSettle={noop}
-              options={menuOptions}
-              style={composerControlStyle}
-            >
-              <ComposerCircleFace icon="plus" />
-            </NativeMenu>
+            <View style={styles.leading}>
+              <NativeMenu
+                accessibilityHint="Attach files or choose which AI this starts on"
+                accessibilityLabel="Message actions"
+                onPresent={noop}
+                onSettle={noop}
+                options={menuOptions}
+                style={composerControlStyle}
+              >
+                <ComposerCircleFace icon="plus" />
+              </NativeMenu>
+              {props.voice === true ? <VoiceMic disabled={held} /> : null}
+            </View>
           }
           shape="rounded"
         />
@@ -769,6 +776,7 @@ export function FirstMessageHeld(props: {
 }
 
 const styles = StyleSheet.create({
+  leading: { flexDirection: "row" },
   content: { flexGrow: 1, gap: space[16], paddingBottom: space[24] },
   dock: { gap: space[8], paddingTop: space[8] },
   example: {

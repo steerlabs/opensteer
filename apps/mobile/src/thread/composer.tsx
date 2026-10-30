@@ -1,5 +1,6 @@
 import { UsageNotice } from "./usage-notice.js";
 import { useFocusEffect } from "@react-navigation/native";
+import { VoiceDock, VoiceMic, useVoice } from "../voice/controls.js";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationBar, DictationMic, DictationStatus } from "../dictation/controls.js";
@@ -157,6 +158,8 @@ export function Composer(props: {
   readonly subagentTitles: ReadonlyMap<string, string>;
   readonly threadId: string;
   readonly user: AuthenticatedUser;
+  /** Chat's composer, which offers the voice button beside the microphone. */
+  readonly voice?: boolean;
   /** Where this Thread's attached files are uploaded; null until the Thread is known. */
   readonly workspaceId: string | null;
 }): ReactNode {
@@ -376,7 +379,10 @@ export function Composer(props: {
   useEffect(() => {
     if (notice && visible.current) AccessibilityInfo.announceForAccessibility(notice);
   }, [notice]);
+  // While voice holds the microphone, dictation steps aside on every composer.
+  const voiceOn = useVoice().snapshot.phase !== "idle";
   const startDictation = (): void => {
+    if (voiceOn) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     dictation.start({
       owner,
@@ -845,6 +851,7 @@ export function Composer(props: {
         onSwitch={() => props.onChangeModel(true)}
       />
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
+      <VoiceDock />
       <ComposerBar
         // Two lines from the start: the page above the field is part of the box.
         shape={includedPage === null || view.readOnly ? view.shape : "rounded"}
@@ -873,6 +880,7 @@ export function Composer(props: {
                   >
                     <ComposerCircleFace icon="plus" />
                   </NativeMenu>
+                  {props.voice === true ? <VoiceMic disabled={readOnly || textHidden} /> : null}
                 </View>
               ),
             })}
@@ -932,7 +940,7 @@ export function Composer(props: {
           : {
               action: (
                 <View style={{ flexDirection: "row" }}>
-                  {!dictating ? (
+                  {!dictating && !voiceOn ? (
                     <DictationMic
                       controller={dictation}
                       snapshot={dictationState}

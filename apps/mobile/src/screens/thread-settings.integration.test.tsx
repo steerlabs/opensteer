@@ -7,6 +7,9 @@ import { unwrapRpcResult, type HttpHostClient } from "@opensteer/client/host";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// Voice's controls animate with Reanimated, which cannot load here; these tests are not about voice.
+vi.mock("../voice/controls.js", () => ({ VoiceDock: () => null, VoiceMic: () => null }));
+
 import { type ModelSelection, type WorkspaceId } from "@opensteer/core";
 import type { HarnessModelDescriptor, HostApiClient } from "@opensteer/protocol";
 

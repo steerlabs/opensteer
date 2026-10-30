@@ -194,7 +194,7 @@ function applyStaticSecurityHeaders(reply: FastifyReply): void {
   void reply
     .header("strict-transport-security", "max-age=31536000; includeSubDomains")
     .header("content-security-policy", staticContentSecurityPolicy)
-    .header("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()")
+    .header("permissions-policy", "camera=(), microphone=(self), geolocation=(), payment=()")
     .header("referrer-policy", "no-referrer")
     .header("x-content-type-options", "nosniff")
     .header("x-frame-options", "DENY");

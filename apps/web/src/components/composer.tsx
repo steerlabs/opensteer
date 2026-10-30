@@ -5,6 +5,7 @@ import {
   type DictationSelection,
 } from "@opensteer/client/dictation";
 import { DictationStatus, DictationLive, useDictation } from "./dictation.js";
+import { useVoice } from "./voice.js";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   useCallback,
@@ -146,6 +147,8 @@ interface ComposerProps {
   readOnly?: boolean;
   footerExtras?: ReactNode;
   leadingFooter?: ReactNode;
+  /** Chat's voice button, beside Send. */
+  voice?: ReactNode;
   /**
    * Published so a surface that took the keyboard away — the AI picker's
    * review, a Find panel — can give it back to the words being written.
@@ -225,6 +228,7 @@ export function Composer({
   readOnly = false,
   footerExtras,
   leadingFooter,
+  voice,
   inputRef,
   onDraftChange,
   onHoldingChange,
@@ -243,6 +247,7 @@ export function Composer({
 }: ComposerProps) {
   const [draft, setDraft] = useState("");
   const { controller: dictation, snapshot: speech } = useDictation();
+  const { snapshot: voiceState } = useVoice();
   const instance = useId();
   const owner = `${dictationScope}/${instance}`;
   const view = dictationView(speech, owner);
@@ -804,27 +809,30 @@ export function Composer({
       </>
     ) : null;
 
-  const microphone = view.visible ? (
-    <button
-      ref={microphoneRef}
-      className="composer__attach"
-      type="button"
-      aria-label={dictationStartLabel(view.languageName ?? "")}
-      title={dictationLabels.dictate}
-      disabled={disabled || readOnly || view.blocked || view.phase !== "idle"}
-      onPointerDown={(event) => {
-        if (event.button === 0) {
-          event.preventDefault();
-          startDictation();
-        }
-      }}
-      onClick={(event) => {
-        if (event.detail === 0) startDictation();
-      }}
-    >
-      <Icon name="microphone" />
-    </button>
-  ) : null;
+  // While voice holds the microphone, dictation steps aside.
+  const microphone =
+    view.visible && voiceState.phase === "idle" ? (
+      <button
+        ref={microphoneRef}
+        className="composer__attach"
+        type="button"
+        aria-label={dictationStartLabel(view.languageName ?? "")}
+        title={dictationLabels.dictate}
+        disabled={disabled || readOnly || view.blocked || view.phase !== "idle"}
+        // The press is the start: the bar shows on pointer-down, not on release.
+        onPointerDown={(event) => {
+          if (event.button === 0) {
+            event.preventDefault();
+            startDictation();
+          }
+        }}
+        onClick={(event) => {
+          if (event.detail === 0) startDictation();
+        }}
+      >
+        <Icon name="microphone" />
+      </button>
+    ) : null;
   const mentionList =
     mention && placeContext ? (
       <MentionList
@@ -890,6 +898,8 @@ export function Composer({
           <FoldRow className="composer__settings">{footerExtras}</FoldRow>
         </>
       )}
+      {/* Voice and dictation share the microphone: each steps aside for the other. */}
+      {view.phase === "idle" ? voice : null}
       {showStop ? (
         <StopButton
           disabled={stopping || disabled || readOnly}

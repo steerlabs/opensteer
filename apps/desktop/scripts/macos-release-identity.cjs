@@ -35,7 +35,7 @@ function validateReleaseEntitlements(entitlements, passkeyIdentity) {
   assertRecord(entitlements, "The signed macOS release entitlements");
   // Not Apple events: every command an agent runs descends from this app, so
   // sending in Messages belongs to the Computer Use helper alone.
-  const expected = ["com.apple.security.cs.allow-jit"];
+  const expected = ["com.apple.security.cs.allow-jit", "com.apple.security.device.audio-input"];
   if (passkeyIdentity) {
     const values = {
       "com.apple.developer.web-browser.public-key-credential": true,
@@ -53,6 +53,9 @@ function validateReleaseEntitlements(entitlements, passkeyIdentity) {
     throw new Error(
       "The signed Electron app must use only the reviewed hardened-runtime entitlements.",
     );
+  }
+  if (entitlements["com.apple.security.device.audio-input"] !== true) {
+    throw new Error("The signed Electron app must retain the audio-input entitlement.");
   }
   if (entitlements["com.apple.security.cs.allow-jit"] !== true) {
     throw new Error("The signed Electron app must retain the hardened-runtime JIT entitlement.");

@@ -31,7 +31,6 @@ import {
   View,
   type TextInputInstance,
 } from "react-native";
-import { useSidebarToggle } from "../navigation-header.js";
 import { operationDetail } from "../client/mobile-client.js";
 import type { PendingCommand } from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
@@ -89,8 +88,6 @@ const examples = [
  * task was opened from.
  */
 export function NewTaskScreen(props: NewTaskScreenProps): ReactNode {
-  // Over a task, the docked sidebar's own Show and Hide stay beside Back.
-  useSidebarToggle();
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
   const { deploymentId, workspaceId } = props.route.params;

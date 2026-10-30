@@ -1491,16 +1491,18 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
-  it("shows a page opened from Tabs before Chat exists alone, with no conversation", () => {
+  it("shows a page opened from Tabs alone, even when the route still names a conversation", () => {
+    // A route a previous release built carried the conversation Tabs was opened from.
     const { container, render } = setup({
       scope: "workspace",
       sessionId: "chosen",
-      threadId: null,
-    } as Partial<SurfacesRoute>);
+      threadId: "thread-a",
+    } as unknown as Partial<SurfacesRoute>);
     state.snapshot = snapshot([session("chosen", child.id)]);
     render();
     expect(container.textContent).toContain("Viewing chosen");
     expect(container.textContent).not.toContain("Conversation folded");
+    expect(container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
     expect(state.conversationMounts).toBe(0);
   });
 

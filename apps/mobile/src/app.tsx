@@ -1,4 +1,6 @@
 import { createExpoSavedViews } from "./platform/expo-saved-views.js";
+import { VoiceOverlay } from "./voice/controls.js";
+import { VoiceProvider } from "./voice/context.js";
 
 import { DictationProvider } from "./dictation/context.js";
 import * as Application from "expo-application";
@@ -170,7 +172,6 @@ function mobileClient(): MobileRoot {
     catalogFilePath: `${root}${storeName}/deployments.json`,
     doneShelfFilePath: `${root}${storeName}/done-shelf.json`,
     draftsFilePath: `${root}${storeName}/drafts-v3.json`,
-    sidebarFilePath: `${root}${storeName}/sidebar.json`,
     fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
     hostPort: configuration.mock
       ? createMockHostPort({
@@ -592,32 +593,35 @@ export function App(): ReactNode {
     <GestureHandlerRootView style={styles.root}>
       <DictationProvider>
         <MobileClientProvider client={client}>
-          <IphoneAppsProvider controller={iphone}>
-            <MobileNotificationsProvider notifications={notifications}>
-              <SafeAreaProvider>
-                <StatusBar style="light" />
-                <IphoneAppsNotice controller={iphone} />
-                {linkFailure === null ? null : (
-                  <LinkFailure detail={linkFailure} onDismiss={() => setLinkFailure(null)} />
-                )}
-                {integrationNotice === null ? null : (
-                  <IntegrationNotice
-                    detail={integrationNotice.detail}
-                    onDismiss={() => setIntegrationNotice(null)}
-                    title={integrationNotice.title}
+          <VoiceProvider>
+            <IphoneAppsProvider controller={iphone}>
+              <MobileNotificationsProvider notifications={notifications}>
+                <SafeAreaProvider>
+                  <StatusBar style="light" />
+                  <IphoneAppsNotice controller={iphone} />
+                  {linkFailure === null ? null : (
+                    <LinkFailure detail={linkFailure} onDismiss={() => setLinkFailure(null)} />
+                  )}
+                  {integrationNotice === null ? null : (
+                    <IntegrationNotice
+                      detail={integrationNotice.detail}
+                      onDismiss={() => setIntegrationNotice(null)}
+                      title={integrationNotice.title}
+                    />
+                  )}
+                  <Navigation
+                    initialState={initialNavigationState}
+                    onReady={handleNavigatorReady}
+                    onStateChange={syncDeferredRootSelection}
+                    ref={navigationRef}
+                    theme={navigationTheme}
                   />
-                )}
-                <Navigation
-                  initialState={initialNavigationState}
-                  onReady={handleNavigatorReady}
-                  onStateChange={syncDeferredRootSelection}
-                  ref={navigationRef}
-                  theme={navigationTheme}
-                />
-                <IphoneAppsPrompt controller={iphone} />
-              </SafeAreaProvider>
-            </MobileNotificationsProvider>
-          </IphoneAppsProvider>
+                  <VoiceOverlay />
+                  <IphoneAppsPrompt controller={iphone} />
+                </SafeAreaProvider>
+              </MobileNotificationsProvider>
+            </IphoneAppsProvider>
+          </VoiceProvider>
         </MobileClientProvider>
       </DictationProvider>
     </GestureHandlerRootView>

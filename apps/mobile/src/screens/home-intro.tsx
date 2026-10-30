@@ -347,6 +347,7 @@ export function HomeIntro(props: {
 
   return (
     <FirstMessageComposer
+      voice
       blocker={blocker}
       held={held !== null}
       execution={execution}

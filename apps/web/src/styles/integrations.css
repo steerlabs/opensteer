@@ -92,14 +92,12 @@
   transform: translateX(2px);
 }
 
-.intg-permissions,
 .intg-advanced {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface);
 }
 
-.intg-permissions > summary,
 .intg-advanced > summary {
   display: flex;
   justify-content: space-between;
@@ -111,12 +109,6 @@
   font-weight: 600;
 }
 
-.intg-permissions > summary span {
-  color: var(--muted);
-  font-weight: 450;
-}
-
-.intg-permissions .check-list,
 .intg-advanced > :not(summary) {
   margin: 0 12px 12px;
 }
@@ -240,10 +232,108 @@
   margin-top: 3px;
 }
 
-.intg-tool-cloud {
+/* An account, named the way its owner knows it, with one line for its state. */
+.intg-account__mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ember-wash);
+  color: var(--ember);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.intg-account__title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.intg-account__status {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  gap: var(--space-6);
+  white-space: nowrap;
+}
+
+.intg-account__status--attention {
+  color: var(--amber-text);
+}
+
+/* The row that adds an account, and the rows that open a setting, are whole-row buttons. */
+.intg-account--add,
+.intg-link {
+  width: 100%;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.intg-account--add:hover:not(:disabled),
+.intg-link:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.intg-account--add:focus-visible,
+.intg-link:focus-visible {
+  outline: 2px solid var(--ember-line);
+  outline-offset: -2px;
+}
+
+.intg-account--add .card__row-title {
+  color: var(--ember);
+}
+
+.intg-account--add:disabled {
+  cursor: default;
+}
+
+.intg-account--add:disabled .card__row-title,
+.intg-account--add:disabled .intg-account__mark {
+  color: var(--muted);
+}
+
+.intg-account__mark--add {
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+}
+
+.intg-account__mark--add svg {
+  width: 14px;
+  height: 14px;
+}
+
+.intg-link > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--muted);
+}
+
+/* Why this device cannot finish a sign-in, and where it can be. */
+.intg-account__elsewhere {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  margin: var(--space-10) 0 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.intg-account__elsewhere svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin-top: 2px;
 }
 
 .intg-account-selection {
@@ -298,21 +388,6 @@
 .intg-account-identity__identifier {
   color: var(--muted);
   font-size: var(--text-sm);
-}
-
-.chip--scope {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 4px 9px;
-}
-
-.chip--scope svg {
-  width: 11px;
-  height: 11px;
-  color: var(--ember);
 }
 
 .intg-grant + .intg-grant {
@@ -403,56 +478,19 @@
   gap: 1px;
 }
 
-.connect-sheet__facts {
-  margin: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-}
-
-.connect-sheet__fact {
-  display: grid;
-  grid-template-columns: 9rem minmax(0, 1fr);
-  gap: var(--space-12);
-  padding: var(--space-10) var(--space-12);
-}
-
-.connect-sheet__fact + .connect-sheet__fact {
-  border-top: 1px solid var(--line);
-}
-
-.connect-sheet__fact dt {
-  color: var(--muted);
-}
-
-.connect-sheet__fact dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 480px) {
-  .connect-sheet__fact {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-2);
-  }
-}
-
 @media (max-width: 680px) {
   .intg-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* The copy keeps the width; the setup link goes under it. */
-  .intg-hero {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: start;
-    row-gap: var(--space-10);
+  /* An account's actions go under its name rather than squeezing it. */
+  .intg-account:not(.intg-account--add) {
+    flex-wrap: wrap;
   }
 
-  .intg-hero__setup {
-    grid-column: 2;
-    justify-self: start;
+  .intg-account .card__row-actions {
+    width: 100%;
+    padding-left: 42px;
   }
 
   .intg-card,

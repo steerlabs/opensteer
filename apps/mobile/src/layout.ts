@@ -251,6 +251,12 @@ export type SidebarArrangement =
     };
 
 export interface ShellInput {
+  /**
+   * The screen in front arranges a page and its conversation around the folds
+   * itself, so its pane spans the ones the sidebar leaves rather than keeping
+   * to one side of them.
+   */
+  readonly aroundFolds: boolean;
   /** The shell's own measured surface, in its provider's points. */
   readonly bounds: Size;
   readonly fontScale: number;
@@ -261,10 +267,6 @@ export interface ShellInput {
   readonly ready: boolean;
   readonly regions: readonly ReservedRegion[];
   readonly rtl: boolean;
-  /** The reader's own choice: false when they last hid the sidebar. */
-  readonly shown: boolean;
-  /** A page is in front, and gets the room a sidebar would take. */
-  readonly watching: boolean;
 }
 
 export interface ShellArrangement {
@@ -279,13 +281,15 @@ export interface ShellArrangement {
 }
 
 /**
- * The shell's arrangement: the sidebar docked as a column beside the stack, or
- * a drawer over it, and exactly where each is drawn. Two useful panes are
- * preferred to three cramped ones, so a page in front takes the sidebar's room.
- * Until the surface is measured the drawer stays: a column drawn before a fold
- * is known could straddle it. Whatever is chosen stays off every fold: a single
- * pane takes the largest span the folds leave, not the whole surface — except
- * a watched page, whose pair surface keeps itself off the folds it cannot use.
+ * The shell's arrangement: the sidebar docked as a column beside the stack
+ * wherever the surface has room for both, whatever the stack shows, or a
+ * drawer over it, and exactly where each is drawn. It depends on geometry
+ * alone, so the sidebar is never taken away by what is in front. Until the
+ * surface is measured the drawer stays: a column drawn before a fold is known
+ * could straddle it. Whatever is chosen stays off every fold: a single pane
+ * takes the largest span the folds leave, not the whole surface — except a
+ * page with its conversation, whose pair surface keeps itself off the folds it
+ * cannot use and is handed the ones it can.
  */
 export function deriveShell(input: ShellInput): ShellArrangement {
   const { bounds, fontScale, insets, previous, rtl } = input;
@@ -312,12 +316,15 @@ export function deriveShell(input: ShellInput): ShellArrangement {
   );
   const columns = shellColumns();
   const sidebarRect = columns.sidebar === null ? null : rectOf(columns.sidebar, band);
-  // A page in front arranges itself around the folds — tabletop at a
-  // horizontal one, side by side at a vertical one — in its own surface, which
-  // must contain them to see them. The shell hands it the whole surface.
-  const content = input.watching
-    ? { height: bounds.height, width: bounds.width, x: 0, y: 0 }
-    : rectOf(columns.content, band);
+  // A page with its conversation arranges itself around the folds — tabletop
+  // at a horizontal one, side by side at a vertical one — in its own surface,
+  // which must contain them to see them. The shell hands it every fold the
+  // sidebar does not keep it from: beside a column, its whole height.
+  const content = !input.aroundFolds
+    ? rectOf(columns.content, band)
+    : columns.sidebar === null
+      ? { height: bounds.height, width: bounds.width, x: 0, y: 0 }
+      : rectOf(columns.content, { end: bounds.height, start: 0 });
   const leading = rtl ? xs[xs.length - 1]! : xs[0]!;
   return {
     content,
@@ -338,7 +345,7 @@ export function deriveShell(input: ShellInput): ShellArrangement {
 
   function shellColumns(): { readonly content: Span; readonly sidebar: Span | null } {
     const drawer = { content: longest(xs, rtl), sidebar: null };
-    if (!input.ready || !input.shown || input.watching) return drawer;
+    if (!input.ready) return drawer;
     if (length(band) < columnMinimumHeight) return drawer;
     const entering = previous.mode !== "column";
     const conversation = scaled(conversationWidth, fontScale) + (entering ? hysteresis : 0);
