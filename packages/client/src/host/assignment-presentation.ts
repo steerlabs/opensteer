@@ -369,7 +369,7 @@ function currentStep(
   ).findLast((group) => group.kind === "turn");
   if (turn?.kind !== "turn") return null;
   const summary = workSummary(turn.turn);
-  return summary.state === "live" && summary.label !== "Working" && summary.label !== "Starting"
+  return summary?.state === "live" && summary.label !== "Working" && summary.label !== "Starting"
     ? summary.label
     : null;
 }

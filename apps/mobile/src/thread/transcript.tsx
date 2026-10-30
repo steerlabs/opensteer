@@ -27,6 +27,7 @@ import {
   type Turn,
   type WorkEntry,
   type WorkRow,
+  type WorkSummary,
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -217,14 +218,14 @@ function TurnView(props: {
 }
 
 function WorkStatus(props: {
+  readonly summary: WorkSummary;
   readonly turn: Turn;
   readonly live?: boolean;
   /** Given, the line is the disclosure for the turn's folded trace. */
   readonly onToggle?: () => void;
   readonly open?: boolean;
 }): ReactNode {
-  const { turn } = props;
-  const summary = useMemo(() => workSummary(turn), [turn]);
+  const { summary, turn } = props;
   const line = useComputerLine(turn, props.live !== false);
   const unsettled = summary.state !== "settled";
   const live = props.live !== false && unsettled;
@@ -514,21 +515,19 @@ function TurnContent(props: {
   readonly live: boolean;
 }): ReactNode {
   const active = turnState(props.turn) !== "settled";
-  const silent = props.turn.run?.status === "completed" && props.turn.run.replyMessageId === null;
   const status = props.status !== false;
   const work = props.entries ?? props.turn.work;
   const { reply } = props.turn;
+  const summary = useMemo(() => (status ? workSummary(props.turn) : null), [status, props.turn]);
   // Closed, the reply is the turn's one row and its steps are not mounted at
   // all, which is what keeps a long night of turns light to scroll.
   const closed = props.fold?.open === false && reply !== null;
   const rows = useMemo(
     () => [
       ...workRows(closed ? [reply] : work),
-      ...(status && (work.length > 0 || active || silent)
-        ? [{ kind: "status" as const, key: "status" }]
-        : []),
+      ...(summary === null ? [] : [{ kind: "status" as const, key: "status", summary }]),
     ],
-    [work, active, status, closed, reply, silent],
+    [work, closed, reply, summary],
   );
   const { fold } = props;
   return rows.map((row) => {
@@ -536,6 +535,7 @@ function TurnContent(props: {
       return (
         <WorkStatus
           key={row.key}
+          summary={row.summary}
           turn={props.turn}
           live={props.live}
           {...(fold === undefined ? {} : fold)}
