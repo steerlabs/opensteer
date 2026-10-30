@@ -2799,6 +2799,12 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly tools: readonly IntegrationToolMaterial[];
   }): Promise<void> {
     await withDatabaseTransaction(this.database, async (transaction) => {
+      await transaction
+        .selectFrom("integrationServers")
+        .select("id")
+        .where("id", "=", input.serverId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
       const attempt = await transaction
         .selectFrom("integrationAuthAttempts")
         .select("id")
@@ -2809,12 +2815,6 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!attempt) throw forbidden("MCP OAuth attempt is no longer active");
-      await transaction
-        .selectFrom("integrationServers")
-        .select("id")
-        .where("id", "=", input.serverId)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
       const now = new Date();
       if (input.reconnect) {
         const connection = await transaction

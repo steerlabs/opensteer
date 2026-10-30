@@ -3109,12 +3109,26 @@ export class IntegrationPlatformService {
       : undefined;
     const current = this.#clients.get(key);
     if (current) {
-      return current.client.then((value) => {
-        if (
-          value.fingerprint === fingerprint &&
-          value.credentialRevision?.() === authProvider?.credentialRevision()
-        )
-          return value;
+      return current.client.then(async (value) => {
+        if (value.fingerprint === fingerprint) {
+          const clientRevision = value.credentialRevision?.();
+          const storedRevision = authProvider?.credentialRevision();
+          if (clientRevision === storedRevision) return value;
+          if (clientRevision == null || storedRevision == null || !connectionId)
+            throw new Error("MCP credential revision is unavailable");
+          if (storedRevision <= clientRevision) return value;
+          const latest = await this.#mcpOauth.providerFor({
+            connectionId,
+            ownerUserId: callable.grant.ownerUserId as UserId,
+            serverId: server.id,
+          });
+          if (this.#clients.get(key) !== current) return this.#client(callable);
+          const latestRevision = latest.credentialRevision();
+          const currentRevision = value.credentialRevision?.();
+          if (latestRevision == null || currentRevision == null)
+            throw new Error("MCP credential revision is unavailable");
+          if (latestRevision <= currentRevision) return value;
+        }
         this.#letGo(key, current);
         return this.#client(callable);
       });
