@@ -980,7 +980,7 @@ it.each([
         owner,
       ).catch((error: unknown) => cleanupFailures.push(`owner renewal: ${String(error)}`));
     }, 60_000);
-    cleanup.push(() => clearInterval(renewProtectedOwner));
+    cleanup.push(async () => clearInterval(renewProtectedOwner));
     let inputSequence = 0;
     function input(view: ComputerDisplayViewer, events: DisplayInputEvent[]) {
       view.send({
