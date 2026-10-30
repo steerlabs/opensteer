@@ -102,6 +102,10 @@ enum MacOwnerInput {
       }
     }
   }
+  static func changesEditing(_ events: [Event], buttonsHeld: Bool) -> Bool {
+    // tickOwnerInput's idle publication still observes hover-driven focus/caret changes.
+    buttonsHeld || !events.allSatisfy { $0.kind == "mouse" && $0.phase == "move" }
+  }
   struct ResetParams: Decodable { let streamId: String; let source: MacVideoSource }
   struct InputParams: Decodable, Sendable { let streamId: String; let source: MacVideoSource; let geometry: Int; let sequence: Int; let events: [Event] }
   struct Batch: Sendable {
@@ -356,10 +360,13 @@ final class MacOwnerInputWorker {
         "inputSequence": params.sequence, "generation": map.generation,
         "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
       try proceed()
+      let changesEditing = MacOwnerInput.changesEditing(params.events, buttonsHeld: !buttons.isEmpty)
       try await dispatch(params, lease: lease, map: map, proceed: proceed)
-      lease.mutations.notePersonEdit()
-      contextID = UUID().uuidString
-      await publishContext(lease, map: map, ownChange: true)
+      if changesEditing {
+        lease.mutations.notePersonEdit()
+        contextID = UUID().uuidString
+        await publishContext(lease, map: map, ownChange: true)
+      }
       lease.count("outcome.dispatched")
       return MacOwnerInput.Result(sequence: params.sequence, outcome: "dispatched")
     } catch let refusal as MacOwnerInput.Refusal {

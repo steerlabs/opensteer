@@ -302,55 +302,25 @@ export function taskRowNote(presentation: AssignmentPresentation): AssignmentDet
   return presentation.detail?.kind === "step" ? null : presentation.detail;
 }
 
-/** One state in a group's summary: how many tasks read that word. */
-export interface TaskGroupPart {
-  readonly tone: AssignmentTone;
-  /** Whether a task counted here is working now, so its dot may pulse. */
-  readonly moving: boolean;
-  readonly text: string;
-}
-
-/**
- * Tasks one turn handed out, read as one: how many, and how many read each
- * word, what asks for the reader or went wrong first. The counts use each
- * task's own word, so a group never says what its rows would not.
- */
-export function taskGroupSummary(presentations: readonly AssignmentPresentation[]): {
-  readonly label: string;
-  readonly parts: readonly TaskGroupPart[];
-} {
-  const byWord = new Map<string, { count: number; moving: boolean; tone: AssignmentTone }>();
-  for (const { moving, tone, word } of presentations) {
-    const held = byWord.get(word);
-    byWord.set(word, {
-      count: (held?.count ?? 0) + 1,
-      moving: (held?.moving ?? false) || moving,
-      tone,
-    });
-  }
-  // A copy sorted in place: Hermes, which the phone runs, has no `toSorted`.
-  const parts = [...byWord]
-    .sort(([, left], [, right]) => groupOrder[left.tone] - groupOrder[right.tone])
-    .map(([word, { count, moving, tone }]) => ({
-      moving,
-      text: `${count} ${(word === needsYou && count > 1 ? "Need you" : word).toLowerCase()}`,
-      tone,
-    }));
-  return { label: `${presentations.length} tasks`, parts };
-}
-
 const needsYou = "Needs you";
 
-/** What a reader looks for first in a group: what asks for them, then what went wrong. */
-const groupOrder: Record<AssignmentTone, number> = {
-  waiting: 0,
-  failed: 1,
-  completed: 2,
-  working: 3,
-  paused: 4,
-  queued: 5,
-  stopped: 6,
-};
+/**
+ * The tasks a conversation handed out that are still going, for its menu: in
+ * the order it handed them out, so a line keeps its place as its state
+ * changes. A finished one has already come back where the conversation asked.
+ */
+export function tasksUnderWay(
+  threadId: string,
+  assignments: Readonly<Record<string, AssignmentSummary>>,
+): readonly AssignmentSummary[] {
+  // Filtered first, so sorting in place sorts a copy: Hermes has no `toSorted`.
+  return Object.values(assignments)
+    .filter(({ parentThreadId, status }) => status === "open" && parentThreadId === threadId)
+    .sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+    );
+}
 
 /**
  * The step the worker is taking now, from its own transcript, held while a

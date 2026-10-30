@@ -2228,41 +2228,6 @@ fieldset.action-panel {
   overflow-wrap: anywhere;
 }
 
-/* What can be done with an update hangs from its bubble's foot (over its
-   padding, never its words), shown as a reply's More is: where a pointer
-   rests, focus lands or a finger taps. */
-.msg--input--quotable {
-  position: relative;
-}
-
-.msg--input__actions {
-  position: absolute;
-  top: calc(100% - var(--space-8));
-  right: var(--space-10);
-  z-index: var(--layer-raised);
-  display: flex;
-  padding: 3px;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-raised);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--duration-fast) var(--ease-out);
-}
-
-.msg--input:hover .msg--input__actions,
-.msg--input:focus-within .msg--input__actions,
-.msg--input--tapped .msg--input__actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.msg--input__actions .btn {
-  height: 26px;
-  border-radius: 7px;
-}
-
 .workspace-mute {
   display: flex;
   flex-direction: column;

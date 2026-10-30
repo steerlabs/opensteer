@@ -152,10 +152,7 @@ vi.mock("../threads/tasks-pane.js", () => ({
   TasksPane: ({ header }: { readonly header: ReactNode }) => <>{header}</>,
 }));
 vi.mock("../thread/thread-pane.js", () => ({ sameThreadHeader: () => false }));
-vi.mock("../navigation-header.js", () => ({
-  browserHeaderActions: () => ({}),
-  useSidebarToggle: () => undefined,
-}));
+vi.mock("../navigation-header.js", () => ({ browserHeaderActions: () => ({}) }));
 vi.mock("../ui/glass.js", () => ({ useLiquidGlass: () => false }));
 vi.mock("../ui/motion.js", () => ({ appear: undefined }));
 vi.mock("../ui/screen.js", () => ({

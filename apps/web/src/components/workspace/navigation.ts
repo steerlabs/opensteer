@@ -387,7 +387,7 @@ export interface WorkspaceNavigation {
   readonly leaveSettings: () => void;
   /** The path of a conversation: Chat at the root, a task under /threads. */
   readonly threadPath: (threadId: string) => string;
-  /** Task row, task card, header switcher: the conversation only. */
+  /** Task row, task line, the menu under a name: the conversation only. */
   readonly openConversation: (
     path: string,
     options?: { readonly focusRequest?: string; readonly messageId?: string },

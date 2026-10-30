@@ -93,11 +93,19 @@ export function registerIntegrationAuthorizationRoutes(
   app.get<{ Params: { attemptId: string } }>(
     "/v1/integration-authorizations/:attemptId/launch",
     async (request, reply) => {
-      options.authenticator.requireCanonicalSurface(request.headers);
       const { attemptId } = AttemptParamsSchema.parse(request.params);
       const { ticket } = LaunchQuerySchema.parse(request.query);
       const launched = await options.attempts.launch({ id: attemptId, launchTicket: ticket });
       if (!launched) throw unavailableAttempt();
+      // A sign-in through the Account service launches from any origin that
+      // reaches this Host; its ticket is the authority. One the provider returns
+      // to this Host's own callback is finished only by the browser holding the
+      // binding cookie set here, so it launches on that callback's origin and is
+      // refused before the provider elsewhere. Its ticket is spent either way: a
+      // launch from another origin could never have completed it.
+      if (returnsToHost(launched.authorizationUrl, options.authenticator.publicOrigin)) {
+        options.authenticator.requireCanonicalSurface(request.headers);
+      }
       return reply
         .header("cache-control", "no-store")
         .header("pragma", "no-cache")
@@ -285,6 +293,17 @@ export function failIntegrationAuthorizationBrowser(
     .send(resultPage(false, failureCode));
 }
 
+/** Whether the stored authorization sends the browser back to this Host's own origin. */
+function returnsToHost(authorizationUrl: string, publicOrigin: string): boolean {
+  const redirect = new URL(authorizationUrl).searchParams.get("redirect_uri");
+  if (redirect === null) return false;
+  try {
+    return new URL(redirect).origin === new URL(publicOrigin).origin;
+  } catch {
+    return true;
+  }
+}
+
 function authorizationBindingCookie(
   attemptId: string,
   browserBinding: string,
@@ -308,7 +327,10 @@ function resultPage(
     : failureCode === "provider-identity-already-connected"
       ? "This account is already connected by another user. Ask them to disconnect it, or return to Opensteer and connect with your own provider app."
       : "Return to Opensteer for details or to try again. You can close this tab.";
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>html{color-scheme:dark;font:16px system-ui;background:#0b0b0b;color:#f5f5f5}main{max-width:36rem;margin:18vh auto;padding:2rem}h1{font-size:1.6rem}p{color:#b8b8b8;line-height:1.55}</style></head><body><main><h1>${title}</h1><p>${detail}</p></main></body></html>`;
+  const mark = completed
+    ? '<path d="M7 12.5l3.2 3.2L17 9" stroke="#71c6a5"/>'
+    : '<path d="M12 7.5v5.5M12 16.5v.01" stroke="#dfb36b"/>';
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>html{color-scheme:dark;background:#080808;color:#f5f4f2;font:15px/1.5 system-ui,sans-serif}main{max-width:22rem;margin:22vh auto 0;padding:0 1.5rem;text-align:center}svg{width:44px;height:44px;margin-bottom:1rem}h1{font-size:1.35rem;font-weight:600;margin:0 0 .4rem}p{color:#8e8a86;margin:0}</style></head><body><main><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10.5" stroke="#2a2a2a"/>${mark}</svg><h1>${title}</h1><p>${detail}</p></main></body></html>`;
 }
 
 function requireOwner(context: HostApiServerContext) {

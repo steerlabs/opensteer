@@ -247,6 +247,18 @@ describe("IntegrationConnectSheet", () => {
     });
   });
 
+  // The way it could fail: a phone offered an MCP sign-in whose callback is the
+  // Mac's own loopback address, which the Host refuses to begin from here.
+  it("says an MCP server's sign-in is finished on the computer running Opensteer", async () => {
+    await render(fakeClient({ remote: true, requirementKind: "mcp-oauth", sources: [] }));
+
+    expect(buttons()).not.toContain("Connect account");
+    expect(text()).toContain(
+      "This sign-in returns to the computer running Opensteer, so finish it there.",
+    );
+    expect(beginMcpIntegrationAuthorization).not.toHaveBeenCalled();
+  });
+
   // The ways it could fail, as on the web card: connecting on a request for
   // Main also answers it with nothing said first, or said only on the review,
   // so the key form, the browser sign-in, or a key repair that opens straight
@@ -1315,6 +1327,8 @@ function fakeClient(input: {
   readonly isAdministrator?: boolean;
   readonly multipleServers?: boolean;
   readonly provider?: "github" | "slack";
+  /** Attached from another device, as a phone always is to a Personal Opensteer. */
+  readonly remote?: boolean;
   readonly workspaceKind?: "main" | "specialized";
 }) {
   const provider = input.provider ?? "slack";
@@ -1352,12 +1366,15 @@ function fakeClient(input: {
     dispatch,
     getSnapshot: () => snapshot,
     rpc: {
-      "integration.platform.get": async () => ({
-        ok: true,
-        data:
+      "integration.platform.get": async () => {
+        const data =
           input.installedPlatform ??
-          platform(input.requirementKind ?? "provider", input.multipleServers ?? false, provider),
-      }),
+          platform(input.requirementKind ?? "provider", input.multipleServers ?? false, provider);
+        return {
+          ok: true,
+          data: input.remote ? { ...data, authorizationSurface: "personal-remote" } : data,
+        };
+      },
       "integration.repositoryAccess.check": vi.fn(
         async (): Promise<
           | { readonly data: unknown; readonly ok: true }

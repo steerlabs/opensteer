@@ -95,10 +95,9 @@ const IntegrationDeploymentPostureSchema = z.enum([
 export type IntegrationDeploymentPosture = z.infer<typeof IntegrationDeploymentPostureSchema>;
 
 /**
- * The authenticated Host surface from which an authorization can be started.
- * Provider and MCP OAuth launches are bound to the canonical Host. Personal
- * remote sessions can inspect and manage existing connections, but must hand
- * new authorization back to the owner computer.
+ * The authenticated Host surface an authorization is started from. A Personal
+ * remote session can start any sign-in whose provider returns somewhere its
+ * browser can reach; see `oauthSourceFinishesOnHostComputer`.
  */
 export const IntegrationAuthorizationSurfaceSchema = z.enum(["canonical", "personal-remote"]);
 export type IntegrationAuthorizationSurface = z.infer<typeof IntegrationAuthorizationSurfaceSchema>;
@@ -163,6 +162,20 @@ export function sameIntegrationOAuthApplicationSource(
     left.callbackUrl === right.callbackUrl &&
     left.providerApplicationId === right.providerApplicationId &&
     left.providerApplicationRevision === right.providerApplicationRevision
+  );
+}
+
+/**
+ * Whether the provider sends this sign-in back to a loopback address, which
+ * only a browser on the computer running the Host can reach. Opensteer's
+ * managed app and relayed apps return to the Account service instead, so a
+ * browser on any device can finish them.
+ */
+export function oauthSourceFinishesOnHostComputer(
+  source: IntegrationOAuthApplicationSource,
+): boolean {
+  return (
+    source.kind === "deployment-oauth" && isLoopbackHostname(new URL(source.callbackUrl).hostname)
   );
 }
 
@@ -410,6 +423,12 @@ export const IntegrationDashboardSchema = z.strictObject({
   isAdministrator: z.boolean(),
   providers: z.array(IntegrationProviderManifestSchema).max(16),
   hostedOAuthDisclosure: z.string().min(1).max(1_000),
+  /**
+   * Set by a Host that begins a Personal remote session's sign-in when its
+   * provider returns to the Account service. An older Host omits it and
+   * refuses every remote sign-in.
+   */
+  remoteAccountSignIn: z.literal(true).optional(),
 });
 export const IntegrationDashboardViewSchema = z.object({
   ...IntegrationDashboardSchema.shape,

@@ -25,7 +25,7 @@ function tool(overrides: Partial<ToolEntry> = {}): ToolEntry {
 }
 
 describe("AgentTranscript", () => {
-  it("keeps the last activity but removes live clocks, shimmer and typing when disconnected", () => {
+  it("keeps the last activity but removes shimmer and typing when disconnected", () => {
     const entries = [tool({ state: "running", completedAt: null })];
     const live = renderToStaticMarkup(
       <MemoryRouter>
@@ -33,7 +33,6 @@ describe("AgentTranscript", () => {
       </MemoryRouter>,
     );
     expect(live).toContain("work--live");
-    expect(live).toContain("work__clock");
     const stale = renderToStaticMarkup(
       <MemoryRouter>
         <AgentTranscript activity="working" entries={entries} live={false} />
@@ -41,7 +40,6 @@ describe("AgentTranscript", () => {
     );
     expect(stale).toContain("work__label");
     expect(stale).not.toContain("work--live");
-    expect(stale).not.toContain("work__clock");
     expect(stale).not.toContain("stream-caret");
     expect(
       renderToStaticMarkup(<AgentTranscript activity="working" entries={[]} live={false} />),
@@ -140,14 +138,16 @@ describe("AgentTranscript", () => {
 
     expect(markup).toContain("msg--input");
     expect(markup).toContain("input-card__plain");
-    expect(markup).toContain("Alex");
-    expect(markup).toContain('dateTime="2026-08-16T10:00:01.000Z"');
+    expect(markup).toContain('<span class="input-card__name">Alex</span>');
+    // Another person is not a place to go: their name is not a link.
+    expect(markup).not.toContain('<a class="input-card__sender"');
     expect(markup).not.toContain("md-prose");
     expect(markup).not.toContain("msg--assistant");
-    expect(markup).not.toContain("input-card__open");
   });
 
-  it("counts steps that returned an error without calling the turn a failure", () => {
+  // Failure mode: a step the agent read and carried on from reads as the
+  // turn failing, or as an alarm on a turn that answered.
+  it("keeps a step that returned an error behind the status line, without calling the turn a failure", () => {
     const markup = renderToStaticMarkup(
       <AgentTranscript
         entries={[
@@ -157,7 +157,8 @@ describe("AgentTranscript", () => {
         ]}
       />,
     );
-    expect(markup).toContain("1 error");
+    expect(markup).toContain("Worked for");
+    expect(markup).not.toContain("error");
     expect(markup).not.toContain("run-failure");
   });
 

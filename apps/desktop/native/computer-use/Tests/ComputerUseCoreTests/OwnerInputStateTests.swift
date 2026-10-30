@@ -76,6 +76,36 @@ final class OwnerInputStateTests: XCTestCase {
     XCTAssertEqual(lane.revision, 1)
   }
 
+  func testHoverSkipsEditingChangesButHeldMovesAndOtherInputKeepThem() throws {
+    func event(_ json: String) throws -> MacOwnerInput.Event {
+      let event = try JSONDecoder().decode(MacOwnerInput.Event.self, from: Data(json.utf8))
+      try event.validate()
+      return event
+    }
+    let move = try event(#"{"kind":"mouse","phase":"move","button":"none","x":0.5,"y":0.5}"#)
+    XCTAssertFalse(MacOwnerInput.changesEditing([move], buttonsHeld: false))
+    XCTAssertFalse(MacOwnerInput.changesEditing([move, move], buttonsHeld: false))
+    XCTAssertTrue(MacOwnerInput.changesEditing([move], buttonsHeld: true), "Held moves drag")
+    let inputs = [
+      #"{"kind":"mouse","phase":"down","button":"left","x":0.5,"y":0.5}"#,
+      #"{"kind":"mouse","phase":"up","button":"left","x":0.5,"y":0.5}"#,
+      #"{"kind":"mouse","phase":"cancel","button":"none","x":0.5,"y":0.5}"#,
+      #"{"kind":"scroll","x":0.5,"y":0.5,"dx":0,"dy":0.1}"#,
+      #"{"kind":"key","action":"down","key":"a","code":"KeyA"}"#,
+      #"{"kind":"command","command":"selectAll"}"#,
+      #"{"kind":"edit","edit":{"contextId":"00000000-0000-0000-0000-000000000001","text":"a","before":"","after":""}}"#,
+      #"{"kind":"paste","text":"a"}"#,
+      #"{"kind":"copy"}"#,
+    ]
+    for json in inputs {
+      let input = try event(json)
+      for held in [false, true] {
+        XCTAssertTrue(MacOwnerInput.changesEditing([input], buttonsHeld: held), json)
+        XCTAssertTrue(MacOwnerInput.changesEditing([move, input, move], buttonsHeld: held), json)
+      }
+    }
+  }
+
   func testQueueBoundsOrderAndInvalidation() throws {
     let lane = OwnerInputAdmission(maxBatches: 2, maxBytes: 100)
     let first = try lane.admit(sequence: 0, bytes: 40)

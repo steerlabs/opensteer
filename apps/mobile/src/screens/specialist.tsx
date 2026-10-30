@@ -18,7 +18,6 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import { useSidebarToggle } from "../navigation-header.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { color, space } from "../theme.js";
 import { TasksPane } from "../threads/tasks-pane.js";
@@ -66,8 +65,6 @@ export function specialistStatus(workspace: WorkspaceSummary): string | null {
  * computer is named — and nothing else is implied.
  */
 export function SpecialistScreen(props: SpecialistScreenProps): ReactNode {
-  // Over a task, the docked sidebar's own Show and Hide stay beside Back.
-  useSidebarToggle();
   const { deploymentId, workspaceId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;

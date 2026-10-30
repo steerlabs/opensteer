@@ -9,7 +9,16 @@ import {
   type IntegrationSkill,
   type IntegrationTool,
 } from "@opensteer/integration-core/models";
-import { canSetUpOwnApp, installationDefinition } from "@opensteer/client/integrations";
+import {
+  canSetUpOwnApp,
+  connectionNeedsReconnect,
+  installationDefinition,
+  integrationAccountRepair,
+  integrationStatusLabel,
+  type IntegrationAccountRepair,
+} from "@opensteer/client/integrations";
+
+export { connectionNeedsReconnect };
 
 export interface InstallationEntry {
   readonly installation: IntegrationPlatformDashboardView["installations"][number]["installation"];
@@ -55,7 +64,7 @@ export interface InactiveInstallation {
 }
 
 /** The one thing that repairs an account, wherever the account is listed. */
-export type AccountRepair = "choose-repositories" | "replace-key" | "sign-in";
+export type AccountRepair = IntegrationAccountRepair;
 
 /** Whether this definition is an app that runs on an enrolled computer. */
 export function isComputerApp(definition: IntegrationDefinitionSummaryView): boolean {
@@ -146,36 +155,20 @@ function installationStatusDetail(entry: InstallationEntry): string | null {
   );
 }
 
-/**
- * Whether a connection needs its owner. The Host already reports an account
- * whose OAuth app is gone as needing attention, so its status says it all.
- */
-export function connectionNeedsReconnect(connection: IntegrationConnectionSummary): boolean {
-  // A blocked computer app is the owner's decision, not a fault to repair.
-  if (connection.computer?.blockedAt) return false;
-  return connection.status !== "connected";
-}
-
-/**
- * How an account that needs its owner is repaired, the same from every list.
- * A key names no account, so only its own row can say which connection a new
- * key replaces. An account whose credential works but which the provider
- * grants too little, GitHub's repository step, goes back to that step.
- * Any other sign-in comes back as whichever account the provider names, and
- * the Host updates that account in place, so signing in again repairs it.
- * Nothing repairs an account of an installation that is not active: it could
- * not be used.
- */
+/** How this account is repaired from any list; see `integrationAccountRepair`. */
 export function accountRepair(
   integration: DefinedIntegration | undefined,
   connection: IntegrationConnectionSummary,
 ): AccountRepair | null {
-  if (integration?.entry?.installation.status !== "active") return null;
-  if (!connectionNeedsReconnect(connection)) return null;
-  if (connection.connectionMethod === "api-key") return "replace-key";
-  if (connection.connectionMethod !== "managed-oauth") return null;
-  if (connection.statusReason === "permissions") return "choose-repositories";
-  return integration.definition.authMethods.some(({ kind }) => kind === "oauth") ? "sign-in" : null;
+  return integrationAccountRepair(
+    connection,
+    integration?.entry
+      ? {
+          active: integration.entry.installation.status === "active",
+          definition: integration.definition,
+        }
+      : null,
+  );
 }
 
 export function accountsFor(
@@ -270,10 +263,7 @@ export function secretFieldLabel(field: string): string {
 }
 
 /** A status as every chip says it: "needs-attention" reads "Needs attention". */
-export function statusLabel(status: string): string {
-  const words = status.replaceAll("-", " ");
-  return words.charAt(0).toLocaleUpperCase() + words.slice(1);
-}
+export { integrationStatusLabel as statusLabel };
 
 export function statusChipClass(status: string): string {
   return status === "connected" || status === "active"

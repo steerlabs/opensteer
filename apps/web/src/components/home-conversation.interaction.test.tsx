@@ -538,7 +538,7 @@ describe("Home conversation", () => {
     expect(workerThreadId).not.toBe(initialHome);
     await act(async () => task?.click());
     // The line opens the task itself, whose brief says who asked for it.
-    expect(node.querySelector(".input-card__meta")?.textContent).toMatch(/^Chat·/u);
+    expect(node.querySelector(".input-card__name")?.textContent).toBe("Chat");
     expect(node.querySelector(".assignment-strip")).toBeNull();
     expect(activate).toHaveBeenLastCalledWith(workerThreadId);
   });

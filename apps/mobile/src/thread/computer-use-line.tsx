@@ -11,7 +11,7 @@ import {
 import { useComputerUseStop, useComputerUseStopForRun } from "@opensteer/client/react";
 import type { MachineSummary } from "@opensteer/protocol";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { color, radius, space } from "../theme.js";
 import { appear } from "../ui/motion.js";
@@ -66,13 +66,43 @@ export function useComputerLine(turn: Turn, live: boolean): ComputerLine | null 
   return useMemo(() => computerLine(turn, computers, live), [computers, live, turn]);
 }
 
+/** A task turn's folded steps, which its status line opens and closes. */
+export interface StepsToggle {
+  readonly onToggle: () => void;
+  readonly open: boolean;
+}
+
+/** Where a turn on the reader's Mac is, and — for a task's turn — the way into its steps. */
+function Where(props: {
+  readonly children: ReactNode;
+  readonly toggle: StepsToggle | null;
+}): ReactNode {
+  const { toggle } = props;
+  if (toggle === null) return <View style={styles.where}>{props.children}</View>;
+  return (
+    <Pressable
+      accessibilityHint={toggle.open ? "Hides this reply's steps" : "Shows this reply's steps"}
+      accessibilityRole="button"
+      accessibilityState={{ expanded: toggle.open }}
+      onPress={toggle.onToggle}
+      style={({ pressed }) => [styles.where, pressed && styles.pressed]}
+    >
+      {props.children}
+      <Symbol name={toggle.open ? "chevron.down" : "chevron.right"} size={11} tint={color.muted} />
+    </Pressable>
+  );
+}
+
 /**
  * The turn's status while it works on the reader's Mac, as the web draws it:
  * the Mac as the agent's ember mark, what it is doing, then where, and Stop.
  * It arrives once and holds still, so a step changing its words is the only
  * news. The app itself opens from its chip under the line, the one way to it.
  */
-export function ComputerUseLine(props: { readonly now: ComputerUseNow }): ReactNode {
+export function ComputerUseLine(props: {
+  readonly now: ComputerUseNow;
+  readonly toggle?: StepsToggle | null;
+}): ReactNode {
   const { now } = props;
   const computers = useContext(TranscriptComputersContext);
   const hostClient = computers?.hostClient ?? null;
@@ -85,30 +115,32 @@ export function ComputerUseLine(props: { readonly now: ComputerUseNow }): ReactN
   return (
     <Animated.View entering={appear} style={styles.block}>
       <View style={styles.line}>
-        <View style={styles.glyph}>
-          <Symbol
-            name={now.kind === "phone" ? "smartphone" : "laptopcomputer"}
-            size={15}
-            tint={color.ember}
-            weight="semibold"
-          />
-        </View>
-        <View style={styles.text}>
-          <AppText numberOfLines={1} role="secondaryMedium">
-            {now.action}
-          </AppText>
-          {failure === null ? (
-            <AppText numberOfLines={1} role="caption" tone="muted">
-              {now.place}
+        <Where toggle={props.toggle ?? null}>
+          <View style={styles.glyph}>
+            <Symbol
+              name={now.kind === "phone" ? "smartphone" : "laptopcomputer"}
+              size={15}
+              tint={color.ember}
+              weight="semibold"
+            />
+          </View>
+          <View style={styles.text}>
+            <AppText numberOfLines={1} role="secondaryMedium">
+              {now.action}
             </AppText>
-          ) : (
-            <View accessibilityLiveRegion="polite" accessibilityRole="alert">
-              <AppText role="caption" tone="danger">
-                {failure.message ?? computerUseStopSentence(failure)}
+            {failure === null ? (
+              <AppText numberOfLines={1} role="caption" tone="muted">
+                {now.place}
               </AppText>
-            </View>
-          )}
-        </View>
+            ) : (
+              <View accessibilityLiveRegion="polite" accessibilityRole="alert">
+                <AppText role="caption" tone="danger">
+                  {failure.message ?? computerUseStopSentence(failure)}
+                </AppText>
+              </View>
+            )}
+          </View>
+        </Where>
         <SecondaryButton
           {...(stopping
             ? {}
@@ -178,24 +210,29 @@ export function useKeptComputerStop(
 }
 
 /** The line a Stop leaves behind while its answer is on the way or just in. */
-export function KeptComputerStopLine(props: { readonly stop: ComputerUseStop }): ReactNode {
+export function KeptComputerStopLine(props: {
+  readonly stop: ComputerUseStop;
+  readonly toggle?: StepsToggle | null;
+}): ReactNode {
   const { stop } = props;
   return (
     <Animated.View entering={appear} style={styles.block}>
       <View style={styles.line}>
-        <View style={styles.glyph}>
-          <Symbol name="laptopcomputer" size={15} tint={color.ember} weight="semibold" />
-        </View>
-        <View accessibilityLiveRegion="polite" style={styles.text}>
-          <AppText numberOfLines={1} role="secondaryMedium">
-            {computerUseStopSentence(stop)}
-          </AppText>
-          {stop.phase === "stopping" ? (
-            <AppText numberOfLines={1} role="caption" tone="muted">
-              {`On ${stop.machineName}`}
+        <Where toggle={props.toggle ?? null}>
+          <View style={styles.glyph}>
+            <Symbol name="laptopcomputer" size={15} tint={color.ember} weight="semibold" />
+          </View>
+          <View accessibilityLiveRegion="polite" style={styles.text}>
+            <AppText numberOfLines={1} role="secondaryMedium">
+              {computerUseStopSentence(stop)}
             </AppText>
-          ) : null}
-        </View>
+            {stop.phase === "stopping" ? (
+              <AppText numberOfLines={1} role="caption" tone="muted">
+                {`On ${stop.machineName}`}
+              </AppText>
+            ) : null}
+          </View>
+        </Where>
       </View>
     </Animated.View>
   );
@@ -218,5 +255,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingVertical: space[2],
   },
+  pressed: { opacity: 0.7 },
   text: { flex: 1, gap: 1, minWidth: 0 },
+  where: { alignItems: "center", flex: 1, flexDirection: "row", gap: space[12], minWidth: 0 },
 });
