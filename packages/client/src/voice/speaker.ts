@@ -34,7 +34,6 @@ type Speech =
 export interface VoiceSpeakerInput extends VoiceTimers {
   readonly hostClient: HostClient;
   readonly say: (text: string) => Promise<void>;
-  readonly startedAt: number;
   /** Taken before opening the microphone, so start-up replies are still new. */
   readonly baseline: HostSnapshot;
   readonly onReplySpoken?: (runId: string | null) => void;
@@ -42,15 +41,29 @@ export interface VoiceSpeakerInput extends VoiceTimers {
   readonly onError?: () => void;
 }
 
-/** A held Chat observation never navigates or acknowledges its messages. */
+/**
+ * Says Chat's new replies and "needs you" Requests one at a time. A held Chat
+ * observation never navigates or acknowledges its messages.
+ *
+ * The voice also speaks on its own (acknowledgements), so a relay counts as
+ * spoken only when the voice turn that began after it was sent ends, and the
+ * next relay waits until the voice is quiet.
+ */
 export class VoiceSpeaker {
   readonly #input: VoiceSpeakerInput;
   readonly #timers;
   readonly #messages = new Set<string>();
   readonly #requests = new Set<string>();
+  /**
+   * The newest Chat message the person already had, in the Host's own clock:
+   * replies at or before it are history, whatever this device's clock says.
+   */
+  readonly #since: number | null;
   #queue: Speech[] = [];
-  #current: Speech | null = null;
+  #current: { readonly speech: Speech; started: boolean } | null = null;
+  #talking = false;
   #timer: VoiceTimer | null = null;
+  #quiet: VoiceTimer | null = null;
   #threadId: string | null = null;
   #release: (() => void) | null = null;
   #unsubscribe: () => void;
@@ -59,23 +72,29 @@ export class VoiceSpeaker {
   constructor(input: VoiceSpeakerInput) {
     this.#input = input;
     this.#timers = voiceTimers(input);
+    let since: number | null = null;
     for (const entry of input.baseline.transcripts[input.baseline.homeThreadId ?? ""] ?? []) {
       if (durableReply(entry)) this.#messages.add(entry.id);
+      const at = entry.kind === "message" ? Date.parse(entry.createdAt) : Number.NaN;
+      if (Number.isFinite(at)) since = Math.max(since ?? at, at);
     }
+    this.#since = since;
     for (const { request } of input.baseline.waitingRequests) this.#requests.add(request.id);
     this.#unsubscribe = input.hostClient.subscribe(() => this.#read());
     this.#read();
   }
 
+  /** The voice began a turn of speech. */
+  speaking(): void {
+    this.#talking = true;
+    if (this.#current) this.#current.started = true;
+  }
+
+  /** The voice finished a turn of speech. */
   spoke(): void {
-    const current = this.#current;
-    if (!current || this.#disposed) return;
-    this.#timers.clear(this.#timer);
-    this.#timer = null;
-    this.#current = null;
-    if (current.kind === "reply") this.#input.onReplySpoken?.(current.runId);
-    this.#input.onSettled?.();
-    this.#drain();
+    this.#talking = false;
+    if (this.#current?.started) this.#finish();
+    else this.#drain();
   }
 
   dispose(): void {
@@ -85,8 +104,20 @@ export class VoiceSpeaker {
     this.#release?.();
     this.#release = null;
     this.#timers.clear(this.#timer);
+    this.#timers.clear(this.#quiet);
     this.#queue = [];
     this.#current = null;
+  }
+
+  #finish(): void {
+    const current = this.#current;
+    if (!current || this.#disposed) return;
+    this.#timers.clear(this.#timer);
+    this.#timer = null;
+    this.#current = null;
+    if (current.speech.kind === "reply") this.#input.onReplySpoken?.(current.speech.runId);
+    this.#input.onSettled?.();
+    this.#drain();
   }
 
   #read(): void {
@@ -101,7 +132,7 @@ export class VoiceSpeaker {
     for (const entry of snapshot.transcripts[snapshot.homeThreadId ?? ""] ?? []) {
       if (!durableReply(entry) || this.#messages.has(entry.id)) continue;
       this.#messages.add(entry.id);
-      if (Date.parse(entry.createdAt) <= this.#input.startedAt) continue;
+      if (this.#since !== null && !(Date.parse(entry.createdAt) > this.#since)) continue;
       const text = voiceSpeakableText(entry.body);
       if (text) this.#enqueue({ kind: "reply", text, runId: entry.runId });
     }
@@ -118,7 +149,18 @@ export class VoiceSpeaker {
   }
 
   #drain(): void {
-    if (this.#disposed || this.#current) return;
+    if (this.#disposed || this.#current || this.#queue.length === 0) return;
+    if (this.#talking) {
+      // A missed turn end must not hold the queue: assume quiet after a while.
+      this.#quiet ??= this.#timers.set(() => {
+        this.#quiet = null;
+        this.#talking = false;
+        this.#drain();
+      }, 20_000);
+      return;
+    }
+    this.#timers.clear(this.#quiet);
+    this.#quiet = null;
     const next = this.#queue.shift();
     if (!next) return;
     let text: string;
@@ -132,14 +174,15 @@ export class VoiceSpeaker {
       const title = requesterLink(snapshot, waiting.request.originatingThreadId)?.title ?? "A task";
       text = `${title.slice(0, voiceSayMaxLength - 12)} needs you.`;
     } else text = next.text;
-    this.#current = next;
+    const current = { speech: next, started: false };
+    this.#current = current;
     // A missing voice turn-end must not hold the queue forever (at most four minutes).
     this.#timer = this.#timers.set(
-      () => this.spoke(),
+      () => this.#finish(),
       Math.min(240_000, 15_000 + text.length * 80),
     );
     void this.#input.say(text).catch(() => {
-      if (!this.#disposed && this.#current === next) this.#input.onError?.();
+      if (!this.#disposed && this.#current === current) this.#input.onError?.();
     });
   }
 }

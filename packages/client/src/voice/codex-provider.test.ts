@@ -60,6 +60,9 @@ function setup() {
   const stopPlayback = vi.fn();
   const media: VoiceMediaPort = {
     getUserMedia: vi.fn(async () => stream),
+    releaseStream: vi.fn((released: MediaStream) => {
+      for (const each of released.getTracks()) each.stop();
+    }),
     createPeerConnection: () => peer as unknown as RTCPeerConnection,
     unavailableReason: () => null,
     playRemote: vi.fn(() => stopPlayback),

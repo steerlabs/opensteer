@@ -74,6 +74,7 @@ export function semanticVoice() {
   const media: VoiceMediaPort = {
     unavailableReason: () => null,
     getUserMedia: vi.fn(),
+    releaseStream: vi.fn(),
     createPeerConnection: vi.fn(),
     playRemote: vi.fn(),
     keepAwake: vi.fn(),

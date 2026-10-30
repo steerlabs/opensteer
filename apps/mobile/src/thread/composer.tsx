@@ -1,5 +1,5 @@
 import { useFocusEffect } from "@react-navigation/native";
-import { VoiceDock, VoiceMic } from "../voice/controls.js";
+import { VoiceDock, VoiceMic, useVoice } from "../voice/controls.js";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationMic, DictationStatus } from "../dictation/controls.js";
@@ -356,7 +356,10 @@ export function Composer(props: {
   useEffect(() => {
     if (notice && visible.current) AccessibilityInfo.announceForAccessibility(notice);
   }, [notice]);
-  const startDictation = (): void =>
+  // While voice holds the microphone, dictation steps aside on every composer.
+  const voiceOn = useVoice().snapshot.phase !== "idle";
+  const startDictation = (): void => {
+    if (voiceOn) return;
     dictation.start({
       owner,
       read: () => ({
@@ -377,6 +380,7 @@ export function Composer(props: {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       },
     });
+  };
   const editText = (next: string): void => {
     changeText(next);
     dictation.release(owner);
@@ -847,13 +851,15 @@ export function Composer(props: {
                   >
                     <ComposerCircleFace icon="plus" />
                   </NativeMenu>
-                  <DictationMic
-                    controller={dictation}
-                    snapshot={dictationState}
-                    owner={owner}
-                    disabled={readOnly || textHidden}
-                    onStart={startDictation}
-                  />
+                  {voiceOn ? null : (
+                    <DictationMic
+                      controller={dictation}
+                      snapshot={dictationState}
+                      owner={owner}
+                      disabled={readOnly || textHidden}
+                      onStart={startDictation}
+                    />
+                  )}
                   {props.voice === true ? <VoiceMic disabled={readOnly || textHidden} /> : null}
                 </View>
               ),

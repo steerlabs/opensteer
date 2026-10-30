@@ -35,6 +35,11 @@ export function createVoiceMediaPort(rtc: typeof import("react-native-webrtc")):
         throw cause;
       }
     },
+    releaseStream(stream) {
+      // A stopped native track only goes quiet; release frees the tracks and stream natively.
+      for (const track of stream.getTracks()) track.stop();
+      (stream as unknown as { release(releaseTracks?: boolean): void }).release(true);
+    },
     createPeerConnection: (configuration) => new PeerConnection(configuration),
     playRemote(stream) {
       // WebRTC renders remote audio natively; there is no HTML audio element.

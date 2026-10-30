@@ -6,6 +6,9 @@ export function createBrowserVoiceMediaPort(): VoiceMediaPort {
   const settings = desktopBridge()?.dictation;
   return {
     getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
+    releaseStream: (stream) => {
+      for (const track of stream.getTracks()) track.stop();
+    },
     createPeerConnection: (configuration) => new RTCPeerConnection(configuration),
     playRemote(stream) {
       const audio = document.createElement("audio");

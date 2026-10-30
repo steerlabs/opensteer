@@ -119,7 +119,9 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         for (const release of [
           () => channel?.close(),
           () => pc?.close(),
-          ...(local?.getTracks() ?? []).map((track) => () => track.stop()),
+          () => {
+            if (local) input.media.releaseStream(local);
+          },
           () => playback?.(),
         ]) {
           try {
@@ -244,7 +246,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         });
         void microphone.then(
           (stream) => {
-            if (ended) stream.getTracks().forEach((track) => track.stop());
+            if (ended) input.media.releaseStream(stream);
           },
           () => {},
         );
@@ -261,7 +263,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
           );
         }
         if (ended) {
-          local.getTracks().forEach((track) => track.stop());
+          input.media.releaseStream(local);
           throw new VoiceStartError("connection-failed");
         }
         pc = input.media.createPeerConnection();

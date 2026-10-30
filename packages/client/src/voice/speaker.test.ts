@@ -23,14 +23,13 @@ function setup() {
       new VoiceSpeaker({
         hostClient: fixture.host,
         baseline: fixture.host.getSnapshot(),
-        startedAt: voiceTestNow,
         say,
       }),
   };
 }
 
 describe("VoiceSpeaker", () => {
-  it("speaks only new durable replies, never settled streams, old history, input, or the start cut", () => {
+  it("speaks only replies newer than Chat's newest message at start, never settled streams, history or input", () => {
     const f = setup();
     f.publish({
       transcripts: { [f.id]: [voiceReply("baseline", "already here", voiceTestNow + 1)] },
@@ -39,11 +38,11 @@ describe("VoiceSpeaker", () => {
     const entries = [
       voiceReply("baseline"),
       voiceReply("old", "old", voiceTestNow - 1),
-      voiceReply("cut", "cut", voiceTestNow),
-      { ...voiceReply("stream:run"), streaming: false },
-      { ...voiceReply("live"), streaming: true },
-      { ...voiceReply("input"), messageKind: "input" as const },
-      voiceReply("durable", "Hello"),
+      voiceReply("cut", "cut", voiceTestNow + 1),
+      { ...voiceReply("stream:run", "s", voiceTestNow + 2), streaming: false },
+      { ...voiceReply("live", "l", voiceTestNow + 2), streaming: true },
+      { ...voiceReply("input", "i", voiceTestNow + 2), messageKind: "input" as const },
+      voiceReply("durable", "Hello", voiceTestNow + 2),
     ];
     f.publish({ transcripts: { [f.id]: entries } });
     expect(f.say).toHaveBeenCalledExactlyOnceWith("Hello");
@@ -68,6 +67,7 @@ describe("VoiceSpeaker", () => {
       },
     });
     expect(f.say.mock.calls).toEqual([["one"]]);
+    speaker.speaking();
     speaker.spoke();
     expect(f.say.mock.calls).toEqual([["one"], ["three"]]);
     await vi.advanceTimersByTimeAsync(15_000 + "three".length * 80);
@@ -75,6 +75,46 @@ describe("VoiceSpeaker", () => {
     speaker.dispose();
     f.host.dispose();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("waits out the voice's own acknowledgement and is not finished by it", () => {
+    const f = setup();
+    const speaker = f.make();
+    speaker.speaking();
+    f.publish({ transcripts: { [f.id]: [voiceReply("one"), voiceReply("two")] } });
+    expect(f.say).not.toHaveBeenCalled();
+    speaker.spoke();
+    expect(f.say.mock.calls).toEqual([["one"]]);
+    // An acknowledgement that began before the relay ends without finishing it.
+    speaker.spoke();
+    expect(f.say.mock.calls).toEqual([["one"]]);
+    speaker.speaking();
+    speaker.spoke();
+    expect(f.say.mock.calls).toEqual([["one"], ["two"]]);
+    speaker.dispose();
+    f.host.dispose();
+  });
+
+  it.each([
+    ["ahead of", -3_600_000],
+    ["behind", 3_600_000],
+  ])("judges new replies in the Host's clock when this device runs %s it", (_, skew) => {
+    const f = setup();
+    const host = voiceTestNow + skew;
+    f.publish({ transcripts: { [f.id]: [voiceReply("history", "history", host)] } });
+    const speaker = f.make();
+    f.publish({
+      transcripts: {
+        [f.id]: [
+          voiceReply("older", "older", host - 60_000),
+          voiceReply("history", "history", host),
+          voiceReply("new", "New reply", host + 500),
+        ],
+      },
+    });
+    expect(f.say.mock.calls).toEqual([["New reply"]]);
+    speaker.dispose();
+    f.host.dispose();
   });
 
   it("baselines Requests and rechecks queued Requests without reading their payload", () => {
@@ -94,8 +134,10 @@ describe("VoiceSpeaker", () => {
     f.publish({ transcripts: { [f.id]: [voiceReply("one")] } });
     f.publish({ waitingRequests: [request("existing"), request("resolved"), request("new")] });
     f.publish({ waitingRequests: [request("existing"), request("new")] });
+    speaker.speaking();
     speaker.spoke();
     expect(f.say.mock.calls).toEqual([["one"], ["Chat needs you."]]);
+    speaker.speaking();
     speaker.spoke();
     f.publish({ waitingRequests: [request("new")] });
     expect(f.say).toHaveBeenCalledTimes(2);

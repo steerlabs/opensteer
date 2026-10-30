@@ -31,6 +31,11 @@ describe("native voice media", () => {
     expect(port.unavailableReason()).toBeNull();
     expect(await port.getUserMedia({ audio: true })).toBe(stream);
     expect(capture).toHaveBeenCalledWith({ audio: true, video: false });
+    const nativeTrack = { stop: vi.fn() };
+    const native = { getTracks: () => [nativeTrack], release: vi.fn() };
+    port.releaseStream(native as unknown as MediaStream);
+    expect(nativeTrack.stop).toHaveBeenCalledTimes(1);
+    expect(native.release).toHaveBeenCalledWith(true);
     const configuration = { iceServers: [] };
     port.createPeerConnection(configuration);
     expect(pc).toHaveBeenCalledWith(configuration);

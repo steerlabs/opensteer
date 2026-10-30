@@ -11,6 +11,8 @@ import type { WorkspaceSurfaceDestination } from "../host/surfaces.js";
 export interface VoiceMediaPort {
   /** Asks for the microphone on first use; rejects with a `NotAllowedError` when refused. */
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
+  /** Ends a stream `getUserMedia` returned, freeing the microphone and any native handles. */
+  releaseStream(stream: MediaStream): void;
   createPeerConnection(configuration?: RTCConfiguration): RTCPeerConnection;
   /** Plays the far end's audio until the returned function is called. */
   playRemote(stream: MediaStream): () => void;

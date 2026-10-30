@@ -99,7 +99,6 @@ interface VoiceSession {
   readonly abort: AbortController;
   readonly account: VoiceAccount;
   readonly baseline: HostSnapshot;
-  readonly startedAt: number;
   readonly turns: Set<string>;
   readonly pending: Map<string, { messageId: string | null; runId: string | null }>;
   hearing: boolean;
@@ -166,7 +165,6 @@ export class VoiceController {
       abort: new AbortController(),
       account,
       baseline,
-      startedAt: this.#timers.now(),
       turns: new Set(),
       pending: new Map(),
       hearing: false,
@@ -204,7 +202,6 @@ export class VoiceController {
       session.speaker = new VoiceSpeaker({
         ...this.#input,
         baseline,
-        startedAt: session.startedAt,
         say: (text) => call.say(text),
         onReplySpoken: (runId) => {
           for (const [key, pending] of session.pending)
@@ -366,6 +363,7 @@ export class VoiceController {
         break;
       }
       case "speaking":
+        if (!session.speaking) session.speaker?.speaking();
         session.speaking = true;
         this.#publish({ spoken: event.text });
         this.#settlePhase(session);
