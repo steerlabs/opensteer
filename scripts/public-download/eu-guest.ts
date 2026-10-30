@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { verifyAXDriver } from "./ax-driver-artifact.js";
 import { journeyMetadata, journeyInput } from "./evidence.js";
 import { validateMirrorRequests } from "./update-traffic.js";
-import { containGuest } from "./containment.js";
+import { assertOfflineNotarized, containGuest } from "./containment.js";
 import { parse as parseYaml } from "yaml";
 import { draftReceipt } from "./draft.js";
 import { githubJourney } from "./eu-journey.js";
@@ -146,7 +146,9 @@ const verify = async (version: string, target = app) => {
     `-R=anchor apple generic and identifier "${bundleId}" and certificate leaf[subject.OU] = "${metadata.expectedTeamId}"`,
     target,
   ]);
-  run("xcrun", ["stapler", "validate", target]);
+  assertOfflineNotarized(
+    run("spctl", ["--assess", "--type", "execute", "--verbose=4", target]).output,
+  );
   await wait("Personal healthy", health);
   run("curl", [
     "-fsS",
