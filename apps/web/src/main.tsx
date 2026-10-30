@@ -1,3 +1,5 @@
+import { installDictation } from "./desktop/dictation-runtime.js";
+import { DictationContext } from "./components/dictation.js";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { desktopBridge } from "./desktop/desktop-bridge.js";
@@ -18,7 +20,12 @@ if (!root) {
   throw new Error("Opensteer web root was not found.");
 }
 
-const reactRoot = createRoot(root);
+const appRoot = createRoot(root);
+const dictation = installDictation(desktopBridge()?.dictation);
+const reactRoot = {
+  render: (children: React.ReactNode) =>
+    appRoot.render(<DictationContext value={dictation}>{children}</DictationContext>),
+};
 
 /** The path the desktop's floating Full access panel loads. */
 const fullAccessPanelPath = "/full-access";

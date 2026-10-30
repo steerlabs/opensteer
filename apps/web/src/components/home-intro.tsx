@@ -256,6 +256,7 @@ export function HomeIntro({
             </p>
           ) : null}
           <Composer
+            dictationScope={`${deploymentId}/${userId}/home/${workspace.id}`}
             placeContext={placeContext}
             variant="conversation"
             settingsRequired={choosable}

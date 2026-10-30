@@ -1,0 +1,121 @@
+.dictation-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-14);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  border-bottom: 1px solid var(--line);
+}
+.dictation-status > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.dictation-status__copy {
+  flex: 1;
+  min-width: 0;
+}
+.dictation-status__timer {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.dictation-level {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 28px;
+  height: 24px;
+  color: var(--ember);
+}
+.dictation-level i {
+  width: 3px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dictation-status .spinner,
+  .composer__attach .spinner {
+    animation: none;
+  }
+  .dictation-level i {
+    height: 8px !important;
+  }
+}
+
+.composer__dictation-slot {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+}
+.dictation-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 32px;
+  font-size: var(--text-sm);
+  color: var(--text-soft);
+}
+.dictation-live .dictation-status__copy {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer__attach.dictation-stop,
+.composer__attach.dictation-stop:hover:not(:disabled),
+.composer--conversation .composer__attach.dictation-stop:hover:not(:disabled) {
+  background: var(--ember);
+  color: var(--bg);
+  border-radius: var(--radius-full);
+}
+
+.composer--conversation .composer__dictation-slot {
+  width: 180px;
+  flex: none;
+  max-width: 45cqi;
+}
+.dictation-live .icon-btn {
+  flex: none;
+}
+.dictation-live .dictation-status__timer {
+  flex: none;
+}
+.dictation-live__compact {
+  display: none;
+}
+@container conversation-composer (max-width: 500px) {
+  .composer--conversation .composer__dictation-slot {
+    width: 96px;
+  }
+  .dictation-live__full {
+    display: none;
+  }
+  .dictation-live__compact {
+    display: inline;
+  }
+}
+
+.dictation-progress {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+@container conversation-composer (max-width: 500px) {
+  /* A readable draft and the live controls cannot share one narrow line. */
+  .composer--dictation .composer__entry {
+    flex-wrap: wrap;
+  }
+  .composer--dictation .composer__input {
+    order: -1;
+    flex: 0 0 100%;
+    width: 100%;
+  }
+  .composer--dictation .composer__footer {
+    margin-left: auto;
+  }
+}
