@@ -6,6 +6,7 @@ import {
   writeMacAppManifest,
 } from "./mac-app-delivery.js";
 import { MacPreparationPool, runMacPreparations } from "./mac-preparation.js";
+import { selectDictationSDK, signedMacHelpers } from "./signed-mac-helpers.js";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
@@ -517,6 +518,21 @@ export async function buildSignedMac(
     "APPLE_TEAM_ID",
   ])
     env[name] = undefined;
+  Object.assign(
+    env,
+    await selectDictationSDK(
+      (sdkEnv) =>
+        execute(
+          context,
+          "/usr/bin/xcrun",
+          ["--sdk", "macosx", "--show-sdk-version"],
+          60_000,
+          sdkEnv,
+        ),
+      env,
+      context.signal,
+    ),
+  );
   let phoneReceiptSha256 = context.agentPhoneReceiptSha256;
   const branches = [
     async (signal: AbortSignal) => {
@@ -547,21 +563,23 @@ export async function buildSignedMac(
         );
     },
     async (signal: AbortSignal) => {
-      await execute(
-        { ...context, signal },
-        "pnpm",
-        [
-          "--filter",
-          "@opensteer/desktop",
-          "exec",
-          "tsx",
-          "scripts/build-passwords-broker.ts",
-          "--sign",
-          config.signingIdentity,
-        ],
-        20 * 60_000,
-        { ...env, OPENSTEER_PASSWORDS_PROVISIONING_PROFILE: config.passwordsProvisioningProfile },
-      );
+      for (const helper of signedMacHelpers) {
+        await execute(
+          { ...context, signal },
+          "pnpm",
+          [
+            "--filter",
+            "@opensteer/desktop",
+            "exec",
+            "tsx",
+            `scripts/${helper.script}`,
+            "--sign",
+            config.signingIdentity,
+          ],
+          20 * 60_000,
+          { ...env, OPENSTEER_PASSWORDS_PROVISIONING_PROFILE: config.passwordsProvisioningProfile },
+        );
+      }
     },
   ];
   const preparePhone = async (signal: AbortSignal) => {
