@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   allNativeMacTasks,
+  nativeMacMatrix,
   decide,
   detect,
   lastFullRunSha,
@@ -341,7 +342,7 @@ test("Swift sources, node manifests and the CI definition select their tasks", (
     "passwords-helper",
     "passwords-tests",
   ]);
-  // passwords-tests runs only `swift test`: installed packages cannot change it.
+  // Swift-only tests do not depend on installed Node packages.
   assert.deepEqual(swiftOnly(decide(["pnpm-lock.yaml"], realGraph)), [
     "computer-helper",
     "passwords-helper",
@@ -463,4 +464,16 @@ test("a root test edit selects its own lane, the test guards and typecheck, not 
       ([lane, on]) => on || lane === "native-mac",
     ),
   );
+});
+
+test("dictation selects its Swift lane and pins its SDK independently", () => {
+  const plan = decide(
+    ["packages/apple-dictation/Sources/OpensteerDictation/DictationService.swift"],
+    readGraph(process.cwd()),
+  );
+  assert.ok(plan.nativeMac.includes("dictation"));
+  const [task] = nativeMacMatrix(["dictation"]);
+  assert.equal(task.xcode, "/Applications/Xcode_26.3.app/Contents/Developer");
+  assert.equal(task.swift, "packages/apple-dictation");
+  assert.equal(nativeMacMatrix(["iphone"])[0].xcode, "/Applications/Xcode.app/Contents/Developer");
 });

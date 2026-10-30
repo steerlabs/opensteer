@@ -1247,6 +1247,8 @@ importers:
 
   packages/apple-data: {}
 
+  packages/apple-dictation: {}
+
   packages/browser-core:
     devDependencies:
       '@types/node':
