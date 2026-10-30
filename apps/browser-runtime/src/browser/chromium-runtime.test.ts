@@ -682,7 +682,7 @@ describe("real Chromium runtime", () => {
         ?.surfaces.find((surface) => surface.id === y.surfaceId)?.geometryRevision ?? -1;
     const order: { type: string; revision: number }[] = [];
     let releaseList: (() => void) | undefined;
-    let blockList = true;
+    let blockList = false;
     sink.sendServerImplementation = async (message) => {
       if (message.type === "browser.surfaces.changed") {
         if (blockList) {
@@ -712,6 +712,8 @@ describe("real Chromium runtime", () => {
       sink.frames.slice(framesBeforePaint).some((frame) => frame.header.surfaceId === y.surfaceId),
     );
     expect(order).toContainEqual({ type: "frame", revision: announcedBefore });
+    // Hold the next list only now: one held during the repaint would also hold its frame.
+    blockList = true;
     const resizeFirst = request(
       "Emulation.setDeviceMetricsOverride",
       { width: 900, height: 700, deviceScaleFactor: 1, mobile: false },
