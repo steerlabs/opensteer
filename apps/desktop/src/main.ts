@@ -1,4 +1,3 @@
-import { releaseSmokeCryptography } from "./secrets/release-smoke-cryptography.js";
 import { open as openInspector } from "node:inspector";
 import { autoUpdater } from "electron-updater";
 import { startDesktopUpdater } from "./app/desktop-updater.js";
@@ -195,7 +194,11 @@ const releaseSmoke = process.env.OPENSTEER_DESKTOP_RELEASE_SMOKE === "1";
 if (acceptLaunch()) {
   // Shipped fuses keep CLI inspection disabled; only a validated fresh smoke
   // profile opens a loopback inspector for the release harness.
-  if (releaseSmoke) openInspector(0, "127.0.0.1");
+  if (releaseSmoke) {
+    // Chromium cookie encryption must use the isolated test Keychain too.
+    app.commandLine.appendSwitch("use-mock-keychain");
+    openInspector(0, "127.0.0.1");
+  }
   app.setName(desktopApplicationName(app.isPackaged, embeddedRelease.application.name));
   app.enableSandbox();
   void startDesktop().catch((error: unknown) => {
@@ -302,16 +305,13 @@ async function runDesktop(
   }
   const hostNetwork = new ElectronHostNetwork();
   const serviceNetwork = new ElectronServiceNetwork();
-  const protectedStorage = new VerifiedDesktopSecretCryptography(
-    releaseSmoke ? releaseSmokeCryptography() : safeStorage,
-    {
-      onVerificationFailure: ({ error, phase }) =>
-        reportNonFatal(
-          "desktop.protected-storage.verification-failed",
-          new Error(`${phase}: ${safeErrorMessage(error)}`),
-        ),
-    },
-  );
+  const protectedStorage = new VerifiedDesktopSecretCryptography(safeStorage, {
+    onVerificationFailure: ({ error, phase }) =>
+      reportNonFatal(
+        "desktop.protected-storage.verification-failed",
+        new Error(`${phase}: ${safeErrorMessage(error)}`),
+      ),
+  });
   const resourcesDirectory = path.dirname(loaded.config.personal.releaseDirectory);
   const personalUserEnvironment = releaseSmoke
     ? new FixedPersonalUserEnvironment(process.env)

@@ -115,29 +115,22 @@ try {
     .first()
     .waitFor({ timeout: 30_000 });
   step = "Personal Host never became ready";
-  // This is the same action as the welcome screen's setup button.
   await bounded(
-    page.evaluate(() => {
-      void (
+    page.evaluate(async () => {
+      const bridge = (
         window as Window & {
           opensteerDesktop?: import("../packages/protocol/src/desktop.js").OpensteerDesktopBridge;
         }
-      ).opensteerDesktop!.createPersonalDeployment();
+      ).opensteerDesktop!;
+      // The existing operation resolves after the supervisor finishes startup.
+      await bridge.createPersonalDeployment();
+      const snapshot = await bridge.getDeploymentAccessSnapshot();
+      if (snapshot.personalSetup?.state !== "ready")
+        throw Error(
+          `Personal setup is ${snapshot.personalSetup?.state}: ${snapshot.personalSetup?.issue?.detail ?? "not ready"}`,
+        );
     }),
-    5_000,
-  );
-  await page.waitForFunction(
-    async () => {
-      const snapshot = await (
-        window as Window & {
-          opensteerDesktop?: import("../packages/protocol/src/desktop.js").OpensteerDesktopBridge;
-        }
-      ).opensteerDesktop!.getDeploymentAccessSnapshot();
-      if (snapshot.personalSetup?.issue != null) throw Error("Personal setup failed");
-      return snapshot.personalSetup?.state === "ready";
-    },
-    undefined,
-    { timeout: 80_000 },
+    80_000,
   );
   children = descendantPids(processTable(), launched!.pid!);
   const deployments = await readdir(path.join(data, "deployments"));
