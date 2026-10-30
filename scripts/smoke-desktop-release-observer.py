@@ -20,6 +20,7 @@ def visible_window(pid):
     cf.CFNumberGetValue.argtypes = [c.c_void_p, c.c_int, c.c_void_p]
     cf.CFNumberGetValue.restype = c.c_bool
     cf.CFRelease.argtypes = [c.c_void_p]
+    cf.CFRelease.restype = None
 
     def number(window, key, kind, storage):
         value = cf.CFDictionaryGetValue(window, c.c_void_p.in_dll(cg, key).value)

@@ -32,6 +32,7 @@ const roots = new Set<number>();
 const children = new Set<number>();
 let app: ChildProcess | undefined;
 let quitting = false;
+let passed = false;
 let installed: string | undefined;
 let step = "preparing the isolated packaged app";
 const failure = new AbortController();
@@ -261,9 +262,7 @@ try {
   await bounded("captured desktop children did not exit", 12_000, () =>
     command("/usr/bin/python3", [observer, "exit", ...[...children].map(String)], 11_000),
   );
-  console.log(
-    `Desktop external launch check passed in ${((performance.now() - started) / 1000).toFixed(1)}s`,
-  );
+  passed = true;
 } catch (error) {
   const message = `${step}: ${String(error)}`;
   console.error(message);
@@ -286,8 +285,13 @@ try {
     () => {},
   );
   killCaptured();
-  clearTimeout(hardDeadline);
   if (installed) await command("sudo", ["-n", "rm", "-rf", installed], 10_000);
   // Preserve evidence when the caller did not provide an external artifacts directory.
   if (values["artifacts-dir"]) await rm(home, { recursive: true, force: true });
+  clearTimeout(hardDeadline);
 }
+
+if (passed)
+  console.log(
+    `Desktop external launch check passed in ${((performance.now() - started) / 1000).toFixed(1)}s`,
+  );
