@@ -170,8 +170,9 @@ as `.claude/skills/`.
 - Work in your own worktree. **One request is one PR** on
   [steerlabs/opensteer](https://github.com/steerlabs/opensteer), with a
   conventional title (`fix:`, `feat:`, `docs:`, `refactor:`, `test:`, `chore:`).
-  Split it only where part needs Tim's approval or a reviewer couldn't follow it
-  as one change. A bug you find along the way is its own PR.
+  It includes whatever it takes to land: a bug the change exposes, a flaky test
+  blocking its CI, a tooling problem in the way. Say so in the body. Split only
+  when Tim asks or part of it needs his approval.
 - When you split a request across agents, each works on its own branch in its
   own worktree and opens no PR. You merge their branches into one PR branch and
   open one PR. Every PR runs CI on one shared queue, so a dozen small PRs block
