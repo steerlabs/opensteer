@@ -166,6 +166,7 @@ describe("Codex voice provider", () => {
     await call.say("Hello");
     expect(f.rpc["voice.say"]).toHaveBeenCalledWith({
       environmentId: "environment",
+      harnessInstanceId: "account",
       sessionId: voiceTestId,
       text: "Hello",
     });
@@ -264,6 +265,7 @@ describe("Codex voice provider", () => {
     expect(f.rpc["voice.stop"]).toHaveBeenCalledWith({
       sessionId: voiceTestId,
       environmentId: "environment",
+      harnessInstanceId: "account",
     });
     admit({ ok: true, data: { answer: "late" } });
     await opening.catch(() => {});
@@ -343,6 +345,7 @@ describe("Codex voice provider", () => {
     expect(f.rpc["voice.stop"]).toHaveBeenCalledWith({
       sessionId: voiceTestId,
       environmentId: "environment",
+      harnessInstanceId: "account",
     });
     expect(f.rpc["voice.start"]).not.toHaveBeenCalled();
     expect(f.track.stop).toHaveBeenCalledTimes(1);

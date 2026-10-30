@@ -69,7 +69,11 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
           unavailable === "insecure-context" ? unavailable : "connection-failed",
         );
       const sessionId = VoiceSessionIdSchema.parse(input.createId());
-      const address = { environmentId: input.environmentId, sessionId };
+      const address = {
+        environmentId: input.environmentId,
+        harnessInstanceId: input.harnessInstanceId,
+        sessionId,
+      };
       let local: MediaStream | null = null;
       let pc: RTCPeerConnection | null = null;
       let channel: RTCDataChannel | null = null;
@@ -305,7 +309,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         if (!sdp) throw new VoiceStartError("connection-failed");
         hostMayHoldCall = true;
         const starting = input.rpc["voice.start"](
-          { ...address, harnessInstanceId: input.harnessInstanceId, offer: sdp },
+          { ...address, offer: sdp },
           { signal },
         );
         // Stop once more after a late admission, in case the first stop overtook start.
