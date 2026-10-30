@@ -82,6 +82,19 @@ test("read-only preflight, secret-free discovery and only stable publication app
     /always/,
   );
 });
+test("signing puts its ephemeral keychain on the user search list before building", () => {
+  const run = workflow.jobs.build.steps.find(
+    (step) => step.name === "Sign, notarize and staple desktop",
+  ).run;
+  const added = run.indexOf('security list-keychains -d user -s "$keychain"');
+  assert.ok(added >= 0, "codesign --keychain needs the keychain on the search list on macOS 15");
+  assert.ok(run.indexOf("security import") < added);
+  assert.ok(added < run.indexOf("pnpm desktop:build-release"));
+  assert.match(
+    workflow.jobs.build.steps.find((step) => step.name === "Delete signing material").run,
+    /security delete-keychain "\$keychain"/,
+  );
+});
 test("the macOS build installs the Go toolchain every bundled Go module needs before building", () => {
   const steps = workflow.jobs.build.steps;
   const setupGo = steps.findIndex((step) => step.uses?.startsWith("actions/setup-go@"));

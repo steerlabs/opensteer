@@ -181,6 +181,10 @@ jobs:
           security unlock-keychain -p '' "$keychain"
           security import "$RUNNER_TEMP/release-keys/signing.pem" -k "$keychain" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k '' "$keychain" >/dev/null
+          # On macOS 15 codesign --keychain still fails with "could not be found in
+          # the keychain" unless that keychain is on the user search list.
+          # Deleting the keychain afterwards also removes it from the list.
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)".*/\1/p')
           echo "::add-mask::$identity"
           export OPENSTEER_RELEASE_SIGNING_IDENTITY="$identity" CSC_KEYCHAIN="$keychain"
