@@ -68,7 +68,7 @@ of you, say so plainly and get sign-off before breaking it.
 
 ## Ways to hurt yourself
 
-1. **Touching the live install.** `~/Library/Application Support/OpenSteer Beta`
+1. **Touching the live install.** `~/Library/Application Support/Opensteer Beta`
    and `~/Library/Application Support/Opensteer` hold Tim's real installed apps,
    with their databases and credentials. Never point dev, tests or scripts at
    them, and never migrate, repair or delete anything there.
