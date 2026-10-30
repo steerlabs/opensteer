@@ -423,6 +423,12 @@ export const IntegrationDashboardSchema = z.strictObject({
   isAdministrator: z.boolean(),
   providers: z.array(IntegrationProviderManifestSchema).max(16),
   hostedOAuthDisclosure: z.string().min(1).max(1_000),
+  /**
+   * Set by a Host that begins a Personal remote session's sign-in when its
+   * provider returns to the Account service. An older Host omits it and
+   * refuses every remote sign-in.
+   */
+  remoteAccountSignIn: z.literal(true).optional(),
 });
 export const IntegrationDashboardViewSchema = z.object({
   ...IntegrationDashboardSchema.shape,

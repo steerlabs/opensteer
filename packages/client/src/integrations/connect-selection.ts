@@ -136,9 +136,9 @@ export function initialConnectSource(
  * eligible app outranks the code.
  *
  * A remote session's Host reports CANONICAL_SURFACE_REQUIRED when its selected
- * app returns to the Host computer; another app that can finish here is then
- * offered by choice. An older Host reports it for every remote sign-in, with a
- * selection that could finish anywhere, and that refusal stands.
+ * app returns to the Host computer; one that says it begins remote sign-ins
+ * through the Account service then has another app offered by choice. An older
+ * Host reports it for every remote sign-in, and that refusal stands.
  */
 export function connectAvailability(
   dashboard: IntegrationDashboard,
@@ -148,8 +148,7 @@ export function connectAvailability(
   const authorization = dashboard.providerAuthorizations[provider] ?? null;
   const options = connectSignInOptions(dashboard, provider);
   if (authorization?.code === "CANONICAL_SURFACE_REQUIRED") {
-    const selected = authorization.selectedSource;
-    return options.length > 0 && selected !== null && oauthSourceFinishesOnHostComputer(selected)
+    return dashboard.remoteAccountSignIn === true && options.length > 0
       ? { kind: "ready" }
       : { detail: authorization.detail, kind: "other-surface" };
   }

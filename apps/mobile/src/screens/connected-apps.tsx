@@ -13,7 +13,7 @@ import {
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { useIsFocused, type StaticScreenProps } from "@react-navigation/native";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AccessibilityInfo,
   Alert,
@@ -101,6 +101,9 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
   /** The row whose action is under way; every other action waits for it. */
   const [busy, setBusy] = useState<string | null>(null);
   const [foreground, setForeground] = useState(AppState.currentState === "active");
+  /** The GitHub account sent to choose repositories, checked again when the person is back. */
+  const awaitingRepositories = useRef<{ readonly id: string; readonly title: string } | null>(null);
+  const returned = useRef<() => void>(() => undefined);
 
   const load = useCallback(async () => {
     try {
@@ -118,9 +121,10 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
   }, [hostClient, hostName]);
 
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", (next) =>
-      setForeground(next === "active"),
-    );
+    const subscription = AppState.addEventListener("change", (next) => {
+      setForeground(next === "active");
+      if (next === "active") returned.current();
+    });
     return () => subscription.remove();
   }, []);
 
@@ -148,6 +152,42 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
     }
   };
 
+  /**
+   * GitHub's repository step: the Host counts a GitHub account connected only
+   * once a check finds a repository it can reach. Until then GitHub is where
+   * repositories are chosen, and coming back checks again.
+   */
+  const finishRepositories = async (
+    account: { readonly id: string; readonly title: string },
+    openGitHub: boolean,
+  ): Promise<string | null> => {
+    const access = unwrapRpcResult(
+      await hostClient.rpc["integration.repositoryAccess.check"]({ connectionId: account.id }),
+    );
+    await load();
+    if (access.ready) {
+      awaitingRepositories.current = null;
+      return `${account.title} is connected.`;
+    }
+    awaitingRepositories.current = account;
+    if (!openGitHub) return null;
+    const url = access.installationUrl ?? access.installations[0]?.configureUrl ?? null;
+    if (url === null) {
+      throw new Error(
+        "This sign-in app has no GitHub App installation link. Choose repositories from Opensteer on a computer.",
+      );
+    }
+    await Linking.openURL(url);
+    return null;
+  };
+
+  useEffect(() => {
+    returned.current = () => {
+      const account = awaitingRepositories.current;
+      if (account !== null) void run(account.id, () => finishRepositories(account, false));
+    };
+  });
+
   const signIn = (app: ConnectedAppModel, key: string) => {
     const start = (source: IntegrationOAuthApplicationSource) =>
       void run(key, async () => {
@@ -160,9 +200,15 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
         const dashboard = await load();
         const connection =
           dashboard === null ? null : authorizationConnection(dashboard, status.connectionId);
-        return connection === null
-          ? `${app.name} is connected.`
-          : `${integrationAccountTitle(connection)} is connected.`;
+        if (connection === null) {
+          throw new Error(
+            `${app.name} reported success, but no connected account is recorded here. Try again.`,
+          );
+        }
+        const account = { id: connection.id, title: integrationAccountTitle(connection) };
+        return connection.status === "connected"
+          ? `${account.title} is connected.`
+          : finishRepositories(account, true);
       });
     if (app.signIn?.kind === "direct") {
       start(app.signIn.source);
@@ -179,24 +225,7 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
   };
 
   const chooseRepositories = (account: ConnectedAccountRow) =>
-    void run(account.id, async () => {
-      const access = unwrapRpcResult(
-        await hostClient.rpc["integration.repositoryAccess.check"]({ connectionId: account.id }),
-      );
-      if (access.ready) {
-        await load();
-        return `${account.title} is connected.`;
-      }
-      // GitHub is where repositories are chosen; coming back reads the list again.
-      const url = access.installationUrl ?? access.installations[0]?.configureUrl ?? null;
-      if (url === null) {
-        throw new Error(
-          "This sign-in app has no GitHub App installation link. Choose repositories from Opensteer on a computer.",
-        );
-      }
-      await Linking.openURL(url);
-      return null;
-    });
+    void run(account.id, () => finishRepositories(account, true));
 
   const disconnect = (account: ConnectedAccountRow) =>
     Alert.alert(account.title, "Agents stop using this account. You can connect it again.", [
@@ -349,6 +378,7 @@ function AppGroup(props: {
           )),
           signsIn ? (
             <Pressable
+              accessibilityLabel={`Add a ${app.name} account`}
               accessibilityRole="button"
               accessibilityState={{ busy: busy === addKey, disabled: busy !== null }}
               disabled={busy !== null}

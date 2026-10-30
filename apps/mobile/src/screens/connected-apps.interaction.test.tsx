@@ -9,8 +9,10 @@ import { unwrapRpcResult } from "@opensteer/client/host";
 
 const state = vi.hoisted(() => ({
   alert: null as null | { buttons: { onPress?: () => void; text: string }[]; title: string },
+  appState: (_next: string) => undefined as void,
   begin: null as unknown,
   hostClient: null as unknown,
+  openURL: null as unknown,
 }));
 
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
@@ -25,8 +27,14 @@ vi.mock("react-native", () => ({
       state.alert = { buttons, title };
     },
   },
-  AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
-  Linking: { openURL: vi.fn(async () => undefined) },
+  AppState: {
+    addEventListener: (_event: string, listener: (next: string) => void) => {
+      state.appState = listener;
+      return { remove: () => undefined };
+    },
+    currentState: "active",
+  },
+  Linking: { openURL: (url: string) => (state.openURL as (url: string) => Promise<void>)(url) },
   Pressable: ({
     accessibilityLabel,
     children,
@@ -120,23 +128,7 @@ describe("Connected apps on the phone", () => {
         definitionId === "google-calendar" && accountIdentifier === "alex@example.com",
     );
     if (!broken) throw new Error("The mock seeds a Google Calendar account needing sign-in.");
-    // The phone's own sign-in, against the mock Host: begin, then read the attempt.
-    state.begin = vi.fn(async (input: { applicationSource: unknown; definitionId: string }) => {
-      const started = await client.dispatch({
-        idempotencyKey: "connected-apps-test",
-        input: {
-          definitionId: input.definitionId,
-          exactApplicationSource: input.applicationSource as never,
-          returnPath: "/",
-          surface: "native",
-        },
-        type: "integration.authorization.begin",
-      });
-      if (started.type !== "integration.authorization.begin") throw new Error("begin");
-      return unwrapRpcResult(
-        await client.rpc["integration.authorization.get"]({ attemptId: started.attemptId }),
-      );
-    });
+    state.begin = vi.fn(phoneSignIn(client));
     const container = await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Google Calendar"));
     const row = [...container.querySelectorAll<HTMLElement>("[role=button]")].find((candidate) =>
@@ -159,6 +151,47 @@ describe("Connected apps on the phone", () => {
     await vi.waitFor(() =>
       expect(container.textContent).toContain("alex@example.com is connected."),
     );
+  });
+
+  // The ways it could fail: a GitHub sign-in announced as connected while the
+  // Host still waits for a repository it can reach; or the person chooses
+  // repositories in GitHub and comes back to the same unfinished account.
+  it("finishes a GitHub sign-in in GitHub's repository step, and checks again on return", async () => {
+    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    await client.load();
+    state.hostClient = client;
+    state.begin = vi.fn(phoneSignIn(client));
+    state.openURL = vi.fn(async () => undefined);
+    const installationUrl = "https://github.com/apps/opensteer/installations/new";
+    const check = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: { installationUrl, installations: [], ready: false },
+        ok: true,
+      })
+      .mockResolvedValue({ data: { installationUrl, installations: [], ready: true }, ok: true });
+    const rpc = client.rpc;
+    Object.defineProperty(client, "rpc", {
+      value: new Proxy(rpc, {
+        get: (target, key) =>
+          key === "integration.repositoryAccess.check" ? check : Reflect.get(target, key),
+      }),
+    });
+    const container = await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("GitHub REST"));
+
+    await act(async () =>
+      container.querySelector<HTMLElement>('[aria-label="Add a GitHub REST account"]')?.click(),
+    );
+
+    await vi.waitFor(() => expect(state.openURL).toHaveBeenCalledWith(installationUrl));
+    expect(check).toHaveBeenCalledOnce();
+    expect(container.textContent).not.toContain("is connected.");
+
+    await act(async () => state.appState("active"));
+
+    await vi.waitFor(() => expect(container.textContent).toContain("is connected."));
+    expect(check).toHaveBeenCalledTimes(2);
   });
 
   it("disconnects an account only once the person confirms", async () => {
@@ -196,4 +229,24 @@ async function render(): Promise<HTMLElement> {
     ),
   );
   return container;
+}
+
+/** The phone's own sign-in against the mock Host: begin, then read the attempt back. */
+function phoneSignIn(client: MockHostClient) {
+  return async (input: { applicationSource: unknown; definitionId: string }) => {
+    const started = await client.dispatch({
+      idempotencyKey: `connected-apps-test:${input.definitionId}`,
+      input: {
+        definitionId: input.definitionId,
+        exactApplicationSource: input.applicationSource as never,
+        returnPath: "/",
+        surface: "native",
+      },
+      type: "integration.authorization.begin",
+    });
+    if (started.type !== "integration.authorization.begin") throw new Error("begin");
+    return unwrapRpcResult(
+      await client.rpc["integration.authorization.get"]({ attemptId: started.attemptId }),
+    );
+  };
 }

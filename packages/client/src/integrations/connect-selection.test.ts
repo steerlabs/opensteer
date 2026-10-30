@@ -148,17 +148,22 @@ describe("connectAvailability", () => {
   });
 
   it("keeps an older Host's refusal of every remote sign-in", () => {
-    expect(
-      connectAvailability(
-        dashboard({
-          code: "CANONICAL_SURFACE_REQUIRED",
-          remote: true,
-          selected: hosted,
-          sources: [hosted],
-        }),
-        "slack",
-      ).kind,
-    ).toBe("other-surface");
+    // An older Host does not say it begins remote sign-ins, whichever app it
+    // selected and whichever others it offers.
+    for (const selected of [hosted, loopbackSource]) {
+      expect(
+        connectAvailability(
+          dashboard({
+            code: "CANONICAL_SURFACE_REQUIRED",
+            olderHost: true,
+            remote: true,
+            selected,
+            sources: [loopbackSource, hosted],
+          }),
+          "slack",
+        ).kind,
+      ).toBe("other-surface");
+    }
   });
 });
 
@@ -287,6 +292,8 @@ function connection(id: string, status: "connected" | "needs-attention") {
 function dashboard(input: {
   readonly code?: IntegrationDashboard["providerAuthorizations"]["slack"]["code"];
   readonly hostedOAuthStatus?: IntegrationDashboard["providerAuthorizations"]["slack"]["hostedOAuthStatus"];
+  /** A Host from before remote sign-ins through the Account service. */
+  readonly olderHost?: boolean;
   readonly remote?: boolean;
   readonly selected?: IntegrationDashboard["providerAuthorizations"]["slack"]["selectedSource"];
   readonly sources?: IntegrationDashboard["providerAuthorizations"]["slack"]["availableSources"];
@@ -318,6 +325,7 @@ function dashboard(input: {
       },
     },
     providers: [manifest()],
+    ...(input.olderHost ? {} : { remoteAccountSignIn: true }),
   } as unknown as IntegrationDashboard;
 }
 

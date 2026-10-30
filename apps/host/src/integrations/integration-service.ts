@@ -317,6 +317,7 @@ export class IntegrationService {
       isAdministrator,
       providerAuthorizations,
       providers: this.#providerManifests,
+      remoteAccountSignIn: true,
     });
   }
 
