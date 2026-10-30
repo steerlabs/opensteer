@@ -129,7 +129,8 @@ async function waitForSelection(deploymentId: string, signal: AbortSignal): Prom
     const finish = (error?: unknown) => {
       observer.close();
       signal.removeEventListener("abort", aborted);
-      error ? reject(error) : resolve();
+      if (error) reject(error);
+      else resolve();
     };
     const aborted = () => finish(signal.reason);
     signal.addEventListener("abort", aborted, { once: true });
