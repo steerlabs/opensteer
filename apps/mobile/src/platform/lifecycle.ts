@@ -11,6 +11,7 @@ export interface AppStateLike {
 }
 
 export interface NetworkReading {
+  readonly type?: string | undefined;
   readonly isConnected?: boolean | undefined;
   readonly isInternetReachable?: boolean | undefined;
 }
@@ -66,14 +67,37 @@ export function createMobileLifecycle(options: {
     for (const listener of networkListeners) listener(state);
   };
 
-  const readNetwork = (): void => {
+  let lastReading: NetworkReading | undefined;
+  let networkRevision = 0;
+
+  // A foreground reread that finds the path it left is the foreground itself,
+  // which the client already recovers from by probing or replacing. Announcing
+  // it as well would replace the sockets that recovery just kept or reopened.
+  // A listener notification, or a reread that finds another path, still goes out.
+  const readNetwork = (foreground = false): void => {
+    const revision = networkRevision;
     void network
       .getNetworkStateAsync()
-      .then((reading) => publishNetwork(networkStateOf(reading)))
+      .then((reading) => {
+        if (revision !== networkRevision) return;
+        const previous = lastReading;
+        lastReading = reading;
+        if (
+          foreground &&
+          previous?.type &&
+          reading.type === previous.type &&
+          reading.isConnected === previous.isConnected &&
+          reading.isInternetReachable === previous.isInternetReachable
+        )
+          return;
+        publishNetwork(networkStateOf(reading));
+      })
       .catch(onReadFailure);
   };
 
   const networkSubscription = network.addNetworkStateListener((reading) => {
+    networkRevision += 1;
+    lastReading = reading;
     publishNetwork(networkStateOf(reading));
   });
 
@@ -82,7 +106,7 @@ export function createMobileLifecycle(options: {
     if (visibility === snapshot.visibility) return;
     snapshot = { ...snapshot, visibility };
     if (visibility === "foreground") {
-      readNetwork();
+      readNetwork(true);
       for (const listener of foregroundListeners) listener();
       return;
     }

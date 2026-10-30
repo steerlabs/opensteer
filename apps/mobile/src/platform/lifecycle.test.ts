@@ -89,6 +89,29 @@ describe("createMobileLifecycle", () => {
     lifecycle.dispose();
   });
 
+  it("coalesces an unchanged foreground reread but forwards a handover", async () => {
+    const appState = new FakeAppState();
+    const network = new FakeNetwork();
+    network.reading = { type: "WIFI", isConnected: true, isInternetReachable: true };
+    const lifecycle = createMobileLifecycle({ appState, network });
+    await settle();
+    const seen: string[] = [];
+    lifecycle.onNetworkChange((state) => seen.push(state));
+    appState.change("background");
+    appState.change("active");
+    await settle();
+    expect(seen).toEqual([]);
+    network.emit({ type: "CELLULAR", isConnected: true, isInternetReachable: true });
+    expect(seen).toEqual(["online"]);
+    // The phone moved back to Wi-Fi while suspended, with nothing delivered.
+    appState.change("background");
+    network.reading = { type: "WIFI", isConnected: true, isInternetReachable: true };
+    appState.change("active");
+    await settle();
+    expect(seen).toEqual(["online", "online"]);
+    lifecycle.dispose();
+  });
+
   it("forwards every network notification, repeats included", () => {
     // A Wi-Fi to cellular handover reports `online` on both sides of the move
     // and still invalidates every open socket, so a repeat is a notification

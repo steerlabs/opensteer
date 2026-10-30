@@ -501,7 +501,8 @@ needs from a platform: `getSnapshot`, `onBackground`, `onForeground`, `onNetwork
   repeats and the client replaces every channel on each one; the single exception is a repeat of
   `offline`. The Expo adapter (`apps/mobile/src/platform/lifecycle.ts`) also re-reads network state
   on every foreground, because `expo-network`'s listener is told nothing while the process is
-  suspended. Only `AppState === "active"` is foreground: `inactive` is the switcher or a system
+  suspended. A foreground reread matching the last known network type and reachability does not
+  emit a second notification; listener notifications still always do. Only `AppState === "active"` is foreground: `inactive` is the switcher or a system
   prompt, and treating it as backgrounded would drop sockets whenever a notification slides down.
 - **A quiet channel is asked whether it is there.** While the client reads, a synchronized
   Workspace channel whose own subscription has sent nothing for `realtimeIdleProbeMs` (25s) gets a
