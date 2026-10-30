@@ -1,3 +1,4 @@
+import { createCaptureRecordWriter } from "./capture-records.mjs";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -64,6 +65,9 @@ const version =
   scenario === "version-mismatch"
     ? "0.0.0"
     : createRequire(import.meta.url)("@openai/codex/package.json").version;
+const writeCaptureRecord = capturePath ? createCaptureRecordWriter(capturePath) : undefined;
+let captureRunId = null;
+
 const lines = readline.createInterface({ input: process.stdin });
 let initialized = false;
 let modelListRequests = 0;
@@ -496,6 +500,7 @@ function handleClientMethod(message) {
         ephemeralThreads.add(threadId);
       } else if (process.argv.includes("--unique-threads"))
         threadId = `codex-thread-${randomUUID()}`;
+      captureRunId = threadId;
       threadConfig = message.params.config ?? {};
       if (process.env.FAKE_CODEX_TRUST_WRITE_PATH && message.params.sandbox !== "read-only") {
         appendFileSync(process.env.FAKE_CODEX_TRUST_WRITE_PATH, "mutated\n");
@@ -512,6 +517,7 @@ function handleClientMethod(message) {
     case "thread/resume":
       requireInitialized(message);
       threadId = message.params.threadId;
+      captureRunId = threadId;
       threadConfig = message.params.config ?? {};
       // Codex keeps a thread's reading with its history, and on resuming it
       // restates that reading, naming the thread's last turn, before any new
@@ -2530,6 +2536,13 @@ function send(message) {
 }
 
 function capture(message) {
+  if (capturePath && process.argv.includes("--capture-records")) {
+    if (message.params?.threadId) captureRunId = message.params.threadId;
+    // initialize has no thread yet. The immutable process identity correlates
+    // its credentials with the later thread/start or thread/resume record.
+    writeCaptureRecord(message, captureRunId);
+    return;
+  }
   if (capturePath)
     appendFileSync(
       capturePath,

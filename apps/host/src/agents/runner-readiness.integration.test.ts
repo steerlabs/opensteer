@@ -131,6 +131,7 @@ const evidence: unknown[] = [];
       const arguments_ = [
         `--fixture=${fixture}`,
         `--scratch=${scratch}`,
+        "--capture-records",
         `--capture=${capture}`,
         `--preparation-release=${release}`,
         "--scenario=happy",

@@ -149,6 +149,7 @@ integration("Runs that outlive their connection", () => {
               `--scenario=${input.scenario ?? "long-stream-held"}`,
               "--unique-threads",
               `--release-file=${releaseFile}`,
+              "--capture-records",
               `--capture=${captureFile}`,
               "--capture-process-id",
               ...(input.engineArguments ?? []),
