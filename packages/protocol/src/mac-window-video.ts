@@ -6,29 +6,31 @@ import {
   MacWindowTargetSchema,
   MacDisplayWarmSchema,
   DisplayMaxLongSideSchema,
-  DisplayControlIdSchema,
   DisplayInputSchema,
   DisplayInputResultSchema,
   DisplayEditingSchema,
   DisplayClipboardSchema,
-  DisplayViewerControlSchema,
 } from "./display-stream.js";
 
 export const MacOwnerSourceSchema = DisplaySourceSchema.options[1];
-export const MacOwnerControlParamsSchema = z.strictObject({
-  streamId: DisplayStreamIdSchema,
-  source: MacOwnerSourceSchema,
-  controlId: DisplayControlIdSchema,
-  action: z.enum(["acquire", "release"]),
-  access: z.literal("read-write"),
-});
+/**
+ * Owner input version 2 is shared input: the person's batches go into an app
+ * alongside the agent's actions. Version 1 was an exclusive Take over lease and
+ * is no longer offered or accepted.
+ */
+export const macOwnerInputVersion = 2;
+/** The person's input for one owner view, in the Host's single person lane for its stream. */
 export const MacOwnerInputParamsSchema = z.strictObject({
   streamId: DisplayStreamIdSchema,
   source: MacOwnerSourceSchema,
   ...DisplayInputSchema.shape,
 });
+/** The viewer holding the person lane left mid-gesture: release what it holds and drop the rest. */
+export const MacOwnerInputResetParamsSchema = z.strictObject({
+  streamId: DisplayStreamIdSchema,
+  source: MacOwnerSourceSchema,
+});
 export const MacOwnerInputMessageSchema = z.union([
-  DisplayViewerControlSchema,
   DisplayInputResultSchema,
   DisplayEditingSchema,
   DisplayClipboardSchema,
@@ -36,16 +38,15 @@ export const MacOwnerInputMessageSchema = z.union([
 export const MacOwnerInputEventSchema = z.strictObject({
   streamId: DisplayStreamIdSchema,
   source: MacOwnerSourceSchema,
-  controlId: DisplayControlIdSchema,
   message: MacOwnerInputMessageSchema,
 });
 
 export const macWindowVideoParams = {
-  "display.control": MacOwnerControlParamsSchema,
   "display.input": MacOwnerInputParamsSchema,
+  "display.input-reset": MacOwnerInputResetParamsSchema,
   "display.resolve": z.strictObject({
     source: DisplaySourceSchema,
-    ownerInputVersion: z.literal(1).optional(),
+    ownerInputVersion: z.literal(macOwnerInputVersion).optional(),
   }),
   "display.start": z.strictObject({
     streamId: DisplayStreamIdSchema,
@@ -66,8 +67,8 @@ export const macWindowVideoParams = {
   "display.attach": z.strictObject({ token: z.string().uuid() }),
 };
 export const macWindowVideoResults = {
-  "display.control": DisplayViewerControlSchema.omit({ type: true }),
   "display.input": DisplayInputResultSchema.omit({ type: true }),
+  "display.input-reset": z.strictObject({}),
   "display.resolve": z.strictObject({
     target: MacWindowTargetSchema,
   }),

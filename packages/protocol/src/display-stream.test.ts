@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  DisplayControlIdSchema,
   DisplayDataTicketClaimsSchema,
   DisplayDataServerMessageSchema,
   DisplayInputEventsSchema,
@@ -16,6 +15,8 @@ import {
   encodeDisplayMediaFrame,
   encodeDisplayViewerFrame,
   DisplayViewerStateSchema,
+  DisplayInputResultSchema,
+  LegacyDisplayViewerControlSchema,
   displayViewerCloseCodes,
   isRetryableDisplayViewerClose,
 } from "./display-stream.js";
@@ -27,9 +28,8 @@ import {
 // Failure cases: unknown fields or bad IDs/fences; unsafe, fractional or out-of-range
 // numbers; mixed text variants; empty/oversize batches; key/codec mismatch; broken
 // byte order, UTF-8 or JSON; truncated/oversize envelopes; empty/oversize payloads.
-// Control timeout must be accepted without conflating it with transport loss.
 const streamId = "dsp_11111111-1111-4111-8111-111111111111";
-const controlId = "dcl_22222222-2222-4222-8222-222222222222";
+const legacyControlId = "dcl_22222222-2222-4222-8222-222222222222";
 const sessionId = "cus_33333333-3333-4333-8333-333333333333";
 const fence = {
   auxiliaryStreamId: "rax_11111111-1111-4111-8111-111111111111",
@@ -52,7 +52,7 @@ const viewerKey = {
 const mediaKey = { streamId, ...viewerKey };
 const delta = { generation: 1, sequence: 1, ptsUs: 156_789, key: false, width: 720, height: 1280 };
 const pointer = { kind: "pointer", phase: "down", x: 0, y: 1, t: 1.25 };
-const input = { controlId, geometry: 1, sequence: 0, events: [pointer] };
+const input = { geometry: 1, sequence: 0, events: [pointer] };
 
 function envelope(header: unknown, payload = new Uint8Array([0, 0, 0, 1, 0x41])) {
   const bytes = new TextEncoder().encode(JSON.stringify(header));
@@ -66,9 +66,7 @@ function envelope(header: unknown, payload = new Uint8Array([0, 0, 0, 1, 0x41]))
 describe("display identities and data ticket", () => {
   it("requires the complete integrations fence and distinct ticket purpose", () => {
     expect(DisplayStreamIdSchema.parse(streamId)).toBe(streamId);
-    expect(DisplayControlIdSchema.parse(controlId)).toBe(controlId);
-    expect(DisplayStreamIdSchema.safeParse(controlId).success).toBe(false);
-    expect(DisplayControlIdSchema.safeParse("dcl_invalid").success).toBe(false);
+    expect(DisplayStreamIdSchema.safeParse(legacyControlId).success).toBe(false);
     const claims = {
       ...fence,
       display: "main",
@@ -249,9 +247,49 @@ describe("display input and socket messages", () => {
       ).toBe(false);
   });
 
-  it("accepts a Host control timeout reason on the viewer socket", () => {
-    const message = { type: "display.control", state: "released", controlId, reason: "timed-out" };
-    expect(DisplayViewerServerMessageSchema.parse(message)).toEqual(message);
+  it("reads a previous-release viewer's Take over traffic without applying it", () => {
+    // Launch-release clients still send these; the socket must keep parsing them.
+    for (const action of ["acquire", "release"])
+      expect(DisplayViewerClientMessageSchema.parse({ type: "display.control", action })).toEqual({
+        type: "display.control",
+        action,
+      });
+    const legacy = { type: "display.input", ...input, controlId: legacyControlId };
+    expect(DisplayViewerClientMessageSchema.parse(legacy)).toEqual(legacy);
+    expect(
+      DisplayViewerClientMessageSchema.safeParse({ ...legacy, controlId: "dcl_invalid" }).success,
+    ).toBe(false);
+    // Its one answer is a refusal whose reason that release shows no words for.
+    const refusal = { type: "display.control", state: "refused", reason: "released-by-owner" };
+    expect(LegacyDisplayViewerControlSchema.parse(refusal)).toEqual(refusal);
+    for (const state of ["held", "released", "busy"])
+      expect(LegacyDisplayViewerControlSchema.safeParse({ ...refusal, state }).success).toBe(false);
+    // Current viewers never receive a control message.
+    expect(DisplayViewerServerMessageSchema.safeParse(refusal).success).toBe(false);
+  });
+
+  it("projects shared input and names why a batch was refused", () => {
+    const state = { type: "display.state", state: "live", generation: 1, width: 720, height: 1280 };
+    expect(DisplayViewerStateSchema.parse({ ...state, sharedInput: 1 }).sharedInput).toBe(1);
+    expect(DisplayViewerStateSchema.parse(state).sharedInput).toBeUndefined();
+    expect(DisplayViewerStateSchema.safeParse({ ...state, sharedInput: 2 }).success).toBe(false);
+    for (const reason of ["unavailable", "contended", "stale", "unsupported", "too-large"])
+      expect(
+        DisplayInputResultSchema.safeParse({
+          type: "display.input.result",
+          sequence: 0,
+          outcome: "refused",
+          reason,
+        }).success,
+      ).toBe(true);
+    expect(
+      DisplayInputResultSchema.safeParse({
+        type: "display.input.result",
+        sequence: 0,
+        outcome: "refused",
+        reason: "not-held",
+      }).success,
+    ).toBe(false);
   });
 
   it("pins the data ack and viewer JSON directions", () => {
@@ -262,9 +300,6 @@ describe("display input and socket messages", () => {
       false,
     );
     expect(DisplayViewerClientMessageSchema.safeParse({ ...ack, extra: 1 }).success).toBe(false);
-    expect(
-      DisplayViewerClientMessageSchema.parse({ type: "display.control", action: "acquire" }),
-    ).toEqual({ type: "display.control", action: "acquire" });
     for (const state of [
       "starting",
       "live",
@@ -282,11 +317,6 @@ describe("display input and socket messages", () => {
           width: 0,
           height: 0,
         }).success,
-      ).toBe(true);
-    for (const state of ["held", "released", "busy", "refused"])
-      expect(
-        DisplayViewerServerMessageSchema.safeParse({ type: "display.control", state, controlId })
-          .success,
       ).toBe(true);
     expect(DisplayViewerServerMessageSchema.safeParse(ack).success).toBe(false);
   });
@@ -309,14 +339,8 @@ describe("display integrations frames and capability", () => {
       },
       { ...common, display: "main", type: "host.integrations.display.stop" },
       { ...common, display: "main", type: "host.integrations.display.refresh" },
-      {
-        ...common,
-        sessionId,
-        controlId,
-        type: "host.integrations.display.control",
-        action: "acquire",
-      },
       { ...common, sessionId, ...input, type: "host.integrations.display.input" },
+      { ...common, sessionId, type: "host.integrations.display.input-reset" },
     ];
     for (const frame of frames) {
       expect(HostToIntegrationsModuleMessageSchema.parse(frame)).toEqual(frame);
@@ -327,6 +351,29 @@ describe("display integrations frames and capability", () => {
         HostToIntegrationsModuleMessageSchema.safeParse({ ...frame, module: "shell" }).success,
       ).toBe(false);
     }
+    expect(
+      HostToIntegrationsModuleMessageSchema.parse({ ...frames[0], sharedInput: 1 }),
+    ).toMatchObject({ sharedInput: 1 });
+    expect(
+      HostToIntegrationsModuleMessageSchema.safeParse({ ...frames[0], sharedInput: 2 }).success,
+    ).toBe(false);
+    // Input names no control: the Host never issues one.
+    expect(
+      HostToIntegrationsModuleMessageSchema.safeParse({
+        ...frames[3],
+        controlId: legacyControlId,
+      }).success,
+    ).toBe(false);
+    for (const type of ["host.integrations.display.control", "host.integrations.mac-owner.control"])
+      expect(
+        HostToIntegrationsModuleMessageSchema.safeParse({
+          ...common,
+          sessionId,
+          controlId: legacyControlId,
+          type,
+          action: "acquire",
+        }).success,
+      ).toBe(false);
     for (const change of [
       { maxLongSide: 319 },
       { maxLongSide: 1921 },
@@ -348,14 +395,15 @@ describe("display integrations frames and capability", () => {
       height: 1280,
       rotation: 0,
     };
-    const control = {
+    const result = {
       ...common,
-      controlId,
-      type: "runner.integrations.display.control-state",
       sessionId,
-      state: "held",
+      geometry: 1,
+      sequence: 4,
+      outcome: "dispatched",
+      type: "runner.integrations.display.input-result",
     };
-    for (const frame of [state, control]) {
+    for (const frame of [state, result]) {
       expect(IntegrationsModuleEventSchema.parse(frame)).toEqual(frame);
       expect(IntegrationsModuleEventSchema.safeParse({ ...frame, extra: true }).success).toBe(
         false,
@@ -371,9 +419,18 @@ describe("display integrations frames and capability", () => {
       IntegrationsModuleEventSchema.safeParse({ ...state, state: "unsupported" }).success,
     ).toBe(false);
     expect(IntegrationsModuleEventSchema.safeParse({ ...state, rotation: 45 }).success).toBe(false);
-    expect(IntegrationsModuleEventSchema.safeParse({ ...control, state: "busy" }).success).toBe(
-      false,
-    );
+    expect(
+      IntegrationsModuleEventSchema.safeParse({ ...result, controlId: legacyControlId }).success,
+    ).toBe(false);
+    expect(
+      IntegrationsModuleEventSchema.safeParse({
+        ...common,
+        controlId: legacyControlId,
+        type: "runner.integrations.display.control-state",
+        sessionId,
+        state: "held",
+      }).success,
+    ).toBe(false);
   });
 });
 
