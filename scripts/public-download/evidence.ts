@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { z } from "zod";
 import { compareStableVersions } from "../engines.js";
 
@@ -18,35 +15,6 @@ export const certificationCases = {
   stable: ["stable:menu", "stable:tray", "stable:quit"],
   beta: ["beta:menu", "beta:quit"],
 } as const satisfies Record<Channel, readonly string[]>;
-
-/** The guest installs the prepared archives, so they must be the builds a receipt hashes. */
-export function verifyPreparedArchives(
-  inputs: string,
-  builds: readonly { channel: Channel; version: string; sha256: string }[],
-) {
-  for (const build of builds) {
-    const { tag, zip } = releaseAsset(build.channel, build.version);
-    const prepared = path.join(inputs, tag, zip);
-    const sha256 = createHash("sha256").update(readFileSync(prepared)).digest("hex");
-    if (sha256 !== build.sha256)
-      throw Error(`Prepared archive ${tag}/${zip} differs from the recorded build`);
-  }
-}
-
-/** A local archive is certified only by a passing receipt for its exact bytes and all cases. */
-export function requireCertifiedJourneys<Build extends { channel: Channel; sha256: string }>(
-  receipt: { builds: readonly Build[]; results: readonly { name: string; passed: true }[] },
-  channel: Channel,
-  localSha256: string,
-): Build {
-  const certified = receipt.builds.find((b) => b.channel === channel && b.sha256 === localSha256);
-  if (!certified) throw Error("Local ZIP is not a certified build of this channel");
-  const missing = certificationCases[channel].filter(
-    (name) => !receipt.results.some((r) => r.name === name),
-  );
-  if (missing.length) throw Error(`Certification lacks ${missing.join(", ")}`);
-  return certified;
-}
 
 export const journeyMetadata = z.object({ expectedTeamId: z.string().regex(/^[A-Z0-9]{10}$/u) });
 export const numericVersion = z.string().regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u);

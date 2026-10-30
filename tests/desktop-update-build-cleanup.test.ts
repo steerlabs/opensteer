@@ -12,7 +12,8 @@ import {
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pruneCompletedBuild } from "../scripts/public-download/build-cleanup.js";
+import { commandEvidence, pruneCompletedBuild } from "../scripts/public-download/build-cleanup.js";
+import { runBounded } from "../scripts/command-runner.js";
 
 test("completed build pruning removes its registered source and extractions while preserving verified archives and receipts", async () => {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opensteer-build-prune-")));
@@ -71,6 +72,20 @@ test("completed build pruning removes its registered source and extractions whil
     expect(readFileSync(zip, "utf8")).toBe("verified archive");
     expect(git(["worktree", "list", "--porcelain"])).not.toContain(source);
     await pruneCompletedBuild(directory);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assessment evidence keeps stderr, where spctl and codesign report, and never stale output", async () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opensteer-build-evidence-")));
+  try {
+    const file = path.join(root, "spctl-assess.log");
+    writeFileSync(file, "/Old.app: accepted\nsource=Notarized Developer ID\n");
+    const assess = 'echo "$1: accepted" >&2; echo "source=Notarized Developer ID" >&2';
+    await expect(
+      commandEvidence(runBounded, file, "/bin/sh", ["-c", assess, "sh", "/A.app"]),
+    ).resolves.toBe("/A.app: accepted\nsource=Notarized Developer ID\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

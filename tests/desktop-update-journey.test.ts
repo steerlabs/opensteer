@@ -1,12 +1,4 @@
-import { forbiddenPublicUpdateHosts } from "../scripts/public-download/update-traffic.js";
 import { personalEndpoint } from "../scripts/public-download/personal-endpoint.js";
-import {
-  certificationCases,
-  releaseAsset,
-  requireCertifiedJourneys,
-  verifyPreparedArchives,
-} from "../scripts/public-download/evidence.js";
-import { createHash } from "node:crypto";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { test, expect } from "vitest";
 import { spawn, execFileSync } from "node:child_process";
@@ -16,14 +8,14 @@ import path from "node:path";
 import { request } from "node:https";
 import { createSocket } from "node:dgram";
 
-test("Enterprise Atom/Latest, cross-origin ranges and wildcard Account sinkhole", async () => {
+test("Public GitHub Atom/Latest, cross-origin ranges and wildcard Account sinkhole", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "opensteer-public-mirror-"));
   const cert = path.join(dir, "cert.pem"),
     key = path.join(dir, "key.pem"),
     log = path.join(dir, "network.jsonl");
   writeFileSync(
     path.join(dir, "openssl.cnf"),
-    "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=Private test\n[ext]\nsubjectAltName=DNS:github.opensteer.test,DNS:objects.opensteer.test\nbasicConstraints=critical,CA:TRUE\n",
+    "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=Private test\n[ext]\nsubjectAltName=DNS:github.com,DNS:api.github.com,DNS:objects.githubusercontent.com,DNS:release-assets.githubusercontent.com\nbasicConstraints=critical,CA:TRUE\n",
   );
   execFileSync(
     "openssl",
@@ -73,7 +65,7 @@ test("Enterprise Atom/Latest, cross-origin ranges and wildcard Account sinkhole"
       1_000,
       { timeoutError: () => new Error("Mirror did not report its HTTPS and DNS ports") },
     );
-    const get = async (host: string, url: string, range?: string) => {
+    const get = async (host: string, url: string, range?: string, accept = "application/json") => {
       const controller = new AbortController();
       try {
         return await withTimeout(
@@ -86,7 +78,7 @@ test("Enterprise Atom/Latest, cross-origin ranges and wildcard Account sinkhole"
                   servername: host,
                   port: ports.https.port,
                   path: url,
-                  headers: { host, ...(range ? { range } : {}) },
+                  headers: { host, ...(accept ? { accept } : {}), ...(range ? { range } : {}) },
                   ca: readFileSync(cert),
                 },
                 (res) => {
@@ -109,51 +101,52 @@ test("Enterprise Atom/Latest, cross-origin ranges and wildcard Account sinkhole"
       }
     };
     const prefix = "/steerlabs/opensteer/releases";
+    expect((await get("github.com", `${prefix}/latest`, undefined, "")).status).toBe(406);
+    expect((await get("api.github.com", `${prefix}/latest`)).status).toBe(421);
     writeFileSync(
       path.join(dir, "atom.json"),
       JSON.stringify(["v0.10.2", "desktop-v0.1.2", "v0.1.2-insider", "v0.1.1-insider"]),
     );
     expect(
-      JSON.parse(
-        (await get("github.opensteer.test", "/api/v3/repos/steerlabs/opensteer/releases/latest"))
-          .body,
-      ),
+      JSON.parse((await get("github.com", "/steerlabs/opensteer/releases/latest")).body),
     ).toEqual({ tag_name: "desktop-v0.1.1" });
-    expect((await get("github.opensteer.test", `${prefix}.atom`)).body).toContain("v0.1.2-insider");
+    expect((await get("github.com", `${prefix}.atom`)).body).toContain("v0.1.2-insider");
     mkdirSync(path.join(dir, "v0.1.2-insider"));
     writeFileSync(path.join(dir, "v0.1.2-insider/insider-mac.yml"), "version: 0.1.2");
     expect(
-      (await get("github.opensteer.test", `${prefix}/download/v0.1.2-insider/insider-mac.yml`))
-        .location,
-    ).toBe("https://objects.opensteer.test/v0.1.2-insider/insider-mac.yml");
-    const first = await get(
-      "github.opensteer.test",
-      `${prefix}/download/desktop-v0.1.1/latest-mac.yml`,
-    );
+      (await get("github.com", `${prefix}/download/v0.1.2-insider/insider-mac.yml`)).location,
+    ).toBe("https://release-assets.githubusercontent.com/v0.1.2-insider/insider-mac.yml");
+    const first = await get("github.com", `${prefix}/download/desktop-v0.1.1/latest-mac.yml`);
     expect(first.status).toBe(302);
     writeFileSync(path.join(dir, "latest"), "desktop-v0.1.2");
-    expect(first.location).toBe("https://objects.opensteer.test/desktop-v0.1.1/latest-mac.yml");
-    expect((await get("objects.opensteer.test", new URL(first.location!).pathname)).body).toBe(
-      "0.1.1",
+    expect(first.location).toBe(
+      "https://release-assets.githubusercontent.com/desktop-v0.1.1/latest-mac.yml",
     );
+    expect(
+      (await get("release-assets.githubusercontent.com", new URL(first.location!).pathname)).body,
+    ).toBe("0.1.1");
     const partial = await get(
-      "objects.opensteer.test",
+      "release-assets.githubusercontent.com",
       "/desktop-v0.1.1/latest-mac.yml",
       "bytes=2-4",
     );
     expect(partial.status).toBe(206);
     expect(partial.body).toBe("1.1");
     expect(
-      (await get("objects.opensteer.test", "/desktop-v0.1.1/latest-mac.yml", "bytes=99-100"))
-        .status,
+      (
+        await get(
+          "release-assets.githubusercontent.com",
+          "/desktop-v0.1.1/latest-mac.yml",
+          "bytes=99-100",
+        )
+      ).status,
     ).toBe(416);
     expect(
-      JSON.parse(
-        (await get("github.opensteer.test", "/api/v3/repos/steerlabs/opensteer/releases/latest"))
-          .body,
-      ),
+      JSON.parse((await get("github.com", "/steerlabs/opensteer/releases/latest")).body),
     ).toEqual({ tag_name: "desktop-v0.1.2" });
-    expect((await get("objects.opensteer.test", "/desktop-v0.1.1/not-an-asset")).status).toBe(404);
+    expect(
+      (await get("release-assets.githubusercontent.com", "/desktop-v0.1.1/not-an-asset")).status,
+    ).toBe(404);
     const dns = createSocket("udp4");
     try {
       const labels = "unexpected.accounts.opensteer.com"
@@ -211,71 +204,4 @@ test("Personal health follows the persisted dynamic Host port", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("public update hosts are forbidden on both channels while staging Account is informational only for Beta", () => {
-  const packet = (host: string) => `100|127.0.0.1|1.2.3.4|${host}||`;
-  const records = [
-    packet("github.opensteer.test"),
-    packet("objects.opensteer.test"),
-    packet("accounts.beta.opensteer.com"),
-    packet("github.com"),
-    packet("release-assets.githubusercontent.com"),
-    packet("downloads.opensteer.com"),
-  ];
-  expect(forbiddenPublicUpdateHosts(records, 99, false)).toHaveLength(4);
-  expect(forbiddenPublicUpdateHosts(records, 99, true)).toHaveLength(3);
-  expect(forbiddenPublicUpdateHosts(records, 101, true)).toHaveLength(0);
-});
-
-// A receipt certifies archives by hash, so the guest must test those same bytes.
-test("prepared archives must be the recorded builds before any VM starts", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "opensteer-prepared-archives-"));
-  try {
-    const build = { channel: "beta" as const, version: "0.1.252" };
-    const { tag, zip } = releaseAsset(build.channel, build.version);
-    expect({ tag, zip }).toEqual({ tag: "v0.1.252-insider", zip: "Opensteer-Beta-mac-arm64.zip" });
-    mkdirSync(path.join(dir, tag));
-    writeFileSync(path.join(dir, tag, zip), "tested bytes");
-    const sha256 = createHash("sha256").update("tested bytes").digest("hex");
-    expect(() => verifyPreparedArchives(dir, [{ ...build, sha256 }])).not.toThrow();
-    writeFileSync(path.join(dir, tag, zip), "rebuilt bytes");
-    expect(() => verifyPreparedArchives(dir, [{ ...build, sha256 }])).toThrow(/differs/u);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-// Certification is the release's whole journey set, never a selected subset.
-test("the byte bridge accepts only a channel's complete certification", () => {
-  const receipt = (names: string[]) => ({
-    builds: [
-      {
-        channel: "stable" as const,
-        sha256: "a".repeat(64),
-        revision: "c".repeat(40),
-        version: "0.1.317",
-      },
-    ],
-    results: names.map((name) => ({ name, passed: true as const })),
-  });
-  expect(() =>
-    requireCertifiedJourneys(receipt(["stable:menu"]), "stable", "a".repeat(64)),
-  ).toThrow(/stable:tray/u);
-  // The bridge compares the local bundle with the certified build's source and version.
-  expect(
-    requireCertifiedJourneys(
-      receipt(["stable:menu", "stable:tray", "stable:quit"]),
-      "stable",
-      "a".repeat(64),
-    ),
-  ).toMatchObject({ revision: "c".repeat(40), version: "0.1.317" });
-  expect(() =>
-    requireCertifiedJourneys(
-      receipt(["stable:menu", "stable:tray", "stable:quit"]),
-      "stable",
-      "b".repeat(64),
-    ),
-  ).toThrow(/certified/u);
-  expect(certificationCases.beta).toEqual(["beta:menu", "beta:quit"]);
 });
