@@ -50,8 +50,9 @@ import { color } from "./theme.js";
  * screen it was opened from.
  *
  * The sidebar is the stack's own `layout` (`SidebarShell`): one navigator,
- * one history, with the drawer around it. It is also the task list, so there
- * is no Tasks screen to go to.
+ * one history, with the drawer or docked column around it. It is also the
+ * task list and the list of tabs, so there is no Tasks screen to go to, and
+ * the route in front is the only selection either list marks.
  *
  * The back control shows its chevron and no word. iOS 26 draws every header
  * control on a glass capsule, and a capsule wide enough to hold the previous
@@ -118,7 +119,7 @@ const RootStack = createNativeStackNavigator({
       options: { ...destinationOptions(), title: "Specialists" },
     },
     // Every tab this person may see, from the sidebar like Specialists. A tab
-    // opened from here talks to the conversation Tabs was opened from.
+    // opened from here is shown alone.
     Tabs: { screen: TabsScreen, options: { ...destinationOptions(), title: "Tabs" } },
     // One specialist, over the directory. Its name is the large title, set
     // once it loads, so it folds into the bar as its work scrolls under it.
@@ -142,7 +143,8 @@ const RootStack = createNativeStackNavigator({
     // from the sidebar's magnifying glass.
     TaskSearch: { screen: TaskSearchScreen, options: { title: "Search" } },
     // A conversation's tabs and Mac apps, pushed over it: the grid, or one
-    // tab or app, which a tile pushes over the grid or over Tabs. The native
+    // tab or app, which a tile pushes over the grid; or one tab, app or phone
+    // alone, from Tabs or the sidebar. The native
     // Back (and swipe, and Android's back) returns, and leaving stops nothing.
     WorkspaceBrowser: { screen: WorkspaceBrowserScreen, options: { title: "Tabs" } },
     // The model picker starts compact and can expand for a long catalog. It
@@ -367,11 +369,7 @@ type OpensteerRootParamList = {
   readonly Settings: undefined;
   readonly Specialist: { readonly deploymentId: string; readonly workspaceId: string };
   readonly Specialists: { readonly deploymentId: string };
-  readonly Tabs: {
-    readonly deploymentId: string;
-    /** The conversation Tabs was opened from; null where there was none. */
-    readonly threadId: string | null;
-  };
+  readonly Tabs: { readonly deploymentId: string };
   readonly TaskSearch: { readonly deploymentId: string };
   readonly Thread: {
     readonly deploymentId: string;

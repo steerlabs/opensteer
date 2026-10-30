@@ -63,7 +63,6 @@ import {
   type PersonalSessionStore,
 } from "./personal-session-store.js";
 import { createDoneShelfFile, type DoneShelfFile } from "./done-shelf-file.js";
-import { createSidebarFile, type SidebarFile } from "./sidebar-file.js";
 import { createSelectionFile, type SelectionFile } from "./selection-file.js";
 import { createSignedOutFile, type SignedOutFile } from "./signed-out-file.js";
 import { createThreadDraftStore, type ThreadDraftStore } from "./thread-drafts.js";
@@ -108,7 +107,6 @@ export interface MobileClientOptions {
   readonly catalogFilePath: string;
   readonly doneShelfFilePath: string;
   readonly draftsFilePath: string;
-  readonly sidebarFilePath: string;
   readonly fetch: HostFetch;
   /** Everything that reaches a Host: what to present, what to attach, what epoch. */
   readonly hostPort: MobileHostPortFactory;
@@ -161,8 +159,6 @@ export class MobileClient {
   readonly directoryRefresh: AccountDirectoryRefreshService<void>;
   /** Whether the sidebar's Done shelf is open on this phone. */
   readonly doneShelf: DoneShelfFile;
-  /** Whether the reader hid the docked sidebar on this phone. */
-  readonly sidebar: SidebarFile;
   /** Unsent message text, per Thread, kept where a killed app cannot lose it. */
   readonly drafts: ThreadDraftStore;
   readonly oauth: NativeOAuthManager;
@@ -298,10 +294,6 @@ export class MobileClient {
     });
     this.doneShelf = createDoneShelfFile({
       filePath: options.doneShelfFilePath,
-      privateFiles: options.privateFiles,
-    });
-    this.sidebar = createSidebarFile({
-      filePath: options.sidebarFilePath,
       privateFiles: options.privateFiles,
     });
     this.#selectionFile = createSelectionFile({

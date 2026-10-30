@@ -71,7 +71,6 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         catalogFilePath: "/private/catalog.json",
         doneShelfFilePath: "/private/done.json",
         draftsFilePath: "/private/drafts.json",
-        sidebarFilePath: "/private/sidebar.json",
         selectionFilePath: "/private/selection.json",
         signedOutFilePath: "/private/signout.json",
         fetch: globalThis.fetch,

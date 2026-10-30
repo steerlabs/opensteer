@@ -9,9 +9,12 @@ import {
   taskTime,
   type HostClient,
   type HostSnapshot,
+  type PlaceItem,
   type TaskList,
   type TaskRow,
+  type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
+import { usePlaceList } from "@opensteer/client/react";
 import {
   memo,
   useCallback,
@@ -33,6 +36,9 @@ import {
   type TextInstance,
   View,
 } from "react-native";
+import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
+import { sameDestination } from "../browser/surface-route.js";
+import { tabSiteLabel } from "../browser/tab-tiles.js";
 import { deploymentStatusLabel } from "../client/deployment-rows.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { statusTone } from "../screens/deployment-row.js";
@@ -71,6 +77,8 @@ export interface SidebarActions {
   /** Closes the sidebar because the reader is going somewhere else. */
   readonly onLeave: () => void;
   readonly onNewTask: (deploymentId: string, workspaceId: string) => void;
+  /** Shows exactly this tab, app or phone, alone. */
+  readonly onOpenPlace: (destination: WorkspaceSurfaceDestination) => void;
   readonly onOpenTask: (deploymentId: string, threadId: string) => void;
   readonly onSearch: (deploymentId: string) => void;
   readonly onSettings: () => void;
@@ -177,11 +185,12 @@ function useDoneShelf(): readonly [boolean, () => void] {
 }
 
 /**
- * The sidebar is the reader's task list: Chat, New task, Specialists and Tabs, then
- * the tasks grouped by what each asks of the reader — Working, with anything
+ * The sidebar is the one place to move between everything: Chat, New task and
+ * Specialists; the Deployment's tabs, apps and phones, and All tabs; then the
+ * tasks grouped by what each asks of the reader — Working, with anything
  * waiting on them first; Ready; Done — and below them Settings and which
- * Deployment this is. Each row comes from the shared task list, so a task
- * reads the same here as on the web.
+ * Deployment this is. Each row comes from the shared task and place lists, so
+ * a task or tab reads the same here as on the web.
  *
  * Only an attached Host of the Deployment underneath is read. While the
  * selection is moving to another one, or that Host has refused this phone,
@@ -197,10 +206,10 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
    * neither isolates itself for a screen reader nor takes its focus.
    */
   readonly docked: boolean;
-  /** Hides the docked sidebar, as the reader's own choice. */
-  readonly onHide?: () => void;
   /** Where the reader left the list, kept by the shell across the drawer and the column. */
   readonly scroll: ScrollMemory;
+  /** The tab, app or phone in front, marked as the one open. */
+  readonly selectedPlace: WorkspaceSurfaceDestination | null;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
   readonly visible: boolean;
@@ -344,9 +353,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             onPress={() => actions.onSearch(deploymentId)}
           />
         )}
-        {docked && props.onHide !== undefined ? (
-          <IconButton icon="sidebar.left" label="Hide sidebar" onPress={props.onHide} />
-        ) : null}
       </View>
 
       <ScrollView
@@ -393,10 +399,22 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             label="Specialists"
             onPress={actions.onSpecialists}
           />
+        </View>
+
+        <View style={styles.nav}>
+          {hostClient === null || model === null ? (
+            <GroupHead title="Tabs" />
+          ) : (
+            <SidebarTabs
+              hostClient={hostClient}
+              onOpen={actions.onOpenPlace}
+              selected={props.selectedPlace}
+            />
+          )}
           <DestinationRow
             current={destination === "Tabs"}
             icon="rectangle.on.rectangle"
-            label="Tabs"
+            label="All tabs"
             onPress={actions.onTabs}
           />
         </View>
@@ -557,6 +575,91 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
 function noop(): void {}
 
 /**
+ * The tabs listed before All tabs: enough to switch between the ones in use
+ * without the task list moving out of reach. The one open is always listed.
+ */
+const sidebarTabLimit = 5;
+
+/**
+ * The Deployment's tabs, apps and phones as rows, in the shared place list's
+ * order. A row opens exactly its place; nothing is shown of who opened it or
+ * which task holds it, and no picture is asked for.
+ */
+const SidebarTabs = memo(function SidebarTabs(props: {
+  readonly hostClient: HostClient;
+  readonly onOpen: (destination: WorkspaceSurfaceDestination) => void;
+  readonly selected: WorkspaceSurfaceDestination | null;
+}): ReactNode {
+  const places = usePlaceList(props.hostClient);
+  const { selected } = props;
+  const shown = useMemo(() => {
+    const first = places.slice(0, sidebarTabLimit);
+    if (selected === null || first.some((place) => sameDestination(place.destination, selected)))
+      return first;
+    const open = places.find((place) => sameDestination(place.destination, selected));
+    return open === undefined ? first : [...first, open];
+  }, [places, selected]);
+  return (
+    <>
+      <GroupHead count={places.length} title="Tabs" />
+      {shown.map((place) => (
+        <PlaceRow
+          key={place.key}
+          onOpen={props.onOpen}
+          place={place}
+          selected={selected !== null && sameDestination(place.destination, selected)}
+        />
+      ))}
+    </>
+  );
+});
+
+const placeGlyph: Record<PlaceItem["kind"], SFSymbolName> = {
+  app: "desktopcomputer",
+  browser: "globe",
+  phone: "smartphone",
+};
+
+const placeKind: Record<PlaceItem["kind"], string> = {
+  app: "App",
+  browser: "Tab",
+  phone: "Phone",
+};
+
+const PlaceRow = memo(function PlaceRow(props: {
+  readonly onOpen: (destination: WorkspaceSurfaceDestination) => void;
+  readonly place: PlaceItem;
+  readonly selected: boolean;
+}): ReactNode {
+  const { onOpen, place, selected } = props;
+  const acting = place.occupants.some((occupant) => occupant.acting);
+  const unavailable = place.availability === "unavailable";
+  const where =
+    (place.kind === "browser" ? tabSiteLabel(place.site) : (place.device?.name ?? null)) ??
+    placeKind[place.kind];
+  const label = [
+    place.title,
+    where,
+    acting ? agentWorkingLabel.toLowerCase() : null,
+    unavailable ? "unavailable" : null,
+  ]
+    .filter((part) => part !== null)
+    .join(", ");
+  return (
+    <DestinationRow
+      accessibilityLabel={label}
+      accessory={acting ? <ActingDot grouped /> : null}
+      current={selected}
+      detail={where}
+      icon={placeGlyph[place.kind]}
+      label={place.title}
+      muted={unavailable}
+      onPress={() => onOpen(place.destination)}
+    />
+  );
+});
+
+/**
  * Beside Chat, the one thing worth saying: a question waiting on the reader,
  * that it is replying, or that something arrived unread. Before the task list
  * has said anything about Chat, nothing is claimed.
@@ -634,12 +737,17 @@ function DestinationRow(props: {
   /** What the place has to say for itself, at the row's end. */
   readonly accessory?: ReactNode;
   readonly current: boolean;
+  /** A second, quieter word after the label: a tab's site. */
+  readonly detail?: string;
   readonly disabled?: boolean;
   readonly icon: SFSymbolName;
   readonly label: string;
+  /** Still a place to go, but one that cannot show anything now. */
+  readonly muted?: boolean;
   readonly onPress: () => void;
 }): ReactNode {
   const disabled = props.disabled === true;
+  const quiet = disabled || props.muted === true;
   return (
     <Pressable
       accessibilityLabel={props.accessibilityLabel ?? props.label}
@@ -658,7 +766,7 @@ function DestinationRow(props: {
           <Symbol
             name={props.icon}
             size={18}
-            tint={disabled ? color.mutedDim : props.current ? color.ember : color.muted}
+            tint={quiet ? color.mutedDim : props.current ? color.ember : color.muted}
             weight={props.current ? "semibold" : "regular"}
           />
         )}
@@ -668,7 +776,7 @@ function DestinationRow(props: {
         numberOfLines={1}
         style={[
           type.secondary,
-          disabled
+          quiet
             ? styles.disabledLabel
             : props.current
               ? styles.currentLabel
@@ -677,6 +785,15 @@ function DestinationRow(props: {
       >
         {props.label}
       </Text>
+      {props.detail === undefined ? null : (
+        <Text
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={1}
+          style={[type.caption, styles.detail]}
+        >
+          {props.detail}
+        </Text>
+      )}
       {props.accessory}
     </Pressable>
   );
@@ -707,6 +824,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[12],
   },
   destinationLabel: { color: color.textSoft, flex: 1 },
+  // A site is the shorter of the two words: the title keeps what room there is.
+  detail: { color: color.mutedDim, flexShrink: 1, maxWidth: "40%" },
   // The places to go share the task rows' mark column, so every label lines up.
   destinationMark: { alignItems: "center", width: taskTextInset - space[12] * 2 },
   disabledLabel: { color: color.mutedDim, flex: 1 },
