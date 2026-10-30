@@ -1,3 +1,4 @@
+import { createExpoSavedViews } from "./platform/expo-saved-views.js";
 import * as Application from "expo-application";
 import { OAuthDeepLinkBroker, type NativeOAuthIdentity } from "@opensteer/client/auth";
 import {
@@ -160,6 +161,7 @@ function mobileClient(): MobileRoot {
     }),
   });
   const client = new MobileClient({
+    ...(!configuration.mock ? { savedViewStore: createExpoSavedViews(storeName) } : {}),
     accountOrigin: configuration.accountOrigin,
     catalogFilePath: `${root}${storeName}/deployments.json`,
     doneShelfFilePath: `${root}${storeName}/done-shelf.json`,

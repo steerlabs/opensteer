@@ -332,6 +332,7 @@ function open(
     readonly iphoneApps?: MobileClientOptions["iphoneApps"];
     readonly openIntegrationAuthorization?: MobileClientOptions["openIntegrationAuthorization"];
     readonly records?: MobileClientOptions["records"];
+    readonly savedViewStore?: MobileClientOptions["savedViewStore"];
   } = {},
 ) {
   const opened: string[] = [];
@@ -343,6 +344,7 @@ function open(
     sidebarFilePath: "/private/sidebar.json",
     fetch: options.fetch ?? testFetch,
     hostPort: port,
+    ...(options.savedViewStore ? { savedViewStore: options.savedViewStore } : {}),
     ...(options.iphoneApps === undefined ? {} : { iphoneApps: options.iphoneApps }),
     oauthIdentity,
     openAuthorization: async (url) => {
@@ -1238,6 +1240,111 @@ describe("MobileClient attachment reconciliation", () => {
 });
 
 describe("MobileClient sign-in", () => {
+  it("attaches a Personal session when optional saved-view identity storage fails", async () => {
+    const base = testPort({ held: false, realCredentials: true });
+    const viewLoginId = vi.fn(async () => {
+      throw new Error("Keychain locked");
+    });
+    const factory: MobileHostPortFactory = (input) => {
+      const port = base.factory(input);
+      return { ...port, credentials: { ...port.credentials, viewLoginId } };
+    };
+    const { client } = open(factory);
+    await client.initialize();
+    await client.catalog.upsert(connectComputer(1));
+    await client.sessions.save(personalSession());
+    await expect(client.select(serverId)).resolves.toBeUndefined();
+    await settle();
+    expect(viewLoginId).toHaveBeenCalled();
+    expect(base.attached).toHaveLength(1);
+    expect(client.getSnapshot().selection.row?.status).toBe("connected");
+    client.dispose();
+  });
+
+  it("hides before interactive login, replaces healthy clients, and reconfirms a cancelled login", async () => {
+    const port = testPort({ held: true, realCredentials: true });
+    const deleted: string[] = [];
+    const { client, opened } = open(port.factory, undefined, {
+      savedViewStore: {
+        load: async () => null,
+        write: async () => undefined,
+        invalidate: async (id) => {
+          deleted.push(id);
+        },
+      },
+    });
+    await client.catalog.upsertAndSelect(
+      asInput(testDeploymentConnection({ deploymentId: serverId })),
+    );
+    await client.initialize();
+    const exchange = async () => {
+      const state = new URL(opened.at(-1)!).searchParams.get("state")!;
+      await client.oauth.handleCallback(
+        `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
+      );
+      await settle();
+    };
+    await client.signIn(serverId);
+    await exchange();
+    await vi.waitFor(() => expect(client.getSnapshot().selection.row?.status).toBe("connected"));
+    const first = client.getSnapshot().selection.hostClient;
+    await client.signIn(serverId);
+    expect(deleted).toContain(serverId);
+    expect(client.getSnapshot().selection.hostClient).toBeNull();
+    await exchange();
+    expect(client.getSnapshot().selection.hostClient).not.toBe(first);
+    const second = client.getSnapshot().selection.hostClient;
+    await client.signIn(serverId);
+    client.oauth.abandonHostSignIn(DeploymentIdSchema.parse(serverId));
+    await settle();
+    expect(client.getSnapshot().selection.hostClient).not.toBe(second);
+    expect(port.attached).toHaveLength(3);
+    client.dispose();
+  });
+
+  it("deletes the saved key before revocation, retaining a visible cleanup failure for retry", async () => {
+    const port = testPort({ held: true, realCredentials: true });
+    const events: string[] = [];
+    let fail = false;
+    const { client, opened } = open(port.factory, undefined, {
+      savedViewStore: {
+        load: async () => null,
+        write: async () => undefined,
+        invalidate: async () => {
+          events.push("delete-key");
+          if (fail) throw new Error("locked");
+        },
+      },
+      fetch: async (input) => {
+        if (String(input).includes("/revoke")) events.push("revoke");
+        return testFetch(input);
+      },
+    });
+    await client.catalog.upsertAndSelect(
+      asInput(testDeploymentConnection({ deploymentId: serverId })),
+    );
+    await client.initialize();
+    await client.signIn(serverId);
+    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
+    await client.oauth.handleCallback(
+      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
+    );
+    await settle();
+    events.length = 0;
+    fail = true;
+    const signingOut = client.signOut(serverId);
+    expect(client.getSnapshot().selection.hostClient).toBeNull();
+    await signingOut;
+    expect(events[0]).toBe("delete-key");
+    expect(events).toContain("revoke");
+    expect(client.getSnapshot().savedViewFailure).toMatch(/cleanup could not be completed/u);
+    fail = false;
+    await client.foregrounded();
+    await client.reconcile();
+    expect(client.getSnapshot().savedViewFailure).toBeNull();
+    client.dispose();
+  });
+
   it("establishes a missing Connect session while selecting and lands connected", async () => {
     const port = testPort({ held: false, realCredentials: true });
     const { client } = open(port.factory);
@@ -1921,6 +2028,8 @@ describe("MobileClient per-deployment sign out", () => {
     expect(await client.sessions.load(DeploymentIdSchema.parse(serverId))).not.toBeNull();
     const row = client.getSnapshot().rows.find((candidate) => candidate.deploymentId === serverId);
     expect(row?.status).toBe("connected");
+    // The login and its live attachment remain; only the saved view stays erased.
+    expect(client.getSnapshot().selection.hostClient).not.toBeNull();
     client.dispose();
   });
 });
