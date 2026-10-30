@@ -1,6 +1,6 @@
 [
   {
-    "file": "tests/browser-sessions.integration.test.ts",
+    "file": "tests/browser-sessions-context.integration.test.ts",
     "name": [
       "Browser Sessions through a whole deployment",
       "admits automatic page references after delayed forms and document changes"
@@ -17,7 +17,7 @@
     ]
   },
   {
-    "file": "tests/browser-sessions.integration.test.ts",
+    "file": "tests/browser-sessions-context.integration.test.ts",
     "name": [
       "Browser Sessions through a whole deployment",
       "attributes reply page chips only to exact pages used by each concurrent Run"
@@ -337,7 +337,7 @@
     ]
   },
   {
-    "file": "tests/browser-sessions.integration.test.ts",
+    "file": "tests/browser-sessions-identities.integration.test.ts",
     "name": [
       "Browser Sessions through a whole deployment",
       "reports a refused final-save lease promptly with its typed reason"

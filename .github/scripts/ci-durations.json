@@ -821,7 +821,6 @@
     "packages/database/src/workspace-tab-store.integration.test.ts": 31012,
     "packages/identity/src/identity-service.integration.test.ts": 31628,
     "tests/browser-profiles.integration.test.ts": 120108,
-    "tests/browser-sessions.integration.test.ts": 285458,
     "tests/browser-tab-groups.integration.test.ts": 151624,
     "tests/local-runner-startup.integration.test.ts": 17513,
     "tests/workspace-negotiation.integration.test.ts": 11059
