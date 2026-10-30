@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { tryKernelLock } from "@opensteer/shared/kernelLock";
-import { reclaimVmStorage, referencedRunIds } from "../scripts/test-vm/retention.js";
+import { addRunIds, reclaimVmStorage, referencedRunIds } from "../scripts/test-vm/retention.js";
 
 const roots: string[] = [];
 const sha = (n: number) => n.toString(16).padStart(40, "0");
@@ -469,5 +469,39 @@ describe("storage retention safety", () => {
         "20261020T000000Z-eeeeeeee",
       ]),
     });
+  });
+
+  // The scan checks bytes around each "Z-" instead of running a regex over decoded text,
+  // which cost minutes of CPU per admission; it must find exactly what the pattern does.
+  it("finds the same run IDs in bytes as the run-ID pattern, overlaps included", () => {
+    const pattern = /(?=(\d{8}T\d{6}Z-[0-9a-f]{8}))/gu;
+    const alphabet = "0123456789TZ-afgA x";
+    let seed = 7;
+    const random = () => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) / 2 ** 31;
+    const id = () =>
+      `2026${String(Math.floor(random() * 1e4)).padStart(4, "0")}T${String(Math.floor(random() * 1e6)).padStart(6, "0")}Z-${Math.floor(
+        random() * 2 ** 32,
+      )
+        .toString(16)
+        .padStart(8, "0")}`;
+    const samples = [
+      "",
+      "Z-",
+      "0000000T000000Z-aaaaaaaa",
+      "20261020T000000Z-AAAAAAAA",
+      "20261020T000000Z-aaaaaaa",
+      "20261019T120000Z-20261020T000000Z-eeeeeeee",
+    ];
+    for (let n = 0; n < 2_000; n += 1) {
+      let text = "";
+      while (text.length < 80)
+        text += random() < 0.3 ? id() : alphabet[Math.floor(random() * alphabet.length)];
+      samples.push(text.slice(Math.floor(random() * 30)));
+    }
+    for (const text of samples) {
+      const found = new Set<string>();
+      addRunIds(Buffer.from(text, "latin1"), text.length, found);
+      expect(found, text).toEqual(new Set([...text.matchAll(pattern)].map((match) => match[1])));
+    }
   });
 });
