@@ -1,6 +1,16 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, closeSync, openSync, watch } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  lstat,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +21,7 @@ import { personalSelectionReady, personalSetupIntent } from "./smoke-desktop-rel
 const { values } = parseArgs({
   options: {
     executable: { type: "string" },
+    "home-dir": { type: "string" },
     "artifacts-dir": { type: "string" },
     "install-in-applications": { type: "boolean" },
   },
@@ -21,8 +32,21 @@ if (ciInstall && (process.env.GITHUB_ACTIONS !== "true" || process.env.CI !== "t
   throw Error("Installing the check copy in /Applications is allowed only in GitHub Actions");
 const started = performance.now();
 const home = await realpath(
-  await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "opensteer-launch-")),
+  values["home-dir"] ??
+    (await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "opensteer-launch-"))),
 );
+if (values["home-dir"]) {
+  const metadata = await lstat(home);
+  if (
+    !path.basename(home).startsWith("opensteer-launch-") ||
+    (metadata.mode & 0o777) !== 0o700 ||
+    metadata.uid !== process.getuid?.() ||
+    (await readdir(home)).some((name) => name !== "Library" && name !== ".CFUserTextEncoding")
+  )
+    throw Error(
+      "--home-dir must be a fresh private owned temporary HOME containing only OS bootstrap state",
+    );
+}
 const data = path.join(home, "userdata");
 const artifacts = path.resolve(values["artifacts-dir"] ?? path.join(home, "artifacts"));
 await mkdir(artifacts, { recursive: true });
@@ -287,7 +311,8 @@ try {
   killCaptured();
   if (installed) await command("sudo", ["-n", "rm", "-rf", installed], 10_000);
   // Preserve evidence when the caller did not provide an external artifacts directory.
-  if (values["artifacts-dir"]) await rm(home, { recursive: true, force: true });
+  if (values["artifacts-dir"] && !values["home-dir"])
+    await rm(home, { recursive: true, force: true });
   clearTimeout(hardDeadline);
 }
 
