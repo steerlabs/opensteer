@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { journeyMetadata } from "./evidence.js";
+import { journeyMetadata, requireCertifiedJourneys } from "./evidence.js";
 import { releaseComparison, releaseInspection } from "./release-comparison.js";
 const { values } = parseArgs({
   options: {
@@ -46,11 +46,7 @@ const certification = z
   })
   .parse(JSON.parse(readFileSync(z.string().parse(values.certification), "utf8")));
 const hash = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
-const certified = certification.builds.find(
-  (b) => b.channel === channel && b.sha256 === hash(localZip),
-);
-if (!certified || !certification.results.some((r) => r.name === `${channel}:menu`))
-  throw Error("Local ZIP lacks a passing same-channel journey certification");
+requireCertifiedJourneys(certification, channel, hash(localZip));
 const temporary = mkdtempSync(path.join(tmpdir(), "opensteer-release-bridge-"));
 const command = (exe: string, args: string[], input?: string) => {
   const r = spawnSync(exe, args, { encoding: "utf8", input, timeout: 120_000 });

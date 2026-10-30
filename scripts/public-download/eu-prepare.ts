@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { journeyWorkDirectory } from "./work-directory.js";
-import { journeyInput } from "./evidence.js";
+import { journeyInput, releaseAsset } from "./evidence.js";
 import { journeySigning } from "./signing.js";
 import path from "node:path";
 import { z } from "zod";
@@ -62,7 +62,7 @@ for (const revision of revisions) {
         "--source-sha",
         revision,
         "--out",
-        path.join(out, channel === "stable" ? `desktop-v${version}` : `v${version}-insider`),
+        path.join(out, releaseAsset(channel, version).tag),
         "--download-base",
         "https://github.opensteer.test/steerlabs/opensteer/releases/download",
         "--allow-private-feed",

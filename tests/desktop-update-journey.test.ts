@@ -1,5 +1,12 @@
 import { forbiddenPublicUpdateHosts } from "../scripts/public-download/update-traffic.js";
 import { personalEndpoint } from "../scripts/public-download/personal-endpoint.js";
+import {
+  certificationCases,
+  releaseAsset,
+  requireCertifiedJourneys,
+  verifyPreparedArchives,
+} from "../scripts/public-download/evidence.js";
+import { createHash } from "node:crypto";
 import { test, expect } from "vitest";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -192,4 +199,48 @@ test("public update hosts are forbidden on both channels while staging Account i
   expect(forbiddenPublicUpdateHosts(records, 99, false)).toHaveLength(4);
   expect(forbiddenPublicUpdateHosts(records, 99, true)).toHaveLength(3);
   expect(forbiddenPublicUpdateHosts(records, 101, true)).toHaveLength(0);
+});
+
+// A receipt certifies archives by hash, so the guest must test those same bytes.
+test("prepared archives must be the recorded builds before any VM starts", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opensteer-prepared-archives-"));
+  try {
+    const build = { channel: "beta" as const, version: "0.1.252" };
+    const { tag, zip } = releaseAsset(build.channel, build.version);
+    expect({ tag, zip }).toEqual({ tag: "v0.1.252-insider", zip: "Opensteer-Beta-mac-arm64.zip" });
+    mkdirSync(path.join(dir, tag));
+    writeFileSync(path.join(dir, tag, zip), "tested bytes");
+    const sha256 = createHash("sha256").update("tested bytes").digest("hex");
+    expect(() => verifyPreparedArchives(dir, [{ ...build, sha256 }])).not.toThrow();
+    writeFileSync(path.join(dir, tag, zip), "rebuilt bytes");
+    expect(() => verifyPreparedArchives(dir, [{ ...build, sha256 }])).toThrow(/differs/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Certification is the release's whole journey set, never a selected subset.
+test("the byte bridge accepts only a channel's complete certification", () => {
+  const receipt = (names: string[]) => ({
+    builds: [{ channel: "stable" as const, sha256: "a".repeat(64) }],
+    results: names.map((name) => ({ name, passed: true as const })),
+  });
+  expect(() =>
+    requireCertifiedJourneys(receipt(["stable:menu"]), "stable", "a".repeat(64)),
+  ).toThrow(/stable:tray/u);
+  expect(() =>
+    requireCertifiedJourneys(
+      receipt(["stable:menu", "stable:tray", "stable:quit"]),
+      "stable",
+      "a".repeat(64),
+    ),
+  ).not.toThrow();
+  expect(() =>
+    requireCertifiedJourneys(
+      receipt(["stable:menu", "stable:tray", "stable:quit"]),
+      "stable",
+      "b".repeat(64),
+    ),
+  ).toThrow(/certified/u);
+  expect(certificationCases.beta).toEqual(["beta:menu", "beta:quit"]);
 });

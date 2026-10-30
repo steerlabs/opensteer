@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { prepareAXDriver } from "./ax-driver-artifact.js";
-import { journeyInput } from "./evidence.js";
+import { journeyInput, verifyPreparedArchives } from "./evidence.js";
 import { journeySigning } from "./signing.js";
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -30,7 +30,7 @@ mkdirSync(out, { recursive: true });
 console.log(out);
 const buildRoot = path.join(work, "builds");
 const builds: {
-  channel: string;
+  channel: "beta" | "stable";
   version: string;
   revision: string;
   sha256: string;
@@ -38,7 +38,7 @@ const builds: {
 }[] = [];
 const fixtures: typeof builds = [];
 for (const item of [input.older, input.n, input.next])
-  for (const channel of ["stable", "beta"]) {
+  for (const channel of ["stable", "beta"] as const) {
     const directory = path.join(buildRoot, item.revision, channel),
       build = z
         .object({ zip: z.string() })
@@ -59,6 +59,8 @@ for (const item of [input.older, input.n, input.next])
       if (existsSync(path.join(directory, file)))
         cpSync(path.join(directory, file), path.join(out, `${channel}-${item.version}-${file}`));
   }
+// A rebuild after preparation would otherwise certify bytes the guest never tested.
+verifyPreparedArchives(inputs, [...builds, ...fixtures]);
 const stop = new AbortController();
 const interrupt = () => stop.abort();
 process.once("SIGINT", interrupt);

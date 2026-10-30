@@ -1,5 +1,54 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { compareStableVersions } from "../engines.js";
+
+type Channel = "beta" | "stable";
+
+/** The release tag and archive name `desktop:public-release prepare` writes per channel. */
+export function releaseAsset(channel: Channel, version: string) {
+  return channel === "stable"
+    ? { tag: `desktop-v${version}`, zip: "Opensteer-mac-arm64.zip" }
+    : { tag: `v${version}-insider`, zip: "Opensteer-Beta-mac-arm64.zip" };
+}
+
+/** Every journey a channel's release must pass; a selected subset is only partial evidence. */
+export const certificationCases = {
+  stable: ["stable:menu", "stable:tray", "stable:quit"],
+  beta: ["beta:menu", "beta:quit"],
+} as const satisfies Record<Channel, readonly string[]>;
+
+/** The guest installs the prepared archives, so they must be the builds a receipt hashes. */
+export function verifyPreparedArchives(
+  inputs: string,
+  builds: readonly { channel: Channel; version: string; sha256: string }[],
+) {
+  for (const build of builds) {
+    const { tag, zip } = releaseAsset(build.channel, build.version);
+    const prepared = path.join(inputs, tag, zip);
+    const sha256 = createHash("sha256").update(readFileSync(prepared)).digest("hex");
+    if (sha256 !== build.sha256)
+      throw Error(`Prepared archive ${tag}/${zip} differs from the recorded build`);
+  }
+}
+
+/** A local archive is certified only by a passing receipt for its exact bytes and all cases. */
+export function requireCertifiedJourneys(
+  receipt: {
+    builds: readonly { channel: Channel; sha256: string }[];
+    results: readonly { name: string; passed: true }[];
+  },
+  channel: Channel,
+  localSha256: string,
+) {
+  if (!receipt.builds.some((b) => b.channel === channel && b.sha256 === localSha256))
+    throw Error("Local ZIP is not a certified build of this channel");
+  const missing = certificationCases[channel].filter(
+    (name) => !receipt.results.some((r) => r.name === name),
+  );
+  if (missing.length) throw Error(`Certification lacks ${missing.join(", ")}`);
+}
 
 export const journeyMetadata = z.object({ expectedTeamId: z.string().regex(/^[A-Z0-9]{10}$/u) });
 export const numericVersion = z.string().regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u);
