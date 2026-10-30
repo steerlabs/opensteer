@@ -58,9 +58,10 @@ readiness. Diagnose any reported launch error before proceeding.
 public-repository hosted runner. On every merge to main that changes an eligible
 path, it resolves main HEAD and waits up to one hour for that exact SHA's newest
 main CI run and `Check` to succeed. It skips if the newest published insider
-already targets it. Otherwise it
-builds **Opensteer Beta** (`com.steerlabs.opensteer.beta`), signs, notarizes and
-publishes `vX.Y.Z-insider` automatically as a prerelease, never Latest. Insiders
+already targets it. A cancelled CI run also skips release work when the selected
+source is an ancestor of the now-advanced main and a newer main push CI run exists.
+Other CI failures still block release. Once qualified, it builds **Opensteer Beta**
+(`com.steerlabs.opensteer.beta`), signs, notarizes and publishes `vX.Y.Z-insider` automatically as a prerelease, never Latest. Insiders
 use updater channel `insider` and product build channel `beta`.
 
 Documentation and CI-only paths are excluded; there is no blanket Markdown

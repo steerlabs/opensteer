@@ -236,9 +236,10 @@ run; manual runs always do, and Check refuses a skipped task in either.
 Integration shards run `pnpm test:integration` with its own tmpfs PostgreSQL, as
 local runs do. Browser journeys that accept `OPENSTEER_CHROMIUM_EXECUTABLE` get
 the pinned Playwright Chromium there, never the runner image's browsers. Missing or
-corrupt evidence fails Check. Main runs every public lane and is never cancelled
-by a newer main push. GUI, device and account suites require their separate
-environments.
+corrupt evidence fails Check. Main runs every public lane. Main push CI keeps one
+running run and one pending run per branch: a newer push replaces the pending run,
+while the running run is never cancelled by a newer main push. GUI, device and
+account suites require their separate environments.
 
 Tabs profile filtering is covered by `pnpm --filter @opensteer/web
 test:tab-profile-filter` (headless Chromium and the mock Host). Its repeatable

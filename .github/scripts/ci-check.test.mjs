@@ -309,3 +309,29 @@ test("native-fs executes once on shard one, fails the lane and Check, and upload
   assert.ok(job.steps.every((s) => !/pnpm pretest/.test(s.run)));
   // validateResults' failing matrix-lane regression above proves the Check side.
 });
+
+test("main push concurrency coalesces by branch without changing other event groups", async () => {
+  const { workflow } = await ciConfig();
+  const { runInNewContext } = await import("node:vm");
+  const expand = (value, github) =>
+    value.replace(/\$\{\{(.*?)\}\}/g, (_, expression) =>
+      String(runInNewContext(expression, { github })),
+    );
+  const group = (event_name, sha, ref = "refs/heads/main", number) =>
+    expand(workflow.concurrency.group, {
+      event_name,
+      sha,
+      ref,
+      event: { pull_request: { number } },
+    });
+  assert.equal(group("push", "a"), group("push", "b"));
+  assert.notEqual(group("push", "a"), group("push", "a", "refs/heads/other"));
+  assert.equal(group("pull_request", "a", "refs/pull/12/merge", 12), "ci-12-pull_request");
+  for (const event of ["schedule", "workflow_dispatch"])
+    assert.equal(group(event, "a"), `ci-a-${event}`);
+  assert.equal(expand(workflow.concurrency["cancel-in-progress"], { event_name: "push" }), "false");
+  assert.equal(
+    expand(workflow.concurrency["cancel-in-progress"], { event_name: "pull_request" }),
+    "true",
+  );
+});
