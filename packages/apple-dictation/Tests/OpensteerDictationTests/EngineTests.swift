@@ -8,10 +8,15 @@ private let other = "00000000-0000-4000-8000-000000000002"
 final class Events: @unchecked Sendable {
   private let lock = NSLock()
   private var values: [DictationEvent] = []
+  let onEvent: @Sendable (DictationEvent) -> Void
+  init(onEvent: @escaping @Sendable (DictationEvent) -> Void = { _ in }) {
+    self.onEvent = onEvent
+  }
   func append(_ event: DictationEvent) {
     lock.lock()
-    defer { lock.unlock() }
     values.append(event)
+    lock.unlock()
+    onEvent(event)
   }
   var all: [DictationEvent] {
     lock.lock()
@@ -46,8 +51,11 @@ actor Gate {
   private var continuation: CheckedContinuation<Void, Never>?
   private(set) var entered = false
   private var opened = false
+  let onEnter: @Sendable () -> Void
+  init(onEnter: @escaping @Sendable () -> Void = {}) { self.onEnter = onEnter }
   func wait() async {
     entered = true
+    onEnter()
     if opened { return }
     await withCheckedContinuation { continuation = $0 }
   }
@@ -77,6 +85,7 @@ final class Capture: AudioCapture, @unchecked Sendable {
   var beforeStop: (@Sendable () -> Void)?
   var restartBarrier: (@Sendable () -> Void)?
   var burst = 1
+  var queue: AudioQueue?
   init(trace: Trace = Trace()) { operations = trace }
   func permission() -> DictationMicrophone { granted ? .granted : .undetermined }
   func restricted() -> Bool { false }
@@ -88,6 +97,7 @@ final class Capture: AudioCapture, @unchecked Sendable {
     lock.lock()
     startCount += 1
     lock.unlock()
+    self.queue = queue
     operations.append("captureStart")
     monitor = InputChanges(
       center: center, object: source, read: { self.route.input },
@@ -122,6 +132,9 @@ actor FakeRecognizer: Recognizer {
   let output: AsyncStream<RecognitionResult>.Continuation
   let operations: Trace
   var trace: [String] { operations.all }
+  var admissionFails = true
+  var fedFrames: [AVAudioFrameCount] = []
+  func successfulAdmission() { admissionFails = false }
   var admissionGate: Gate?
   var cleanupGate: Gate?
   var preparationGate: Gate?
@@ -165,7 +178,7 @@ actor FakeRecognizer: Recognizer {
     operations.append("admit")
     if let admissionGate {
       await admissionGate.wait()
-      throw DictationError.modelUnavailable
+      if admissionFails { throw DictationError.modelUnavailable }
     }
   }
   func prepare() async throws {
@@ -174,6 +187,7 @@ actor FakeRecognizer: Recognizer {
     if delayedPreparation { try await Task.sleep(for: .seconds(60)) }
   }
   func feed(_ buffer: AVAudioPCMBuffer) async throws {
+    fedFrames.append(buffer.frameLength)
     operations.append("feed")
     await feedGate?.wait()
     output.yield(
@@ -215,6 +229,129 @@ final class EngineTests: XCTestCase {
       try await Task.sleep(for: .milliseconds(5))
     }
   }
+  func testListeningAndOrderedAudioDuringAdmissionAndPreparation() async throws {
+    let ended = expectation(description: "Session ended")
+    let events = Events { if case .ended = $0.payload { ended.fulfill() } }
+    let capture = Capture()
+    let recognizer = FakeRecognizer()
+    let admitting = expectation(description: "Admission entered")
+    let preparing = expectation(description: "Preparation entered")
+    let admission = Gate(onEnter: { admitting.fulfill() })
+    let preparation = Gate(onEnter: { preparing.fulfill() })
+    await recognizer.successfulAdmission()
+    await recognizer.gates(admission: admission, preparation: preparation)
+    let service = DictationService(
+      emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+    try await service.start(session: id)
+    await fulfillment(of: [admitting], timeout: 2)
+    XCTAssertEqual(capture.starts, 1)
+    XCTAssertEqual(events.all.first?.payload, .listening)
+    capture.queue?.append(buffer(seconds: 0.2))
+    await admission.open()
+    await fulfillment(of: [preparing], timeout: 2)
+    let before = await recognizer.fedFrames
+    XCTAssertTrue(before.isEmpty)
+    capture.queue?.append(buffer(seconds: 0.3))
+    // Stop closes the queue while preparation is still blocked.
+    await service.stop(session: id)
+    await preparation.open()
+    await fulfillment(of: [ended], timeout: 2)
+    let frames = await recognizer.fedFrames
+    XCTAssertEqual(frames, [1600, 3200, 4800])
+    XCTAssertEqual(events.ended.map(\.payload), [.ended(.completed, nil)])
+    XCTAssertEqual(events.all.last?.payload, .ended(.completed, nil))
+    XCTAssertTrue(events.all.contains { $0.payload == .text(finalized: ["last words"], volatile: []) })
+  }
+
+  func testAdmissionFailureAfterCaptureStopsAndEndsOnce() async throws {
+    let ended = expectation(description: "Session ended")
+    let events = Events { if case .ended = $0.payload { ended.fulfill() } }
+    let capture = Capture()
+    let recognizer = FakeRecognizer()
+    let admitting = expectation(description: "Admission entered")
+    let admission = Gate(onEnter: { admitting.fulfill() })
+    let cleaning = expectation(description: "Failed admission releases recognizer")
+    let cleanup = Gate(onEnter: { cleaning.fulfill() })
+    await recognizer.gates(admission: admission, cleanup: cleanup)
+    let service = DictationService(
+      emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+    try await service.start(session: id)
+    await fulfillment(of: [admitting], timeout: 2)
+    XCTAssertEqual(capture.starts, 1)
+    XCTAssertEqual(events.all.first?.payload, .listening)
+    await admission.open()
+    await fulfillment(of: [ended], timeout: 2)
+    await fulfillment(of: [cleaning], timeout: 2)
+    await cleanup.open()
+    XCTAssertTrue(capture.operations.all.contains("captureStop"))
+    XCTAssertEqual(events.ended.map(\.payload), [.ended(.failed, .modelUnavailable)])
+    await service.stop(session: id)
+    await service.cancel(session: id)
+    XCTAssertEqual(events.all.last?.payload, .ended(.failed, .modelUnavailable))
+    XCTAssertEqual(events.ended.count, 1)
+  }
+
+  func testCancelDuringAdmissionFencesLateSuccess() async throws {
+    let events = Events()
+    let capture = Capture()
+    let recognizer = FakeRecognizer()
+    let admitting = expectation(description: "Admission entered")
+    let admission = Gate(onEnter: { admitting.fulfill() })
+    await recognizer.successfulAdmission()
+    await recognizer.gates(admission: admission)
+    let service = DictationService(
+      emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+    try await service.start(session: id)
+    await fulfillment(of: [admitting], timeout: 2)
+    XCTAssertEqual(capture.starts, 1)
+    let work = await service.admissionTask()
+    await service.cancel(session: id)
+    await admission.open()
+    await work?.value
+    XCTAssertTrue(capture.operations.all.contains("captureStop"))
+    XCTAssertEqual(events.ended.map(\.payload), [.ended(.cancelled, nil)])
+    XCTAssertEqual(events.all.last?.payload, .ended(.cancelled, nil))
+    let trace = await recognizer.trace
+    XCTAssertFalse(trace.contains("prepare"))
+  }
+
+  func testStopDuringAdmissionDrainsOrTimesOutExactlyOnce() async throws {
+    for timeout in [false, true] {
+      let ended = expectation(description: "Stop during admission ended")
+      let events = Events { if case .ended = $0.payload { ended.fulfill() } }
+      let capture = Capture()
+      let recognizer = FakeRecognizer()
+      let admitting = expectation(description: "Admission entered")
+      let admission = Gate(onEnter: { admitting.fulfill() })
+      await recognizer.successfulAdmission()
+      await recognizer.gates(admission: admission)
+      let service = DictationService(
+        emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer },
+        timeout: timeout ? .milliseconds(30) : .seconds(5))
+      try await service.start(session: id)
+      await fulfillment(of: [admitting], timeout: 2)
+      XCTAssertEqual(capture.starts, 1)
+      let work = await service.admissionTask()
+      await service.stop(session: id)
+      XCTAssertTrue(capture.operations.all.contains("captureStop"))
+      if !timeout { await admission.open() }
+      await fulfillment(of: [ended], timeout: 2)
+      await admission.open()
+      await work?.value
+      let frames = await recognizer.fedFrames
+      XCTAssertEqual(frames, timeout ? [] : [1600])
+      let terminal: DictationEvent.Payload = timeout
+        ? .ended(.failed, .recognitionFailed) : .ended(.completed, nil)
+      XCTAssertEqual(events.ended.map(\.payload), [terminal])
+      XCTAssertEqual(events.all.last?.payload, terminal)
+      if !timeout {
+        XCTAssertTrue(events.all.contains {
+          $0.payload == .text(finalized: ["last words"], volatile: [])
+        })
+      }
+    }
+  }
+
   func testLateAdmissionErrorCannotOverrideStop() async throws {
     let events = Events()
     let capture = Capture()
@@ -236,7 +373,7 @@ final class EngineTests: XCTestCase {
     await finish.open()
     try await wait { !events.ended.isEmpty }
     XCTAssertEqual(events.ended.map(\.payload), [.ended(.completed, nil)])
-    XCTAssertEqual(capture.starts, 0)
+    XCTAssertEqual(capture.starts, 1)
   }
 
   func testNextSessionWaitsForCleanupAndLateResultsAreFenced() async throws {
