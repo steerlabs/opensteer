@@ -158,6 +158,11 @@ it.skipIf(process.platform !== "darwin").each(["stable", "beta"] as const)(
   },
 );
 
+const certifiedZip = (manifest: { assets: Record<string, string>; channel: "stable" | "beta" }) =>
+  manifest.assets[
+    manifest.channel === "stable" ? "Opensteer-mac-arm64.zip" : "Opensteer-Beta-mac-arm64.zip"
+  ]!;
+
 async function releaseFixture(channel: "stable" | "beta" = "stable") {
   const names =
     channel === "stable"
@@ -253,6 +258,46 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
   await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("Asset differs");
 });
 
+// Publication must ship exactly the zip the gate certified, even when a later swap
+// rewrote release.json and SHA256SUMS to match the new bytes.
+it("publishes only the certified zip and never publishes stable without certification", async () => {
+  const certified = await releaseFixture("beta");
+  const swapped = await releaseFixture("beta");
+  const zip = "Opensteer-Beta-mac-arm64.zip";
+  await writeFile(path.join(swapped.dir, zip), "swapped build");
+  swapped.manifest.assets[zip] = await sha256File(path.join(swapped.dir, zip));
+  await writeFile(path.join(swapped.dir, "release.json"), JSON.stringify(swapped.manifest));
+  let patches = 0;
+  const provider =
+    (fixture: Awaited<ReturnType<typeof releaseFixture>>): typeof runBounded =>
+    async (exe, args) => {
+      if (exe === "gh" && args.includes("PATCH")) patches++;
+      else if (exe === "gh" && args[1] === "download") {
+        const output = args[args.indexOf("--dir") + 1]!;
+        for (const name of [...Object.keys(fixture.manifest.assets), "release.json"])
+          await writeFile(path.join(output, name), await readFile(path.join(fixture.dir, name)));
+      } else if (exe === "gh") return JSON.stringify(fixture.release);
+      else if (exe === "curl") {
+        const dest = args[args.indexOf("-o") + 1]!;
+        await writeFile(dest, await readFile(path.join(fixture.dir, path.basename(dest))));
+      }
+      return "";
+    };
+  const tag = certified.manifest.tag;
+  const certifiedHash = certifiedZip(certified.manifest);
+  await expect(
+    publish("steerlabs/opensteer", tag, provider(swapped), "beta", certifiedHash),
+  ).rejects.toThrow(/certified/u);
+  expect(patches).toBe(0);
+  await publish("steerlabs/opensteer", tag, provider(certified), "beta", certifiedHash);
+  expect(patches).toBe(1);
+  const stable = await releaseFixture("stable");
+  await expect(
+    publish("steerlabs/opensteer", stable.manifest.tag, provider(stable), "stable"),
+  ).rejects.toThrow(/certified/u);
+  expect(patches).toBe(1);
+});
+
 it("publishes only verified drafts through a fake provider and rechecks anonymous asset hashes", async () => {
   const { dir, release, manifest } = await releaseFixture();
   let tamperDraft = false;
@@ -288,24 +333,30 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
     } else throw new Error("Unexpected provider");
     return "";
   };
-  await publish("steerlabs/opensteer", manifest.tag, run);
+  await publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest));
   expect(patches).toBe(1);
   // A draft retargeted away from the built source must not be published.
   release.target_commitish = "main";
-  await expect(publish("steerlabs/opensteer", manifest.tag, run)).rejects.toThrow("disagree");
+  await expect(
+    publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest)),
+  ).rejects.toThrow("disagree");
   expect(patches).toBe(1);
   release.target_commitish = manifest.sourceSha;
   // A draft whose bytes drifted must never become public or Latest.
   tamperDraft = true;
-  await expect(publish("steerlabs/opensteer", manifest.tag, run)).rejects.toThrow("Asset differs");
+  await expect(
+    publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest)),
+  ).rejects.toThrow("Asset differs");
   expect(patches).toBe(1);
   tamperDraft = false;
   tamperPublic = true;
-  await expect(publish("steerlabs/opensteer", manifest.tag, run)).rejects.toThrow("Asset differs");
+  await expect(
+    publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest)),
+  ).rejects.toThrow("Asset differs");
   // Rerunning on an already published release only repeats the anonymous check.
   release.draft = false;
   tamperPublic = false;
-  await publish("steerlabs/opensteer", manifest.tag, run);
+  await publish("steerlabs/opensteer", manifest.tag, run, undefined, certifiedZip(manifest));
   expect(patches).toBe(2);
 });
 

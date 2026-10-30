@@ -494,7 +494,7 @@ test("discovery skips unchanged published insiders and reuses only matching draf
     f.close();
   }
 });
-test("insiders auto-publish on push, manual practice stops at draft, stable alone requests approval", () => {
+test("insiders auto-publish on push, dispatch stops at draft unless publish, stable also requests approval", () => {
   const enabled = (
     job,
     {
@@ -522,10 +522,47 @@ test("insiders auto-publish on push, manual practice stops at draft, stable alon
   assert.equal(enabled("publish-insider", { publish: true, reuse: true }), true);
   assert.equal(enabled("publish-insider", { event: "push", skip: true }), false);
   assert.equal(enabled("publish-insider", { channel: "stable", publish: true }), false);
-  assert.equal(enabled("publish-stable", { channel: "stable" }), true);
-  assert.equal(enabled("publish-stable"), false);
+  assert.equal(enabled("publish-stable", { channel: "stable" }), false);
+  assert.equal(enabled("publish-stable", { channel: "stable", publish: true, reuse: true }), true);
+  assert.equal(enabled("publish-stable", { publish: true }), false);
   assert.equal(workflow.jobs["publish-insider"].environment, undefined);
   assert.equal(workflow.jobs["publish-stable"].environment, "publish");
+});
+
+// Publication ships exactly the zip the update journey certified. A dispatch without
+// a certified hash fails before building; automatic insiders on push stay unbound.
+test("publish=true requires the certified zip sha256 and passes it to publish", () => {
+  assert.equal(workflow.on.workflow_dispatch.inputs.certified_zip_sha256.type, "string");
+  const guard = workflow.jobs.preflight.steps.find((s) => s.if?.includes("certified_zip_sha256"));
+  const refused = (inputs) =>
+    Boolean(runInNewContext(guard.if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), { inputs }));
+  assert.equal(refused({ publish: true, certified_zip_sha256: "" }), true);
+  assert.equal(refused({ publish: true, certified_zip_sha256: "a".repeat(64) }), false);
+  assert.equal(refused({ publish: false, certified_zip_sha256: "" }), false);
+  assert.equal(refused({}), false);
+  assert.throws(() => execFileSync("bash", ["-c", guard.run], { stdio: "pipe" }));
+  const dir = mkdtempSync(path.join(tmpdir(), "opensteer-publish-step-"));
+  try {
+    const calls = path.join(dir, "calls");
+    writeFileSync(path.join(dir, "pnpm"), `#!/bin/sh\nprintf '%s\\n' "$*" > "${calls}"\n`, {
+      mode: 0o755,
+    });
+    for (const job of ["publish-insider", "publish-stable"]) {
+      const step = workflow.jobs[job].steps.find((s) => s.run?.includes("publish --repo"));
+      assert.equal(step.env.CERTIFIED_ZIP_SHA256, "${{ inputs.certified_zip_sha256 }}");
+      for (const hash of ["a".repeat(64), ""]) {
+        execFileSync("bash", ["-c", step.run], {
+          env: { PATH: `${dir}:${process.env.PATH}`, TAG: "t", CERTIFIED_ZIP_SHA256: hash },
+        });
+        assert.equal(
+          readFileSync(calls, "utf8").trim(),
+          `desktop:public-release publish --repo steerlabs/opensteer --tag t --certified-zip-sha256=${hash}`,
+        );
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("ignored paths exclude only documentation and CI, preserving all desktop/APK source inputs", () => {

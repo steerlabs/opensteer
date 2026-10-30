@@ -412,6 +412,7 @@ export async function publish(
   tagInput: string,
   run: Run = runBounded,
   channel?: string,
+  certifiedZipSha256?: string,
 ) {
   const repo = repoSchema.parse(repoInput);
   const tag = tagSchema.parse(tagInput);
@@ -422,6 +423,16 @@ export async function publish(
   releaseManifest(release, manifest);
   checkChannel(manifest, channel);
   publicGuard(repo, manifest);
+  // The update journey certifies one exact zip. verifyDraftAssets has just checked
+  // the freshly downloaded zip against the manifest, so comparing the manifest's
+  // hash refuses a later swap even when release.json and SHA256SUMS were rewritten.
+  if (certifiedZipSha256 === undefined) {
+    if (manifest.channel === "stable")
+      throw new Error("Stable publication requires the certified zip sha256");
+  } else if (
+    manifest.assets[channelConfig(manifest.channel).zip] !== hashSchema.parse(certifiedZipSha256)
+  )
+    throw new Error("Draft zip is not the certified build");
   // Installers and updaters follow Latest immediately, so nothing becomes public
   // until the draft's stored bytes match its manifest. A rerun after publication
   // only repeats the anonymous check below.
@@ -487,6 +498,7 @@ export async function main(args = process.argv.slice(2)) {
       dir: { type: "string" },
       repo: { type: "string" },
       tag: { type: "string" },
+      "certified-zip-sha256": { type: "string" },
     },
   });
   const required = (key: keyof typeof values) => z.string().min(1).parse(values[key]);
@@ -504,7 +516,13 @@ export async function main(args = process.argv.slice(2)) {
   else if (subcommand === "draft")
     await draft(required("dir"), required("repo"), runBounded, values.channel);
   else if (subcommand === "publish")
-    await publish(required("repo"), required("tag"), runBounded, values.channel);
+    await publish(
+      required("repo"),
+      required("tag"),
+      runBounded,
+      values.channel,
+      values["certified-zip-sha256"] || undefined,
+    );
   else throw new Error("Usage: desktop:public-release prepare|draft|publish [options]");
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

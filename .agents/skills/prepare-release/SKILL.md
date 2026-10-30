@@ -38,9 +38,12 @@ artifact digests, SHA256SUMS and release.json. Inspect the complete draft. Do no
 claim a skipped or unrun journey passed. Real desktop journeys run in a VM after
 merge or on maintainer request; there is no local release requalification.
 
-If authorized to publish the insider, repeat dispatch with `-f publish=true`.
+Publishing needs the zip sha256 that the [update journey](../../../docs/testing.md#gui-test-vms)
+certified for this exact draft; take it from the journey's receipt. If authorized
+to publish the insider, repeat dispatch with `-f publish=true -f certified_zip_sha256=HASH`.
 An unchanged main reuses and verifies exact draft bytes; advanced main builds a
-new version. Never backfill an older insider after a newer one.
+new version that needs its own certification. Never backfill an older insider
+after a newer one.
 
 For requested stable promotion, choose an already published insider. Run full CI
 on main and confirm Check before dispatch (or use the scheduled full run):
@@ -50,8 +53,9 @@ gh workflow run ci.yml --repo steerlabs/opensteer --ref main
 gh workflow run release.yml --repo steerlabs/opensteer --ref main -f channel=stable -f insider_tag=vX.Y.Z-insider
 ```
 
-Inspect the rebuilt stable draft and leave publication to Tim's `publish`
-environment approval. Use `gh run view RUN_ID --log-failed` for failures; never
+Inspect and certify the rebuilt stable draft, then repeat the stable dispatch
+with `-f publish=true -f certified_zip_sha256=HASH` and leave publication to Tim's
+`publish` environment approval. Use `gh run view RUN_ID --log-failed` for failures; never
 bypass source, signature, notarization, receipt or asset verification.
 
 For an authorized manual packaging operation, use new absolute output directories:
@@ -59,7 +63,7 @@ For an authorized manual packaging operation, use new absolute output directorie
 ```sh
 pnpm desktop:public-release prepare --channel stable --app-zip /absolute/app.zip --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --out /absolute/new-output
 pnpm desktop:public-release draft --dir /absolute/new-output --repo steerlabs/opensteer --channel stable
-pnpm desktop:public-release publish --repo steerlabs/opensteer --tag desktop-vX.Y.Z --channel stable
+pnpm desktop:public-release publish --repo steerlabs/opensteer --tag desktop-vX.Y.Z --channel stable --certified-zip-sha256 HASH
 ```
 
 Use channel `beta` and tag `vX.Y.Z-insider` for Beta. Do not publish unless requested.

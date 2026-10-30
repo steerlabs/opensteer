@@ -34,9 +34,12 @@ on:
         description: Published insider tag to rebuild as stable
         type: string
       publish:
-        description: Publish insider (false stops at draft; stable uses approval)
+        description: Publish the draft (false stops at draft; stable also needs approval)
         type: boolean
         default: false
+      certified_zip_sha256:
+        description: The update journey's certified zip sha256 (required when publish=true)
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -60,6 +63,10 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       superseded: ${{ steps.resolve.outputs.superseded }}
     steps:
+      - if: ${{ inputs.publish && inputs.certified_zip_sha256 == '' }}
+        run: |
+          echo "::error::certified_zip_sha256 is required when publish=true"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: main
@@ -260,10 +267,11 @@ jobs:
       - env:
           GITHUB_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
-        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG"
+          CERTIFIED_ZIP_SHA256: ${{ inputs.certified_zip_sha256 }}
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --certified-zip-sha256="$CERTIFIED_ZIP_SHA256"
   publish-stable:
     needs: [preflight, discover, draft]
-    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'stable' && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'stable' && inputs.publish && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
     runs-on: ubuntu-latest
     environment: publish
     permissions:
@@ -282,4 +290,5 @@ jobs:
       - env:
           GITHUB_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
-        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG"
+          CERTIFIED_ZIP_SHA256: ${{ inputs.certified_zip_sha256 }}
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --certified-zip-sha256="$CERTIFIED_ZIP_SHA256"
