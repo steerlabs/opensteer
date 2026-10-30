@@ -6118,8 +6118,17 @@ export const personAskedThreadsMigration: Migration = {
         where parent.role = 'conversation' and delegation.origin = 'run'
           and seed.author ->> 'kind' = 'human'
       ), listing as (
-        select thread.id, (thread.parent_thread_id is null or asked.id is not null) as listed
-        from threads as thread left join asked on asked.id = thread.id
+        -- Every delegation writes its row with the child it creates, so a child
+        -- with none is one a person made, listed only when made in a conversation.
+        select thread.id, (
+          thread.parent_thread_id is null
+          or asked.id is not null
+          or (parent.role = 'conversation' and not exists (
+            select 1 from delegations as delegation where delegation.child_thread_id = thread.id))
+        ) as listed
+        from threads as thread
+        left join threads as parent on parent.id = thread.parent_thread_id
+        left join asked on asked.id = thread.id
       )
       update threads as thread set listed = listing.listed
       from listing where thread.id = listing.id and thread.listed is distinct from listing.listed;

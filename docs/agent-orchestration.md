@@ -776,13 +776,14 @@ finished task's model. The label remains available when the worker Thread or its
 not loaded. Protocol epoch 27 requires this field; migration 0071 fills historical Assignment
 events from the Run named in each event before those events are replayed.
 
-Navigation lists a person's tasks. A Thread is listed when a person creates it, including
-with a parent, or a `conversation` Thread such as Chat delegates during a Run whose seed input
-was authored by a `human`. Delegation must have origin `run`; trigger and watch origins never
+Navigation lists a person's tasks: root Threads, and work a person handed off from a
+`conversation` Thread such as Chat. A person's own new Thread is listed as a root or when made in
+a conversation; a conversation's delegation is listed only during a Run whose seed input was
+authored by a `human`. Delegation must have origin `run`; trigger and watch origins never
 list work. The same rule promotes an existing unlisted Thread and publishes `thread.listed`.
-Work another task delegates stays inside that task, even when a person woke its Run. Nothing
-at runtime unlists a Thread. Migration 0113 recomputes existing listing from delegation seed
-inputs (keeping roots listed), and rewrites every durable Thread snapshot an event carries.
+Work handed to a task stays inside that task, whoever handed it, even when a person woke the Run. Nothing
+at runtime unlists a Thread. Migration 0113 recomputes existing listing by this rule
+(keeping roots listed), and rewrites every durable Thread snapshot an event carries.
 `parentThreadId` stays lineage only. Workspace snapshots and `tasks.list` filter on `listed`
 before pagination; clients apply the event's flag on replay. Direct navigation and authorized
 agent searches reach unlisted work. Questions in unlisted work roll up to the nearest listed

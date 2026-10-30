@@ -31,7 +31,9 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
             ('monitor', 'task', 'work', true),
             ('scheduled', 'chat', 'work', true),
             ('helper', 'task', 'work', false),
-            ('retasked', 'task', 'work', false);
+            ('retasked', 'task', 'work', false),
+            ('made-in-chat', 'chat', 'work', false),
+            ('made-in-task', 'task', 'work', true);
           insert into delegations values
             ('asked', 'chat', 'chat-person', 'run'),
             ('follow-up', 'chat', 'chat-return', 'run'),
@@ -75,15 +77,19 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
         // Roots stay listed, even when an automation-woken Chat turn later gave one work.
         chat: true,
         task: true,
-        // A person's Chat turn handed these off, at creation or by re-tasking.
+        // A person's Chat turn handed these off, at creation or by re-tasking, or a
+        // person made it in Chat themselves.
         asked: true,
         retasked: true,
+        "made-in-chat": true,
         // Chat woke for a returning task, an automation re-tasked a task's helper, or a
         // schedule created it: none of these is work a person asked for.
         "follow-up": false,
         monitor: false,
         scheduled: false,
         helper: false,
+        // A person's own child of a task stays inside that task.
+        "made-in-task": false,
       });
       expect(Object.fromEntries(once.events.map(({ id, data }) => [id, data]))).toEqual({
         "asked-created": { thread: { id: "asked", listed: true } },

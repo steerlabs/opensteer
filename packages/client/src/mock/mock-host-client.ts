@@ -8516,7 +8516,10 @@ class MockHostState {
       harnessLabel: harness?.name ?? workspace.harnessLabel,
       id: this.nextId("thread"),
       inputQueuePaused: false,
-      listed: true,
+      listed:
+        input.parentThreadId === undefined ||
+        this.snapshot.threads.find(({ id }) => id === input.parentThreadId)?.role ===
+          "conversation",
       modelLabel: model.displayName,
       modelSelection: storedSelection,
       parentThreadId: input.parentThreadId ?? null,

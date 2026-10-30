@@ -107,20 +107,29 @@ describeStore("person-asked Thread listing", (it) => {
     ]);
   });
 
-  it("lists a person's child even under a work Thread", async ({ storeFixture }) => {
-    const { createRunFixture, store } = storeFixture;
+  it("keeps a person's child inside a task, and lists one they make in Chat", async ({
+    storeFixture,
+  }) => {
+    const { createRunFixture, database, store } = storeFixture;
     const f = await createRunFixture("person-child");
-    const child = await store.createThread({
-      createdBy: f.userId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harnessInstance.id,
-      idempotencyKey: "person-child",
-      modelSelection: testModelSelection,
-      parentThreadId: f.thread.id,
-      title: "My task",
-      workspaceId: f.workspace.id,
-    });
-    expect(child.thread.listed).toBe(true);
+    const create = (key: string) =>
+      store.createThread({
+        createdBy: f.userId,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        idempotencyKey: key,
+        modelSelection: testModelSelection,
+        parentThreadId: f.thread.id,
+        title: key,
+        workspaceId: f.workspace.id,
+      });
+    expect((await create("inside-task")).thread.listed).toBe(false);
+    await database
+      .updateTable("threads")
+      .set({ role: "conversation" })
+      .where("id", "=", f.thread.id)
+      .execute();
+    expect((await create("from-chat")).thread.listed).toBe(true);
   });
 
   for (const kind of ["trigger", "watch"] as const) {
