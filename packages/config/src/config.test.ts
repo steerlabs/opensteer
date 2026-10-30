@@ -1188,3 +1188,17 @@ function writeManagedAccountBundle(value: unknown): string {
   writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
   return path;
 }
+
+it.each([undefined, "0", "1", "false", "true"])(
+  "validates the default-off passkey flag %s",
+  (value) => {
+    expect(parseHostConfig({ ...localHostEnvironment, OPENSTEER_PASSKEYS: value }).passkeys).toBe(
+      value === "1" || value === "true",
+    );
+  },
+);
+it("rejects a malformed passkey flag", () => {
+  expect(() => parseHostConfig({ ...localHostEnvironment, OPENSTEER_PASSKEYS: "enabled" })).toThrow(
+    "OPENSTEER_PASSKEYS",
+  );
+});

@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { journeySteps as nativeBrowserCases } from "./native-browser-journey-contract.js";
+import { journeySteps, passkeyJourneySteps } from "./native-browser-journey-contract.js";
+const nativeBrowserCases: Record<string, string> = { ...journeySteps, ...passkeyJourneySteps };
 const serialCases = new Set(Object.keys(nativeBrowserCases));
 
 export type NativeCaseId = string;

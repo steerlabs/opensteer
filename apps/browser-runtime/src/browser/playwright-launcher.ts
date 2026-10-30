@@ -46,6 +46,7 @@ import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passk
 
 interface PlaywrightChromiumLauncherOptions {
   authenticator?: PasskeyAuthenticator;
+  probePasskeys?: boolean;
   args?: readonly string[];
   chromiumSandbox: boolean;
   environment?: Readonly<NodeJS.ProcessEnv>;
@@ -142,10 +143,11 @@ export async function probePasskeySecurityState(
 }
 
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
+  private readonly probePasskeys: boolean;
   private preparation: Promise<void> | undefined;
   private securityStateAvailable = false;
   get passkeys(): 1 | undefined {
-    return this.authenticator && this.securityStateAvailable ? 1 : undefined;
+    return this.securityStateAvailable ? 1 : undefined;
   }
   private readonly authenticator: PasskeyAuthenticator | undefined;
   private readonly args: readonly string[];
@@ -159,6 +161,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     if (!path.isAbsolute(options.executablePath)) {
       throw new Error("Chromium executablePath must be absolute.");
     }
+    this.probePasskeys = options.probePasskeys === true || options.authenticator !== undefined;
     this.authenticator = options.authenticator;
     this.args = options.args ?? [];
     this.chromiumSandbox = options.chromiumSandbox;
@@ -201,7 +204,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
 
   prepare(): Promise<void> {
     this.preparation ??= (async () => {
-      if (!this.authenticator) return;
+      if (!this.probePasskeys) return;
       let server: PlaywrightBrowserServer | undefined;
       try {
         server = await this.startServer(2000);
