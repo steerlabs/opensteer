@@ -164,8 +164,9 @@ and [authority tests](../packages/deployment-authority/src/authority.test.ts).
 
 Account rows are visible only while signed in; expiration hides rather than
 deletes them, while sign-out removes them. The selected place remains visible
-asking for sign-in and does not reopen automatically. Status must come from the
-authority able to vouch for it: local supervision, attached connection, a fresh
+asking for sign-in; a previously used selected Account place reattaches after
+sign-in returns. Status must come from the authority able to vouch for it:
+local supervision, attached connection, a fresh
 verified Account read, or an identity-checked manual probe. A failed check cannot
 be called offline, and an unsuccessful refresh cannot renew stale evidence or
 clear failure. See
