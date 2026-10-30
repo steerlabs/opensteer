@@ -461,5 +461,21 @@
     "evidence": [
       "integration (4) on 6a217cb (PR #221, which changed only Thread listing): the test ran 84.9 s, its hook timed out at 60 s and database fixture containment failed ('Producers of ... host_clone ... did not stop'); 'ends an overdue background Run's sessions ...' then failed only by worker contamination. The same job passed on rerun at the same SHA (run 40999673919, attempt 2), and the whole file passed 14/14 locally at that SHA (13.2 s for this test). Reproduce under the full integration shard's load; fix why the token-refresh session leaves database producers running past teardown, keeping the refresh and expiry assertions unchanged."
     ]
+  },
+  {
+    "file": "apps/host/src/browser/browser-editing.integration.test.ts",
+    "name": [
+      "Host and Chromium editing contract",
+      "projects old viewers and attributes native clipboard over the real Host route"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-10-30T05:39:00Z",
+    "deadline": "2026-11-06T05:39:00Z",
+    "sha": "7cab25b8ba1f7397e3feb0c66d13cb118a84265a",
+    "evidence": [
+      "integration (1) on 7cab25b (PR #243, which changed only how task rows render): the clipboard result arrived late ('Matcher did not succeed in time'; expected [ { type: 'clipboard.result', … } ] to deeply equal [ ObjectContaining{…} ]) after 25.7 s. The same job passed on rerun at the same SHA (run 41009135701, attempt 2) in 17.7 s. Reproduce under the integration shard's load; fix why the native clipboard result can miss the matcher's window, keeping the projection and attribution assertions unchanged."
+    ]
   }
 ]
