@@ -1079,6 +1079,15 @@ opened from another follows that opener and its earlier children, in order.
 `holding` means a live Run is still attached to the session and has a durable use of that tab; `acting` means admitted work within
 15 seconds. Historical usage supplies no occupants. `host.browser-tabs-changed`
 replaces exactly one session's catalog, including an explicit empty replacement.
+For each reader within a broker generation, changed validated catalog content (including
+occupants, activity timestamps and inventory revision) advances the catalog revision.
+The Host retains at most 256 SHA-256 digests and assigned revisions per broker; hash
+collisions are negligible. An evicted reader receives a fresh global revision on its
+next read. Holdings restorations run in session FIFO order and install their results
+after metadata loading. History ends with the broker. Generations still use wall-clock
+milliseconds: clock rollback or same-millisecond broker recreation remains a known
+limitation of restart ordering.
+
 Icons are read by authorized session-scoped `browser.tabIcon.get`; its references
 resolve against the bounded live inventory or currently bound, nonclosed durable tabs.
 Reads authorize the lineage's latest session and never restore a page. Cold summaries

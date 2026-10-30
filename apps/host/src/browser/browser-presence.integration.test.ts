@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
 import { AgentControlResponseSchema, BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { resolvedInputParts } from "@opensteer/harness";
@@ -125,13 +126,19 @@ interface Reader {
   activateWorkspace(workspaceId: string): void;
   dispose(): void;
   getSnapshot(): HostSnapshot;
+  refresh(): Promise<void>;
+  waitForSnapshot(predicate: (snapshot: HostSnapshot) => boolean): Promise<void>;
 }
 
 /**
  * The shared client every app uses, signed in as the owner on another device.
  * It records the path of every request it makes.
  */
-async function reader(host: MachineAccessHost, delayBootstrapMs = 0): Promise<Reader> {
+async function reader(
+  host: MachineAccessHost,
+  delayBootstrapMs = 0,
+  beforeResponse?: (request: Request) => Promise<void>,
+): Promise<Reader> {
   const { HttpHostClient } = (await import("@opensteer/client/host")) as unknown as {
     HttpHostClient: new (options: {
       readonly baseUrl: URL;
@@ -140,7 +147,10 @@ async function reader(host: MachineAccessHost, delayBootstrapMs = 0): Promise<Re
       readonly reconnectMaxDelayMs: number;
       readonly refreshIntervalMs: number;
       readonly webSocketFactory: (url: string) => unknown;
-    }) => Omit<Reader, "requests" | "sockets"> & { load(): Promise<void> };
+    }) => Omit<Reader, "requests" | "sockets"> & {
+      load(): Promise<void>;
+      subscribe(listener: () => void): () => void;
+    };
   };
   const requests: string[] = [];
   const sockets: WebSocket[] = [];
@@ -158,6 +168,7 @@ async function reader(host: MachineAccessHost, delayBootstrapMs = 0): Promise<Re
       const response = await fetch(request);
       if (request.url.includes("bootstrap.get") && delayBootstrapMs)
         await new Promise((resolve) => setTimeout(resolve, delayBootstrapMs));
+      await beforeResponse?.(request);
       return response;
     },
     reconnectBaseDelayMs: 20,
@@ -174,6 +185,24 @@ async function reader(host: MachineAccessHost, delayBootstrapMs = 0): Promise<Re
     activateWorkspace: (workspaceId) => client.activateWorkspace(workspaceId),
     dispose: () => client.dispose(),
     getSnapshot: () => client.getSnapshot(),
+    refresh: () => client.refresh(),
+    waitForSnapshot: async (predicate) => {
+      if (predicate(client.getSnapshot())) return;
+      let unsubscribe = () => {};
+      try {
+        await withTimeout(
+          new Promise<void>((resolve) => {
+            unsubscribe = client.subscribe(() => {
+              if (predicate(client.getSnapshot())) resolve();
+            });
+          }),
+          5_000,
+          { timeoutError: () => new Error("Reader did not acknowledge catalog") },
+        );
+      } finally {
+        unsubscribe();
+      }
+    },
     requests,
     sockets,
     retainBrowserWatch: (sessionId, surfaceId) => client.retainBrowserWatch(sessionId, surfaceId),
@@ -338,7 +367,15 @@ integration("Browser presence and conversation usage", () => {
     expect(omitted.sessions.every((session) => session.tabCatalog === undefined)).toBe(true);
     // Let all coalesced notices go by before the cold client's realtime socket exists.
     await new Promise((resolve) => setTimeout(resolve, 250));
-    const client = await reader(host, 350);
+    const deliverComplete = Promise.withResolvers<void>();
+    let holdComplete = false;
+    const client = await reader(host, 350, async (request) => {
+      if (
+        holdComplete &&
+        (request.url.includes("bootstrap.get") || request.url.includes("browser.tabs.get"))
+      )
+        await deliverComplete.promise;
+    });
     cleanups.push(async () => client.dispose());
     const loaded = client.getSnapshot().browserSessions;
     expect(loaded).toHaveLength(100);
@@ -354,6 +391,81 @@ integration("Browser presence and conversation usage", () => {
     expect(client.requests.filter((request) => request.includes("browser.tabs.get"))).toHaveLength(
       100,
     );
+    for (const socket of client.sockets) {
+      if (socket.readyState !== WebSocket.OPEN)
+        await new Promise<void>((resolve) => socket.once("open", resolve));
+      await new Promise<void>((resolve) => {
+        socket.once("pong", () => resolve());
+        socket.ping();
+      });
+    }
+    // Capture both projections before publishing the older one. The first load
+    // has finished before the second query starts, so FIFO restoration cannot
+    // deadlock this delivery gate.
+    const partialCaptured = Promise.withResolvers<void>();
+    const publishPartial = Promise.withResolvers<void>();
+    const queryHoldings = host.store.listBrowserPlaceHoldings.bind(host.store);
+    const project = host.runtime.browser.catalogsForViewers.bind(host.runtime.browser);
+    const holdingsSpy = vi.spyOn(host.store, "listBrowserPlaceHoldings");
+    const projectionSpy = vi.spyOn(host.runtime.browser, "catalogsForViewers");
+    let partialRevision = -1;
+    let capture = true;
+    holdingsSpy.mockImplementation(async (id) => {
+      const rows = await queryHoldings(id);
+      return id === sessionId && capture ? rows.slice(0, 512) : rows;
+    });
+    projectionSpy.mockImplementation(async (id) => {
+      const catalogs = await project(id);
+      if (id === sessionId && capture) {
+        capture = false;
+        const partial = catalogs.get(host.ownerId)!;
+        expect(partial.tabs.every((tab) => tab.occupants.length === 8)).toBe(true);
+        partialRevision = partial.revision;
+        partialCaptured.resolve();
+        await publishPartial.promise;
+      } else if (id === sessionId) {
+        await deliverComplete.promise;
+      }
+      return catalogs;
+    });
+    try {
+      holdComplete = true;
+      runtime.sendServer(
+        {
+          type: "browser.surfaces.changed",
+          surfaces: surfaces.map((surface) => ({ ...surface, title: "Revised" })),
+        },
+        sessionId,
+      );
+      await withTimeout(partialCaptured.promise, 5_000, {
+        timeoutError: () => new Error("Partial projection was not captured"),
+      });
+      const complete = await host.runtime.browser.readTabCatalog(host.ownerId, sessionId);
+      expect(complete.tabs.every((tab) => tab.occupants.length === 16)).toBe(true);
+      publishPartial.resolve();
+      await client.waitForSnapshot(
+        (snapshot) =>
+          snapshot.browserSessions
+            .find((session) => session.id === sessionId)
+            ?.tabCatalog?.tabs.every((tab) => tab.occupants.length === 8) === true,
+      );
+      holdComplete = false;
+      deliverComplete.resolve();
+      await client.refresh();
+      const converged = client
+        .getSnapshot()
+        .browserSessions.find((session) => session.id === sessionId)!.tabCatalog!;
+      expect(converged.tabs.every((tab) => tab.occupants.length === 16)).toBe(true);
+      expect(complete.revision).toBeGreaterThan(partialRevision);
+      expect((await host.runtime.browser.readTabCatalog(host.ownerId, sessionId)).revision).toBe(
+        complete.revision,
+      );
+    } finally {
+      publishPartial.resolve();
+      deliverComplete.resolve();
+      projectionSpy.mockRestore();
+      holdingsSpy.mockRestore();
+    }
     const outsider = await signUpUser(host, {
       email: "maximum-stranger@example.com",
       password: "maximum-stranger-password",
