@@ -978,6 +978,7 @@ integration("Browser presence and conversation usage", () => {
     await inFlight;
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(ofType(owner, "host.place-activity")).toHaveLength(beforeLate);
+    const beforeEmpty = runtime.receivedCommands().length;
     runtime.sendServer({ type: "browser.surfaces.changed", surfaces: [] });
     runtime.sendServer({
       type: "browser.workspace-tabs",
@@ -989,6 +990,17 @@ integration("Browser presence and conversation usage", () => {
         ? true
         : undefined,
     );
+    // The Host drops the runtime streams of the vanished pages on its own schedule;
+    // only once it has can the historical sends below be the sole source of commands.
+    await until(() => {
+      const dropped = new Set(
+        runtime
+          .receivedCommands()
+          .slice(beforeEmpty)
+          .flatMap((command) => (command.type === "stream.unsubscribe" ? [command.surfaceId] : [])),
+      );
+      return surfaces.every(({ id }) => dropped.has(id)) || undefined;
+    });
     const historical = [];
     for (const state of ["tab-closed", "session-closed"] as const) {
       if (state === "session-closed") {
