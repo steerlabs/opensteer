@@ -1,3 +1,4 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
@@ -5,7 +6,6 @@ import {
   executionLeaseExpiresAt,
 } from "../agents/execution-clock.test-support.js";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
-import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -5418,18 +5418,5 @@ function waitForClose(
 ): Promise<{ readonly code: number; readonly reason: string }> {
   return new Promise((resolve) => {
     socket.once("close", (code, reason) => resolve({ code, reason: reason.toString("utf8") }));
-  });
-}
-
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createNetServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string")
-        return reject(new Error("failed to allocate port"));
-      server.close((error) => (error ? reject(error) : resolve(address.port)));
-    });
   });
 }

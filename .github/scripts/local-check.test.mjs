@@ -40,3 +40,8 @@ test("Node fixture tests run through Node even for global CI inputs", () => {
     ),
   );
 });
+test("a root test edit alone still runs the test typecheck", () => {
+  const p = localPlan(["tests/foo.test.ts"], [], ["tests/foo.test.ts"]);
+  assert.equal(p.full, false);
+  assert.ok(p.commands.some((c) => c.length === 1 && c[0] === "typecheck:tests"));
+});

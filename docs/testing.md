@@ -128,7 +128,7 @@ register's format; an entry never exempts a test by itself.
 - `integration-schemas.integration.test.ts` (large API) and `watch-supervisor.test.ts` (stale artifacts): closed 2026-10-28 by the shared HTTP fixture path filter in this change; red reproduction `8fcd16dd0`.
 
 - `computer-repl.test.ts`: image budgets and producer-message limits; closed 2026-10-28; fixes `074a72c17`, `89388e4f4`, `c92fdee76`, `04fa64da3`.
-- `harness-actions.test.ts` A13-dialog-closes-during-exit: closed 2026-10-28; fix `9ec07ab02`; cross-channel timestamps replaced by acknowledged causal phases, with all grace and cleanup bounds retained.
+- `harness-actions-input-lifecycle.test.ts` A13-dialog-closes-during-exit: closed 2026-10-28; fix `9ec07ab02`; cross-channel timestamps replaced by acknowledged causal phases, with all grace and cleanup bounds retained.
 - `apps/runner/src/runtime/runtime.test.ts`: interrupts the active harness turn without detaching the workspace; closed 2026-10-28; fix `ff00efbc2`, landed `0d295e69f`.
 - `packages/runner-client/src/auxiliary-stream.test.ts`: exposes only the Passwords capabilities opted into by this welcome; closed 2026-10-28; fix `94e2e5c33`, landed `18c5103ad`.
 - `packages/harness-codex/src/process.test.ts`: attaches a bounded redacted stderr diagnostic to a timed-out request; closed 2026-10-28; fix `2eb6ed588`, landed `18c5103ad`.
@@ -153,15 +153,26 @@ artifacts and run `pnpm exec tsx scripts/ci-durations.ts <directory>`. New files
 receive a small default weight. Each job's `timeout-minutes` is 1.5 times its
 slowest measured run in the current layout, at least 3:
 `pnpm exec tsx scripts/ci-timeouts.ts <run id>...` prints them, counting failed
-runs and listing cancelled or timed-out ones. Re-measure after changing shards or
-job contents. Every shard uploads discovery and execution
+runs, and cancelled or timed-out ones as lower bounds. Re-measure after changing
+shards or job contents. Every shard uploads discovery and execution
 inventories; Check requires their exact union and pairwise disjoint membership. Integration
 shards also upload enforcing lock graphs, merged through the global cycle check;
 each shard's graph must trace every file that shard ran. Tests that need Darwin
 (`darwinOnlyTests` in
 [ci-test-files.mjs](../.github/scripts/ci-test-files.mjs)) leave the Linux shards
 and run in the native-mac matrix with their own discovery and execution inventory.
-The native lane separates helper builds, Swift packages, and native wire checks.
+The native lane separates helper builds, Swift packages, and native wire checks:
+one job per task in [ci-native-mac.json](../.github/scripts/ci-native-mac.json).
+The `iphone` task carries the Darwin-only files and runs for any workspace edit.
+Each Swift task runs only when its Swift packages, the CI definition, what its node
+scripts import, or a file its Swift tests read changes. `ci-native-inputs.json`
+lists those imports (whole workspace packages), `pnpm exec tsx
+scripts/ci-native-inputs.ts` regenerates it, and `tests/ci-native-inputs.test.ts`
+fails when it is stale or when a Swift test names a repository file its task does
+not list. A root `tests/*.test.ts` edit selects its own lane, the repo-wide test
+guards in `tests` and `build-types`; other files under `tests/` stay global
+inputs. Main and manual runs select every task, and Check refuses a skipped one
+there.
 Integration shards run `pnpm test:integration` with its own tmpfs PostgreSQL, as
 local runs do. Browser journeys that accept `OPENSTEER_CHROMIUM_EXECUTABLE` get
 the pinned Playwright Chromium there, never the runner image's browsers. Missing or
@@ -211,7 +222,7 @@ PNG evidence and `journey.json` under `OPENSTEER_FAVICON_EVIDENCE_DIR`, defaulti
 `opensteer-favicons` in the system temporary directory.
 
 Browser Harness element actions (hosted Chromium) run with
-`pnpm exec vitest run apps/browser-runtime/src/browser/harness-actions.test.ts`.
+`pnpm exec vitest run apps/browser-runtime/src/browser/harness-actions*.test.ts`.
 Use the Chromium selection above. Each acceptance case writes `result.json` and
 `page.png` under `OPENSTEER_HARNESS_ACTIONS_EVIDENCE_DIR` (default:
 `opensteer-harness-actions` in the system temporary directory), including harness
@@ -329,7 +340,7 @@ grace and duration bounds still apply.
 
 Keep transport, process and browser deadlines on real time. `BrowserService.activityClock`
 controls only agent activity timestamps and expiry scheduling; production uses
-`systemClock`. The page-chip journey in `tests/browser-sessions.integration.test.ts`
+`systemClock`. The page-chip journey in `tests/browser-sessions-context.integration.test.ts`
 advances a `ManualClock` through the same 300 ms discovery pause and 15,100 ms
 idle interval, retaining the before/after page, occupant and acting assertions.
 That clock does not advance the real 100 ms catalog-notice timer. After discovery,

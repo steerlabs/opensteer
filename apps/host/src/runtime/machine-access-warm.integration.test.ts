@@ -1,3 +1,4 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { startHoldingHop, type HoldingHop } from "./machine-access-hop.test-support.js";
 import { probeTestServer } from "@opensteer/shared/test-support/serverProbes";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
@@ -1006,7 +1007,7 @@ function recordingHook(probes: Probe[]): MachineAccessValidationHook {
 /** A long command and a port forward, both open and carrying bytes. */
 async function openWork(rig: Rig, launch: Launch, echoPort: number) {
   const known = new Set((await rig.sessions()).map((session) => session.id));
-  const port = await freeLocalPort();
+  const port = await freePort();
   const command = startShim(launch, "ssh", ["example-mac", "sleep 60"]);
   const forward = startShim(launch, "ssh", [
     "-N",
@@ -1167,16 +1168,6 @@ async function startEchoServer(): Promise<{ readonly port: number; close(): Prom
     },
     port: address.port,
   };
-}
-
-async function freeLocalPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("no free port");
-  const { port } = address;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
 }
 
 /** What a connection through a forwarded port finds. */

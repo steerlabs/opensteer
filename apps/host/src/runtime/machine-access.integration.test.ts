@@ -1,5 +1,6 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { startEchoTestServer as startEchoServer } from "@opensteer/shared/test-support/tcpServer";
-import { connect, createServer } from "node:net";
+import { connect } from "node:net";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir, userInfo } from "node:os";
@@ -387,7 +388,7 @@ integration("Machine access, end to end", () => {
 
     const echo = await startEchoServer();
     try {
-      const refusedPort = await freeLocalPort();
+      const refusedPort = await freePort();
       const refusedForward = startShim(launch, "ssh", [
         "-N",
         "-L",
@@ -405,7 +406,7 @@ integration("Machine access, end to end", () => {
         policy: { commands: false, forwarding: true, reach: "owner", shares: [] },
         runnerId: target.runnerId,
       });
-      const allowedPort = await freeLocalPort();
+      const allowedPort = await freePort();
       const allowedForward = startShim(launch, "ssh", [
         "-N",
         "-L",
@@ -475,16 +476,6 @@ async function sftpBatch(launch: MachineAccessSetup, alias: string, script: stri
   } finally {
     await rm(batch, { force: true });
   }
-}
-
-async function freeLocalPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("no free port");
-  const { port } = address;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
 }
 
 /**

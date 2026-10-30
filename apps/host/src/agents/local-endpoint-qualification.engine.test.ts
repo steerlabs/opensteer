@@ -1,3 +1,4 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -448,15 +449,6 @@ async function phonePhoto(
   })
     .jpeg({ quality: grain.quality })
     .toBuffer();
-}
-
-/** A port nothing listens on: a server is bound to it, then closed. */
-async function closedPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
 }
 
 /** oMLX's settings as its Mac app writes them: its port, its key, its admin secret. */
@@ -1211,7 +1203,7 @@ qualification("local endpoint qualification", () => {
       const firstKey = `omlx-key-${randomUUID()}`;
       const rotatedKey = `omlx-rotated-${randomUUID()}`;
       const fixture = await startOmlxFixture(firstKey);
-      const lmStudioPort = await closedPort();
+      const lmStudioPort = await freePort();
       const home = await modelServerHome(
         Number(new URL(fixture.origin).port),
         firstKey,

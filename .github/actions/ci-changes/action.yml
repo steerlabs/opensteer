@@ -5,6 +5,8 @@ outputs:
     value: ${{ steps.detect.outputs.tests-shards }}
   integration-shards:
     value: ${{ steps.detect.outputs.integration-shards }}
+  native-mac-tasks:
+    value: ${{ steps.detect.outputs.native-mac-tasks }}
   lint:
     value: ${{ steps.detect.outputs.lint }}
   build-types:

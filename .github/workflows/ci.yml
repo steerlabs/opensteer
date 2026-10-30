@@ -22,6 +22,7 @@ jobs:
     outputs:
       tests-shards: ${{ steps.changes.outputs.tests-shards }}
       integration-shards: ${{ steps.changes.outputs.integration-shards }}
+      native-mac-tasks: ${{ steps.changes.outputs.native-mac-tasks }}
       lint: ${{ steps.changes.outputs.lint }}
       build-types: ${{ steps.changes.outputs.build-types }}
       tests: ${{ steps.changes.outputs.tests }}
@@ -197,17 +198,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - task: computer-helper
-            timeout: 6
-          - task: passwords-helper
-            timeout: 8
-          - task: iphone
-            timeout: 6
-          - task: computer-tests
-            timeout: 6
-          - task: passwords-tests
-            timeout: 11
+        # Tasks, timeouts and Swift cache inputs live in .github/scripts/ci-native-mac.json;
+        # `changes` selects the tasks whose inputs this change touches.
+        include: ${{ fromJSON(needs.changes.outputs.native-mac-tasks) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -215,13 +208,16 @@ jobs:
       - uses: ./.github/actions/ci-setup
       - id: swift
         shell: bash
+        env:
+          SWIFT_INPUTS: ${{ matrix.swift }}
         run: |
+          # The compiler, Xcode and SDK, not the runner image: SwiftPM revalidates a
+          # restored build, so a key only decides how warm it starts.
           swift --version > "$RUNNER_TEMP/swift-toolchain"
           xcodebuild -version >> "$RUNNER_TEMP/swift-toolchain"
           xcrun --show-sdk-version >> "$RUNNER_TEMP/swift-toolchain"
-          echo "$ImageVersion" >> "$RUNNER_TEMP/swift-toolchain"
           toolchain=$(shasum -a 256 "$RUNNER_TEMP/swift-toolchain" | cut -d' ' -f1)
-          inputs=$(git ls-tree -r HEAD -- packages apps/desktop apps/mobile/modules/iphone-apps/ios scripts patches .github/actions/ci-setup package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .pnpmfile.cjs tsconfig.json tsconfig.base.json tsconfig.package.json tsconfig.tests.json | shasum -a 256 | cut -d' ' -f1)
+          inputs=$(git ls-tree -r HEAD -- ${SWIFT_INPUTS:?} | shasum -a 256 | cut -d' ' -f1)
           echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
           echo "inputs=$inputs" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -255,7 +251,7 @@ jobs:
         if: matrix.task == 'passwords-tests'
         run: swift test --package-path apps/desktop/native/passwords
       - name: Test native contracts and Darwin-only files
-        if: matrix.task == 'iphone'
+        if: matrix.darwin
         shell: bash
         env:
           CI_LANE: darwin
@@ -275,7 +271,7 @@ jobs:
         with:
           name: native-mac-${{ matrix.task }}-${{ github.sha }}
           path: ${{ runner.temp }}/evidence
-          if-no-files-found: ${{ matrix.task == 'iphone' && 'error' || 'ignore' }}
+          if-no-files-found: ${{ matrix.darwin && 'error' || 'ignore' }}
   android:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.android != 'false' }}
