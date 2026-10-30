@@ -1392,7 +1392,7 @@ describe("MobileClient cold saved launch", () => {
       await vi.waitFor(() => expect(client.getSnapshot().selection.hostClient).not.toBe(first));
       await settle();
       expect(port.disposed).toContain(serverId);
-      expect(encrypted.keys.keys).toEqual([]);
+      expect(encrypted.slots()).toEqual([]);
       expect(
         (await client.sessions.load(DeploymentIdSchema.parse(serverId)))!.viewLoginId,
       ).not.toBe(before.loginId);
@@ -1448,7 +1448,7 @@ describe("MobileClient cold saved launch", () => {
     expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
     expect(client.getSnapshot().selection.hostClient).toBeNull();
     await signing;
-    expect(encrypted.keys.keys).toEqual([]);
+    expect(encrypted.slots()).toEqual([]);
     expect(client.oauth.hostViewLoginId(accountConnection())).toBe(hostLogin);
     subject = ControlPlaneAccountIdSchema.parse("acct_0192f4a1-8888-4000-8000-000000000008");
     const callback = new URL(opensteerMobileAccountOAuthCallback);
@@ -1502,7 +1502,8 @@ describe("MobileClient cold saved launch", () => {
       const credential = await records.read(`personal.${serverId}`);
       let deletionAttempts = 0;
       encrypted.keys.interrupt = (step) => {
-        if (step.startsWith("delete:")) {
+        // Key-slot deletions; the ownership index beside them is bookkeeping.
+        if (step.startsWith("delete:") && step !== "delete:saved.owners") {
           deletionAttempts += 1;
           if (reason !== "marker-write") throw new Error("locked");
         }
@@ -1522,7 +1523,7 @@ describe("MobileClient cold saved launch", () => {
       const marker = `/private/saved-view-denials/${serverId}.deny`;
       if (markerWrite) {
         expect(deletionAttempts).toBe(1);
-        expect(encrypted.keys.keys).toEqual([]);
+        expect(encrypted.slots()).toEqual([]);
         expect(files.text(marker)).toBeNull();
       } else {
         expect(files.text(marker)).toBe("");
@@ -1545,15 +1546,15 @@ describe("MobileClient cold saved launch", () => {
       expect(frames).not.toContain("saved");
       if (markerWrite) {
         expect(deletionAttempts).toBe(beforeRestart);
-        expect(encrypted.keys.keys).toEqual([]);
+        expect(encrypted.slots()).toEqual([]);
       } else {
         expect(deletionAttempts).toBeGreaterThan(beforeRestart);
-        expect(encrypted.keys.keys).toHaveLength(1);
+        expect(encrypted.slots()).toHaveLength(1);
       }
       markerWrite?.mockRestore();
       encrypted.keys.interrupt = () => {};
       await restarted.foregrounded();
-      expect(encrypted.keys.keys).toEqual([]);
+      expect(encrypted.slots()).toEqual([]);
       expect(restarted.getSnapshot().savedViewFailure).toBeNull();
       expect(await records.read(`personal.${serverId}`)).toBe(credential);
       expect(await encrypted.open().load(saved, () => true)).toBeNull();
