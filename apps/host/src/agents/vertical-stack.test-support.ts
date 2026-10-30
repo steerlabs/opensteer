@@ -343,7 +343,11 @@ export async function startVerticalStack(options: VerticalStackOptions): Promise
             run: async () => {
               await starting.catch(() => undefined);
               const results = await Promise.allSettled(operations);
-              const failures = results.filter((result) => result.status === "rejected");
+              // Callers still receive cancellation; teardown only consumes its own signal's reason.
+              const failures = results.filter(
+                (result): result is PromiseRejectedResult =>
+                  result.status === "rejected" && result.reason !== shutdown.signal.reason,
+              );
               if (failures.length)
                 throw new AggregateError(failures.map((result) => result.reason));
             },
@@ -913,7 +917,11 @@ async function startWithin(
         ...process,
         close: () => {
           shutdown.removeEventListener("abort", stop);
-          expired.reject(new Error(`Runner boot ${bootId} stopped before readiness`));
+          expired.reject(
+            shutdown.aborted
+              ? shutdown.reason
+              : new Error(`Runner boot ${bootId} stopped before readiness`),
+          );
           stopObserving();
           return (stopping ??= process.close());
         },

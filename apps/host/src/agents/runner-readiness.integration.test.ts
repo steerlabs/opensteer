@@ -230,6 +230,7 @@ const evidence: unknown[] = [];
             }
           })(),
         ).rejects.toThrow("Injected assertion failure while preparation is held");
+        await expect(restart).rejects.toThrow("Vertical stack closed");
         const survivors = survivingPids();
         evidence.push({
           kind: "assertion-failure teardown",
