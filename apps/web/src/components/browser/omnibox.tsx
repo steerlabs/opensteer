@@ -93,6 +93,10 @@ export function useOmnibox(options: {
       ),
     [hostClient, profileId, revision, historyRevision, scope],
   );
+  const historyIcons = useMemo(
+    () => new Map(history.map(({ url, favicon }) => [url, favicon])),
+    [history],
+  );
   const rows =
     frozen ??
     startPageResults(index, {
@@ -368,6 +372,7 @@ export function useOmnibox(options: {
     focused,
     visible,
     rows,
+    historyIcons,
     active,
     listId,
     setText,
@@ -462,7 +467,10 @@ export function OmniboxResults({
             ) : row.place ? (
               <PlaceMark hostClient={hostClient} icon={row.place.icon} site={row.place.site} />
             ) : (
-              <SiteMark favicon={row.favicon} site={row.title} />
+              <SiteMark
+                favicon={controller.historyIcons.get(row.historyUrl ?? "")}
+                site={row.title}
+              />
             )}
           </span>
           <span className="start-result__text">

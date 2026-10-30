@@ -93,7 +93,6 @@ export interface StartPageResult {
   readonly title: string;
   readonly fillText?: string;
   readonly historyUrl?: string;
-  readonly favicon?: string;
   /** Muted words after the title: the app's computer, or a recent site's nothing. */
   readonly detail: string | null;
   readonly label: string;
@@ -424,7 +423,6 @@ export function startPageResults(
       fillText: displayAddress(entry.url),
       detail: entry.title || null,
       historyUrl: entry.url,
-      ...(entry.favicon ? { favicon: entry.favicon } : {}),
       label: `Go to site · ${name}`,
       available: selected.available,
       action: { kind: "open-url", target, url: entry.url },
