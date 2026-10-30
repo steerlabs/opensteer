@@ -53,6 +53,7 @@ test("only the contributor packager's exact ad-hoc, unnotarized electron-builder
     process.arch === "arm64" ? "--arm64" : "--x64",
     "--config",
     "electron-builder.yml",
+    "-c.directories.output=release/contributor",
     ${flags}
   ];`;
   const reviewed = '"-c.mac.identity=-", "-c.mac.notarize=false", "-c.mac.hardenedRuntime=false",';
