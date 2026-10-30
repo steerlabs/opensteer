@@ -2,6 +2,12 @@ import type { SVGProps } from "react";
 
 /** Hand-drawn 24×24 stroke icon set; sized by the surrounding CSS. */
 const paths = {
+  microphone: (
+    <>
+      <rect x="9" y="2" width="6" height="13" rx="3" />
+      <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+    </>
+  ),
   activity: <path d="M22 12h-4l-3 8L9 4l-3 8H2" />,
   "alert-circle": (
     <>

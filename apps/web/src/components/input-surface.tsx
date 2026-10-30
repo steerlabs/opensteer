@@ -155,6 +155,8 @@ export function InputSurface({
       ) : null}
       <div hidden={composerHidden || (docked && dock.composerHidden)}>
         <Composer
+          dictationScope={`${deploymentId}/${userId}/${threadId}`}
+          hidden={composerHidden || (docked && dock.composerHidden)}
           variant={variant}
           placeContext={placeContext}
           attachments={attachmentTarget}

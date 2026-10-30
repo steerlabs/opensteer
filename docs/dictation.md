@@ -87,3 +87,20 @@ work through the same idempotent termination path.
 Show notices only for their owner. The next mic action, an edit in that composer,
 or dismiss clears them; empty/downloaded dismiss after five seconds. Announce
 state changes and notices once, rather than announcing text, level or timer ticks.
+
+## Desktop composer
+
+The web runtime shares one controller backed by the optional desktop dictation
+bridge. Availability refreshes on startup, focus and return to a visible window;
+unsupported browsers have no microphone control. Each composer scopes ownership
+to its deployment, user, thread and instance, and leaves when hidden or unmounted.
+Live words appear at the captured selection without changing the draft. Cancel
+restores the original words and selection; typing or starting IME composition
+adopts the displayed text and releases dictation. Escape keeps the words, while
+Enter and Send finalize before submitting through the existing send gates.
+
+The status row uses shared controller copy, a separately subscribed level meter
+and a one-second timer. A polite live region announces states and notices without
+reading partial words, levels or timer ticks. Reduced motion keeps the meter static.
+`dictation-visual.html?state=listening` is the fake-port visual fixture; its `state`
+parameter also accepts idle, downloading, starting, finishing and every notice kind.
