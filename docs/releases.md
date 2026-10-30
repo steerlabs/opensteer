@@ -54,116 +54,121 @@ readiness. Diagnose any reported launch error before proceeding.
 
 ## Public desktop releases
 
-[Desktop release](../.github/workflows/release.yml) uses GitHub's public-repository
-hosted macOS arm64 runner. `desktop-vX.Y.Z` builds **Opensteer**
-(`com.opensteer.opensteer`), published Latest. `vX.Y.Z-insider` builds
-**Opensteer Beta** (`com.steerlabs.opensteer.beta`), published as a prerelease and
-never Latest. No other `v*` tag triggers a release.
+[Desktop release](../.github/workflows/release.yml) builds macOS arm64 on GitHub's
+public-repository hosted runner. Daily at 07:37 UTC it resolves main HEAD,
+requires main's latest CI run and `Check` to have succeeded for that exact SHA,
+and skips if the newest published insider already targets it. Otherwise it
+builds **Opensteer Beta** (`com.steerlabs.opensteer.beta`), signs, notarizes and
+publishes `vX.Y.Z-insider` automatically as a prerelease, never Latest. Insiders
+use updater channel `insider` and product build channel `beta`.
 
-Both apps have plain numeric `X.Y.Z` versions from the root package.json, exactly
-matching the numeric part of the tag. There is one Beta per version: bump the
-version for every Beta. The first public release is 0.1.220. Beta's updater uses
-channel `insider`; `beta` remains the product build channel name.
+There are no tag-push or pull-request triggers. Draft creation targets the built
+SHA; tags created with GITHUB_TOKEN do not start another release workflow.
+Channel concurrency uses `queue: max` and never cancels releases in progress.
+Never backfill an older insider after a newer one: the updater selects the first
+eligible feed entry.
 
-Commit the version on main and wait for its CI evidence. Tim chooses one:
+### Derived versions
+
+Both channels use plain numeric `X.Y.Z`. No version commit or bump PR is needed.
+In a full-history checkout, infra and maintainers can recompute a source's version:
 
 ```sh
-git tag v0.1.220-insider MAIN_COMMIT_SHA
-git push public refs/tags/v0.1.220-insider
-# Stable:
-git tag desktop-v0.1.220 MAIN_COMMIT_SHA
-git push public refs/tags/desktop-v0.1.220
+node scripts/release-version.cjs FULL_40_CHARACTER_SHA
 ```
 
-Approve draft discovery's `release` environment request after source validation,
-then approve the build when a new artifact is needed. Inspect the complete draft
-before approving the separate publish job. A Beta is published only after its draft
-is complete. Never backfill an older Beta after a newer one: the updater picks
-the first eligible feed entry. Never move a release tag. Channel concurrency uses
-`queue: max` with `cancel-in-progress: false`, preserving queued releases through
-approval waits.
+The root manifest at that SHA supplies base `M.m.p`. Find the most recent
+first-parent commit that changed the **version value**, or the root commit.
+For N first-parent commits after it, the release is `M.m.(p+N)`. Non-version
+manifest edits count as commits. A new base must exceed the preceding derived
+version; nonlinear or shallow history, invalid versions and unreadable manifests
+fail closed. The CommonJS export is
+`deriveReleaseVersion({ repositoryRoot, revision })`.
 
-### Practice run and exact-byte promotion
+The build stamps only its workspace's root package.json, never committing it.
+The canonical identity guard accepts that one byte-exact generated change only
+when its version is derived for HEAD; any other field/file change is refused.
+Desktop packaging and the Personal runtime use the same guard. Infra must use it before building the container release-record stage, which retains its existing Git-free manifest validation.
+The APK receipt and release.json bind the derived version to the exact source.
 
-`workflow_dispatch` requires this workflow on the default branch. From main:
+### Insider practice run
+
+`workflow_dispatch` needs the workflow on the default branch. From main:
 
 ```sh
 gh workflow run release.yml --repo steerlabs/opensteer --ref main \
-  -f ref=MAIN_COMMIT_SHA -f channel=beta -f version=0.1.220 -f publish=false
+  -f channel=insider -f publish=false
 ```
 
-`publish=false` is the default. After protected discovery and build approval,
-this stops at a draft, invisible to anonymous users and `releases/latest`.
-Inspect the prepared artifact,
-SHA256SUMS and release.json. To promote, dispatch again with the same source,
-channel and version and `-f publish=true`. Read-only preflight validates the
-source first. The protected discovery job uses its own `contents: write` token to see drafts,
-verifies the existing draft's `sourceSha`, `version`, `channel` and `tag`, then
-skips rebuilding and drafting and requests publish approval. The publication
-tool verifies those exact draft bytes before promotion. Already published
-versions are rejected. Never replace draft assets
-between verification and approval.
+`publish=false` is the manual insider default. The build ends at a complete draft,
+invisible to anonymous users and `releases/latest`. Inspect its artifact,
+SHA256SUMS and release.json. Dispatch with `-f publish=true` to publish. When main
+still has the same SHA, discovery validates and reuses the exact draft instead
+of rebuilding; publication rechecks all its bytes. If main has advanced, the run
+builds its new derived version. An unchanged already-published insider is skipped.
+Insider signing and publication have no reviewer approval gate.
 
-### Build inputs and local proof
+### Stable promotion
 
-`pnpm desktop:build-release --out /absolute/build-directory` requires a clean
-checkout. It downloads checksum-pinned official Node, PostgreSQL source and
-cloudflared; compiles and relocates PostgreSQL; builds and signs the supervisor;
-and invokes the product's Personal runtime, Computer Use, Passwords and desktop
-packagers. The Personal runtime's source provenance, native input proofs and
-resource digests remain enforced. Script debugger maps are omitted so the
-existing 2,048-file runtime manifest limit remains intact. Node setup caches only
-the pnpm store by the lockfile; no compiled PostgreSQL cache is used. Each
-external build command has its own unchanged 15-minute deadline, including
-separate configure, make and install commands. A fresh local PostgreSQL 17.11
-build measured 27 seconds for configure, 79 seconds for make and 6 seconds for
-install; hosted-runner timing remains to be verified. No sibling checkout,
-private infrastructure, login keychain item or local signing JSON is needed.
+Choose an already **published** insider prerelease:
 
-The workflow first runs `pnpm build:agent-phone --release`. With its source and
-version environment, that producer writes and verifies the trusted APK receipt.
-The desktop builder pins that receipt and verifies it again during staging and
-packaging. The phone's permanent signer check is unchanged.
+```sh
+gh workflow run release.yml --repo steerlabs/opensteer --ref main \
+  -f channel=stable -f insider_tag=v0.1.230-insider
+```
 
-Signing uses `OPENSTEER_RELEASE_SIGNING_IDENTITY`, `OPENSTEER_APPLE_TEAM_ID` and
-`CSC_KEYCHAIN`, validated by the same strict contract as the existing optional
-signing JSON. Matching inherited values remain compatible with a signing file;
-conflicting values fail. API-key notarization uses `APPLE_API_KEY`,
-`APPLE_API_KEY_ID` and `APPLE_API_ISSUER`, independently of the signing keychain.
-Packaging notarizes and staples; the workflow also runs explicit staple and
-Gatekeeper checks before preparing the ZIP.
+Preflight requires its tag, release target and release.json to agree on source
+and derived version, and checks that exact main SHA's CI. It rebuilds **Opensteer**
+(`com.opensteer.opensteer`) from that commit with the same numeric version,
+prepares `desktop-vX.Y.Z` and creates a draft. Tim then approves the separate
+`publish` environment job to undraft those verified bytes and mark Latest.
+The `publish` boolean controls manual insider publication; stable always requests
+this approval after drafting. Discovery reuses only a matching draft; already
+published stable versions and mismatched targets/assets fail closed.
 
-For a keyless packaging proof on an arm64 Mac with the Android SDK, JDK 17 or
-newer, Go, Node/pnpm and Xcode command-line tools:
+### Hosted build and keyless proof
+
+`desktop:build-release --out <outside-checkout-directory>` provisions pinned
+public Node, PostgreSQL source and cloudflared, relocates PostgreSQL libraries,
+and invokes the product's runtime, native helpers, supervisor and packagers.
+Production provenance, signer, profile, resource and APK receipt checks remain
+enforced. Debugger maps are omitted to retain the 2,048-file runtime manifest
+bound. Each command retains its 15-minute limit; configure, make and install
+are separate commands. A cold local PostgreSQL build measured 27/79/6 seconds;
+hosted timing still needs the first practice run. Only the pnpm store is cached.
+No private checkout, login keychain item or signing JSON is required by CI.
+
+Signing uses strict `OPENSTEER_RELEASE_SIGNING_IDENTITY`,
+`OPENSTEER_APPLE_TEAM_ID` and `CSC_KEYCHAIN` inputs, compatible with the existing
+signing-file contract. API-key notarization uses `APPLE_API_KEY`,
+`APPLE_API_KEY_ID` and `APPLE_API_ISSUER` independently. Packaging notarizes and
+staples, and the workflow explicitly validates the staple and Gatekeeper before
+preparing its ZIP. `build:agent-phone --release` produces the trusted receipt;
+staging and after-pack reverify it. Android builds disable persistent daemons.
+
+For an arm64 Mac with JDK 17+, Android SDK, Go, Node/pnpm and Xcode tools:
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm desktop:build-release --unsigned --out /absolute/proof-inputs
 ```
 
-This builds a debug APK and uses `package:mac --unsigned`, an explicit contributor
-mode with development trust and ad-hoc signatures. Its app is under
-`apps/desktop/release/contributor/mac-arm64/`. It does not stamp release build
-metadata or generate updater metadata, and cannot be prepared for publication:
-public prepare requires the Developer ID identity, deep-strict signature and a
-valid notarization staple. No notarization or app launch runs in this proof.
-On the shared development Mac, wrap this command with the existing private
-checkout's `pnpm heavy --`; the public repo does not carry that local machinery.
-Every Android build disables persistent Gradle/Kotlin daemons.
-
-The public-download tooling owns updater configuration and publication.
-`prepare --channel stable|beta --app-zip --version --source-sha --out` emits the
-ZIP and blockmap, SHA256SUMS and release.json. Stable adds latest-mac.yml and
-install.sh; Beta adds insider-mac.yml. `draft --dir --repo` reads the manifest
-channel, attaches release.json and targets its source SHA. `publish --repo --tag`
-verifies the draft, makes stable Latest, and keeps Beta prerelease and never
-Latest. Never set any `OPENSTEER_DESKTOP_UPDATE_*` variable.
+This builds a debug APK and ad-hoc contributor app under
+`apps/desktop/release/contributor/mac-arm64/`, with development trust, version
+0.0.0 and no updater metadata. It never notarizes or launches the app and cannot
+be prepared as a distribution: public preparation checks the real Developer ID
+team, deep-strict signature and staple. On the shared Mac, use its existing
+private checkout's `pnpm heavy --` wrapper; that machinery is not part of this repo.
+Never set any `OPENSTEER_DESKTOP_UPDATE_*` variable.
 
 ## Tim's one-time setup and rotation
 
-The `release` environment is already configured with required reviewer
-`timjang3`. Deployment refs are branch `main`, tags `desktop-v*`, and tags
-`v*-insider`. Keep signing secrets scoped to that environment. Tim performs all
+The `release` environment holds signing secrets and has **no required reviewer**
+for automatic insider builds. Deployment refs remain branch `main`, tags
+`desktop-v*`, and tags `v*-insider`. Only the stable publication job uses the
+separate `publish` environment, with required reviewer `timjang3` and **no secrets**.
+Tim/maintainers configure these environments before enabling the schedule; agents
+do not change settings. Keep signing secrets scoped to `release`. Tim performs all
 credential operations himself; agents never read or operate on key material.
 
 | Environment secret                            | Contents and rotation source                                                                                                                                                                                                                                                                                                                  |
@@ -244,7 +249,7 @@ appends human release notes. Draft/publish infer the channel from the attached
 `release.json`; an explicit mismatch is refused. A draft targets `sourceSha`, so
 publication creates a missing tag at the built commit rather than the current main;
 a draft with another target is refused. Identical draft bytes are reused,
-differing drafts refused. After maintainer approval, publish verifies every draft
+differing drafts refused. Publication verifies every draft
 asset before changing visibility and Latest status, then checks anonymous downloads.
 A published-release rerun only verifies.
 

@@ -96,7 +96,7 @@ resource preparation and nested signing gates in
 [prepare-release-resources.ts](scripts/prepare-release-resources.ts) and
 [after-sign.cjs](scripts/after-sign.cjs). The current release entry point also
 requires its existing release/runtime inputs, and its configured signing identity
-must match the JSON. Packaging derives `OPENSTEER_APPLE_TEAM_ID` and `CSC_NAME`
+must match the validated signing input. Packaging derives `OPENSTEER_APPLE_TEAM_ID` and `CSC_NAME`
 from the validated input. A notarization profile in the JSON supplies
 `APPLE_KEYCHAIN_PROFILE`; otherwise configure one complete credential strategy
 accepted by [package-macos.ts](scripts/package-macos.ts).
@@ -131,4 +131,5 @@ the Electron app retains only its reviewed JIT entitlement. Follow the existing
 release entry point for [notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
 and stapling: submit the signed archive, wait for acceptance, staple the resulting
 ticket and validate it before installation. Signing alone does not prove
-notarization. Keep credentials and release automation in private infrastructure.
+notarization. Keep credentials in the protected `release` environment; the public
+[release workflow](../../.github/workflows/release.yml) handles automation.

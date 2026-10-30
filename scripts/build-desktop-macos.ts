@@ -71,8 +71,14 @@ const { version } = z
 if (process.env.OPENSTEER_RELEASE_VERSION && process.env.OPENSTEER_RELEASE_VERSION !== version)
   throw Error("Requested version differs from checkout");
 const sha = (await run("git", ["rev-parse", "HEAD"], root, true)).trim();
-if ((await run("git", ["status", "--porcelain=v1", "--untracked-files=all"], root, true)).trim())
-  throw Error("Build requires a clean checkout");
+const { requireCanonicalReleaseIdentity } = require("./release-identity.cjs") as {
+  requireCanonicalReleaseIdentity(root: string, environment: NodeJS.ProcessEnv): unknown;
+};
+requireCanonicalReleaseIdentity(root, {
+  ...env,
+  OPENSTEER_SOURCE_REVISION: sha,
+  OPENSTEER_RELEASE_VERSION: version,
+});
 if (process.env.OPENSTEER_SOURCE_REVISION && process.env.OPENSTEER_SOURCE_REVISION !== sha)
   throw Error("Source revision differs from checkout");
 Object.assign(env, { OPENSTEER_SOURCE_REVISION: sha, OPENSTEER_RELEASE_VERSION: version });

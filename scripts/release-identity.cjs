@@ -1,6 +1,6 @@
 const { appendFileSync, lstatSync, readFileSync } = require("node:fs");
 const { resolve } = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { verifyReleaseWorkspace } = require("./release-version.cjs");
 
 const releaseVersionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const releaseVersionMaxLength = 79;
@@ -8,7 +8,7 @@ const sourceRevisionPattern = /^[0-9a-f]{40}$/u;
 
 /**
  * Resolve one releasable Opensteer identity. The semantic version comes only
- * from the root manifest; the revision must identify the clean checkout.
+ * from the root manifest; only a verified derived version stamp may dirty it.
  */
 function requireCanonicalReleaseIdentity(repositoryRoot, environment = process.env, options = {}) {
   const root = resolve(repositoryRoot);
@@ -43,33 +43,9 @@ function requireCanonicalReleaseIdentity(repositoryRoot, environment = process.e
   }
 
   if (options.verifyRepository !== false) {
-    const head = git(root, ["rev-parse", "--verify", "HEAD^{commit}"]);
-    if (head !== sourceRevision) {
-      throw new Error(
-        `OPENSTEER_SOURCE_REVISION ${sourceRevision} does not match checkout HEAD ${head}.`,
-      );
-    }
-    if (git(root, ["status", "--porcelain=v1", "--untracked-files=all"])) {
-      throw new Error("An Opensteer release must be built from a clean source checkout.");
-    }
+    verifyReleaseWorkspace(root, sourceRevision);
   }
   return Object.freeze({ sourceRevision, version });
-}
-
-function git(root, arguments_) {
-  const result = spawnSync("git", ["-C", root, ...arguments_], {
-    encoding: "utf8",
-    shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const detail = String(result.stderr || "").trim();
-    throw new Error(
-      `Could not verify the Opensteer release checkout${detail ? `: ${detail}` : ""}`,
-    );
-  }
-  return String(result.stdout).trim();
 }
 
 module.exports = { requireCanonicalReleaseIdentity };

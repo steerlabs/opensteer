@@ -1,120 +1,61 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { parseDocument } from "yaml";
-
+import { preflight, discover } from "./release-plan.mjs";
 const text = readFileSync(new URL("../workflows/release.yml", import.meta.url), "utf8");
 const doc = parseDocument(text, { uniqueKeys: true });
 const workflow = doc.toJS();
-
-test("desktop release accepts only namespaced tags and opt-in manual publishing", () => {
+test("only daily schedule and explicit dispatch can release; no tag or PR trigger", () => {
   assert.deepEqual(doc.errors, []);
   assert.deepEqual(doc.warnings, []);
-  assert.deepEqual(Object.keys(workflow.on).sort(), ["push", "workflow_dispatch"]);
-  assert.deepEqual(workflow.on.push, { tags: ["desktop-v*.*.*", "v*.*.*-insider"] });
+  assert.deepEqual(Object.keys(workflow.on).sort(), ["schedule", "workflow_dispatch"]);
+  assert.equal(workflow.on.schedule.length, 1);
+  assert.notEqual(workflow.on.schedule[0].cron.split(" ")[0], "0");
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.channel.options, ["insider", "stable"]);
   assert.equal(workflow.on.workflow_dispatch.inputs.publish.default, false);
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.channel.options, ["stable", "beta"]);
+  assert.ok(workflow.on.workflow_dispatch.inputs.insider_tag);
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
   assert.equal(workflow.concurrency.queue, "max");
   assert.match(workflow.concurrency.group, /^release-desktop-/);
 });
-
-test("release authority is scoped, environment gated, pinned and isolated from PRs", () => {
+test("read-only preflight, secret-free discovery and only stable publication approval", () => {
   assert.deepEqual(workflow.permissions, { contents: "read" });
-  assert.doesNotMatch(text, /pull_request_target|OPENSTEER_DESKTOP_UPDATE_FEED_URL/);
+  assert.doesNotMatch(text, /pull_request_target|OPENSTEER_DESKTOP_UPDATE_/);
   for (const [name, job] of Object.entries(workflow.jobs)) {
     assert.ok(["ubuntu-latest", "macos-15"].includes(job["runs-on"]));
     assert.deepEqual(job.permissions ?? workflow.permissions, {
-      contents: ["discover", "draft", "publish"].includes(name) ? "write" : "read",
+      contents: ["discover", "draft", "publish-insider", "publish-stable"].includes(name)
+        ? "write"
+        : "read",
+      ...(name === "preflight" ? { actions: "read" } : {}),
     });
+    assert.equal(
+      job.environment,
+      name === "build" ? "release" : name === "publish-stable" ? "publish" : undefined,
+    );
     for (const step of job.steps) {
       if (step.uses) assert.match(step.uses, /^[\w-]+\/[\w-]+@[a-f0-9]{40}$/);
-      if (step.uses?.startsWith("actions/checkout@")) {
+      if (step.uses?.startsWith("actions/checkout@"))
         assert.equal(step.with["persist-credentials"], false);
-      }
-      if (JSON.stringify(step).includes("secrets.")) assert.equal(job.environment, "release");
+      if (JSON.stringify(step).includes("secrets.")) assert.equal(name, "build");
       assert.doesNotMatch(step.run ?? "", /\$\{\{\s*(inputs\.|github\.ref)/);
     }
   }
-  assert.equal(workflow.jobs.discover.environment, "release");
-  assert.deepEqual(workflow.jobs.discover.permissions, { contents: "write" });
   assert.equal(workflow.jobs.discover.needs, "preflight");
-  assert.equal(workflow.jobs.preflight.permissions, undefined);
-  assert.doesNotMatch(JSON.stringify(workflow.jobs.preflight), /gh api|gh release|GH_TOKEN/);
   assert.ok(workflow.jobs.build.needs.includes("discover"));
-  assert.ok(workflow.jobs.publish.needs.includes("discover"));
-  assert.match(workflow.jobs.publish.if, /needs.discover.result == 'success'/);
-  for (const job of ["build", "draft", "publish"]) {
-    const setup = workflow.jobs[job].steps.find((step) =>
-      step.uses?.startsWith("actions/setup-node@"),
-    );
-    assert.equal(setup.with.cache, "pnpm");
-  }
-  assert.equal(workflow.jobs.build.environment, "release");
-  assert.equal(workflow.jobs.publish.environment, "release");
-  assert.match(workflow.jobs.publish.if, /inputs.publish/);
-  assert.match(workflow.jobs.publish.if, /needs.draft.result == 'success'/);
-  assert.match(workflow.jobs.preflight.steps[1].run, /git merge-base --is-ancestor/);
-});
-
-test("preflight requires numeric versions for stable and insider before secrets", async () => {
-  const { spawnSync } = await import("node:child_process");
-  const script = workflow.jobs.preflight.steps[1].run;
-  const validation = script.slice(script.indexOf("stable="), script.indexOf("manifest_version="));
-  for (const [channel, version, accepted] of [
-    ["stable", "1.2.3", true],
-    ["beta", "1.2.3-beta.1", false],
-    ["stable", "1.2.3-beta.1", false],
-    ["beta", "1.2.3", true],
-    ["beta", "1.2.3-beta.01", false],
-    ["stable", "01.2.3", false],
-    ["beta", "1.2.3-rc.1", false],
-    ["other", "1.2.3", false],
-  ]) {
-    const result = spawnSync("bash", ["-e", "-c", validation], {
-      env: { ...process.env, CHANNEL: channel, VERSION: version },
-    });
-    assert.equal(result.status === 0, accepted, `${channel} ${version}`);
-  }
-});
-
-test("preflight maps only desktop stable and semver insider tags", async () => {
-  const { spawnSync } = await import("node:child_process");
-  const script = workflow.jobs.preflight.steps[1].run;
-  const validation = script.slice(
-    script.indexOf('if [[ "$EVENT" == push ]]'),
-    script.indexOf("manifest_version="),
+  assert.match(
+    workflow.jobs.build.steps.find((step) => step.run?.includes("stampReleaseVersion")).run,
+    /release-version.cjs/,
   );
-  for (const [tag, channel, version, accepted] of [
-    ["desktop-v1.2.3", "stable", "1.2.3", true],
-    ["v1.2.3-insider", "beta", "1.2.3", true],
-    ["v0.11.2", "stable", "0.11.2", false],
-    ["desktop-v1.2.3-beta.1", "beta", "1.2.3", false],
-    ["v1.2.3-beta", "beta", "1.2.3", false],
-  ]) {
-    const result = spawnSync(
-      "bash",
-      [
-        "-e",
-        "-c",
-        validation +
-          '\n[[ "$tag" == "$TAG" && "$CHANNEL" == "$EXPECTED_CHANNEL" && "$VERSION" == "$EXPECTED_VERSION" ]]',
-      ],
-      {
-        env: {
-          ...process.env,
-          EVENT: "push",
-          TAG: tag,
-          EXPECTED_CHANNEL: channel,
-          EXPECTED_VERSION: version,
-        },
-      },
-    );
-    assert.equal(result.status === 0, accepted, tag);
-  }
-});
-
-test("signing consumes only the configured environment secrets and never the unused app profile", () => {
+  const checkout = workflow.jobs.build.steps.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  assert.equal(checkout.with["fetch-depth"], 0);
   const names = [...text.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((match) => match[1]);
   assert.deepEqual(
     [...new Set(names)].sort(),
@@ -129,7 +70,6 @@ test("signing consumes only the configured environment secrets and never the unu
       "OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD",
     ].sort(),
   );
-  assert.doesNotMatch(text, /OPENSTEER_DESKTOP_UPDATE_/);
   const signing = workflow.jobs.build.steps.find(
     (step) => step.name === "Sign, notarize and staple desktop",
   );
@@ -140,111 +80,233 @@ test("signing consumes only the configured environment secrets and never the unu
     /always/,
   );
 });
-
-test("a protected write token discovers and validates drafts, then publishes without rebuilding", async () => {
-  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const { spawnSync } = await import("node:child_process");
-  const { runInNewContext } = await import("node:vm");
-  const discovery = workflow.jobs.discover;
-  assert.equal(discovery.steps[0].env.GH_TOKEN, "${{ github.token }}");
-  for (const scenario of [
-    { channel: "stable", exists: true, expected: "true" },
-    { channel: "beta", exists: true, expected: "true" },
-    { channel: "stable", exists: false, expected: "false" },
-    { channel: "stable", exists: true, draft: false },
-    { channel: "stable", exists: true, manifest: { sourceSha: "b".repeat(40) } },
-    { channel: "stable", exists: true, manifest: { channel: "beta" } },
-    { channel: "stable", exists: true, manifest: { version: "1.2.4" } },
-    { channel: "stable", exists: true, manifest: { tag: "desktop-v1.2.4" } },
-    { channel: "stable", exists: false, apiFailure: true },
-  ]) {
-    const directory = mkdtempSync(join(tmpdir(), "release-discovery-"));
-    try {
-      const sha = "a".repeat(40);
-      const version = "1.2.3";
-      const tag = scenario.channel === "beta" ? `v${version}-insider` : `desktop-v${version}`;
-      const fixture = join(directory, "fixture.json");
-      const output = join(directory, "output");
-      writeFileSync(output, "");
+function fixture() {
+  const root = mkdtempSync(path.join(tmpdir(), "release-plan-"));
+  const git = (...args) =>
+    execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  git("init", "-b", "main");
+  git("config", "user.name", "Release Test");
+  git("config", "user.email", "release@opensteer.invalid");
+  git("config", "commit.gpgsign", "false");
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "1.2.3" }));
+  git("add", ".");
+  git("commit", "-m", "base");
+  writeFileSync(path.join(root, "change"), "first");
+  git("add", ".");
+  git("commit", "-m", "first");
+  const sha = git("rev-parse", "HEAD");
+  git("update-ref", "refs/remotes/origin/main", sha);
+  git("tag", "--no-sign", "v1.2.4-insider");
+  const source = { sha, version: "1.2.4", channel: "beta", tag: "v1.2.4-insider" };
+  const state = {
+    releases: [],
+    manifest: { sourceSha: sha, version: source.version, channel: "beta", tag: source.tag },
+    runs: [
+      {
+        id: 42,
+        run_number: 7,
+        head_sha: sha,
+        head_branch: "main",
+        event: "push",
+        status: "completed",
+        conclusion: "success",
+      },
+    ],
+    jobs: [{ name: "Check", status: "completed", conclusion: "success" }],
+  };
+  const run = (exe, args) => {
+    if (exe === "git") return args[0] === "fetch" ? "" : git(...args);
+    assert.equal(exe, "gh");
+    if (state.apiFailure) throw Error("API unavailable");
+    if (args[0] === "release") {
       writeFileSync(
-        fixture,
-        JSON.stringify({
-          ...scenario,
-          release: { tag_name: tag, draft: scenario.draft ?? true },
-          manifest: {
-            sourceSha: sha,
-            version,
-            channel: scenario.channel,
-            tag,
-            ...scenario.manifest,
-          },
-        }),
+        path.join(args[args.indexOf("--dir") + 1], "release.json"),
+        JSON.stringify(state.manifest),
       );
-      writeFileSync(
-        join(directory, "gh"),
-        `#!/usr/bin/env node
-const fs = require("node:fs");
-const path = require("node:path");
-const fixture = JSON.parse(fs.readFileSync(process.env.GH_FIXTURE, "utf8"));
-const args = process.argv.slice(2);
-fs.appendFileSync(process.env.GH_CALLS, JSON.stringify(args) + "\\n");
-if (args[0] === "api") {
-  if (fixture.apiFailure) process.exit(1);
-  // GitHub exposes drafts only to a token with push access.
-  console.log(JSON.stringify(fixture.exists && process.env.GH_TOKEN === "contents:write" ? [fixture.release] : []));
-} else if (args[0] === "release" && args[1] === "download") {
-  fs.writeFileSync(path.join(args[args.indexOf("--dir") + 1], "release.json"), JSON.stringify(fixture.manifest));
-} else process.exit(2);
-`,
-        { mode: 0o755 },
-      );
-      const result = spawnSync("bash", ["-c", discovery.steps[0].run], {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: directory + ":" + process.env.PATH,
-          GH_TOKEN: `contents:${discovery.permissions.contents}`,
-          GH_FIXTURE: fixture,
-          GH_CALLS: join(directory, "calls"),
-          GITHUB_OUTPUT: output,
-          RUNNER_TEMP: directory,
-          SHA: sha,
-          VERSION: version,
-          CHANNEL: scenario.channel,
-          TAG: tag,
-        },
-      });
-      if (!scenario.expected) {
-        assert.notEqual(result.status, 0, JSON.stringify(scenario));
-        assert.equal(readFileSync(output, "utf8"), "");
-        continue;
-      }
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(readFileSync(output, "utf8"), `reuse=${scenario.expected}\n`);
-      const needs = {
-        discover: { result: "success", outputs: { reuse: scenario.expected } },
-        build: { result: scenario.expected === "true" ? "skipped" : "success" },
-        draft: { result: scenario.expected === "true" ? "skipped" : "success" },
-      };
-      const enabled = (job, publish) =>
-        Boolean(
-          runInNewContext(workflow.jobs[job].if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
-            needs,
-            inputs: { publish },
-            github: { event_name: "workflow_dispatch" },
-            cancelled: () => false,
-          }),
-        );
-      assert.deepEqual(
-        [enabled("build", true), enabled("draft", true), enabled("publish", true)],
-        scenario.expected === "true" ? [false, false, true] : [true, true, true],
-      );
-      assert.equal(enabled("publish", false), false);
-      assert.ok(readFileSync(join(directory, "calls"), "utf8").includes("api"));
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
+      return "";
     }
+    const url = args.at(-1);
+    if (url.includes("/actions/workflows/ci.yml/runs?"))
+      return JSON.stringify([{ workflow_runs: state.runs }]);
+    if (url.includes("/actions/runs/42/jobs?")) return JSON.stringify([{ jobs: state.jobs }]);
+    assert.ok(url.endsWith("/releases"));
+    return JSON.stringify([
+      state.releases.filter(
+        (item) => !item.draft || workflow.jobs.discover.permissions.contents === "write",
+      ),
+    ]);
+  };
+  return {
+    root,
+    git,
+    source,
+    state,
+    run,
+    close: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+function published(source) {
+  return {
+    tag_name: source.tag,
+    target_commitish: source.sha,
+    draft: false,
+    prerelease: true,
+    published_at: "2026-10-30T00:00:00Z",
+  };
+}
+test("schedule and manual insider resolve main and derive its numeric version", () => {
+  const f = fixture();
+  try {
+    assert.deepEqual(preflight({ root: f.root, event: "schedule" }, f.run), f.source);
+    assert.deepEqual(
+      preflight({ root: f.root, event: "workflow_dispatch", channel: "insider" }, f.run),
+      f.source,
+    );
+  } finally {
+    f.close();
   }
+});
+test("stable rebuilds the exact published insider source and version, even after main advances", () => {
+  const f = fixture();
+  try {
+    f.state.releases = [published(f.source)];
+    writeFileSync(path.join(f.root, "change"), "second");
+    f.git("commit", "-am", "second");
+    f.git("update-ref", "refs/remotes/origin/main", f.git("rev-parse", "HEAD"));
+    assert.deepEqual(
+      preflight(
+        { root: f.root, event: "workflow_dispatch", channel: "stable", insiderTag: f.source.tag },
+        f.run,
+      ),
+      { ...f.source, channel: "stable", tag: "desktop-v1.2.4" },
+    );
+    for (const mutation of [
+      { draft: true },
+      { prerelease: false },
+      { target_commitish: "b".repeat(40) },
+    ]) {
+      f.state.releases = [{ ...published(f.source), ...mutation }];
+      assert.throws(() =>
+        preflight({ root: f.root, channel: "stable", insiderTag: f.source.tag }, f.run),
+      );
+    }
+    f.state.releases = [published(f.source)];
+    for (const mutation of [
+      { sourceSha: "b".repeat(40) },
+      { version: "1.2.5" },
+      { channel: "stable" },
+      { tag: "v1.2.5-insider" },
+    ]) {
+      f.state.manifest = { sourceSha: f.source.sha, ...f.source, ...mutation };
+      assert.throws(() =>
+        preflight({ root: f.root, channel: "stable", insiderTag: f.source.tag }, f.run),
+      );
+    }
+    assert.throws(() => preflight({ root: f.root, channel: "stable", insiderTag: "" }, f.run));
+  } finally {
+    f.close();
+  }
+});
+test("preflight refuses missing, failed, pending or non-main qualification of the exact SHA", () => {
+  const f = fixture();
+  try {
+    const valid = f.state.runs[0];
+    const job = f.state.jobs[0];
+    for (const mutation of [
+      { conclusion: "failure" },
+      { status: "in_progress" },
+      { head_sha: "b".repeat(40) },
+      { head_branch: "other" },
+      { event: "pull_request" },
+    ]) {
+      f.state.runs = [{ ...valid, ...mutation }];
+      assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+    }
+    f.state.runs = [valid, { ...valid, id: 43, run_number: 8, conclusion: "failure" }];
+    assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+    f.state.runs = [];
+    assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+    f.state.runs = [valid];
+    for (const mutation of [
+      { name: "another" },
+      { status: "in_progress" },
+      { conclusion: "failure" },
+    ]) {
+      f.state.jobs = [{ ...job, ...mutation }];
+      assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+    }
+    f.state.jobs = [];
+    assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+    f.state.apiFailure = true;
+    assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+  } finally {
+    f.close();
+  }
+});
+test("discovery skips unchanged published insiders and reuses only matching draft targets and metadata", () => {
+  const f = fixture();
+  try {
+    assert.deepEqual(discover(f.source, f.run, f.root), { skip: false, reuse: false });
+    f.state.releases = [published(f.source)];
+    assert.deepEqual(discover(f.source, f.run, f.root), { skip: true, reuse: false });
+    f.state.manifest.sourceSha = "b".repeat(40);
+    assert.throws(() => discover(f.source, f.run, f.root));
+    f.state.manifest.sourceSha = f.source.sha;
+    f.state.releases = [
+      { ...published(f.source), tag_name: "v1.2.5-insider", target_commitish: "b".repeat(40) },
+    ];
+    assert.throws(() => discover(f.source, f.run, f.root), /backfill/);
+    f.state.releases = [{ ...published(f.source), draft: true }];
+    assert.deepEqual(discover(f.source, f.run, f.root), { skip: false, reuse: true });
+    for (const mutation of [
+      { sourceSha: "b".repeat(40) },
+      { version: "1.2.5" },
+      { channel: "stable" },
+      { tag: "v1.2.5-insider" },
+    ]) {
+      f.state.manifest = { sourceSha: f.source.sha, ...f.source, ...mutation };
+      assert.throws(() => discover(f.source, f.run, f.root));
+    }
+    f.state.manifest = { sourceSha: f.source.sha, ...f.source };
+    f.state.releases[0].target_commitish = "b".repeat(40);
+    assert.throws(() => discover(f.source, f.run, f.root));
+  } finally {
+    f.close();
+  }
+});
+test("insiders auto-publish on schedule, manual practice stops at draft, stable alone requests approval", () => {
+  const enabled = (
+    job,
+    {
+      channel = "beta",
+      event = "workflow_dispatch",
+      publish = false,
+      reuse = false,
+      skip = false,
+    } = {},
+  ) =>
+    Boolean(
+      runInNewContext(workflow.jobs[job].if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
+        needs: {
+          preflight: { outputs: { channel } },
+          discover: { result: "success", outputs: { reuse: String(reuse), skip: String(skip) } },
+          draft: { result: reuse ? "skipped" : "success" },
+        },
+        github: { event_name: event },
+        inputs: { publish },
+        cancelled: () => false,
+      }),
+    );
+  assert.equal(enabled("publish-insider", { event: "schedule" }), true);
+  assert.equal(enabled("publish-insider"), false);
+  assert.equal(enabled("publish-insider", { publish: true, reuse: true }), true);
+  assert.equal(enabled("publish-insider", { event: "schedule", skip: true }), false);
+  assert.equal(enabled("publish-insider", { channel: "stable", publish: true }), false);
+  assert.equal(enabled("publish-stable", { channel: "stable" }), true);
+  assert.equal(enabled("publish-stable"), false);
+  assert.equal(workflow.jobs["publish-insider"].environment, undefined);
+  assert.equal(workflow.jobs["publish-stable"].environment, "publish");
 });
