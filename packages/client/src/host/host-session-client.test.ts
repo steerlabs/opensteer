@@ -66,19 +66,29 @@ type TestHostClientOptions = Omit<HttpHostClientOptions, "baseUrl"> & {
   readonly browserUsageReads?: "answered" | "observed";
   /** Whether the case's own fetch sees the task list reads that follow bootstrap and sync. */
   readonly taskReads?: "answered" | "observed";
+  readonly browserCatalogReads?: "answered" | "observed";
 };
 
 function createHttpHostClient({
   timeZoneReports = "answered",
   browserUsageReads = "answered",
   taskReads = "answered",
+  browserCatalogReads = "answered",
   ...options
 }: TestHostClientOptions = {}): HttpHostClient {
   return new HttpHostClient({
     baseUrl: "http://127.0.0.1",
     ...options,
     ...(options.fetch
-      ? { fetch: rpcContractFetch(options.fetch, timeZoneReports, browserUsageReads, taskReads) }
+      ? {
+          fetch: rpcContractFetch(
+            options.fetch,
+            timeZoneReports,
+            browserUsageReads,
+            taskReads,
+            browserCatalogReads,
+          ),
+        }
       : {}),
   });
 }
@@ -88,6 +98,7 @@ function rpcContractFetch(
   timeZoneReports: "answered" | "observed",
   browserUsageReads: "answered" | "observed",
   taskReads: "answered" | "observed",
+  browserCatalogReads: "answered" | "observed",
 ): typeof globalThis.fetch {
   return async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
@@ -95,7 +106,7 @@ function rpcContractFetch(
     if (!url.pathname.startsWith(prefix)) return fetch(input, init);
     const name = url.pathname.slice(prefix.length);
     // Legacy browser fixtures describe no authoritative tabs; deferred reads are empty.
-    if (name === "browser.tabs.get")
+    if (name === "browser.tabs.get" && browserCatalogReads === "answered")
       return json({ data: { generation: 0, revision: 0, tabs: [] }, ok: true });
     // Nothing waits on this notional Host's reader: the read follows every
     // bootstrap, and no case here is about it.
@@ -4546,6 +4557,205 @@ function pendingInput(message: Message) {
 function queueItem(message: Message, canSteer: boolean) {
   return { canCancel: true, canMove: true, canSteer, input: pendingInput(message), message };
 }
+
+describe("HttpHostClient catalog startup", () => {
+  function startup(options: { readonly failSession?: number } = {}) {
+    const workspace = makeWorkspace();
+    const seed = new MockHostClient();
+    const saved = seed.getSnapshot().workspaceTabs!.find((group) => group.tabs?.length)!;
+    seed.dispose();
+    const group = { ...saved, session: { ...saved.session, workspaceId: workspace.id } };
+    const sessions = Array.from({ length: 4 }, () => ({
+      ...group.session,
+      id: createBrowserSessionId(),
+      tabCatalog: undefined,
+      state: "ready" as const,
+    }));
+    const body = bootstrap([workspace], {
+      available: true,
+      profiles: [],
+      profileGrants: [],
+      placements: [],
+      workspaceTabRestoreVersion: 1,
+      workspaceTabs: [{ ...group, tabs: undefined }],
+      sessions,
+    });
+    const socket = new FakeSocket();
+    const sockets: FakeSocket[] = [];
+    const pending: { answer: () => void }[] = [];
+    const readSessions: string[] = [];
+    let hold = true;
+    let refuse = false;
+    let concurrent = 0;
+    let maximum = 0;
+    let taskReads = 0;
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      browserCatalogReads: "observed",
+      taskReads: "observed",
+      webSocketFactory: () => {
+        sockets.push(socket);
+        return socket;
+      },
+      fetch: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname.endsWith("/auth.config") && refuse)
+          return json(
+            { error: { code: "unauthorized", message: "Sign in", retryable: false } },
+            401,
+          );
+        if (url.pathname.endsWith("/tasks.list")) {
+          taskReads++;
+          return json({
+            tasks: [],
+            readStates: [],
+            window: { byteCount: 0, itemCount: 0, hasMore: false, nextBefore: null, totalItems: 0 },
+          });
+        }
+        const isGroup = url.pathname.endsWith("/workspace.tabs.get");
+        if (isGroup || url.pathname.endsWith("/browser.tabs.get")) {
+          const sessionId = isGroup ? null : requiredString(rpcPayload(url, init), "sessionId");
+          if (sessionId) readSessions.push(sessionId);
+          if (options.failSession !== undefined && sessionId === sessions[options.failSession]!.id)
+            return json(
+              { error: { code: "internal", message: "Catalog unavailable", retryable: true } },
+              500,
+            );
+          if (!hold)
+            return json(
+              isGroup ? { ...group, revision: 2 } : { generation: 1, revision: 1, tabs: [] },
+            );
+          concurrent++;
+          maximum = Math.max(maximum, concurrent);
+          try {
+            await new Promise<void>((answer) => pending.push({ answer }));
+            return json(
+              isGroup ? { ...group, revision: 1 } : { generation: 1, revision: 1, tabs: [] },
+            );
+          } finally {
+            concurrent--;
+          }
+        }
+        return json(body);
+      },
+    });
+    const loaded = client.load();
+    return {
+      body,
+      client,
+      group,
+      loaded,
+      pending,
+      readSessions,
+      sessions,
+      socket,
+      sockets,
+      maximum: () => maximum,
+      taskReads: () => taskReads,
+      release: () => {
+        hold = false;
+        for (const request of pending) request.answer();
+      },
+      unhold: () => {
+        hold = false;
+      },
+      refuse: () => {
+        refuse = true;
+      },
+    };
+  }
+
+  it("starts realtime and tasks before bounded catalog recovery and keeps newer catalogs", async () => {
+    const run = startup();
+    try {
+      await vi.waitFor(() => expect(run.pending.length).toBeGreaterThan(0));
+      expect(run.sockets).toHaveLength(1);
+      run.socket.open();
+      expect(parseSent(run.socket, 0)).toMatchObject({ type: "client.subscribe" });
+      expect(run.taskReads()).toBeGreaterThan(0);
+      expect(run.pending).toHaveLength(3);
+      // A newer lineage read and realtime catalog can win while recovery waits.
+      run.unhold();
+      await run.client.readWorkspaceTabs(run.group.id);
+      run.socket.receive({
+        type: "host.browser-tabs-changed",
+        sessionId: run.sessions[0]!.id,
+        catalog: { generation: 2, revision: 2, tabs: [] },
+      });
+      run.release();
+      await run.loaded;
+      expect(run.maximum()).toBe(3);
+      expect(new Set(run.readSessions)).toEqual(new Set(run.sessions.map(({ id }) => id)));
+      expect(run.client.getSnapshot().workspaceTabs?.[0]?.revision).toBe(2);
+      expect(run.client.getSnapshot().browserSessions[0]?.tabCatalog).toMatchObject({
+        generation: 2,
+        revision: 2,
+      });
+      expect(
+        run.client
+          .getSnapshot()
+          .browserSessions.slice(1)
+          .every((session) => session.tabCatalog?.revision === 1),
+      ).toBe(true);
+    } finally {
+      run.release();
+      await run.loaded.catch(() => undefined);
+      run.client.dispose();
+    }
+  });
+
+  it("recovers every other catalog when one read fails, then reports that failure", async () => {
+    const run = startup({ failSession: 0 });
+    try {
+      run.release();
+      const outcome = await run.loaded.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      // Five reads in batches of three: the failure is in the first batch.
+      expect(new Set(run.readSessions)).toEqual(new Set(run.sessions.map(({ id }) => id)));
+      expect(run.client.getSnapshot().workspaceTabs?.[0]?.revision).toBe(2);
+      const catalogs = run.client.getSnapshot().browserSessions.map(({ tabCatalog }) => tabCatalog);
+      expect(catalogs[0]).toBeUndefined();
+      expect(catalogs.slice(1).every((catalog) => catalog?.revision === 1)).toBe(true);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain("Catalog unavailable");
+    } finally {
+      run.release();
+      await run.loaded.catch(() => undefined);
+      run.client.dispose();
+    }
+  });
+
+  it("discards recovery from before sign-out even when the same viewer signs in again", async () => {
+    const run = startup();
+    try {
+      await vi.waitFor(() => expect(run.pending.length).toBeGreaterThan(0));
+      run.refuse();
+      await run.client.rpc["auth.config"]({});
+      expect(run.client.getSnapshot().session).toBe("authentication-required");
+      run.body.browser.workspaceTabs = [{ ...run.group, revision: 0, tabs: [] }];
+      run.body.browser.sessions = run.sessions.map((session) => ({
+        ...session,
+        tabCatalog: { generation: 0, revision: 0, tabs: [] },
+      }));
+      run.unhold();
+      await run.client.reauthenticate();
+      run.release();
+      await run.loaded;
+      expect(run.client.getSnapshot().workspaceTabs?.[0]?.revision).toBe(0);
+      expect(
+        run.client
+          .getSnapshot()
+          .browserSessions.every((session) => session.tabCatalog?.revision === 0),
+      ).toBe(true);
+    } finally {
+      run.release();
+      await run.loaded.catch(() => undefined);
+      run.client.dispose();
+    }
+  });
+});
 
 describe("HttpHostClient hosted browser", () => {
   it("reconciles browser Watch targets learned over HTTP while realtime is disconnected", async () => {

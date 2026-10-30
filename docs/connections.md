@@ -44,7 +44,9 @@ the subscribed realtime channel. A failed ordinary RPC reports an error for
 that operation; it does not mark the Deployment offline. The initial bootstrap
 sets availability when no synchronized channel can establish a usable session.
 Cancellation and an attachment fence discard stale work without claiming that
-the Host was unreachable.
+the Host was unreachable. After publishing bootstrap, the client starts realtime and
+task/request reads before recovering omitted tab catalogs in batches of three; newer
+catalog revisions and viewer generations continue to fence delayed recovery results.
 
 ## Durable stream and live progress
 
