@@ -1,7 +1,27 @@
 name: Desktop release
 on:
-  schedule:
-    - cron: "37 7 * * *"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "AGENTS.md"
+      - "CHANGELOG*.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/dependabot.yml"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/agent-context-budget.yml"
+      - ".github/actions/ci-browser/**"
+      - ".github/actions/ci-changes/**"
+      - ".github/actions/ci-setup/**"
+      - ".github/scripts/ci-*.mjs"
+      - ".github/scripts/ci-*.json"
+      - ".github/scripts/fork-safety.mjs"
+      - ".github/scripts/fork-safety.test.mjs"
+      - ".github/scripts/local-check.mjs"
+      - ".github/scripts/local-check.test.mjs"
   workflow_dispatch:
     inputs:
       channel:
@@ -22,7 +42,6 @@ permissions:
 concurrency:
   group: release-desktop-${{ inputs.channel || 'insider' }}
   cancel-in-progress: false
-  queue: max
 defaults:
   run:
     shell: bash
@@ -30,6 +49,7 @@ jobs:
   preflight:
     if: github.repository == 'steerlabs/opensteer'
     runs-on: ubuntu-latest
+    timeout-minutes: 70
     permissions:
       contents: read
       actions: read
@@ -205,7 +225,7 @@ jobs:
         run: pnpm desktop:public-release draft --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
   publish-insider:
     needs: [preflight, discover, draft]
-    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'schedule' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

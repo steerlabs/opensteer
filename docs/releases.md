@@ -55,16 +55,25 @@ readiness. Diagnose any reported launch error before proceeding.
 ## Public desktop releases
 
 [Desktop release](../.github/workflows/release.yml) builds macOS arm64 on GitHub's
-public-repository hosted runner. Daily at 07:37 UTC it resolves main HEAD,
-requires main's latest CI run and `Check` to have succeeded for that exact SHA,
-and skips if the newest published insider already targets it. Otherwise it
+public-repository hosted runner. On every merge to main that changes an eligible
+path, it resolves main HEAD and waits up to one hour for that exact SHA's newest
+main CI run and `Check` to succeed. It skips if the newest published insider
+already targets it. Otherwise it
 builds **Opensteer Beta** (`com.steerlabs.opensteer.beta`), signs, notarizes and
 publishes `vX.Y.Z-insider` automatically as a prerelease, never Latest. Insiders
 use updater channel `insider` and product build channel `beta`.
 
-There are no tag-push or pull-request triggers. Draft creation targets the built
-SHA; tags created with GITHUB_TOKEN do not start another release workflow.
-Channel concurrency uses `queue: max` and never cancels releases in progress.
+Documentation and CI-only paths are excluded; there is no blanket Markdown
+exclusion because notices and agent skills are shipped build inputs. The exact
+`paths-ignore` list is in the workflow, with a contract guarding all tracked app,
+package, build-script, deployment and patch sources plus root build inputs.
+There are no schedule, tag-push or pull-request triggers. Draft creation targets
+the built SHA; tags created with GITHUB_TOKEN do not start another release workflow.
+Per-channel concurrency keeps one running and at most one pending run. Bursts
+coalesce: the newest pending run replaces older pending runs. A running build is
+never canceled mid-notarization. A coalesced manual stable dispatch can be
+re-dispatched.
+
 Never backfill an older insider after a newer one: the updater selects the first
 eligible feed entry.
 
@@ -167,7 +176,7 @@ The `release` environment holds signing secrets and has **no required reviewer**
 for automatic insider builds. Deployment refs remain branch `main`, tags
 `desktop-v*`, and tags `v*-insider`. Only the stable publication job uses the
 separate `publish` environment, with required reviewer `timjang3` and **no secrets**.
-Tim/maintainers configure these environments before enabling the schedule; agents
+Tim/maintainers configure these environments before enabling main-push releases; agents
 do not change settings. Keep signing secrets scoped to `release`. Tim performs all
 credential operations himself; agents never read or operate on key material.
 

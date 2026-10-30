@@ -6,21 +6,23 @@ import path from "node:path";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { parseDocument } from "yaml";
-import { preflight, discover } from "./release-plan.mjs";
+import { preflight, qualifiedPreflight, discover } from "./release-plan.mjs";
 const text = readFileSync(new URL("../workflows/release.yml", import.meta.url), "utf8");
 const doc = parseDocument(text, { uniqueKeys: true });
 const workflow = doc.toJS();
-test("only daily schedule and explicit dispatch can release; no tag or PR trigger", () => {
+test("only main pushes and explicit dispatch can release; default coalescing never cancels running builds", () => {
   assert.deepEqual(doc.errors, []);
   assert.deepEqual(doc.warnings, []);
-  assert.deepEqual(Object.keys(workflow.on).sort(), ["schedule", "workflow_dispatch"]);
-  assert.equal(workflow.on.schedule.length, 1);
-  assert.notEqual(workflow.on.schedule[0].cron.split(" ")[0], "0");
+  assert.deepEqual(Object.keys(workflow.on).sort(), ["push", "workflow_dispatch"]);
+  assert.deepEqual(workflow.on.push.branches, ["main"]);
+  assert.equal(workflow.on.push.tags, undefined);
+  assert.equal(workflow.on.schedule, undefined);
+  assert.ok(workflow.on.push["paths-ignore"].length > 0);
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.channel.options, ["insider", "stable"]);
   assert.equal(workflow.on.workflow_dispatch.inputs.publish.default, false);
   assert.ok(workflow.on.workflow_dispatch.inputs.insider_tag);
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
-  assert.equal(workflow.concurrency.queue, "max");
+  assert.deepEqual(Object.keys(workflow.concurrency).sort(), ["cancel-in-progress", "group"]);
   assert.match(workflow.concurrency.group, /^release-desktop-/);
 });
 test("read-only preflight, secret-free discovery and only stable publication approval", () => {
@@ -157,10 +159,10 @@ function published(source) {
     published_at: "2026-10-30T00:00:00Z",
   };
 }
-test("schedule and manual insider resolve main and derive its numeric version", () => {
+test("push and manual insider resolve main and derive its numeric version", () => {
   const f = fixture();
   try {
-    assert.deepEqual(preflight({ root: f.root, event: "schedule" }, f.run), f.source);
+    assert.deepEqual(preflight({ root: f.root, event: "push" }, f.run), f.source);
     assert.deepEqual(
       preflight({ root: f.root, event: "workflow_dispatch", channel: "insider" }, f.run),
       f.source,
@@ -223,12 +225,12 @@ test("preflight refuses missing, failed, pending or non-main qualification of th
       { event: "pull_request" },
     ]) {
       f.state.runs = [{ ...valid, ...mutation }];
-      assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+      assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     }
     f.state.runs = [valid, { ...valid, id: 43, run_number: 8, conclusion: "failure" }];
-    assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     f.state.runs = [];
-    assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     f.state.runs = [valid];
     for (const mutation of [
       { name: "another" },
@@ -236,12 +238,12 @@ test("preflight refuses missing, failed, pending or non-main qualification of th
       { conclusion: "failure" },
     ]) {
       f.state.jobs = [{ ...job, ...mutation }];
-      assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+      assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     }
     f.state.jobs = [];
-    assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     f.state.apiFailure = true;
-    assert.throws(() => preflight({ root: f.root, event: "schedule" }, f.run));
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
   } finally {
     f.close();
   }
@@ -277,7 +279,7 @@ test("discovery skips unchanged published insiders and reuses only matching draf
     f.close();
   }
 });
-test("insiders auto-publish on schedule, manual practice stops at draft, stable alone requests approval", () => {
+test("insiders auto-publish on push, manual practice stops at draft, stable alone requests approval", () => {
   const enabled = (
     job,
     {
@@ -300,13 +302,131 @@ test("insiders auto-publish on schedule, manual practice stops at draft, stable 
         cancelled: () => false,
       }),
     );
-  assert.equal(enabled("publish-insider", { event: "schedule" }), true);
+  assert.equal(enabled("publish-insider", { event: "push" }), true);
   assert.equal(enabled("publish-insider"), false);
   assert.equal(enabled("publish-insider", { publish: true, reuse: true }), true);
-  assert.equal(enabled("publish-insider", { event: "schedule", skip: true }), false);
+  assert.equal(enabled("publish-insider", { event: "push", skip: true }), false);
   assert.equal(enabled("publish-insider", { channel: "stable", publish: true }), false);
   assert.equal(enabled("publish-stable", { channel: "stable" }), true);
   assert.equal(enabled("publish-stable"), false);
   assert.equal(workflow.jobs["publish-insider"].environment, undefined);
   assert.equal(workflow.jobs["publish-stable"].environment, "publish");
+});
+
+test("ignored paths exclude only documentation and CI, preserving all desktop/APK source inputs", () => {
+  const ignored = workflow.on.push["paths-ignore"];
+  const sourceFiles = execFileSync(
+    "git",
+    ["ls-files", "-z", "--", "apps", "packages", "scripts", "deploy", "patches"],
+    { encoding: "utf8" },
+  )
+    .split("\0")
+    .filter(Boolean);
+  const protectedFiles = [
+    ...sourceFiles,
+    "THIRD_PARTY_NOTICES.md",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    ".npmrc",
+    "tsconfig.base.json",
+    ".github/workflows/release.yml",
+    ".github/scripts/release-plan.mjs",
+  ];
+  for (const pattern of ignored) {
+    assert.ok(!pattern.startsWith("!"), "paths-ignore cannot re-include a build input");
+    for (const file of protectedFiles)
+      assert.equal(path.matchesGlob(file, pattern), false, `${pattern} hides build input ${file}`);
+  }
+  for (const file of [
+    "docs/releases.md",
+    "README.md",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    ".github/ISSUE_TEMPLATE/bug.yml",
+    ".github/workflows/ci.yml",
+    ".github/scripts/ci-shards.json",
+  ]) {
+    assert.ok(
+      ignored.some((pattern) => path.matchesGlob(file, pattern)),
+      `should skip documentation/CI ${file}`,
+    );
+  }
+  assert.ok(
+    sourceFiles.some(
+      (file) => file.startsWith("apps/runner/agent-skills/") && file.endsWith(".md"),
+    ),
+  );
+  assert.equal(ignored.includes("**/*.md"), false);
+});
+
+test("a push waits for its original SHA's main CI without advancing to a newer main", async () => {
+  const f = fixture();
+  try {
+    f.state.runs[0].status = "in_progress";
+    let clock = 0;
+    let fetches = 0;
+    const run = (exe, args) => {
+      if (exe === "git" && args[0] === "fetch") fetches++;
+      return f.run(exe, args);
+    };
+    const result = await qualifiedPreflight({ root: f.root, event: "push" }, run, {
+      now: () => clock,
+      timeoutMs: 30,
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+        writeFileSync(path.join(f.root, "change"), "new main");
+        f.git("commit", "-am", "new main");
+        f.git("update-ref", "refs/remotes/origin/main", f.git("rev-parse", "HEAD"));
+        f.state.runs[0].status = "completed";
+      },
+    });
+    assert.deepEqual(result, f.source);
+    assert.equal(fetches, 1);
+    assert.notEqual(f.git("rev-parse", "HEAD"), result.sha);
+  } finally {
+    f.close();
+  }
+});
+test("CI wait is bounded and failed main runs or API errors fail closed", async () => {
+  const f = fixture();
+  try {
+    let clock = 0;
+    f.state.runs = [];
+    await assert.rejects(
+      qualifiedPreflight({ root: f.root, event: "push" }, f.run, {
+        now: () => clock,
+        timeoutMs: 30,
+        sleep: async (milliseconds) => {
+          clock += milliseconds;
+        },
+      }),
+      /wait budget/,
+    );
+    f.state.runs = [
+      {
+        id: 42,
+        run_number: 7,
+        head_sha: f.source.sha,
+        head_branch: "main",
+        event: "push",
+        status: "completed",
+        conclusion: "failure",
+      },
+    ];
+    const neverSleep = async () => {
+      assert.fail("failed CI must not be retried");
+    };
+    await assert.rejects(
+      qualifiedPreflight({ root: f.root, event: "push" }, f.run, { sleep: neverSleep }),
+      /must succeed/,
+    );
+    f.state.apiFailure = true;
+    await assert.rejects(
+      qualifiedPreflight({ root: f.root, event: "push" }, f.run, { sleep: neverSleep }),
+      /API unavailable/,
+    );
+  } finally {
+    f.close();
+  }
 });
