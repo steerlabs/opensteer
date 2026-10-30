@@ -29,7 +29,7 @@ catalog:
   vitest: 4.1.10
   ws: 8.21.3
   yaml: 2.9.0
-  zod: 4.6.6
+  zod: 4.6.7
   better-auth: 1.6.29
   better-call: 1.4.0
   jose: 6.2.8
