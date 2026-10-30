@@ -4588,6 +4588,7 @@ describe("HttpHostClient Home prefetch", () => {
       },
     });
     const client = createHttpHostClient({
+      prefetchHome: true,
       refreshIntervalMs: 0,
       browserUsageReads: "observed",
       timeZoneReports: "observed",
@@ -4637,6 +4638,31 @@ describe("HttpHostClient Home prefetch", () => {
       },
     };
   }
+
+  it("does not read Home's history before it opens when the client does not prefetch", async () => {
+    const workspace = makeWorkspace();
+    const home: Thread = { ...makeThread(workspace.id), role: "conversation" };
+    workspace.homeThreadId = home.id;
+    const operations: string[] = [];
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+      fetch: async (input) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        operations.push(url.pathname.slice("/v1/rpc/".length));
+        return json(bootstrap([workspace]));
+      },
+    });
+    try {
+      await client.load();
+      // An unopened Home stays outside the Workspace's Thread page on clients
+      // that do not open on Chat, so its Thread list never depends on timing.
+      expect(operations).not.toContain("thread.events.list");
+      expect(client.getSnapshot().threads.map(({ id }) => id)).not.toContain(home.id);
+    } finally {
+      client.dispose();
+    }
+  });
 
   it.each(["pending", "ready"] as const)(
     "starts Home history before activation, joins the %s prefetch and never marks reading",
