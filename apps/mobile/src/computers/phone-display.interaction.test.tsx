@@ -22,6 +22,8 @@ const state = vi.hoisted(() => ({
   proxy: null as null | { onEvent(event: EditingProxyEvent): unknown; context: unknown },
   copy: vi.fn(async () => true),
   appState: null as null | ((value: string) => void),
+  /** Frames the native decoder received, as bytes or as base64 for an older binary. */
+  decoded: [] as { epoch: string; bytes?: number[]; data?: string }[],
 }));
 vi.mock("react-native", () => ({
   Platform: {
@@ -74,6 +76,8 @@ vi.mock("react-native", () => ({
 vi.mock("expo", async () => {
   const React = await import("react");
   return {
+    requireOptionalNativeModule: (name: string) =>
+      name === "PhoneDisplay" ? { binaryPresentationVersion: 1 } : null,
     requireNativeView: () =>
       React.forwardRef((props: { onReady: typeof state.ready }, ref) => {
         state.ready = props.onReady;
@@ -81,8 +85,14 @@ vi.mock("expo", async () => {
           reset: async (epoch: string) => {
             state.epoch = epoch;
           },
-          decode: async (frame: { epoch: string }) => {
+          decode: async (frame: { epoch: string; data: string }) => {
             state.epoch = frame.epoch;
+            state.decoded.push({ epoch: frame.epoch, data: frame.data });
+            return true;
+          },
+          decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
+            state.epoch = metadata.epoch;
+            state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
             return true;
           },
         }));
@@ -110,7 +120,12 @@ vi.mock("../browser/surface-header.js", () => ({ useSurfaceHeader: () => undefin
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
-import { ComputerDisplay, ComputerTaskView, ComputerOwnerView } from "./phone-display.js";
+import {
+  ComputerDisplay,
+  ComputerTaskView,
+  ComputerOwnerView,
+  decodeDisplayFrame,
+} from "./phone-display.js";
 class Socket implements WebSocketClient {
   readyState = 0;
   binaryType: "arraybuffer" | "blob" = "arraybuffer";
@@ -152,6 +167,7 @@ afterEach(async () => {
   container?.remove();
   state.copy.mockClear();
   state.proxy = null;
+  state.decoded = [];
 });
 async function setup(
   phone = true,
@@ -609,4 +625,29 @@ it("cancels local preedit and resets input when its screen hides", async () => {
   const released = socket.sent.findIndex((message) => message.type === "display.input-reset");
   expect(committed).toBe(-1);
   expect(released).toBeGreaterThanOrEqual(0);
+});
+
+it("hands the transport's frame bytes to a binary that takes them, under the epoch it was queued for", async () => {
+  await setup();
+  expect(state.decoded).toEqual([{ epoch: state.epoch, bytes: [0, 0, 1, 0x65] }]);
+});
+
+it("sends standard padded base64 to a binary that predates byte frames", async () => {
+  const decode = vi.fn(async () => true);
+  const decodeBytes = vi.fn(async () => true);
+  const metadata = { epoch: "3", width: 2, height: 2, pts: 1, key: true, replayed: false };
+  const reset = async () => undefined;
+  // The JavaScript bundle may be newer than the binary: without its declaration, bytes are never sent.
+  await decodeDisplayFrame(
+    { reset, decode, decodeBytes },
+    false,
+    Uint8Array.of(0xfb, 0xff),
+    metadata,
+  );
+  await decodeDisplayFrame({ reset, decode }, true, Uint8Array.of(0xfb, 0xff, 0xfe, 1), metadata);
+  expect(decodeBytes).not.toHaveBeenCalled();
+  expect(decode.mock.calls).toEqual([
+    [{ ...metadata, data: "+/8=" }],
+    [{ ...metadata, data: "+//+AQ==" }],
+  ]);
 });

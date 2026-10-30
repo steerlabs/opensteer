@@ -34,6 +34,8 @@ import {
   nextMobileBrowserDecode,
   type MobileBrowserFrame,
 } from "./browser-frame.js";
+import { nativePictureView } from "../computers/phone-display-native.js";
+import { useNativeBrowserPicture } from "./native-browser-picture.js";
 
 export interface BrowserStreamProps {
   /** True only while this viewer is focused, visible, and in the foreground. */
@@ -87,9 +89,11 @@ const emptySlots: FrameSlots = { decoding: null, displayed: null };
  * drops a picture — another tab, a closed browser, a lost connection — the
  * screen empties.
  *
- * The view is done with a picture once its Image has loaded it, or failed
- * to; only then may the next come. One that cannot be decoded leaves the last
- * picture on screen until a newer one arrives.
+ * The view is done with a picture once it is drawn, or failed or dropped;
+ * only then may the next come. One that cannot be decoded leaves the last
+ * picture on screen until a newer one arrives. A binary with the native
+ * picture view decodes off the main thread there; an older one decodes
+ * base64 data URIs through Image.
  *
  * A picture on screen says nothing over itself: whether an agent is acting is
  * the caller's to show, and a picture arriving is not news. Words appear only
@@ -113,8 +117,10 @@ export function BrowserStream({
   const [attempt, setAttempt] = useState(0);
   const ready = session.state === "ready";
   const frames = interactive ? hostClient.browserFrames : hostClient.browserWatchFrames;
-  const received = useBrowserFrame(frames, session.id, tabId, active);
-  const frame = received !== null && received.header.surfaceId === tabId ? received : null;
+  // Fixed for the binary's lifetime, so one presenter owns this view's receipts.
+  const [Picture] = useState(nativePictureView);
+  const native = Picture !== null;
+  const received = useBrowserFrame(frames, session.id, tabId, active && !native);
   const [slots, setSlots] = useState<FrameSlots>(emptySlots);
   const slotsRef = useRef(slots);
   slotsRef.current = slots;
@@ -148,20 +154,35 @@ export function BrowserStream({
     },
     [hostClient, session.id, tabId],
   );
+  const picture = useNativeBrowserPicture({
+    enabled: native,
+    visible: active && ready,
+    frames,
+    sessionId: session.id,
+    tabId,
+    settle: finish,
+  });
+  const frame = native
+    ? picture.drawn
+    : received !== null && received.header.surfaceId === tabId
+      ? received
+      : null;
 
   useLayoutEffect(
     () => () => {
+      if (native) return;
       const delivery = frames.get(session.id, tabId);
       if (delivery) finish(delivery);
       const decoding = slotsRef.current.decoding;
       if (decoding) finish(decoding.source);
     },
-    [finish, frames, session.id, tabId],
+    [finish, frames, native, session.id, tabId],
   );
 
   // A layout effect, so pixels are gone before the next paint; they are also
   // hidden in render below.
   useLayoutEffect(() => {
+    if (native) return;
     if (!active || !ready || frame === null) {
       const decoding = slotsRef.current.decoding;
       if (decoding) finish(decoding.source);
@@ -184,13 +205,13 @@ export function BrowserStream({
           ? current.displayed
           : null,
     }));
-  }, [active, finish, frame, frames, ready, received, session.id, tabId]);
+  }, [active, finish, frame, frames, native, ready, received, session.id, tabId]);
 
   // Only convert when the native decoder slot is free. With one picture in
   // flight at a time, the feed's value once the slot frees is the latest.
   const decodingBusy = slots.decoding !== null;
   useEffect(() => {
-    if (!active || !ready || frame === null || decodingBusy) return;
+    if (native || !active || !ready || frame === null || decodingBusy) return;
     const next = nextMobileBrowserDecode({
       active,
       activeSurfaceId: frame.header.surfaceId,
@@ -204,7 +225,7 @@ export function BrowserStream({
       // Too large to convert here: dropped, so the feed can move on.
       finish(frame);
     }
-  }, [active, decodingBusy, finish, frame, ready]);
+  }, [active, decodingBusy, finish, frame, native, ready]);
 
   const loaded = (slot: FrameSlot) => {
     if (slotsRef.current.decoding !== slot) return;
@@ -231,8 +252,11 @@ export function BrowserStream({
 
   // Hidden in the render that loses the feed's picture, not an effect later.
   const visible = active && ready && frame !== null;
-  const displayed = visible ? slots.displayed : null;
-  const decoding = visible ? slots.decoding : null;
+  const displayedSlot = visible && !native ? slots.displayed : null;
+  const displayed: { readonly source: BrowserFrameView } | null = native
+    ? picture.drawn && { source: picture.drawn }
+    : displayedSlot;
+  const decoding = visible && !native ? slots.decoding : null;
   const size = useRef({ width: 0, height: 0 });
   const origin = useRef({ x: 0, y: 0 });
   const [stageSize, setStageSize] = useState(size.current);
@@ -404,8 +428,39 @@ export function BrowserStream({
       }}
       style={[styles.stage, style]}
     >
+      {Picture === null ? null : (
+        <View pointerEvents="none" style={styles.image}>
+          <Picture
+            accessibilityElementsHidden={displayed === null}
+            accessibilityIgnoresInvertColors
+            accessibilityLabel={displayed === null ? undefined : label}
+            importantForAccessibility={displayed === null ? "no-hide-descendants" : "auto"}
+            onCleared={picture.cleared}
+            ref={picture.view}
+            style={styles.image}
+          />
+          {displayed?.source.header.capture ? (
+            <View
+              pointerEvents="none"
+              style={[
+                styles.frame,
+                styles.nativeFrame,
+                browserFrameContentRect(
+                  { ...stageSize, left: 0, top: 0 },
+                  displayed.source.header.rasterWidth,
+                  displayed.source.header.rasterHeight,
+                  displayed.source.header.capture,
+                  "center",
+                ),
+              ]}
+            >
+              <CropCues header={displayed.source.header} />
+            </View>
+          ) : null}
+        </View>
+      )}
       {/* One list, so the picture that finishes decoding stays mounted as it is shown. */}
-      {[displayed, decoding].map((slot) => {
+      {[displayedSlot, decoding].map((slot) => {
         if (!slot) return null;
         const { header } = slot.source;
         const rect = browserFrameContentRect(
@@ -423,29 +478,22 @@ export function BrowserStream({
               styles.frame,
               rect,
               header.capture ? styles.nativeFrame : null,
-              slot !== displayed ? styles.hidden : null,
+              slot !== displayedSlot ? styles.hidden : null,
             ]}
           >
             <Image
-              accessibilityElementsHidden={slot !== displayed}
+              accessibilityElementsHidden={slot !== displayedSlot}
               accessibilityIgnoresInvertColors
-              accessibilityLabel={slot === displayed ? label : undefined}
+              accessibilityLabel={slot === displayedSlot ? label : undefined}
               fadeDuration={0}
-              importantForAccessibility={slot === displayed ? "auto" : "no-hide-descendants"}
+              importantForAccessibility={slot === displayedSlot ? "auto" : "no-hide-descendants"}
               onError={() => failed(slot)}
               onLoad={() => loaded(slot)}
               resizeMode="stretch"
               source={{ uri: slot.frame.uri }}
               style={styles.image}
             />
-            {slot === displayed && header.capture && header.capture.width < header.viewportWidth ? (
-              <View style={styles.cropRight} />
-            ) : null}
-            {slot === displayed &&
-            header.capture &&
-            header.capture.height < header.viewportHeight ? (
-              <View style={styles.cropBottom} />
-            ) : null}
+            {slot === displayedSlot ? <CropCues header={header} /> : null}
           </View>
         );
       })}
@@ -493,6 +541,19 @@ export function submitBrowserCommand(
   }
 }
 
+/** Fades the edges where a native capture is cut short of the page. */
+function CropCues({ header }: { readonly header: BrowserFrameView["header"] }) {
+  const { capture } = header;
+  return (
+    <>
+      {capture && capture.width < header.viewportWidth ? <View style={styles.cropRight} /> : null}
+      {capture && capture.height < header.viewportHeight ? (
+        <View style={styles.cropBottom} />
+      ) : null}
+    </>
+  );
+}
+
 /** What stands in for the picture while there is none. */
 function streamLabel(
   sessionState: BrowserSessionSummary["state"],
@@ -523,7 +584,11 @@ function useBrowserFrame(
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-/** Targeted channels publish their own readiness, independently of the session's active page. */
+/**
+ * Targeted channels publish their own readiness, independently of the session's
+ * active page. Readers see the same state until something other than the
+ * picture changes, so a page does not render again for every delivery.
+ */
 export function useBrowserFeedState(
   hostClient: Pick<
     HostClient,
@@ -536,7 +601,7 @@ export function useBrowserFeedState(
   sessionId: string,
   tabId: string,
   interactive = true,
-): BrowserWatchState {
+): BrowserFeedState {
   const subscribe = useCallback(
     (listener: () => void) =>
       interactive
@@ -545,15 +610,26 @@ export function useBrowserFeedState(
         : hostClient.subscribeBrowserWatch(sessionId, tabId, listener),
     [hostClient, interactive, sessionId, tabId],
   );
-  const get = useCallback(
-    () =>
-      interactive
-        ? hostClient.browserViewerState(sessionId, tabId)
-        : hostClient.browserWatchState(sessionId, tabId),
-    [hostClient, interactive, sessionId, tabId],
-  );
+  const last = useRef<BrowserFeedState | null>(null);
+  const get = useCallback(() => {
+    const { frame: _picture, ...state } = interactive
+      ? hostClient.browserViewerState(sessionId, tabId)
+      : hostClient.browserWatchState(sessionId, tabId);
+    const previous = last.current;
+    const keys = Object.keys(state) as (keyof BrowserFeedState)[];
+    if (
+      previous !== null &&
+      keys.length === Object.keys(previous).length &&
+      keys.every((key) => Object.is(previous[key], state[key]))
+    )
+      return previous;
+    last.current = state;
+    return state;
+  }, [hostClient, interactive, sessionId, tabId]);
   return useSyncExternalStore(subscribe, get, get);
 }
+
+export type BrowserFeedState = Omit<BrowserWatchState, "frame">;
 
 const styles = StyleSheet.create({
   stage: {

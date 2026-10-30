@@ -10,16 +10,7 @@ import {
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
-import { requireNativeView } from "expo";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type Ref,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
@@ -28,7 +19,6 @@ import {
   Pressable,
   StyleSheet,
   View,
-  type ViewProps,
 } from "react-native";
 import { useSurfaceHeader } from "../browser/surface-header.js";
 import { color } from "../theme.js";
@@ -39,25 +29,27 @@ import {
   type DisplayControlsHandle,
 } from "./display-input.js";
 
-interface Decoder {
-  reset(epoch: string): Promise<void>;
-  decode(frame: {
-    epoch: string;
-    data: string;
-    width: number;
-    height: number;
-    pts: number;
-    key: boolean;
-    replayed: boolean;
-  }): Promise<boolean>;
+import {
+  NativeDisplay,
+  phoneDisplayBinary,
+  type DisplayFrameMetadata,
+  type NativeDecoder,
+} from "./phone-display-native.js";
+
+/**
+ * Hands one frame to the native decoder: the bytes themselves where the
+ * binary takes them, otherwise standard base64 for a binary that predates it.
+ */
+export function decodeDisplayFrame(
+  native: NativeDecoder,
+  binary: boolean,
+  payload: Uint8Array,
+  metadata: DisplayFrameMetadata,
+): Promise<boolean> {
+  if (binary && native.decodeBytes) return native.decodeBytes(payload, metadata);
+  const raw = encodeBase64Url(payload).replace(/-/g, "+").replace(/_/g, "/");
+  return native.decode({ ...metadata, data: raw + "=".repeat((4 - (raw.length % 4)) % 4) });
 }
-const NativeDisplay = requireNativeView<
-  ViewProps & {
-    ref?: Ref<Decoder>;
-    onReady?: (event: { nativeEvent: { epoch: string; width: number; height: number } }) => void;
-    onNeedsKeyframe?: (event: { nativeEvent: { epoch: string } }) => void;
-  }
->("PhoneDisplay");
 
 /** A native surface consumes the shared transport's exact task authority; it never asks for a screenshot. */
 export function ComputerDisplay({
@@ -96,7 +88,8 @@ export function ComputerDisplay({
   const [inputLease, setInputLease] = useState<DisplayLease | null>(null);
   const [picture, setPicture] = useState<DisplayPicture | null>(null);
   const decodingPicture = useRef<DisplayPicture | null>(null);
-  const decoder = useRef<Decoder | null>(null);
+  const decoder = useRef<NativeDecoder | null>(null);
+  const [binary] = useState(phoneDisplayBinary);
   const [foreground, setForeground] = useState(AppState.currentState === "active");
   const [words, setWords] = useState<string | null>("Connecting…");
   const [shown, setShown] = useState(false);
@@ -247,13 +240,10 @@ export function ComputerDisplay({
             lease.requestKeyframe();
             return;
           }
-          const raw = encodeBase64Url(frame.payload).replace(/-/g, "+").replace(/_/g, "/");
-          const base64 = raw + "=".repeat((4 - (raw.length % 4)) % 4);
           const { width, height, ptsUs, key } = frame.header;
           decodingPicture.current = { generation: frame.header.generation, width, height };
-          const accepted = await native.decode({
+          const accepted = await decodeDisplayFrame(native, binary, frame.payload, {
             epoch: String(current),
-            data: base64,
             width,
             height,
             pts: ptsUs,
@@ -296,6 +286,7 @@ export function ComputerDisplay({
     phone,
     unavailable,
     interactive,
+    binary,
   ]);
   return (
     <View

@@ -2,7 +2,7 @@ Pod::Spec.new do |s|
   s.name = 'PhoneDisplay'
   s.version = '1.0.0'
   s.summary = 'Opensteer live phone display surface'
-  s.description = 'Native H.264 decoding for the shared phone display transport.'
+  s.description = 'Native H.264 and picture decoding for shared display and browser transports.'
   s.license = { :type => 'MIT' }
   s.author = 'Opensteer'
   s.homepage = 'https://opensteer.com'
@@ -11,6 +11,6 @@ Pod::Spec.new do |s|
   s.source = { :git => '' }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
-  s.frameworks = 'AVFoundation', 'CoreMedia'
-  s.source_files = '**/*.{h,m,mm,swift}'
+  s.frameworks = 'AVFoundation', 'CoreMedia', 'ImageIO'
+  s.source_files = 'PhoneDisplayModule.swift', 'Core/*.swift'
 end

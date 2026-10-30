@@ -45,12 +45,16 @@
         "apps/mobile/modules/iphone-apps/ios",
         "apps/mobile/modules/dictation/ios/Package.swift",
         "apps/mobile/modules/dictation/ios/Sources",
-        "apps/mobile/modules/dictation/ios/Tests"
+        "apps/mobile/modules/dictation/ios/Tests",
+        "apps/mobile/modules/phone-display/ios/Package.swift",
+        "apps/mobile/modules/phone-display/ios/Core",
+        "apps/mobile/modules/phone-display/ios/Tests"
       ],
       "tests": [
         "packages/apple-data",
         "apps/mobile/modules/iphone-apps/ios",
-        "apps/mobile/modules/dictation/ios"
+        "apps/mobile/modules/dictation/ios",
+        "apps/mobile/modules/phone-display/ios"
       ],
       "scripts": [
         "scripts/generate-apple-data-contracts.ts",
