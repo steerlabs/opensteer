@@ -335,7 +335,7 @@ then returns to Tabs, or to the conversation when nothing of it remains. A saved
 tab through `closeWorkspaceTabs` without waking its browser; a failed close retries that same
 operation. Human and agent input remain concurrent.
 The native text-input module requires a rebuilt custom client; Metro exports verify
-bundle resolution and do not qualify native keyboard or take-over behavior.
+bundle resolution and do not qualify native keyboard or shared-input behavior.
 The app never sizes a page by itself: it scales the picture, and Fit page is the explicit fit
 ([Browser sessions](browser-sessions.md#shared-viewing-and-previews)). Leaving or backgrounding
 releases the channel. JavaScript prompts belong to their exact tab and dialog ID; accepting sends
