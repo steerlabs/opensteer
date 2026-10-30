@@ -108,7 +108,7 @@ export async function phoneCacheInputs(
     ),
     ...Object.fromEntries(
       [
-        "platforms/android-36/android.jar",
+        "platforms/android-37.0/android.jar",
         ...["aapt2", "apksigner", "lib/apksigner.jar", "lib/d8.jar", "zipalign"].map(
           (name) => `build-tools/${agentPhoneBuildToolsVersion}/` + name,
         ),

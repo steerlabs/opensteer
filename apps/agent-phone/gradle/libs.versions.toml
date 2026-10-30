@@ -1,10 +1,9 @@
 # Every build input of the Agent Phone app is pinned here; Gradle itself is
 # pinned by the wrapper.
 [versions]
-agp = "9.4.1"
+agp = "9.5.0"
 kotlin = "2.4.21"
-# 5.5.0 requires compileSdk 37; 5.4.0 is the newest release that builds against 36.
-okhttp = "5.4.0"
+okhttp = "5.5.1"
 bouncycastle = "1.86"
 junit = "4.13.2"
 compose-bom = "2025.08.01"

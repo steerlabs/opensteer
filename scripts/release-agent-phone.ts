@@ -69,7 +69,7 @@ export async function preflightAgentPhone(
   for (const name of ["aapt2", "apksigner"])
     if (!(await lstat(path.join(tools, name))).isFile())
       throw new Error(`Android ${agentPhoneBuildToolsVersion} ${name} is missing.`);
-  await lstat(path.join(config.sdkDirectory, "platforms/android-36/android.jar"));
+  await lstat(path.join(config.sdkDirectory, "platforms/android-37.0/android.jar"));
   const javaHome = process.env.JAVA_HOME;
   const java = await context.run(
     javaHome ? path.join(javaHome, "bin/java") : "java",

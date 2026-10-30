@@ -10,7 +10,7 @@ plugins {
  */
 android {
     namespace = "com.opensteer.agentphone.fixture"
-    compileSdk = 36
+    compileSdk = 37
     buildFeatures { compose = true }
 
     defaultConfig {
