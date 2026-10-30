@@ -432,13 +432,19 @@ describe("dictation controller", () => {
     expect(f.controller.getSnapshot().notice).toBeNull();
   });
 
-  it("says nothing was kept when dictation is interrupted before any final words", async () => {
+  it("keeps a cut-short tentative tail, and promises kept words only when there were some", async () => {
     const f = runtime();
     await f.start();
     f.emit({ type: "listening" });
     f.emit(text([], ["still tentative"]));
     f.emit({ type: "ended", reason: "interrupted", error: null });
-    expect(f.target.commit).not.toHaveBeenCalled();
+    expect(f.draft().text).toBe("a still tentative day");
+    expect(f.controller.getSnapshot().notice?.message).toBe(
+      "Dictation stopped. Your words so far are in the message.",
+    );
+    await f.start();
+    f.emit({ type: "listening" });
+    f.emit({ type: "ended", reason: "interrupted", error: null });
     expect(f.controller.getSnapshot().notice?.message).toBe("Dictation stopped.");
   });
 

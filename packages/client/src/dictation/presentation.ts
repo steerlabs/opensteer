@@ -11,7 +11,9 @@ export const dictationLabels = {
   cancelDownload: "Cancel download",
   cancelStarting: "Cancel",
   starting: "Starting microphone…",
+  listening: "Listening",
   finishing: "Finishing…",
+  stopped: "Dictation stopped",
   openSettings: "Open Settings",
   dismissNotice: "Dismiss dictation notice",
 } as const;

@@ -68,7 +68,7 @@ Preview stays null until speech arrives. Then render its text over the unchanged
 draft, and apply its UTF-16 selection only when the preview text changes. Selection
 moves alone do not relocate dictation. On completion the controller inserts final
 segments at the captured selection, or appends if the draft changed externally.
-Failures also retain the last tentative tail. Cancel discards the preview.
+Any ending other than cancel also keeps a tentative tail the person already saw; native code finalizes first, so one remains only when that was cut short. Cancel discards the preview.
 
 For Send/Enter, await stop(owner) (one shared promise per session; another owner's call returns idle and touches nothing). Send the explicit
 text on committed; use the current draft on idle/empty; never send on failed/aborted.

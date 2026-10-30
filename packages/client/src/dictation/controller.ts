@@ -79,7 +79,8 @@ export type DictationFinish =
   | { kind: "aborted" }
   | { kind: "committed"; text: string };
 
-type Timer = ReturnType<typeof globalThis.setTimeout>;
+// Browsers and React Native return numeric handles; Node returns an object.
+type Timer = ReturnType<typeof globalThis.setTimeout> | number;
 export interface DictationControllerInput {
   port: DictationPort | null;
   /** Fresh lowercase UUID v4; native code echoes the identifier unchanged. */
@@ -406,10 +407,10 @@ export class DictationController {
         finish = { kind: failed ? "failed" : "empty" };
         notice = failed ? (error ?? (reason as "interrupted" | "device-changed")) : "downloaded";
       } else {
-        const transcript = joinDictationText([
-          ...session.finalized,
-          ...(reason === "failed" ? session.volatile : []),
-        ]);
+        // Native code finalizes before every ending it controls, so a tentative tail
+        // remains only when that was cut short (an iOS background task expiring, a
+        // failure): keep it rather than lose words the person already saw.
+        const transcript = joinDictationText([...session.finalized, ...session.volatile]);
         if (transcript) {
           const current = session.target.read();
           const insertion =
