@@ -1626,34 +1626,57 @@ export class IdentityService {
     }
     const token = LocalPasswordRecoveryTokenSchema.parse(tokenValue);
     const newPassword = IdentityPasswordSchema.parse(passwordValue);
+    const passwordHash = await (await this.#auth.$context).password.hash(newPassword);
     const now = new Date();
-    const recovery = await this.#database
-      .selectFrom("authVerifications")
-      .innerJoin("users", "users.id", "authVerifications.value")
-      .select(["users.id as userId", "users.disabledAt", "users.instanceRole"])
-      .where("authVerifications.identifier", "=", `reset-password:${token}`)
-      .where("authVerifications.expiresAt", ">", now)
-      .executeTakeFirst();
-    if (!recovery || recovery.instanceRole !== "administrator" || recovery.disabledAt !== null) {
-      throw invalidOperatorRecoveryLink();
-    }
-    const sessions = await this.#database
-      .selectFrom("authSessions")
-      .select("id")
-      .where("userId", "=", recovery.userId)
-      .execute();
-
-    const response = await this.#auth.handler(
-      new Request(new URL(`${internalAuthPath}/reset-password`, this.#options.publicOrigin), {
-        body: JSON.stringify({ newPassword, token }),
-        headers: {
-          "content-type": "application/json",
-          origin: this.#options.publicOrigin.origin,
-        },
-        method: "POST",
-      }),
-    );
-    if (!response.ok) throw invalidOperatorRecoveryLink();
+    // Better Auth's reset deletes every session in one unordered statement
+    // inside its own transaction, so the Host consumes its own capability here
+    // and fences the sessions in id order first.
+    const { recovery, sessions } = await this.#database
+      .transaction()
+      .execute(async (transaction) => {
+        const verification = await transaction
+          .deleteFrom("authVerifications")
+          .where("identifier", "=", `reset-password:${token}`)
+          .where("expiresAt", ">", now)
+          .returning("value")
+          .executeTakeFirst();
+        const userId = UserIdSchema.safeParse(verification?.value);
+        const recovery = userId.success
+          ? await transaction
+              .selectFrom("users")
+              .select(["id as userId", "disabledAt", "instanceRole"])
+              .where("id", "=", userId.data)
+              .forNoKeyUpdate()
+              .executeTakeFirst()
+          : undefined;
+        if (
+          !recovery ||
+          recovery.instanceRole !== "administrator" ||
+          recovery.disabledAt !== null
+        ) {
+          throw invalidOperatorRecoveryLink();
+        }
+        const sessions = await transaction
+          .selectFrom("authSessions")
+          .select("id")
+          .where("userId", "=", recovery.userId)
+          .orderBy("id", "asc")
+          // FOR UPDATE: fence the exact ordered deletion set.
+          .forUpdate()
+          .execute();
+        await transaction
+          .deleteFrom("authSessions")
+          .where("userId", "=", recovery.userId)
+          .execute();
+        const updated = await transaction
+          .updateTable("authAccounts")
+          .set({ password: passwordHash, updatedAt: now })
+          .where("userId", "=", recovery.userId)
+          .where("providerId", "=", "credential")
+          .executeTakeFirst();
+        if (updated.numUpdatedRows !== 1n) throw invalidOperatorRecoveryLink();
+        return { recovery, sessions };
+      });
     for (const session of sessions) this.#options.onSessionEnded?.(session.id);
 
     await this.#database
@@ -2537,6 +2560,8 @@ function createOpensteerAuth(
       "/change-email",
       "/delete-user",
       "/link-social",
+      "/request-password-reset",
+      "/reset-password",
       "/sso/delete-provider",
       "/sso/get-provider",
       "/sso/providers",
@@ -2556,7 +2581,6 @@ function createOpensteerAuth(
       maxPasswordLength: identityPasswordMaxLength,
       minPasswordLength: identityPasswordMinLength,
       requireEmailVerification: false,
-      revokeSessionsOnPasswordReset: true,
     },
     plugins: [
       ...(options.oidcProviders.length === 0
