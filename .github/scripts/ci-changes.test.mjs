@@ -347,6 +347,7 @@ test("Swift sources, node manifests and the CI definition select their tasks", (
     "computer-helper",
     "passwords-helper",
     "computer-tests",
+    "dictation",
   ]);
   assert.deepEqual(decide([".github/workflows/ci.yml"], realGraph).nativeMac, allNativeMacTasks);
   assert.deepEqual(decide([], realGraph, realGraph, true).nativeMac, allNativeMacTasks);

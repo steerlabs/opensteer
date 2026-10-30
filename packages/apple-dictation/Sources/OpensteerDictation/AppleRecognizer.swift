@@ -3,6 +3,7 @@ import Foundation
 import Speech
 
 @available(iOS 26, macOS 26, *)
+/// Adapts SpeechAnalyzer while sharing inventory serialization across sessions.
 actor AppleRecognizer: Recognizer {
   private var transcriber: SpeechTranscriber?
   private var analyzer: SpeechAnalyzer?
@@ -187,6 +188,7 @@ actor AppleRecognizer: Recognizer {
 // Backpressure reaches the capture queue: conversion waits until the analyzer
 // accepts each buffer instead of accumulating an unbounded second audio stream.
 @available(iOS 26, macOS 26, *)
+/// Acknowledges analyzer consumption so backpressure stays in the bounded capture queue.
 private final class AnalyzerInputs: AsyncSequence, @unchecked Sendable {
   typealias Element = AnalyzerInput
   private let stream: AsyncStream<AnalyzerInput>

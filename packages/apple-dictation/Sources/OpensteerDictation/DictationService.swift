@@ -243,6 +243,7 @@ public actor DictationService {
   }
 }
 
+/// Older runtimes retain the service API without opening a microphone.
 final class UnsupportedRecognizer: Recognizer {
   func availability(microphone: DictationMicrophone) async -> DictationAvailability {
     .unavailable(.os)

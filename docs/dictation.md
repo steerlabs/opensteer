@@ -117,7 +117,12 @@ iOS. Only its Apple Speech adapter needs OS 26; lifecycle and wire tests also ru
 older systems, where availability reports `os`. Admission checks permission, resolves
 the first supported preferred language and requires an installed model before capture.
 Availability reconciles reservations; download keeps one for that language and releases
-new reservations on unsuccessful installation.
+new reservations on unsuccessful installation. Inventory operations share a service-wide serial
+coordinator, including suspended reservation calls. Terminal events arrive promptly; the next
+session waits for native cleanup. Equivalent ICU and BCP-47 locale identifiers retain the same
+reservation. Input configuration notifications end capture only when its input identity or format
+changes; output and category changes alone do not. The level ticker samples capture independently
+of analyzer preparation and backpressure.
 
 Results replace overlapping audio ranges and promote at Apple's finalization watermark,
 including unchanged tentative results. Text coalesces every 100 ms, retaining every newly

@@ -1,12 +1,14 @@
 import AVFoundation
 import Foundation
 
+/// A transcript revision and Apple's finalization watermark, in audio time.
 struct RecognitionResult: Sendable {
   let start: Double
   let end: Double
   let finalization: Double
   let text: String
 }
+/// Keeps revisions by range because Apple may finalize without repeating a result.
 struct ResultTracker {
   private(set) var kept: [RecognitionResult] = []
   private(set) var finalized: [String] = []
@@ -44,6 +46,7 @@ struct ResultTracker {
 // The tap never schedules a task per buffer. A single feeder drains this bounded
 // queue
 // The one-element wake stream coalesces notifications, never audio.
+/// Copies remain bounded while the analyzer prepares or applies backpressure.
 final class AudioQueue: @unchecked Sendable {
   private let lock = NSLock()
   private var buffers: [AVAudioPCMBuffer] = []
@@ -120,6 +123,7 @@ final class AudioQueue: @unchecked Sendable {
   }
 }
 
+/// Capture owns permission and synchronous microphone shutdown before draining.
 protocol AudioCapture: AnyObject, Sendable {
   func permission() -> DictationMicrophone
   func restricted() -> Bool
@@ -127,6 +131,7 @@ protocol AudioCapture: AnyObject, Sendable {
   func start(queue: AudioQueue, changed: @escaping @Sendable (DictationEndReason) -> Void) throws
   func stop()
 }
+/// Analyzer seam keeps admission, draining and result completion independently testable.
 protocol Recognizer: AnyObject, Sendable {
   func availability(microphone: DictationMicrophone) async -> DictationAvailability
   func download(progress: @escaping @Sendable (Double?) -> Void) async throws

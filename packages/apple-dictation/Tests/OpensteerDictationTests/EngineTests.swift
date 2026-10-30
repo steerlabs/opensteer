@@ -110,6 +110,9 @@ actor FakeRecognizer: Recognizer {
     cleanupGate = cleanup
     preparationGate = preparation
   }
+  var receiveLate: (@Sendable (RecognitionResult) async -> Void)?
+  var failingResults = false
+  func failResults() { failingResults = true }
   var hanging = false
   var longText = false
   var delayedPreparation = false
@@ -163,10 +166,15 @@ actor FakeRecognizer: Recognizer {
     output.finish()
   }
   func results(_ receive: @escaping @Sendable (RecognitionResult) async -> Void) async throws {
+    receiveLate = receive
+    if failingResults { throw DictationError.recognitionFailed }
     for await result in stream { await receive(result) }
     operations.append("consumed")
   }
   func push(_ result: RecognitionResult) { output.yield(result) }
+  func lateResult() async {
+    await receiveLate?(.init(start: 0, end: 1, finalization: 1, text: "late"))
+  }
   func cancel() async {
     operations.append("cancel")
     await cleanupGate?.wait()
@@ -215,7 +223,7 @@ final class EngineTests: XCTestCase {
     await service.cancel(session: id)
     try await wait { await gate.entered }
     let count = events.all.count
-    await recognizer.push(.init(start: 0, end: 1, finalization: 1, text: "late"))
+    await recognizer.lateResult()
     try await service.start(session: other)
     XCTAssertEqual(capture.starts, 1)
     XCTAssertEqual(events.all.count, count)
@@ -289,6 +297,40 @@ final class EngineTests: XCTestCase {
     XCTAssertGreaterThan(before, 0)
     XCTAssertGreaterThan(flushed, 0)
     XCTAssertEqual(before + flushed, 4800)
+  }
+
+  func testConsumerFailureIsPromptWhilePreparationIsBlocked() async throws {
+    let events = Events()
+    let capture = Capture()
+    let recognizer = FakeRecognizer()
+    let gate = Gate()
+    await recognizer.gates(preparation: gate)
+    await recognizer.failResults()
+    let service = DictationService(
+      emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+    try await service.start(session: id)
+    try await wait { !events.ended.isEmpty }
+    XCTAssertEqual(events.ended.map(\.payload), [.ended(.failed, .recognitionFailed)])
+    await gate.open()
+  }
+
+  func testReservationTransactionsRemainSerialAcrossSuspension() async throws {
+    let coordinator = ReservationCoordinator()
+    let gate = Gate()
+    let trace = Trace()
+    let reserve = Task {
+      await coordinator.run {
+        trace.append("reserve")
+        await gate.wait()
+        trace.append("release")
+      }
+    }
+    try await wait { await gate.entered }
+    let next = Task { await coordinator.run { trace.append("next") } }
+    await gate.open()
+    await reserve.value
+    await next.value
+    XCTAssertEqual(trace.all, ["reserve", "release", "next"])
   }
 
   func testRangeRevisionAndFinalizationWatermark() throws {

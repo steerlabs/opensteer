@@ -1,5 +1,6 @@
 import Foundation
 
+/// Stable error codes shared with the protocol schema.
 public enum DictationError: String, Codable, Error, Sendable, CaseIterable {
   case permissionDenied = "permission-denied"
   case busy
@@ -9,19 +10,24 @@ public enum DictationError: String, Codable, Error, Sendable, CaseIterable {
   case recognitionFailed = "recognition-failed"
   case serviceUnavailable = "service-unavailable"
 }
+/// Exactly one terminal outcome is delivered for each accepted session.
 public enum DictationEndReason: String, Codable, Sendable, CaseIterable {
   case completed, cancelled, interrupted
   case deviceChanged = "device-changed"
   case failed
 }
+/// Permission queries never prompt.
 public enum DictationMicrophone: String, Codable, Sendable, CaseIterable {
   case undetermined, granted, denied
 }
+/// Explains why dictation is unavailable without attempting capture.
 public enum DictationUnavailableReason: String, Codable, Sendable, CaseIterable {
   case platform, os, hardware, language, restricted
 }
+/// Installation state for the Apple-resolved language.
 public enum DictationModel: String, Codable, Sendable, CaseIterable { case installed, download }
 
+/// Wire availability is query-only and contains no native framework objects.
 public enum DictationAvailability: Codable, Sendable, Equatable {
   case unavailable(DictationUnavailableReason)
   case available(
@@ -57,6 +63,7 @@ public enum DictationAvailability: Codable, Sendable, Equatable {
   }
 }
 
+/// Wire events carry a session-local sequence assigned only at delivery.
 public struct DictationEvent: Codable, Sendable, Equatable {
   public enum Payload: Sendable, Equatable {
     case downloading(Double?)
