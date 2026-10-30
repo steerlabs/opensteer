@@ -396,6 +396,30 @@ final class EngineTests: XCTestCase {
     XCTAssertEqual(before + flushed, 4800)
   }
 
+  func testWordsRecognizedJustBeforeAFailureAreDelivered() async throws {
+    let events = Events()
+    let capture = Capture()
+    let recognizer = FakeRecognizer()
+    let service = DictationService(
+      emit: { events.append($0) }, capture: { capture }, recognizer: { recognizer })
+    try await service.start(session: id)
+    try await wait {
+      events.all.contains { if case .listening = $0.payload { return true } else { return false } }
+    }
+    // Both arrive inside one 100 ms tick: the second is refused, ending the session.
+    await recognizer.push(.init(start: 0, end: 1, finalization: 0, text: "kept words"))
+    await recognizer.push(
+      .init(start: 1, end: 2, finalization: 0, text: String(repeating: "a", count: 50_001)))
+    try await wait { !events.ended.isEmpty }
+    let delivered = events.all.flatMap { event -> [String] in
+      guard case .text(let finalized, let volatile) = event.payload else { return [] }
+      return finalized + volatile
+    }
+    XCTAssertTrue(delivered.contains("kept words"))
+    XCTAssertEqual(events.ended.map(\.payload), [.ended(.failed, .recognitionFailed)])
+    XCTAssertEqual(events.all.last?.payload, .ended(.failed, .recognitionFailed))
+  }
+
   func testConsumerFailureIsPromptWhilePreparationIsBlocked() async throws {
     let events = Events()
     let capture = Capture()
@@ -625,6 +649,18 @@ final class EngineTests: XCTestCase {
     XCTAssertEqual(tracker.finalized.count, 1000)
     XCTAssertThrowsError(
       try tracker.accept(.init(start: 1000, end: 1001, finalization: 1001, text: "overflow")))
+    // A refused mutation leaves the tracker unchanged, so it can still be flushed within bounds.
+    XCTAssertEqual(tracker.finalized.count, 1000)
+    XCTAssertTrue(tracker.kept.isEmpty)
+    try tracker.accept(.init(start: 1000, end: 1001, finalization: 1000, text: "tentative"))
+    XCTAssertThrowsError(try tracker.finish())
+    XCTAssertEqual(tracker.finalized.count, 1000)
+    XCTAssertEqual(tracker.kept.map(\.text), ["tentative"])
+    guard case .text(let finalized, let volatile) = tracker.take() else {
+      return XCTFail("Pending words were not deliverable")
+    }
+    XCTAssertEqual(finalized.count, 1000)
+    XCTAssertEqual(volatile, ["tentative"])
     XCTAssertThrowsError(
       try validateSession(id.uppercased().replacingOccurrences(of: "00000000", with: "AAAAAAAA")))
     XCTAssertNoThrow(try validateSession(id))

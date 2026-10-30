@@ -9,28 +9,36 @@ struct RecognitionResult: Sendable {
   let text: String
 }
 /// Keeps revisions by range because Apple may finalize without repeating a result.
+///
+/// Every mutation is validated before it is committed, so a result or a finish
+/// that would exceed the wire's bounds throws and leaves the tracker exactly as
+/// it was: still within bounds, so its pending words can still be delivered.
 struct ResultTracker {
   private(set) var kept: [RecognitionResult] = []
   private(set) var finalized: [String] = []
   var dirty = false
   mutating func accept(_ result: RecognitionResult) throws {
     guard result.text.utf16.count <= 50_000 else { throw DictationError.recognitionFailed }
-    kept.removeAll { $0.start < result.end && result.start < $0.end }
-    kept.append(result)
-    kept.sort { $0.start < $1.start }
-    finalized += kept.filter { $0.end <= result.finalization }.map(\.text)
-    kept.removeAll { $0.end <= result.finalization }
-    try checkLimits()
+    var nextKept = kept.filter { !($0.start < result.end && result.start < $0.end) }
+    nextKept.append(result)
+    nextKept.sort { $0.start < $1.start }
+    let promoted = nextKept.filter { $0.end <= result.finalization }.map(\.text)
+    nextKept.removeAll { $0.end <= result.finalization }
+    let nextFinalized = finalized + promoted
+    try Self.checkLimits(kept: nextKept.count, finalized: nextFinalized.count)
+    kept = nextKept
+    finalized = nextFinalized
     dirty = true
   }
   mutating func finish() throws {
-    finalized += kept.map(\.text)
+    let nextFinalized = finalized + kept.map(\.text)
+    try Self.checkLimits(kept: 0, finalized: nextFinalized.count)
+    finalized = nextFinalized
     kept = []
-    try checkLimits()
     dirty = true
   }
-  private func checkLimits() throws {
-    guard kept.count <= 1_000, finalized.count <= 1_000 else {
+  private static func checkLimits(kept: Int, finalized: Int) throws {
+    guard kept <= 1_000, finalized <= 1_000 else {
       throw DictationError.recognitionFailed
     }
   }

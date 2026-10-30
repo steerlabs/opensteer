@@ -187,8 +187,9 @@ public actor DictationService {
       s.deadline = Task {
         do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
         guard self.current(s) else { return }
+        // Promote what Apple left tentative when the bounds allow; termination
+        // flushes either way, so a refused promotion still delivers every word.
         try? s.tracker.finish()
-        self.flush(s)
         await self.fail(s, .recognitionFailed)
       }
     }
@@ -242,6 +243,9 @@ public actor DictationService {
   private func terminate(_ s: Session, _ reason: DictationEndReason, _ error: DictationError?) async
   {
     guard current(s) else { return }
+    // Words recognized since the last 100 ms tick must not be lost to a failure,
+    // an interruption or a device change; only cancel discards them.
+    if reason != .cancelled { flush(s) }
     s.capture.stop()
     s.queue.finish()
     s.work?.cancel()
