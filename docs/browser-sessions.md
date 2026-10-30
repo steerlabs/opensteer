@@ -286,8 +286,9 @@ Watch is passive: it may manage picture subscriptions, receipts and raster
 demand. It must never navigate, select, resize the page, input, access
 clipboard/CDP or import/export state. Raster demand changes presentation density
 without changing page geometry or ending held input; it must not resubscribe
-the viewer. Older viewers retain the released capture density. Native control subscriptions without pictures require target-control
-support and a target; unsupported runtimes must not substitute pictures. Targeted
+the viewer. Viewers that do not negotiate raster demand keep the existing
+full-density capture. Native control subscriptions without pictures require
+target-control support and a target; unsupported runtimes must not substitute pictures. Targeted
 readers refuse producers without targeted-streaming support. One viewer's image
 credit never blocks input or another viewer. A subscription alone is not proof of
 a live picture.

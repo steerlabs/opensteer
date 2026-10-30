@@ -95,9 +95,9 @@ const emptySlots: FrameSlots = { decoding: null, displayed: null };
  * drops a picture — another tab, a closed browser, a lost connection — the
  * screen empties.
  *
- * The view is done with a picture once it is drawn, or failed or dropped;
- * only then may the next come. One that cannot be decoded leaves the last
- * picture on screen until a newer one arrives. A binary with the native
+ * Each picture returns its delivery credit once it is drawn, failed or
+ * dropped. One that cannot be decoded leaves the last picture on screen
+ * until a newer one arrives. A binary with the native
  * picture view decodes off the main thread there; an older one decodes
  * base64 data URIs through Image.
  *
