@@ -42,7 +42,8 @@ before publication. The release-only launch check has a three-minute deadline;
 failures retain logs and a screenshot. The explicit smoke launch mode accepts only
 Playwright's ephemeral debugger ports with a fresh private HOME, userData and
 workspace; normal packaged launches still reject debugging switches. Smoke mode
-keeps the login-shell and engine environment in that HOME and skips the move-to-
+uses a process-local encryption key instead of the user’s Keychain, keeps the
+login-shell and engine environment in that HOME and skips the move-to-
 Applications prompt. It is an instrumentation exception for release checks, not
 a sandbox against a same-user process that deliberately enables it.
 Database upgrade coverage belongs to the

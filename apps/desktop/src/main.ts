@@ -1,3 +1,4 @@
+import { releaseSmokeCryptography } from "./secrets/release-smoke-cryptography.js";
 import { open as openInspector } from "node:inspector";
 import { autoUpdater } from "electron-updater";
 import { startDesktopUpdater } from "./app/desktop-updater.js";
@@ -301,13 +302,16 @@ async function runDesktop(
   }
   const hostNetwork = new ElectronHostNetwork();
   const serviceNetwork = new ElectronServiceNetwork();
-  const protectedStorage = new VerifiedDesktopSecretCryptography(safeStorage, {
-    onVerificationFailure: ({ error, phase }) =>
-      reportNonFatal(
-        "desktop.protected-storage.verification-failed",
-        new Error(`${phase}: ${safeErrorMessage(error)}`),
-      ),
-  });
+  const protectedStorage = new VerifiedDesktopSecretCryptography(
+    releaseSmoke ? releaseSmokeCryptography() : safeStorage,
+    {
+      onVerificationFailure: ({ error, phase }) =>
+        reportNonFatal(
+          "desktop.protected-storage.verification-failed",
+          new Error(`${phase}: ${safeErrorMessage(error)}`),
+        ),
+    },
+  );
   const resourcesDirectory = path.dirname(loaded.config.personal.releaseDirectory);
   const personalUserEnvironment = releaseSmoke
     ? new FixedPersonalUserEnvironment(process.env)
