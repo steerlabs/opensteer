@@ -4,6 +4,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
+// PostgreSQL fixtures are configured only by the integration launcher.
 const integration = databaseUrl ? describe : describe.skip;
 
 integration("Vertical stack teardown", () => {
@@ -53,7 +54,7 @@ integration("Vertical stack teardown", () => {
       release.resolve();
       if (saveEntered)
         await expect(finished).rejects.toThrow(
-          /Runner boot .* (?:timed out|did not finish startup)/,
+          "The account reported unavailable: Harness driver missing is not installed",
         );
       await stack?.close();
     }
