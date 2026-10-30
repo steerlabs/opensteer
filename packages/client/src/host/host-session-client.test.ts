@@ -19,6 +19,7 @@ import {
   BrowserSurfaceIdSchema,
   HostToClientMessageSchema,
   HostedBrowserBootstrapSchema,
+  ComputerViewSchema,
   type WorkspaceTabLineage,
   type HostedBrowserBootstrap,
   type HostToClientMessage,
@@ -9188,6 +9189,109 @@ describe("HttpHostClient owner views", () => {
   }
   const renewals = (commands: readonly Readonly<Record<string, unknown>>[]) =>
     commands.filter((command) => command.type === "computer.view.renew").length;
+
+  it.each(["command", "notice"] as const)(
+    "keeps a second app window accepted through a %s while an older refresh is in flight",
+    async (delivery) => {
+      const { machine, view } = await ownerViewWorld();
+      if (view.target.kind !== "app") throw new Error("Expected a Mac app view");
+      const second = ComputerViewSchema.parse({
+        ...view,
+        viewId: `cvw_${crypto.randomUUID()}`,
+        target: { ...view.target, window: 102 },
+        window: { id: 102, title: "Second window" },
+      });
+      let listed = [machine];
+      const host = ownerViewHost(
+        () => listed,
+        async () => json({ view: second }),
+      );
+      try {
+        await host.client.load();
+        const socket = host.connect();
+        const bootstrapAnswer = host.host.bootstrap;
+        const reading = deferred<void>();
+        const release = deferred<void>();
+        host.host.bootstrap = async () => {
+          const response = await bootstrapAnswer();
+          reading.resolve();
+          await release.promise;
+          return response;
+        };
+        const refreshing = host.client.refresh();
+        await reading.promise;
+        if (delivery === "command")
+          await host.client.openComputerView(second.machineId, second.target);
+        else socket.receive({ type: "host.computer-view.changed", view: second });
+        const views = () =>
+          host.client.getSnapshot().machines.find((candidate) => candidate.id === machine.id)
+            ?.computerUse?.ownerViews;
+        expect(views()).toEqual([view, second]);
+        release.resolve();
+        await refreshing;
+        expect(views()).toEqual([view, second]);
+        expect(
+          placeList(host.client.getSnapshot()).filter((place) => place.ownerView),
+        ).toHaveLength(2);
+
+        // A read begun after the update still removes views the Host no longer lists.
+        host.host.bootstrap = bootstrapAnswer;
+        await host.client.refresh();
+        expect(views()).toEqual([view]);
+        listed = [{ ...machine, computerUse: { ...machine.computerUse!, ownerViews: [] } }];
+        await host.client.refresh();
+        expect(views()).toEqual([]);
+      } finally {
+        host.client.dispose();
+      }
+    },
+  );
+
+  it.each(["ready", "renewed", "reopened", "closed", "expired"] as const)(
+    "preserves a %s view update over an in-flight refresh",
+    async (change) => {
+      const { machine, view } = await ownerViewWorld();
+      const initial = change === "ready" ? { ...view, state: "opening" as const } : view;
+      const updated = ComputerViewSchema.parse({
+        ...view,
+        generation: view.generation + (change === "reopened" ? 1 : 0),
+        expiresAt:
+          change === "renewed"
+            ? new Date(Date.parse(view.expiresAt) + 30_000).toISOString()
+            : view.expiresAt,
+        state: change === "closed" || change === "expired" ? change : "ready",
+        unavailableReason: change === "closed" || change === "expired" ? change : null,
+      });
+      const host = ownerViewHost(
+        () => [{ ...machine, computerUse: { ...machine.computerUse!, ownerViews: [initial] } }],
+        async () => json({ view: updated }),
+      );
+      try {
+        await host.client.load();
+        const socket = host.connect();
+        const bootstrapAnswer = host.host.bootstrap;
+        const reading = deferred<void>();
+        const release = deferred<void>();
+        host.host.bootstrap = async () => {
+          const response = await bootstrapAnswer();
+          reading.resolve();
+          await release.promise;
+          return response;
+        };
+        const refreshing = host.client.refresh();
+        await reading.promise;
+        socket.receive({ type: "host.computer-view.changed", view: updated });
+        release.resolve();
+        await refreshing;
+        expect(
+          host.client.getSnapshot().machines.find((candidate) => candidate.id === machine.id)
+            ?.computerUse?.ownerViews,
+        ).toEqual([updated]);
+      } finally {
+        host.client.dispose();
+      }
+    },
+  );
 
   it("keeps a watched view renewed through failed renewals and a dropped connection, and stops on a terminal refusal", async () => {
     const { machine, view } = await ownerViewWorld();
