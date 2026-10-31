@@ -2136,9 +2136,14 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     );
     expect(report.fixtureCookieHeader).not.toMatch(/anon|tracker/u);
     await verifyLegacyProfileCheckpoint();
-    await verifyNativeProfilePersistence();
     await verifyNativeProfileConversion();
   }, 60_000);
+
+  it(
+    "preserves native profile cookies and origin stores across close and process crash",
+    verifyNativeProfilePersistence,
+    30_000,
+  );
 
   it("shows every page a browser without WebAuthn, directly and as a hosted runtime launches it", async () => {
     // Hosted runtimes launch Chromium with the egress proxy's arguments.

@@ -3,7 +3,10 @@ import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import type { RoutedHostToBrowserRelayMessage } from "@opensteer/protocol/browser-relay";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RunnerBrowserHooks, RunnerBrowserRegistry } from "./runner-browser-hub.js";
-import { RunnerBrowserRuntimeRouter } from "./runner-browser-runtime.js";
+import {
+  RunnerBrowserRuntimeRouter,
+  type BrowserRuntimeRelayRequest,
+} from "./runner-browser-runtime.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -886,7 +889,7 @@ it.each(["timeout", "cancel"] as const)(
       streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     } as RunnerAuxiliaryStream;
     let hooks: RunnerBrowserHooks = {};
-    const sent: RoutedHostToBrowserRelayMessage[] = [];
+    const sent: BrowserRuntimeRelayRequest[] = [];
     const responseErrors: unknown[] = [];
     let siblingId: string | undefined;
     const router = new RunnerBrowserRuntimeRouter({

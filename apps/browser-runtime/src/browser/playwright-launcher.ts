@@ -483,6 +483,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         ...this.args,
         `--user-data-dir=${directory}`,
         "--remote-debugging-pipe",
+        // Guest already receives these from Playwright's defaults. Native launches
+        // must not start Chromium's bundled extension workers on every cold open.
+        "--disable-extensions",
+        "--disable-component-extensions-with-background-pages",
         "--no-startup-window",
         "--restore-last-session",
         "--no-first-run",
@@ -566,10 +570,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       if (context.pages().length) throw new Error("Chromium restored unauthorized tabs.");
       // Keep one private blank target only while this bounded profile host is warm.
       // Without it, closing the last tab also discards Chromium's warm renderer.
-      const [helper] = await Promise.all([
-        context.newPage(),
-        snapshot ? Promise.resolve() : context.newPage(),
-      ]);
+      const helper = await context.newPage();
       timing("cookie-target");
       const browserCdp = await browser.newBrowserCDPSession();
       timing("cdp");

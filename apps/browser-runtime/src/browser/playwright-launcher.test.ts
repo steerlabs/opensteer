@@ -344,7 +344,6 @@ describe("native Chromium profiles", () => {
       detach: vi.fn().mockResolvedValue(undefined),
     };
     const helper = { on: vi.fn(), isClosed: () => false };
-    const rootPage = { on: vi.fn(), isClosed: () => false };
     const pages: Page[] = [];
     const browser = {
       newBrowserCDPSession: vi.fn().mockResolvedValue(cdp),
@@ -354,9 +353,8 @@ describe("native Chromium profiles", () => {
       browser: () => browser,
       pages: () => pages,
       newPage: vi.fn().mockImplementation(async () => {
-        const page = pages.length === 0 ? helper : rootPage;
-        pages.push(page as unknown as Page);
-        return page;
+        pages.push(helper as unknown as Page);
+        return helper;
       }),
       newCDPSession: vi.fn().mockResolvedValue(cdp),
       addInitScript: vi.fn().mockResolvedValue(undefined),
@@ -394,6 +392,8 @@ describe("native Chromium profiles", () => {
         expect.arrayContaining([
           `--user-data-dir=${directory}`,
           "--remote-debugging-pipe",
+          "--disable-extensions",
+          "--disable-component-extensions-with-background-pages",
           "--restore-last-session",
           "--no-startup-window",
           "--headless=new",
@@ -409,9 +409,9 @@ describe("native Chromium profiles", () => {
       expect(JSON.parse(await readFile(join(directory, "Default", "Preferences"), "utf8"))).toEqual(
         { session: { restore_on_startup: 1 } },
       );
-      expect(context.newPage).toHaveBeenCalledTimes(2);
+      expect(context.newPage).toHaveBeenCalledOnce();
       expect(context.newCDPSession).not.toHaveBeenCalled();
-      expect(launched.context.pages()).toHaveLength(1);
+      expect(launched.context.pages()).toEqual([]);
       await expect(launched.cdp.send("Target.getBrowserContexts")).resolves.toEqual({
         browserContextIds: [],
       });
