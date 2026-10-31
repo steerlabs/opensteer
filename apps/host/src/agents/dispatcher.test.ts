@@ -1,3 +1,4 @@
+import { ScreenPresentationRegistry } from "../screen/screen-presentation-registry.js";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { ModelSelectionSchema, OpensteerError, createId, type Message } from "@opensteer/core";
 import type { CommandRow, OpensteerStore } from "@opensteer/database";
@@ -607,6 +608,62 @@ describe("HostCommandDispatcher model selection", () => {
     expect(current.dispatch).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])(
+    "sends only negotiated, live input presentation context (supported: %s)",
+    async (supported) => {
+      const screen = new ScreenPresentationRegistry();
+      const ownerId = createId("user");
+      const sessionId = createId("authSession");
+      const message = steerMessage();
+      const endpoint = screen.open({
+        ownerId,
+        sessionId,
+        sink: { id: "screen", send: async () => undefined, close: () => undefined },
+      });
+      const currentThreadId = createId("thread");
+      screen.register({
+        ownerId,
+        sessionId,
+        threadId: message.threadId,
+        messageId: message.id,
+        context: {
+          endpointRef: endpoint.ready.endpointRef,
+          voiceSessionId: "00000000-0000-4000-8000-000000000001",
+          utteranceSequence: 1,
+          interactionRevision: 1,
+          currentThreadId,
+        },
+      });
+      const fixture = dispatchRun({
+        screenPresentation: screen,
+        inputs: [message],
+        capabilities: [
+          "native-session-continuation-v1",
+          "assignments-v1",
+          "thread-state-v1",
+          "execution-plane-v2",
+          "requester-time-zone-v1",
+          ...(supported ? ["screen-show-v1"] : []),
+        ],
+        models: [gpt5],
+        modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      });
+      try {
+        await fixture.run();
+        const sent = fixture.dispatch.mock.calls[0]?.[0];
+        if (!sent || sent.type !== "run.execute") throw new Error("No Run command");
+        if (supported) expect(sent.inputs[0]?.presentationContext).toEqual({ currentThreadId });
+        else expect(sent.inputs[0]).not.toHaveProperty("presentationContext");
+        expect(JSON.stringify(sent)).not.toContain(endpoint.ready.endpointRef);
+        expect(
+          screen.inputWasSent(message.id, sent.context.runId, sent.context.bindingGeneration),
+        ).toBe(true);
+      } finally {
+        screen.close();
+      }
+    },
+  );
+
   function dispatchRun(input: {
     readonly capabilities?: readonly string[];
     readonly role?: "conversation" | "work";
@@ -615,6 +672,8 @@ describe("HostCommandDispatcher model selection", () => {
     readonly models: readonly unknown[];
     readonly modelSelection: unknown;
     readonly requesterTimeZone?: string | null;
+    readonly inputs?: readonly Message[];
+    readonly screenPresentation?: ScreenPresentationRegistry;
   }) {
     const models = input.models.map((model) => HarnessModelDescriptorSchema.parse(model));
     const modelSelection = ModelSelectionSchema.parse(input.modelSelection);
@@ -623,9 +682,18 @@ describe("HostCommandDispatcher model selection", () => {
     const requestedBy = createId("user");
     const runId = createId("run");
     const threadId = createId("thread");
-    const dispatch = vi.fn(async (_command: RunnerCommand, _signal: AbortSignal) => undefined);
+    const dispatch = vi.fn(
+      async (
+        _command: RunnerCommand,
+        _signal: AbortSignal,
+        options?: { readonly onSending?: () => void },
+      ) => {
+        options?.onSending?.();
+      },
+    );
     const timeZoneFor = vi.fn(async () => input.requesterTimeZone ?? null);
     const dispatcher = new HostCommandDispatcher({
+      ...(input.screenPresentation ? { screenPresentation: input.screenPresentation } : {}),
       executionLeaseMs: 90_000,
       attachmentRunTokens: { issue: () => "attachment-token" } as never,
       attachments: {
@@ -684,7 +752,7 @@ describe("HostCommandDispatcher model selection", () => {
         loadRunDispatchContext: async () => ({
           history: [],
           historyWindow: { byteCount: 0, itemCount: 0, hasEarlier: false },
-          inputs: [],
+          inputs: input.inputs ?? [],
           reports: { messages: [], omittedCount: 0, throughSequence: null },
           membershipGeneration: 1,
           run: {
@@ -898,10 +966,14 @@ function steerDispatcher(input: {
     integrationToolsTokens: {} as never,
     onWorkspaceEvent: input.onWorkspaceEvent ?? vi.fn(),
     publicUrl: new URL("https://host.example"),
-    runners: { dispatch: input.runnersDispatch } as never,
+    runners: {
+      dispatch: input.runnersDispatch,
+      identityForEnvironment: () => ({ capabilities: [], connectionGeneration: 1 }),
+    } as never,
     store: {
       dispatchChannelCommand: input.dispatchChannelCommand,
       loadSteerDispatchInput: async () => ({
+        bindingGeneration: 1,
         message: steerMessage(),
         runId: createId("run"),
         threadId: createId("thread"),

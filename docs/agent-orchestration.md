@@ -357,9 +357,11 @@ parts. Page addresses never enter notification or channel summaries.
 Browser presence reaches only authorized viewers and exposes site/title, never
 path/query. Mac presence reaches only its owner. Patches cannot be overwritten
 by older bootstrap reads. Live acting ends with the Run, even if a late command
-answers. Agent activity never navigates the person's selected place; a place
-ending may select a successor, but being offline or awaiting permission does
-not mean ended. Old links stay exact and show ended state. Mac pictures name
+answers. Agent activity alone never navigates the person's selected place. An
+explicit voice input can offer Main Chat one presentation of existing resources when enabled,
+subject to the originating client's current interaction and exact source checks
+([Voice](voice.md)). A place ending may select a successor, but being offline or
+awaiting permission does not mean ended. Old links stay exact and show ended state. Mac pictures name
 both session and app; capture cannot follow a later agent target. Previews do
 not resize pages, and switching views never redirects the agent.
 See [Browser sessions](browser-sessions.md) and [Computer use](computer-use.md).

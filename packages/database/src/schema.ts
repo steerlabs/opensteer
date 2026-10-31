@@ -1255,6 +1255,7 @@ export interface AgentControlRequestTable {
   requestId: string;
   sourceThreadId: ThreadId;
   action:
+    | "screen.show"
     | "assignment.cancel"
     | "machine.full-disk-access.request"
     | "browser.access.request"
@@ -1282,6 +1283,7 @@ export interface AgentControlRequestTable {
     | "workspace.inspect"
     | "workspace.mount";
   actionClass:
+    | "screen.show"
     | "assignment.cancel"
     | "machine.full-disk-access.request"
     | "browser.access.request"

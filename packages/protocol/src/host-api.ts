@@ -1,3 +1,4 @@
+import { ScreenPresentationInputSchema } from "./screen-presentation.js";
 import {
   WorkspaceTabsInputSchema,
   WorkspaceTabLineageSchema,
@@ -455,6 +456,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.sendMessage"),
+    screenPresentation: ScreenPresentationInputSchema.optional(),
     quotedMessageId: MessageIdSchema.optional(),
   }),
   z.strictObject({
