@@ -93,6 +93,9 @@ export function BrowserPage(props: {
       : undefined);
   const [problem, setProblem] = useState<string | null>(null);
   const [addressOpen, setAddressOpen] = useState(props.editAddress);
+  useEffect(() => {
+    if (addressOpen) hostClient.prepareBrowserProfile();
+  }, [addressOpen, hostClient]);
   // Null shows the page's own address; anything else is the person's, kept
   // until they go there or put it away.
   const [addressDraft, setAddressDraft] = useState<string | null>(null);
@@ -214,6 +217,9 @@ export function BrowserPage(props: {
     }
     // The address stays as typed until the page has taken it.
     if (!send({ type: "navigation.go", url: url.href })) return;
+    hostClient.browserPreferences.lastBrowsingChoice = session.profileId
+      ? { kind: "profile", profileId: session.profileId }
+      : { kind: "guest" };
     setProblem(null);
     setAddressDraft(null);
     setAddressOpen(false);

@@ -410,6 +410,9 @@ describe("native Chromium profiles", () => {
         { session: { restore_on_startup: 1 } },
       );
       expect(context.newPage).toHaveBeenCalledOnce();
+      await launched.profile?.ready();
+      expect(context.newPage).toHaveBeenCalledOnce();
+      await launched.profile?.admit();
       expect(context.newCDPSession).not.toHaveBeenCalled();
       expect(launched.context.pages()).toEqual([]);
       await expect(launched.cdp.send("Target.getBrowserContexts")).resolves.toEqual({

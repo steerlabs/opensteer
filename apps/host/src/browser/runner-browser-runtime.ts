@@ -51,11 +51,19 @@ const browserChannelEnvelope = {
 };
 export const HostToBrowserRuntimeRelayMessageSchema = z.union([
   z.strictObject({ ...browserChannelEnvelope, type: z.literal("browser.client-message") }),
-  createHostToBrowserRelayMessageSchema({ localProfiles: 1, initialNavigationVersion: 1 }),
+  createHostToBrowserRelayMessageSchema({
+    localProfiles: 1,
+    profilePrepare: 1,
+    initialNavigationVersion: 1,
+  }),
 ]);
 export const BrowserRuntimeRelayToHostMessageSchema = z.union([
   z.strictObject({ ...browserChannelEnvelope, type: z.literal("browser.server-message") }),
-  createBrowserRelayToHostMessageSchema({ localProfiles: 1, initialNavigationVersion: 1 }),
+  createBrowserRelayToHostMessageSchema({
+    localProfiles: 1,
+    profilePrepare: 1,
+    initialNavigationVersion: 1,
+  }),
 ]);
 export type BrowserRuntimeRelayRequest = Extract<
   z.infer<typeof HostToBrowserRuntimeRelayMessageSchema>,
@@ -80,6 +88,7 @@ interface PendingRequest {
   readonly fence: RunnerAuxiliaryFrameFence;
   readonly runnerId: RunnerId;
   readonly expectedType:
+    | "browser.profile.prepared"
     | "browser.attached"
     | "browser.closed"
     | "capability.accepted"
@@ -106,6 +115,7 @@ interface PlacementCapabilityLease {
 }
 
 interface RoutedChannel {
+  readonly preparation: boolean;
   readonly channelId: BrowserChannelId;
   readonly connection: RunnerBrowserConnection;
   lastSequence: number;
@@ -200,10 +210,33 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     const placementKey = runnerPlacementKey(placement.runnerId, browser.runtimeId);
     return {
       placementKey,
+      main: stream.identity.runnerKind === "main",
       ...(browser.localProfiles === 1 && browser.localProfileStorage
         ? { localProfileStorage: browser.localProfileStorage }
         : {}),
       initialNavigationVersion: browser.initialNavigationVersion === 1,
+      ...(browser.localProfiles === 1 &&
+      browser.profilePrepare === 1 &&
+      browser.profilePrepareInstanceId
+        ? {
+            profilePrepare: true,
+            incarnation: browser.profilePrepareInstanceId,
+            prepareProfile: (ticket: string) => {
+              const connection = new RunnerBrowserConnection(this);
+              queueMicrotask(() => {
+                void this.#open(
+                  connection,
+                  placement.runnerId,
+                  browser.runtimeId,
+                  expectedFence,
+                  ticket,
+                  true,
+                );
+              });
+              return connection;
+            },
+          }
+        : {}),
       runtimeId: browser.runtimeId,
       stateImport: browser.stateImport === true,
       fileStaging: browser.fileStaging === true,
@@ -285,12 +318,19 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     runtimeId: string,
     expectedFence: RunnerAuxiliaryFrameFence,
     ticket: string,
+    preparation = false,
   ): Promise<void> {
     let placementLease: PlacementCapabilityLease | undefined;
     let channel: RoutedChannel | undefined;
     try {
       if (this.#closed) throw new Error("The browser relay router is closed.");
       const stream = this.#requireExpectedStream(runnerId, expectedFence);
+      if (
+        preparation &&
+        (stream.identity.modules.browser?.profilePrepare !== 1 ||
+          stream.identity.modules.browser?.localProfiles !== 1)
+      )
+        throw relayError("Profile preparation was not negotiated.");
       const reason = this.#admissionReason(stream);
       if (reason) throw relayError(reason);
       placementLease = await this.#acquirePlacementLease(stream, runtimeId);
@@ -307,6 +347,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       }
       const channelId = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
       const routedChannel: RoutedChannel = {
+        preparation,
         channelId,
         connection,
         lastSequence: -1,
@@ -315,10 +356,11 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       channel = routedChannel;
       this.#channels.set(channelId, routedChannel);
       activePlacementLease.channels.add(channelId);
+      if (preparation) activePlacementLease.maintenanceCount++;
       const attached = await this.#request(runnerId, stream.fence, {
         capability: activePlacementLease.capability,
         channelId,
-        expectedType: "browser.attached",
+        expectedType: preparation ? "browser.profile.prepared" : "browser.attached",
         // Negotiated readiness includes conversion and engine startup, rather
         // than just the old loopback WebSocket upgrade. Use the broker's startup budget.
         timeoutMs:
@@ -328,10 +370,10 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
             : undefined,
         message: {
           ...stream.fence,
-          attachTicket: ticket,
+          ...(preparation ? { preparationTicket: ticket } : { attachTicket: ticket }),
           capability: activePlacementLease.capability,
           channelId,
-          type: "browser.attach",
+          type: preparation ? "browser.profile.prepare" : "browser.attach",
         },
       });
       if (connection.readyState !== WebSocket.CONNECTING) {
@@ -341,25 +383,30 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       }
       const browser = stream.identity.modules.browser;
       const claims =
-        browser?.initialNavigationVersion === 1
+        !preparation && browser?.initialNavigationVersion === 1
           ? BrowserAttachTicketClaimsSchema.parse(
               JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString("utf8")),
             )
           : undefined;
-      if (attached.type !== "browser.attached")
+      if (attached.type !== "browser.attached" && attached.type !== "browser.profile.prepared")
         throw relayError("The browser did not acknowledge attachment.");
+      const initialPage = attached.type === "browser.attached" ? attached.initialPage : undefined;
       if (claims?.initialNavigationVersion === 1) {
         if (
-          !attached.initialPage ||
-          attached.initialPage.operationKey !== claims.initialNavigation?.operationKey ||
-          attached.initialPage.navigation !==
-            (claims.initialNavigation?.url ? "submitted" : "blank")
+          !initialPage ||
+          initialPage.operationKey !== claims.initialNavigation?.operationKey ||
+          initialPage.navigation !== (claims.initialNavigation?.url ? "submitted" : "blank")
         )
           throw relayError("The browser returned mismatched initial page readiness.");
-      } else if (attached.initialPage)
+      } else if (initialPage)
         throw relayError("The browser sent unnegotiated initial page readiness.");
-      connection.initialPage = attached.initialPage;
+      connection.initialPage = initialPage;
       connection.acceptOpen();
+      if (attached.type === "browser.profile.prepared" && !attached.retained) {
+        await this.#bestEffortCloseAndRevoke(routedChannel);
+        this.#dropChannel(routedChannel, 1000, "Profile preparation skipped");
+        return;
+      }
       if (!activePlacementLease.renewalTimer && !activePlacementLease.renewal) {
         this.#scheduleRenewal(activePlacementLease, activePlacementLease.expiresAt);
       }
@@ -613,13 +660,18 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
 
     if (
       message.type === "browser.profile.delete.result" ||
+      message.type === "browser.profile.prepared" ||
       message.type === "browser.attached" ||
       message.type === "capability.accepted" ||
       message.type === "capability.revoked"
     ) {
       const pending = this.#takePending(message.requestId);
       if (!pending) {
-        if (message.type === "browser.attached" && !this.#channels.has(message.channelId)) return;
+        if (
+          (message.type === "browser.attached" || message.type === "browser.profile.prepared") &&
+          !this.#channels.has(message.channelId)
+        )
+          return;
         throw relayError("The browser relay response is not correlated.");
       }
       this.#assertPendingResponse(
@@ -957,6 +1009,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     this.#channels.delete(channel.channelId);
     const placementLease = channel.placementLease;
     placementLease.channels.delete(channel.channelId);
+    if (channel.preparation) placementLease.maintenanceCount--;
     if (placementLease.channels.size === 0 && placementLease.maintenanceCount === 0) {
       if (placementLease.renewalTimer) clearTimeout(placementLease.renewalTimer);
       placementLease.renewalTimer = undefined;

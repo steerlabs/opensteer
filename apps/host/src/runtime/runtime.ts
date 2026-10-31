@@ -798,6 +798,7 @@ export async function createHostRuntime(
     };
     const browserTabGroups = new BrowserTabGroupStore(database);
     const browser = new BrowserService({
+      personal: deployment.deploymentShape.kind === "personal",
       localProfiles,
       eraseLocalProfiles: (runnerId) => runnerBrowsers.resumeDeletions(runnerId),
       passkeys: config.passkeys === true,

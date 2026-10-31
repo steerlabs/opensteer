@@ -23,7 +23,10 @@ export function runnerAuxiliaryWelcome(
     ...(module === "browser" &&
     stream.identity.modules.browser?.localProfiles === 1 &&
     stream.identity.modules.browser.localProfileStorage
-      ? { localProfiles: 1 }
+      ? {
+          localProfiles: 1,
+          ...(stream.identity.modules.browser?.profilePrepare === 1 ? { profilePrepare: 1 } : {}),
+        }
       : {}),
     ...(module === "browser" && stream.identity.modules.browser?.initialNavigationVersion === 1
       ? { initialNavigationVersion: 1 }

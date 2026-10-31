@@ -254,6 +254,9 @@ export const StartPage = memo(function StartPage({
       lastChoice: lastBrowsingChoice(scope),
     });
   });
+  useEffect(() => {
+    hostClient.prepareBrowserProfile(lastBrowsingChoice(scope));
+  }, [hostClient, snapshot.connection, scope.deploymentId, scope.userId]);
   const [pending, setPending] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -349,6 +352,8 @@ export const StartPage = memo(function StartPage({
     setChoice(identity);
     setRefusal(null);
     rememberBrowsingChoice(scope, identity);
+    hostClient.browserPreferences.lastBrowsingChoice = identity;
+    hostClient.prepareBrowserProfile(identity);
     inputRef.current?.focus();
   };
 

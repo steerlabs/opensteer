@@ -121,9 +121,6 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
   });
   await runtime.prepare();
   const address = await server.start();
-  process.stdout.write(
-    `${JSON.stringify({ event: "browser-runtime.ready", host: address.host, port: address.port })}\n`,
-  );
 
   const relay = await (async () => {
     try {
@@ -164,6 +161,9 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
     fail(reason);
     void close().catch(fail);
   });
+  process.stdout.write(
+    `${JSON.stringify({ event: "browser-runtime.ready", host: address.host, port: address.port })}\n`,
+  );
 }
 
 /**

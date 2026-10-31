@@ -75,6 +75,7 @@ export const RunnerAuxiliaryWelcomeSchema = z.strictObject({
   /** Opt in only when the descriptor offers it; old Hosts receive no new status fields. */
   passkeys: z.literal(1).optional(),
   localProfiles: z.literal(1).optional(),
+  profilePrepare: z.literal(1).optional(),
   initialNavigationVersion: z.literal(1).optional(),
   loginText: z.literal(1).optional(),
   passwordSignIn: z.literal(1).optional(),

@@ -113,6 +113,9 @@ function TabsForReader(props: {
   const placements = useHostSelector(hostClient, selectPlacements);
   const loaded = useHostSelector(hostClient, selectLoaded);
   const offline = useHostSelector(hostClient, selectConnection);
+  useEffect(() => {
+    if (props.active && offline === null) hostClient.prepareBrowserProfile();
+  }, [hostClient, props.active, offline]);
   const tiles = useMemo(
     () =>
       places.map((place) =>

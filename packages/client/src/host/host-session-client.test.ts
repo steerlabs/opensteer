@@ -406,6 +406,59 @@ describe("HttpHostClient Workspace files", () => {
   });
 });
 
+describe("profile preparation", () => {
+  it.each([true, false])(
+    "deduplicates per attach, never waits, and gates old Hosts: %s",
+    async (supported) => {
+      const requests: unknown[] = [];
+      const pending = Promise.withResolvers<Response>();
+      const client = createHttpHostClient({
+        capabilities: supported ? ["browser-profile-prepare-v1"] : [],
+        refreshIntervalMs: 0,
+        fetch: async (input, init) => {
+          if (String(input).endsWith("commands.dispatch")) {
+            requests.push(JSON.parse(String(init?.body)));
+            return pending.promise;
+          }
+          return json(
+            bootstrap([makeWorkspace()], {
+              profileGrants: [],
+              available: true,
+              placements: [],
+              profiles: [],
+              sessions: [],
+            }),
+          );
+        },
+      });
+      try {
+        await client.load();
+        const identity = { kind: "profile" as const, profileId: createId("browserProfile") };
+        expect(client.prepareBrowserProfile(identity)).toBeUndefined();
+        client.prepareBrowserProfile(identity);
+        client.prepareBrowserProfile({ kind: "guest" });
+        await vi.waitFor(
+          () =>
+            expect(
+              requests,
+              `snapshot connection: ${client.getSnapshot().connection}`,
+            ).toHaveLength(supported ? 1 : 0),
+          { timeout: 1000 },
+        );
+        expect(client.getSnapshot().session).toBe("authenticated");
+        const other = { kind: "profile" as const, profileId: createId("browserProfile") };
+        client.prepareBrowserProfile(other);
+        await client.refresh();
+        client.prepareBrowserProfile(identity);
+        await vi.waitFor(() => expect(requests).toHaveLength(supported ? 2 : 0), { timeout: 1000 });
+      } finally {
+        pending.resolve(json({ type: "browser.profile.prepare" }));
+        client.dispose();
+      }
+    },
+  );
+});
+
 describe("HttpHostClient authentication and onboarding", () => {
   it("projects, clears, and tolerates an absent authenticated session surface", async () => {
     const remoteBootstrap = { ...bootstrap([]), sessionSurface: "personal-remote" as const };

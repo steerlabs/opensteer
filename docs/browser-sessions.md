@@ -459,8 +459,9 @@ nonsecret tombstone to refuse stale tickets and reconcile Host DB rollback.
 ## Profile state
 
 Native profile storage belongs permanently to its bound computer, storage root
-and engine. Creation may leave a profile unplaced; its first supported open fixes
-that placement. Reconnect, update, eviction and reenrollment cannot move it.
+and engine. Creation may leave a profile unplaced; its first supported open or
+authorized preparation on Personal's Main computer fixes that placement.
+Reconnect, update, eviction and reenrollment cannot move it.
 Missing native data, root identity or mismatched markers refuse opening; never
 create an empty replacement, use another computer or substitute Guest. Chromium
 owns recovery within its databases; marker validation is not an internal
@@ -528,6 +529,18 @@ Close, eviction, failure cleanup and relaunch never clear native storage. Electr
 eviction releases views/controllers but retains its Session and mirror until
 process exit, so it does not bound all Session memory. See the
 [runtime](../packages/browser-runtime-core/src/runtime.ts).
+
+Clients may express their last explicit profile choice through negotiated
+preparation before opening a tab. Preparation has a distinct signed purpose,
+creates no session or user page, and retains at most one speculative native host per
+runtime within existing capacity. It never evicts a useful host. Only Personal's
+Main computer may proactively convert an unbound profile; server Deployments
+prepare already-bound profiles on their owner. Reconnect preserves the attempt
+limit for that runtime incarnation. Revocation or deletion cancels preparation;
+an actual open joins the same profile lane and takes over its capability hold.
+Launchers advertise preparation only when they implement page-free launch and
+separate readiness from network admission; see the
+[launcher contract](../packages/browser-runtime-core/src/browser/backend.ts).
 
 The [legacy snapshot adapter](../packages/browser-runtime-core/src/legacy-snapshot-adapter.ts)
 serves old runtimes, Guest save and one-time conversion. Only legacy named-profile

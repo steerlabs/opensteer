@@ -1,3 +1,5 @@
+import { RunnerBrowserRuntimeRouter } from "../apps/host/src/browser/runner-browser-runtime.js";
+import { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -217,6 +219,10 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   let coldNativeTimings: NativeProfileOpenTiming[] = [];
   let warmWallMs: number | undefined;
   let coldWallMs: number | undefined;
+  let preparedFirstOpen: BrowserOpenTiming[] = [];
+  let preparedFirstOpenWallMs: number | undefined;
+  let joinedFirstOpen: BrowserOpenTiming[] = [];
+  let joinedFirstOpenWallMs: number | undefined;
   addCleanup(
     "native profile timing receipts",
     async () => {
@@ -232,6 +238,10 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
             coldNativeTimings,
             warmWallMs,
             coldWallMs,
+            preparedFirstOpen,
+            preparedFirstOpenWallMs,
+            joinedFirstOpen,
+            joinedFirstOpenWallMs,
           },
           null,
           2,
@@ -419,6 +429,169 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   coldNativeTimings = browser.nativeTimings.slice(coldNativeStart);
   await close(cold);
 
+  const preparingHost = vi.spyOn(stack.host.browser, "prepareProfile");
+  const preparationErrors: Error[] = [];
+  const resolveTarget = RunnerBrowserRuntimeRouter.prototype.resolve;
+  const resolvingPreparation = vi
+    .spyOn(RunnerBrowserRuntimeRouter.prototype, "resolve")
+    .mockImplementation(function (this: RunnerBrowserRuntimeRouter, placement) {
+      const target = resolveTarget.call(this, placement);
+      if (target?.prepareProfile) {
+        const prepare = target.prepareProfile.bind(target);
+        return {
+          ...target,
+          prepareProfile: (ticket: string) => {
+            const connection = prepare(ticket);
+            connection.on("error", (error) => preparationErrors.push(error));
+            return connection;
+          },
+        };
+      }
+      return target;
+    });
+  const preparingClient = async () => {
+    await vi.waitFor(
+      async () => {
+        const bootstrap = await stack.api["bootstrap.get"]({});
+        expect(
+          bootstrap.ok && bootstrap.data.browser.available,
+          "Runtime inventory not admitted before client intent",
+        ).toBe(true);
+      },
+      { timeout: 15_000 },
+    );
+    const previousPrepares = preparingHost.mock.calls.length;
+    const client = new HttpHostClient({
+      baseUrl: stack.hostOrigin,
+      capabilities: ["browser-profile-prepare-v1"],
+      refreshIntervalMs: 0,
+      recentSitesStorage: {
+        getItem: (key) =>
+          key.startsWith("opensteer.browse-with.v1:")
+            ? JSON.stringify({ kind: "profile", profileId: profile.id })
+            : null,
+        setItem: () => {},
+        removeItem: () => {},
+      },
+      fetch: (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.set("cookie", stack.sessionCookie);
+        headers.set("origin", stack.hostOrigin.origin);
+        return fetch(input, { ...init, headers });
+      },
+    });
+    addCleanup("preparing client", async () => client.dispose(), 0);
+    await client.load();
+    expect(client.getSnapshot().session).toBe("authenticated");
+    client.prepareBrowserProfile();
+    await vi.waitFor(
+      () =>
+        expect(
+          preparingHost.mock.calls.length,
+          "The client did not send preparation intent",
+        ).toBeGreaterThan(previousPrepares),
+      { timeout: 2000 },
+    );
+    const preparation = preparingHost.mock.results.at(-1)!;
+    if (preparation.type === "return") await preparation.value;
+    const resolved = resolvingPreparation.mock.results.at(-1)!;
+    if (resolved.type === "return")
+      expect(resolved.value).toMatchObject({
+        profilePrepare: true,
+        incarnation: expect.any(String),
+      });
+    return client;
+  };
+  await browser.close();
+  await browser.start();
+  await stack.restartRunner();
+  const visitsBeforePrepare = site.visits();
+  const beforePreparation = await stack.api["bootstrap.get"]({});
+  const client = await preparingClient();
+  await vi.waitFor(
+    async () => {
+      if (preparationErrors[0]) throw preparationErrors[0];
+      expect(
+        await browser.health(),
+        "Client preparation did not retain a page-free native host",
+      ).toMatchObject({ profileHostCount: 1, sessionCount: 0 });
+    },
+    { timeout: 15_000 },
+  );
+  expect(site.visits(), "Preparation navigated an unauthorized tab").toEqual(visitsBeforePrepare);
+  const afterPreparation = await stack.api["bootstrap.get"]({});
+  expect(afterPreparation.ok && afterPreparation.data.browser.sessions).toEqual(
+    beforePreparation.ok && beforePreparation.data.browser.sessions,
+  );
+  const preparedCounts = {
+    native: browser.nativeTimings.length,
+    seeds: seeds.mock.calls.length,
+    complete: complete.mock.calls.length,
+  };
+  const firstStart = browser.timings.length;
+  const firstWallStart = performance.now();
+  const first = await open(profile.id, "/read?id=prepared-first");
+  preparedFirstOpenWallMs = performance.now() - firstWallStart;
+  expect(await site.observed("prepared-first")).toEqual(expected);
+  preparedFirstOpen = browser.timings.slice(firstStart);
+  expect(preparedFirstOpen).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ stage: "profile-acquire", acquisition: "warm" }),
+    ]),
+  );
+  expect(browser.nativeTimings).toHaveLength(preparedCounts.native);
+  expect(seeds).toHaveBeenCalledTimes(preparedCounts.seeds);
+  expect(complete).toHaveBeenCalledTimes(preparedCounts.complete);
+  await close(first);
+  client.dispose();
+
+  await browser.close();
+  await browser.start();
+  await stack.restartRunner();
+  // The bridge rendezvous holds actual preparation before native acquisition.
+  // The person clicks while it is still in flight; that attach uses the same profile lane.
+  const prepareGate = gate({ label: "first-open preparation bridge", deadlineMs: 15_000 });
+  const attachBridge = LocalBrowserRuntimeBridge.prototype.attach;
+  const bridge = vi
+    .spyOn(LocalBrowserRuntimeBridge.prototype, "attach")
+    .mockImplementation(async function (
+      this: LocalBrowserRuntimeBridge,
+      channel,
+      ticket,
+      sink,
+      preparation,
+    ) {
+      if (preparation) {
+        const result = attachBridge.call(this, channel, ticket, sink, preparation);
+        await prepareGate.enter();
+        return result;
+      }
+      return attachBridge.call(this, channel, ticket, sink, preparation);
+    });
+  const joinedNativeStart = browser.nativeTimings.length;
+  const joinedClient = await preparingClient();
+  await prepareGate.entered;
+  const joinStart = browser.timings.length;
+  const joinWallStart = performance.now();
+  try {
+    const joined = await open(profile.id, "/read?id=joined-first");
+    joinedFirstOpenWallMs = performance.now() - joinWallStart;
+    expect(await site.observed("joined-first")).toEqual(expected);
+    joinedFirstOpen = browser.timings.slice(joinStart);
+    expect(
+      browser.nativeTimings
+        .slice(joinedNativeStart)
+        .filter((timing) => timing.stage === "chromium-launch"),
+    ).toHaveLength(1);
+    expect(seeds).toHaveBeenCalledTimes(preparedCounts.seeds);
+    expect(complete).toHaveBeenCalledTimes(preparedCounts.complete);
+    await close(joined);
+  } finally {
+    prepareGate.release();
+    joinedClient.dispose();
+    bridge.mockRestore();
+  }
+
   // Simulate a DB-only rollback while the owning engine is stopped. The new
   // authenticated stream must reconcile before any new execution ticket.
   await browser.close();
@@ -543,6 +716,8 @@ it("advertises exact prepared storage through the standalone browser-only Runner
   const capabilities = await bridge.capabilities();
   expect(capabilities).toEqual({
     localProfiles: 1,
+    profilePrepare: 1,
+    profilePrepareInstanceId: expect.any(String),
     localProfileStorage: { storageInstanceId: expect.any(String), engine: "chromium" },
     initialNavigationVersion: 1,
   });

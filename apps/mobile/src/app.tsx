@@ -1,3 +1,4 @@
+import { createBrowsingChoiceStorage } from "./client/browsing-choice-storage.js";
 import { createExpoSavedViews } from "./platform/expo-saved-views.js";
 import { VoiceOverlay } from "./voice/controls.js";
 import { VoiceProvider } from "./voice/context.js";
@@ -183,6 +184,9 @@ function mobileClient(): MobileRoot {
           },
         })
       : createNetworkHostPort({
+          recentSitesStorage: createBrowsingChoiceStorage(
+            new File(`${root}${storeName}/browsing-choices.json`),
+          ),
           fetch: mobileHostFetch,
           lifecycle,
           now: () => new Date(),

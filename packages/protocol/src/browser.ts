@@ -163,6 +163,20 @@ export const BrowserAttachTicketIdentitySchema = z.discriminatedUnion("kind", [
 ]);
 export type BrowserAttachTicketIdentity = z.infer<typeof BrowserAttachTicketIdentitySchema>;
 
+/** Preparation grants native acquisition only; it grants no session, page or navigation. */
+export const BrowserPreparationTicketClaimsSchema = z.strictObject({
+  audience: z.literal("opensteer-browser-runtime"),
+  purpose: z.literal("profile-prepare"),
+  identity: BrowserAttachTicketIdentitySchema.options[2],
+  passkeys: z.literal(1).optional(),
+  runtimeId: z.string().min(1).max(255),
+  subject: z.string().min(1).max(255),
+  issuedAt: IsoDateTimeSchema,
+  expiresAt: IsoDateTimeSchema,
+  nonce: z.string().min(16).max(255),
+});
+export type BrowserPreparationTicketClaims = z.infer<typeof BrowserPreparationTicketClaimsSchema>;
+
 const BrowserInitialNavigationUrlSchema = z
   .url()
   .max(8_192)

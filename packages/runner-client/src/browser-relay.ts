@@ -62,7 +62,9 @@ export class BrowserModuleRelay {
     this.#inventoryComplete = stream.localProfiles !== 1;
     this.#bridge.setPasskeysEnabled(stream.passkeys === 1);
     this.#bridge.setNegotiation({
-      ...(stream.localProfiles === 1 ? { localProfiles: 1 } : {}),
+      ...(stream.localProfiles === 1
+        ? { localProfiles: 1, ...(stream.profilePrepare === 1 ? { profilePrepare: 1 } : {}) }
+        : {}),
       ...(stream.initialNavigationVersion === 1 ? { initialNavigationVersion: 1 } : {}),
     });
     if (!stream.browserAttachPublicKeys) {
@@ -143,7 +145,11 @@ export class BrowserModuleRelay {
     };
     // Process start/import never occupies the auxiliary stream's ordered input
     // dispatcher. Channel registration happens synchronously before the await.
-    if (message.type === "browser.attach" || message.type === "browser.profile.delete") {
+    if (
+      message.type === "browser.attach" ||
+      message.type === "browser.profile.prepare" ||
+      message.type === "browser.profile.delete"
+    ) {
       void handle().catch(() => undefined);
       return;
     }
@@ -204,6 +210,7 @@ export class BrowserModuleRelay {
           type: "browser.health",
         });
         return;
+      case "browser.profile.prepare":
       case "browser.attach": {
         if (!this.#inventoryComplete)
           throw new BrowserRelayError("Local browser profile inventory has not completed.");
@@ -226,12 +233,13 @@ export class BrowserModuleRelay {
         };
         this.#channels.set(message.channelId, channel);
         const authority = this.#authority;
-        let attached: BrowserBridgeAttached;
+        let attached: BrowserBridgeAttached & { retained?: boolean };
         try {
           attached = await this.#bridge.attach(
             message.channelId,
-            message.attachTicket,
+            message.type === "browser.attach" ? message.attachTicket : message.preparationTicket,
             this.#sink(channel),
+            message.type === "browser.profile.prepare",
           );
           if (
             this.#stream !== stream ||
@@ -253,8 +261,13 @@ export class BrowserModuleRelay {
           capability: message.capability,
           channelId: message.channelId,
           requestId: message.requestId,
-          type: "browser.attached",
-          ...(stream.initialNavigationVersion === 1 && attached.initialPage
+          type: message.type === "browser.attach" ? "browser.attached" : "browser.profile.prepared",
+          ...(message.type === "browser.profile.prepare"
+            ? { retained: attached.retained === true }
+            : {}),
+          ...(message.type === "browser.attach" &&
+          stream.initialNavigationVersion === 1 &&
+          attached.initialPage
             ? { initialPage: attached.initialPage }
             : {}),
         });

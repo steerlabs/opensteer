@@ -10,6 +10,7 @@ import {
   type ClientLifecycle,
   type HostClient,
   type HostCapabilityReader,
+  type RecentSitesStorage,
 } from "@opensteer/client/host";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import { isSameHost } from "@opensteer/deployment-authority";
@@ -68,6 +69,7 @@ export type MobileHostPortFactory = (input: {
 }) => MobileHostPort;
 
 export function createNetworkHostPort(options: {
+  readonly recentSitesStorage?: RecentSitesStorage;
   readonly fetch: HostFetch;
   readonly lifecycle: ClientLifecycle;
   readonly now: () => Date;
@@ -90,6 +92,7 @@ export function createNetworkHostPort(options: {
       });
       return new HttpHostClient({
         baseUrl: origin,
+        ...(options.recentSitesStorage ? { recentSitesStorage: options.recentSitesStorage } : {}),
         capabilities,
         fetch: network.fetch,
         lifecycle: options.lifecycle,

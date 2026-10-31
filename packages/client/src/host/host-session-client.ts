@@ -752,7 +752,32 @@ export class HttpHostClient {
       ),
     changed: (pendingBrowserTabs) => this.#update({ ...this.#snapshot, pendingBrowserTabs }),
   });
-  readonly beginBrowserTabOpen = this.#pendingBrowserTabs.begin;
+  readonly #preparedBrowserProfiles = new Set<string>();
+  prepareBrowserProfile(
+    identity?: import("./start-page-model.js").BrowserIdentityChoice | null,
+  ): void {
+    if (
+      this.#snapshot.session !== "authenticated" ||
+      !this.#snapshot.browserAvailable ||
+      this.#snapshot.connection === "offline" ||
+      !this.#capabilities?.includes("browser-profile-prepare-v1")
+    )
+      return;
+    const choice = identity === undefined ? this.browserPreferences.lastBrowsingChoice : identity;
+    if (!choice || choice.kind === "guest") return;
+    if (this.#preparedBrowserProfiles.has(choice.profileId)) return;
+    this.#preparedBrowserProfiles.add(choice.profileId);
+    void this.rpc["commands.dispatch"]({
+      type: "browser.profile.prepare",
+      identity: choice,
+      idempotencyKey: mutationIdempotencyKey("prepare-profile"),
+    }).catch(() => undefined);
+  }
+  readonly beginBrowserTabOpen: OwnerViewHostClient["beginBrowserTabOpen"] = (target, options) => {
+    if (typeof target !== "string" && "identity" in target)
+      this.browserPreferences.lastBrowsingChoice = target.identity;
+    return this.#pendingBrowserTabs.begin(target, options);
+  };
   readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
     return this.beginBrowserTabOpen(target, options).result;
@@ -5536,9 +5561,17 @@ export class HttpHostClient {
     ) {
       this.#savedViewReadiness = { ...this.#savedViewReadiness, home: { status: "unknown" } };
     }
+    if (this.#snapshot.connection === "connected" && snapshot.connection !== "connected")
+      this.#preparedBrowserProfiles.clear();
+    const shouldPrepare =
+      snapshot.connection !== this.#snapshot.connection ||
+      snapshot.session !== this.#snapshot.session ||
+      snapshot.homeWorkspaceId !== this.#snapshot.homeWorkspaceId ||
+      snapshot.browserAvailable !== this.#snapshot.browserAvailable;
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      this.#preparedBrowserProfiles.clear();
       this.#pendingBrowserTabs.clear();
       this.#workspaceTabActivations.clear(false);
       this.#computerViews.clear();
@@ -5715,6 +5748,7 @@ export class HttpHostClient {
     );
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
+    if (shouldPrepare) this.prepareBrowserProfile();
   }
 }
 

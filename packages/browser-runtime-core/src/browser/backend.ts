@@ -133,10 +133,12 @@ export interface NativeProfileConversionEngine {
 }
 
 export interface BrowserLaunchRequest {
+  /** Launch with no eager user page and keep network admission dormant. */
+  preparation?: boolean;
   authenticator?: import("../passkeys/authenticator.js").PasskeyAuthenticator;
   initialViewport: Viewport;
   partitionKey: BrowserPartitionKey;
-  sessionId: BrowserSessionId;
+  sessionId?: BrowserSessionId;
   storage: BrowserLaunchStorage;
 }
 
@@ -173,6 +175,8 @@ export interface EngineClipboardScope {
 }
 
 export interface LaunchedBrowser {
+  /** Restoration completed, independently of permission to serve user pages. */
+  profile?: { ready(): Promise<void>; admit(): Promise<void> };
   cdp: BrowserCdpBackend;
   /** Present on engines that implement the editing contract's clipboard. */
   clipboard?: EngineClipboard;
@@ -202,6 +206,16 @@ export interface LaunchedBrowser {
 
 /** Engine support for profiles stored natively on this computer. */
 export interface LocalProfileEngine extends NativeProfileConversionEngine {
+  /**
+   * Advertise only with page-free launch and separate ready/admit operations.
+   * Electron must await mirror restoration in ready(), leave the Session gate
+   * dormant (cancel requests, never queue them), and open it only on admit().
+   * Preserve synthetic conversion helpers; Network Service recovery must restore
+   * the previous prepared/admitted mode. A prepared launch never eagerly creates
+   * a user page. Revocation retires controllers and fences the retained Session
+   * without deleting its native storage.
+   */
+  readonly preparation?: 1;
   readonly engine: BrowserEngine;
   /**
    * Gives up the engine's hold on a local profile directory so it can be erased.
@@ -214,7 +228,7 @@ export interface LocalProfileEngine extends NativeProfileConversionEngine {
 export interface BrowserLauncher {
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
-  launch(request: BrowserLaunchRequest): Promise<LaunchedBrowser>;
+  launch(request: BrowserLaunchRequest, signal?: AbortSignal): Promise<LaunchedBrowser>;
   /** Present only on engines that implement native local profiles. */
   readonly localProfiles?: LocalProfileEngine;
 }

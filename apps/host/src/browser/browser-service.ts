@@ -490,6 +490,10 @@ export interface BrowserRuntimeConnection {
 export interface BrowserRuntimeTarget {
   readonly placementKey: string;
   readonly runtimeId: string;
+  readonly main?: boolean;
+  readonly profilePrepare?: boolean;
+  readonly incarnation?: string;
+  prepareProfile?(ticket: string): BrowserRuntimeConnection;
   readonly localProfileStorage?: { storageInstanceId: string; engine: "electron" | "chromium" };
   readonly initialNavigationVersion?: boolean;
   /** The Runtime accepts `state.import`; one that predates it is never sent the frame. */
@@ -599,6 +603,7 @@ type BrowserCdpWireResponse = Extract<
 >;
 
 interface BrowserServiceOptions {
+  readonly personal?: boolean;
   readonly passkeys?: boolean;
   readonly passkeyOwnOrigins?: () => readonly string[];
   readonly onProfilesChanged?: (ownerId: UserId, workspaceId: WorkspaceId) => void;
@@ -730,6 +735,12 @@ export class BrowserService {
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #repository: BrowserSessionRepository;
   readonly #localProfiles: BrowserLocalProfiles | undefined;
+  readonly #personal: boolean;
+  readonly #preparationAttempts = new Map<
+    RunnerId,
+    { incarnation: string; profiles: Set<string> }
+  >();
+  readonly #preparedProfiles = new Map<BrowserProfileId, BrowserRuntimeConnection>();
   readonly #eraseLocalProfiles: BrowserServiceOptions["eraseLocalProfiles"];
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
   readonly #legacyProfiles: LegacyBrowserProfileAdapter;
@@ -742,6 +753,7 @@ export class BrowserService {
 
   constructor(options: BrowserServiceOptions) {
     this.#localProfiles = options.localProfiles;
+    this.#personal = options.personal === true;
     this.#eraseLocalProfiles = options.eraseLocalProfiles;
     this.#passkeys = options.passkeys === true;
     this.#passkeyOwnOrigins =
@@ -1120,6 +1132,8 @@ export class BrowserService {
       `profile-admission:${input.profileId}`,
       () => this.#repository.deleteBrowserProfile(input),
     );
+    this.#preparedProfiles.get(input.profileId)?.close();
+    this.#preparedProfiles.delete(input.profileId);
     this.invalidatePlaceAuthority();
     const stops = await Promise.allSettled(
       sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
@@ -1358,6 +1372,138 @@ export class BrowserService {
     };
   }
 
+  async #resolveIdentityOpen(
+    ownerId: UserId,
+    command: {
+      identity: NonNullable<BrowserTabOpenCommand["identity"]>;
+      placement?: BrowserTabOpenCommand["placement"];
+    },
+  ) {
+    const workspace = await this.#repository.findMainWorkspaceForOwner(ownerId);
+    if (!workspace)
+      throw new OpensteerError({ code: "not_found", message: "Main Workspace not found." });
+    const profileId = command.identity.kind === "profile" ? command.identity.profileId : null;
+    const identityKey = profileId ?? "guest";
+    if (profileId && !(await this.#repository.getBrowserProfile(profileId, ownerId)))
+      throw this.#tabOpenRefusal(
+        "browser-profile-unavailable",
+        "That browser profile is unavailable. Choose a profile.",
+      );
+    const storage =
+      profileId && this.#localProfiles
+        ? await this.#localProfiles.storage(profileId)
+        : { kind: "vault" as const };
+    const boundRunnerId = storage.kind === "vault" ? undefined : storage.binding.runnerId;
+    if (boundRunnerId && command.placement && command.placement.runnerId !== boundRunnerId)
+      throw this.#tabOpenRefusal(
+        "browser-placement-unavailable",
+        "This profile belongs to another computer. Open it on its owning computer.",
+      );
+    const holder = profileId
+      ? await this.#repository.findBrowserSessionHoldingProfilePlacement(profileId)
+      : null;
+    if (holder && command.placement && !samePlacement(command.placement, placementOf(holder)))
+      throw this.#tabOpenRefusal(
+        "browser-placement-unavailable",
+        "That profile is already held on another computer. Choose that computer or close its browser first.",
+      );
+    const remembered =
+      !command.placement && !holder
+        ? await this.#repository.rememberedBrowserPlacement(ownerId, identityKey)
+        : null;
+    const eligible = this.#placements().filter((candidate) => candidate.available);
+    let placement =
+      (boundRunnerId ? { kind: "runner" as const, runnerId: boundRunnerId } : command.placement) ??
+      (holder
+        ? placementOf(holder)
+        : remembered
+          ? { kind: "runner" as const, runnerId: remembered }
+          : null);
+    if (!placement) {
+      if (eligible.length > 1)
+        throw this.#tabOpenRefusal(
+          "browser-placement-ambiguous",
+          "Choose which computer should open this browser.",
+        );
+      placement = eligible[0] ? placementSelector(eligible[0]) : null;
+    }
+    if (
+      !placement ||
+      !eligible.some((candidate) => candidate.runnerId === placement.runnerId) ||
+      !this.#resolveTarget(placement)
+    )
+      throw this.#tabOpenRefusal(
+        "browser-placement-unavailable",
+        boundRunnerId
+          ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
+          : "The selected browser computer is unavailable.",
+      );
+    return {
+      workspace,
+      profileId,
+      identityKey,
+      placement,
+      holder,
+      storage,
+      target: this.#resolveTarget(placement)!,
+    };
+  }
+
+  async prepareProfile(
+    ownerId: UserId,
+    identity: NonNullable<BrowserTabOpenCommand["identity"]>,
+  ): Promise<void> {
+    if (this.#closed) throw unavailable("The Host browser service is shutting down.");
+    if (identity.kind === "guest") return;
+    await this.#serializeKey(`profile-admission:${identity.profileId}`, async () => {
+      const { profileId, placement, holder, storage, target } = await this.#resolveIdentityOpen(
+        ownerId,
+        { identity },
+      );
+      if (
+        !profileId ||
+        !this.#localProfiles ||
+        !target.profilePrepare ||
+        !target.prepareProfile ||
+        !target.incarnation
+      )
+        return;
+      // Only Personal's Main computer can proactively place/convert an unbound profile.
+      if (storage.kind === "vault" && (!this.#personal || !target.main || holder)) return;
+      let attempts = this.#preparationAttempts.get(placement.runnerId);
+      if (attempts?.incarnation !== target.incarnation) {
+        attempts = { incarnation: target.incarnation, profiles: new Set() };
+        this.#preparationAttempts.set(placement.runnerId, attempts);
+      }
+      if (attempts.profiles.has(profileId)) return;
+      attempts.profiles.add(profileId);
+      const localIdentity = await this.#localProfiles.identity(
+        profileId,
+        placement.runnerId,
+        target,
+      );
+      if (!localIdentity) return;
+      if (this.#closed) return;
+      const connection = target.prepareProfile(
+        this.#signer.issuePreparation({
+          identity: localIdentity,
+          runtimeId: target.runtimeId,
+          subject: ownerId,
+          ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
+        }),
+      );
+      this.#preparedProfiles.get(profileId)?.close();
+      this.#preparedProfiles.set(profileId, connection);
+      connection.on("error", () => {
+        connection.close();
+      });
+      connection.on("close", () => {
+        if (this.#preparedProfiles.get(profileId) === connection)
+          this.#preparedProfiles.delete(profileId);
+      });
+    });
+  }
+
   openTab(ownerId: UserId, input: BrowserTabOpenCommand): Promise<BrowserTabOpenResult> {
     const parsed = BrowserTabOpenCommandSchema.parse(input);
     const command = parsed.url ? { ...parsed, url: safeNavigationUrl(parsed.url) } : parsed;
@@ -1386,68 +1532,12 @@ export class BrowserService {
           this.#requireOpenableSession(record);
           runnerId = record.runnerId;
         } else {
-          const workspace = await this.#repository.findMainWorkspaceForOwner(ownerId);
-          if (!workspace)
-            throw new OpensteerError({ code: "not_found", message: "Main Workspace not found." });
-          const profileId =
-            command.identity!.kind === "profile" ? command.identity!.profileId : null;
-          identityKey = profileId ?? "guest";
-          if (profileId && !(await this.#repository.getBrowserProfile(profileId, ownerId)))
-            throw this.#tabOpenRefusal(
-              "browser-profile-unavailable",
-              "That browser profile is unavailable. Choose a profile.",
-            );
-          const storage =
-            profileId && this.#localProfiles
-              ? await this.#localProfiles.storage(profileId)
-              : { kind: "vault" as const };
-          const boundRunnerId = storage.kind === "vault" ? undefined : storage.binding.runnerId;
-          if (boundRunnerId && command.placement && command.placement.runnerId !== boundRunnerId)
-            throw this.#tabOpenRefusal(
-              "browser-placement-unavailable",
-              "This profile belongs to another computer. Open it on its owning computer.",
-            );
-          const holder = profileId
-            ? await this.#repository.findBrowserSessionHoldingProfilePlacement(profileId)
-            : null;
-          if (holder && command.placement && !samePlacement(command.placement, placementOf(holder)))
-            throw this.#tabOpenRefusal(
-              "browser-placement-unavailable",
-              "That profile is already held on another computer. Choose that computer or close its browser first.",
-            );
-          const remembered =
-            !command.placement && !holder
-              ? await this.#repository.rememberedBrowserPlacement(ownerId, identityKey)
-              : null;
-          const eligible = this.#placements().filter((candidate) => candidate.available);
-          let placement =
-            (boundRunnerId
-              ? { kind: "runner" as const, runnerId: boundRunnerId }
-              : command.placement) ??
-            (holder
-              ? placementOf(holder)
-              : remembered
-                ? { kind: "runner" as const, runnerId: remembered }
-                : null);
-          if (!placement) {
-            if (eligible.length > 1)
-              throw this.#tabOpenRefusal(
-                "browser-placement-ambiguous",
-                "Choose which computer should open this browser.",
-              );
-            placement = eligible[0] ? placementSelector(eligible[0]) : null;
-          }
-          if (
-            !placement ||
-            !eligible.some((candidate) => candidate.runnerId === placement.runnerId) ||
-            !this.#resolveTarget(placement)
-          )
-            throw this.#tabOpenRefusal(
-              "browser-placement-unavailable",
-              boundRunnerId
-                ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
-                : "The selected browser computer is unavailable.",
-            );
+          const resolved = await this.#resolveIdentityOpen(ownerId, {
+            identity: command.identity!,
+            ...(command.placement ? { placement: command.placement } : {}),
+          });
+          const { workspace, profileId, placement } = resolved;
+          identityKey = resolved.identityKey;
           runnerId = placement.runnerId;
           const sessions = await this.#repository.listBrowserSessions(ownerId);
           record =
@@ -3315,6 +3405,8 @@ export class BrowserService {
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
+    for (const connection of this.#preparedProfiles.values()) connection.close();
+    this.#preparedProfiles.clear();
     this.#authorityGeneration++;
     for (const actor of this.#actors.values()) this.#clearActor(actor);
     for (const timer of this.#catalogNotices.values()) clearTimeout(timer);
@@ -3632,6 +3724,10 @@ export class BrowserService {
       try {
         stage = "runtime-readiness";
         await broker.ready();
+        if (profile) {
+          this.#preparedProfiles.get(profile.id)?.close();
+          this.#preparedProfiles.delete(profile.id);
+        }
         if (
           target.workspaceTabRestoreVersion &&
           origin !== "trigger" &&

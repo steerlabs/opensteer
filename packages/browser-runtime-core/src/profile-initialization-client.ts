@@ -18,8 +18,8 @@ import {
 
 export type LocalProfileIdentity = Extract<BrowserAttachTicketIdentity, { kind: "profile-local" }>;
 export interface ProfileInitializationClient {
-  load(identity: LocalProfileIdentity): Promise<BrowserProfileSnapshot>;
-  complete(identity: LocalProfileIdentity): Promise<void>;
+  load(identity: LocalProfileIdentity, signal?: AbortSignal): Promise<BrowserProfileSnapshot>;
+  complete(identity: LocalProfileIdentity, signal?: AbortSignal): Promise<void>;
 }
 export class HttpProfileInitializationClient implements ProfileInitializationClient {
   private readonly trustedHttpOrigin: string | undefined;
@@ -40,9 +40,12 @@ export class HttpProfileInitializationClient implements ProfileInitializationCli
       ? safeTrustedHttpOrigin(options.trustedHttpOrigin)
       : undefined;
   }
-  async load(identity: LocalProfileIdentity): Promise<BrowserProfileSnapshot> {
+  async load(
+    identity: LocalProfileIdentity,
+    signal?: AbortSignal,
+  ): Promise<BrowserProfileSnapshot> {
     const parsed = ProfileInitializationSeedResponseSchema.safeParse(
-      await this.request(identity, "GET"),
+      await this.request(identity, "GET", signal),
     );
     if (!parsed.success)
       throw new BrowserRuntimeError(
@@ -65,9 +68,9 @@ export class HttpProfileInitializationClient implements ProfileInitializationCli
       );
     return result.snapshot;
   }
-  async complete(identity: LocalProfileIdentity): Promise<void> {
+  async complete(identity: LocalProfileIdentity, signal?: AbortSignal): Promise<void> {
     const parsed = CompleteProfileInitializationResultSchema.safeParse(
-      await this.request(identity, "POST"),
+      await this.request(identity, "POST", signal),
     );
     if (!parsed.success)
       throw new BrowserRuntimeError(
@@ -82,7 +85,11 @@ export class HttpProfileInitializationClient implements ProfileInitializationCli
         "The completed browser profile binding does not match.",
       );
   }
-  private async request(identity: LocalProfileIdentity, method: "GET" | "POST"): Promise<unknown> {
+  private async request(
+    identity: LocalProfileIdentity,
+    method: "GET" | "POST",
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const initialization = identity.initialization;
     if (!initialization)
       throw new BrowserRuntimeError(
@@ -94,7 +101,10 @@ export class HttpProfileInitializationClient implements ProfileInitializationCli
       const response = await (this.options.fetch ?? globalThis.fetch)(url, {
         method,
         redirect: "error",
-        signal: AbortSignal.timeout(this.options.timeoutMs ?? 15_000),
+        signal: AbortSignal.any([
+          AbortSignal.timeout(this.options.timeoutMs ?? 15_000),
+          ...(signal ? [signal] : []),
+        ]),
         headers: {
           authorization: `Bearer ${initialization.initializationToken}`,
           ...(method === "POST" ? { "content-type": "application/json" } : {}),

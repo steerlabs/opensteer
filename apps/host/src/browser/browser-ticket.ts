@@ -1,6 +1,8 @@
 import { randomBytes, sign, type KeyObject } from "node:crypto";
 import {
   BrowserAttachTicketClaimsSchema,
+  BrowserPreparationTicketClaimsSchema,
+  type BrowserPreparationTicketClaims,
   type BrowserAttachTicketClaims,
   type BrowserAttachTicketIdentity,
   type BrowserSessionId,
@@ -65,6 +67,23 @@ export class BrowserAttachTicketSigner {
     this.#privateKey = options.privateKey;
   }
 
+  issuePreparation(
+    input: Pick<BrowserPreparationTicketClaims, "identity" | "runtimeId" | "subject" | "passkeys">,
+  ): string {
+    const issuedAt = this.#clock();
+    return this.#sign(
+      BrowserPreparationTicketClaimsSchema.parse({
+        ...input,
+        audience: "opensteer-browser-runtime",
+        purpose: "profile-prepare",
+        issuedAt: issuedAt.toISOString(),
+        expiresAt: new Date(issuedAt.getTime() + this.#lifetimeMs).toISOString(),
+        nonce: randomBytes(24).toString("base64url"),
+      }),
+      "opensteer-browser-prepare+jwt",
+    );
+  }
+
   issue(input: IssueBrowserAttachTicketInput): string {
     const issuedAt = this.#clock();
     const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
@@ -100,8 +119,12 @@ export class BrowserAttachTicketSigner {
       subject: input.subject,
       ...(input.viewport ? { viewport: input.viewport } : {}),
     });
+    return this.#sign(claims, ticketType);
+  }
+
+  #sign(claims: BrowserAttachTicketClaims | BrowserPreparationTicketClaims, typ: string): string {
     const protectedHeader = Buffer.from(
-      JSON.stringify({ alg: "EdDSA", kid: this.#keyId, typ: ticketType }),
+      JSON.stringify({ alg: "EdDSA", kid: this.#keyId, typ }),
       "utf8",
     ).toString("base64url");
     const payload = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");

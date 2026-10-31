@@ -184,6 +184,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
   private readonly nativeCloseFailures = new Set<string>();
   readonly localProfiles: LocalProfileEngine = {
     engine: "chromium",
+    preparation: 1,
     importAndFlush: async (input) => {
       const snapshot = BrowserProfileSnapshotSchema.parse(input.snapshot);
       const browser = await this.acquireNative(
@@ -609,6 +610,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
 
 class PlaywrightLaunchedBrowser implements LaunchedBrowser {
   clipboard?: ReturnType<typeof ChromiumClipboard.lazy>;
+  readonly profile = { ready: async () => {}, admit: async () => {} };
   private readonly owner: { close(): Promise<void> };
   private readonly browserCdp: PlaywrightCdpSession;
   private readonly browserContextId: string | undefined;

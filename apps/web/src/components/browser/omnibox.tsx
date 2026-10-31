@@ -54,6 +54,9 @@ export function useOmnibox(options: {
     (snapshot) =>
       `${snapshot.deploymentId}:${snapshot.user?.id}:${snapshot.searchSuggestionsAvailable === true}:${snapshot.connection}`,
   );
+  useEffect(() => {
+    hostClient.prepareBrowserProfile();
+  }, [hostClient, scope]);
   const [raw, setRaw] = useState(options.initialValue ?? options.pageValue ?? "");
   const [completion, setCompletion] = useState<string | null>(null);
   const [highlight, setHighlight] = useState<StartPageResult | null>(null);

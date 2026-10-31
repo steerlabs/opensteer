@@ -1179,6 +1179,7 @@ export interface HostClient {
   latestPlaceOfThread(threadId: string): ThreadPlace | null;
   subscribeLatestPlace(threadId: string, listener: () => void): () => void;
   readBrowserContextCandidate(sessionId: string, tabId: string): Promise<BrowserContextCandidate>;
+  prepareBrowserProfile(identity?: BrowserIdentityChoice | null): void;
   beginBrowserTabOpen(
     target: string | BrowserTabOpenInput,
     options?: BrowserTabOpenOptions,
