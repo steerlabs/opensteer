@@ -192,7 +192,7 @@ describe("the conversation's family", () => {
     const button = element<HTMLButtonElement>(".task-family-button");
     expect(button.getAttribute("aria-label")).toContain("1 task running");
     expect(button.getAttribute("aria-label")).toContain("1 automation");
-    expect(button.getAttribute("aria-label")).toContain("Needs you");
+    expect(button.getAttribute("aria-label")).toContain("one needs you");
     expect(button.querySelector(".task-family-button__attention")).not.toBeNull();
     await click(button);
     expect(element('[aria-label="Running"]').textContent).toContain("Running · 1");

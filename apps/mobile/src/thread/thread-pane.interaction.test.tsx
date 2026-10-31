@@ -2595,7 +2595,7 @@ describe("a conversation's task family", () => {
         ],
       }),
     );
-    await press(container, "1 task running, Needs you, 4 automations");
+    await press(container, "1 task running, one needs you, 4 automations");
     expect(text(container)).toContain("Running · 1");
     expect(text(container)).toContain("Automations · 4");
     expect(text(container)).toContain("Watching");
@@ -2631,7 +2631,7 @@ describe("a conversation's task family", () => {
         threadAutomations: {},
       }),
     );
-    await press(container, "0 tasks running, 5 earlier");
+    await press(container, "5 earlier");
     expect(text(container)).toContain("Earlier · 5");
     expect(container.querySelectorAll('button[aria-label^="Earlier task"]')).toHaveLength(4);
     await press(container, "Show all");

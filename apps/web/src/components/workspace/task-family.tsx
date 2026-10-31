@@ -35,7 +35,7 @@ export function TaskFamilyButton({
     ? `${glance.earlier} earlier`
     : [
         `${glance.running} task${glance.running === 1 ? "" : "s"} running`,
-        ...(glance.needsYou ? ["Needs you"] : []),
+        ...(glance.needsYou ? ["one needs you"] : []),
         ...(glance.automations
           ? [`${glance.automations} automation${glance.automations === 1 ? "" : "s"}`]
           : []),

@@ -3306,6 +3306,13 @@ html[data-tab-sorting] * {
   transform: translateX(6px);
 }
 
+/* However much came before, the list scrolls inside the window. */
+.task-family {
+  max-height: min(520px, calc(100vh - 120px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .task-family > section + section {
   border-top: 1px solid var(--line);
   margin-top: var(--space-6);

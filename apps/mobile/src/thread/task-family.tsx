@@ -18,54 +18,60 @@ import { TaskMark } from "../ui/task-mark.js";
 import { TaskStatus } from "./task-status.js";
 
 export function familyLabel(glance: TaskFamilyGlance): string {
+  if (glance.running === 0 && glance.automations === 0) return `${glance.earlier} earlier`;
   return [
     `${glance.running} ${glance.running === 1 ? "task" : "tasks"} running`,
-    ...(glance.needsYou ? ["Needs you"] : []),
+    ...(glance.needsYou ? ["one needs you"] : []),
     ...(glance.automations > 0
       ? [`${glance.automations} ${glance.automations === 1 ? "automation" : "automations"}`]
       : []),
-    ...(glance.running === 0 && glance.automations === 0 ? [`${glance.earlier} earlier`] : []),
   ].join(", ");
 }
 
-export function familyCount(glance: TaskFamilyGlance): string {
-  return [
-    String(glance.running || (glance.automations === 0 ? glance.earlier : 0)),
-    ...(glance.automations > 0 ? [`◷ ${glance.automations}`] : []),
-  ].join(" · ");
-}
-
+/** Android's bar: the same parts as the web's line, marks first. */
 export function FamilyButton(props: {
   readonly glance: TaskFamilyGlance;
   readonly onPress: () => void;
 }): ReactNode {
-  const tint = props.glance.needsYou
-    ? color.amber
-    : props.glance.running > 0
-      ? color.text
-      : color.muted;
+  const { glance } = props;
+  const earlierOnly = glance.running === 0 && glance.automations === 0;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={familyLabel(props.glance)}
+      accessibilityLabel={familyLabel(glance)}
       accessibilityHint="Opens this conversation's tasks and automations"
       onPress={props.onPress}
       style={styles.button}
     >
-      <View style={styles.marks}>
-        {props.glance.marks.length === 0 ? (
-          <Symbol name="arrow.triangle.branch" size={18} tint={tint} />
-        ) : (
-          props.glance.marks.map((mark, index) => (
+      {glance.marks.length > 0 ? (
+        <View style={styles.marks}>
+          {glance.marks.map((mark, index) => (
             <View key={index} style={{ marginLeft: index === 0 ? 0 : -8 }}>
               <TaskMark mark={mark} size={16} />
             </View>
-          ))
-        )}
-      </View>
-      <AppText role="caption" maxFontSizeMultiplier={headerFontScaleLimit} style={{ color: tint }}>
-        {familyCount(props.glance)}
-      </AppText>
+          ))}
+        </View>
+      ) : earlierOnly ? (
+        <Symbol name="arrow.triangle.branch" size={16} tint={color.muted} />
+      ) : null}
+      {glance.running > 0 || earlierOnly ? (
+        <AppText
+          maxFontSizeMultiplier={headerFontScaleLimit}
+          role="caption"
+          tone={earlierOnly ? "muted" : "default"}
+        >
+          {earlierOnly ? glance.earlier : glance.running}
+        </AppText>
+      ) : null}
+      {glance.needsYou ? <View style={styles.attention} /> : null}
+      {glance.automations > 0 ? (
+        <>
+          <Symbol name="clock" size={14} tint={color.muted} />
+          <AppText maxFontSizeMultiplier={headerFontScaleLimit} role="caption" tone="muted">
+            {glance.automations}
+          </AppText>
+        </>
+      ) : null}
     </Pressable>
   );
 }
@@ -237,6 +243,7 @@ function automationDetail(automation: ThreadAutomation): string {
 const styles = StyleSheet.create({
   button: { flexDirection: "row", alignItems: "center", gap: space[4], minHeight: touchTarget },
   marks: { flexDirection: "row", alignItems: "center" },
+  attention: { width: 6, height: 6, borderRadius: 3, backgroundColor: color.amber },
   section: { paddingHorizontal: space[16], paddingTop: space[24], paddingBottom: space[8] },
   row: {
     flexDirection: "row",

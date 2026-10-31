@@ -137,9 +137,9 @@ describe("the conversation bar's family and tabs", () => {
     const options = browserHeaderActions(false, true, vi.fn(), {
       action: {
         icon: "arrow.triangle.branch",
-        label: "2 · ◷ 1",
-        badge: "2 · ◷ 1",
-        accessibilityLabel: "2 tasks running, Needs you, 1 automation",
+        label: "2 tasks running, one needs you, 1 automation",
+        badge: "2",
+        accessibilityLabel: "2 tasks running, one needs you, 1 automation",
         tintColor: "#amber",
         onPress: open,
       },
@@ -149,9 +149,9 @@ describe("the conversation bar's family and tabs", () => {
     expect(items).toEqual([
       expect.objectContaining({
         icon: { name: "arrow.triangle.branch", type: "sfSymbol" },
-        accessibilityLabel: "2 tasks running, Needs you, 1 automation",
+        accessibilityLabel: "2 tasks running, one needs you, 1 automation",
         tintColor: "#amber",
-        badge: expect.objectContaining({ value: "2 · ◷ 1" }),
+        badge: expect.objectContaining({ value: "2" }),
       }),
       expect.objectContaining({ accessibilityLabel: "Tabs" }),
     ]);

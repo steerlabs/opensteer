@@ -11,7 +11,7 @@ import { Platform, Pressable, StyleSheet, View } from "react-native";
 import { browserHeaderActions } from "../navigation-header.js";
 import { color, headerFontScaleLimit, space } from "../theme.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
-import { FamilyButton, TaskFamilySheet, familyCount, familyLabel } from "../thread/task-family.js";
+import { FamilyButton, TaskFamilySheet, familyLabel } from "../thread/task-family.js";
 import { TaskMenu, useTaskMenuChoices } from "../thread/task-status.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
@@ -224,15 +224,11 @@ function ThreadTitle(
           ? undefined
           : {
               action: {
-                // UIKit displays the image instead of the title. Badges carry
-                // the counts on iOS 26; older bars use a compact text glyph.
-                ...(Platform.OS === "ios" && Number.parseInt(String(Platform.Version), 10) < 26
-                  ? { label: `⑂ ${familyCount(glance)}` }
-                  : {
-                      icon: "arrow.triangle.branch" as const,
-                      label: familyCount(glance),
-                      badge: familyCount(glance),
-                    }),
+                // UIKit draws the symbol in place of the label; the badge
+                // counts what is running, and the tint says when one asks.
+                icon: "arrow.triangle.branch" as const,
+                label: familyLabel(glance),
+                ...(glance.running > 0 ? { badge: String(glance.running) } : {}),
                 accessibilityLabel: familyLabel(glance),
                 tintColor: glance.needsYou
                   ? color.amber
