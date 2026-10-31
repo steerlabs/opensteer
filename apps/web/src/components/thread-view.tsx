@@ -47,7 +47,6 @@ import { useShell } from "./app-shell.js";
 import { ExecutionControls } from "./execution-controls.js";
 import {
   applyThreadExecution,
-  nextTurnNote,
   reviewExecutionSwitch,
   reviewFreshStart,
   type ReviewedChoice,
@@ -206,7 +205,6 @@ function ThreadView({
   const [returning, setReturning] = useState(false);
   const [switchingAccount, setSwitchingAccount] = useState(false);
   const [finding, setFinding] = useState(false);
-  const [selectionNote, setSelectionNote] = useState<string | null>(null);
   // A reply's Activity while it is open: which reply, the control that opened
   // it, where it hangs, and a message a search or a link asked to be shown in
   // it. What the reply under way or a reply's menu opened, that reply owns;
@@ -235,7 +233,6 @@ function ThreadView({
   useEffect(() => {
     // Handed over once; opening this conversation again starts from its own draft.
     setRestoredDraft(null);
-    setSelectionNote(null);
     setHistorical(false);
     setActivityView(null);
   }, [composerKey]);
@@ -360,24 +357,6 @@ function ThreadView({
         selection,
         threadId: thread.id,
       });
-      // Honest, and nothing more: the pill names what was chosen, and this
-      // says what the next authorized work will use — or, when the queue
-      // makes that claim false, says nothing about what runs next.
-      setSelectionNote(
-        [
-          reviewed?.continuation?.fresh
-            ? `${target.engineName} · ${target.accountName} started fresh.`
-            : `Now using ${target.engineName} · ${target.accountName}.`,
-          // Chat is never paused and keeps no queue: what is sent joins the reply.
-          nextTurnNote({
-            engineName: target.engineName,
-            paused: !conversational && thread.inputQueuePaused,
-            queuedCount: conversational ? 0 : (inputQueue?.items.length ?? 0),
-          }),
-        ]
-          .filter((part): part is string => part !== null)
-          .join(" "),
-      );
       return true;
     } catch (error) {
       reportActionError(error);
@@ -1023,11 +1002,6 @@ function ThreadView({
       ) : null}
 
       <div className="composer-dock">
-        {selectionNote ? (
-          <p className="thread__selection-note" role="status">
-            {selectionNote}
-          </p>
-        ) : null}
         {inputQueue && thread.role === "work" ? (
           <QueuedMessages
             client={hostClient}

@@ -1751,12 +1751,6 @@ fieldset.action-panel {
   justify-content: flex-end;
 }
 
-.thread__selection-note {
-  margin: 0 0 var(--space-8);
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
 /* Where this reader stopped last time. A position, not an alarm. */
 .unread-divider {
   display: flex;

@@ -151,7 +151,6 @@ export function ExecutionControls({
         ? {
             continuation: {
               expectedProviderSessionId: outcome.expectedProviderSessionId,
-              fresh: outcome.kind === "fresh",
             },
           }
         : {}),

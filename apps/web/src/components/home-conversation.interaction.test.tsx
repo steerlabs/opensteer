@@ -28,6 +28,7 @@ afterEach(() => {
   document.body.replaceChildren();
   localStorage.clear();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 const reportWorkspaceId = createId("workspace");
@@ -565,6 +566,90 @@ describe("Home conversation", () => {
     expect(node.querySelector(".input-card__name")?.textContent).toBe("Chat");
     expect(node.querySelector(".assignment-strip")).toBeNull();
     expect(activate).toHaveBeenLastCalledWith(workerThreadId);
+  });
+
+  it("keeps successful AI choices in the picker, while retaining errors and fresh-start review", async () => {
+    stubLayoutApis();
+    // Happy DOM has no layout; the real popover needs an on-screen anchor.
+    const rect = new DOMRect(0, 0, 100, 40);
+    vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue(
+      Object.assign([rect], { item: (index: number) => (index === 0 ? rect : null) }),
+    );
+    const client = new MockHostClient({ latencyMs: 0 });
+    clients.push(client);
+    await client.load();
+    const home = client
+      .getSnapshot()
+      .threads.find((item) => item.id === client.getSnapshot().homeThreadId)!;
+    const thread = await client.createThread({
+      accessMode: home.accessMode,
+      environmentId: home.environmentId,
+      harnessInstanceId: home.harnessInstanceId,
+      modelSelection: home.modelSelection,
+      title: "Choose AI quietly",
+      workspaceId: home.workspaceId,
+    });
+    const { node, root } = setup();
+    await act(async () =>
+      root.render(
+        <ToastProvider>
+          <MemoryRouter initialEntries={[`/threads/${thread.id}`]}>
+            <Routes>
+              <Route element={<AppShell hostClient={client} loadError={null} />}>
+                <Route path="threads/:threadId" element={<ThreadRoute />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>,
+      ),
+    );
+    const current = () => client.getSnapshot().threads.find((item) => item.id === thread.id)!;
+    const openPicker = () =>
+      act(async () => node.querySelector<HTMLButtonElement>(".exec-pill")!.click());
+    expect(node.querySelector<HTMLButtonElement>(".exec-pill")?.disabled).toBe(false);
+    await openPicker();
+    expect(node.querySelector(".exec-pill")?.getAttribute("aria-expanded")).toBe("true");
+    expect(document.body.textContent).toContain("GPT-5.6-Terra");
+    await press(document, "GPT-5.6-Terra");
+    expect(current().modelSelection.modelId).toBe("gpt-5.6-terra");
+    expect(node.querySelector(".exec-pill")?.textContent).toContain("GPT-5.6-Terra");
+    expect(node.textContent).not.toContain("Now using");
+    expect(node.textContent).not.toContain("Your next message will use");
+
+    await openPicker();
+    const changeReasoning = (step: number) =>
+      act(async () => {
+        const slider = document.querySelector<HTMLInputElement>('input[aria-label="Reasoning"]')!;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+          slider,
+          String(step),
+        );
+        slider.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    await changeReasoning(2);
+    expect(current().modelSelection.options.effort).toBe("high");
+    expect(node.querySelector(".exec-pill")?.textContent).toContain("High");
+    expect(node.querySelector(".thread__selection-note")).toBeNull();
+
+    vi.spyOn(client, "updateThreadExecution").mockRejectedValueOnce(
+      new Error("The account went offline."),
+    );
+    await changeReasoning(0);
+    expect(current().modelSelection.options.effort).toBe("high");
+    expect(node.textContent).toContain("The account went offline.");
+
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>(".execution-menu__bottom")!.click(),
+    );
+    await act(async () =>
+      [...document.querySelectorAll("button")]
+        .find((item) => item.textContent?.trim().startsWith("Start fresh with Codex"))!
+        .click(),
+    );
+    expect(document.body.textContent).toContain("Start fresh with Codex?");
+    expect(document.body.textContent).toContain("Your messages stay here.");
+    await press(document, "Keep this session");
+    expect(current().providerSessionId).toBe(thread.providerSessionId);
   });
 
   it("says a task waits on its worker's own AI account while that account gets ready", async () => {
