@@ -215,6 +215,7 @@ export async function readBrowserProfileInitialization(
       });
     const storage = profileStorage(row);
     if (storage.kind !== "initializing") throw new Error("Profile is not initializing");
+    await validateBindingOwner(transaction, storage.binding, row.ownerId);
     const revision =
       storage.seed.revision === 0
         ? null
@@ -252,6 +253,7 @@ export async function completeBrowserProfileInitialization(
       !sameSeed(storage.seed, input.seed)
     )
       conflict("Browser profile initialization binding does not match.");
+    await validateBindingOwner(transaction, storage.binding, row.ownerId);
     if (storage.kind === "local") return storage;
     if (
       row.initializationTokenHash !== input.tokenHash ||

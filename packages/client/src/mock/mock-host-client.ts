@@ -3318,6 +3318,7 @@ function mockBootstrap(
       placements: snapshot.browserPlacements,
       profileGrants: snapshot.browserProfileGrants,
       profiles: snapshot.browserProfiles,
+      profileDeletions: snapshot.browserProfileDeletions,
       // The catalog names each browser's conversations, as the Host's does.
       sessions: snapshot.browserSessions.map((session) => ({
         ...session,
@@ -3543,6 +3544,12 @@ export class MockHostClient implements HostClient {
     this.#ownerViews.expire();
     return this.#state.getSnapshot();
   };
+  setBrowserProfileDeletions(
+    deletions: NonNullable<HostSnapshot["browserProfileDeletions"]>,
+  ): void {
+    this.#state.updatePlaces({ ...this.getSnapshot(), browserProfileDeletions: deletions });
+  }
+
   setSearchSuggestionsAvailable(available: boolean): void {
     this.#state.updatePlaces({ ...this.getSnapshot(), searchSuggestionsAvailable: available });
   }

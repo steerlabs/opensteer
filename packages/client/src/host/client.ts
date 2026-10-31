@@ -592,6 +592,12 @@ export interface BrowserFrameView {
   header: BrowserBinaryFrameHeader;
 }
 
+export interface BrowserProfileDeletionSummary {
+  profileId: string;
+  computerId: string;
+  state: "pending-computer" | "pending-restart";
+}
+
 export interface BrowserProfileSummary {
   id: string;
   name: string;
@@ -757,6 +763,7 @@ export interface HostSnapshot {
   browserAvailable: boolean;
   browserPlacements: BrowserPlacementSummary[];
   browserProfiles: BrowserProfileSummary[];
+  browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
   connection: HostConnectionState;
   /** Reachability reported by the platform, distinct from Host availability. */

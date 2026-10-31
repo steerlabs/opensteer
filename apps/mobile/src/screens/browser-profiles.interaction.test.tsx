@@ -140,14 +140,17 @@ afterEach(() => {
   state.alert = null;
 });
 
-async function render(): Promise<void> {
+async function render(): Promise<() => Promise<void>> {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  await act(async () =>
-    root.render(<BrowserProfilesScreen route={{ params: { deploymentId: "deployment-a" } }} />),
-  );
+  const paint = () =>
+    root.render(<BrowserProfilesScreen route={{ params: { deploymentId: "deployment-a" } }} />);
+  await act(async () => paint());
+  return async () => {
+    await act(async () => paint());
+  };
 }
 
 function button(label: string): HTMLButtonElement {
@@ -179,6 +182,11 @@ function host(manage = true, empty = false) {
           { id: "bpr_work", name: "Work", revision: 1 },
           { id: "bpr_personal", name: "Personal", revision: 1 },
         ],
+    browserProfileDeletions: [] as {
+      profileId: string;
+      computerId: string;
+      state: "pending-computer" | "pending-restart";
+    }[],
     browserProfileGrants: [
       { id: "grant-research", profileId: "bpr_work", workspaceId: "wsp_research" },
     ],
@@ -192,7 +200,7 @@ function host(manage = true, empty = false) {
     activatingWorkspaceTabs: [],
     browserSessions: [],
     browserPlacements: [],
-    machines: [],
+    machines: [{ id: "computer-delete", name: "Studio Mac" }],
   };
   const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
   state.hostClient = { dispatch, getSnapshot: () => snapshot };
@@ -244,6 +252,25 @@ describe("mobile browser profiles", () => {
         idempotencyKey: expect.any(String),
       }),
     );
+  });
+
+  it("shows pending disk erasure after profiles leave the list", async () => {
+    const { snapshot } = host(true, true);
+    snapshot.browserProfileDeletions = [
+      {
+        profileId: "bpr_deleted_offline",
+        computerId: "computer-delete",
+        state: "pending-computer",
+      },
+      { profileId: "bpr_deleted_restart", computerId: "computer-delete", state: "pending-restart" },
+    ];
+    const repaint = await render();
+    expect(text()).toContain("Will be erased when Studio Mac is back online");
+    expect(text()).toContain("Erased after Opensteer restarts on Studio Mac");
+    expect(document.querySelectorAll('[aria-label^="Delete "]')).toHaveLength(0);
+    snapshot.browserProfileDeletions = [];
+    await repaint();
+    expect(text()).not.toContain("Deleted profile");
   });
 
   it("hides Rename and Delete on older Hosts and still manages specialists", async () => {

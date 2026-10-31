@@ -5850,6 +5850,56 @@ describe("HttpHostClient browser profiles", () => {
     client.dispose();
   });
 
+  it("keeps pending erasure from delete receipts and bootstrap until completion, including older Hosts", async () => {
+    const profileId = createId("browserProfile");
+    const computerId = createId("runner");
+    const deletion = { profileId, computerId, state: "pending-computer" as const };
+    let browser: HostedBrowserBootstrap = {
+      available: false,
+      placements: [],
+      profiles: [{ id: profileId, name: "Work", revision: 0 }],
+      profileGrants: [],
+      sessions: [],
+    };
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+      fetch: async (input) => {
+        const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+        if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([makeWorkspace()], browser));
+        if (path === "/v1/rpc/commands.dispatch")
+          return json({ type: "browser.profile.delete", deletion });
+        throw new Error(`Unexpected request ${path}`);
+      },
+    });
+    try {
+      await client.load();
+      expect(client.getSnapshot().browserProfileDeletions).toBeUndefined();
+      await client.dispatch({
+        type: "browser.profile.delete",
+        profileId,
+        idempotencyKey: "delete-native-profile",
+      });
+      expect(client.getSnapshot().browserProfiles).toEqual([]);
+      expect(client.getSnapshot().browserProfileDeletions).toEqual([deletion]);
+      browser = {
+        ...browser,
+        profiles: [],
+        profileDeletions: [{ ...deletion, state: "pending-restart" }],
+      };
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toEqual(browser.profileDeletions);
+      browser = { ...browser, profileDeletions: [] };
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toEqual([]);
+      delete browser.profileDeletions;
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toBeUndefined();
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("makes a profile saved from a fresh session immediately selectable", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();

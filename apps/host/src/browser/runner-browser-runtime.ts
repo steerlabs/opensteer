@@ -136,7 +136,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   readonly #generationByPlacement = new Map<string, number>();
   readonly #leaseByPlacement = new Map<string, PlacementCapabilityLease>();
   readonly #leaseAcquisitions = new Map<string, Promise<PlacementCapabilityLease>>();
-  readonly #erasures = new Map<RunnerId, Promise<void>>();
+  readonly #erasures = new Map<RunnerId, { pending: boolean; operation: Promise<void> }>();
   readonly #now: () => number;
   readonly #pending = new Map<RunnerAuxiliaryRequestId, PendingRequest>();
   readonly #registry: RunnerBrowserRegistry;
@@ -455,29 +455,52 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   resumeDeletions(runnerId: RunnerId): Promise<void> {
-    const pending = this.#erasures.get(runnerId);
-    if (pending) return pending;
-    const operation = this.#eraseProfiles(runnerId);
-    this.#erasures.set(runnerId, operation);
-    void operation
-      .finally(() => {
-        if (this.#erasures.get(runnerId) === operation) this.#erasures.delete(runnerId);
-      })
-      .catch(() => undefined);
-    return operation;
+    const active = this.#erasures.get(runnerId);
+    if (active) {
+      active.pending = true;
+      return active.operation;
+    }
+    const lane = { pending: true, operation: Promise.resolve() };
+    this.#erasures.set(runnerId, lane);
+    lane.operation = Promise.resolve().then(async () => {
+      let fence: RunnerAuxiliaryFrameFence | undefined;
+      const attempted = new Set<string>();
+      let failure: { error: unknown } | undefined;
+      try {
+        do {
+          lane.pending = false;
+          const stream = this.#registry.stream(runnerId);
+          if (!stream || this.#closed) break;
+          if (!fence || !sameRunnerAuxiliaryFence(fence, stream.fence)) attempted.clear();
+          fence = stream.fence;
+          try {
+            await this.#eraseProfiles(stream, attempted);
+          } catch (error) {
+            failure = { error };
+          }
+        } while (lane.pending);
+        if (failure) throw failure.error;
+      } finally {
+        this.#erasures.delete(runnerId);
+      }
+    });
+    return lane.operation;
   }
 
-  async #eraseProfiles(runnerId: RunnerId): Promise<void> {
-    const stream = this.#registry.stream(runnerId);
-    if (!stream || !this.#localProfiles || this.#admissionReason(stream)) return;
+  async #eraseProfiles(stream: RunnerAuxiliaryStream, attempted: Set<string>): Promise<void> {
+    const runnerId = stream.identity.runnerId;
+    if (!this.#localProfiles || this.#admissionReason(stream)) return;
     const browser = stream.identity.modules.browser;
     if (browser?.localProfiles !== 1 || !browser.localProfileStorage) return;
     for (const job of await this.#localProfiles.jobs(runnerId)) {
       if (
+        attempted.has(job.deletionId) ||
         job.binding.storageInstanceId !== browser.localProfileStorage.storageInstanceId ||
         job.binding.engine !== browser.localProfileStorage.engine
       )
         continue;
+      // A rerun picks up new jobs without retrying pending-restart acknowledgements.
+      attempted.add(job.deletionId);
       const placementLease = await this.#acquirePlacementLease(stream, browser.runtimeId);
       if (placementLease.renewal) await placementLease.renewal;
       const capability = placementLease.capability;

@@ -15,7 +15,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   BrowserProfileIdSchema,
@@ -803,6 +803,7 @@ it("serves only an authorized frozen native seed and exposes offline erasure thr
       })
     ).profiles.has(profileId),
   ).toBe(false);
+  const people = await connectedPeople(stack);
   const deleted = await stack.api["commands.dispatch"]({
     type: "browser.profile.delete",
     profileId,
@@ -821,6 +822,26 @@ it("serves only an authorized frozen native seed and exposes offline erasure thr
       },
     },
   });
+  await vi.waitFor(
+    () => {
+      for (const client of people)
+        expect(client.getSnapshot().browserProfileDeletions).toEqual([
+          { profileId, computerId: runnerId, state: "pending-computer" },
+        ]);
+    },
+    { timeout: 5_000 },
+  );
+  const [job] = await stack.host.store.listBrowserProfileErasureJobs(runnerId);
+  if (!job) throw new Error("Deleted native profile has no erasure job");
+  for (const state of ["pending-restart", "deleted"] as const) {
+    await stack.host.store.acknowledgeBrowserProfileDeletion({ ...job, state });
+    for (const client of people) {
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toEqual(
+        state === "deleted" ? [] : [{ profileId, computerId: runnerId, state }],
+      );
+    }
+  }
   expect(
     (
       await stack.host.app.inject({
