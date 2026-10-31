@@ -16,6 +16,7 @@ import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { closeHttpServerNow } from "../packages/shared/src/httpServer.js";
 import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
 import type { BrowserProfileId } from "../packages/core/src/index.js";
+import type { NativeProfileOpenTiming } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import type { BrowserOpenTiming } from "../packages/browser-runtime-core/src/runtime.js";
 import type { BrowserTabOpenResult } from "../packages/protocol/src/index.js";
 
@@ -31,6 +32,7 @@ async function browserProcess(relay?: { hostOrigin: URL; enrollmentToken: string
   const bridgeToken = randomBytes(32).toString("base64url");
   const url = new URL("http://127.0.0.1:0");
   const timings: BrowserOpenTiming[] = [];
+  const nativeTimings: NativeProfileOpenTiming[] = [];
   let stop = async () => {};
   let diagnostics = () => "";
   const start = async () => {
@@ -74,6 +76,10 @@ async function browserProcess(relay?: { hostOrigin: URL; enrollmentToken: string
           url.port = String(value.port);
           ready.resolve();
         }
+        if (value.event === "browser.native.open.timing") {
+          const { event: _event, ...timing } = value;
+          nativeTimings.push(timing);
+        }
         if (value.event === "browser.session.open.timing") {
           const { event: _event, ...timing } = value;
           timings.push(timing);
@@ -109,6 +115,7 @@ async function browserProcess(relay?: { hostOrigin: URL; enrollmentToken: string
     bridgeToken,
     url,
     timings,
+    nativeTimings,
     start,
     health,
     close: () => stop(),
@@ -127,7 +134,9 @@ async function stateSite() {
     }
     return value;
   };
-  const navigation = gate({ label: "delayed first navigation", deadlineMs: 20_000 });
+  let navigation: ReturnType<typeof gate> | undefined;
+  const navigationGate = () =>
+    (navigation ??= gate({ label: "delayed first navigation", deadlineMs: 20_000 }));
   let responseCompleted = false;
   const server = createServer((request, response) => {
     const url = new URL(request.url!, "http://fixture.invalid");
@@ -175,7 +184,7 @@ async function stateSite() {
       if (url.pathname === "/delayed") responseCompleted = true;
     };
     if (url.pathname === "/delayed")
-      void bounded(navigation.enter(), "Delayed response gate was never released")
+      void bounded(navigationGate().enter(), "Delayed response gate was never released")
         .then(deliver)
         .catch(() => response.destroy());
     else deliver();
@@ -185,12 +194,14 @@ async function stateSite() {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Fixture has no port");
   addCleanup("profile fixture site", async () => {
-    navigation.release();
+    navigation?.release();
     await closeHttpServerNow(server);
   });
   return {
     origin: `http://127.0.0.1:${address.port}`,
-    navigation,
+    get navigation() {
+      return navigationGate();
+    },
     responseCompleted: () => responseCompleted,
     visits: () => Object.fromEntries(visits),
     observed: (id: string) => bounded(result(id).promise, `Page ${id} never reported its storage`),
@@ -342,7 +353,9 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   );
   const requests = { seeds: seeds.mock.calls.length, complete: complete.mock.calls.length };
   const warmStart = browser.timings.length;
+  const warmWallStart = performance.now();
   const warm = await open(profile.id, "/read?id=warm");
+  const warmWallMs = performance.now() - warmWallStart;
   expect(await site.observed("warm")).toEqual(expected);
   expect(seeds).toHaveBeenCalledTimes(requests.seeds);
   expect(complete).toHaveBeenCalledTimes(requests.complete);
@@ -356,7 +369,10 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   await browser.start();
   await stack.restartRunner();
   const coldStart = browser.timings.length;
+  const coldNativeStart = browser.nativeTimings.length;
+  const coldWallStart = performance.now();
   const cold = await open(profile.id, "/read?id=cold");
+  const coldWallMs = performance.now() - coldWallStart;
   expect(await site.observed("cold")).toEqual(expected);
   expect(site.visits(), "Chromium restored a tab independently of Opensteer").toEqual({
     ...visitsBeforeRestart,
@@ -371,6 +387,7 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   expect(complete).toHaveBeenCalledTimes(requests.complete);
   expect(browser.timings.some((timing) => timing.acquisition === "cold")).toBe(true);
   const coldTimings = browser.timings.slice(coldStart);
+  const coldNativeTimings = browser.nativeTimings.slice(coldNativeStart);
   await close(cold);
 
   // Simulate a DB-only rollback while the owning engine is stopped. The new
@@ -487,7 +504,19 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   expect(tombstone).toMatchObject({ phase: "deleted", erasure: "deleted" });
   await writeFile(
     path.join(tmpdir(), "native-profile-integration-timings.json"),
-    JSON.stringify({ warm: warmTimings, cold: coldTimings, timings: browser.timings }, null, 2),
+    JSON.stringify(
+      {
+        warm: warmTimings,
+        cold: coldTimings,
+        timings: browser.timings,
+        nativeTimings: browser.nativeTimings,
+        coldNativeTimings,
+        warmWallMs,
+        coldWallMs,
+      },
+      null,
+      2,
+    ),
   );
   vi.restoreAllMocks();
 }, 90_000);

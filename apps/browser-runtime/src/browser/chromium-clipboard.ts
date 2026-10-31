@@ -29,6 +29,24 @@ export class ChromiumClipboard implements EngineClipboard {
     this.#page = page;
   }
 
+  static lazy(browser: Browser): EngineClipboard & { close(): Promise<void> } {
+    let pending: Promise<ChromiumClipboard> | undefined;
+    let closed = false;
+    return {
+      machineClipboardShared: false,
+      open: async (page, input) => {
+        if (closed) throw new Error("The browser clipboard is closed.");
+        const clipboard = await (pending ??= ChromiumClipboard.create(browser));
+        if (closed) throw new Error("The browser clipboard is closed.");
+        return clipboard.open(page, input);
+      },
+      close: async () => {
+        closed = true;
+        await (await pending)?.close();
+      },
+    };
+  }
+
   static async create(browser: Browser): Promise<ChromiumClipboard> {
     const context = await browser.newContext({
       permissions: ["clipboard-read", "clipboard-write"],

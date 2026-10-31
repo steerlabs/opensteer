@@ -6,7 +6,13 @@ import { assertImportedCookies } from "./native-profile-storage.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { EventEmitter } from "node:events";
 import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
-import { chromium, type Browser, type BrowserContext, type BrowserServer } from "playwright-core";
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type BrowserServer,
+  type Page,
+} from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
 import { validClaims } from "@opensteer/browser-runtime-core/test-support";
 import {
@@ -16,6 +22,11 @@ import {
 
 vi.mock("./chromium-clipboard.js", () => ({
   ChromiumClipboard: {
+    lazy: () => ({
+      machineClipboardShared: false,
+      open: async () => ({ close: async () => null }),
+      close: async () => {},
+    }),
     create: async () => ({
       machineClipboardShared: false,
       open: async () => ({ close: async () => null }),
@@ -332,15 +343,21 @@ describe("native Chromium profiles", () => {
       off: vi.fn(),
       detach: vi.fn().mockResolvedValue(undefined),
     };
-    const helper = { on: vi.fn() };
+    const helper = { on: vi.fn(), isClosed: () => false };
+    const rootPage = { on: vi.fn(), isClosed: () => false };
+    const pages: Page[] = [];
     const browser = {
       newBrowserCDPSession: vi.fn().mockResolvedValue(cdp),
       close: vi.fn().mockResolvedValue(undefined),
     };
     const context = {
       browser: () => browser,
-      pages: () => [],
-      newPage: vi.fn().mockResolvedValue(helper),
+      pages: () => pages,
+      newPage: vi.fn().mockImplementation(async () => {
+        const page = pages.length === 0 ? helper : rootPage;
+        pages.push(page as unknown as Page);
+        return page;
+      }),
       newCDPSession: vi.fn().mockResolvedValue(cdp),
       addInitScript: vi.fn().mockResolvedValue(undefined),
       on: vi.fn(),
@@ -392,12 +409,9 @@ describe("native Chromium profiles", () => {
       expect(JSON.parse(await readFile(join(directory, "Default", "Preferences"), "utf8"))).toEqual(
         { session: { restore_on_startup: 1 } },
       );
-      expect(context.addInitScript.mock.invocationCallOrder[0]).toBeLessThan(
-        context.newPage.mock.invocationCallOrder[0]!,
-      );
-      expect(context.on.mock.invocationCallOrder[0]).toBeLessThan(
-        context.newPage.mock.invocationCallOrder[0]!,
-      );
+      expect(context.newPage).toHaveBeenCalledTimes(2);
+      expect(context.newCDPSession).not.toHaveBeenCalled();
+      expect(launched.context.pages()).toHaveLength(1);
       await expect(launched.cdp.send("Target.getBrowserContexts")).resolves.toEqual({
         browserContextIds: [],
       });
@@ -406,6 +420,29 @@ describe("native Chromium profiles", () => {
       await expect(
         launched.cdp.send("Storage.clearCookies", { browserContextId: "other" }),
       ).rejects.toThrow(/another browser context/);
+      pages.push(helper as unknown as Page);
+      await launched.replaceSiteCookies(
+        "https://site.test",
+        [
+          {
+            name: "sid",
+            value: "committed",
+            domain: "site.test",
+            path: "/",
+            expires: -1,
+            secure: true,
+            httpOnly: true,
+          },
+        ],
+        new AbortController().signal,
+      );
+      expect(context.newCDPSession).toHaveBeenCalledExactlyOnceWith(helper);
+      expect(cdp.send).toHaveBeenCalledWith("Storage.clearDataForOrigin", {
+        origin: expect.stringMatching(/^https:\/\/[a-f0-9-]+\.invalid$/u),
+        storageTypes: "cookies",
+      });
+      expect(cdp.detach).toHaveBeenCalledOnce();
+      pages.length = 0;
       let released = false;
       const releasing = launcher.localProfiles.release(directory).then(() => {
         released = true;
@@ -422,6 +459,7 @@ describe("native Chromium profiles", () => {
       expect(context.close).toHaveBeenCalledOnce();
       // Existing preferences belong to Chromium and cannot be replaced on reopen.
       await writeFile(join(directory, "Default", "Preferences"), '{"retained":true}');
+      pages.length = 0;
       const reopened = await launcher.launch(nativeProfileRequest(directory));
       expect(await readFile(join(directory, "Default", "Preferences"), "utf8")).toBe(
         '{"retained":true}',

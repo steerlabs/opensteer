@@ -3,6 +3,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { constants } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -55,8 +56,25 @@ import {
 import type { BrowserPagePolicyConfig } from "@opensteer/browser-runtime-core/page-policy";
 import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
 
+export interface NativeProfileOpenTiming {
+  readonly correlationId: string;
+  readonly stage:
+    | "prepare"
+    | "preferences"
+    | "chromium-launch"
+    | "page-policy"
+    | "cookie-target"
+    | "cdp"
+    | "import"
+    | "clipboard"
+    | "target-discovery";
+  readonly elapsedMs: number;
+  readonly elapsedSinceStartMs: number;
+}
+
 interface PlaywrightChromiumLauncherOptions {
   authenticator?: PasskeyAuthenticator;
+  onNativeOpenTiming?: (timing: NativeProfileOpenTiming) => void;
   probePasskeys?: boolean;
   args?: readonly string[];
   chromiumSandbox: boolean;
@@ -187,6 +205,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       return "released";
     },
   };
+  private readonly onNativeOpenTiming: ((timing: NativeProfileOpenTiming) => void) | undefined;
   private readonly probePasskeys: boolean;
   private preparation: Promise<void> | undefined;
   private securityStateAvailable = false;
@@ -205,6 +224,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     if (!path.isAbsolute(options.executablePath)) {
       throw new Error("Chromium executablePath must be absolute.");
     }
+    this.onNativeOpenTiming = options.onNativeOpenTiming;
     this.probePasskeys = options.probePasskeys === true || options.authenticator !== undefined;
     this.authenticator = options.authenticator;
     this.args = options.args ?? [];
@@ -431,10 +451,29 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     signal?: AbortSignal,
     requestedAuthenticator?: PasskeyAuthenticator,
   ): Promise<LaunchedBrowser> {
+    const started = performance.now();
+    const correlationId = randomUUID();
+    let previous = started;
+    const timing = (stage: NativeProfileOpenTiming["stage"]) => {
+      const now = performance.now();
+      try {
+        this.onNativeOpenTiming?.({
+          correlationId,
+          stage,
+          elapsedMs: now - previous,
+          elapsedSinceStartMs: now - started,
+        });
+      } catch {
+        /* Diagnostics cannot change profile readiness. */
+      }
+      previous = now;
+    };
     signal?.throwIfAborted();
     await access(this.executablePath, constants.X_OK);
     await this.prepare();
+    timing("prepare");
     await initializeNativePreferences(directory);
+    timing("preferences");
     signal?.throwIfAborted();
     const context = await chromium.launchPersistentContext(directory, {
       executablePath: this.executablePath,
@@ -471,6 +510,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       acceptDownloads: false,
       viewport: null,
     });
+    timing("chromium-launch");
     const browser = context.browser();
     if (!browser) {
       await context.close();
@@ -515,6 +555,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         : undefined;
       const providerConfig = authenticator ? createPasskeyProviderConfig() : undefined;
       await context.addInitScript({ content: browserPagePolicyScriptFor(providerConfig) });
+      timing("page-policy");
       context.on("dialog", (dialog) => {
         const page = dialog.page();
         if (page) openDialogs.set(page, dialog);
@@ -523,11 +564,15 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         page.on("close", () => openDialogs.delete(page));
       });
       if (context.pages().length) throw new Error("Chromium restored unauthorized tabs.");
-      // This target is private for the lifetime of the host, like the clipboard
-      // target. It never enters the surface ledger or an agent's page inventory.
-      const helper = await context.newPage();
+      // Keep one private blank target only while this bounded profile host is warm.
+      // Without it, closing the last tab also discards Chromium's warm renderer.
+      const [helper] = await Promise.all([
+        context.newPage(),
+        snapshot ? Promise.resolve() : context.newPage(),
+      ]);
+      timing("cookie-target");
       const browserCdp = await browser.newBrowserCDPSession();
-      const helperCdp = await context.newCDPSession(helper);
+      timing("cdp");
       if (snapshot) {
         await importNativeOrigins(context, helper, snapshot);
         await browserCdp.send("Storage.setCookies", {
@@ -535,6 +580,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         });
         const { cookies } = await browserCdp.send("Storage.getCookies");
         assertImportedCookies(snapshot.cookies, cookies);
+        timing("import");
       }
       const launched = new PlaywrightLaunchedBrowser(
         owner,
@@ -546,10 +592,11 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         authenticator,
         providerConfig,
         helper,
-        helperCdp,
       );
-      if (this.headless && !snapshot) launched.clipboard = await ChromiumClipboard.create(browser);
+      if (this.headless && !snapshot) launched.clipboard = ChromiumClipboard.lazy(browser);
+      timing("clipboard");
       await browserCdp.send("Target.setDiscoverTargets", { discover: true });
+      timing("target-discovery");
       signal?.throwIfAborted();
       return launched;
     } catch (error) {
@@ -560,7 +607,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
 }
 
 class PlaywrightLaunchedBrowser implements LaunchedBrowser {
-  clipboard?: ChromiumClipboard;
+  clipboard?: ReturnType<typeof ChromiumClipboard.lazy>;
   private readonly owner: { close(): Promise<void> };
   private readonly browserCdp: PlaywrightCdpSession;
   private readonly browserContextId: string | undefined;
@@ -570,7 +617,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
   private lastSnapshot: BrowserProfileSnapshot;
   private readonly contextHandle: PlaywrightContextHandle;
   private readonly playwrightContext: PlaywrightBrowserContext;
-  private readonly persistenceCdp: PlaywrightCdpSession | undefined;
+  private readonly persistencePage: Page | undefined;
 
   constructor(
     owner: { close(): Promise<void> },
@@ -582,9 +629,8 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     authenticator?: PasskeyAuthenticator,
     providerConfig?: BrowserPagePolicyConfig,
     privatePage?: Page,
-    persistenceCdp?: PlaywrightCdpSession,
   ) {
-    this.persistenceCdp = persistenceCdp;
+    this.persistencePage = privatePage;
     this.owner = owner;
     this.lastSnapshot = lastSnapshot;
     this.browserCdp = browserCdp;
@@ -658,7 +704,16 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       ...(this.browserContextId ? { browserContextId: this.browserContextId } : {}),
       cookies: batch,
     });
-    if (this.persistenceCdp) await flushNativeCookies(this.persistenceCdp);
+    if (this.browserContextId === undefined) {
+      const page = this.persistencePage ?? this.playwrightContext.pages()[0];
+      if (!page) throw new Error("Native cookie persistence requires a live profile page.");
+      const channel = await this.playwrightContext.newCDPSession(page);
+      try {
+        await flushNativeCookies(channel);
+      } finally {
+        await channel.detach();
+      }
+    }
   }
 
   close(): Promise<void> {

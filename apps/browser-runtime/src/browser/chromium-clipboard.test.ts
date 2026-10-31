@@ -4,6 +4,28 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { findChromium } from "./browser-test-lifecycle.js";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
 
+it("does no clipboard work until first use and joins initialization on close", async () => {
+  const ready = Promise.withResolvers<ChromiumClipboard>();
+  const create = vi.spyOn(ChromiumClipboard, "create").mockReturnValue(ready.promise);
+  const scope = { close: vi.fn(async () => null) };
+  const owner = { open: vi.fn(async () => scope), close: vi.fn(async () => {}) };
+  try {
+    const clipboard = ChromiumClipboard.lazy({} as Browser);
+    expect(create).not.toHaveBeenCalled();
+    const opening = clipboard.open({} as BrowserPage, null);
+    const closing = clipboard.close();
+    expect(create).toHaveBeenCalledOnce();
+    expect(owner.close).not.toHaveBeenCalled();
+    ready.resolve(owner as unknown as ChromiumClipboard);
+    await expect(opening).rejects.toThrow(/closed/);
+    await closing;
+    expect(owner.close).toHaveBeenCalledOnce();
+    await expect(clipboard.open({} as BrowserPage, null)).rejects.toThrow(/closed/);
+  } finally {
+    create.mockRestore();
+  }
+});
+
 it("clears an installed clipboard when opening the scope fails and permits the next scope", async () => {
   const page = {} as BrowserPage;
   const writes: unknown[] = [];

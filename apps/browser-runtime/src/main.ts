@@ -46,6 +46,10 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
   });
   const launcher = new PlaywrightChromiumLauncher({
     probePasskeys: true,
+    onNativeOpenTiming: (timing) =>
+      process.stdout.write(
+        `${JSON.stringify({ event: "browser.native.open.timing", ...timing })}\n`,
+      ),
     chromiumSandbox: config.chromiumSandbox,
     executablePath: config.executablePath,
     headless: config.headless,
