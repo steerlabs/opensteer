@@ -2579,9 +2579,7 @@ describe("a task", () => {
       }),
     );
     const { container } = await mount(host, workId);
-    expect(
-      container.querySelector('[aria-label="Queued message 1 of 1: Start with these statements"]'),
-    ).not.toBeNull();
+    expect(container.querySelector('[aria-label="Queued message 1 of 1, up next"]')).not.toBeNull();
     expect(text(container)).toContain("What would you like to do?");
     expect(text(container)).toContain(waiting.body);
   });

@@ -124,19 +124,20 @@ export const QueuedMessages = memo(function QueuedMessages(props: {
             exiting={exit}
             layout={LinearTransition.duration(duration.enter)}
           >
-            <QueuedBubble
-              blocked={blocked}
-              count={shown.length}
-              index={index}
-              message={message}
-              onAction={(name) => action(message, name)}
-              viewerUserId={props.viewerUserId}
-            />
+            <QueuedBubble message={message} viewerUserId={props.viewerUserId} />
             <View style={styles.controls}>
               {busyId === message.item.message.id ? (
                 <ActivityIndicator size="small" color={color.muted} />
               ) : (
-                <AppText role="caption" tone="muted">
+                // The message and its files stay reachable on their own; this
+                // says which waiting message they were.
+                <AppText
+                  accessibilityLabel={`Queued message ${index + 1} of ${shown.length}${
+                    message.next ? ", up next" : ""
+                  }`}
+                  role="caption"
+                  tone="muted"
+                >
                   {message.next ? "Up next" : "Queued"}
                 </AppText>
               )}
@@ -201,47 +202,23 @@ export const QueuedMessages = memo(function QueuedMessages(props: {
 });
 
 function QueuedBubble(props: {
-  readonly blocked: boolean;
-  readonly count: number;
-  readonly index: number;
   readonly message: QueuedMessage;
-  readonly onAction: (name: string) => void;
   readonly viewerUserId: string | null;
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  const files = props.message.entry.attachments?.length ?? 0;
   return (
-    <View
-      accessible
-      accessibilityLabel={`Queued message ${props.index + 1} of ${props.count}: ${props.message.text}${files > 0 ? `, ${files} files` : ""}`}
-      accessibilityActions={
-        props.blocked
-          ? []
-          : [
-              ...(props.message.item.canSteer ? [{ name: "steer", label: "Steer" }] : []),
-              ...(props.message.item.canCancel
-                ? [
-                    { name: "edit", label: "Edit" },
-                    { name: "remove", label: "Remove" },
-                  ]
-                : []),
-            ]
-      }
-      onAccessibilityAction={({ nativeEvent }) => props.onAction(nativeEvent.actionName)}
-    >
-      <Message
-        queued
-        conversation={false}
-        homeThreadId={null}
-        onReply={undefined}
-        message={props.message.entry}
-        open={open}
-        onToggle={() => setOpen(!open)}
-        onOpenThread={ignoreThread}
-        viewerUserId={props.viewerUserId}
-        workspaces={noWorkspaces}
-      />
-    </View>
+    <Message
+      queued
+      conversation={false}
+      homeThreadId={null}
+      onReply={undefined}
+      message={props.message.entry}
+      open={open}
+      onToggle={() => setOpen(!open)}
+      onOpenThread={ignoreThread}
+      viewerUserId={props.viewerUserId}
+      workspaces={noWorkspaces}
+    />
   );
 }
 const noWorkspaces: readonly WorkspaceSummary[] = [];
