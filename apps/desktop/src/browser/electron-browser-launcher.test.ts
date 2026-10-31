@@ -1763,6 +1763,7 @@ describe("native Electron profiles", () => {
       engine: "electron",
     };
     const directory = path.join(root, "profiles", binding.profileId, "native");
+    const onLocalProfileOpenTiming = vi.fn();
     const launcher = new ElectronBrowserLauncher({
       downloads: {
         accept: vi.fn(() => {
@@ -1771,6 +1772,7 @@ describe("native Electron profiles", () => {
       },
       pagePolicyPreloadPath: "/policy.cjs",
       localProfileRoot: root,
+      onLocalProfileOpenTiming,
     });
     const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
     return {
@@ -1778,6 +1780,7 @@ describe("native Electron profiles", () => {
       binding,
       directory,
       launcher,
+      onLocalProfileOpenTiming,
       launch: () =>
         launcher.launch({
           sessionId,
@@ -1900,6 +1903,33 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
+  it("keeps an actionable encryption failure on subsequent opens and preserves all native data", async () => {
+    const f = await fixture();
+    const { safeStorage, session } = await import("electron");
+    const encrypt = vi
+      .spyOn(safeStorage, "encryptStringAsync")
+      .mockRejectedValue(new Error("unavailable"));
+    try {
+      await expect(
+        f.launcher.localProfiles.importAndFlush({
+          directory: f.directory,
+          binding: f.binding,
+          snapshot: { cookies: [], origins: [] },
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toThrow(/Unlock the login keychain.*restart Opensteer/u);
+      await expect(f.launch()).rejects.toThrow(/Unlock the login keychain.*restart Opensteer/u);
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      expect(profile.clearCache).not.toHaveBeenCalled();
+      expect(profile.clearStorageData).not.toHaveBeenCalled();
+      await expect(readdir(path.dirname(f.directory))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      encrypt.mockRestore();
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it("prepares with Guest only and never allocates a persistent Session", async () => {
     const f = await fixture();
     const { session } = await import("electron");
@@ -2005,6 +2035,14 @@ describe("native Electron profiles", () => {
       const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
       const browser = await f.launch();
       await browser.close();
+      expect(f.onLocalProfileOpenTiming.mock.calls.map(([timing]) => timing.stage)).toEqual([
+        "session-created",
+        "mirror-restored",
+        "admitted",
+        "first-page-created",
+      ]);
+      const durations = f.onLocalProfileOpenTiming.mock.calls.map(([timing]) => timing.elapsedMs);
+      expect(durations).toEqual([...durations].sort((a, b) => a - b));
       const reopened = await f.launch();
       await reopened.close();
       expect(session.fromPath).toHaveBeenCalledWith(f.directory);

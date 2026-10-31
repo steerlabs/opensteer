@@ -487,8 +487,8 @@ Conversion guarantees committed state across a **process crash**, not power loss
 or hardware failure. Electron's localStorage acknowledgement and
 `flushStorageData()` alone do not prove a DB commit. The
 [conversion barrier](../apps/desktop/src/browser/electron-browser-launcher.ts)
-depends on pinned Electron 44.9.2 / Chromium 151 ordering: flushing followed by
-clearing localStorage for a fresh, unloaded `.invalid` origin waits behind the
+depends on pinned Electron 44.9.2 / Chromium 152.0.7977.167 ordering: flushing
+followed by clearing localStorage for a fresh, unloaded `.invalid` origin waits behind the
 queued commits. A loaded origin does not provide that barrier. Engine upgrades
 must requalify this dependency with an immediate crash and reopen.
 
@@ -503,7 +503,9 @@ also pins the cookie commit barrier used for controlled cookie writes.
 Electron persists session cookies through an encrypted per-profile mirror with
 an OS-wrapped key; Guest creates neither. Native files use Chromium's platform
 protection; named launches must not disable OS cookie encryption or use testing
-key-store fallbacks. An unavailable approved mirror-key provider refuses opening.
+key-store fallbacks. An unavailable approved mirror-key provider refuses opening
+with instructions to unlock the login keychain and restart the app; the store and mirror stay intact.
+This also prevents an already-created Session from bypassing restoration on retry.
 The Session-wide request gate covers workers as well as pages and stays closed
 until restoration. Cookie-change events
 invalidate an authoritative Session-scoped capture rather than supplying cookie

@@ -34,7 +34,15 @@ import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:https";
@@ -42,7 +50,10 @@ import { app, webContents } from "electron";
 import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import type { BrowserOriginState, BrowserProfileSnapshot } from "@opensteer/browser-profile";
 import type { BrowserPage, LaunchedBrowser } from "@opensteer/browser-runtime-core";
-import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
+import {
+  ElectronBrowserLauncher,
+  type ElectronLocalProfileOpenTiming,
+} from "../src/browser/electron-browser-launcher.js";
 import { key, cert } from "./fixtures/profile-restore-tls.js";
 
 const smokeDownloads = smokeDesktopDownloads();
@@ -50,7 +61,9 @@ const smokeDownloads = smokeDesktopDownloads();
 // The same bundle is a Node phase driver in the committed VM command and an
 // Electron entry in the working-tree VM harness. Both use real process restarts.
 const phase = process.env.PROFILE_VM_PHASE ?? "main";
-const state = process.env.PROFILE_VM_STATE ?? mkdtempSync(path.join(tmpdir(), "profile-restore-"));
+const state = realpathSync(
+  process.env.PROFILE_VM_STATE ?? mkdtempSync(path.join(tmpdir(), "profile-restore-")),
+);
 const out =
   process.env.PROFILE_VM_OUT ??
   process.env.OPENSTEER_PROFILE_RESTORE_ARTIFACT_DIR ??
@@ -69,6 +82,7 @@ const destroyedAt = new Map<number, number>();
 const creations: number[] = [];
 const observations = new Map<string, Record<string, unknown>>();
 const swRuns: string[] = [];
+const nativeOpenTimings: ElectronLocalProfileOpenTiming[] = [];
 const nativeFirstRequests = new Map<string, string>();
 const open = new Set<LaunchedBrowser>();
 const port = 18766;
@@ -350,6 +364,7 @@ async function main() {
     );
     launcher = new ElectronBrowserLauncher({
       downloads: smokeDownloads,
+      onLocalProfileOpenTiming: (timing) => nativeOpenTimings.push(timing),
       localProfileRoot: path.join(state, "native-profiles"),
       pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
     });
@@ -363,7 +378,7 @@ async function main() {
           origin,
           firstRequest: (name) => nativeFirstRequests.get(name),
         });
-        Object.assign(observed, result);
+        Object.assign(observed, result, { openTimings: nativeOpenTimings });
         crash = result.crash;
       });
       if (crash && Object.values(results).every((result) => result.status === "pass"))

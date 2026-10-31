@@ -16,7 +16,29 @@ export function profileFailureDiagnostic(error: unknown, depth = 0): unknown {
     ].includes(error.name)
       ? error.name
       : "Error",
-    ...(code && /^E[A-Z0-9_]{1,40}$/u.test(code) ? { code } : {}),
+    ...(code &&
+    [
+      "EACCES",
+      "EPERM",
+      "ENOENT",
+      "ENOSPC",
+      "EIO",
+      "EMFILE",
+      "ENFILE",
+      "EROFS",
+      "ELOOP",
+      "ENOTDIR",
+      "EISDIR",
+      "EEXIST",
+      "EBUSY",
+      "EINVAL",
+      "EBADF",
+      "ENAMETOOLONG",
+      "ENOTEMPTY",
+      "EXDEV",
+    ].includes(code)
+      ? { code }
+      : {}),
     // Retain only source locations, never the message or evaluated page source.
     frames: (error.stack ?? "")
       .split("\n")

@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+import { securePrivateDirectory } from "@opensteer/shared/atomicPrivateFile";
 import { profileFailureDiagnostic } from "../browser/profile-failure-diagnostic.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import { randomBytes } from "node:crypto";
@@ -52,21 +54,25 @@ export async function startLocalBrowserRuntime(
   options: LocalBrowserRuntimeOptions,
 ): Promise<PersonalLocalBrowserHandle> {
   assertAbsolutePath(options.profileRoot, "Browser profile root");
+  await securePrivateDirectory(options.profileRoot);
+  // Chromium's macOS sandbox grants paths literally; symlink aliases such as
+  // /var can leave the Network Service unable to write an otherwise valid store.
+  const profileRoot = await realpath(options.profileRoot);
   const bridgeToken = randomBytes(32).toString("base64url");
   const attachKeys = new BrowserAttachKeyRegistry(new Map());
   const ticketVerifier = await Ed25519AttachTicketVerifier.create({
-    replayLedgerPath: defaultAttachTicketReplayLedgerPath(options.profileRoot),
+    replayLedgerPath: defaultAttachTicketReplayLedgerPath(profileRoot),
     resolvePublicKey: (keyId) => attachKeys.resolve(keyId),
   });
   const launcher = new ElectronBrowserLauncher({
     downloads: options.downloads,
-    localProfileRoot: options.profileRoot,
+    localProfileRoot: profileRoot,
     pagePolicyPreloadPath: options.pagePolicyPreloadPath,
   });
   const preparation = launcher.prepare();
   const log = options.logPath ? new RotatingPersonalLog(options.logPath) : null;
   const diagnostics = new BoundedPersonalLog(16 * 1_024, [], (line) => log?.append("stderr", line));
-  const profileStorage = { localProfiles: { root: options.profileRoot } };
+  const profileStorage = { localProfiles: { root: profileRoot } };
   const runtime = new BrowserRuntime({
     onCheckpointFailure: ({ error, ...diagnostic }) =>
       logShutdownError(
@@ -95,7 +101,7 @@ export async function startLocalBrowserRuntime(
       : {}),
     profileStateClient: options.profileStateClient ?? new HttpBrowserProfileStateClient(),
     runtimeId: options.runtimeId,
-    sessionFilesRoot: sessionFilesRoot(options.profileRoot),
+    sessionFilesRoot: sessionFilesRoot(profileRoot),
     ...(options.loginAuthority ? { loginAuthority: options.loginAuthority } : {}),
     ticketVerifier,
   });

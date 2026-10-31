@@ -19,3 +19,15 @@ it("reports cause locations and filesystem codes without messages or website dat
   });
   expect(JSON.stringify(diagnostic)).not.toMatch(/secret|private.test|token|cookie|key/u);
 });
+
+it("bounds cyclic causes and refuses arbitrary diagnostic names and codes", () => {
+  const error = Object.assign(new Error("private"), {
+    name: "private-key",
+    code: "ESECRET",
+    cause: new Error("private"),
+  });
+  error.cause.cause = error;
+  const diagnostic = JSON.stringify(profileFailureDiagnostic(error));
+  expect(diagnostic).toContain("TruncatedCause");
+  expect(diagnostic).not.toMatch(/private|ESECRET/u);
+});

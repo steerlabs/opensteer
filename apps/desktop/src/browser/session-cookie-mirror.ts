@@ -71,7 +71,7 @@ interface SessionCookieMirrorOptions {
   readonly capture: () => Promise<unknown[]>;
   readonly restore: (cookies: readonly Record<string, unknown>[]) => Promise<void>;
   readonly subscribe: (invalidate: () => void) => () => void;
-  readonly onFailure: () => void;
+  readonly onFailure: (error: unknown) => void;
   readonly onIdle?: () => void;
   readonly publish?: (file: string, content: string) => Promise<void>;
 }
@@ -247,7 +247,7 @@ export class SessionCookieMirror {
             });
       this.#failure = failure;
       this.#suspended = true;
-      this.#options.onFailure();
+      this.#options.onFailure(failure);
       for (const waiter of this.#waiters) waiter.reject(failure);
       this.#waiters.clear();
     });
@@ -409,7 +409,7 @@ function unreadable(): Error {
     "Browser profile session cookies are missing, incompatible or corrupt. The profile was preserved.",
   );
 }
-// Scheme/port-bound cookie keys are disabled in the pinned Chromium 151.
+// Scheme/port-bound cookie keys are disabled in the pinned Chromium 152.0.7977.167.
 function cookieIdentity(cookie: {
   name: string;
   domain: string;

@@ -245,6 +245,22 @@ export async function runNativeProfileSmokePhase(input: {
         "first post-restart request missed the session cookie",
       );
       await assertCookies(browser, expected);
+      const survivingWorker = await evaluate<{
+        cookie: string | null;
+        cached: string | null;
+        cookieChange: boolean;
+      }>(page, `fetch('/native-worker-state').then(r => r.json())`);
+      assert.equal(
+        survivingWorker.cookie,
+        "session-visible",
+        "surviving worker missed Network Service cookie recovery",
+      );
+      assert.equal(
+        survivingWorker.cached,
+        "native-value",
+        "Network Service restart lost CacheStorage",
+      );
+      cookieChange = survivingWorker.cookieChange;
       await browser.replaceSiteCookies("example.test", expected, new AbortController().signal);
       assert.equal(
         await readFile(mirror, "utf8"),
