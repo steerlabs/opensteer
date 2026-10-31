@@ -45,6 +45,7 @@ import {
   messageAuthorName,
   messageFoldLines,
   turnFolds,
+  turnOpen,
   turnWords,
   type ActivityStepHead,
   type ActivityTone,
@@ -345,7 +346,11 @@ export function AgentTranscript({
                                     <Fragment key={key}>
                                       {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
                                       {group.kind === "turn" ? (
-                                        <TurnView turn={group.turn} turnKey={group.key} />
+                                        <TurnView
+                                          turn={group.turn}
+                                          turnKey={group.key}
+                                          reveal={revealMessage}
+                                        />
                                       ) : group.kind === "delegation" ? (
                                         <DelegationNotice delegation={group.entry} />
                                       ) : group.kind === "assignment" ? (
@@ -395,12 +400,27 @@ export function AgentTranscript({
 
 /* ---- A turn ---- */
 
-function TurnView({ turn, turnKey }: { turn: Turn; turnKey: string }) {
+function TurnView({
+  turn,
+  turnKey,
+  reveal,
+}: {
+  turn: Turn;
+  turnKey: string;
+  reveal: { readonly id: string } | null;
+}) {
   const live = useContext(TranscriptLive);
   const conversation = useContext(ConversationMode);
   const renderTask = useContext(TaskViews);
-  // Open for as long as the reader is on the task: steps they opened stay open.
-  const [opened, setOpened] = useState(false);
+  const [chosen, setChosen] = useState<boolean | null>(null);
+  const open = turnOpen(turn, chosen);
+  const hiddenTarget =
+    reveal !== null &&
+    turn.work.some((entry) => entry.kind === "message" && entry.id === reveal.id) &&
+    !turnWords(turn).some((entry) => entry.id === reveal.id);
+  useLayoutEffect(() => {
+    if (!conversation && hiddenTarget) setChosen(true);
+  }, [conversation, reveal, hiddenTarget]);
   if (conversation) return <ConversationTurn turn={turn} turnKey={turnKey} />;
   const spoken = turn.reply ?? turn.work.find((entry) => entry.kind === "message");
   const outcome = turn.run !== null && showsRunOutcome(turn.run);
@@ -409,7 +429,7 @@ function TurnView({ turn, turnKey }: { turn: Turn; turnKey: string }) {
     <div className="turn" data-run-id={turn.runId ?? undefined}>
       <AgentByline author={spoken?.kind === "message" ? spoken.author : null} />
       <TurnContent
-        fold={turnFolds(turn) ? { open: opened, onToggle: () => setOpened(!opened) } : undefined}
+        fold={turnFolds(turn) ? { open, onToggle: () => setChosen(!open) } : undefined}
         turn={turn}
         live={live}
       />
@@ -1257,7 +1277,7 @@ function TurnContent({
   entries?: readonly WorkEntry[];
   /**
    * Given, the turn's steps fold behind its status line, which opens them in
-   * place. Folded, only what the agent wrote is drawn: the steps are not
+   * place. Folded, only the last word is drawn; the earlier trace is not
    * mounted at all.
    */
   fold?: { readonly open: boolean; readonly onToggle: () => void } | undefined;

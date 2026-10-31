@@ -66,6 +66,7 @@ vi.mock("react-native-reanimated", () => ({
       <div aria-label={props.accessibilityLabel}>{props.children}</div>
     ),
   },
+  LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),

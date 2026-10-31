@@ -425,15 +425,29 @@ export function turnState(turn: Turn): TurnState {
 /**
  * Whether a task's turn has steps to fold behind its status line. The line
  * leads the turn whether it is live or settled, so finishing changes only its
- * words; what the agent wrote is never folded, only what it did.
+ * words. A turn that only spoke has nothing to fold.
  */
 export function turnFolds(turn: Turn): boolean {
   return turn.work.some((entry) => entry.kind !== "message");
 }
 
-/** What a folded turn still shows: everything the agent wrote, where it wrote it. */
+/**
+ * Whether a task's turn shows its whole story. Under way, it is told as it
+ * happens: what the agent says between the steps it takes, in order. Settled,
+ * it folds to its last word. The reader's own choice, once made, holds.
+ */
+export function turnOpen(turn: Turn, chosen: boolean | null): boolean {
+  return chosen ?? turnState(turn) !== "settled";
+}
+
+/**
+ * What a folded turn still shows: its last word — the reply the Run named, or
+ * else the last thing the agent wrote. What it said on the way is part of the
+ * story behind the status line, so it never runs into the answer.
+ */
 export function turnWords(turn: Turn): readonly WorkEntry[] {
-  return turn.work.filter((entry) => entry.kind === "message");
+  const last = turn.reply ?? turn.work.findLast((entry) => entry.kind === "message");
+  return last === undefined ? [] : [last];
 }
 
 /** Why a live turn's Run is still queued, when the client knows; otherwise null. */

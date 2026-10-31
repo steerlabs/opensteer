@@ -33,6 +33,7 @@ import {
   turnFolds,
   turnState,
   turnComputer,
+  turnOpen,
   turnWords,
   workRows,
   workSummary,
@@ -743,10 +744,11 @@ describe("workSummary", () => {
 });
 
 describe("a task's turn", () => {
-  // The ways it could fail: a live turn showing every step as it streams; a
-  // turn split by a message keeping its steps open; folding hiding what the
-  // agent wrote along the way; a reply alone growing a "Worked" line.
-  it("folds every step behind its status line and keeps everything the agent wrote", () => {
+  // The ways it could fail: a live turn hiding the steps between what the agent
+  // says; a settled turn running what it said on the way into its answer, or
+  // hiding the answer; a reader's choice not holding; a reply alone growing a
+  // "Worked" line.
+  it("tells its story in order while live, then folds to its last word", () => {
     const note = message({ body: "Checking tonight first.", id: "note" });
     const reply = message({ body: "Dhamaka has 9:45.", id: "reply" });
     const working = turns([
@@ -755,12 +757,20 @@ describe("a task's turn", () => {
       command("ls", { completedAt: null, state: "running" }),
     ])[0]!;
     expect(turnFolds(working)).toBe(true);
+    expect(turnOpen(working, null)).toBe(true);
+    expect(turnOpen(working, false)).toBe(false);
     expect(turnWords(working)).toEqual([note]);
     expect(workSummary(working)?.label).toBe("Running a command");
 
     const answered = turns([run({ replyMessageId: "reply" }), note, command("ls"), reply])[0]!;
-    expect(turnWords(answered)).toEqual([note, reply]);
+    expect(turnOpen(answered, null)).toBe(false);
+    expect(turnOpen(answered, true)).toBe(true);
+    expect(turnWords(answered)).toEqual([reply]);
     expect(workSummary(answered)?.label).toBe("Worked for 4s");
+
+    // A Run that ended without naming a reply still leaves its last word in view.
+    const failed = turns([run({ status: "failed" }), note, command("ls")])[0]!;
+    expect(turnWords(failed)).toEqual([note]);
 
     const joined = groupTranscriptEntries([
       run({ status: "running" }),

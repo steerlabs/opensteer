@@ -11,6 +11,7 @@ import {
   messageAuthorName,
   messageFoldLines,
   turnFolds,
+  turnOpen,
   turnState,
   turnWords,
   workRows,
@@ -31,7 +32,7 @@ import {
 } from "@opensteer/client/host";
 import { memo, useMemo, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
-import Animated from "react-native-reanimated";
+import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { Markdown, PlainProse } from "../markdown/markdown.js";
 import { color, material, radius, space, touchTarget, type } from "../theme.js";
 import { appear, exit } from "../ui/motion.js";
@@ -75,12 +76,11 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly group: TranscriptGroup;
   readonly live?: boolean;
   /**
-   * Whether the reader opened this row: a turn's folded steps, or a message's
-   * folded words. The pane holds it, because the list unmounts rows scrolled
-   * far away and brings them back.
+   * The reader's choice for this row, or null for its default. The pane holds
+   * it across rows leaving the list's mounted window.
    */
-  readonly open: boolean;
-  readonly onToggleOpen: (rowKey: string) => void;
+  readonly open: boolean | null;
+  readonly onToggleOpen: (rowKey: string, open: boolean) => void;
   readonly highlightRequestId: string | null;
   /** Opens one step's detail. */
   readonly onOpenStep: (entryId: string) => void;
@@ -136,8 +136,8 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           joinedRun={props.conversation !== true && group.joinedRun === true}
           homeThreadId={props.homeThreadId}
           onReply={props.onReply}
-          onToggle={() => props.onToggleOpen(group.key)}
-          open={props.open}
+          onToggle={() => props.onToggleOpen(group.key, props.open === true)}
+          open={props.open === true}
           message={group.entry}
           askAbout={props.askAbout}
           onOpenThread={props.onOpenThread}
@@ -181,18 +181,19 @@ export function transcriptSpacing(previous: TranscriptVoice | null, next: Transc
 function TurnView(props: {
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
-  readonly onToggle: (turnKey: string) => void;
-  readonly open: boolean;
+  readonly onToggle: (turnKey: string, open: boolean) => void;
+  readonly open: boolean | null;
   readonly turn: Turn;
   readonly turnKey: string;
   readonly live?: boolean;
 }): ReactNode {
   const { onToggle, turn, turnKey } = props;
   const folds = turnFolds(turn);
+  const open = turnOpen(turn, props.open);
   return (
     <View style={styles.turn}>
       <TurnContent
-        {...(folds ? { fold: { onToggle: () => onToggle(turnKey), open: props.open } } : {})}
+        {...(folds ? { fold: { onToggle: () => onToggle(turnKey, open), open } } : {})}
         highlightRequestId={props.highlightRequestId}
         onOpenStep={props.onOpenStep}
         turn={turn}
@@ -507,8 +508,7 @@ function TurnContent(props: {
   const active = turnState(turn) !== "settled";
   const status = props.status !== false;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
-  // Closed, the agent's words are the turn's rows and its steps are not
-  // mounted at all, which is what keeps a long night of turns light to scroll.
+  // Closed, only the last word stays mounted, keeping long transcripts light to scroll.
   const closed = fold?.open === false;
   const rows = useMemo(
     () => workRows(closed ? turnWords(turn) : (props.entries ?? turn.work)),
@@ -524,26 +524,22 @@ function TurnContent(props: {
           {...(fold === undefined ? {} : fold)}
         />
       )}
-      {rows.map((row) => {
-        const view = (
-          <WorkRowView
-            active={active}
-            highlightRequestId={props.highlightRequestId}
-            key={row.key}
-            onOpenStep={props.onOpenStep}
-            row={row}
-            subagentWork={turn.subagentWork}
-          />
-        );
-        // A folding turn's steps come and go as any opened row's do; its words stay put.
-        return fold === undefined || row.kind === "note" ? (
-          view
-        ) : (
+      {/* What is there when the turn is first drawn simply stands; what
+          arrives or unfolds after it eases in, and what folds away eases out.
+          Every row keeps one wrapper, so nothing remounts as the turn grows. */}
+      <LayoutAnimationConfig skipEntering>
+        {rows.map((row) => (
           <Animated.View entering={appear} exiting={exit} key={row.key}>
-            {view}
+            <WorkRowView
+              active={active}
+              highlightRequestId={props.highlightRequestId}
+              onOpenStep={props.onOpenStep}
+              row={row}
+              subagentWork={turn.subagentWork}
+            />
           </Animated.View>
-        );
-      })}
+        ))}
+      </LayoutAnimationConfig>
     </>
   );
 }

@@ -752,15 +752,10 @@ function ThreadPaneForUser(
     isHome,
   ]);
 
-  // The rows the reader opened, for as long as this screen is up: answered
-  // turns' steps and long messages' words.
-  const [openRows, setOpenRows] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleRow = useCallback((rowKey: string) => {
-    setOpenRows((open) => {
-      const next = new Set(open);
-      if (!next.delete(rowKey)) next.add(rowKey);
-      return next;
-    });
+  // The reader's choices survive rows leaving the list's mounted window.
+  const [openRows, setOpenRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const toggleRow = useCallback((rowKey: string, open: boolean) => {
+    setOpenRows((choices) => new Map(choices).set(rowKey, !open));
   }, []);
   const openStep = useCallback(
     (entryId: string) => navigation.navigate("ThreadStep", { deploymentId, entryId, threadId }),
@@ -788,7 +783,9 @@ function ThreadPaneForUser(
       }
       const { openKey } = place;
       if (openKey !== null) {
-        setOpenRows((open) => (open.has(openKey) ? open : new Set(open).add(openKey)));
+        setOpenRows((open) =>
+          open.get(openKey) === true ? open : new Map(open).set(openKey, true),
+        );
       }
       if (place.activityKey !== null) openActivity(place.activityKey);
     },
@@ -966,7 +963,7 @@ function ThreadPaneForUser(
               onReply={conversational ? replyWith : undefined}
               live={live}
               group={item.group}
-              open={openRows.has(item.group.key)}
+              open={openRows.get(item.group.key) ?? null}
               onToggleOpen={toggleRow}
               highlightRequestId={requestId}
               askAbout={askAbout}

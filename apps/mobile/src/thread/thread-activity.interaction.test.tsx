@@ -27,6 +27,7 @@ vi.mock("react-native-reanimated", () => ({
   default: {
     View: ({ children }: { children?: ReactNode }) => <div data-working>{children}</div>,
   },
+  LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
 vi.mock("../ui/motion.js", () => ({ appear: undefined, exit: undefined }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
