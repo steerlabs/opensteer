@@ -1,5 +1,5 @@
 diff --git a/lib/coreBundle.js b/lib/coreBundle.js
-index d9041dd0f009072511a7d808dec83121ff29e127..aa5ad65e1a13d1e0b2bba26aa5ce72c1d0da0017 100644
+index d9041dd0f009072511a7d808dec83121ff29e127..2f798402cb5f555829843c70c85b7ea604a4bbcf 100644
 --- a/lib/coreBundle.js
 +++ b/lib/coreBundle.js
 @@ -51725,11 +51725,32 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
@@ -81,3 +81,15 @@ index d9041dd0f009072511a7d808dec83121ff29e127..aa5ad65e1a13d1e0b2bba26aa5ce72c1
        }
      };
    }
+@@ -62911,6 +62937,11 @@ var init_browserType2 = __esm({
+           return context3;
+         });
+         await this._instrumentation.runAfterCreateBrowserContext(context2);
++        // Native storage may be released only after its exact owned process exits.
++        if (this._connection.toImpl) {
++          const browserProcess = this._connection.toImpl(context2)._browser.options.browserProcess;
++          Object.defineProperty(context2, "process", { value: () => browserProcess.process });
++        }
+         return context2;
+       }
+       async connect(optionsOrEndpoint, options) {

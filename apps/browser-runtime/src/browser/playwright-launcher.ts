@@ -1,3 +1,4 @@
+import { ChildProcess } from "node:child_process";
 import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
@@ -518,10 +519,39 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       acceptDownloads: false,
       viewport: null,
     });
+    let ownedProcess: ChildProcess;
+    try {
+      // The pinned Playwright patch exposes the same owner as BrowserServer.process().
+      const handle = (
+        context as PlaywrightBrowserContext & { process?(): ChildProcess }
+      ).process?.();
+      if (
+        !(handle instanceof ChildProcess) ||
+        typeof handle.pid !== "number" ||
+        !Number.isSafeInteger(handle.pid) ||
+        handle.pid <= 0
+      )
+        throw new Error("Persistent Chromium did not expose its owned process.");
+      ownedProcess = handle;
+    } catch (cause) {
+      this.nativeCloseFailures.add(directory);
+      await context.close().catch(() => undefined);
+      throw new BrowserRuntimeError(
+        "conflict",
+        "Native Chromium process ownership is unavailable. The profile was preserved.",
+        { cause },
+      );
+    }
+    const exited = new Promise<void>((resolve) => {
+      if (ownedProcess.exitCode !== null || ownedProcess.signalCode !== null) resolve();
+      else ownedProcess.once("exit", () => resolve());
+    });
     timing("chromium-launch");
     const browser = context.browser();
     if (!browser) {
+      this.nativeCloseFailures.add(directory);
       await context.close();
+      await exited;
       throw new Error("Persistent Chromium has no browser owner.");
     }
     let stopped: Promise<void> | undefined;
@@ -534,7 +564,11 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
           try {
             await context.close();
           } finally {
-            await browser.close();
+            try {
+              await browser.close();
+            } finally {
+              await exited;
+            }
           }
         })()
           .then(

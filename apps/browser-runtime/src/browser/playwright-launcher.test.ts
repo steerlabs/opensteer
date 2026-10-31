@@ -5,6 +5,7 @@ import { nativeProfileRequest } from "./native-profile.test-support.js";
 import { assertImportedCookies } from "./native-profile-storage.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { EventEmitter } from "node:events";
+import { ChildProcess } from "node:child_process";
 import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
 import {
   chromium,
@@ -331,6 +332,16 @@ describe("native Chromium profiles", () => {
     await writeFile(join(directory, "Default", "Cookies"), "untouched");
     const close = Promise.withResolvers<void>();
     const closing = Promise.withResolvers<void>();
+    const processHandle = () => {
+      const child = new ChildProcess();
+      Object.defineProperty(child, "pid", { value: 12345 });
+      return child;
+    };
+    let ownedProcess = processHandle();
+    const exit = () => {
+      Object.defineProperty(ownedProcess, "exitCode", { value: 0 });
+      ownedProcess.emit("exit", 0, null);
+    };
     const cdp = {
       send: vi
         .fn()
@@ -350,6 +361,7 @@ describe("native Chromium profiles", () => {
       close: vi.fn().mockResolvedValue(undefined),
     };
     const context = {
+      process: () => ownedProcess,
       browser: () => browser,
       pages: () => pages,
       newPage: vi.fn().mockImplementation(async () => {
@@ -377,6 +389,7 @@ describe("native Chromium profiles", () => {
     try {
       const cancellation = new AbortController();
       const launched = await launcher.launch(nativeProfileRequest(directory), cancellation.signal);
+      expect(ownedProcess.listenerCount("exit")).toBe(1);
       cancellation.abort();
       expect(
         context.close,
@@ -462,6 +475,11 @@ describe("native Chromium profiles", () => {
       expect(released).toBe(false);
       expect(context.close).toHaveBeenCalledOnce();
       close.resolve();
+      await vi.waitFor(() => expect(browser.close).toHaveBeenCalledOnce(), { timeout: 1000 });
+      expect(released, "Protocol close must not release a still-running native process").toBe(
+        false,
+      );
+      exit();
       await releasing;
       expect(browser.close).toHaveBeenCalledOnce();
       await launched.close();
@@ -469,18 +487,55 @@ describe("native Chromium profiles", () => {
       // Existing preferences belong to Chromium and cannot be replaced on reopen.
       await writeFile(join(directory, "Default", "Preferences"), '{"retained":true}');
       pages.length = 0;
+      ownedProcess = processHandle();
       const reopened = await launcher.launch(nativeProfileRequest(directory));
       expect(await readFile(join(directory, "Default", "Preferences"), "utf8")).toBe(
         '{"retained":true}',
       );
-      await reopened.close();
+      const reopenedClose = reopened.close();
+      exit();
+      await reopenedClose;
     } finally {
       close.resolve();
+      exit();
       await launcher.localProfiles.release(directory);
       await rm(directory, { recursive: true, force: true });
     }
   });
 
+  it("refuses an unpatched persistent context and fences release without clearing native storage", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os-native-unowned-"));
+    await writeFile(join(directory, "retained"), "sentinel");
+    const context = {
+      browser: () => ({}),
+      close: vi.fn().mockResolvedValue(undefined),
+      addInitScript: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      newPage: vi.fn(),
+    };
+    const persistent = vi
+      .spyOn(chromium, "launchPersistentContext")
+      .mockResolvedValueOnce(context as unknown as BrowserContext);
+    const launcher = new PlaywrightChromiumLauncher({
+      executablePath: process.execPath,
+      headless: true,
+      chromiumSandbox: true,
+    });
+    try {
+      await expect(launcher.launch(nativeProfileRequest(directory))).rejects.toThrow(
+        "Native Chromium process ownership is unavailable",
+      );
+      expect(context.close).toHaveBeenCalledOnce();
+      expect(context.newPage).not.toHaveBeenCalled();
+      await expect(launcher.localProfiles.release(directory)).rejects.toThrow(
+        "Native Chromium process ownership is unavailable",
+      );
+      expect(await readFile(join(directory, "retained"), "utf8")).toBe("sentinel");
+    } finally {
+      persistent.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
   it.each(["--password-store=basic", "--use-mock-keychain", "--profile-directory=Other"])(
     "refuses native launches with %s",
     async (arg) => {
