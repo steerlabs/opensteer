@@ -18,6 +18,7 @@ import { voiceTimers, type VoiceTimer, type VoiceTimers } from "./timers.js";
 export interface CodexVoiceProviderInput extends VoiceTimers {
   readonly rpc: Pick<HostApiClient, "voice.start" | "voice.renew" | "voice.say" | "voice.stop">;
   readonly media: VoiceMediaPort;
+  readonly agent?: boolean;
   readonly environmentId: string;
   readonly harnessInstanceId: string;
   /** Fresh lowercase UUID v4 for each call. */
@@ -315,7 +316,10 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         const sdp = pc.localDescription?.sdp;
         if (!sdp) throw new VoiceStartError("connection-failed");
         hostMayHoldCall = true;
-        const starting = input.rpc["voice.start"]({ ...address, offer: sdp }, { signal });
+        const starting = input.rpc["voice.start"](
+          { ...address, offer: sdp, ...(input.agent ? { agent: true as const } : {}) },
+          { signal },
+        );
         // Stop once more after a late admission, in case the first stop overtook start.
         const stopLateStart = () => {
           if (ended) void input.rpc["voice.stop"](address).catch(() => {});
@@ -334,6 +338,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
           void levels();
         }, 100);
         return {
+          agent: result.data.agent === true,
           async say(text) {
             if (ended) throw new VoiceStartError("connection-failed");
             const result = await input.rpc["voice.say"]({ ...address, text });

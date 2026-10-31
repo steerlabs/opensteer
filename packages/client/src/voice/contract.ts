@@ -44,6 +44,7 @@ export type VoiceEndReason =
   "stopped" | "connection-lost" | "replaced" | "expired" | "refused" | "failed";
 
 export interface VoiceCall {
+  readonly agent?: boolean;
   /** Has the voice tell the person this. Resolves when accepted, not when spoken. */
   say(text: string): Promise<void>;
   setMuted(muted: boolean): void;

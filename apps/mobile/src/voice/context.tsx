@@ -1,9 +1,9 @@
+import { show } from "./navigation.js";
 import { voicePlaces } from "./places.js";
-import { VoiceController, type VoiceTarget } from "@opensteer/client/voice";
-import { StackActions } from "@react-navigation/native";
+import { VoiceController } from "@opensteer/client/voice";
 import { randomUUID } from "expo-crypto";
 import { useEffect, useState, type ReactNode } from "react";
-import { workspaceRoute } from "../browser/surface-route.js";
+import { paramsDestination } from "../browser/surface-route.js";
 import { useDictation } from "../dictation/context.js";
 import { navigationRef } from "../navigation-ref.js";
 import { useVoiceBackgroundStop } from "../platform/use-voice-background-stop.js";
@@ -28,14 +28,28 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
       media: voiceMediaPort,
       navigate: (target) => show(client.getSnapshot().selection.deploymentId, target),
       createId: randomUUID,
+      currentView: () => {
+        const route = navigationRef.getCurrentRoute();
+        const params = route?.params as { threadId?: string } | undefined;
+        return {
+          threadId:
+            route?.name === "Home"
+              ? (hostClient.getSnapshot().homeThreadId ?? undefined)
+              : params?.threadId,
+          destination: paramsDestination(params) ?? undefined,
+          title: route?.name,
+        };
+      },
       places: () => voicePlaces(hostClient, navigationRef.getCurrentRoute()),
       onStart: async () => {
         const owner = dictation.getSnapshot().owner;
         if (owner) await dictation.stop(owner);
       },
     });
+    const unsubscribe = navigationRef.addListener("state", () => created.refreshContext());
     setController(created);
     return () => {
+      unsubscribe();
       created.dispose();
       setController(null);
     };
@@ -51,19 +65,4 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
 function BackgroundStop({ controller }: { readonly controller: VoiceController }): null {
   useVoiceBackgroundStop(controller);
   return null;
-}
-
-function show(deploymentId: string | null, target: VoiceTarget): void {
-  if (!deploymentId || !navigationRef.isReady()) return;
-  if (target.kind === "back") {
-    if (navigationRef.canGoBack()) navigationRef.goBack();
-  } else if (target.kind === "chat") navigationRef.navigate("Home", { deploymentId });
-  else if (target.kind === "thread")
-    navigationRef.dispatch(
-      StackActions.push("Thread", { deploymentId, threadId: target.threadId }),
-    );
-  else
-    navigationRef.dispatch(
-      StackActions.push("WorkspaceBrowser", workspaceRoute(deploymentId, target.destination)),
-    );
 }

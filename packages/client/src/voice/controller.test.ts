@@ -1,3 +1,4 @@
+import type { VoiceToolCall } from "@opensteer/protocol/voice";
 import { EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserPagePart } from "../host/pending-send.js";
@@ -191,7 +192,7 @@ describe("VoiceController", () => {
     f.dispose();
   });
 
-  it("routes navigation, leaves ambiguity for Chat, and never creates Chat just to navigate", async () => {
+  it("forwards navigation words verbatim and creates Chat through the legacy send path", async () => {
     const f = setup({ home: "absent" });
     const snapshot = f.host.getSnapshot();
     const account = voiceAccount(snapshot)!;
@@ -203,9 +204,7 @@ describe("VoiceController", () => {
     const dispatch = vi.spyOn(f.host, "dispatch");
     await f.controller.start();
     f.emit({ type: "heard", turnId: "nav", text: "show me chat" });
-    expect(f.navigate).toHaveBeenCalledExactlyOnceWith({ kind: "chat" });
-    expect(createHome).not.toHaveBeenCalled();
-    f.emit({ type: "heard", turnId: "ask", text: "show me how to write a PR" });
+    expect(f.navigate).not.toHaveBeenCalled();
     await vi.waitFor(
       () => expect(createHome, "first utterance never created Chat").toHaveBeenCalledTimes(1),
       { timeout: 100 },
@@ -229,7 +228,7 @@ describe("VoiceController", () => {
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: home.id,
-        content: [{ type: "text", text: "show me how to write a PR" }],
+        content: [{ type: "text", text: "show me chat" }],
       }),
     );
     f.dispose();
@@ -489,7 +488,7 @@ describe("VoiceController", () => {
     f.emit({ type: "spoke" });
     expect(f.controller.getSnapshot()).toMatchObject({ phase: "hearing", heard: "Go" });
     f.emit({ type: "heard", text: "go back", turnId: "nav" });
-    expect(f.controller.getSnapshot().phase).toBe("listening");
+    expect(f.controller.getSnapshot().phase).toBe("thinking");
     f.dispose();
   });
 
@@ -503,4 +502,151 @@ describe("VoiceController", () => {
     expect(f.controller.getSnapshot().phase).toBe("listening");
     f.dispose();
   });
+});
+
+function agentSetup(input?: Partial<VoiceControllerInput>) {
+  const f = setup({ input: input ?? {} });
+  Object.assign(f.call, { agent: true });
+  const queue: VoiceToolCall[] = [];
+  let deliver: ((value: { ok: true; data: { call: VoiceToolCall | null } }) => void) | undefined;
+  const next = vi.fn<(typeof f.host.rpc)["voice.next"]>(async () => {
+    const call = queue.shift();
+    if (call) return { ok: true, data: { call } };
+    return new Promise((resolve) => {
+      deliver = resolve;
+    });
+  });
+  const answer = vi
+    .fn<(typeof f.host.rpc)["voice.answer"]>()
+    .mockResolvedValue({ ok: true, data: {} });
+  const context = vi
+    .fn<(typeof f.host.rpc)["voice.context"]>()
+    .mockResolvedValue({ ok: true, data: {} });
+  Object.assign(f.host.rpc, {
+    "voice.next": next,
+    "voice.answer": answer,
+    "voice.context": context,
+  });
+  const dispatch = vi.spyOn(f.host, "dispatch");
+  return {
+    ...f,
+    next,
+    answer,
+    context,
+    dispatch,
+    tool(call: VoiceToolCall) {
+      if (deliver) {
+        const resolve = deliver;
+        deliver = undefined;
+        resolve({ ok: true, data: { call } });
+      } else queue.push(call);
+    },
+  };
+}
+
+it("agent captions never auto-send; redelivered back executes once and unknown tools fail", async () => {
+  const f = agentSetup();
+  await f.controller.start();
+  f.emit({ type: "heard", turnId: "one", text: "go back" });
+  expect(f.dispatch).not.toHaveBeenCalled();
+  expect(f.controller.getSnapshot()).toMatchObject({ heard: "go back", phase: "thinking" });
+  f.tool({ id: "back", tool: "show", input: { link: "opensteer://back" } });
+  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(1), { timeout: 100 });
+  f.tool({ id: "back", tool: "show", input: { link: "opensteer://back" } });
+  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(2), { timeout: 100 });
+  expect(f.navigate).toHaveBeenCalledExactlyOnceWith({ kind: "back" });
+  f.tool({ id: "unknown", tool: "future", input: {} });
+  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(3), { timeout: 100 });
+  expect(f.answer.mock.calls[2]![0]).toMatchObject({
+    ok: false,
+    text: "This device can't do that yet.",
+  });
+  await f.controller.stop();
+  f.tool({ id: "late", tool: "show", input: { link: "opensteer://back" } });
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(f.navigate).toHaveBeenCalledTimes(1);
+  f.dispose();
+});
+
+it("hands off only the last buffered user words with the call id, then clears them", async () => {
+  const f = agentSetup();
+  await f.controller.start();
+  for (let i = 0; i < 7; i++) f.emit({ type: "heard", turnId: String(i), text: `  Words ${i}!  ` });
+  f.tool({
+    id: "send",
+    tool: "send_to_chat",
+    input: { messages: 5, text: "injected agent words" },
+  });
+  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(1), { timeout: 200 });
+  expect(f.dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      idempotencyKey: `voice:${voiceTestId}:send`,
+      content: [{ type: "text", text: [2, 3, 4, 5, 6].map((i) => `  Words ${i}!  `).join("\n") }],
+    }),
+  );
+  f.tool({ id: "empty", tool: "send_to_chat", input: { messages: 1 } });
+  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(2), { timeout: 100 });
+  expect(f.answer.mock.calls[1]![0]).toMatchObject({ ok: false });
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
+  f.dispose();
+});
+
+it("deduplicates context, debounces changes, and pushes changed context on hearing", async () => {
+  let title = "First";
+  const f = agentSetup({ currentView: () => ({ title }) });
+  await f.controller.start();
+  await vi.waitFor(() => expect(f.context).toHaveBeenCalledTimes(1), { timeout: 100 });
+  f.controller.refreshContext();
+  await vi.advanceTimersByTimeAsync(250);
+  expect(f.context).toHaveBeenCalledTimes(1);
+  title = "Second";
+  f.controller.refreshContext();
+  await vi.advanceTimersByTimeAsync(249);
+  expect(f.context).toHaveBeenCalledTimes(1);
+
+  f.emit({ type: "hearing", text: "hello" });
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.context).toHaveBeenCalledTimes(2);
+  f.dispose();
+});
+
+it("backs off transient polls, retries the same answer body, and cancels a pending backoff", async () => {
+  const f = agentSetup();
+  f.next.mockRejectedValueOnce(new TypeError("offline"));
+  f.answer.mockRejectedValueOnce(new TypeError("lost answer"));
+  await f.controller.start();
+  await vi.advanceTimersByTimeAsync(249);
+  expect(f.next).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.next).toHaveBeenCalledTimes(2);
+  f.tool({ id: "one", tool: "show", input: { link: "opensteer://back" } });
+  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(2), { timeout: 100 });
+  expect(f.answer.mock.calls[0]![0]).toEqual(f.answer.mock.calls[1]![0]);
+  expect(f.navigate).toHaveBeenCalledTimes(1);
+  f.next.mockRejectedValue(new TypeError("offline"));
+  f.tool({ id: "two", tool: "future", input: {} });
+  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(3), { timeout: 100 });
+  await f.controller.stop();
+  const polls = f.next.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(f.next).toHaveBeenCalledTimes(polls);
+  f.dispose();
+});
+
+it("waits for negotiation before handling an utterance received while opening", async () => {
+  const f = agentSetup();
+  const opening = f.controller.start();
+  // onStart yields before the provider opens; emit from within provider admission.
+  vi.mocked(f.provider.open).mockImplementationOnce(async (input) => {
+    input.onEvent({ type: "heard", turnId: "early", text: "do this" });
+    return f.call;
+  });
+  await opening;
+  expect(f.dispatch).not.toHaveBeenCalled();
+  f.tool({ id: "handoff", tool: "send_to_chat", input: { messages: 1 } });
+  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(1), { timeout: 100 });
+  expect(f.dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({ content: [{ type: "text", text: "do this" }] }),
+  );
+  f.dispose();
 });
