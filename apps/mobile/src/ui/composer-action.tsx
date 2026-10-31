@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
-import { color, radius, touchTarget } from "../theme.js";
+import { color, material, radius, touchTarget } from "../theme.js";
 import type { ComposerActionProps } from "./composer-action.types.js";
 
 /**
@@ -27,7 +27,7 @@ export function ComposerAction(props: ComposerActionProps): ReactNode {
             styles.button,
             props.kind === "stop" && styles.stop,
             (props.disabled || props.busy) && styles.disabled,
-            pressed && styles.pressed,
+            pressed && (props.kind === "stop" ? styles.stopPressed : styles.pressed),
           ]}
         >
           {props.busy ? (
@@ -48,16 +48,21 @@ export function ComposerAction(props: ComposerActionProps): ReactNode {
 
 const styles = StyleSheet.create({
   button: {
+    ...material.accent,
     alignItems: "center",
-    backgroundColor: color.ember,
     borderRadius: radius.full,
     height: 34,
     justifyContent: "center",
     width: 34,
   },
-  stop: { backgroundColor: color.red },
+  stop: { ...material.destructive },
   disabled: { opacity: 0.4 },
-  pressed: { opacity: 0.75 },
+  pressed: { ...material.accentPressed },
+  stopPressed: {
+    ...material.platePressed,
+    backgroundColor: material.destructive.backgroundColor,
+    borderTopColor: material.destructive.borderColor,
+  },
   square: { backgroundColor: color.inkOnEmber, borderRadius: 2, height: 11, width: 11 },
   target: {
     alignItems: "center",

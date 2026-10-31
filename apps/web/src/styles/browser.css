@@ -46,9 +46,9 @@
 /* A page's or app's own actions, behind one ⋯. */
 .surface-menu.icon-btn {
   flex: none;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
+  width: var(--control-height);
+  min-width: var(--control-height);
+  height: var(--control-height);
   padding: 0;
   border: 0;
   border-radius: var(--radius-xs);
@@ -64,7 +64,7 @@
 .surface-menu:hover,
 .surface-menu.is-open {
   color: var(--text);
-  background: var(--surface-elevated);
+  background-color: var(--fill-quiet);
 }
 
 /* Taller than the shared popover: the whole menu should be readable without
@@ -118,22 +118,25 @@
   align-items: center;
   width: 200px;
   min-width: 128px;
-  height: 36px;
+  height: var(--control-height);
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   color: var(--muted);
   transition:
     color var(--duration-fast) var(--ease-out),
-    background var(--duration-fast) var(--ease-out);
+    background-color var(--duration-fast) var(--ease-out);
+  border: 1px solid transparent;
 }
 
 .browser-tab:hover:not(.is-active) {
   color: var(--text-soft);
-  background: rgb(255 255 255 / 4%);
+  background-color: var(--fill-quiet);
 }
 
 .browser-tab.is-active {
   color: var(--text);
-  background: var(--surface);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 
 /* A hairline between two quiet tabs, as Chrome draws one. */
@@ -144,7 +147,7 @@
   bottom: 11px;
   left: -2px;
   width: 1px;
-  background: var(--line-strong);
+  background-color: var(--line-strong);
 }
 
 /* The agent's badge, in the green that marks an agent acting anywhere it works. */
@@ -167,7 +170,7 @@
    is "Agent", still read in full. */
 
 /* Nothing to point at: every tab shows its close, bigger, over its faded name. */
-@media (hover: none) {
+@media (any-pointer: coarse) {
   .browser-tab {
     --tab-close: 32px;
     height: var(--touch-target);
@@ -201,7 +204,7 @@
   min-height: 56px;
   padding: var(--space-8) var(--space-10);
   border-bottom: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--ground);
 }
 
 .browser-toolbar .browser-address {
@@ -232,7 +235,7 @@
 
 .browser-controls button:hover:not(:disabled) {
   color: var(--text);
-  background: rgb(255 255 255 / 7%);
+  background-color: var(--fill-quiet);
 }
 
 .browser-controls button:disabled {
@@ -250,23 +253,25 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  height: 32px;
+  height: var(--control-height);
   padding: 0 var(--space-4) 0 var(--space-12);
   overflow: hidden;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-control);
   border-radius: var(--radius-full);
   color: var(--text-soft);
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
   gap: var(--space-8);
   transition: border-color var(--duration-fast) linear;
+  box-shadow: var(--edge-plate);
 }
 
 .browser-address:focus-within {
-  border-color: var(--ember-line);
+  border-color: var(--ember);
 }
 
 .browser-address {
   position: relative;
+  min-height: var(--control-height);
 }
 
 /* At rest the address reads as Chrome's does: the site, then the rest dimmed.
@@ -372,7 +377,7 @@
 }
 
 .browser-page-name:active:not(:disabled) {
-  background: var(--surface-elevated);
+  background-color: var(--fill-quiet);
 }
 
 .browser-page-name__text {
@@ -406,6 +411,12 @@
   position: relative;
   display: grid;
   min-height: 0;
+  --browser-frame-left: 0px;
+  --browser-frame-top: 0px;
+  --browser-frame-width: 100%;
+  --browser-frame-height: 100%;
+  --browser-frame-aspect: auto;
+  --browser-region-radius: 0px;
 }
 
 .browser-canvas {
@@ -443,14 +454,17 @@
   max-width: 100%;
   padding: var(--space-4) var(--space-8);
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: 0 var(--radius-sm) 0 0;
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-float);
   color: var(--text-soft);
   font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;
+  box-shadow: var(--edge-plate), var(--lift-float);
+  -webkit-backdrop-filter: var(--blur-float);
+  backdrop-filter: var(--blur-float);
 }
 
 /* The profile sheets ride the shared Dialog. A page's own dialog (alert,
@@ -465,7 +479,7 @@
   display: grid;
   place-items: start center;
   padding: 0 var(--space-14);
-  background: rgb(0 0 0 / 32%);
+  background: var(--scrim-light);
   animation: fade-in var(--duration-fast) var(--ease-out);
 }
 
@@ -489,9 +503,10 @@
   border: 1px solid var(--red-line);
   border-radius: var(--radius-xs);
   color: var(--red-text);
-  background: color-mix(in srgb, var(--red) 10%, var(--surface-elevated));
+  background: var(--sheen) var(--fill-plate);
   font-size: var(--text-sm);
   line-height: 1.4;
+  box-shadow: var(--edge-attention);
 }
 
 .browser-stage > .browser-action-error {
@@ -527,16 +542,17 @@
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background var(--duration-fast) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .browser-choice__option:hover {
-  background: var(--surface-elevated);
+  background-color: var(--fill-quiet);
 }
 
 .browser-choice__option:has(input:checked) {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 
 .browser-choice__option.is-disabled {
@@ -600,16 +616,17 @@
   flex: 1 1 160px;
   min-width: 0;
   padding: var(--space-8) var(--space-10);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-control);
   border-radius: var(--radius-xs);
   color: var(--text);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   font: inherit;
   font-size: var(--text-lg);
+  box-shadow: var(--edge-plate);
 }
 
 .browser-name-form input:focus-visible {
-  border-color: var(--ember-line);
+  border-color: var(--ember);
   outline: none;
   box-shadow: var(--ring-ember);
 }
@@ -656,7 +673,7 @@
   border-radius: 5px;
   color: hsl(var(--site-hue, 30) 28% 86%);
   background: hsl(var(--site-hue, 30) 22% 26%);
-  font-size: 10px;
+  font-size: var(--text-3xs);
   font-weight: var(--weight-heavy);
   line-height: 1;
 }
@@ -681,7 +698,7 @@
   gap: var(--space-8);
   min-height: 56px;
   padding: var(--space-8) var(--space-10);
-  background: var(--surface);
+  background: var(--ground);
 }
 
 /* A real text control owns IME composition; the remote frame remains the visible editor. */
@@ -696,7 +713,7 @@
   opacity: 0;
   resize: none;
   overflow: hidden;
-  font-size: 16px;
+  font-size: var(--text-input);
   pointer-events: none;
 }
 
@@ -717,12 +734,14 @@
   gap: var(--space-6);
   min-height: var(--touch-target);
   padding: 0 var(--space-14);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
   color: var(--text);
-  background: color-mix(in srgb, var(--surface-elevated) 92%, transparent);
-  box-shadow: var(--shadow-raised);
+  background: var(--sheen) var(--fill-float);
+  box-shadow: var(--edge-plate), var(--lift-float);
   font-size: var(--text-md);
+  -webkit-backdrop-filter: var(--blur-float);
+  backdrop-filter: var(--blur-float);
 }
 
 .browser-keyboard-offer svg {
@@ -751,25 +770,26 @@
   min-width: 0;
   /* Three chips share a line in the conversation column beside an open stage. */
   max-width: 10.5rem;
-  height: 26px;
+  height: var(--control-height-sm);
   padding: 0 var(--space-10) 0 var(--space-4);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
   color: var(--text-soft);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   font-size: var(--text-sm);
   text-decoration: none;
   transition:
     background-color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
+  box-shadow: var(--edge-plate);
 }
 
 a.surface-chip:hover,
 button.surface-chip:hover {
   border-color: var(--line-hover);
-  background: var(--surface-hover);
   color: var(--text);
   text-decoration: none;
+  background-color: var(--fill-plate-hover);
 }
 
 .surface-chip .site-mark,
@@ -833,9 +853,10 @@ button.surface-chip:hover {
 
 /* The place the reply's live picture shows, highlighted where it stands. */
 .surface-chip--active {
-  border-color: var(--muted);
-  background: var(--surface-raised);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
   color: var(--text);
+  box-shadow: var(--edge-plate);
 }
 
 .surface-chips__list {
@@ -882,16 +903,18 @@ button.surface-chip:hover {
   .surface-row {
     min-height: calc(52px + env(safe-area-inset-top, 0px));
     padding-top: calc(var(--space-8) + env(safe-area-inset-top, 0px));
+    background: var(--ground);
   }
 
   /* Put away, the sheet is its handle alone: the page stays usable. */
   .thread--sheet {
     flex: none;
     height: auto;
-    border-top: 1px solid var(--line-strong);
+    border-top: 1px solid var(--rim-plate);
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-    background: var(--surface);
-    box-shadow: 0 -12px 32px rgb(0 0 0 / 45%);
+    background: var(--ground);
+    box-shadow: var(--edge-plate);
+    --ground: var(--surface-elevated);
   }
 
   .thread--sheet > .topbar {
@@ -925,7 +948,7 @@ button.surface-chip:hover {
   .thread--sheet .composer-dock {
     padding-top: var(--space-6);
     border-top: 1px solid var(--line);
-    background: var(--surface);
+    background: var(--ground);
   }
 }
 
@@ -1000,16 +1023,16 @@ button.surface-chip:hover {
 
 /* Fingers: chips grow to a size a thumb can land on; the chips stay one
    height, the "+N" with them. */
-@media (hover: none) {
+@media (any-pointer: coarse) {
   .surface-chip {
-    height: 36px;
-    min-height: 0;
+    height: var(--touch-target);
+    min-height: var(--touch-target);
   }
 }
 
 /* Native pages show through the app view; only the area around the placed page is painted. */
 .browser-view--native > .browser-toolbar {
-  background: var(--surface-elevated);
+  background: var(--ground);
 }
 .browser-stage:has(.browser-native-well) {
   background: transparent;
@@ -1033,9 +1056,7 @@ button.surface-chip:hover {
 }
 .browser-page-hole.is-sized {
   outline: 1px solid var(--line-strong);
-  box-shadow:
-    var(--shadow-raised),
-    0 0 0 100vmax var(--surface-elevated);
+  box-shadow: 0 0 0 100vmax var(--surface-elevated);
 }
 .browser-well__brackets {
   position: absolute;
@@ -1114,8 +1135,8 @@ button.surface-chip:hover {
 .browser-find button {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
   padding: 4px;
   flex: none;
   border: 0;
@@ -1125,7 +1146,7 @@ button.surface-chip:hover {
 }
 .browser-find button:hover {
   color: var(--text);
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 .browser-find__count {
   color: var(--muted);
@@ -1180,10 +1201,12 @@ button.surface-chip:hover {
   max-height: min(480px, 70dvh);
   overflow-y: auto;
   padding: 6px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: 12px;
-  background: var(--surface-elevated);
-  box-shadow: 0 8px 32px #0002;
+  background: var(--sheen) var(--fill-float);
+  box-shadow: var(--edge-plate), var(--lift-float);
+  -webkit-backdrop-filter: var(--blur-float);
+  backdrop-filter: var(--blur-float);
 }
 
 .browser-downloads {
@@ -1195,8 +1218,9 @@ button.surface-chip:hover {
   inset: 0;
   border-radius: 50%;
   background: conic-gradient(var(--green) var(--download-progress), var(--line-strong) 0);
-  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), var(--mask-ink) 0);
   pointer-events: none;
+  --download-progress: 0%;
 }
 
 .browser-downloads__progress.is-indeterminate {
@@ -1259,7 +1283,7 @@ button.surface-chip:hover {
 }
 
 button.browser-download__file:hover {
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 
 .browser-download__filename,
@@ -1288,7 +1312,7 @@ button.browser-download__file:hover {
   padding: 10px 14px;
   background: var(--surface-elevated);
   border-bottom: 1px solid var(--line);
-  font-size: 13px;
+  font-size: var(--text-lg);
 }
 .browser-passkey-bar small {
   display: block;

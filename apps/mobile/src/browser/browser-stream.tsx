@@ -27,7 +27,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { color, radius, space, type as textType } from "../theme.js";
+import { color, material, radius, space, type as textType } from "../theme.js";
 import { usePaneGeometry } from "../ui/pane.js";
 import { interact } from "../voice/interaction.js";
 import {
@@ -750,11 +750,9 @@ const styles = StyleSheet.create({
   },
   label: { ...textType.caption, color: color.muted, textAlign: "center" },
   retry: {
+    ...material.control,
     alignItems: "center",
-    backgroundColor: color.surfaceRaised,
-    borderColor: color.lineControl,
     borderRadius: radius.full,
-    borderWidth: 1,
     justifyContent: "center",
     minHeight: 44,
     paddingHorizontal: space[16],

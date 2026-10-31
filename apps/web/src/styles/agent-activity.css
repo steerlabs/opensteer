@@ -12,9 +12,10 @@
    output stays bare. */
 .msg--user,
 .input-card {
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: 15px 15px 5px 15px;
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   color: var(--text);
   font-size: var(--text-2xl);
   line-height: 1.55;
@@ -127,8 +128,8 @@ a.input-card__sender:focus-visible {
 
 .input-card__ask:hover,
 .input-card__ask:focus-visible {
-  background: var(--surface-raised);
   color: var(--ember-bright);
+  background-color: var(--fill-quiet);
 }
 
 @media (hover: none) {
@@ -143,10 +144,11 @@ a.input-card__sender:focus-visible {
   place-items: center;
   width: 16px;
   height: 16px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: 5px;
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
+  box-shadow: var(--edge-plate);
 }
 
 .input-card__glyph .icon {
@@ -186,12 +188,13 @@ a.input-card__sender:focus-visible {
 .message-fold:not([data-open]) {
   max-height: calc(var(--fold-lines) * 1lh);
   overflow: clip;
+  --fold-lines: 5;
 }
 
 /* Only words that run past the fold fade into it. */
 .message-fold[data-overflowing] {
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2lh), transparent);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 2lh), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, var(--mask-ink) calc(100% - 2lh), transparent);
+  mask-image: linear-gradient(to bottom, var(--mask-ink) calc(100% - 2lh), transparent);
 }
 
 .message-fold__toggle {
@@ -375,9 +378,9 @@ a.input-card__sender:focus-visible {
 }
 
 .trace-step__surface:hover {
-  background: var(--surface-hover);
   color: var(--text);
   text-decoration: none;
+  background-color: var(--fill-quiet);
 }
 
 .trace-step__icon {
@@ -675,8 +678,10 @@ div.trace-step__head .trace-step__detail {
    subagent it started nests inside, one step in. */
 .subagent {
   padding: 0 var(--space-10);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .subagent > .trace-step__body {
@@ -863,20 +868,22 @@ button.computer-now__where:focus-visible .work__chevron {
 
 .computer-now__stop {
   flex: none;
-  min-height: 32px;
+  min-height: var(--control-height);
   padding: 0 var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: 999px;
-  background: none;
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
   font-size: var(--text-sm);
   transition:
     border-color var(--duration-fast) var(--ease-out),
     color var(--duration-fast) var(--ease-out);
+  box-shadow: var(--edge-plate);
 }
 
 .computer-now__stop:hover:not(:disabled) {
-  border-color: var(--line-hover);
+  border-color: var(--rim-selected);
+  background-color: var(--fill-plate-hover);
   color: var(--text);
 }
 
@@ -884,7 +891,7 @@ button.computer-now__where:focus-visible .work__chevron {
   color: var(--muted);
 }
 
-@media (hover: none) and (pointer: coarse) {
+@media (any-pointer: coarse) {
   .computer-now__stop {
     min-height: var(--touch-target);
   }
@@ -922,12 +929,12 @@ button.computer-now__where:focus-visible .work__chevron {
   padding: var(--space-4) var(--space-8);
   /* A deliberate one-off: a line's wash, softer than a surface's corners. */
   border-radius: 8px;
-  transition: background var(--duration-fast) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .task-line:hover,
 .task-line--menu {
-  background: rgb(255 255 255 / 4%);
+  background-color: var(--fill-quiet);
 }
 
 .task-line__row {
@@ -1064,7 +1071,7 @@ button.computer-now__where:focus-visible .work__chevron {
   height: 16px;
 }
 
-@media (hover: none) and (pointer: coarse) {
+@media (hover: none) {
   .task-line__more {
     opacity: 1;
   }
@@ -1198,8 +1205,10 @@ button.computer-now__where:focus-visible .work__chevron {
   padding: var(--space-12) var(--space-14);
   border: 1px solid var(--red-line);
   border-radius: var(--radius-md);
-  background: var(--red-wash);
+  background: var(--sheen) var(--fill-plate);
   font-size: var(--text-lg);
+  border-color: var(--rim-attention);
+  box-shadow: var(--edge-attention);
 }
 
 .run-failure__title {
@@ -1228,7 +1237,7 @@ button.computer-now__where:focus-visible .work__chevron {
   width: 14px;
   height: 14px;
   border-radius: var(--radius-full);
-  background: radial-gradient(circle at 34% 30%, var(--ember-bright), #7a5348);
+  background: radial-gradient(circle at 34% 30%, var(--ember-bright), var(--orb-core));
   animation: breathe 1.5s ease-in-out infinite;
 }
 
@@ -1283,7 +1292,7 @@ button.computer-now__where:focus-visible .work__chevron {
   border: 0;
   background: none;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   color: var(--muted-dim);
   cursor: pointer;
 }
@@ -1303,7 +1312,7 @@ button.computer-now__where:focus-visible .work__chevron {
   align-items: center;
   gap: var(--space-6);
   color: var(--muted-dim);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .turn-source .icon {

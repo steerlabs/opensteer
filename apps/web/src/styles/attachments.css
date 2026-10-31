@@ -10,7 +10,7 @@
 }
 
 .composer__attach:hover:not(:disabled) {
-  background: var(--surface-hover);
+  --face-fill: var(--fill-quiet);
   color: var(--text);
 }
 
@@ -26,8 +26,8 @@
 .composer--dropping,
 .composer--dropping:focus-within {
   border-color: var(--ember-line);
-  background: color-mix(in srgb, var(--ember-wash) 50%, var(--surface-elevated));
-  box-shadow: var(--shadow-raised), var(--ring-ember);
+  background-color: color-mix(in srgb, var(--ember-wash) 50%, var(--fill-float));
+  box-shadow: var(--edge-plate), var(--lift-float), var(--ring-ember);
 }
 
 .attachment-tray {
@@ -51,17 +51,18 @@
   gap: var(--space-8);
   width: 232px;
   padding: var(--space-4);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   transition:
     border-color var(--duration-fast) var(--ease-out),
     opacity var(--duration-fast) var(--ease-out);
+  box-shadow: var(--edge-plate);
 }
 
 .staged-attachment--failed {
   border-color: var(--red-line);
-  background: color-mix(in srgb, var(--red-wash) 60%, var(--surface-raised));
+  background-color: var(--red-wash);
 }
 
 .staged-attachment--sending {
@@ -101,7 +102,7 @@
 
 /* Over a thumbnail, the upload state needs its own ground to read against. */
 .staged-attachment__media:has(img) .staged-attachment__spinner {
-  box-shadow: 0 0 0 9px rgb(0 0 0 / 45%);
+  box-shadow: 0 0 0 9px var(--scrim);
 }
 
 .staged-attachment__media > .staged-attachment__alert {
@@ -150,8 +151,8 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
   border-radius: var(--radius-xs);
   color: var(--muted);
   transition:
@@ -165,13 +166,13 @@
 }
 
 .staged-attachment__action:hover:not(:disabled) {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .staged-attachment__action--remove:hover:not(:disabled) {
-  background: var(--red-wash);
   color: var(--red);
+  background-color: var(--red-wash);
 }
 
 .staged-attachment__action:disabled {
@@ -204,8 +205,8 @@
 }
 
 .attachment-tray__dismiss:hover {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .attachment-tray__dismiss svg {
@@ -228,9 +229,10 @@
   gap: var(--space-6);
   margin: var(--space-10) var(--space-10) 0;
   padding: var(--space-8) var(--space-10);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .held-message__text {
@@ -307,15 +309,17 @@
 }
 
 .message-attachment {
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text);
   transition: border-color var(--duration-fast) var(--ease-out);
+  box-shadow: var(--edge-plate);
 }
 
 button.message-attachment:hover:not(:disabled) {
-  border-color: var(--line-hover);
+  border-color: var(--rim-selected);
+  background-color: var(--fill-plate-hover);
 }
 
 .message-attachment--image {

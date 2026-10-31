@@ -64,7 +64,7 @@ import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart } from "@opensteer/core";
 import { paramsDestination, sameDestination, surfaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, radius, space, touchTarget } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
@@ -1767,37 +1767,31 @@ const styles = StyleSheet.create({
     minHeight: touchTarget,
     paddingHorizontal: space[6],
   },
-  requesterPressed: { backgroundColor: color.surfacePressed },
+  requesterPressed: { ...material.quiet },
   requesterTitle: { flexShrink: 1 },
   jump: {
+    ...material.float,
     alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.lineStrong,
     borderRadius: radius.full,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: space[8],
     justifyContent: "center",
     minHeight: touchTarget,
-    paddingHorizontal: space[16],
+    paddingHorizontal: space[16] - (1 - StyleSheet.hairlineWidth),
     // Lifted off the transcript it floats over.
-    elevation: 6,
-    shadowColor: "#000",
-    shadowOffset: { height: 4, width: 0 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
+    zIndex: 6,
   },
   // Clear of the composer beneath it: the pill is an offer, and an offer that
   // touches the thing it sits on reads as part of it.
   jumpHome: { alignItems: "center", bottom: space[12], left: 0, position: "absolute", right: 0 },
-  jumpPressed: { backgroundColor: color.surfacePressed },
+  jumpPressed: { ...material.floatPressed },
   latest: {
     alignItems: "center",
     flexDirection: "row",
     gap: space[8],
     minHeight: touchTarget,
   },
-  latestPressed: { backgroundColor: color.surfacePressed },
+  latestPressed: { ...material.quiet },
   latestText: { flex: 1 },
   pane: { flex: 1 },
   // Its own basis is nothing and its least is the latest line, so the room is

@@ -108,6 +108,25 @@ html.electron-shell .conv-header {
   padding-block: var(--space-6);
 }
 
+/* A conversation that is the sheet starts one gutter below the window's top,
+   so its head is that much shorter and still ends on the titlebar's line; the
+   gutter above and beside it drags the window like the place's does. */
+@media (min-width: 701px) {
+  html.electron-shell .workspace--talk {
+    app-region: drag;
+  }
+
+  html.electron-shell .workspace--talk .workspace__conversation {
+    app-region: no-drag;
+  }
+
+  html.electron-shell .workspace--talk .conv-header {
+    app-region: drag;
+    height: calc(var(--desktop-titlebar-height) - var(--sheet-gutter));
+    min-height: calc(var(--desktop-titlebar-height) - var(--sheet-gutter));
+  }
+}
+
 html.electron-shell .workspace--talk .conv-header,
 html.electron-shell .workspace--dock-closed .place .surface-row {
   padding-right: calc(var(--space-14) + var(--desktop-titlebar-trailing-inset));
@@ -165,7 +184,9 @@ html.electron-shell .splash__inner {
   border: 1px solid var(--line);
   border-top: 0;
   border-radius: 0 0 var(--radius-md) var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  border-color: var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .add-deployment__form .text-input {
@@ -180,9 +201,10 @@ html.electron-shell .splash__inner {
 .desktop-verified-identity {
   overflow: hidden;
   margin: 0;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .desktop-verified-identity > div {
@@ -260,10 +282,12 @@ html.electron-shell .splash__inner {
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   margin: 0;
   padding: 0;
   list-style: none;
+  border-color: var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .desktop-deployment-list > li + li {
@@ -274,7 +298,9 @@ html.electron-shell .splash__inner {
 .onboarding .pop-foot {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  border-color: var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 /* The narrowed credential disclosure: one quiet line, only when a saved
@@ -379,7 +405,8 @@ html.electron-shell .splash__inner {
    scoped to this page by the attribute the panel sets on <html>. */
 
 html[data-panel="full-access"],
-html[data-panel="full-access"] body {
+html[data-panel="full-access"] body,
+html[data-panel="full-access"] #root {
   background: transparent;
   overflow: hidden;
 }
@@ -389,10 +416,10 @@ html[data-panel="full-access"] body {
   display: flex;
   flex-direction: column;
   padding: var(--space-20);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
-  background: var(--surface-elevated);
-  box-shadow: var(--shadow-overlay);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate), var(--lift-float);
   /* The window has no title bar, so the card itself is what it moves by. */
   app-region: drag;
   user-select: none;
@@ -413,7 +440,6 @@ html[data-panel="full-access"] body {
   height: 56px;
   flex: none;
   object-fit: contain;
-  filter: drop-shadow(0 3px 9px rgb(0 0 0 / 38%));
 }
 
 .full-access-panel__body {
@@ -460,7 +486,8 @@ html[data-panel="full-access"] body {
    the Full access panel — a draggable card, no title bar — with the app, not
    Opensteer, as the subject of the approval. */
 html[data-panel="computer-use"],
-html[data-panel="computer-use"] body {
+html[data-panel="computer-use"] body,
+html[data-panel="computer-use"] #root {
   background: transparent;
   overflow: hidden;
 }
@@ -471,10 +498,10 @@ html[data-panel="computer-use"] body {
   flex-direction: column;
   gap: var(--space-14);
   padding: var(--space-20);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
-  background: var(--surface-elevated);
-  box-shadow: var(--shadow-overlay);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate), var(--lift-float);
   app-region: drag;
   user-select: none;
   overflow: hidden;
@@ -492,7 +519,6 @@ html[data-panel="computer-use"] body {
   height: 48px;
   flex: none;
   object-fit: contain;
-  filter: drop-shadow(0 3px 9px rgb(0 0 0 / 38%));
 }
 
 .cu-panel__titles {
@@ -540,7 +566,9 @@ html[data-panel="computer-use"] body {
   list-style: none;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  border-color: var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .cu-panel__grant {
@@ -555,7 +583,9 @@ html[data-panel="computer-use"] body {
 }
 
 .cu-panel__grant--current {
-  background: var(--ember-wash);
+  background: var(--sheen) var(--fill-plate-hover);
+  border-color: var(--rim-selected);
+  box-shadow: var(--edge-plate);
 }
 
 .cu-panel__mark {
@@ -616,9 +646,10 @@ html[data-panel="computer-use"] body {
   padding: var(--space-10) var(--space-12);
   border: 1px solid var(--red-line);
   border-radius: var(--radius-sm);
-  background: var(--red-wash);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text);
   font-size: var(--text-sm);
+  box-shadow: var(--edge-attention);
 }
 
 .cu-panel__actions {
@@ -634,18 +665,18 @@ html[data-panel="computer-use"] body {
   height: 56px;
   flex: none;
   object-fit: contain;
-  filter: drop-shadow(0 3px 9px rgb(0 0 0 / 38%));
 }
 
 .cu-approve__icon--monogram {
   display: grid;
   place-items: center;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
   font-family: var(--font-display, inherit);
-  font-size: 26px;
+  font-size: var(--display-xl);
+  box-shadow: var(--edge-plate);
 }
 
 .cu-approve__path {
@@ -727,9 +758,10 @@ html[data-panel="computer-use"] body {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-10) var(--space-12);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .cu-approve__access-label {
@@ -752,10 +784,12 @@ html[data-panel="computer-use"] body {
   padding: var(--space-8) var(--space-12);
   border: 1px solid var(--amber-line);
   border-radius: var(--radius-sm);
-  background: var(--amber-wash);
+  background: var(--sheen) var(--fill-plate);
   color: var(--amber-text);
   font-size: var(--text-md);
   line-height: 1.45;
+  border-color: var(--rim-attention);
+  box-shadow: var(--edge-attention);
 }
 
 .cu-approve__elevated > svg {
@@ -766,7 +800,8 @@ html[data-panel="computer-use"] body {
 }
 
 html.native-browser-live,
-html.native-browser-live body {
+html.native-browser-live body,
+html.native-browser-live #root {
   background: transparent;
 }
 html.native-browser-live .place--browser {
@@ -791,7 +826,8 @@ html.native-browser-live *::after {
    Settings, this app's row struck out, and macOS's question with the pointer
    on Allow. Every animation stills at its end state for reduced motion. */
 html[data-panel="computer-app-setup"],
-html[data-panel="computer-app-setup"] body {
+html[data-panel="computer-app-setup"] body,
+html[data-panel="computer-app-setup"] #root {
   height: 100%;
   background: transparent;
   overflow: hidden;
@@ -815,10 +851,10 @@ html[data-panel="computer-app-setup"] #root {
   flex-direction: column;
   gap: var(--space-10);
   padding: var(--space-10) var(--space-12) var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
-  background: var(--surface-elevated);
-  box-shadow: var(--shadow-overlay);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate), var(--lift-float);
   color: var(--text);
   /* No title bar: the card itself is what moves the window. */
   app-region: drag;
@@ -885,8 +921,8 @@ html[data-panel="computer-app-setup"] #root {
 }
 
 .cas-icon-button:hover {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .cas-icon-button > svg {
@@ -944,10 +980,11 @@ html[data-panel="computer-app-setup"] #root {
   gap: var(--space-6);
   height: 40px;
   padding: 0 var(--space-6) 0 var(--space-8);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  box-shadow: var(--edge-plate);
 }
 
 .cas-row--drag {
@@ -1012,7 +1049,7 @@ html[data-panel="computer-app-setup"] #root {
   height: 15px;
   flex: none;
   border-radius: var(--radius-full);
-  background: #4a4a4c;
+  background: var(--macos-control);
 }
 
 .cas-switch::after {
@@ -1023,8 +1060,8 @@ html[data-panel="computer-app-setup"] #root {
   width: 11px;
   height: 11px;
   border-radius: var(--radius-full);
-  background: #fff;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 40%);
+  background: var(--text-on-color);
+  box-shadow: var(--edge-plate);
 }
 
 .cas-switch--turning-on {
@@ -1118,7 +1155,7 @@ html[data-panel="computer-app-setup"] #root {
   gap: var(--space-6);
   padding: var(--space-6);
   border-radius: var(--radius-md);
-  background: #2c2c2e;
+  background: var(--macos-surface);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
 }
 
@@ -1126,14 +1163,14 @@ html[data-panel="computer-app-setup"] #root {
   flex: 1;
   padding: var(--space-4) 0;
   border-radius: 7px;
-  background: #4a4a4c;
-  color: #fff;
+  background: var(--macos-control);
+  color: var(--text-on-color);
   font-size: var(--text-sm);
   text-align: center;
 }
 
 .cas-question__button--allow {
-  background: #0a84ff;
+  background: var(--macos-blue);
   animation: cas-press 2.2s ease-in-out infinite;
 }
 
@@ -1143,8 +1180,8 @@ html[data-panel="computer-app-setup"] #root {
   left: 72%;
   width: 16px;
   height: 16px;
-  color: #fff;
-  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 70%));
+  color: var(--text-on-color);
+
   animation: cas-tap 2.2s ease-in-out infinite;
 }
 
@@ -1177,10 +1214,11 @@ html[data-panel="computer-app-setup"] #root {
   height: 26px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
+  box-shadow: var(--edge-plate);
 }
 
 .cas-cap > svg {
@@ -1261,11 +1299,11 @@ html[data-panel="computer-app-setup"] #root {
   0%,
   30%,
   100% {
-    background: #4a4a4c;
+    background: var(--macos-control);
   }
   42%,
   88% {
-    background: #0a84ff;
+    background: var(--macos-blue);
   }
 }
 
@@ -1356,7 +1394,7 @@ html[data-panel="computer-app-setup"] #root {
   }
 
   .cas-switch--turning-on {
-    background: #0a84ff;
+    background: var(--macos-blue);
   }
 
   .cas-switch--turning-on::after {

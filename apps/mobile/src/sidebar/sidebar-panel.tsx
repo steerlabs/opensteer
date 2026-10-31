@@ -42,7 +42,15 @@ import { tabSiteLabel } from "../browser/tab-tiles.js";
 import { deploymentStatusLabel } from "../client/deployment-rows.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { statusTone } from "../screens/deployment-row.js";
-import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
+import {
+  color,
+  material,
+  controlFontScaleLimit,
+  radius,
+  space,
+  touchTarget,
+  type,
+} from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { DeploymentMarkView } from "../threads/deployment-mark.js";
 import {
@@ -803,25 +811,29 @@ const styles = StyleSheet.create({
   brand: { color: color.text, flex: 1 },
   content: { paddingBottom: space[16], paddingHorizontal: space[8] },
   count: { color: color.mutedDim, fontVariant: ["tabular-nums"] },
-  current: { backgroundColor: color.surfaceRaised },
+  current: { ...material.selected },
   currentLabel: { color: color.text, flex: 1, fontWeight: "600" },
   deployment: {
+    borderColor: "transparent",
+    borderWidth: 1,
     alignItems: "center",
     borderRadius: radius.md,
     flexDirection: "row",
     gap: space[12],
     minHeight: 56,
-    paddingHorizontal: space[12],
-    paddingVertical: space[8],
+    paddingHorizontal: space[12] - 1,
+    paddingVertical: space[8] - 1,
   },
   destination: {
+    borderColor: "transparent",
+    borderWidth: 1,
     cursor: "pointer",
     alignItems: "center",
     borderRadius: radius.md,
     flexDirection: "row",
     gap: space[12],
     minHeight: touchTarget,
-    paddingHorizontal: space[12],
+    paddingHorizontal: space[12] - 1,
   },
   destinationLabel: { color: color.textSoft, flex: 1 },
   // A site is the shorter of the two words: the title keeps what room there is.
@@ -898,9 +910,10 @@ const styles = StyleSheet.create({
   },
   // Docked, it is a column of the screen: square, and on the screen's own ground.
   docked: { backgroundColor: color.background, borderRadius: 0, borderRightWidth: 0 },
-  pressed: { backgroundColor: color.surfacePressed },
+  pressed: { ...material.quiet },
   scroll: { flex: 1 },
   shelf: {
+    ...material.plate,
     cursor: "pointer",
     alignItems: "center",
     borderRadius: radius.md,
@@ -908,7 +921,7 @@ const styles = StyleSheet.create({
     gap: space[12],
     marginTop: space[8],
     minHeight: touchTarget,
-    paddingHorizontal: space[12],
+    paddingHorizontal: space[12] - 1,
   },
   shelfMark: { alignItems: "center", width: taskTextInset - space[12] * 2 },
   statusLine: { alignItems: "center", flexDirection: "row", gap: space[6] },

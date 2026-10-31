@@ -13,7 +13,7 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, radius, space, touchTarget } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Field, Notice, PrimaryButton, RowGroup } from "../ui/primitives.js";
 import { useReadingColumn } from "../ui/screen.js";
@@ -349,8 +349,8 @@ const styles = StyleSheet.create({
   },
   choiceText: { flex: 1, gap: space[2] },
   close: {
+    ...material.control,
     alignItems: "center",
-    backgroundColor: color.surfaceElevated,
     borderRadius: radius.full,
     height: touchTarget,
     justifyContent: "center",
@@ -359,5 +359,5 @@ const styles = StyleSheet.create({
   content: { gap: space[16], padding: space[16], paddingTop: space[20] },
   dimmed: { opacity: 0.45 },
   group: { gap: space[8] },
-  pressed: { backgroundColor: color.surfacePressed },
+  pressed: { ...material.quiet },
 });

@@ -69,6 +69,7 @@ vi.mock("../computers/phone-display-native.js", async () => {
 });
 
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   Image: ({
     accessibilityLabel,
     onError,

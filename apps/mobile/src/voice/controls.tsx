@@ -19,7 +19,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { color, radius, space } from "../theme.js";
+import { color, material, radius, space } from "../theme.js";
 import { ComposerCircleFace, composerControlStyle } from "../thread/composer-bar.js";
 import { enter, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
@@ -319,11 +319,9 @@ function Orb(props: {
 
 const styles = StyleSheet.create({
   bar: {
+    ...material.plate,
     alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.lineStrong,
     borderRadius: radius.full,
-    borderWidth: 1,
     flexDirection: "row",
     gap: space[10],
     minHeight: 56,
@@ -348,9 +346,6 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     position: "absolute",
     right: 3,
-    shadowColor: color.ember,
-    shadowOpacity: 0.45,
-    shadowRadius: 8,
     top: 3,
   },
   dim: { opacity: 0.45 },
@@ -367,10 +362,7 @@ const styles = StyleSheet.create({
   },
   endText: { color: color.red },
   floating: {
-    shadowColor: "#000",
-    shadowOffset: { height: 8, width: 0 },
-    shadowOpacity: 0.4,
-    shadowRadius: 20,
+    ...material.float,
   },
   halo: {
     backgroundColor: color.emberWash,
@@ -387,8 +379,8 @@ const styles = StyleSheet.create({
   labelAlone: { fontSize: 15, lineHeight: 21 },
   micBox: { alignItems: "center", height: 44, justifyContent: "center", width: 44 },
   micOn: {
+    ...material.accent,
     alignItems: "center",
-    backgroundColor: color.ember,
     borderRadius: radius.full,
     height: 34,
     justifyContent: "center",
@@ -400,9 +392,8 @@ const styles = StyleSheet.create({
   overlay: { left: space[12], position: "absolute", right: space[12] },
   quiet: { opacity: 0.45 },
   settings: {
-    borderColor: color.lineStrong,
+    ...material.control,
     borderRadius: radius.full,
-    borderWidth: 1,
     paddingHorizontal: space[12],
     paddingVertical: space[6],
   },

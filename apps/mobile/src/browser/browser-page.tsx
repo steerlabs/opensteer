@@ -35,7 +35,7 @@ import {
 import { LegacyInput } from "../../modules/remote-text-input/src/legacy-input.js";
 import type { EditingTargetAbilities } from "@opensteer/client/editing";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, radius, space, touchTarget, type as textType } from "../theme.js";
+import { color, material, radius, space, touchTarget, type as textType } from "../theme.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TextInput } from "../ui/text-input.js";
@@ -570,12 +570,10 @@ const styles = StyleSheet.create({
   },
   bottom: { bottom: space[12], left: space[12], position: "absolute", right: space[12] },
   card: {
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.lineStrong,
+    ...material.float,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
     gap: space[8],
-    padding: space[12],
+    padding: space[12] - (1 - StyleSheet.hairlineWidth),
   },
   grow: { flex: 1, minWidth: 0 },
   iconButton: {
@@ -585,32 +583,24 @@ const styles = StyleSheet.create({
     width: touchTarget,
   },
   input: {
+    ...material.control,
     ...textType.secondary,
-    backgroundColor: color.surfaceRaised,
-    borderColor: color.lineControl,
     borderRadius: radius.md,
-    borderWidth: 1,
     color: color.text,
     minHeight: touchTarget,
     paddingHorizontal: space[12],
   },
   // A round control in the corner, clear of the page's own controls along its edges.
   keyboard: {
+    ...material.float,
     alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.lineStrong,
     borderRadius: radius.full,
-    borderWidth: StyleSheet.hairlineWidth,
     bottom: space[16],
-    elevation: 6,
+    zIndex: 6,
     height: 48,
     justifyContent: "center",
     position: "absolute",
     right: space[16],
-    shadowColor: "#000",
-    shadowOffset: { height: 4, width: 0 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
     width: 48,
   },
   // Its own height, given up from the picture first when the screen is short.
@@ -621,13 +611,11 @@ const styles = StyleSheet.create({
   textButton: { justifyContent: "center", minHeight: touchTarget, paddingHorizontal: space[6] },
   top: { gap: space[8], left: space[12], position: "absolute", right: space[12], top: space[12] },
   typing: {
+    ...material.float,
     alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.lineStrong,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: space[8],
-    padding: space[8],
+    padding: space[8] - (1 - StyleSheet.hairlineWidth),
   },
 });

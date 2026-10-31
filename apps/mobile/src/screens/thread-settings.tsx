@@ -36,7 +36,15 @@ import {
 } from "react-native";
 import { canRespondToRequests } from "@opensteer/client/host";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
+import {
+  color,
+  material,
+  controlFontScaleLimit,
+  radius,
+  space,
+  touchTarget,
+  type,
+} from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
 import { startingPlacement } from "../thread/first-message.js";
 import {
@@ -912,7 +920,7 @@ function ModelPickerList(
                     onPress={() => props.onEngine(engine.driverKind)}
                     style={[
                       styles.chip,
-                      selected && { backgroundColor: color.ember },
+                      selected && material.accent,
                       engine.status !== "ready" && styles.dimmed,
                     ]}
                   >
@@ -1687,7 +1695,7 @@ function ReasoningLadder({
             void Haptics.selectionAsync();
             onChange(option.id, option.automatic!.value);
           }}
-          style={[styles.chip, option.step === null && { borderColor: color.ember }]}
+          style={[styles.chip, option.step === null && material.selected]}
         >
           <AppText>{option.automatic.label}</AppText>
         </Pressable>
@@ -1711,10 +1719,6 @@ const styles = StyleSheet.create({
     height: 22,
     marginLeft: -11,
     position: "absolute",
-    shadowColor: "#000",
-    shadowOffset: { height: 1, width: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 3,
     width: 22,
   },
   tick: {
@@ -1728,14 +1732,13 @@ const styles = StyleSheet.create({
   tickFilled: { backgroundColor: color.surface },
   track: { justifyContent: "center", minHeight: 44 },
   chip: {
+    ...material.control,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     minHeight: 44,
     paddingHorizontal: 16,
     borderRadius: radius.full,
-    borderWidth: 1,
-    borderColor: color.lineControl,
     alignSelf: "flex-start",
   },
   review: { gap: space[12], padding: space[16] },
@@ -1747,14 +1750,14 @@ const styles = StyleSheet.create({
     minHeight: touchTarget,
   },
   barButton: {
+    ...material.control,
     alignItems: "center",
     borderRadius: radius.full,
     justifyContent: "center",
     minHeight: touchTarget,
     width: touchTarget,
-    backgroundColor: color.surfaceElevated,
   },
-  barButtonPressed: { backgroundColor: color.surfacePressed },
+  barButtonPressed: { ...material.platePressed },
   barButtonSpace: { width: touchTarget },
   barTitle: { alignItems: "center", flex: 1, minWidth: 0, paddingHorizontal: space[4] },
   // The sheet owns the grabber; the list owns its clearance on every subpage.

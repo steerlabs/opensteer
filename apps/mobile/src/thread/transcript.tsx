@@ -33,7 +33,7 @@ import { memo, useMemo, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated from "react-native-reanimated";
 import { Markdown, PlainProse } from "../markdown/markdown.js";
-import { color, radius, space, touchTarget, type } from "../theme.js";
+import { color, material, radius, space, touchTarget, type } from "../theme.js";
 import { appear, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
@@ -1354,13 +1354,8 @@ const styles = StyleSheet.create({
   },
   unreadRule: { backgroundColor: color.emberLine, flex: 1, height: 1 },
   assistant: { gap: space[2] },
-  /** Opensteer's side of a conversation: the same bubble as the reader's, from the other side. */
+  /** Assistant prose keeps the reading ground, without a card around long Markdown. */
   reply: {
-    backgroundColor: color.surfaceElevated,
-    borderBottomStartRadius: radius.xs,
-    borderColor: color.line,
-    borderRadius: radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
     flexShrink: 1,
     gap: space[4],
     paddingHorizontal: space[16],
@@ -1384,18 +1379,16 @@ const styles = StyleSheet.create({
   },
   outcome: { flexShrink: 1, gap: space[4] },
   typing: {
+    ...material.plate,
     alignItems: "center",
     alignSelf: "flex-start",
-    backgroundColor: color.surfaceElevated,
     borderBottomStartRadius: radius.xs,
-    borderColor: color.line,
     borderRadius: radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
     height: 40,
     justifyContent: "center",
-    paddingHorizontal: space[16],
+    paddingHorizontal: space[16] - (1 - StyleSheet.hairlineWidth),
   },
-  typingPressed: { backgroundColor: color.surfacePressed },
+  typingPressed: { ...material.platePressed },
   typingRow: { alignSelf: "flex-start", flexDirection: "row" },
 
   attribution: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[6] },
@@ -1408,8 +1401,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.xl,
     borderBottomEndRadius: radius.xs,
     maxWidth: "100%",
-    paddingHorizontal: space[16],
-    paddingVertical: space[12],
+    paddingHorizontal: space[16] - 1,
+    paddingVertical: space[12] - 1,
   },
   /**
    * The reader's own words, in the accent. It is the one filled shape in the
@@ -1418,14 +1411,14 @@ const styles = StyleSheet.create({
    * another thread all arrive on the same side, a neutral fill would leave
    * nothing that finds itself.
    */
-  bubbleMine: { backgroundColor: color.bubble },
+  bubbleMine: { ...material.accent },
   bubbleInk: { color: color.bubbleInk },
-  bubbleInput: { backgroundColor: color.surfaceElevated },
+  bubbleInput: { ...material.plate },
   /** Another Thread's result is the one framed thing among the agent's rows: it came from elsewhere. */
   card: {
-    backgroundColor: color.assistantSurface,
+    ...material.plate,
     borderRadius: radius.md,
-    paddingHorizontal: space[8],
+    paddingHorizontal: space[8] - 1,
   },
   cardBody: { gap: space[4], paddingBottom: space[4], paddingLeft: space[32] },
   code: { fontFamily: monoFontFamily, fontSize: 12 },
@@ -1494,7 +1487,7 @@ const styles = StyleSheet.create({
     paddingLeft: space[4],
   },
   openThread: { justifyContent: "center", minHeight: touchTarget, paddingLeft: space[28] },
-  pressed: { backgroundColor: color.surface },
+  pressed: { ...material.quiet },
   step: {
     alignItems: "center",
     borderRadius: radius.sm,

@@ -1,3 +1,5 @@
+/* The native window composites this document over another app; only its
+   explicit overlay controls may paint or intercept input. */
 html,
 body,
 #root {

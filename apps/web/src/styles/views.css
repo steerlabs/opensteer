@@ -32,9 +32,10 @@
 
 .channel-setup-details,
 .channel-access-history {
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .channel-setup-details > summary,
@@ -77,7 +78,7 @@
 
 .channel-route-editor {
   border-bottom: 1px solid var(--line);
-  background: var(--surface-elevated);
+  background: var(--fill-quiet);
 }
 
 .channel-route-editor__actions {
@@ -159,8 +160,8 @@
 
 .page__back:hover {
   color: var(--text-soft);
-  background: var(--surface-hover);
   text-decoration: none;
+  background-color: var(--fill-quiet);
 }
 
 .page__back svg {
@@ -204,10 +205,11 @@
 }
 
 .card {
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   overflow: hidden;
+  box-shadow: var(--edge-plate);
 }
 
 .card__row {
@@ -228,11 +230,12 @@
   width: 34px;
   height: 34px;
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
-  border: 1px solid var(--line);
+  background: var(--sheen) var(--fill-plate);
+  border: 1px solid var(--rim-plate);
   color: var(--text-soft);
   font-size: var(--display-xs);
   flex: none;
+  box-shadow: var(--edge-plate);
 }
 
 .card__row-glyph svg {
@@ -249,7 +252,7 @@
 }
 
 .card__row-title {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: var(--weight-strong);
   color: var(--text);
   display: flex;
@@ -536,9 +539,11 @@
 .computers-readiness {
   display: grid;
   gap: var(--space-8);
-  padding: var(--space-12);
+  padding: calc(var(--space-12) - 1px);
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
+  border: 1px solid var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .computers-readiness__line {
@@ -660,10 +665,11 @@
   min-width: 0;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   overflow: hidden;
+  box-shadow: var(--edge-plate);
 }
 
 /* Who may reach it — the second question, asked only where there is more than
@@ -706,10 +712,11 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   overflow: hidden;
+  box-shadow: var(--edge-plate);
 }
 
 .machine-access__grants-label {
@@ -828,12 +835,13 @@ label.machine-access__grant-head {
   align-items: flex-start;
   gap: var(--space-8);
   padding: var(--space-10) var(--space-12);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
   font-size: var(--text-md);
   line-height: 1.45;
+  box-shadow: var(--edge-plate);
 }
 
 .machine-access__summary > svg {
@@ -866,9 +874,10 @@ label.machine-access__grant-head {
   gap: var(--space-10);
   min-width: 0;
   padding: var(--space-10) var(--space-12);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .machine-access__session-body {
@@ -949,7 +958,7 @@ label.machine-access__grant-head {
 }
 
 .machine-access__history-summary:hover {
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 
 .machine-access__history-body {
@@ -1038,8 +1047,35 @@ label.machine-access__grant-head {
   border-top: 1px solid var(--line);
 }
 
+.settings-choice-group {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-12);
+  width: 100%;
+  min-height: var(--control-height);
+  padding: calc(var(--space-12) - 1px) calc(var(--space-16) - 1px);
+  border: 1px solid transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.settings-choice:hover {
+  background-color: var(--fill-quiet);
+}
+
 .settings-choice.is-selected {
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 
 .settings-choice input {
@@ -1056,11 +1092,13 @@ label.machine-access__grant-head {
 }
 
 .settings-choice-group:disabled .settings-choice:hover {
-  background: transparent;
+  background-color: transparent;
 }
 
 .settings-choice-group:disabled .settings-choice.is-selected {
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 
 .settings-choice__copy {
@@ -1072,21 +1110,22 @@ label.machine-access__grant-head {
 
 .settings-choice__title {
   color: var(--text);
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
 }
 
 .settings-choice__detail {
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--text-md);
 }
 
 .settings-ai-engines__locations {
   margin-bottom: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   overflow: hidden;
+  box-shadow: var(--edge-plate);
 }
 
 .settings-ai-engine-form {
@@ -1119,7 +1158,7 @@ label.machine-access__grant-head {
   gap: var(--space-10);
   padding: var(--space-12) var(--space-16);
   border-bottom: 1px solid var(--line);
-  background: var(--surface-elevated);
+  background: var(--fill-quiet);
 }
 
 .settings-engine__mark {
@@ -1128,10 +1167,11 @@ label.machine-access__grant-head {
   width: 28px;
   height: 28px;
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
-  border: 1px solid var(--line);
+  background: var(--sheen) var(--fill-plate);
+  border: 1px solid var(--rim-plate);
   color: var(--text-soft);
   flex: none;
+  box-shadow: var(--edge-plate);
 }
 
 .settings-engine__mark svg {
@@ -1140,7 +1180,7 @@ label.machine-access__grant-head {
 }
 
 .settings-engine__title {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: var(--weight-strong);
   color: var(--text);
 }
@@ -1187,9 +1227,11 @@ label.machine-access__grant-head {
 .add-account__sources {
   margin: 0;
   padding: 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
   overflow: hidden;
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 /* A legend draws on the fieldset's border by default; floated, it becomes the
@@ -1219,8 +1261,10 @@ label.machine-access__grant-head {
   margin: var(--space-12) 0 0;
   padding: 0;
   list-style: none;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .model-settings__row {
@@ -1372,7 +1416,7 @@ label.machine-access__grant-head {
   gap: var(--space-8);
   padding: var(--space-16);
   border-top: 1px solid var(--ember-line);
-  background: var(--ember-wash);
+  background: var(--fill-quiet);
   color: var(--muted);
   font-size: var(--text-md);
 }
@@ -1422,7 +1466,7 @@ label.machine-access__grant-head {
 }
 
 .settings-pairing-value__copy {
-  min-height: 36px;
+  min-height: var(--control-height);
   flex: none;
   gap: var(--space-6);
 }
@@ -1461,16 +1505,19 @@ label.machine-access__grant-head {
   align-items: flex-start;
   gap: var(--space-10);
   padding: var(--space-8) var(--space-12);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
   font-size: var(--text-lg);
   color: var(--text-soft);
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-out);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .check-item:hover {
-  border-color: var(--line-strong);
+  border-color: var(--rim-selected);
+  background-color: var(--fill-plate-hover);
 }
 
 .check-item input {
@@ -1513,7 +1560,7 @@ label.machine-access__grant-head {
   min-height: 220px;
   padding: var(--space-12) var(--space-14);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-control);
   background: var(--surface-code);
   color: var(--text-soft);
   font-family: var(--font-mono);
@@ -1521,11 +1568,13 @@ label.machine-access__grant-head {
   line-height: 1.6;
   resize: vertical;
   tab-size: 2;
+  box-shadow: none;
 }
 
 .code-editor:focus {
   outline: none;
-  border-color: var(--ember-line);
+  border-color: var(--ember);
+  box-shadow: var(--ring-ember);
 }
 
 /* ---- Apps on a computer ----
@@ -1584,7 +1633,7 @@ label.machine-access__grant-head {
   padding: var(--space-10) var(--space-12);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--surface-inset);
+  background: var(--surface-code);
   color: var(--muted);
   font-size: var(--text-md);
   line-height: 1.45;
@@ -1867,6 +1916,9 @@ label.machine-access__grant-head {
      two words; the rows themselves keep their shape. */
   .computers-offer {
     flex-wrap: wrap;
+    background: var(--sheen) var(--fill-plate);
+    border-color: var(--rim-attention);
+    box-shadow: var(--edge-attention);
   }
 
   .machine-access__actions {
@@ -1953,9 +2005,10 @@ label.machine-access__grant-head {
   width: 104px;
   height: 78px;
   flex: none;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .device-art svg {
@@ -2080,10 +2133,11 @@ label.machine-access__grant-head {
 }
 
 .computers-home {
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   overflow: hidden;
+  box-shadow: var(--edge-plate);
 }
 
 .computers-home__main {
@@ -2100,8 +2154,8 @@ a.computers-home__main {
 }
 
 a.computers-home__main:hover {
-  background: var(--surface-elevated);
   text-decoration: none;
+  background-color: var(--fill-quiet);
 }
 
 a.computers-home__main:focus-visible {
@@ -2148,7 +2202,7 @@ a.computers-home__main:focus-visible {
   gap: var(--space-10) var(--space-28);
   padding: var(--space-12) var(--space-22);
   border-top: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+  background: var(--fill-quiet);
   color: var(--muted);
   font-size: var(--text-md);
 }
@@ -2181,7 +2235,9 @@ a.computers-home__main:focus-visible {
   padding: var(--space-16) var(--space-18);
   border: 1px solid var(--ember-line);
   border-radius: var(--radius-lg);
-  background: var(--ember-wash);
+  background: var(--sheen) var(--fill-plate);
+  border-color: var(--rim-attention);
+  box-shadow: var(--edge-attention);
 }
 
 .computers-offer__glyph {
@@ -2191,8 +2247,11 @@ a.computers-home__main:focus-visible {
   height: 44px;
   flex: none;
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--ember) 14%, transparent);
+  background: var(--sheen) var(--fill-plate);
   color: var(--ember-bright);
+  border: 1px solid transparent;
+  border-color: var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .computers-offer__glyph .icon {
@@ -2237,7 +2296,7 @@ a.computers-home__main:focus-visible {
   gap: var(--space-8);
   margin: 0 0 0 var(--space-2);
   color: var(--text-soft);
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: var(--weight-bold);
 }
 
@@ -2248,10 +2307,11 @@ a.computers-home__main:focus-visible {
 }
 
 .computers-list {
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   overflow: hidden;
+  box-shadow: var(--edge-plate);
 }
 
 .computers-list__empty {
@@ -2286,8 +2346,8 @@ button.computer-row {
 
 a.computer-row:hover,
 button.computer-row:hover {
-  background: var(--surface-elevated);
   text-decoration: none;
+  background-color: var(--fill-quiet);
 }
 
 a.computer-row:focus-visible,
@@ -2306,10 +2366,11 @@ button.computer-row:focus-visible {
   place-items: center;
   width: 40px;
   height: 40px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
+  box-shadow: var(--edge-plate);
 }
 
 .computer-row__glyph .icon {
@@ -2329,7 +2390,7 @@ button.computer-row:focus-visible {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-10);
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: var(--weight-strong);
   overflow-wrap: anywhere;
 }
@@ -2534,6 +2595,7 @@ button.computer-row:focus-visible {
 
   .computers-home__foot {
     padding: var(--space-12) var(--space-16);
+    background: var(--fill-quiet);
   }
 
   .device-art {
@@ -2591,6 +2653,9 @@ button.computer-row:focus-visible {
 
   .computers-offer {
     flex-wrap: wrap;
+    background: var(--sheen) var(--fill-plate);
+    border-color: var(--rim-attention);
+    box-shadow: var(--edge-attention);
   }
 
   .computers-offer > .btn {
@@ -2754,7 +2819,9 @@ button.computer-row:focus-visible {
   padding: var(--space-14) var(--space-16);
   border: 1px solid var(--ember-line);
   border-radius: var(--radius-md);
-  background: var(--ember-wash);
+  background: var(--sheen) var(--fill-plate);
+  border-color: var(--rim-attention);
+  box-shadow: var(--edge-attention);
 }
 
 .add-computer__here-glyph {
@@ -2765,7 +2832,10 @@ button.computer-row:focus-visible {
   flex: none;
   border-radius: var(--radius-sm);
   color: var(--ember-bright);
-  background: color-mix(in srgb, var(--ember) 14%, transparent);
+  background: var(--sheen) var(--fill-plate);
+  border: 1px solid transparent;
+  border-color: var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .add-computer__here-glyph .icon {
@@ -2865,9 +2935,11 @@ button.computer-row:focus-visible {
   padding: var(--space-12) var(--space-16);
   border: 1px solid var(--amber-line);
   border-radius: var(--radius-md);
-  background: var(--amber-wash);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
   font-size: var(--text-sm);
+  border-color: var(--rim-attention);
+  box-shadow: var(--edge-attention);
 }
 
 .computer-use__lead,
@@ -2969,7 +3041,9 @@ button.computer-row:focus-visible {
   padding: var(--space-6) var(--space-6) var(--space-6) var(--space-14);
   border: 1px solid var(--ember-line);
   border-radius: var(--radius-sm);
-  background: linear-gradient(90deg, var(--ember-wash), transparent 70%), var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  border-color: var(--rim-attention);
+  box-shadow: var(--edge-attention);
 }
 
 .computer-use__session-text {
@@ -3001,9 +3075,10 @@ button.computer-row:focus-visible {
   margin: 0;
   padding: 0;
   list-style: none;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .computer-use__app {
@@ -3087,14 +3162,15 @@ button.computer-row:focus-visible {
   align-items: center;
   gap: var(--space-8);
   padding: 0 var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-control);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   color: var(--muted);
+  box-shadow: var(--edge-plate);
 }
 
 .computer-use__search:focus-within {
-  border-color: var(--ember-line);
+  border-color: var(--ember);
   box-shadow: var(--ring-ember);
 }
 
@@ -3123,8 +3199,10 @@ button.computer-row:focus-visible {
   padding: 0;
   list-style: none;
   overflow-y: auto;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .computer-use__list > li + li {
@@ -3181,15 +3259,17 @@ button.computer-row:focus-visible {
   align-items: flex-start;
   gap: var(--space-10);
   padding: var(--space-10) var(--space-12);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   cursor: pointer;
+  box-shadow: var(--edge-plate);
 }
 
 .computer-use__option--on {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 
 .computer-use__option > input {
@@ -3206,7 +3286,7 @@ button.computer-row:focus-visible {
 
 .computer-use__option-title {
   color: var(--text);
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: var(--weight-strong);
 }
 
@@ -3283,16 +3363,18 @@ button.computer-row:focus-visible {
   width: 100%;
   height: 100%;
   padding: var(--space-16);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text);
   text-align: left;
   transition: border-color var(--duration-fast) var(--ease-out);
+  box-shadow: var(--edge-plate);
 }
 
 .specialist-card:hover {
-  border-color: var(--line-strong);
+  border-color: var(--rim-selected);
+  background-color: var(--fill-plate-hover);
   text-decoration: none;
 }
 
@@ -3385,8 +3467,10 @@ button.computer-row:focus-visible {
 
 .specialist-tasks .task-rows {
   padding: var(--space-4);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .specialist-tasks .task-group + .task-group {

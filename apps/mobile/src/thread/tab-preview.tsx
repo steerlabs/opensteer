@@ -15,7 +15,7 @@ import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
 import { BrowserStream } from "../browser/browser-stream.js";
 import { surfaceRoute } from "../browser/surface-route.js";
 import { tabSiteLabel } from "../browser/tab-tiles.js";
-import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import { color, material, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { appear, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { useAppForeground } from "../ui/foreground.js";
@@ -252,13 +252,11 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     width: 64,
   },
-  pressed: { opacity: 0.7 },
+  pressed: { ...material.platePressed, opacity: 0.7 },
   row: {
+    ...material.plate,
     alignItems: "center",
-    backgroundColor: color.surfaceRaised,
-    borderColor: color.line,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: space[4],
     paddingEnd: space[4],

@@ -16,6 +16,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ usageNotices: dismissals }),
 }));
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   Pressable: (props: {
     accessibilityLabel?: string;
     children?: ReactNode;

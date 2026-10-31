@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+vi.mock("react-native", () => ({ Platform: { OS: "ios", Version: "26" } }));
+
 import type { ReservedRegion } from "react-native-reserved-regions";
 import {
   derivePagePair,

@@ -7,7 +7,10 @@
 .composer__attach.composer__voice--on:hover:not(:disabled),
 .composer--conversation .composer__attach.composer__voice--on,
 .composer--conversation .composer__attach.composer__voice--on:hover:not(:disabled) {
-  background: var(--ember);
+  --face-sheen: var(--sheen-accent);
+  --face-fill: var(--fill-accent);
+  --face-rim: var(--rim-accent);
+  --face-edge: var(--edge-accent);
   color: var(--ink-on-ember);
 }
 
@@ -38,15 +41,19 @@
   gap: var(--space-10);
   min-height: 52px;
   padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--surface-elevated) 92%, transparent);
-  box-shadow: var(--shadow-raised);
-  backdrop-filter: blur(18px) saturate(1.2);
+  background: var(--sheen) var(--fill-float);
+  box-shadow: var(--edge-plate), var(--lift-float);
+  backdrop-filter: var(--blur-float);
   animation: voice-island-in var(--duration-med) var(--ease-spring) both;
+  -webkit-backdrop-filter: var(--blur-float);
 }
 .voice-island--docked {
-  box-shadow: 0 4px 24px rgb(0 0 0 / 12%);
+  box-shadow: var(--edge-plate);
+  background: var(--sheen) var(--surface-elevated);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .voice-island:not(.voice-island--notice)[data-phase="hearing"],
 .voice-island:not(.voice-island--notice)[data-phase="speaking"] {
@@ -87,7 +94,7 @@
   white-space: nowrap;
 }
 .voice-island__caption[data-overflow="true"] {
-  mask-image: linear-gradient(to right, transparent, #000 28px);
+  mask-image: linear-gradient(to right, transparent, var(--mask-ink) 28px);
 }
 .voice-island[data-phase="thinking"] .voice-island__caption {
   color: var(--muted);
@@ -100,8 +107,8 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: var(--control-height);
+  height: var(--control-height);
   border-radius: var(--radius-full);
   color: var(--text-soft);
   transition:
@@ -109,8 +116,8 @@
     color var(--duration-fast) var(--ease-out);
 }
 .voice-island__button:hover:not(:disabled) {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 .voice-island__button:disabled {
   opacity: 0.45;
@@ -126,18 +133,19 @@
 
 .voice-island__end {
   flex: none;
-  height: 34px;
+  height: var(--control-height);
   padding: 0 var(--space-14);
   border-radius: var(--radius-full);
-  background: var(--red-wash);
-  border: 1px solid var(--red-line);
+  background: var(--sheen) var(--fill-plate);
+  border: 1px solid var(--rim-plate);
   color: var(--red-text);
   font-size: var(--text-md);
   font-weight: var(--weight-strong);
   transition: background-color var(--duration-fast) var(--ease-out);
+  box-shadow: var(--edge-plate);
 }
 .voice-island__end:hover {
-  background: color-mix(in srgb, var(--red) 18%, transparent);
+  background-color: var(--fill-plate-hover);
 }
 
 .voice-island--notice {
@@ -191,10 +199,10 @@
   z-index: 1;
   background: radial-gradient(
     circle at 34% 30%,
-    #fff4ef 0%,
+    var(--orb-light) 0%,
     var(--ember-bright) 30%,
     var(--ember) 58%,
-    color-mix(in srgb, var(--ember) 55%, #5b2f22) 100%
+    color-mix(in srgb, var(--ember) 55%, var(--orb-core)) 100%
   );
   box-shadow: 0 0 12px color-mix(in srgb, var(--ember) 40%, transparent);
   transform: scale(calc(0.88 + var(--level) * 0.32));
@@ -210,9 +218,9 @@
   background: conic-gradient(
     from 0deg,
     var(--ember) 0deg,
-    #fff4ef 90deg,
+    var(--orb-light) 90deg,
     var(--ember) 180deg,
-    color-mix(in srgb, var(--ember) 45%, #5b2f22) 270deg,
+    color-mix(in srgb, var(--ember) 45%, var(--orb-core)) 270deg,
     var(--ember) 360deg
   );
   animation: voice-turn 1.6s linear infinite;

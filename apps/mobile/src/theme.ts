@@ -3,6 +3,7 @@
  * Native controls retain their own spacing and materials. Shared content uses
  * these roles so Dynamic Type and Android font scaling grow it coherently.
  */
+import { Platform, type BoxShadowValue, type ViewStyle } from "react-native";
 
 /**
  * The accent and its ink, named before the palette, so the roles that *are*
@@ -10,23 +11,17 @@
  */
 const ember = "#e6beb0";
 const inkOnEmber = "#1b120e";
+const surfaceElevated = "#171717";
 
 export const color = {
   background: "#080808",
   surface: "#101010",
-  surfaceElevated: "#171717",
+  surfaceElevated,
+  /** A floor beneath native glass that would otherwise sample only the page. */
+  floatTint: alpha(surfaceElevated, 0.6),
   surfaceRaised: "#1d1d1d",
   surfacePressed: "#242424",
   surfaceCode: "#0d0d0d",
-  /**
-   * The ground an assistant turn's own furniture stands on — a collapsed
-   * activity row, a step hanging off its hairline. A single step above the
-   * page, so it reads as attached to the turn rather than drawn on the
-   * screen. The assistant's prose itself takes no ground at all: it is the
-   * reading surface, and a bubble around long markdown narrows it for nothing.
-   */
-  assistantSurface: "#151515",
-
   text: "#f5f4f2",
   textSoft: "#cecbc7",
   muted: "#8e8a86",
@@ -146,6 +141,112 @@ export const pillHeight = 32;
 
 /** The width of a control's edge: see `color.lineControl`. */
 export const controlBorderWidth = 1;
+
+const light = "#ffffff";
+const shade = "#000000";
+
+/** sRGB, like the web's color-mix: changing the palette changes every material. */
+function mix(from: string, toward: string, weight: number): string {
+  return `#${[1, 3, 5]
+    .map((offset) =>
+      Math.round(
+        Number.parseInt(from.slice(offset, offset + 2), 16) * (1 - weight) +
+          Number.parseInt(toward.slice(offset, offset + 2), 16) * weight,
+      )
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
+}
+
+function alpha(hex: string, opacity: number): string {
+  return `rgba(${[1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16)).join(", ")}, ${opacity})`;
+}
+
+// RN's InsetBoxShadowDrawable requires API 29; the app also runs on API 24–28.
+// There the same light occupies the top border, without adding a view per card.
+const insetLight = Platform.OS !== "android" || Number(Platform.Version) >= 29;
+const floatLift: BoxShadowValue[] =
+  Platform.OS === "android" && Number(Platform.Version) < 28
+    ? []
+    : [{ offsetX: 0, offsetY: 12, blurRadius: 32, spreadDistance: -16, color: alpha(shade, 0.6) }];
+
+function topLight(edge: string): BoxShadowValue[] {
+  return insetLight ? [{ offsetX: 0, offsetY: 1, blurRadius: 0, color: edge, inset: true }] : [];
+}
+
+function surface(fill: string, rim: string, edge: string, sheen = alpha(light, 0.035)): ViewStyle {
+  return {
+    backgroundColor: fill,
+    backgroundImage: `linear-gradient(${sheen}, ${alpha(light, 0)})`,
+    borderColor: rim,
+    borderWidth: controlBorderWidth,
+    boxShadow: topLight(edge),
+    ...(!insetLight && { borderTopColor: edge }),
+  };
+}
+
+const plateFill = mix(color.background, light, 0.05);
+const plateHover = mix(color.background, light, 0.08);
+const plate = {
+  ...surface(plateFill, color.line, alpha(light, 0.07)),
+  ...(!insetLight && { borderTopColor: color.lineHover }),
+};
+const accentRim = mix(color.ember, color.inkOnEmber, 0.24);
+
+/**
+ * Opaque reading surfaces; only GlassSurface may replace float with Liquid Glass.
+ * Full-point rims belong to surfaces, hairlines only to the separators within.
+ * These weights match the web Material block; native typography and targets keep
+ * their own scale. Press removes the top light without growing a shadow.
+ */
+export const material = {
+  quiet: { backgroundColor: alpha(light, 0.05) },
+  plate,
+  control: {
+    ...plate,
+    borderColor: color.lineControl,
+    ...(!insetLight && { borderTopColor: alpha(light, 0.4) }),
+  },
+  selected: { ...plate, backgroundColor: plateHover, borderColor: color.lineStrong },
+  float: {
+    ...plate,
+    backgroundColor: color.surfaceElevated,
+    boxShadow: [...topLight(alpha(light, 0.07)), ...floatLift],
+  },
+  accent: surface(color.ember, accentRim, alpha(light, 0.5), alpha(light, 0.16)),
+  destructive: surface(
+    color.red,
+    mix(color.red, color.inkOnEmber, 0.24),
+    alpha(light, 0.5),
+    alpha(light, 0.16),
+  ),
+  attention: surface(plateFill, alpha(color.ember, 0.26), alpha(color.ember, 0.3)),
+  attentionPressed: {
+    backgroundColor: plateHover,
+    borderTopColor: alpha(color.ember, 0.26),
+    boxShadow: [],
+    transform: [{ scale: 0.97 }],
+  },
+  platePressed: {
+    backgroundColor: plateHover,
+    borderTopColor: undefined,
+    boxShadow: [],
+    transform: [{ scale: 0.97 }],
+  },
+  accentPressed: {
+    backgroundColor: color.emberBright,
+    borderTopColor: accentRim,
+    boxShadow: [],
+    transform: [{ scale: 0.97 }],
+  },
+  floatPressed: {
+    backgroundColor: mix(color.surfaceElevated, light, 0.05),
+    borderTopColor: undefined,
+    boxShadow: floatLift,
+    transform: [{ scale: 0.97 }],
+  },
+} satisfies Record<string, ViewStyle>;
 
 /**
  * How far Dynamic Type may grow text inside a fixed-height control before the

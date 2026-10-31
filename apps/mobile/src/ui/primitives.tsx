@@ -29,7 +29,7 @@ import Animated, {
 } from "react-native-reanimated";
 import {
   color,
-  controlBorderWidth,
+  material,
   controlFontScaleLimit,
   radius,
   space,
@@ -96,8 +96,8 @@ function textTone(tone: "default" | "soft" | "muted" | "ember" | "emberDim" | "d
 }
 
 /**
- * A set of rows that belong together, drawn as one surface with a hairline
- * around it and a hairline between each row — the shape the web's directory,
+ * A set of rows that belong together, drawn as one plate with a hairline
+ * between each row — the shape the web's directory,
  * its option rows and its settings groups all share.
  *
  * It is what turns a stack of text into a list: the frame says where the list
@@ -549,13 +549,11 @@ export function Divider(): ReactNode {
 }
 
 const styles = StyleSheet.create({
-  buttonCompact: { alignSelf: "flex-start", paddingHorizontal: space[14] },
+  buttonCompact: { alignSelf: "flex-start", paddingHorizontal: space[14] - 1 },
   buttonDisabled: { opacity: 0.45 },
   rowGroup: {
-    backgroundColor: color.surface,
-    borderColor: color.lineStrong,
+    ...material.plate,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
   },
   rowGroupSeparated: { borderColor: color.line, borderTopWidth: StyleSheet.hairlineWidth },
@@ -567,22 +565,18 @@ const styles = StyleSheet.create({
     minHeight: touchTarget,
   },
   switchLabel: { flexShrink: 1 },
-  // The web's execution pills: small, quiet, and no louder than the setting
-  // they name. A filled capsule rather than an outlined one — a hairline at
-  // this size is not seen, and a capsule with a ground is the shape the
-  // platform itself gives a small choice. The composer's one accent belongs to
-  // Send.
+  // The composer's one accent belongs to Send; execution choices stay neutral.
   chip: {
+    ...material.control,
     alignItems: "center",
-    backgroundColor: color.surfaceRaised,
     borderRadius: radius.full,
     justifyContent: "center",
     maxWidth: 200,
     minHeight: 32,
-    paddingHorizontal: space[12],
+    paddingHorizontal: space[12] - 1,
   },
   chipLabel: { color: color.textSoft },
-  chipPressed: { backgroundColor: color.surfacePressed },
+  chipPressed: { ...material.platePressed },
   codeBlock: {
     // The web's own code ground, a step darker than the surface it sits on, at
     // the web's own measure: verbatim output needs room around it to be read as
@@ -610,40 +604,37 @@ const styles = StyleSheet.create({
   divider: { backgroundColor: color.line, height: StyleSheet.hairlineWidth },
   field: { gap: space[6] },
   input: {
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.lineControl,
+    ...material.control,
     borderRadius: radius.sm,
-    borderWidth: controlBorderWidth,
     color: color.text,
     minHeight: touchTarget,
     paddingHorizontal: space[12],
     paddingVertical: space[10],
   },
   notice: {
+    ...material.plate,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
     gap: space[8],
     padding: space[14],
   },
   noticeDanger: { backgroundColor: color.redWash, borderColor: color.redLine },
-  noticeNeutral: { backgroundColor: color.surface, borderColor: color.line },
+  noticeNeutral: { ...material.plate },
   primaryButton: {
+    ...material.accent,
     alignItems: "center",
-    backgroundColor: color.ember,
     borderRadius: radius.sm,
     justifyContent: "center",
     minHeight: touchTarget,
-    paddingHorizontal: space[20],
-    paddingVertical: space[12],
+    paddingHorizontal: space[20] - 1,
+    paddingVertical: space[12] - 1,
   },
   primaryButtonLabel: { color: color.inkOnEmber },
-  primaryButtonPressed: { backgroundColor: color.emberBright },
-  rowPressed: { backgroundColor: color.surfacePressed },
+  primaryButtonPressed: { ...material.accentPressed },
+  rowPressed: { ...material.quiet },
   secondaryButton: {
+    ...material.control,
     alignItems: "center",
-    borderColor: color.lineControl,
     borderRadius: radius.sm,
-    borderWidth: controlBorderWidth,
     justifyContent: "center",
     minHeight: touchTarget,
     paddingHorizontal: space[20],
@@ -653,7 +644,7 @@ const styles = StyleSheet.create({
   secondaryButtonDangerLabel: { color: color.red },
   secondaryButtonDangerPressed: { backgroundColor: color.redWash },
   secondaryButtonLabel: { color: color.text },
-  secondaryButtonPressed: { backgroundColor: color.surfaceElevated },
+  secondaryButtonPressed: { ...material.platePressed },
   statusDot: { borderRadius: radius.full, height: 8, width: 8 },
   typingDot: { backgroundColor: color.muted, borderRadius: radius.full, height: 7, width: 7 },
   typingDotInline: { backgroundColor: color.muted, borderRadius: radius.full, height: 3, width: 3 },

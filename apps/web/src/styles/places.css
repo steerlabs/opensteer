@@ -42,8 +42,8 @@
 }
 
 .place-row__more:hover {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .place-row__more svg {
@@ -68,8 +68,8 @@
 
 .place-row:hover:not(:disabled),
 .place-row[aria-expanded="true"] {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .place-row.is-current {
@@ -101,8 +101,10 @@
   height: 28px;
   flex: none;
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
+  border: 1px solid var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .place-row__mark svg {
@@ -196,14 +198,16 @@
 .place-card {
   margin: var(--space-6) var(--space-4) var(--space-4);
   padding: var(--space-12);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .place-card--attention {
-  border-color: var(--amber-line);
-  background: var(--amber-wash);
+  border-color: var(--rim-attention);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-attention);
 }
 
 .place-card__title {
@@ -238,17 +242,18 @@
   height: 8px;
   border-radius: var(--radius-full);
   background: var(--amber);
-  box-shadow: 0 0 0 2px var(--surface);
+  box-shadow: 0 0 0 2px var(--ground);
 }
 
 /* The same list, framed, on the full window shown when no place is open. */
 .place-panel {
   width: 100%;
   padding: var(--space-6);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   text-align: left;
+  box-shadow: var(--edge-plate);
 }
 
 .place-panel .pop-foot {
@@ -272,8 +277,8 @@
 }
 
 .place-panel__action:hover:not(:disabled) {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .place-panel__action .place-row__mark {
@@ -298,13 +303,13 @@
 .start-app-windows {
   width: 260px;
   max-width: calc(100vw - 24px);
-  font-size: 13px;
+  font-size: var(--text-lg);
 }
 .start-app-windows__toggle {
   width: 100%;
   padding: 2px 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
 }
 .start-app-windows ul {
@@ -323,7 +328,7 @@
   border-radius: 6px;
 }
 .start-app-windows li button:hover {
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 .start-app-windows small {
   opacity: 0.65;
