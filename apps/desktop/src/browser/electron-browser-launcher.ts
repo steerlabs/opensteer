@@ -97,7 +97,6 @@ export interface ElectronLocalProfileOpenTiming {
     | "page-policy-dispatched"
     | "page-policy-ready"
     | "renderer-ready"
-    | "blank-loaded"
     | "page-announced"
     | "first-page-created";
   /** Cumulative time from local launch; preparation and the real open share this clock. */
@@ -727,8 +726,9 @@ class ElectronBrowserContext implements BrowserContext {
       timing,
     );
     try {
-      await page.loadInitialUrl("about:blank");
-      timing?.("blank-loaded");
+      // Native contexts need no import document. Browser-side target identity
+      // lets the ledger subscribe before the first real navigation.
+      if (!this.#localProfile) await page.loadInitialUrl("about:blank");
       await this.#announcePage(page);
       timing?.("page-announced");
       timing?.("first-page-created");
@@ -1901,7 +1901,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   url(): string {
-    return this.#webContents.getURL();
+    return this.#webContents.getURL() || "about:blank";
   }
 
   installPopupHandler(

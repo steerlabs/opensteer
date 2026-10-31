@@ -370,6 +370,11 @@ export async function runNativeProfilePreparationSmoke(input: {
       assert.equal(request.preparation, true, "open bypassed the shared preparation acquisition");
       pagesAtPreparedLaunch = launched.context.pages().length;
       assert.equal(pagesAtPreparedLaunch, 0, "prepared launch created a user page");
+      assert.equal(
+        input.timings.some((timing) => timing.stage === "page-create-started"),
+        false,
+        "prepared launch allocated a user page",
+      );
       return launched;
     },
   };
@@ -428,6 +433,7 @@ export async function runNativeProfilePreparationSmoke(input: {
           access: "full-control",
           identity,
           sessionId: createBrowserSessionId(),
+          navigationVersion: 1,
           initialNavigationVersion: 1,
           initialNavigation: {
             operationKey: randomUUID(),
@@ -469,6 +475,7 @@ export async function runNativeProfilePreparationSmoke(input: {
       localProfiles: true,
       profilePrepare: true,
     });
+    void preparing.catch(() => undefined);
     let attachStarted: number;
     if (converting) {
       await deadline(entered.promise, "preparation seed request");
@@ -506,6 +513,7 @@ export async function runNativeProfilePreparationSmoke(input: {
       const directory = path.join(root, "profiles", binding.profileId, "native");
       const native = session.fromPath(directory);
       const workerProbe = Promise.withResolvers<void>();
+      void workerProbe.promise.catch(() => undefined);
       const onConsole = (_event: Electron.Event, details: Electron.MessageDetails) => {
         if (details.message === "native-probe-cancelled") workerProbe.resolve();
         if (details.message === "native-probe-admitted")
@@ -574,7 +582,7 @@ export async function runNativeProfilePreparationSmoke(input: {
       counts,
       pagesAtPreparedLaunch,
       sessionCountAfterOpen: runtime.health().sessionCount,
-      workerCancelledBeforeAdmit: !converting,
+      ...(converting ? {} : { workerCancelledBeforeAdmit: true }),
       attachToPageCreatedMs: launchAt + firstPage.elapsedMs - attachStarted,
       attachToNavigationSubmittedMs: submitted.elapsedSinceStartMs,
       runtimeTimings,

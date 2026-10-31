@@ -41,6 +41,7 @@ const electron = vi.hoisted(() => ({
     webContents: {
       close: ReturnType<typeof vi.fn>;
       loadURL: ReturnType<typeof vi.fn>;
+      getURL: ReturnType<typeof vi.fn<() => string>>;
       isDestroyed: ReturnType<typeof vi.fn<() => boolean>>;
       beginFrameSubscription: ReturnType<typeof vi.fn>;
       focus: ReturnType<typeof vi.fn>;
@@ -2032,6 +2033,35 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
+  it("creates a native page without loading a throwaway document before the real navigation", async () => {
+    const f = await fixture();
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const browser = await f.launch(true);
+      await browser.profile!.admit();
+      const page = await browser.context.createPage();
+      const view = electron.views.at(-1)!;
+      expect(view.webContents.loadURL).not.toHaveBeenCalled();
+      view.webContents.getURL.mockReturnValue("");
+      expect(page.url()).toBe("about:blank");
+      const ledger = new SurfaceLedger(browser.context, { rootPages: [page] });
+      await ledger.start();
+      expect(ledger.snapshot()).toHaveLength(1);
+      page.submitNavigation!("https://site.test/");
+      expect(view.webContents.loadURL).toHaveBeenCalledExactlyOnceWith("https://site.test/");
+      await ledger.close();
+      await browser.close();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it("prepares with Guest only and never allocates a persistent Session", async () => {
     const f = await fixture();
     const { session } = await import("electron");
@@ -2305,7 +2335,6 @@ describe("native Electron profiles", () => {
         "resting-host-created",
         "page-policy-dispatched",
         "page-policy-ready",
-        "blank-loaded",
         "renderer-ready",
         "page-announced",
         "first-page-created",
