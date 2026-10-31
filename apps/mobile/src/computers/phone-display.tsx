@@ -10,6 +10,7 @@ import {
   type DisplayLease,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
+import { displayViewerWindowFrames } from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -169,7 +170,8 @@ export function ComputerDisplay({
     let disposed = false;
     let connection = -1;
     let generation = -1;
-    let tail = Promise.resolve();
+    let submitting = 0;
+    const queued: { frame: DisplayFrame; epoch: number }[] = [];
     let bytes = 0;
     const pending = new Set<DisplayFrame>();
     const clear = () => {
@@ -181,6 +183,7 @@ export function ComputerDisplay({
       resetDecoder(epoch.current);
       for (const frame of pending) frame.done();
       pending.clear();
+      queued.length = 0;
       bytes = 0;
     };
     const changed = () => {
@@ -208,6 +211,48 @@ export function ComputerDisplay({
         (target) => computerDisplayScope(hostClient.getSnapshot(), target.source) === target.scope,
       );
     });
+    const submit = () => {
+      // Invocation order is decode order. Replies may settle out of order;
+      // DisplayStreams returns credit only after all earlier frames are done.
+      while (!disposed && submitting < 4 && queued.length > 0) {
+        const { frame, epoch: current } = queued.shift()!;
+        if (current !== epoch.current) continue;
+        submitting++;
+        const native = decoder.current;
+        const { width, height, ptsUs, key } = frame.header;
+        decodingPicture.current = { generation: frame.header.generation, width, height };
+        let result: Promise<boolean>;
+        try {
+          result = native
+            ? decodeDisplayFrame(native, binary, frame.payload, {
+                epoch: String(current),
+                width,
+                height,
+                pts: ptsUs,
+                key,
+                replayed: frame.replayed,
+              })
+            : Promise.resolve(false);
+        } catch {
+          result = Promise.resolve(false);
+        }
+        void result
+          .then(
+            (accepted) => {
+              if (!accepted && !disposed && current === epoch.current) lease.requestKeyframe();
+            },
+            () => {
+              if (!disposed && current === epoch.current) lease.requestKeyframe();
+            },
+          )
+          .finally(() => {
+            submitting--;
+            if (pending.delete(frame)) bytes -= frame.payload.byteLength;
+            frame.done();
+            submit();
+          });
+      }
+    };
     const frames = lease.onFrame((frame) => {
       const state = lease.getSnapshot();
       if (
@@ -229,7 +274,12 @@ export function ComputerDisplay({
         generation = frame.header.generation;
       }
       if (
-        pending.size >= (frame.replayed ? 600 : 4) ||
+        pending.size >=
+          (frame.replayed
+            ? 600
+            : state.display?.displayWindow === 1
+              ? displayViewerWindowFrames
+              : 4) ||
         (pending.size > 0 && bytes + frame.payload.byteLength > 1_048_576)
       ) {
         frame.done();
@@ -238,34 +288,8 @@ export function ComputerDisplay({
       }
       pending.add(frame);
       bytes += frame.payload.byteLength;
-      const current = epoch.current;
-      tail = tail
-        .then(async () => {
-          if (disposed || current !== epoch.current) return;
-          const native = decoder.current;
-          if (!native) {
-            lease.requestKeyframe();
-            return;
-          }
-          const { width, height, ptsUs, key } = frame.header;
-          decodingPicture.current = { generation: frame.header.generation, width, height };
-          const accepted = await decodeDisplayFrame(native, binary, frame.payload, {
-            epoch: String(current),
-            width,
-            height,
-            pts: ptsUs,
-            key,
-            replayed: frame.replayed,
-          });
-          if (!accepted && current === epoch.current) lease.requestKeyframe();
-        })
-        .catch(() => {
-          if (!disposed) lease.requestKeyframe();
-        })
-        .finally(() => {
-          if (pending.delete(frame)) bytes -= frame.payload.byteLength;
-          frame.done();
-        });
+      queued.push({ frame, epoch: epoch.current });
+      submit();
     });
     viewportChanged.current = phone ? null : (size) => lease.viewport(size);
     if (!phone) lease.viewport(viewport.current);

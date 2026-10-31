@@ -693,6 +693,7 @@ export class HttpHostClient {
     const url = new URL(this.#webSocketUrl(path));
     url.searchParams.set("sharedInput", "1");
     url.searchParams.set("phoneOwnerControl", "1");
+    url.searchParams.set("displayWindow", "1");
     if (options?.editing === 1) {
       url.searchParams.set("editing", "1");
       url.searchParams.set("displayCut", "1");

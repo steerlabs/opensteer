@@ -86,6 +86,7 @@ export class Direction {
   #availableAt = 0;
   #chunks = 0;
   #timers = new Set<ReturnType<typeof setTimeout>>();
+  #delivery: { ready: boolean; deliver: () => void }[] = [];
   #pending = new WeakMap<Socket, number>();
   #afterDrain = new WeakMap<Socket, () => void>();
   readonly bps: number;
@@ -108,9 +109,9 @@ export class Direction {
         Math.max(now, this.#availableAt) +
         (this.bps ? (part.length * 8_000) / this.bps : 0) +
         stall;
-      const timer = setTimeout(
-        () => {
-          this.#timers.delete(timer);
+      const delivery = {
+        ready: false,
+        deliver: () => {
           if (!target.destroyed) {
             delivered(part.length);
             target.write(part);
@@ -119,6 +120,15 @@ export class Direction {
           this.#pending.set(source, pending);
           if (pending < 512 * 1024 && !source.destroyed) source.resume();
           if (pending === 0) this.#afterDrain.get(source)?.();
+        },
+      };
+      this.#delivery.push(delivery);
+      const timer = setTimeout(
+        () => {
+          this.#timers.delete(timer);
+          delivery.ready = true;
+          // Relative timer rounding may reorder readiness, never TCP bytes.
+          while (this.#delivery[0]?.ready) this.#delivery.shift()!.deliver();
         },
         Math.max(0, this.#availableAt + this.latencyMs - now),
       );
@@ -135,6 +145,7 @@ export class Direction {
   close(): void {
     for (const timer of this.#timers) clearTimeout(timer);
     this.#timers.clear();
+    this.#delivery.length = 0;
   }
 }
 

@@ -247,7 +247,7 @@ describe("phone display socket", () => {
     });
     client.connectComputerDisplay(source);
     expect(urls).toEqual([
-      `wss://host.example/v1/computer-use/sessions/${sessionId}/display?sharedInput=1&phoneOwnerControl=1`,
+      `wss://host.example/v1/computer-use/sessions/${sessionId}/display?sharedInput=1&phoneOwnerControl=1&displayWindow=1`,
     ]);
     client.dispose();
   });

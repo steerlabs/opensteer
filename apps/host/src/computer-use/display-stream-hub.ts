@@ -22,6 +22,7 @@ import {
   displaySlowViewerCloseMs,
   displayViewerCreditBytes,
   displayViewerCreditFrames,
+  displayViewerWindowFrames,
   type ComputerUseSessionId,
   type DisplayDataTicketClaims,
   type DisplayViewerClientMessage,
@@ -78,6 +79,8 @@ type PhoneEvent = Extract<
   }
 >;
 interface Viewer {
+  readonly displayWindow: boolean;
+  readonly ackDelays: { readonly at: number; readonly delay: number }[];
   readonly sharedInput: boolean;
   readonly phoneOwnerControl: boolean;
   authorized: boolean;
@@ -232,6 +235,7 @@ export class DisplayStreamHub {
       readonly displayCut?: boolean;
       readonly sharedInput?: boolean;
       readonly phoneOwnerControl?: boolean;
+      readonly displayWindow?: boolean;
     } = {},
   ): Promise<{
     handle: (message: DisplayViewerClientMessage) => void;
@@ -461,6 +465,8 @@ export class DisplayStreamHub {
     }
     const viewer: Viewer = {
       phoneOwnerControl: options.phoneOwnerControl === true,
+      displayWindow: options.displayWindow === true,
+      ackDelays: [],
       sharedInput: options.sharedInput === true,
       authorized,
       inputSequence: -1,
@@ -639,6 +645,14 @@ export class DisplayStreamHub {
             }
             if (viewer.waiting && !header.key) continue;
             if (!this.#hasCredit(viewer, envelope.byteLength)) {
+              if (!viewer.waiting) {
+                const oldest = viewer.outstanding.values().next().value;
+                this.#options.log?.("computer.display.viewer-credit-stall", {
+                  outstanding: viewer.outstanding.size,
+                  bytes: viewer.bytes,
+                  oldestAckAgeMs: oldest ? this.#now() - oldest.sentAt : 0,
+                });
+              }
               this.#skip(stream, viewer);
               continue;
             }
@@ -872,10 +886,12 @@ export class DisplayStreamHub {
       displayCut: _displayCut,
       sharedInput: _sharedInput,
       phoneOwnerControl: _phoneOwnerControl,
+      displayWindow: _displayWindow,
       ...baseline
     } = state;
     this.#json(viewer.socket, {
       ...baseline,
+      ...(viewer.displayWindow ? { displayWindow: 1 } : {}),
       ...(this.#inputAvailable(stream, viewer) ? { sharedInput: 1 } : {}),
       ...(this.#powerAvailable(stream, viewer) ? { phoneOwnerControl: 1 } : {}),
       ...(viewer.displayCut && stream.displayCut === 1 && !stream.target ? { displayCut: 1 } : {}),
@@ -911,7 +927,8 @@ export class DisplayStreamHub {
       // precede the reset state on the socket and still receive exactly one ack.
       if (
         viewer.discarded.length + viewer.outstanding.size >
-        displayGopCacheFrames + displayViewerCreditFrames
+        displayGopCacheFrames +
+          (viewer.displayWindow ? displayViewerWindowFrames : displayViewerCreditFrames)
       ) {
         viewer.socket.close(
           displayViewerCloseCodes.tryAgain,
@@ -940,7 +957,21 @@ export class DisplayStreamHub {
       }
       // Only actually sent, unacknowledged sequences can return credit. Replaying
       // a GOP can legitimately output sequences older than a prior acknowledgement.
-      if (!viewer.outstanding.has(message.sequence)) return;
+      const acknowledged = viewer.outstanding.get(message.sequence);
+      if (!acknowledged) return;
+      if (viewer.displayWindow) {
+        const at = this.#now();
+        const delay = at - acknowledged.sentAt;
+        // A monotonic queue keeps the minimum of the recent samples without
+        // letting queued decoder/network work permanently inflate the budget.
+        while (
+          viewer.ackDelays.at(-1)?.delay !== undefined &&
+          viewer.ackDelays.at(-1)!.delay >= delay
+        )
+          viewer.ackDelays.pop();
+        viewer.ackDelays.push({ at, delay });
+        if (viewer.ackDelays.length > displayGopCacheFrames) viewer.ackDelays.shift();
+      }
       // Decoder outputs in stream order: acknowledgement returns all earlier credits.
       for (const [sequence, frame] of viewer.outstanding)
         if (sequence <= message.sequence) {
@@ -1243,8 +1274,19 @@ export class DisplayStreamHub {
   }
   #hasCredit(viewer: Viewer, bytes: number, replay = false): boolean {
     return (
-      (replay || viewer.outstanding.size < displayViewerCreditFrames) &&
+      (replay ||
+        (viewer.displayWindow
+          ? viewer.outstanding.size < displayViewerWindowFrames && this.#withinCreditAge(viewer)
+          : viewer.outstanding.size < displayViewerCreditFrames)) &&
       (viewer.outstanding.size === 0 || viewer.bytes + bytes <= displayViewerCreditBytes)
+    );
+  }
+  #withinCreditAge(viewer: Viewer): boolean {
+    const now = this.#now();
+    while (viewer.ackDelays[0] && now - viewer.ackDelays[0].at >= 10_000) viewer.ackDelays.shift();
+    const oldest = viewer.outstanding.values().next().value;
+    return (
+      !oldest || now - oldest.sentAt <= Math.min(1_500, (viewer.ackDelays[0]?.delay ?? 400) + 250)
     );
   }
   #sendFrame(viewer: Viewer, frame: CachedFrame): void {

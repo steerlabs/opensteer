@@ -12,6 +12,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
   dispatch: vi.fn(),
   os: "android",
+  binaryVersion: 1,
   geometry: "side:display@0",
   epoch: "",
   ready: null as
@@ -29,6 +30,7 @@ const state = vi.hoisted(() => ({
   appState: null as null | ((value: string) => void),
   /** Frames the native decoder received, as bytes or as base64 for an older binary. */
   decoded: [] as { epoch: string; bytes?: number[]; data?: string }[],
+  decodeResult: null as null | (() => Promise<boolean>),
 }));
 vi.mock("../ui/pane.js", () => ({ usePaneGeometry: () => state.geometry }));
 vi.mock("react-native", () => ({
@@ -83,7 +85,7 @@ vi.mock("expo", async () => {
   const React = await import("react");
   return {
     requireOptionalNativeModule: (name: string) =>
-      name === "PhoneDisplay" ? { binaryPresentationVersion: 1 } : null,
+      name === "PhoneDisplay" ? { binaryPresentationVersion: state.binaryVersion } : null,
     requireNativeView: () =>
       React.forwardRef((props: { onReady: typeof state.ready }, ref) => {
         state.ready = props.onReady;
@@ -94,12 +96,12 @@ vi.mock("expo", async () => {
           decode: async (frame: { epoch: string; data: string }) => {
             state.epoch = frame.epoch;
             state.decoded.push({ epoch: frame.epoch, data: frame.data });
-            return true;
+            return state.decodeResult ? state.decodeResult() : true;
           },
           decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
             state.epoch = metadata.epoch;
             state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
-            return true;
+            return state.decodeResult ? state.decodeResult() : true;
           },
         }));
         return <div />;
@@ -181,6 +183,8 @@ afterEach(async () => {
   state.geometry = "side:display@0";
   state.proxy = null;
   state.decoded = [];
+  state.decodeResult = null;
+  state.binaryVersion = 1;
 });
 async function setup(
   phone = true,
@@ -710,6 +714,93 @@ it("cancels local preedit and resets input when its screen hides", async () => {
 it("hands the transport's frame bytes to a binary that takes them, under the epoch it was queued for", async () => {
   await setup();
   expect(state.decoded).toEqual([{ epoch: state.epoch, bytes: [0, 0, 1, 0x65] }]);
+});
+
+it.each([0, 1])(
+  "submits four native frames in order without waiting for bridge replies and acknowledges in order (binary version %i)",
+  async (binaryVersion) => {
+    state.binaryVersion = binaryVersion;
+    await setup();
+    const finish: ((accepted: boolean) => void)[] = [];
+    state.decodeResult = () => new Promise((resolve) => finish.push(resolve));
+    await act(async () => {
+      for (let sequence = 2; sequence <= 5; sequence++)
+        socket.emit("message", {
+          data: encodeDisplayViewerFrame(
+            {
+              generation: 1,
+              sequence,
+              ptsUs: sequence * 1000,
+              width: 200,
+              height: 400,
+              key: false,
+            },
+            Uint8Array.of(sequence),
+          ).slice().buffer,
+        });
+    });
+    expect(
+      state.decoded.slice(1).map((frame) => frame.bytes ?? [...Buffer.from(frame.data!, "base64")]),
+    ).toEqual([[2], [3], [4], [5]]);
+    expect(finish).toHaveLength(4);
+    await act(async () => {
+      finish[3]!(true);
+      finish[1]!(true);
+    });
+    expect(
+      socket.sent
+        .filter((message) => message.type === "display.ack")
+        .map((message) => message.sequence),
+    ).toEqual([1]);
+    await act(async () => finish[0]!(true));
+    expect(
+      socket.sent
+        .filter((message) => message.type === "display.ack")
+        .map((message) => message.sequence),
+    ).toEqual([1, 2, 3]);
+    await act(async () => finish[2]!(true));
+    expect(
+      socket.sent
+        .filter((message) => message.type === "display.ack")
+        .map((message) => message.sequence),
+    ).toEqual([1, 2, 3, 4, 5]);
+  },
+);
+
+it("keeps native submissions bounded with a larger viewer window and fences pending work on hide", async () => {
+  const { render } = await setup();
+  const finish: ((accepted: boolean) => void)[] = [];
+  state.decodeResult = () => new Promise((resolve) => finish.push(resolve));
+  await act(async () => {
+    socket.json({
+      type: "display.state",
+      state: "live",
+      generation: 1,
+      width: 200,
+      height: 400,
+      displayWindow: 1,
+    });
+    for (let sequence = 2; sequence <= 12; sequence++)
+      socket.emit("message", {
+        data: encodeDisplayViewerFrame(
+          { generation: 1, sequence, ptsUs: sequence * 1000, width: 200, height: 400, key: false },
+          Uint8Array.of(sequence),
+        ).slice().buffer,
+      });
+  });
+  expect(finish).toHaveLength(4);
+  expect(state.decoded.slice(1).map((frame) => frame.bytes)).toEqual([[2], [3], [4], [5]]);
+  await act(async () => finish[0]!(true));
+  expect(finish).toHaveLength(5);
+  expect(state.decoded.at(-1)?.bytes).toEqual([6]);
+  await render(false);
+  const count = state.decoded.length;
+  const keyframes = socket.sent.filter((message) => message.type === "display.keyframe").length;
+  await act(async () => finish.slice(1).forEach((resolve) => resolve(false)));
+  expect(state.decoded).toHaveLength(count);
+  expect(socket.sent.filter((message) => message.type === "display.keyframe")).toHaveLength(
+    keyframes,
+  );
 });
 
 it("sends standard padded base64 to a binary that predates byte frames", async () => {

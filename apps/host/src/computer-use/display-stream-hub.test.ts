@@ -311,9 +311,9 @@ async function fixture(
     await once(socket, "open");
     return result;
   }
-  const viewer = (editing = false, displayCut = false) =>
+  const viewer = (editing = false, displayCut = false, displayWindow = false) =>
     connect(
-      `/v1/computer-use/sessions/${sessionId}/display?sharedInput=1${editing ? "&editing=1" : ""}${displayCut ? "&displayCut=1" : ""}`,
+      `/v1/computer-use/sessions/${sessionId}/display?sharedInput=1${editing ? "&editing=1" : ""}${displayCut ? "&displayCut=1" : ""}${displayWindow ? "&displayWindow=1" : ""}`,
       "owner",
     );
   const start = () =>
@@ -1456,35 +1456,40 @@ describe("phone display Host sockets", () => {
       await until(() => viewer.media().length === 1);
     },
   );
-  it.each([6, 30_000])(
-    "replays 60 frames with byte credit alone and stays live while acking (%i bytes)",
-    async (size) => {
+  it.each([
+    { size: 6, displayWindow: false },
+    { size: 30_000, displayWindow: false },
+    { size: 6, displayWindow: true },
+    { size: 30_000, displayWindow: true },
+  ])(
+    "replays 90 frames with byte credit alone and stays live while acking ($size bytes, window=$displayWindow)",
+    async ({ size, displayWindow }) => {
       const f = await fixture();
       const first = await f.viewer();
       const phone = await f.phone();
       await f.state();
-      for (let sequence = 1; sequence <= 60; sequence++) {
+      for (let sequence = 1; sequence <= 90; sequence++) {
         phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(size)));
         await first.received(() => first.media().length >= sequence);
         first.send({ type: "display.ack", sequence });
         await first.roundTrip();
       }
-      const joined = await f.viewer();
-      const window = size === 6 ? 60 : 34;
+      const joined = await f.viewer(false, false, displayWindow);
+      const window = size === 6 ? 90 : 34;
       await joined.received(() => joined.media().length >= window);
       expect(joined.media()).toHaveLength(window);
-      expect(joined.json()[0]).toMatchObject({ replayThrough: 60 });
-      for (let sequence = 1; sequence <= 60; sequence++) {
+      expect(joined.json()[0]).toMatchObject({ replayThrough: 90 });
+      for (let sequence = 1; sequence <= 90; sequence++) {
         joined.send({ type: "display.ack", sequence });
         await joined.roundTrip();
         f.advance(9_000);
         f.hub.sweep();
       }
-      expect(joined.media()).toHaveLength(60);
-      phone.socket.send(f.frame(61));
-      await joined.received(() => joined.media().length >= 61);
+      expect(joined.media()).toHaveLength(90);
+      phone.socket.send(f.frame(91));
+      await joined.received(() => joined.media().length >= 91);
       expect(joined.media().map((m) => m.header.sequence)).toEqual(
-        Array.from({ length: 61 }, (_, i) => i + 1),
+        Array.from({ length: 91 }, (_, i) => i + 1),
       );
       expect(joined.socket.readyState).toBe(WebSocket.OPEN);
       expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(0);
@@ -1947,6 +1952,87 @@ describe("phone display Host sockets", () => {
     await until(() => phone.json().length === 2);
     expect(joined.media()).toEqual([]);
   });
+  it("negotiates an RTT-sized live window without widening old viewers, and bounds its age", async () => {
+    const f = await fixture();
+    const modern = await f.viewer(false, false, true);
+    const legacy = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 12; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1));
+      await phone.received(() => phone.json().length === sequence);
+      f.advance(33);
+    }
+    await modern.roundTrip();
+    await legacy.roundTrip();
+    expect(modern.json().find((message) => message.state === "live")).toMatchObject({
+      displayWindow: 1,
+    });
+    expect(legacy.json().every((message) => message.displayWindow === undefined)).toBe(true);
+    expect(modern.media()).toHaveLength(12);
+    expect(legacy.media()).toHaveLength(4);
+    // Acknowledgement includes the shaped round trip, not decoder output order.
+    modern.send({ type: "display.ack", sequence: 1 });
+    await modern.roundTrip();
+    f.advance(1000);
+    phone.socket.send(f.frame(13));
+    await phone.received(() => phone.json().length === 13);
+    await modern.roundTrip();
+    expect(modern.media()).toHaveLength(12);
+    modern.send({ type: "display.ack", sequence: 12 });
+    await modern.roundTrip();
+    phone.socket.send(f.frame(14, true));
+    await phone.received(() => phone.json().length === 14);
+    await modern.roundTrip();
+    expect(modern.media().at(-1)?.header).toMatchObject({ sequence: 14, key: true });
+  });
+
+  it("expires a fast ACK baseline when the connection becomes slower", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    const send = async (sequence: number) => {
+      phone.socket.send(f.frame(sequence, sequence === 1));
+      await phone.received(() => phone.json().length === sequence);
+    };
+    await send(1);
+    f.advance(20);
+    viewer.send({ type: "display.ack", sequence: 1 });
+    await viewer.roundTrip();
+    f.advance(10_001);
+    await send(2);
+    f.advance(600);
+    viewer.send({ type: "display.ack", sequence: 2 });
+    await viewer.roundTrip();
+    await send(3);
+    f.advance(600);
+    await send(4);
+    await viewer.roundTrip();
+    expect(viewer.media()).toHaveLength(4);
+    f.advance(300);
+    await send(5);
+    await viewer.roundTrip();
+    expect(viewer.media()).toHaveLength(4);
+  });
+
+  it.each([6, 600_000])(
+    "bounds negotiated viewer frame metadata and bytes (%i bytes)",
+    async (size) => {
+      const f = await fixture();
+      const viewer = await f.viewer(false, false, true);
+      const phone = await f.phone();
+      await f.state();
+      const limit = size === 6 ? 60 : 1;
+      for (let sequence = 1; sequence <= limit + 1; sequence++) {
+        phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(size).fill(1)));
+        await phone.received(() => phone.json().length === sequence);
+      }
+      await viewer.roundTrip();
+      expect(viewer.media()).toHaveLength(limit);
+    },
+  );
+
   it("enforces independent frame credit and closes viewers that stay over budget", async () => {
     const f = await fixture();
     const slow = await f.viewer();
