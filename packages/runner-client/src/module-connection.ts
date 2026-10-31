@@ -39,6 +39,8 @@ export interface RunnerModuleLogger {
 }
 
 export interface RunnerModuleStream {
+  readonly localProfiles?: 1;
+  readonly initialNavigationVersion?: 1;
   readonly passkeys?: 1;
   readonly loginText?: 1;
   readonly passwordSignIn?: 1;
@@ -324,6 +326,8 @@ export class RunnerModuleConnection {
     const fence = this.#auxiliaryFence.adopt(welcome);
     await this.#options.onStream({
       ...(welcome.passkeys === 1 ? { passkeys: 1 } : {}),
+      ...(welcome.localProfiles === 1 ? { localProfiles: 1 } : {}),
+      ...(welcome.initialNavigationVersion === 1 ? { initialNavigationVersion: 1 } : {}),
       browserAttachPublicKeys: welcome.browserAttachPublicKeys,
       fence,
       send: (frame, binary) => send(socket, frame, binary),

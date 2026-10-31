@@ -1,3 +1,4 @@
+import { gate } from "@opensteer/shared/test-support/observation";
 import {
   PublicKeyCredentialRequestOptionsJSONSchema,
   serializeClientData,
@@ -62,6 +63,39 @@ describe("BrowserController", () => {
       files.root,
     );
     await ledger.start();
+  });
+
+  it("records the initial page before submitting navigation and never waits for its commit", async () => {
+    const held = gate({ label: "initial navigation commit", deadlineMs: 2000 });
+    page.cdpSession.responses.set("Page.navigate", () => held.enter());
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims(),
+      exportSnapshot,
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+    });
+    try {
+      await controller.start();
+      const navigation = { operationKey: "initial-open", url: "https://next.test/" };
+      const result = controller.startInitialNavigation(page, navigation);
+      await held.entered;
+      expect(result).toMatchObject({ operationKey: "initial-open", navigation: "submitted" });
+      expect(controller.startInitialNavigation(page, navigation)).toEqual(result);
+      expect(
+        page.cdpSession.sent.filter((command) => command.method === "Page.navigate"),
+      ).toHaveLength(1);
+      expect(() =>
+        controller.startInitialNavigation(page, { ...navigation, url: "https://other.test/" }),
+      ).toThrow(/Idempotency/);
+    } finally {
+      held.release();
+      await controller.close();
+      await ledger.close();
+    }
   });
 
   it("attributes only viewer input that reaches the page", async () => {

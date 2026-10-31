@@ -265,6 +265,9 @@ importers:
       devtools-protocol:
         specifier: 0.0.1676105
         version: 0.0.1676105
+      fs-native-extensions:
+        specifier: 1.5.2
+        version: 1.5.2
       playwright-core:
         specifier: 1.62.1
         version: 1.62.1(patch_hash=11e913a3b90dcc03be58d7e4ed3e11752dabb77b2e310ff7e4c60175c1b01b05)
@@ -502,6 +505,9 @@ importers:
       electron-updater:
         specifier: 6.8.11
         version: 6.8.11
+      fs-native-extensions:
+        specifier: 1.5.2
+        version: 1.5.2
       sharp:
         specifier: 'catalog:'
         version: 0.35.5(@types/node@26.2.0)
@@ -1315,6 +1321,9 @@ importers:
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../shared
+      fs-native-extensions:
+        specifier: 1.5.2
+        version: 1.5.2
       ws:
         specifier: 'catalog:'
         version: 8.21.3
@@ -4996,6 +5005,25 @@ packages:
     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
     engines: {node: 18 || 20 || >=22}
 
+  bare-addon-resolve@1.11.0:
+    resolution: {integrity: sha512-bTUBSqBjzQQzo2/iIk6KxAClZfahy38EPsJV2bPJ+p2+kS8h+hT5TE5QggpkFUrCnLL4HDTA4DDM+YiNdyol0w==}
+    peerDependencies:
+      bare-url: '*'
+    peerDependenciesMeta:
+      bare-url:
+        optional: true
+
+  bare-module-resolve@1.12.6:
+    resolution: {integrity: sha512-tsoOqHmtF6VmNX4LYDBZwvQVkSmEagnbykNjK31LMxz/amyKfjCs4K976n7uJd1bvWfxbpLQ3Fy7qq8an6jR6Q==}
+    peerDependencies:
+      bare-url: '*'
+    peerDependenciesMeta:
+      bare-url:
+        optional: true
+
+  bare-semver@1.1.0:
+    resolution: {integrity: sha512-1Hw5qJ7hXdVt3uPUqjeFTuxyvBUJauvz5A1I2jk8gzjZMHp04n//6nV9MDbG9CMw78JHY2lGV0w6s//LrASm2w==}
+
   base64-js@1.5.1:
     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
 
@@ -6102,6 +6130,9 @@ packages:
   fs-extra@9.1.0:
     resolution: {integrity: sha512-hcg3ZmepS30/7BSFqRvoo3DOMQu7IjqxO5nCDt+zM9XWjb33Wg7ziNT+Qvqbuc3+gWpzO02JubVyk2G4Zvo1OQ==}
     engines: {node: '>=10'}
+
+  fs-native-extensions@1.5.2:
+    resolution: {integrity: sha512-i3jJC3MLVbdpCEofr+5qV1IqgJP53Iwikb0edmeJoHgrwCzck27KfP4KFgSXIIuxYth86px2PGnlVrcyBTRxdw==}
 
   fs.realpath@1.0.0:
     resolution: {integrity: sha512-OO0pH2lK6a0hZnAdau5ItzHPI6pUlvI7jMVnxUQRtw4owF2wk8lOSabtGDCTP4Ggrg2MbGnWO9X8K1t4+fGMDw==}
@@ -7660,6 +7691,10 @@ packages:
   remark-stringify@11.0.0:
     resolution: {integrity: sha512-1OSmLd3awB/t8qdoEOMazZkNsfVTeY4fTsgzcQFdXNq8ToTN4ZGwrMnlda4K6smTFKD+GRV6O48i6Z4iKgPPpw==}
 
+  require-addon@1.3.0:
+    resolution: {integrity: sha512-j8pifaPNZI7ShKY3ihXZwF0qaEjua8zmlqPvDil0a8SBnyRvjCbAiEQuzO0UcoXH1sqU5U/ilXSjYd1W5NYwAA==}
+    engines: {bare: '>=1.10.0'}
+
   require-directory@2.1.1:
     resolution: {integrity: sha512-fGxEI7+wsG9xrvdjsrlmL22OMTTiHRwAMroiEeMgq8gzoLC/PQr7RsRDSTLUg/bZAZtF+TVIkHc6/4RIKrui+Q==}
     engines: {node: '>=0.10.0'}
@@ -8438,6 +8473,9 @@ packages:
 
   whatwg-url-minimum@0.2.0:
     resolution: {integrity: sha512-BtjXU1caNcCFfETP2DhqSeVPfRDl2MTUitI107RE34rJXjR/izfUtR5IoTFOK1WqjNLXbbeqaCH/mQAOLjpc8g==}
+
+  which-runtime@1.4.0:
+    resolution: {integrity: sha512-0ugbP4CJW4e2D20jvEcC4973dCgIaHI4Rw1PT+26U9zEve7FyYdWAIwUnoeOYvoCfn+wXHoHTKb1KhkYlb60Pw==}
 
   which@2.0.2:
     resolution: {integrity: sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==}
@@ -11564,6 +11602,17 @@ snapshots:
 
   balanced-match@4.0.4: {}
 
+  bare-addon-resolve@1.11.0:
+    dependencies:
+      bare-module-resolve: 1.12.6
+      bare-semver: 1.1.0
+
+  bare-module-resolve@1.12.6:
+    dependencies:
+      bare-semver: 1.1.0
+
+  bare-semver@1.1.0: {}
+
   base64-js@1.5.1: {}
 
   baseline-browser-mapping@2.11.23: {}
@@ -12797,6 +12846,13 @@ snapshots:
       graceful-fs: 4.2.11
       jsonfile: 6.2.1
       universalify: 2.0.1
+
+  fs-native-extensions@1.5.2:
+    dependencies:
+      require-addon: 1.3.0
+      which-runtime: 1.4.0
+    transitivePeerDependencies:
+      - bare-url
 
   fs.realpath@1.0.0: {}
 
@@ -14727,6 +14783,12 @@ snapshots:
       mdast-util-to-markdown: 2.1.2
       unified: 11.0.5
 
+  require-addon@1.3.0:
+    dependencies:
+      bare-addon-resolve: 1.11.0
+    transitivePeerDependencies:
+      - bare-url
+
   require-directory@2.1.1: {}
 
   require-from-string@2.0.2: {}
@@ -15616,6 +15678,8 @@ snapshots:
   whatwg-mimetype@3.0.0: {}
 
   whatwg-url-minimum@0.2.0: {}
+
+  which-runtime@1.4.0: {}
 
   which@2.0.2:
     dependencies:

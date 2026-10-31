@@ -37,6 +37,66 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntimeServer", () => {
+  it("negotiates initial-page readiness through the authenticated bridge", async () => {
+    const claims = validClaims({
+      initialNavigationVersion: 1,
+      initialNavigation: { operationKey: "initial-test", url: "https://example.test/" },
+    });
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(),
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(claims),
+    });
+    const bridgeToken = "b".repeat(64);
+    const keys = generateKeyPairSync("ed25519");
+    const server = new BrowserRuntimeServer({
+      port: 0,
+      runtime,
+      relayBridge: { token: bridgeToken, updateAttachKeys: () => {} },
+    });
+    try {
+      const address = await server.start();
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/v1/browser`, {
+        headers: {
+          authorization: "Bearer abc.def.ghi",
+          "x-opensteer-browser-initial-navigation": "1",
+          "x-opensteer-browser-bridge-token": bridgeToken,
+          "x-opensteer-browser-attach-keys": Buffer.from(
+            JSON.stringify([
+              {
+                keyId: "test-key",
+                publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+              },
+            ]),
+          ).toString("base64url"),
+        },
+      });
+      const result = await settleWithin(
+        new Promise<unknown>((resolve, reject) => {
+          socket.once("error", reject);
+          socket.on("message", (raw, binary) => {
+            if (binary) return;
+            const message = JSON.parse(String(raw));
+            if (message.type === "browser.attached") resolve(message);
+          });
+        }),
+        2000,
+      );
+      expect(result).toMatchObject({
+        settled: "fulfilled",
+        value: {
+          type: "browser.attached",
+          initialPage: { operationKey: "initial-test", navigation: "submitted" },
+        },
+      });
+      socket.terminate();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("refuses listening and health until initialization succeeds, including failed initialization", async () => {
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),

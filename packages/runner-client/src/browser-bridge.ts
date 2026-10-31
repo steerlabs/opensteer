@@ -1,7 +1,12 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { readBoundedText } from "@opensteer/shared/boundedJson";
 import { isLoopbackHostname } from "@opensteer/core";
 import {
   BrowserAttachPublicKeysSchema,
+  createBrowserBridgeAttachedSchema,
+  BrowserEngineSchema,
+  HeldLocalProfileSchema,
+  type LocalProfileBinding,
   BrowserClientMessageSchema,
   BrowserServerMessageSchema,
   serializeJsonFrame,
@@ -14,15 +19,16 @@ import {
   validateBrowserRuntimeFrame,
   type BrowserChannelId,
   type BrowserRuntimeHealth,
+  type BrowserRelayNegotiation,
 } from "@opensteer/protocol/browser-relay";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 
 const maxBrowserRelayChannels = 32;
 
-const LocalHealthSchema = z.strictObject({
+const LocalHealthSchema = z.object({
   runtimeId: z.string().min(1).max(255),
-  sessionId: z.string().max(255).nullable(),
+  sessionId: z.string().max(255).nullable().optional(),
   state: z.enum(["closed", "closing", "idle", "ready", "starting"]),
 });
 
@@ -64,6 +70,49 @@ export class LocalBrowserRuntimeBridge {
   #passkeys = false;
   setPasskeysEnabled(enabled: boolean): void {
     this.#passkeys = enabled;
+  }
+  #negotiation: BrowserRelayNegotiation = {};
+  setNegotiation(negotiation: BrowserRelayNegotiation): void {
+    this.#negotiation = negotiation;
+  }
+
+  async localProfileInventory() {
+    if (this.#negotiation.localProfiles !== 1)
+      throw new BrowserRelayError("Local profiles were not negotiated.");
+    return z
+      .strictObject({
+        storage: z.strictObject({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema }),
+        profiles: z.array(HeldLocalProfileSchema),
+      })
+      .parse(await this.#maintenance("/v1/local-profiles"));
+  }
+  async deleteLocalProfile(
+    binding: LocalProfileBinding,
+    deletionId: string,
+  ): Promise<"pending-restart" | "deleted"> {
+    if (this.#negotiation.localProfiles !== 1)
+      throw new BrowserRelayError("Local profiles were not negotiated.");
+    return z
+      .strictObject({ state: z.enum(["pending-restart", "deleted"]) })
+      .parse(await this.#maintenance("/v1/local-profiles/delete", { binding, deletionId })).state;
+  }
+  async #maintenance(pathname: string, input?: object): Promise<unknown> {
+    const response = await fetch(new URL(pathname, this.#url), {
+      method: input ? "POST" : "GET",
+      redirect: "error",
+      signal: AbortSignal.timeout(120_000),
+      headers: {
+        "x-opensteer-browser-bridge-token": this.#bridgeToken,
+        "x-opensteer-browser-local-profiles": "1",
+        ...(input ? { "content-type": "application/json" } : {}),
+      },
+      ...(input ? { body: JSON.stringify(input) } : {}),
+    });
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      throw new BrowserRelayError("Local browser profile maintenance failed.");
+    }
+    return JSON.parse(await readBoundedText(response, { maximumBytes: 16 * 1024 * 1024 }));
   }
   #attachKeysHeader: string | undefined;
 
@@ -131,7 +180,7 @@ export class LocalBrowserRuntimeBridge {
       if (health.runtimeId !== this.#runtimeId) {
         throw new Error("browser runtime identity does not match configuration");
       }
-      return { ...health, checkedAt, detail: null };
+      return { ...health, sessionId: health.sessionId ?? null, checkedAt, detail: null };
     } catch {
       return {
         checkedAt,
@@ -171,6 +220,12 @@ export class LocalBrowserRuntimeBridge {
     const socket = new WebSocket(url, {
       followRedirects: false,
       headers: {
+        ...(this.#negotiation.localProfiles === 1
+          ? { "x-opensteer-browser-local-profiles": "1" }
+          : {}),
+        ...(this.#negotiation.initialNavigationVersion === 1
+          ? { "x-opensteer-browser-initial-navigation": "1" }
+          : {}),
         ...(this.#passkeys ? { "x-opensteer-browser-passkeys": "1" } : {}),
         authorization: `Bearer ${attachTicket}`,
         "x-opensteer-browser-attach-keys": attachKeysHeader,
@@ -181,6 +236,12 @@ export class LocalBrowserRuntimeBridge {
     });
     this.#channels.set(channelId, { socket });
     let attached = false;
+    const readiness = Promise.withResolvers<BrowserBridgeAttached>();
+    // Observe rejection even if the transport fails before waitForOpen returns.
+    void readiness.promise.catch(() => undefined);
+    const negotiated = this.#negotiation;
+    const needsReadiness =
+      negotiated.localProfiles === 1 || negotiated.initialNavigationVersion === 1;
     socket.on("message", (raw, isBinary) => {
       try {
         const frame = normalizeRawData(raw);
@@ -188,14 +249,26 @@ export class LocalBrowserRuntimeBridge {
           validateBrowserRuntimeFrame(frame);
           sink.onFrame(channelId, frame);
         } else {
-          const message = BrowserServerMessageSchema.parse(JSON.parse(frame.toString("utf8")));
+          const value: unknown = JSON.parse(frame.toString("utf8"));
+          const ready = needsReadiness
+            ? createBrowserBridgeAttachedSchema(negotiated).safeParse(value)
+            : undefined;
+          if (ready?.success) {
+            readiness.resolve(ready.data);
+            return;
+          }
+          const message = BrowserServerMessageSchema.parse(value);
+          if (message.type === "browser.error")
+            readiness.reject(new BrowserRelayError(message.error.message));
           sink.onServerMessage(channelId, message);
         }
       } catch {
+        readiness.reject(new BrowserRelayError("Invalid browser runtime readiness."));
         socket.close(1007, "invalid browser runtime frame");
       }
     });
     socket.once("close", (code, reason) => {
+      readiness.reject(new BrowserRelayError("The browser runtime closed before attachment."));
       if (this.#channels.get(channelId)?.socket !== socket) return;
       this.#channels.delete(channelId);
       if (!attached) return;
@@ -212,8 +285,13 @@ export class LocalBrowserRuntimeBridge {
     });
     try {
       await waitForOpen(socket, 5_000);
+      const result = needsReadiness
+        ? await withTimeout(readiness.promise, 120_000, {
+            timeoutError: () => new BrowserRelayError("Browser runtime readiness timed out."),
+          })
+        : { type: "browser.attached" as const };
       attached = true;
-      return { type: "browser.attached" };
+      return result;
     } catch (error) {
       this.#channels.delete(channelId);
       socket.terminate();

@@ -1,9 +1,16 @@
+import { z } from "zod";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+  type Server as HttpServer,
+} from "node:http";
 import { once } from "node:events";
 import {
   BrowserServerMessageSchema,
   BrowserAttachPublicKeysSchema,
+  LocalProfileBindingSchema,
   type BrowserServerMessage,
   type BrowserAttachPublicKey,
 } from "@opensteer/protocol";
@@ -57,6 +64,14 @@ export class BrowserRuntimeServer {
         response.end(JSON.stringify(this.runtime.health()));
         return;
       }
+      if (safePathname(request)?.startsWith("/v1/local-profiles")) {
+        void this.profileMaintenance(request, response).catch(() => {
+          if (!response.headersSent)
+            response.writeHead(409, { "content-type": "application/json" });
+          response.end('{"error":"local-profile-maintenance-failed"}');
+        });
+        return;
+      }
       response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
       response.end('{"error":"not_found"}');
     });
@@ -92,11 +107,16 @@ export class BrowserRuntimeServer {
         websocket.close(1008, "attach rejected");
         return;
       }
-      this.accept(
-        websocket,
-        ticket,
-        Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
-      );
+      this.accept(websocket, ticket, {
+        passkeys:
+          Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
+        localProfiles:
+          Boolean(this.relayBridge) &&
+          request.headers["x-opensteer-browser-local-profiles"] === "1",
+        initialNavigation:
+          Boolean(this.relayBridge) &&
+          request.headers["x-opensteer-browser-initial-navigation"] === "1",
+      });
     });
   }
 
@@ -106,7 +126,9 @@ export class BrowserRuntimeServer {
     if (
       token === undefined &&
       encodedKeys === undefined &&
-      request.headers["x-opensteer-browser-passkeys"] === undefined
+      request.headers["x-opensteer-browser-passkeys"] === undefined &&
+      request.headers["x-opensteer-browser-local-profiles"] === undefined &&
+      request.headers["x-opensteer-browser-initial-navigation"] === undefined
     )
       return;
     const bridge = this.relayBridge;
@@ -128,6 +150,53 @@ export class BrowserRuntimeServer {
       throw new Error("The browser attach key IDs are not unique.");
     }
     bridge.updateAttachKeys(keys);
+  }
+
+  private async profileMaintenance(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    const token = request.headers["x-opensteer-browser-bridge-token"];
+    if (
+      !this.relayBridge ||
+      typeof token !== "string" ||
+      token.length > 4096 ||
+      !safeTokenEqual(token, this.relayBridge.token)
+    ) {
+      response.writeHead(403);
+      response.end();
+      return;
+    }
+    if (request.headers["x-opensteer-browser-local-profiles"] !== "1") {
+      response.writeHead(403);
+      response.end();
+      return;
+    }
+    if (request.method === "GET" && request.url === "/v1/local-profiles") {
+      const profiles = await this.runtime.localProfileInventory();
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ storage: this.runtime.localProfileStorage, profiles }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/v1/local-profiles/delete") {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of request) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+        size += bytes.byteLength;
+        if (size > 16 * 1024) throw new Error("Profile maintenance body exceeds its limit.");
+        chunks.push(bytes);
+      }
+      const input = z
+        .strictObject({ binding: LocalProfileBindingSchema, deletionId: z.uuid() })
+        .parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      const state = await this.runtime.deleteLocalProfile(input.binding, input.deletionId);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ state }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
   }
 
   start(): Promise<ListeningAddress> {
@@ -157,7 +226,11 @@ export class BrowserRuntimeServer {
     return closing;
   }
 
-  private accept(websocket: WebSocket, ticket: string, passkeys: boolean): void {
+  private accept(
+    websocket: WebSocket,
+    ticket: string,
+    options: { passkeys: boolean; localProfiles: boolean; initialNavigation: boolean },
+  ): void {
     const sink = new WebSocketBrowserSink(websocket, this.maxBufferedBytes);
     let attachment: BrowserAttachment | null = null;
     let disconnected = false;
@@ -201,12 +274,20 @@ export class BrowserRuntimeServer {
       void attachment?.close().catch(() => undefined);
     });
 
-    void this.runtime.attach(ticket, sink, { passkeys }).then(
+    void this.runtime.attach(ticket, sink, options).then(
       async (attached) => {
         attachment = attached;
         if (disconnected) {
           await attached.close().catch(() => undefined);
           return;
+        }
+        if (options.localProfiles || options.initialNavigation) {
+          websocket.send(
+            JSON.stringify({
+              type: "browser.attached",
+              ...(attached.initialPage ? { initialPage: attached.initialPage } : {}),
+            }),
+          );
         }
         for (const frame of queued) await attached.handle(frame);
         queued.length = 0;
