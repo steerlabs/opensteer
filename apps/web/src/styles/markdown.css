@@ -25,19 +25,19 @@
 }
 
 .md-prose h1 {
-  font-size: 1.3em;
+  font-size: var(--display-sm);
 }
 
 .md-prose h2 {
-  font-size: 1.17em;
+  font-size: var(--display-xs);
 }
 
 .md-prose h3 {
-  font-size: 1.05em;
+  font-size: var(--text-root);
 }
 
 .md-prose h4 {
-  font-size: 1em;
+  font-size: var(--text-2xl);
 }
 
 .md-prose ul,
@@ -67,7 +67,7 @@
 }
 
 .md-prose code {
-  font-size: 0.86em;
+  font-size: var(--text-sm);
   background: var(--surface-raised);
   border: 1px solid var(--line);
   border-radius: 5px;

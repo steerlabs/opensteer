@@ -71,6 +71,27 @@ function fixture() {
   };
 }
 describe("Host voice authorization and relay", () => {
+  it.each([false, true])(
+    "reports negotiated agent support %s only when requested",
+    async (agent) => {
+      const f = fixture();
+      f.runners.voice.mockResolvedValue({ ok: true, answer: "answer", agent });
+      expect(await f.handlers["voice.start"]({ ...f.input, agent: true }, f.context)).toEqual({
+        ok: true,
+        data: { answer: "answer", agent },
+      });
+      expect(f.runners.voice).toHaveBeenCalledWith(
+        environmentId,
+        userId,
+        expect.objectContaining({ agent: true }),
+        f.context.signal,
+      );
+      expect(await f.handlers["voice.start"](f.input, f.context)).toEqual({
+        ok: true,
+        data: { answer: "answer" },
+      });
+    },
+  );
   it("relays start with the authenticated person and authorized account", async () => {
     const f = fixture();
     expect(await f.handlers["voice.start"](f.input, f.context)).toEqual({
@@ -137,11 +158,25 @@ describe("Host voice authorization and relay", () => {
     });
     expect(f.runners.voice).not.toHaveBeenCalled();
   });
-  it.each(["voice.renew", "voice.say", "voice.stop"] as const)(
+  it.each([
+    "voice.renew",
+    "voice.say",
+    "voice.stop",
+    "voice.next",
+    "voice.answer",
+    "voice.context",
+  ] as const)(
     "reauthorizes %s against fresh profiles without retaining session state",
     async (method) => {
       const f = fixture();
-      const call = { environmentId, sessionId, harnessInstanceId, text: "hello" };
+      const call = {
+        environmentId,
+        sessionId,
+        harnessInstanceId,
+        text: "hello",
+        callId: "opaque",
+        ok: true,
+      };
       await f.handlers[method](call, f.context);
       expect(f.runners.voice).toHaveBeenLastCalledWith(
         environmentId,

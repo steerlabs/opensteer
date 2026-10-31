@@ -64,6 +64,13 @@ export interface PlaceItem {
   readonly closable: boolean;
 }
 /**
+ * A task or Chat is in the place: it holds it, or worked there moments ago.
+ * These are the places that wear task marks, and what "Tabs with agents" shows.
+ */
+export function placeHasAgents(place: Pick<PlaceItem, "occupants">): boolean {
+  return place.occupants.length > 0;
+}
+/**
  * What a tab, app or phone is found by: its title most (part of a word will
  * do), then its site, its group, who it browses as and the computer it is on.
  */

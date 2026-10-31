@@ -64,7 +64,7 @@ import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart } from "@opensteer/core";
 import { paramsDestination, sameDestination, surfaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, radius, space, touchTarget } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
@@ -439,6 +439,11 @@ function ThreadPaneForUser(
     readonly quote?: ThreadDraftQuote | null;
     readonly text: string;
   } | null>(null);
+  const restoreQueuedDraft = useCallback(
+    (message: { readonly attachments: readonly ArtifactContentPart[]; readonly text: string }) =>
+      setRestoredDraft((current) => ({ ...message, key: (current?.key ?? 0) + 1 })),
+    [],
+  );
   const handedQuote = props.quote ?? null;
   const onQuoteTaken = props.onQuoteTaken;
   useEffect(() => {
@@ -747,23 +752,23 @@ function ThreadPaneForUser(
     isHome,
   ]);
 
-  // The rows the reader opened, for as long as this screen is up: answered
-  // turns' steps and long messages' words.
-  const [openRows, setOpenRows] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleRow = useCallback((rowKey: string) => {
-    setOpenRows((open) => {
-      const next = new Set(open);
-      if (!next.delete(rowKey)) next.add(rowKey);
-      return next;
-    });
+  // The reader's choices survive rows leaving the list's mounted window.
+  const [openRows, setOpenRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const toggleRow = useCallback((rowKey: string, open: boolean) => {
+    setOpenRows((choices) => new Map(choices).set(rowKey, !open));
   }, []);
   const openStep = useCallback(
     (entryId: string) => navigation.navigate("ThreadStep", { deploymentId, entryId, threadId }),
     [deploymentId, navigation, threadId],
   );
   const openActivity = useCallback(
-    (turnKey: string) =>
-      navigation.navigate("ConversationActivity", { deploymentId, threadId, turnKey }),
+    (turnKey: string, messageId?: string) =>
+      navigation.navigate("ConversationActivity", {
+        deploymentId,
+        threadId,
+        turnKey,
+        ...(messageId === undefined ? {} : { messageId }),
+      }),
     [deploymentId, navigation, threadId],
   );
   // The reply under way opens the latest Activity: that reply's, and still
@@ -774,7 +779,7 @@ function ThreadPaneForUser(
   );
   // Puts the reader where a link points, and opens the Activity holding it.
   const reveal = useCallback(
-    (place: LinkedPlace): void => {
+    (place: LinkedPlace, entryId: string): void => {
       if (place.index >= 0) {
         scrollAttempts.current = 0;
         pinned.current = false;
@@ -783,9 +788,11 @@ function ThreadPaneForUser(
       }
       const { openKey } = place;
       if (openKey !== null) {
-        setOpenRows((open) => (open.has(openKey) ? open : new Set(open).add(openKey)));
+        setOpenRows((open) =>
+          open.get(openKey) === true ? open : new Map(open).set(openKey, true),
+        );
       }
-      if (place.activityKey !== null) openActivity(place.activityKey);
+      if (place.activityKey !== null) openActivity(place.activityKey, entryId);
     },
     [openActivity],
   );
@@ -796,7 +803,7 @@ function ThreadPaneForUser(
     // A sheet opens over the screen in front of the reader, never under it.
     if (anchor.activityKey !== null && !focused) return;
     anchorShown.current = anchorMessageId;
-    reveal(anchor);
+    reveal(anchor, anchorMessageId);
   }, [anchor, anchorMessageId, focused, reveal]);
   useEffect(() => {
     if (requestId === null || revealed.current === requestId) return;
@@ -806,10 +813,11 @@ function ThreadPaneForUser(
       revealed.current = requestId;
       return;
     }
-    if (receipt === null || (receipt.activityKey !== null && !focused)) return;
+    if (receipt === null || receiptId === null || (receipt.activityKey !== null && !focused))
+      return;
     revealed.current = requestId;
-    reveal(receipt);
-  }, [focused, pendingRequest, receipt, requestId, reveal]);
+    reveal(receipt, receiptId);
+  }, [focused, pendingRequest, receipt, receiptId, requestId, reveal]);
   // A chip opens exactly the page or app it names, pushed so Back returns to
   // where it was opened; one already in front is left as it is.
   const surfaceTurns = useMemo(
@@ -961,8 +969,9 @@ function ThreadPaneForUser(
               onReply={conversational ? replyWith : undefined}
               live={live}
               group={item.group}
-              open={openRows.has(item.group.key)}
+              open={openRows.get(item.group.key) ?? null}
               onToggleOpen={toggleRow}
+              reveal={anchorMessageId ?? receiptId}
               highlightRequestId={requestId}
               askAbout={askAbout}
               onOpenStep={openStep}
@@ -992,6 +1001,7 @@ function ThreadPaneForUser(
       openRows,
       replyWith,
       requestId,
+      receiptId,
       snapshot.homeThreadId,
       viewerUserId,
       workspaces,
@@ -1045,6 +1055,23 @@ function ThreadPaneForUser(
     if (indicator !== null) rows.push({ indicator, key: "working", kind: "working" });
     return rows;
   }, [conversational, drawn, groups, indicator, outcomes, unreadBoundarySequence, viewerUserId]);
+
+  const queueCanRespond = canRespond && thread?.status !== "archived";
+  const queueFooter = useMemo(
+    () =>
+      thread?.role === "work" && inputQueue !== null ? (
+        <AttachmentReader value={hostClient}>
+          <QueuedMessages
+            canRespond={queueCanRespond}
+            hostClient={hostClient}
+            onEdit={restoreQueuedDraft}
+            queue={inputQueue}
+            viewerUserId={viewerUserId}
+          />
+        </AttachmentReader>
+      ) : null,
+    [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
+  );
 
   // Never under a finger: the list moves only where the reader puts it.
   const keepPinned = (): void => {
@@ -1212,6 +1239,7 @@ function ThreadPaneForUser(
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         keyExtractor={(item) => item.key}
+        ListFooterComponent={queueFooter ?? undefined}
         ListEmptyComponent={
           sheet === null ? (
             <EmptyThread />
@@ -1411,20 +1439,7 @@ function ThreadPaneForUser(
                 threadId={thread.id}
               />
             ) : null}
-            {/* One dock: the tray tucks under the composer's top edge, so the
-                two share a wrapper the dock's own gap cannot reach between.
-                Only work has a tray; a conversation shows what was sent. */}
             <View>
-              {inputQueue === null || thread.role !== "work" ? null : (
-                <QueuedMessages
-                  canRespond={canRespond && thread.status !== "archived"}
-                  hostClient={props.hostClient}
-                  onEdit={(message) =>
-                    setRestoredDraft((current) => ({ ...message, key: (current?.key ?? 0) + 1 }))
-                  }
-                  queue={inputQueue}
-                />
-              )}
               <Composer
                 variant={conversational ? "conversation" : "work"}
                 voice={isHome}
@@ -1690,7 +1705,12 @@ function sameGroup(left: TranscriptGroup, right: TranscriptGroup): boolean {
       sameEntries(left.turn.assignments, right.turn.assignments)
     );
   }
-  return right.kind !== "turn" && right.kind === left.kind && left.entry === right.entry;
+  return (
+    right.kind !== "turn" &&
+    right.kind === left.kind &&
+    left.entry === right.entry &&
+    (left.kind !== "message" || (right.kind === "message" && left.joinedRun === right.joinedRun))
+  );
 }
 
 function sameEntries(left: readonly object[], right: readonly object[]): boolean {
@@ -1767,37 +1787,31 @@ const styles = StyleSheet.create({
     minHeight: touchTarget,
     paddingHorizontal: space[6],
   },
-  requesterPressed: { backgroundColor: color.surfacePressed },
+  requesterPressed: { ...material.quiet },
   requesterTitle: { flexShrink: 1 },
   jump: {
+    ...material.float,
     alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.lineStrong,
     borderRadius: radius.full,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: space[8],
     justifyContent: "center",
     minHeight: touchTarget,
-    paddingHorizontal: space[16],
+    paddingHorizontal: space[16] - (1 - StyleSheet.hairlineWidth),
     // Lifted off the transcript it floats over.
-    elevation: 6,
-    shadowColor: "#000",
-    shadowOffset: { height: 4, width: 0 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
+    zIndex: 6,
   },
   // Clear of the composer beneath it: the pill is an offer, and an offer that
   // touches the thing it sits on reads as part of it.
   jumpHome: { alignItems: "center", bottom: space[12], left: 0, position: "absolute", right: 0 },
-  jumpPressed: { backgroundColor: color.surfacePressed },
+  jumpPressed: { ...material.floatPressed },
   latest: {
     alignItems: "center",
     flexDirection: "row",
     gap: space[8],
     minHeight: touchTarget,
   },
-  latestPressed: { backgroundColor: color.surfacePressed },
+  latestPressed: { ...material.quiet },
   latestText: { flex: 1 },
   pane: { flex: 1 },
   // Its own basis is nothing and its least is the latest line, so the room is

@@ -1,6 +1,5 @@
 import {
   AgentPhoneEnrollments,
-  agentPhoneAdb,
   agentPhoneSetupHost,
   setupAgentPhone,
   type AgentPhoneArtifact,
@@ -9,33 +8,33 @@ import {
   type AgentPhoneSetupStep,
 } from "@opensteer/agent-phone-setup";
 import {
-  agentPhoneCredentialStore,
   agentPhoneUsb,
   chooseAgentPhone,
-  connectAgentPhone,
   grantedAgentPhones,
   type AgentPhoneUsbDevice,
 } from "@opensteer/agent-phone-setup/webusb";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import type { DesktopUsbDeviceChoice, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
+import { connectPhoneForSetup } from "../../computers/agent-phone-connection.js";
 import { loadAgentPhoneArtifact } from "../../computers/agent-phone-setup.js";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
-import { Icon } from "../icon.js";
+import { Icon, type IconName } from "../icon.js";
 
 /**
  * Setting an Android phone up over USB, once.
  *
  * The phone is plugged into the computer this page is open on; everything
- * after the person picks it and allows USB debugging happens without them.
- * The steps are the setup engine's, named the way the person experiences them.
+ * after the person picks it and allows USB debugging happens without them,
+ * unless setup must erase or unpair something first. The dialog shows only
+ * the setup engine's current step, named the way the person experiences it.
  */
 
 type WizardStep = "connect" | "authorize" | "check" | "install" | "configure" | "pair";
 
-/** Why the last attempt to reach the phone ended, shown above the requirements. */
+/** Why the last attempt to reach the phone ended. */
 type ConnectNote = "busy" | "not-chosen" | "unauthorized";
 
 /** What setup asks the person before it removes or unpairs anything on the phone. */
@@ -260,8 +259,8 @@ export function AddPhoneDialog({
     device.current = chosen;
     setPhase({ kind: "running", question: null, step: "connect" });
     try {
-      const connection = await connectAgentPhone(chosen, {
-        credentialStore: agentPhoneCredentialStore(),
+      const connection = await connectPhoneForSetup(chosen, {
+        native: desktopBridge?.agentPhoneAdb,
         onAuthorizePrompt: () => {
           if (isCurrent(session)) {
             setPhase({ kind: "running", question: null, step: "authorize" });
@@ -270,7 +269,7 @@ export function AddPhoneDialog({
         signal: abort.signal,
       });
       if (!isCurrent(session)) {
-        if (connection.kind === "connected") await connection.adb.close().catch(() => undefined);
+        if (connection.kind === "connected") await connection.close().catch(() => undefined);
         return;
       }
       if (connection.kind !== "connected") {
@@ -279,10 +278,10 @@ export function AddPhoneDialog({
       }
       session.close = () => {
         session.close = () => undefined;
-        void connection.adb.close().catch(() => undefined);
+        void connection.close().catch(() => undefined);
       };
       const result = await setupAgentPhone({
-        adb: agentPhoneAdb(connection.adb),
+        adb: connection.adb,
         artifact: loaded,
         confirmUninstall: () => ask({ kind: "uninstall" }, session),
         confirmUnpair: ({ hostUrl }) => ask({ hostUrl, kind: "unpair" }, session),
@@ -325,8 +324,113 @@ export function AddPhoneDialog({
     else setPhase({ kind: "ready", note: null });
   }
 
+  function answerChoice(choice: DesktopUsbDeviceChoice, deviceId: string | null) {
+    const session = attempt.current;
+    if (!desktopBridge || !session) return;
+    void desktopBridge
+      .chooseUsbDevice({ choiceId: choice.choiceId, deviceId })
+      .catch((reason: unknown) => {
+        if (isCurrent(session)) setPhase({ kind: "failed", message: actionErrorMessage(reason) });
+      });
+    setPhase({ choice: null, kind: "choosing" });
+  }
+
+  /** What the dialog shows for the phase it is in. */
+  function stage(): StageProps {
+    const desktop = desktopBridge !== null;
+    switch (phase.kind) {
+      case "unsupported":
+        return {
+          detail:
+            "Open Opensteer in Chrome or the desktop app on the computer the phone plugs into.",
+          title: "This browser can’t reach a phone over USB",
+          tone: "problem",
+        };
+      case "no-artifact":
+        return {
+          detail: "It doesn’t include the Agent Phone app.",
+          title: "This Opensteer build can’t set up phones",
+          tone: "problem",
+        };
+      case "loading":
+        return { title: "Getting Agent Phone ready", tone: "working" };
+      case "ready":
+        return readyStage({
+          deploymentKind,
+          desktop,
+          homeName,
+          note: phase.note,
+          onConnect: () => void choose(),
+          phoneName: phoneName ?? null,
+        });
+      case "choosing": {
+        const { choice } = phase;
+        if (choice) return choiceStage(choice, (deviceId) => answerChoice(choice, deviceId));
+        // The desktop picks a lone phone itself, and asks only when there are several.
+        return desktop
+          ? { title: "Looking for the phone", tone: "working" }
+          : { cue: "Your turn", title: "Choose the phone in the list that opened", tone: "you" };
+      }
+      case "running":
+        return phase.question
+          ? confirmStage(phase.question, phase.step, deploymentName, answered)
+          : runningStage(phase.step, phone, deploymentName);
+      case "disconnected":
+        return {
+          cue: "Your turn",
+          detail: "Setup continues where it stopped.",
+          title: "Plug the phone back in",
+          tone: "you",
+        };
+      case "done":
+        return {
+          actions: (
+            <Link
+              className="btn btn--primary"
+              onClick={closeSetup}
+              to={`/settings/computers/${encodeURIComponent(phase.runnerId)}`}
+            >
+              Open the phone’s page
+            </Link>
+          ),
+          detail: phone?.secureLock
+            ? `Agents in ${deploymentName} can use it while it’s online. They unlock it with the PIN you give them; after a restart, unlock it once yourself.`
+            : `Agents in ${deploymentName} can use it while it’s online.`,
+          title: phone ? `${phone.model} is ready` : "The phone is ready",
+          tone: "done",
+        };
+      case "issue":
+      case "failed": {
+        const remoteAccessOff = phase.kind === "issue" && phase.issue.code === "remote-access-off";
+        return {
+          actions: (
+            <>
+              {remoteAccessOff ? (
+                <Link className="btn btn--primary" onClick={closeSetup} to="/settings/devices">
+                  Open Remote access
+                </Link>
+              ) : null}
+              <button
+                className={remoteAccessOff ? "btn" : "btn btn--primary"}
+                onClick={retry}
+                type="button"
+              >
+                Try again
+              </button>
+            </>
+          ),
+          detail:
+            phase.kind === "issue"
+              ? issueText(phase.issue, { deploymentName, homeName })
+              : phase.message,
+          title: "Setup stopped",
+          tone: "problem",
+        };
+      }
+    }
+  }
+
   const busy = phase.kind === "running" || phase.kind === "choosing";
-  const title = phoneName ? `Plug in ${phoneName}` : "Add a phone";
   return (
     <Dialog
       footer={
@@ -336,95 +440,82 @@ export function AddPhoneDialog({
       }
       labelledBy="add-phone-title"
       onClose={closeSetup}
-      title={title}
+      title={phoneName ?? "Add a phone"}
     >
-      {phase.kind === "unsupported" ? (
-        <p className="notice notice--warn" role="alert">
-          Adding a phone needs Chrome or the Opensteer desktop app, which can reach a phone over
-          USB. This browser can’t.
-        </p>
-      ) : phase.kind === "no-artifact" ? (
-        <p className="notice notice--warn" role="alert">
-          This Opensteer build doesn’t include the Agent Phone app, so it can’t set up a phone.
-        </p>
-      ) : phase.kind === "loading" ? (
-        <p className="section__hint">Getting the Agent Phone app ready…</p>
-      ) : phase.kind === "ready" ? (
-        <Requirements
-          deploymentKind={deploymentKind}
-          homeName={homeName}
-          note={phase.note}
-          onConnect={() => void choose()}
-          phoneName={phoneName ?? null}
-        />
-      ) : phase.kind === "choosing" ? (
-        <UsbChoice
-          choice={phase.choice}
-          onAnswer={(deviceId) => {
-            if (!phase.choice || !desktopBridge) return;
-            const session = attempt.current;
-            if (!session) return;
-            void desktopBridge
-              .chooseUsbDevice({ choiceId: phase.choice.choiceId, deviceId })
-              .catch((reason: unknown) => {
-                if (isCurrent(session))
-                  setPhase({ kind: "failed", message: actionErrorMessage(reason) });
-              });
-            setPhase({ choice: null, kind: "choosing" });
-          }}
-        />
-      ) : phase.kind === "running" ? (
-        <>
-          {phase.question ? <Confirm onAnswer={answered} question={phase.question} /> : null}
-          <Progress deploymentName={deploymentName} step={phase.step} />
-        </>
-      ) : phase.kind === "disconnected" ? (
-        <p className="notice notice--warn" role="status">
-          The phone was unplugged. Plug it back in to continue; setup picks up where it stopped.
-        </p>
-      ) : phase.kind === "done" ? (
-        <section className="add-computer__step">
-          <h3>{phone ? `${phone.model} is ready` : "The phone is ready"}</h3>
-          <p className="section__hint">
-            Agents in {deploymentName} can use it while it is online. You can change their access
-            from the phone’s page. Tasks in a Workspace already allowed to use it aren’t asked
-            again.
-          </p>
-          <Link
-            className="btn btn--primary btn--small"
-            onClick={closeSetup}
-            to={`/settings/computers/${encodeURIComponent(phase.runnerId)}`}
-          >
-            Open the phone’s page
-          </Link>
-        </section>
-      ) : phase.kind === "issue" ? (
-        <IssueNotice
-          deploymentName={deploymentName}
-          homeName={homeName}
-          issue={phase.issue}
-          onClose={closeSetup}
-          onRetry={retry}
-        />
-      ) : (
-        <div className="notice notice--error" role="alert">
-          <p>{phase.message}</p>
-          <div className="form-actions">
-            <button className="btn btn--small" onClick={retry} type="button">
-              Try again
-            </button>
-          </div>
-        </div>
-      )}
-
-      {phone?.secureLock ? (
-        <p className="notice notice--warn">
-          Agents unlock this phone with the PIN you give them; after a restart, unlock it once
-          yourself.
-        </p>
-      ) : null}
+      <Stage {...stage()} />
     </Dialog>
   );
+}
+
+/** Whose move it is: Opensteer's, the person's, or nobody's because setup ended. */
+type Tone = "working" | "you" | "done" | "problem";
+
+interface StageProps {
+  readonly actions?: ReactNode;
+  /** Shown between the words and the actions: a list to pick from, or how-to. */
+  readonly body?: ReactNode;
+  /** Where the person acts, said above the title while setup waits on them. */
+  readonly cue?: string;
+  readonly detail?: ReactNode;
+  readonly icon?: IconName;
+  /** Which of setup's stages it is in, while it runs. */
+  readonly step?: number;
+  readonly title: string;
+  readonly tone: Tone;
+}
+
+/**
+ * The one thing happening now. Whose move it is reads from the glyph's shape
+ * and the words, never from color or motion alone: Opensteer working is a
+ * spinner with nothing to press, and the person's turn names where to act or
+ * offers the buttons that answer it. It stays mounted from phase to phase so
+ * its words are one live region a screen reader follows.
+ */
+function Stage({ actions, body, cue, detail, icon, step, title, tone }: StageProps) {
+  const ref = useRef<HTMLElement | null>(null);
+  // The button just pressed can leave with the phase it belonged to; focus
+  // stays in the dialog so Escape and Tab still reach it.
+  useEffect(() => {
+    if (document.activeElement === document.body) ref.current?.focus();
+  }, [title]);
+  const glyph =
+    icon ?? (tone === "done" ? "check-circle" : tone === "problem" ? "alert-circle" : "phone");
+  return (
+    <section className={`phone-setup phone-setup--${tone}`} ref={ref} tabIndex={-1}>
+      <span aria-hidden="true" className="phone-setup__glyph">
+        {tone === "working" ? <span className="spinner" /> : <Icon name={glyph} />}
+      </span>
+      <div className="phone-setup__words" role="status">
+        {cue ? <p className="phone-setup__cue">{cue}</p> : null}
+        <h3 className="phone-setup__title">{title}</h3>
+        {detail ? <p className="phone-setup__detail">{detail}</p> : null}
+      </div>
+      {body}
+      {actions ? <div className="phone-setup__actions">{actions}</div> : null}
+      {step === undefined ? null : (
+        <ol aria-hidden="true" className="phone-setup__rail">
+          {setupStages.map((steps, index) => (
+            <li
+              className={index < step ? "is-done" : index === step ? "is-current" : undefined}
+              key={steps[0]}
+            />
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+/** Setup's stages on the rail; reaching the phone and reading it are the first. */
+const setupStages: readonly (readonly WizardStep[])[] = [
+  ["connect", "authorize", "check"],
+  ["install"],
+  ["configure"],
+  ["pair"],
+];
+
+function stageIndex(step: WizardStep): number {
+  return setupStages.findIndex((steps) => steps.includes(step));
 }
 
 function wizardStep(step: Exclude<AgentPhoneSetupStep, { readonly step: "done" }>): WizardStep {
@@ -440,83 +531,127 @@ function wizardStep(step: Exclude<AgentPhoneSetupStep, { readonly step: "done" }
   }
 }
 
-function Requirements({
+function runningStage(
+  step: WizardStep,
+  phone: AgentPhoneFacts | null,
+  deploymentName: string,
+): StageProps {
+  // ADB asks this only when the phone doesn't yet trust this computer.
+  if (step === "authorize") {
+    return {
+      cue: "On the phone",
+      detail: "Unlock it if the screen is off, then allow USB debugging.",
+      step: stageIndex(step),
+      title: "Tap Allow on the phone",
+      tone: "you",
+    };
+  }
+  const titles: Readonly<Record<Exclude<WizardStep, "authorize">, string>> = {
+    check: phone ? `Checking ${phone.model}` : "Checking the phone",
+    configure: "Setting up Agent Phone",
+    connect: "Connecting to the phone",
+    install: "Installing Agent Phone",
+    pair: `Joining ${deploymentName}`,
+  };
+  return { step: stageIndex(step), title: titles[step], tone: "working" };
+}
+
+function readyStage({
   deploymentKind,
+  desktop,
   homeName,
   note,
   onConnect,
   phoneName,
 }: {
   readonly deploymentKind: "personal" | "server" | null;
+  readonly desktop: boolean;
   readonly homeName: string;
   readonly note: ConnectNote | null;
   readonly onConnect: () => void;
   readonly phoneName: string | null;
-}) {
-  return (
-    <section className="add-computer__step">
-      {note ? (
-        <p className="notice notice--warn" role="alert">
-          {connectNoteText[note]}
-        </p>
-      ) : null}
-      <h3>{phoneName ? `Plug ${phoneName} into this computer` : "Before you start"}</h3>
-      {phoneName ? (
-        <p className="section__hint">
-          This installs the Agent Phone app that comes with this Opensteer and finishes anything
-          setup left undone. The phone keeps its access and its place here.
-        </p>
-      ) : (
-        <ol className="add-computer__steps">
-          <li>
-            A spare Android phone with Android 11 or newer. Agents use its whole screen, so it
-            shouldn’t be the phone you carry.
-          </li>
-          <li>
-            USB debugging turned on: in Settings → About phone, tap Build number seven times, then
-            turn on Developer options → USB debugging.
-          </li>
-          {deploymentKind === "personal" ? (
-            <li>
-              Remote access on for {homeName}, so the phone can reach it from anywhere.{" "}
-              <Link to="/settings/devices">Open Remote access</Link>
-            </li>
-          ) : null}
-          <li>A USB cable from the phone to this computer.</li>
-        </ol>
-      )}
-      <div className="form-actions">
-        <button className="btn btn--primary" onClick={onConnect} type="button">
-          Choose the phone
-        </button>
+}): StageProps {
+  const noted = note ? connectNote(note, desktop) : null;
+  return {
+    actions: (
+      <button className="btn btn--primary" onClick={onConnect} type="button">
+        Choose the phone
+      </button>
+    ),
+    body: phoneName ? null : (
+      <div className="phone-setup__more">
+        <details>
+          <summary>Turn on USB debugging</summary>
+          <p>
+            In Settings → About phone, tap Build number seven times. Then turn on Developer options
+            → USB debugging.
+          </p>
+        </details>
+        {deploymentKind === "personal" ? (
+          <p>
+            Needs remote access on for {homeName}.{" "}
+            <Link to="/settings/devices">Open Remote access</Link>
+          </p>
+        ) : null}
       </div>
-    </section>
-  );
+    ),
+    detail:
+      noted?.detail ??
+      (phoneName
+        ? "Setup brings Agent Phone up to date and finishes anything left undone. The phone keeps its access."
+        : "Android 11 or newer, with USB debugging on. Agents use its whole screen, so not the phone you carry."),
+    icon: noted ? "alert-circle" : "phone",
+    title:
+      noted?.title ?? (phoneName ? "Plug it into this computer" : "Plug in a spare Android phone"),
+    tone: "you",
+  };
 }
 
-const connectNoteText: Readonly<Record<ConnectNote, string>> = {
-  busy: "Another program is using this phone’s USB debugging, usually Android Studio or adb. Quit it, or run adb kill-server, then choose the phone again.",
-  "not-chosen":
-    "No phone was chosen. If yours wasn’t in the list, USB debugging is off or the cable only charges: turn USB debugging on, then choose the phone again.",
-  unauthorized:
-    "The phone didn’t allow USB debugging. Unlock it, tap Allow when it asks “Allow USB debugging?”, then choose it again.",
-};
+/** Why the last attempt to reach the phone ended, and what gets past it. */
+function connectNote(
+  note: ConnectNote,
+  desktop: boolean,
+): { readonly detail: string; readonly title: string } {
+  switch (note) {
+    case "busy":
+      return {
+        detail: desktop
+          ? "Close its other phone-control session, then choose the phone again."
+          : "Close the other phone-control session and choose again, or try setup in Opensteer Desktop.",
+        title: "Another program is using the phone",
+      };
+    case "not-chosen":
+      return desktop
+        ? {
+            detail: "If it’s plugged in, turn on USB debugging or try a cable that carries data.",
+            title: "No phone found",
+          }
+        : {
+            detail:
+              "If yours wasn’t listed, turn on USB debugging or try a cable that carries data.",
+            title: "No phone was chosen",
+          };
+    case "unauthorized":
+      return {
+        detail: "Unlock it, choose it again, and tap Allow when it asks.",
+        title: "The phone didn’t allow USB debugging",
+      };
+  }
+}
 
 /** Several phones are plugged in; the desktop asks which one. */
-function UsbChoice({
-  choice,
-  onAnswer,
-}: {
-  readonly choice: DesktopUsbDeviceChoice | null;
-  readonly onAnswer: (deviceId: string | null) => void;
-}) {
-  if (!choice) {
-    return <p className="section__hint">Choose the phone in the list that opened.</p>;
-  }
-  return (
-    <section className="add-computer__step">
-      <h3>Which phone?</h3>
-      <div className="card">
+function choiceStage(
+  choice: DesktopUsbDeviceChoice,
+  onAnswer: (deviceId: string | null) => void,
+): StageProps {
+  return {
+    actions: (
+      <button className="btn btn--small" onClick={() => onAnswer(null)} type="button">
+        None of these
+      </button>
+    ),
+    body: (
+      <div className="card phone-setup__choices">
         {choice.devices.map((candidate) => (
           <div className="card__row" key={candidate.deviceId}>
             <span className="card__row-glyph">
@@ -540,123 +675,43 @@ function UsbChoice({
           </div>
         ))}
       </div>
-      <div className="form-actions">
-        <button className="btn btn--small" onClick={() => onAnswer(null)} type="button">
-          None of these
-        </button>
-      </div>
-    </section>
-  );
+    ),
+    cue: "Your turn",
+    title: "Which phone?",
+    tone: "you",
+  };
 }
 
-function Confirm({
-  onAnswer,
-  question,
-}: {
-  readonly onAnswer: (confirmed: boolean) => void;
-  readonly question: Question;
-}) {
-  return (
-    <section className="add-computer__step" role="alertdialog" aria-label="Confirm">
-      {question.kind === "uninstall" ? (
-        <>
-          <h3>Remove the other Agent Phone app?</h3>
-          <p className="section__hint">
-            This phone has a build of Opensteer Agent Phone signed by someone else, and Android
-            won’t replace it. Removing it erases that app and everything it kept on the phone.
-          </p>
-        </>
-      ) : (
-        <>
-          <h3>This phone works for another Opensteer</h3>
-          <p className="section__hint">
-            It’s paired with {question.hostUrl}. Unpairing it there stops agents of that Opensteer
-            from using it; then it joins this one.
-          </p>
-        </>
-      )}
-      <div className="form-actions">
-        <button className="btn btn--danger btn--small" onClick={() => onAnswer(true)} type="button">
-          {question.kind === "uninstall" ? "Remove it" : "Unpair it"}
+/** Setup's question before it erases or unpairs anything on the phone; keeping is the default. */
+function confirmStage(
+  question: Question,
+  step: WizardStep,
+  deploymentName: string,
+  onAnswer: (confirmed: boolean) => void,
+): StageProps {
+  const uninstall = question.kind === "uninstall";
+  return {
+    actions: (
+      <>
+        <button className="btn btn--danger" onClick={() => onAnswer(true)} type="button">
+          {uninstall ? "Remove it" : "Unpair it"}
         </button>
-        <button className="btn btn--small" onClick={() => onAnswer(false)} type="button">
+        <button autoFocus className="btn" onClick={() => onAnswer(false)} type="button">
           Keep it
         </button>
-      </div>
-    </section>
-  );
-}
-
-function Progress({
-  deploymentName,
-  step,
-}: {
-  readonly deploymentName: string;
-  readonly step: WizardStep;
-}) {
-  const steps: readonly { readonly label: string; readonly step: WizardStep }[] = [
-    { label: "Reach the phone", step: "connect" },
-    { label: "Allow USB debugging on the phone", step: "authorize" },
-    { label: "Check the phone", step: "check" },
-    { label: "Install Opensteer Agent Phone", step: "install" },
-    { label: "Turn on its accessibility service", step: "configure" },
-    { label: `Join ${deploymentName}`, step: "pair" },
-  ];
-  const current = steps.findIndex((entry) => entry.step === step);
-  return (
-    <div className="computers-readiness" role="status">
-      {steps.map((entry, index) => (
-        <div className="computers-readiness__line" key={entry.step}>
-          <span
-            className={`status-dot ${
-              index < current
-                ? "status-dot--running"
-                : index === current
-                  ? "status-dot--waiting"
-                  : "status-dot--idle"
-            }`}
-          />
-          <strong>{entry.label}</strong>
-          <span>{index < current ? "Done" : index === current ? currentText(step) : ""}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function currentText(step: WizardStep): string {
-  if (step === "authorize") return "Unlock the phone and tap Allow";
-  return "Working…";
-}
-
-function IssueNotice({
-  deploymentName,
-  homeName,
-  issue,
-  onClose,
-  onRetry,
-}: {
-  readonly deploymentName: string;
-  readonly homeName: string;
-  readonly issue: AgentPhoneSetupIssue;
-  readonly onClose: () => void;
-  readonly onRetry: () => void;
-}) {
-  return (
-    <div className="notice notice--error" role="alert">
-      <p>{issueText(issue, { deploymentName, homeName })}</p>
-      <div className="form-actions">
-        {issue.code === "remote-access-off" ? (
-          <Link className="btn btn--small btn--primary" onClick={onClose} to="/settings/devices">
-            Open Remote access
-          </Link>
-        ) : null}
-        <button className="btn btn--small" onClick={onRetry} type="button">
-          Try again
-        </button>
-      </div>
-    </div>
-  );
+      </>
+    ),
+    cue: "Your turn",
+    detail: uninstall
+      ? "This phone has a copy signed by someone else, which Android won’t replace. Removing it erases that app and everything it kept on the phone."
+      : `It’s paired with ${question.hostUrl}. Unpairing stops that Opensteer’s agents from using it.`,
+    icon: "alert-circle",
+    step: stageIndex(step),
+    title: uninstall
+      ? "Remove the other Agent Phone app?"
+      : `Move this phone to ${deploymentName}?`,
+    tone: "you",
+  };
 }
 
 /** What stopped setup, in words for the person holding the phone. */

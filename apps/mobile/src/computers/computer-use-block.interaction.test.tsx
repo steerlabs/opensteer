@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   ActivityIndicator: () => <span>Working…</span>,
   Pressable: ({
     accessibilityHint,
@@ -46,7 +47,6 @@ vi.mock("react-native", () => ({
     children?: ReactNode;
   }) => <div aria-label={accessibilityLabel}>{children}</div>,
 }));
-vi.mock("../theme.js", () => ({ color: {}, radius: {}, space: {}, touchTarget: 44 }));
 vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (error: unknown, fallback: string) =>
     error instanceof Error ? error.message : fallback,

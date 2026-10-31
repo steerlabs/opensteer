@@ -10,32 +10,35 @@ import {
 
 afterEach(() => vi.useRealTimers());
 
-it.each([undefined, 1] as const)(
-  "reads targetControl %s from the advertised browser module",
-  (targetControl) => {
-    const runnerId = createId("runner");
-    const stream = {
-      identity: {
-        runnerId,
-        modules: { browser: { profileSnapshotVersion: 2, runtimeId: "browser", targetControl } },
+it.each(
+  (["targetControl", "navigationAttributionVersion"] as const).flatMap((capability) =>
+    ([undefined, 1] as const).map((version) => ({ capability, version })),
+  ),
+)("reads $capability=$version from the advertised browser module", ({ capability, version }) => {
+  const runnerId = createId("runner");
+  const stream = {
+    identity: {
+      runnerId,
+      modules: {
+        browser: { profileSnapshotVersion: 2, runtimeId: "browser", [capability]: version },
       },
-    } as RunnerAuxiliaryStream;
-    const registry: RunnerBrowserRegistry = {
-      browserStreams: () => [stream],
-      stream: () => stream,
-      send: async () => undefined,
-      subscribe: () => () => undefined,
-    };
-    const router = new RunnerBrowserRuntimeRouter({ registry });
-    try {
-      expect(router.resolve({ kind: "runner", runnerId })).toMatchObject({
-        targetControl: targetControl === 1,
-      });
-    } finally {
-      router.close();
-    }
-  },
-);
+    },
+  } as unknown as RunnerAuxiliaryStream;
+  const registry: RunnerBrowserRegistry = {
+    browserStreams: () => [stream],
+    stream: () => stream,
+    send: async () => undefined,
+    subscribe: () => () => undefined,
+  };
+  const router = new RunnerBrowserRuntimeRouter({ registry });
+  try {
+    expect(router.resolve({ kind: "runner", runnerId })).toMatchObject({
+      [capability]: version === 1,
+    });
+  } finally {
+    router.close();
+  }
+});
 
 it.each([
   [undefined, undefined],

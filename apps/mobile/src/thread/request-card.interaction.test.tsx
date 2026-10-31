@@ -16,6 +16,7 @@ vi.mock("expo-haptics", () => ({
   notificationAsync: vi.fn(async () => undefined),
 }));
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
   ActivityIndicator: () => <span>Sending…</span>,
   AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
@@ -41,15 +42,6 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (_reason: unknown, fallback: string) => fallback,
-}));
-vi.mock("../theme.js", () => ({
-  color: {},
-  controlBorderWidth: 1,
-  controlFontScaleLimit: 2,
-  radius: {},
-  space: {},
-  touchTarget: 44,
-  type: { body: { lineHeight: 20 } },
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,

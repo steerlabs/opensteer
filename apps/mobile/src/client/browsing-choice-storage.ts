@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { RecentSitesStorage } from "@opensteer/client/host";
+import type { BrowserPreferencesStorage } from "@opensteer/client/host";
 
 /** Only explicit identity choices persist here; recent-site history has a separate owner. */
 export function createBrowsingChoiceStorage(file: {
@@ -8,7 +8,7 @@ export function createBrowsingChoiceStorage(file: {
   textSync(): string;
   create(options: { intermediates: boolean; overwrite: boolean }): void;
   writeSync(value: string): void;
-}): RecentSitesStorage {
+}): BrowserPreferencesStorage {
   const schema = z.record(z.string().max(255), z.string().max(512));
   const read = (): Record<string, string> => {
     try {
@@ -27,6 +27,7 @@ export function createBrowsingChoiceStorage(file: {
   const supported = (key: string) =>
     key.startsWith("opensteer.browse-with.v1:") && key.length <= 255;
   return {
+    keys: () => Object.keys(read()).filter(supported),
     getItem: (key) => (supported(key) ? (read()[key] ?? null) : null),
     setItem: (key, value) => {
       if (supported(key) && value.length <= 512) write({ ...read(), [key]: value });

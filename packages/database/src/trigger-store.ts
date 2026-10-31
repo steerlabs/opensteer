@@ -591,6 +591,7 @@ export class TriggerStore {
   }
 
   async listForOwner(input: {
+    readonly anchorThreadId?: ThreadId;
     readonly limit?: number;
     readonly ownerId: UserId;
     readonly scope: ThreadReachScope;
@@ -604,6 +605,8 @@ export class TriggerStore {
       .where("triggers.createdBy", "=", input.ownerId)
       .where("triggers.status", "!=", "archived");
     if (input.workspaceId) query = query.where("triggers.workspaceId", "=", input.workspaceId);
+    if (input.anchorThreadId)
+      query = query.where("triggers.anchorThreadId", "=", input.anchorThreadId);
     query = query.where(threadReachPredicate(input.scope));
     const rows = await query
       .orderBy("triggers.updatedAt", "desc")

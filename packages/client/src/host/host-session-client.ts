@@ -1,6 +1,5 @@
 import { PendingBrowserTabs } from "./pending-browser-tabs.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
-import { SocketScreenPresentationTransport } from "../screen/transport.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
 import { BrowserPreferences } from "./browser-preferences.js";
@@ -10,7 +9,8 @@ import { BrowserTabGroupClient } from "./browser-tab-groups.js";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "./surfaces.js";
 import { DisplaySourceSchema } from "@opensteer/protocol";
-import { RecentSitesStore, type RecentSitesStorage } from "./recent-sites.js";
+import { BrowserHistoryClient } from "./browser-history.js";
+import type { BrowserPreferencesStorage } from "./browser-preferences.js";
 import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
@@ -265,10 +265,7 @@ const realtimeResyncSchema = z.object({
   reason: z.string().min(1),
 });
 type RealtimeMessage =
-  | Exclude<
-      HostToClientMessage,
-      { type: "host.events" | "host.resync-required" | "host.screen.ready" | "host.screen.show" }
-    >
+  | Exclude<HostToClientMessage, { type: "host.events" | "host.resync-required" }>
   | { type: "host.events"; events: RealtimeEvent[] }
   | z.infer<typeof realtimeResyncSchema>;
 
@@ -526,7 +523,7 @@ export interface HttpHostClientOptions {
   readonly viewerPlatform?: "mac" | "pc";
   /** Verified by the connection owner for this client’s attachment. Null is unknown. */
   readonly capabilities?: readonly HostCapability[] | null | HostCapabilityReader;
-  readonly recentSitesStorage?: RecentSitesStorage;
+  readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   /** The Host's origin. There is no ambient default: a React Native bundle has
    * no document to read one from, and a renderer may address another Host. */
   readonly baseUrl: string | URL;
@@ -549,16 +546,24 @@ export interface HttpHostClientOptions {
   readonly webSocketFactory?: (url: string) => WebSocketClient;
 }
 
+// Keep thumbnails across remounts without retaining unbounded file bytes on phones.
+const attachmentCacheByteBudget = 32 * 1024 * 1024;
+
+type AttachmentRead = {
+  readonly controller: AbortController;
+  readonly promise: Promise<Blob>;
+  callers: number;
+};
+
 export class HttpHostClient {
-  readonly screenPresentation = new SocketScreenPresentationTransport(undefined, (socket) => {
-    const channel = [...this.#channels.values()].find((candidate) => candidate.socket === socket);
-    if (channel) this.#replaceChannel(channel, "Presentation clock refreshed");
-  });
   readonly browserPasskeys: BrowserPasskeys;
-  readonly recentSites: RecentSitesStore;
+  readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: OwnerViewHostClient["retainComputerView"];
   readonly #viewer = new ViewerScope();
+  readonly #attachmentReads = new Map<string, AttachmentRead>();
+  readonly #attachmentCache = new Map<string, Blob>();
+  #attachmentCacheBytes = 0;
   readonly #ownerViews = new OwnerViewRecords();
   #computerViews: { clear(): void; setConnected(connected: boolean): void } = {
     clear: () => undefined,
@@ -586,6 +591,8 @@ export class HttpHostClient {
    * is not retried per event batch; an explicit refresh or a resync asks again.
    */
   readonly #assignmentReads = new Map<string, "read" | "reading">();
+  readonly #automationReads = new Map<string, { again: boolean }>();
+  readonly #readAutomations = new Set<string>();
   /**
    * Per shown conversation whose browser usage has been read, the Runs that
    * read covered. A conversation not here is read whole when it is shown.
@@ -789,6 +796,7 @@ export class HttpHostClient {
         type: "browser.tab.open",
         ...(typeof target === "string" ? { sessionId: target } : target),
         ...(options.url === undefined ? {} : { url: options.url }),
+        ...(options.typed === undefined ? {} : { typed: options.typed }),
         ...(options.viewport ? { viewport: options.viewport } : {}),
         idempotencyKey: options.idempotencyKey ?? mutationIdempotencyKey("open-tab"),
       }),
@@ -1143,10 +1151,27 @@ export class HttpHostClient {
     this.#readCapabilities =
       typeof options.capabilities === "function" ? options.capabilities : null;
     this.#capabilities = Array.isArray(options.capabilities) ? [...options.capabilities] : null;
-    this.browserPreferences = new BrowserPreferences(options.recentSitesStorage);
-    this.recentSites = new RecentSitesStore({
-      ...(options.recentSitesStorage ? { storage: options.recentSitesStorage } : {}),
-      readIcon: (sessionId, iconRef) => this.readBrowserTabIcon(sessionId, iconRef),
+    this.browserPreferences = new BrowserPreferences(options.browserPreferencesStorage);
+    this.browserHistory = new BrowserHistoryClient({
+      get: async (profileId) =>
+        unwrapRpcResult(await this.rpc["browser.history.get"]({ profileId })),
+      icons: async (profileId, iconRefs) =>
+        unwrapRpcResult(await this.rpc["browser.history.icons.get"]({ profileId, iconRefs })),
+      remove: async (profileId, url) => {
+        await this.dispatch({
+          type: "browser.history.remove",
+          profileId,
+          url,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
+      clear: async (profileId) => {
+        await this.dispatch({
+          type: "browser.history.clear",
+          profileId,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
     });
     this.#baseUrl = new URL(options.baseUrl);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -1220,6 +1245,7 @@ export class HttpHostClient {
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-v1") === true,
+      voiceAgentAvailable: this.#capabilities?.includes("voice-agent-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
     };
     this.#visibility = lifecycle?.visibility ?? "foreground";
@@ -1409,8 +1435,7 @@ export class HttpHostClient {
         break;
       case "browser.profile.delete":
         if (commandIs(parsedCommand, result.type)) {
-          // Its history on this device goes with it.
-          this.recentSites.clear({ kind: "profile", profileId: parsedCommand.profileId });
+          this.browserHistory.drop(parsedCommand.profileId);
           this.#update(
             applyOptimisticCommandPatch(this.#snapshot, {
               profileId: parsedCommand.profileId,
@@ -1645,10 +1670,84 @@ export class HttpHostClient {
   }
 
   async readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob> {
-    const content = unwrapRpcResult(
-      await this.rpc["attachment.content"]({ attachmentId }, signal ? { signal } : undefined),
-    );
-    return new Blob([content.bytes], { type: content.metadata.contentType });
+    if (this.#disposed || signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const cached = this.#attachmentCache.get(attachmentId);
+    if (cached) {
+      this.#attachmentCache.delete(attachmentId);
+      this.#attachmentCache.set(attachmentId, cached);
+      return cached;
+    }
+    let read = this.#attachmentReads.get(attachmentId);
+    if (!read) {
+      const controller = new AbortController();
+      const promise = this.rpc["attachment.content"](
+        { attachmentId },
+        { signal: controller.signal },
+      )
+        .then(unwrapRpcResult)
+        .then((content) => new Blob([content.bytes], { type: content.metadata.contentType }));
+      read = { controller, promise, callers: 0 };
+      this.#attachmentReads.set(attachmentId, read);
+      const current = read;
+      void promise.then(
+        (blob) => {
+          if (this.#attachmentReads.get(attachmentId) !== current) return;
+          this.#attachmentReads.delete(attachmentId);
+          if (blob.size > attachmentCacheByteBudget) return;
+          this.#attachmentCache.set(attachmentId, blob);
+          this.#attachmentCacheBytes += blob.size;
+          while (this.#attachmentCacheBytes > attachmentCacheByteBudget) {
+            const oldest = this.#attachmentCache.keys().next().value!;
+            this.#attachmentCacheBytes -= this.#attachmentCache.get(oldest)!.size;
+            this.#attachmentCache.delete(oldest);
+          }
+        },
+        () => {
+          if (this.#attachmentReads.get(attachmentId) === current)
+            this.#attachmentReads.delete(attachmentId);
+        },
+      );
+    }
+    const current = read;
+    current.callers += 1;
+    return new Promise<Blob>((resolve, reject) => {
+      let attached = true;
+      const detach = () => {
+        if (!attached) return false;
+        attached = false;
+        signal?.removeEventListener("abort", abort);
+        current.controller.signal.removeEventListener("abort", abort);
+        current.callers -= 1;
+        // React cleans up and mounts passive effects in the same commit.
+        queueMicrotask(() => {
+          if (current.callers !== 0 || this.#attachmentReads.get(attachmentId) !== current) return;
+          this.#attachmentReads.delete(attachmentId);
+          current.controller.abort();
+        });
+        return true;
+      };
+      const abort = () => {
+        if (detach()) reject(new DOMException("Aborted", "AbortError"));
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      current.controller.signal.addEventListener("abort", abort, { once: true });
+      void current.promise.then(
+        (blob) => {
+          if (detach()) resolve(blob);
+        },
+        (error: unknown) => {
+          if (detach()) reject(error);
+        },
+      );
+    });
+  }
+
+  #clearAttachmentReads(): void {
+    const reads = [...this.#attachmentReads.values()];
+    this.#attachmentReads.clear();
+    this.#attachmentCache.clear();
+    this.#attachmentCacheBytes = 0;
+    for (const read of reads) read.controller.abort();
   }
 
   async discardAttachment(attachmentId: string): Promise<void> {
@@ -1676,9 +1775,11 @@ export class HttpHostClient {
 
   activateThread(threadId: string): void {
     const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
+    const opened = !this.#showsThread(threadId);
     this.#activeThreadId = threadId;
     this.#ensureInputQueue(threadId);
     this.#ensureAssignments(threadId);
+    this.#ensureAutomations(threadId, opened);
     this.#ensureBrowserUsage(threadId, "missing");
     if (!thread) {
       // A deep link can reference a Thread the snapshot has not loaded yet.
@@ -1706,6 +1807,7 @@ export class HttpHostClient {
    * so observing it again, or reconnecting, resumes its stream.
    */
   observeThread(threadId: string): () => void {
+    const opened = !this.#showsThread(threadId);
     this.#observedThreads.set(threadId, (this.#observedThreads.get(threadId) ?? 0) + 1);
     if (!this.#snapshot.transcriptWindows[threadId]) {
       this.#update({
@@ -1718,6 +1820,7 @@ export class HttpHostClient {
     this.#ensureThreadHydration(threadId);
     this.#ensureRequests(threadId);
     this.#ensureAssignments(threadId);
+    this.#ensureAutomations(threadId, opened);
     this.#ensureBrowserUsage(threadId, "missing");
     let held = true;
     return () => {
@@ -1798,25 +1901,122 @@ export class HttpHostClient {
       });
   }
 
-  async #readAssignments(threadId: string): Promise<void> {
+  /**
+   * A conversation's automations are known only while it is shown: no notice
+   * says what changed in one off screen, so it is read afresh each time it is
+   * opened (after any read still under way, which may predate the change),
+   * and a shown one again whenever its Workspace says triggers changed or its
+   * stream comes back. Shown again while unchanged, it is not reread.
+   */
+  #ensureAutomations(threadId: string, again = false): void {
+    if (
+      this.#disposed ||
+      this.#snapshot.session !== "authenticated" ||
+      !this.#capabilities?.includes("task-family-v1")
+    )
+      return;
+    const pending = this.#automationReads.get(threadId);
+    if (pending) {
+      pending.again ||= again;
+      return;
+    }
+    if (!again && this.#readAutomations.has(threadId)) return;
+    const read = { again: false };
+    this.#automationReads.set(threadId, read);
+    void this.#loadAutomations(threadId, read)
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#automationReads.get(threadId) !== read) return;
+        this.#automationReads.delete(threadId);
+        // A failure counts as read too, so a streaming conversation does not
+        // ask again with every event; opening it again does.
+        this.#readAutomations.add(threadId);
+        if (read.again) this.#ensureAutomations(threadId, true);
+      });
+  }
+
+  async #loadAutomations(threadId: string, read: { again: boolean }): Promise<void> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
-    let response;
     try {
-      response = unwrapRpcResult(
-        await this.rpc["thread.assignments.list"]({ threadId, limit: 100 }),
+      const response = unwrapRpcResult(
+        await this.rpc["triggers.list"]({ anchorThreadId: threadId }),
       );
+      if (!this.#viewerStillCurrent(generation, userId)) return;
+      if (this.#automationReads.get(threadId) !== read) return;
+      const automations = response.triggers
+        .filter(({ status }) => status !== "archived")
+        .map((trigger) => ({
+          id: trigger.id,
+          name: trigger.name,
+          kind: trigger.kind,
+          paused: trigger.status === "paused",
+          nextFireAt:
+            trigger.status === "active" && trigger.kind === "schedule" ? trigger.nextFireAt : null,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      const held = this.#snapshot.threadAutomations[threadId] ?? [];
+      if (JSON.stringify(held) === JSON.stringify(automations)) return;
+      this.#update({
+        ...this.#snapshot,
+        threadAutomations: { ...this.#snapshot.threadAutomations, [threadId]: automations },
+      });
     } catch (error) {
-      if (this.#viewerStillCurrent(generation, userId))
-        this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
+      if (
+        this.#viewerStillCurrent(generation, userId) &&
+        this.#automationReads.get(threadId) === read &&
+        error instanceof HostClientRequestError &&
+        (error.status === 403 || error.status === 404)
+      ) {
+        const { [threadId]: _denied, ...threadAutomations } = this.#snapshot.threadAutomations;
+        this.#update({ ...this.#snapshot, threadAutomations });
+      }
       throw error;
     }
-    if (!this.#viewerStillCurrent(generation, userId)) return;
-    if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
-    this.#update({
-      ...this.#snapshot,
-      assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
-    });
+  }
+
+  /**
+   * The newest page, which is all the history a family shows, and every open
+   * Assignment however far back it was handed out, so work under way is never
+   * missing. A Host without `task-family-v1` gives the newest page alone.
+   */
+  async #readAssignments(threadId: string): Promise<void> {
+    await Promise.all([
+      this.#readAssignmentPages(threadId, false),
+      ...(this.#capabilities?.includes("task-family-v1")
+        ? [this.#readAssignmentPages(threadId, true)]
+        : []),
+    ]);
+  }
+
+  async #readAssignmentPages(threadId: string, open: boolean): Promise<void> {
+    const generation = this.#viewerGeneration;
+    const userId = this.#snapshot.user?.id;
+    let before: string | null = null;
+    do {
+      let response;
+      try {
+        response = unwrapRpcResult(
+          await this.rpc["thread.assignments.list"]({
+            threadId,
+            limit: 100,
+            ...(open ? { open } : {}),
+            ...(before === null ? {} : { before }),
+          }),
+        );
+      } catch (error) {
+        if (this.#viewerStillCurrent(generation, userId))
+          this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
+        throw error;
+      }
+      if (!this.#viewerStillCurrent(generation, userId)) return;
+      if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
+      this.#update({
+        ...this.#snapshot,
+        assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
+      });
+      before = open && response.window.hasMore ? response.window.nextBefore : null;
+    } while (before !== null);
   }
 
   /** Every Run whose browser use this Thread shows: its own, and its tasks' workers'. */
@@ -1842,6 +2042,14 @@ export class HttpHostClient {
 
   #showsThread(threadId: string): boolean {
     return threadId === this.#activeThreadId || this.#observedThreads.has(threadId);
+  }
+
+  /** What a triggers notice, or a stream that may have missed one, means for one Workspace. */
+  #refreshShownAutomations(workspaceId: string): void {
+    for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
+      if (threadId !== null && this.#threadWorkspace.get(threadId) === workspaceId)
+        this.#ensureAutomations(threadId, true);
+    }
   }
 
   /**
@@ -2157,6 +2365,8 @@ export class HttpHostClient {
         channel.protocolFailed = false;
       }
     this.#assignmentReads.clear();
+    this.#automationReads.clear();
+    this.#readAutomations.clear();
     this.#requestReads.clear();
     await this.#bootstrap(false, true);
   }
@@ -3003,23 +3213,6 @@ export class HttpHostClient {
     );
   }
 
-  async moveThreadInput(
-    threadId: string,
-    messageId: string,
-    beforeMessageId: string | null,
-  ): Promise<void> {
-    const patch = { beforeMessageId, messageId, threadId, type: "thread.input.move" } as const;
-    this.#update(applyOptimisticCommandPatch(this.#snapshot, patch));
-    try {
-      // Each drop is its own arrangement, so a lost answer is settled by the
-      // reread below rather than replayed over whatever came after it.
-      await this.dispatch({ ...patch, idempotencyKey: mutationIdempotencyKey("input-move") });
-    } catch (error) {
-      this.#reloadInputQueue(threadId);
-      throw error;
-    }
-  }
-
   async resumeThreadInputQueue(threadId: string): Promise<void> {
     // Resume is idempotent on the Host, so a lost answer is simply asked again.
     await this.dispatch({
@@ -3171,7 +3364,8 @@ export class HttpHostClient {
   dispose(): void {
     this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
-    this.recentSites.dispose();
+    this.#clearAttachmentReads();
+    this.browserHistory.dispose();
     this.#workspaceTabActivations.dispose();
     this.#snapshot = { ...this.#snapshot, activatingWorkspaceTabs: [] };
     this.#disposed = true;
@@ -3204,6 +3398,8 @@ export class HttpHostClient {
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
     this.#assignmentReads.clear();
+    this.#automationReads.clear();
+    this.#readAutomations.clear();
     this.#deniedAssignments.clear();
     this.#observedThreads.clear();
     for (const sessionId of this.#browserChannels.keys()) this.#closeBrowserChannel(sessionId);
@@ -3545,6 +3741,7 @@ export class HttpHostClient {
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       voiceAvailable: capabilities.includes("voice-v1"),
+      voiceAgentAvailable: capabilities.includes("voice-agent-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
     if (changed) {
@@ -3905,7 +4102,6 @@ export class HttpHostClient {
    */
   #enterBackground(): void {
     if (this.#disposed || this.#visibility === "background") return;
-    this.screenPresentation.clear();
     this.#visibility = "background";
     this.#targetedControl.suspend(true, this.#network !== "offline");
     this.#targetedWatch.suspend(true);
@@ -3947,13 +4143,6 @@ export class HttpHostClient {
     this.#backgroundedAt = null;
     const trusted = backgroundedForMs < this.#socketTrustWindowMs && this.#network !== "offline";
     for (const channel of this.#channels.values()) {
-      if (
-        channel.workspaceId === this.#snapshot.homeWorkspaceId &&
-        this.#capabilities?.includes("screen-show-v1")
-      ) {
-        this.#replaceChannel(channel, "Presentation resumed");
-        continue;
-      }
       if (trusted && channel.socket?.readyState === 1) {
         this.#probeChannel(channel);
         continue;
@@ -4205,11 +4394,6 @@ export class HttpHostClient {
       if (channel.socket !== socket) return;
       channel.progressAt = Date.now();
       try {
-        const screenShow =
-          this.#capabilities?.includes("screen-show-v1") === true &&
-          channel.workspaceId === this.#snapshot.homeWorkspaceId &&
-          this.#visibility === "foreground";
-        if (screenShow) this.screenPresentation.begin(socket);
         socket.send(
           JSON.stringify({
             afterSequence: channel.cursor,
@@ -4217,7 +4401,6 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
-            ...(screenShow ? { screenShow: true } : {}),
             ...(this.#capabilities?.includes("snapshot-messages-omit-v1")
               ? { snapshotMessages: "omit" }
               : {}),
@@ -4261,7 +4444,6 @@ export class HttpHostClient {
     });
     socket.addEventListener("close", () => {
       if (channel.socket !== socket) return;
-      this.screenPresentation.clear(socket);
       channel.socket = null;
       channel.synchronized = false;
       this.#scheduleReconnect(channel);
@@ -4366,10 +4548,6 @@ export class HttpHostClient {
       return { ...live, type: "host.live", progress: { ...live.progress, items } };
     }
     const message = HostToClientMessageSchema.parse(value);
-    if (message.type === "host.screen.ready" || message.type === "host.screen.show") {
-      if (channel.socket) this.screenPresentation.receive(channel.socket, message);
-      return null;
-    }
     if (
       (message.type === "host.read-states" ||
         message.type === "host.read-markers" ||
@@ -4468,10 +4646,15 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.triggers-changed") {
+      this.#refreshShownAutomations(message.workspaceId);
       this.#update({
         ...this.#snapshot,
         triggerRevision: this.#snapshot.triggerRevision + 1,
       });
+      return;
+    }
+    if (message.type === "host.browser-history-changed") {
+      this.browserHistory.changed(message.profileId);
       return;
     }
     if (message.type === "host.browser-sessions-changed") {
@@ -4552,8 +4735,10 @@ export class HttpHostClient {
     if (reconnected) this.#reread();
     this.#sendAck(channel);
     this.#recomputeConnection();
-    // A task notice sent while this socket was away is lost with it.
+    // A task notice sent while this socket was away is lost with it, and so is
+    // a triggers notice.
     this.#rereadTasks();
+    if (reconnected) this.#refreshShownAutomations(message.workspaceId);
     // A usage notice sent while this socket was away is lost: a shown
     // conversation of this Workspace that was read before is read again now,
     // and one not shown is read whole when it next is. One shown while the
@@ -4722,6 +4907,7 @@ export class HttpHostClient {
         this.#ensureThreadHydration(threadId);
       }
       this.#ensureAssignments(threadId, true);
+      this.#ensureAutomations(threadId, true);
     }
   }
 
@@ -4946,7 +5132,6 @@ export class HttpHostClient {
     const socket = channel.socket;
     channel.socket = null;
     channel.synchronized = false;
-    if (socket) this.screenPresentation.clear(socket);
     if (reconnect) this.#scheduleReconnect(channel);
     try {
       socket?.close(code, reason);
@@ -5351,6 +5536,7 @@ export class HttpHostClient {
   }
 
   #expireSession(): void {
+    this.#clearAttachmentReads();
     this.#savedViewReadiness = emptySavedViewReadiness();
     this.#viewerGeneration += 1;
     this.#retainedWorkspaceTabLineages.clear();
@@ -5380,6 +5566,8 @@ export class HttpHostClient {
     this.#forbiddenWorkspaces.clear();
     this.#threadWorkspace.clear();
     this.#assignmentReads.clear();
+    this.#automationReads.clear();
+    this.#readAutomations.clear();
     this.#requestReads.clear();
     this.#deniedAssignments.clear();
     this.#observedThreads.clear();
@@ -5549,6 +5737,11 @@ export class HttpHostClient {
   #update(snapshot: HostSnapshot): void {
     if (this.#disposed) return;
     if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
+    if (
+      !this.#capabilities?.includes("task-family-v1") &&
+      Object.keys(snapshot.threadAutomations).length > 0
+    )
+      snapshot = { ...snapshot, threadAutomations: {} };
     const home = this.#savedViewReadiness.home;
     if (
       (home.status === "window" &&
@@ -5573,6 +5766,7 @@ export class HttpHostClient {
     if (this.#viewer.change(scope)) {
       this.#preparedBrowserProfiles.clear();
       this.#pendingBrowserTabs.clear();
+      this.#clearAttachmentReads();
       this.#workspaceTabActivations.clear(false);
       this.#computerViews.clear();
       this.#ownerViews.clear();
@@ -5588,7 +5782,10 @@ export class HttpHostClient {
     };
     // A dropped connection pauses the views being watched; it does not end them.
     this.#computerViews.setConnected(scope !== null && snapshot.connection === "connected");
-    this.recentSites.setScope(scope);
+    this.browserHistory.setScope(scope);
+    for (const profile of this.#snapshot.browserProfiles)
+      if (!snapshot.browserProfiles.some((value) => value.id === profile.id))
+        this.browserHistory.drop(profile.id);
     this.browserPreferences.setScope(scope);
     let reconcileBrowserTargets: (() => void) | undefined;
     if (snapshot.session !== "authenticated") {
@@ -5638,6 +5835,12 @@ export class HttpHostClient {
           .map(([threadId]) => threadId),
       );
       const retainThread = ([threadId]: [string, unknown]) => !deniedThreads.has(threadId);
+      snapshot = {
+        ...snapshot,
+        threadAutomations: Object.fromEntries(
+          Object.entries(snapshot.threadAutomations).filter(retainThread),
+        ),
+      };
       const deniedHome =
         snapshot.homeWorkspaceId !== null &&
         this.#forbiddenWorkspaces.has(snapshot.homeWorkspaceId);
@@ -5727,6 +5930,7 @@ export class HttpHostClient {
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-v1") === true,
+      voiceAgentAvailable: this.#capabilities?.includes("voice-agent-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
       // An unchanged Thread keeps its identity: screens compare records by
       // reference, and every publish passes through here.
@@ -5742,10 +5946,7 @@ export class HttpHostClient {
     if (workspaceTabsChanged)
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     reconcileBrowserTargets?.();
-    this.recentSites.observeTabs(
-      this.#snapshot.browserSessions,
-      this.#snapshot.connection === "connected",
-    );
+    this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
     if (shouldPrepare) this.prepareBrowserProfile();
@@ -6098,6 +6299,7 @@ function emptySnapshot(): HostSnapshot {
     sharedTaskDoneAvailable: false,
     iphoneAppsAvailable: false,
     assignments: {},
+    threadAutomations: {},
     requests: {},
     waitingRequests: [],
     runQueue: [],

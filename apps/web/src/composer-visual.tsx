@@ -139,7 +139,7 @@ function App() {
           onStop={async () => {}}
           voice={
             query.has("voice") ? (
-              <button className="composer__attach" aria-label="Talk to Chat" type="button">
+              <button className="composer__attach" aria-label="Talk to Opensteer" type="button">
                 <Icon name="waveform" />
               </button>
             ) : undefined

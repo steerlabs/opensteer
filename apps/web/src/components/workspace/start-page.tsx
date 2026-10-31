@@ -115,7 +115,6 @@ export function openWorkspaceWebLink(
     sourcePlace: key ? (placeList(snapshot).find((place) => place.key === key) ?? null) : null,
     lastChoice: lastBrowsingChoice(scope),
   });
-  const epoch = hostClient.recentSites.epoch;
   const viewport = browserTargetViewport(
     document.querySelector(".place")?.getBoundingClientRect() ?? null,
     window.matchMedia("(max-width: 700px)").matches,
@@ -124,6 +123,7 @@ export function openWorkspaceWebLink(
     { identity: choice },
     {
       url,
+      typed: true,
       ...(viewport ? { viewport } : {}),
       idempotencyKey: mutationIdempotencyKey("reply-link"),
     },
@@ -132,7 +132,6 @@ export function openWorkspaceWebLink(
   nav.showPendingBrowserTab(opening.idempotencyKey);
   void opening.result.then(
     (opened) => {
-      hostClient.recentSites.record(choice, url, epoch, { typed: true, tab: opened });
       nav.replacePendingBrowserTab(opening.idempotencyKey, {
         kind: "browser",
         sessionId: opened.sessionId,
@@ -315,12 +314,8 @@ export const StartPage = memo(function StartPage({
     [approvedApps, choice, localMachineId, places, snapshot],
   );
   const historyRevision = useSyncExternalStore(
-    hostClient.recentSites.subscribe,
-    hostClient.recentSites.getRevision,
-  );
-  const recents = useMemo(
-    () => hostClient.recentSites.list(choice),
-    [choice, hostClient, historyRevision, scope],
+    hostClient.browserHistory.subscribe,
+    hostClient.browserHistory.getRevision,
   );
   const omnibox = useOmnibox({
     hostClient,
@@ -328,6 +323,7 @@ export const StartPage = memo(function StartPage({
     choice,
     inputRef,
     initialValue: link?.address ?? "",
+    historyActive: true,
     includeApps: true,
     onChoose: (result) => void run(result),
     onEdit: () => setRefusal(null),
@@ -335,6 +331,19 @@ export const StartPage = memo(function StartPage({
     onEmptyDown: () => stageRef.current?.querySelector<HTMLElement>("[data-start-tile]")?.focus(),
   });
   const { raw: query, setText: setQuery, rows: results } = omnibox;
+  const profileId = choice.kind === "profile" ? choice.profileId : null;
+  const recents = useMemo(() => {
+    const seen = new Set<string>();
+    return hostClient.browserHistory
+      .entries(profileId)
+      .flatMap((entry) => {
+        const origin = new URL(entry.url).origin;
+        if (seen.has(origin)) return [];
+        seen.add(origin);
+        return [{ origin }];
+      })
+      .slice(0, 12);
+  }, [hostClient, profileId, historyRevision, scope]);
   const selected =
     index.profiles.find((profile) => sameIdentity(profile.identity, choice)) ??
     index.profiles.at(-1)!;
@@ -431,25 +440,16 @@ export const StartPage = memo(function StartPage({
         stageRef.current?.getBoundingClientRect() ?? null,
         phone,
       );
-      const epoch = hostClient.recentSites.epoch;
       const target: BrowserTabOpenInput = { ...action.target, ...(placement ? { placement } : {}) };
       const opening = hostClient.beginBrowserTabOpen(target, {
         url,
+        typed: result.kind === "address",
         ...(viewport ? { viewport } : {}),
         idempotencyKey: mutationIdempotencyKey("start-page-open"),
       });
       rememberBrowsingChoice(scope, choice);
       nav.showPendingBrowserTab(opening.idempotencyKey, { replace: true });
       const opened = await opening.result;
-      hostClient.recentSites.record(choice, url, epoch, {
-        title:
-          hostClient
-            .getSnapshot()
-            .browserSessions.find((session) => session.id === opened.sessionId)
-            ?.tabs.find((tab) => tab.id === opened.tabId)?.title ?? "",
-        typed: result.kind === "address",
-        tab: opened,
-      });
       nav.replacePendingBrowserTab(opening.idempotencyKey, {
         kind: "browser",
         sessionId: opened.sessionId,
@@ -705,7 +705,12 @@ export const StartPage = memo(function StartPage({
                             type="button"
                           >
                             <span className="start-tile__site">
-                              <SiteMark favicon={recent.favicon} site={host} />
+                              <SiteMark
+                                favicon={hostClient.browserHistory.icon(
+                                  profileId,
+                                  hostClient.browserHistory.iconRef(profileId, recent.origin),
+                                )}
+                              />
                             </span>
                             <span className="start-tile__label">{host}</span>
                           </button>
@@ -804,8 +809,10 @@ export const StartPage = memo(function StartPage({
             <button
               className="picker__row"
               onClick={() => {
-                hostClient.recentSites.clear(choice);
-                omnibox.refreshHistory();
+                void hostClient.browserHistory.clear(profileId).catch((error: unknown) => {
+                  if (mounted.current)
+                    setRefusal({ kind: "message", text: actionErrorMessage(error) });
+                });
                 setRecentMenu(null);
                 inputRef.current?.focus();
               }}
@@ -817,9 +824,7 @@ export const StartPage = memo(function StartPage({
               </span>
               <span className="picker__label-stack">
                 <span className="picker__label">Clear browsing history</span>
-                <span className="picker__detail">
-                  For {selected.presentation.name} on this device
-                </span>
+                <span className="picker__detail">For {selected.presentation.name}</span>
               </span>
             </button>
           </div>

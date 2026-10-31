@@ -1,8 +1,3 @@
-import {
-  ScreenDoneMessageSchema,
-  ScreenReadyMessageSchema,
-  ScreenShowMessageSchema,
-} from "./screen-presentation.js";
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
 import {
   AgentEventViewSchema,
@@ -24,7 +19,7 @@ import {
   WorkspaceKindSchema,
   type Workspace,
 } from "@opensteer/core";
-import { RunnerIdSchema } from "@opensteer/core";
+import { BrowserProfileIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import { ThreadPlaceChangedSchema, PlaceActivityNoticeViewSchema } from "./places.js";
 import { BrowserTabsChangedSchema, BrowserPresenceSchema } from "./browser.js";
@@ -160,7 +155,6 @@ export function workspaceViewFromWorkspace(workspace: Workspace): WorkspaceView 
 export const unsupportedVersionCloseCode = 4011;
 
 export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
-  ScreenDoneMessageSchema,
   z.strictObject({
     ...clientMessageBase,
     type: z.literal("client.subscribe"),
@@ -171,7 +165,6 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     apiVersion: z.number().int().positive().optional(),
     /** Requires `snapshot-messages-omit-v1`; absence retains message history. */
     snapshotMessages: z.literal("omit").optional(),
-    screenShow: z.literal(true).optional(),
     threadId: ThreadIdSchema.nullable(),
     workspaceId: WorkspaceIdSchema,
   }),
@@ -274,8 +267,6 @@ export type ThreadEventPage = z.infer<typeof ThreadEventPageSchema>;
 const ProtocolErrorViewSchema = z.object(ProtocolErrorSchema.shape);
 
 export const HostToClientMessageSchema = z.discriminatedUnion("type", [
-  ScreenReadyMessageSchema,
-  ScreenShowMessageSchema,
   ComputerViewChangedSchema,
   ComputerViewRemovedSchema,
   z.object({
@@ -393,6 +384,13 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     ...clientMessageBase,
     type: z.literal("host.tasks-changed"),
+  }),
+  // The reader's own browser profile gained, lost or retitled history, on any
+  // device. Clients holding that profile's history reread `browser.history.get`.
+  z.object({
+    ...clientMessageBase,
+    profileId: BrowserProfileIdSchema,
+    type: z.literal("host.browser-history-changed"),
   }),
   // Sent once, to each socket of the person it is for, as it is decided: the
   // Host has already checked their membership, mute and read position. Nothing

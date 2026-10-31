@@ -28,7 +28,7 @@
   min-height: 52px;
   padding: var(--space-8) var(--space-12);
   border-bottom: 1px solid var(--line);
-  background: var(--surface-raised);
+  background: var(--ground);
 }
 
 /* The app, then the Mac it is on, muted, on one line. */
@@ -156,8 +156,7 @@ button.computer-watch__picture {
   inset: 0;
   display: grid;
   padding: var(--space-16);
-  background: rgb(0 0 0 / 72%);
-  backdrop-filter: blur(10px);
+  background: var(--scrim-strong);
   animation: fade-in var(--duration-med) var(--ease-out);
 }
 
@@ -166,17 +165,17 @@ button.computer-watch__picture {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface-code);
-  box-shadow: var(--shadow-raised);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate), var(--lift-float);
 }
 
 .watch-theater__head {
   display: flex;
   align-items: center;
   border-bottom: 1px solid var(--line);
-  background: var(--surface-raised);
+  background: var(--ground);
 }
 
 .watch-theater__head .computer-watch__bar {
@@ -234,11 +233,13 @@ button.computer-watch__picture {
   gap: var(--space-6) var(--space-10);
   margin: var(--space-12);
   padding: var(--space-6) var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
   color: var(--text-soft);
-  background: color-mix(in srgb, var(--surface-elevated) 88%, transparent);
-  box-shadow: var(--shadow-raised);
+  background: var(--sheen) var(--fill-glass);
+  box-shadow: var(--edge-plate), var(--lift-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .computer-watch__mark .computer-use__app-mark {
@@ -248,7 +249,7 @@ button.computer-watch__picture {
 
 .computer-watch__mark .computer-use__app-mark.intg-icon--monogram {
   border-radius: 7px;
-  font-size: 13px;
+  font-size: var(--text-lg);
 }
 
 .computer-watch__words {
@@ -265,10 +266,11 @@ button.computer-watch__picture {
 @container computer-watch (max-width: 340px) {
   .computer-watch__bar {
     flex-wrap: wrap;
+    background: var(--ground);
   }
 }
 
-@media (hover: none) and (pointer: coarse) {
+@media (any-pointer: coarse) {
   .computer-watch__status .btn {
     min-height: var(--touch-target);
   }
@@ -329,7 +331,7 @@ button.computer-watch__picture {
   min-height: 44px;
   padding: var(--space-6) var(--space-12);
   border-top: 1px solid var(--line);
-  background: var(--surface-raised);
+  background: var(--ground);
 }
 
 .phone-display__note {
@@ -345,7 +347,7 @@ button.computer-watch__picture {
   gap: var(--space-4);
 }
 
-@media (hover: none) and (pointer: coarse) {
+@media (any-pointer: coarse) {
   .phone-display__nav .icon-btn {
     width: var(--touch-target);
     height: var(--touch-target);

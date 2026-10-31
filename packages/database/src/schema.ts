@@ -1256,7 +1256,6 @@ export interface AgentControlRequestTable {
   requestId: string;
   sourceThreadId: ThreadId;
   action:
-    | "screen.show"
     | "assignment.cancel"
     | "machine.full-disk-access.request"
     | "browser.access.request"
@@ -1284,7 +1283,6 @@ export interface AgentControlRequestTable {
     | "workspace.inspect"
     | "workspace.mount";
   actionClass:
-    | "screen.show"
     | "assignment.cancel"
     | "machine.full-disk-access.request"
     | "browser.access.request"
@@ -1438,6 +1436,23 @@ export interface BrowserProfileDeletionTable {
   createdAt: Timestamp;
   updatedAt: Timestamp;
   deletedAt: NullableTimestamp;
+}
+
+interface BrowserHistoryEntryTable {
+  profileId: BrowserProfileId;
+  url: string;
+  origin: string;
+  title: string;
+  typedCount: number;
+  visitCount: number;
+  lastVisitAt: Timestamp;
+}
+
+interface BrowserHistoryIconTable {
+  profileId: BrowserProfileId;
+  origin: string;
+  iconRef: string;
+  favicon: string;
 }
 
 interface BrowserProfileRevisionTable {
@@ -2086,6 +2101,8 @@ export interface DatabaseSchema {
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
   browserProfileDeletions: BrowserProfileDeletionTable;
+  browserHistoryEntries: BrowserHistoryEntryTable;
+  browserHistoryIcons: BrowserHistoryIconTable;
   browserProfileRevisions: BrowserProfileRevisionTable;
   browserSessions: BrowserSessionTable;
   workspaceTabs: WorkspaceTabTable;

@@ -44,7 +44,7 @@ import { useComputerUseStop } from "@opensteer/client/react";
 import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
 import { type ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
-import { color, radius, space, touchTarget } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import {
   AppText,
   Notice,
@@ -594,7 +594,7 @@ const styles = StyleSheet.create({
   appRow: { gap: space[4] },
   block: { gap: space[20] },
   meta: { flexDirection: "row", flexWrap: "wrap", gap: space[8] },
-  pressed: { backgroundColor: color.surfacePressed },
+  pressed: { ...material.quiet },
   row: {
     alignItems: "center",
     flexDirection: "row",
@@ -606,10 +606,8 @@ const styles = StyleSheet.create({
   rowText: { flex: 1, gap: space[2], minWidth: 0 },
   section: { gap: space[8] },
   session: {
-    backgroundColor: color.surface,
-    borderColor: color.emberLine,
+    ...material.plate,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
   },
   sessionRow: {

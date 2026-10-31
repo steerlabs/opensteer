@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { OpensteerError, type BrowserProfileId } from "@opensteer/core";
+import { OpensteerError, type BrowserProfileId, type UserId } from "@opensteer/core";
 import {
   BrowserSurfaceIdSchema,
   type BrowserAttachTicketIdentity,
@@ -93,11 +93,27 @@ export class LegacyBrowserProfileAdapter {
 
 /** A website error still opens its existing page; only a CDP failure fails start. */
 export async function navigateInitiallyLegacy(
-  broker: { requestCdp(message: CdpRequest): Promise<CdpResponse> },
+  broker: {
+    requestCdp(message: CdpRequest): Promise<CdpResponse>;
+    beginHistoryNavigation(
+      ownerId: UserId,
+      typed: boolean,
+      surfaceId?: import("@opensteer/protocol").BrowserSurfaceId,
+    ): string | undefined;
+    cancelHistoryNavigation(navigationId: string | undefined): void;
+  },
   url: string,
+  person?: { ownerId: UserId; typed: boolean },
 ) {
-  const request = async (command: CdpRequest["command"]) =>
-    (await broker.requestCdp({ type: "cdp.command", requestId: randomUUID(), command })).result;
+  const request = async (command: CdpRequest["command"], navigationId?: string) =>
+    (
+      await broker.requestCdp({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        command,
+        ...(navigationId ? { navigationId } : {}),
+      })
+    ).result;
   const targets = z
     .object({
       targetInfos: z.array(
@@ -117,8 +133,19 @@ export async function navigateInitiallyLegacy(
       parameters: { targetId: target.targetId, flatten: true },
     }),
   );
+  const navigationId = person
+    ? broker.beginHistoryNavigation(person.ownerId, person.typed, target.surfaceId)
+    : undefined;
   try {
-    await request({ method: "Page.navigate", parameters: { url }, sessionId: attached.sessionId });
+    const result = z
+      .object({ errorText: z.string().optional() })
+      .parse(
+        await request(
+          { method: "Page.navigate", parameters: { url }, sessionId: attached.sessionId },
+          navigationId,
+        ),
+      );
+    if (result.errorText) broker.cancelHistoryNavigation(navigationId);
   } finally {
     await request({
       method: "Target.detachFromTarget",

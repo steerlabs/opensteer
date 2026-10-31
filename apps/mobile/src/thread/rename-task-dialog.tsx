@@ -2,7 +2,7 @@ import type { HostClient } from "@opensteer/client/host";
 import { threadTitleMaxLength } from "@opensteer/core";
 import { useState, type ReactNode } from "react";
 import { KeyboardAvoidingView, Modal, Platform, StyleSheet, View } from "react-native";
-import { color, space } from "../theme.js";
+import { material, space } from "../theme.js";
 import { AppText, Field, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 
 export function RenameTaskDialog(props: {
@@ -83,13 +83,13 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.6)",
   },
   dialog: {
+    ...material.float,
     alignSelf: "center",
     width: "100%",
     maxWidth: 420,
     borderRadius: 16,
     padding: space[20],
     gap: space[16],
-    backgroundColor: color.surfaceElevated,
   },
   actions: { flexDirection: "row", justifyContent: "flex-end", gap: space[12] },
 });

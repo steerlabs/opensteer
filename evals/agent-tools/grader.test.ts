@@ -32,27 +32,6 @@ describe("case boundary failure modes", () => {
     expect(parseCases(line())[0]?.expect.maxInvalidCalls).toBe(0);
     expect(() => parseCases(`${line()}\n{`)).toThrow(/line 2/);
   });
-  it("validates identified input context without admitting routing credentials", () => {
-    const turn = {
-      text: "Show that conversation",
-      messageId: "msg_00000000-0000-4000-8000-000000000001",
-      presentationContext: { currentThreadId: "thr_00000000-0000-4000-8000-000000000001" },
-    };
-    expect(parseCases(line({ turns: [turn] }))[0]?.turns).toEqual([turn]);
-    expect(() => parseCases(line({ turns: [{ ...turn, messageId: "invalid" }] }))).toThrow();
-    expect(() =>
-      parseCases(
-        line({
-          turns: [
-            {
-              ...turn,
-              presentationContext: { ...turn.presentationContext, endpointRef: "private" },
-            },
-          ],
-        }),
-      ),
-    ).toThrow();
-  });
 });
 describe("trajectory grading failure modes", () => {
   it("matches recursive partial objects without coercion", () => {

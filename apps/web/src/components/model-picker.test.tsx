@@ -486,7 +486,7 @@ it("reviews a session-ending account switch before applying it", async () => {
     await act(async () => confirm.click());
     expect(onApply).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ harnessInstanceId: codexWork.harnessInstanceId }),
-      { continuation: { expectedProviderSessionId: "session", fresh: false } },
+      { continuation: { expectedProviderSessionId: "session" } },
     );
   } finally {
     await act(async () => root.unmount());
@@ -560,7 +560,7 @@ it("keeps everything on Keep, and asks for an access mode rather than choosing o
       expect.objectContaining({ harnessInstanceId: codexWork.harnessInstanceId }),
       {
         accessMode: "approval-required",
-        continuation: { expectedProviderSessionId: "session", fresh: false },
+        continuation: { expectedProviderSessionId: "session" },
       },
     );
   } finally {

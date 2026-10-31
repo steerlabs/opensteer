@@ -37,35 +37,6 @@ it("returns a converted-profile update refusal as an MCP tool error after valida
   }
 });
 
-it("validates screen presentation mocks with the production tool contract", async () => {
-  const testCase = parseCases(
-    await readFile(new URL("./cases/screen-presentation.ndjson", import.meta.url), "utf8"),
-  )[0]!;
-  const host = await startFakeHost(testCase);
-  const client = new Client({ name: "eval-screen-acceptance", version: "1" });
-  try {
-    await client.connect(
-      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
-        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
-      }) as unknown as Transport,
-    );
-    expect((await client.listTools()).tools.some(({ name }) => name === "screen_show")).toBe(true);
-    const args = testCase.expect.calls[0]!.args;
-    expect(await client.callTool({ name: "screen_show", arguments: args })).toMatchObject({
-      structuredContent: { outcome: "applied" },
-    });
-    const invalid = await client.callTool({
-      name: "screen_show",
-      arguments: { ...args, endpointRef: "private-endpoint" },
-    });
-    expect(invalid.isError).toBe(true);
-    expect(host.calls.map(({ valid }) => valid)).toEqual([true, false]);
-  } finally {
-    await client.close();
-    await host.close();
-  }
-});
-
 it("serves the production inventory and validates mocked calls through real MCP HTTP", async () => {
   const c = parseCases(
     JSON.stringify({

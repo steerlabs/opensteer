@@ -2,7 +2,6 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -25,6 +24,8 @@ import { computerNotReadyStatus } from "@opensteer/client/integrations";
 import { NativeBrowserOverlay } from "../native-browser-overlays.js";
 import { Icon } from "../icon.js";
 import { SiteMark } from "../site-mark.js";
+import { useToast } from "../toast.js";
+import { actionErrorMessage } from "../../ui-utils.js";
 import { PlaceMark } from "../workspace/place-mark.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";
 
@@ -39,6 +40,7 @@ export function useOmnibox(options: {
   readonly choice: BrowserIdentityChoice;
   readonly inputRef: RefObject<HTMLInputElement | null>;
   readonly initialValue?: string;
+  readonly historyActive?: boolean;
   readonly pageValue?: string;
   readonly loading?: boolean;
   readonly includeApps?: boolean;
@@ -48,6 +50,7 @@ export function useOmnibox(options: {
   readonly onEmptyDown?: () => void;
 }) {
   const { hostClient, inputRef, index, choice } = options;
+  const toast = useToast();
   const listId = useId();
   const scope = useHostSelector(
     hostClient,
@@ -57,18 +60,18 @@ export function useOmnibox(options: {
   useEffect(() => {
     hostClient.prepareBrowserProfile();
   }, [hostClient, scope]);
+  const viewer = useHostSelector(hostClient, (snapshot) =>
+    JSON.stringify([snapshot.deploymentId, snapshot.user?.id, snapshot.session]),
+  );
   const [raw, setRaw] = useState(options.initialValue ?? options.pageValue ?? "");
   const [completion, setCompletion] = useState<string | null>(null);
+  const completionUrl = useRef<string | null>(null);
   const [highlight, setHighlight] = useState<StartPageResult | null>(null);
   const [frozen, setFrozen] = useState<readonly StartPageResult[] | null>(null);
   const [open, setOpen] = useState(!!options.initialValue);
   const [focused, setFocused] = useState(false);
   const [dirty, setDirty] = useState(!!options.initialValue);
-  const [revision, setRevision] = useState(0);
-  const historyRevision = useSyncExternalStore(
-    hostClient.recentSites.subscribe,
-    hostClient.recentSites.getRevision,
-  );
+  useSyncExternalStore(hostClient.browserHistory.subscribe, hostClient.browserHistory.getRevision);
   const [provider, setProvider] = useState<{ query: string; rows: readonly string[] }>({
     query: "",
     rows: [],
@@ -82,24 +85,29 @@ export function useOmnibox(options: {
   const profileId = choice.kind === "profile" ? choice.profileId : null;
   // Completions and rows came from one identity's history; another identity
   // keeps only what the person typed.
-  const [rowsIdentity, setRowsIdentity] = useState(profileId);
-  if (rowsIdentity !== profileId) {
-    setRowsIdentity(profileId);
+  const identityKey = JSON.stringify([viewer, profileId]);
+  const [rowsIdentity, setRowsIdentity] = useState(identityKey);
+  if (rowsIdentity !== identityKey) {
+    setRowsIdentity(identityKey);
     setCompletion(null);
     setHighlight(null);
     setFrozen(null);
   }
-  const history = useMemo(
-    () =>
-      hostClient.recentSites.history(
-        profileId === null ? { kind: "guest" } : { kind: "profile", profileId },
-      ),
-    [hostClient, profileId, revision, historyRevision, scope],
-  );
-  const historyIcons = useMemo(
-    () => new Map(history.map(({ url, favicon }) => [url, favicon])),
-    [history],
-  );
+  const historyActive = options.historyActive === true || focused;
+  useEffect(() => {
+    if (historyActive) void hostClient.browserHistory.load(profileId);
+  }, [hostClient, profileId, historyActive, viewer]);
+  const history = hostClient.browserHistory.entries(profileId);
+  const historyUrls = new Set(history.map((entry) => entry.url));
+  const retained = (row: StartPageResult) => !row.historyUrl || historyUrls.has(row.historyUrl);
+  // Freeze ordering, but never retain history that another device removed.
+  if (frozen?.some((row) => !retained(row))) {
+    const remaining = frozen.filter(retained);
+    setFrozen(remaining.length ? remaining : null);
+  }
+  if (highlight && !retained(highlight)) setHighlight(null);
+  if (completion && completionUrl.current && !historyUrls.has(completionUrl.current))
+    setCompletion(null);
   const rows =
     frozen ??
     startPageResults(index, {
@@ -112,6 +120,21 @@ export function useOmnibox(options: {
     });
   const active = highlight ?? rows[0] ?? null;
   const visible = focused && open && rows.length > 0;
+  const historyIcons = new Map(
+    (visible ? rows : []).flatMap((row) =>
+      row.historyUrl
+        ? [
+            [
+              row.historyUrl,
+              hostClient.browserHistory.icon(
+                profileId,
+                hostClient.browserHistory.iconRef(profileId, row.historyUrl),
+              ),
+            ] as const,
+          ]
+        : [],
+    ),
+  );
   const value = highlight?.fillText ?? completion ?? (dirty ? raw : pageValue);
 
   useLayoutEffect(() => {
@@ -133,7 +156,6 @@ export function useOmnibox(options: {
     setHighlight(null);
     setFrozen(null);
     setOpen(false);
-    setRevision((count) => count + 1);
   }, [pageValue, options.loading]);
 
   useEffect(() => {
@@ -188,6 +210,11 @@ export function useOmnibox(options: {
     setOpen(!!text.trim());
   }
   function choose(row: StartPageResult) {
+    if (
+      row.historyUrl &&
+      !hostClient.browserHistory.entries(profileId).some((entry) => entry.url === row.historyUrl)
+    )
+      return;
     // An offline computer's row says why it can't open; choosing it changes nothing.
     if (!omniboxChoosable(row)) return;
     const text = row.fillText ?? row.title;
@@ -207,8 +234,9 @@ export function useOmnibox(options: {
   }
   function remove(row: StartPageResult) {
     if (!row.historyUrl) return;
-    hostClient.recentSites.remove(choice, row.historyUrl);
-    setRevision((count) => count + 1);
+    void hostClient.browserHistory
+      .remove(profileId, row.historyUrl)
+      .catch((error: unknown) => toast.error(actionErrorMessage(error)));
     setHighlight(null);
     setFrozen(null);
     setCompletion(null);
@@ -238,6 +266,9 @@ export function useOmnibox(options: {
         input.selectionEnd === text.length;
       setText(text);
       const completed = eligible ? inlineAutocomplete(text, history) : null;
+      completionUrl.current = completed
+        ? (history.find((entry) => inlineAutocomplete(text, [entry]) === completed)?.url ?? null)
+        : null;
       setCompletion(completed);
       if (completed) selection.current = { start: text.length, end: completed.length };
       suppress.current = false;
@@ -381,7 +412,6 @@ export function useOmnibox(options: {
     setText,
     choose,
     remove,
-    refreshHistory: () => setRevision((count) => count + 1),
     point: (row: StartPageResult) => {
       if (omniboxChoosable(row)) {
         setHighlight(row);
@@ -468,12 +498,9 @@ export function OmniboxResults({
                 machineId={row.app.machineId}
               />
             ) : row.place ? (
-              <PlaceMark hostClient={hostClient} icon={row.place.icon} site={row.place.site} />
+              <PlaceMark hostClient={hostClient} icon={row.place.icon} />
             ) : (
-              <SiteMark
-                favicon={controller.historyIcons.get(row.historyUrl ?? "")}
-                site={row.title}
-              />
+              <SiteMark favicon={controller.historyIcons.get(row.historyUrl ?? "") ?? null} />
             )}
           </span>
           <span className="start-result__text">

@@ -11,9 +11,11 @@ import {
   messageAuthorName,
   messageFoldLines,
   turnFolds,
+  turnOpen,
   turnState,
   turnWords,
   workRows,
+  traceWindow,
   workSummary,
   type ActivityIcon,
   type ActivityStepHead,
@@ -31,9 +33,9 @@ import {
 } from "@opensteer/client/host";
 import { memo, useMemo, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
-import Animated from "react-native-reanimated";
+import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { Markdown, PlainProse } from "../markdown/markdown.js";
-import { color, radius, space, touchTarget, type } from "../theme.js";
+import { color, material, radius, space, touchTarget, type } from "../theme.js";
 import { appear, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
@@ -75,12 +77,12 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly group: TranscriptGroup;
   readonly live?: boolean;
   /**
-   * Whether the reader opened this row: a turn's folded steps, or a message's
-   * folded words. The pane holds it, because the list unmounts rows scrolled
-   * far away and brings them back.
+   * The reader's choice for this row, or null for its default. The pane holds
+   * it across rows leaving the list's mounted window.
    */
-  readonly open: boolean;
-  readonly onToggleOpen: (rowKey: string) => void;
+  readonly open: boolean | null;
+  readonly onToggleOpen: (rowKey: string, open: boolean) => void;
+  readonly reveal?: string | null;
   readonly highlightRequestId: string | null;
   /** Opens one step's detail. */
   readonly onOpenStep: (entryId: string) => void;
@@ -117,6 +119,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           />
         ) : (
           <TurnView
+            reveal={props.reveal ?? null}
             highlightRequestId={props.highlightRequestId}
             onOpenStep={props.onOpenStep}
             onToggle={props.onToggleOpen}
@@ -133,10 +136,11 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
       ) : (
         <Message
           conversation={props.conversation === true}
+          joinedRun={props.conversation !== true && group.joinedRun === true}
           homeThreadId={props.homeThreadId}
           onReply={props.onReply}
-          onToggle={() => props.onToggleOpen(group.key)}
-          open={props.open}
+          onToggle={() => props.onToggleOpen(group.key, props.open === true)}
+          open={props.open === true}
           message={group.entry}
           askAbout={props.askAbout}
           onOpenThread={props.onOpenThread}
@@ -178,20 +182,23 @@ export function transcriptSpacing(previous: TranscriptVoice | null, next: Transc
 /* ---- A turn ---- */
 
 function TurnView(props: {
+  readonly reveal?: string | null;
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
-  readonly onToggle: (turnKey: string) => void;
-  readonly open: boolean;
+  readonly onToggle: (turnKey: string, open: boolean) => void;
+  readonly open: boolean | null;
   readonly turn: Turn;
   readonly turnKey: string;
   readonly live?: boolean;
 }): ReactNode {
   const { onToggle, turn, turnKey } = props;
   const folds = turnFolds(turn);
+  const open = turnOpen(turn, props.open);
   return (
     <View style={styles.turn}>
       <TurnContent
-        {...(folds ? { fold: { onToggle: () => onToggle(turnKey), open: props.open } } : {})}
+        {...(folds ? { fold: { onToggle: () => onToggle(turnKey, open), open } } : {})}
+        reveal={props.reveal ?? null}
         highlightRequestId={props.highlightRequestId}
         onOpenStep={props.onOpenStep}
         turn={turn}
@@ -468,6 +475,7 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
  */
 export function ConversationSteps(props: {
   readonly entries: readonly WorkEntry[];
+  readonly reveal?: string | null;
   readonly highlightRequestId: string | null;
   readonly live: boolean;
   readonly onOpenStep: (entryId: string) => void;
@@ -477,6 +485,7 @@ export function ConversationSteps(props: {
     <View style={styles.steps}>
       <TurnContent
         entries={props.entries}
+        reveal={props.reveal ?? null}
         highlightRequestId={props.highlightRequestId}
         live={props.live}
         onOpenStep={props.onOpenStep}
@@ -492,6 +501,7 @@ function TurnContent(props: {
   readonly entries?: readonly WorkEntry[];
   /** Given, the turn's steps fold behind its status line, which opens and closes them (`turnFolds`). */
   readonly fold?: { readonly onToggle: () => void; readonly open: boolean };
+  readonly reveal?: string | null;
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
   /**
@@ -503,16 +513,17 @@ function TurnContent(props: {
   readonly live: boolean;
 }): ReactNode {
   const { fold, turn } = props;
+  const [showAll, setShowAll] = useState(false);
   const active = turnState(turn) !== "settled";
   const status = props.status !== false;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
-  // Closed, the agent's words are the turn's rows and its steps are not
-  // mounted at all, which is what keeps a long night of turns light to scroll.
+  // Closed, only the last word stays mounted, keeping long transcripts light to scroll.
   const closed = fold?.open === false;
   const rows = useMemo(
     () => workRows(closed ? turnWords(turn) : (props.entries ?? turn.work)),
     [closed, props.entries, turn],
   );
+  const trace = traceWindow(rows, { showAll: closed || showAll, keep: props.reveal ?? null });
   return (
     <>
       {summary === null ? null : (
@@ -523,26 +534,40 @@ function TurnContent(props: {
           {...(fold === undefined ? {} : fold)}
         />
       )}
-      {rows.map((row) => {
-        const view = (
-          <WorkRowView
-            active={active}
-            highlightRequestId={props.highlightRequestId}
-            key={row.key}
-            onOpenStep={props.onOpenStep}
-            row={row}
-            subagentWork={turn.subagentWork}
-          />
-        );
-        // A folding turn's steps come and go as any opened row's do; its words stay put.
-        return fold === undefined || row.kind === "note" ? (
-          view
-        ) : (
-          <Animated.View entering={appear} exiting={exit} key={row.key}>
-            {view}
-          </Animated.View>
-        );
-      })}
+      {trace.hidden > 0 ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setShowAll(true)}
+          style={styles.earlierSteps}
+        >
+          <AppText role="secondaryMedium" tone="muted">
+            Show {trace.hidden} earlier {trace.hidden === 1 ? "step" : "steps"}
+          </AppText>
+        </Pressable>
+      ) : null}
+      {/* Steps ease in and out after the turn is first drawn. Notes stay
+          unanimated when a streamed message receives its durable id. */}
+      <LayoutAnimationConfig skipEntering>
+        {trace.rows.map((row) => {
+          const content = (
+            <WorkRowView
+              active={active}
+              highlightRequestId={props.highlightRequestId}
+              onOpenStep={props.onOpenStep}
+              row={row}
+              subagentWork={turn.subagentWork}
+              key={row.key}
+            />
+          );
+          return row.kind === "note" ? (
+            content
+          ) : (
+            <Animated.View entering={appear} exiting={exit} key={row.key}>
+              {content}
+            </Animated.View>
+          );
+        })}
+      </LayoutAnimationConfig>
     </>
   );
 }
@@ -903,7 +928,9 @@ export function firstUnreadGroupKey(
   return null;
 }
 
-function Message(props: {
+export function Message(props: {
+  readonly queued?: boolean;
+  readonly joinedRun?: boolean;
   readonly conversation: boolean;
   readonly homeThreadId: string | null;
   readonly onReply: ((message: MessageEntry) => void) | undefined;
@@ -954,6 +981,18 @@ function Message(props: {
 
   return (
     <View style={update ? styles.updateColumn : styles.inputColumn}>
+      {props.joinedRun ? (
+        <View
+          accessible
+          accessibilityLabel="Steered into the running turn"
+          style={styles.steerMarker}
+        >
+          <Symbol name="arrow.turn.down.right" size={12} tint={color.muted} />
+          <AppText role="caption" tone="muted">
+            Steer
+          </AppText>
+        </View>
+      ) : null}
       {mine ? null : (
         <Attribution
           mark={
@@ -978,12 +1017,22 @@ function Message(props: {
           style={
             update
               ? styles.updateBody
-              : [styles.bubble, mine ? styles.bubbleMine : styles.bubbleInput]
+              : [
+                  styles.bubble,
+                  props.queued
+                    ? [
+                        styles.bubbleQueued,
+                        mine ? styles.bubbleQueuedMine : styles.bubbleQueuedOther,
+                      ]
+                    : mine
+                      ? styles.bubbleMine
+                      : styles.bubbleInput,
+                ]
           }
         >
           <MessageFold
             lines={messageFoldLines(message, props.viewerUserId)}
-            mine={mine}
+            mine={mine && !props.queued}
             more={preview.truncated}
             onToggle={props.onToggle}
             open={open}
@@ -991,7 +1040,7 @@ function Message(props: {
             {/* Only an agent or a trigger writes Markdown into a Thread; a person
                 typed exactly what is shown, so it is shown exactly. */}
             {author.kind === "human" ? (
-              <PlainProse text={message.body} tone={mine ? "bubble" : "default"} />
+              <PlainProse text={message.body} tone={mine && !props.queued ? "bubble" : "default"} />
             ) : (
               <Markdown text={body} />
             )}
@@ -1345,6 +1394,7 @@ export function WorkingIndicator({
 
 const styles = StyleSheet.create({
   askAbout: { justifyContent: "center", minHeight: touchTarget, paddingTop: space[4] },
+  earlierSteps: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },
   unread: {
     alignItems: "center",
     flexDirection: "row",
@@ -1354,13 +1404,8 @@ const styles = StyleSheet.create({
   },
   unreadRule: { backgroundColor: color.emberLine, flex: 1, height: 1 },
   assistant: { gap: space[2] },
-  /** Opensteer's side of a conversation: the same bubble as the reader's, from the other side. */
+  /** Assistant prose keeps the reading ground, without a card around long Markdown. */
   reply: {
-    backgroundColor: color.surfaceElevated,
-    borderBottomStartRadius: radius.xs,
-    borderColor: color.line,
-    borderRadius: radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
     flexShrink: 1,
     gap: space[4],
     paddingHorizontal: space[16],
@@ -1384,18 +1429,16 @@ const styles = StyleSheet.create({
   },
   outcome: { flexShrink: 1, gap: space[4] },
   typing: {
+    ...material.plate,
     alignItems: "center",
     alignSelf: "flex-start",
-    backgroundColor: color.surfaceElevated,
     borderBottomStartRadius: radius.xs,
-    borderColor: color.line,
     borderRadius: radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
     height: 40,
     justifyContent: "center",
-    paddingHorizontal: space[16],
+    paddingHorizontal: space[16] - (1 - StyleSheet.hairlineWidth),
   },
-  typingPressed: { backgroundColor: color.surfacePressed },
+  typingPressed: { ...material.platePressed },
   typingRow: { alignSelf: "flex-start", flexDirection: "row" },
 
   attribution: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[6] },
@@ -1408,8 +1451,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.xl,
     borderBottomEndRadius: radius.xs,
     maxWidth: "100%",
-    paddingHorizontal: space[16],
-    paddingVertical: space[12],
+    paddingHorizontal: space[16] - 1,
+    paddingVertical: space[12] - 1,
   },
   /**
    * The reader's own words, in the accent. It is the one filled shape in the
@@ -1418,14 +1461,18 @@ const styles = StyleSheet.create({
    * another thread all arrive on the same side, a neutral fill would leave
    * nothing that finds itself.
    */
-  bubbleMine: { backgroundColor: color.bubble },
+  bubbleMine: { ...material.accent },
+  bubbleQueued: { backgroundColor: "transparent", borderWidth: 1.5, borderStyle: "dashed" },
+  bubbleQueuedMine: { borderColor: color.emberLine },
+  bubbleQueuedOther: { borderColor: color.lineStrong },
+  steerMarker: { flexDirection: "row", alignItems: "center", gap: space[4] },
   bubbleInk: { color: color.bubbleInk },
-  bubbleInput: { backgroundColor: color.surfaceElevated },
+  bubbleInput: { ...material.plate },
   /** Another Thread's result is the one framed thing among the agent's rows: it came from elsewhere. */
   card: {
-    backgroundColor: color.assistantSurface,
+    ...material.plate,
     borderRadius: radius.md,
-    paddingHorizontal: space[8],
+    paddingHorizontal: space[8] - 1,
   },
   cardBody: { gap: space[4], paddingBottom: space[4], paddingLeft: space[32] },
   code: { fontFamily: monoFontFamily, fontSize: 12 },
@@ -1494,7 +1541,7 @@ const styles = StyleSheet.create({
     paddingLeft: space[4],
   },
   openThread: { justifyContent: "center", minHeight: touchTarget, paddingLeft: space[28] },
-  pressed: { backgroundColor: color.surface },
+  pressed: { ...material.quiet },
   step: {
     alignItems: "center",
     borderRadius: radius.sm,

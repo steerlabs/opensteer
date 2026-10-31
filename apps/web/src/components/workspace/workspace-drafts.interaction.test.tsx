@@ -125,8 +125,9 @@ describe("the draft's places", () => {
     const icon = (ref: string) => `data:image/png;base64,${btoa(ref)}`;
     const title = () => element(".context-chip__title").textContent;
     const chipIcon = (chip = ".context-chip") =>
-      document.querySelector(`${chip} .site-mark--icon`)?.getAttribute("src") ?? null;
+      document.querySelector(`${chip} .site-mark img`)?.getAttribute("src") ?? null;
     async function open(path: Entry | ((source: MockHostClient) => Entry)) {
+      vi.spyOn(HTMLImageElement.prototype, "naturalWidth", "get").mockReturnValue(32);
       vi.stubGlobal(
         "Image",
         class {
@@ -183,6 +184,7 @@ describe("the draft's places", () => {
       expect(title()).toBe("verified.capitalone.com");
       expect(tab.icon()).toBeNull();
       expect(chipIcon()).toBeNull();
+      expect(element(".context-chip .site-mark").textContent).toBe("");
       await settle(1_100);
       const capitalOne = tab.icon();
       expect(capitalOne).not.toBeNull();

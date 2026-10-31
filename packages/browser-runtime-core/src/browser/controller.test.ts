@@ -65,38 +65,55 @@ describe("BrowserController", () => {
     await ledger.start();
   });
 
-  it("records the initial page before submitting navigation and never waits for its commit", async () => {
-    const held = gate({ label: "initial navigation commit", deadlineMs: 2000 });
-    page.cdpSession.responses.set("Page.navigate", () => held.enter());
-    const controller = new BrowserController({
-      cdpRouter,
-      claims: validClaims(),
-      exportSnapshot,
-      files,
-      ledger,
-      replaceSiteCookies,
-      signIns: noSignIns(),
-      sink,
-    });
-    try {
-      await controller.start();
-      const navigation = { operationKey: "initial-open", url: "https://next.test/" };
-      const result = controller.startInitialNavigation(page, navigation);
-      await held.entered;
-      expect(result).toMatchObject({ operationKey: "initial-open", navigation: "submitted" });
-      expect(controller.startInitialNavigation(page, navigation)).toEqual(result);
-      expect(
-        page.cdpSession.sent.filter((command) => command.method === "Page.navigate"),
-      ).toHaveLength(1);
-      expect(() =>
-        controller.startInitialNavigation(page, { ...navigation, url: "https://other.test/" }),
-      ).toThrow(/Idempotency/);
-    } finally {
-      held.release();
-      await controller.close();
-      await ledger.close();
-    }
-  });
+  it.each([false, true])(
+    "records the initial page without waiting for commit (history=%s)",
+    async (history) => {
+      const navigate = vi.spyOn(ledger, "navigate");
+      const held = gate({ label: "initial navigation commit", deadlineMs: 2000 });
+      page.cdpSession.responses.set("Page.navigate", () => held.enter());
+      const controller = new BrowserController({
+        cdpRouter,
+        claims: {
+          ...validClaims(),
+          ...(history ? { navigationAttributionVersion: 1 as const } : {}),
+        },
+        exportSnapshot,
+        files,
+        ledger,
+        replaceSiteCookies,
+        signIns: noSignIns(),
+        sink,
+      });
+      try {
+        await controller.start();
+        const navigation = {
+          operationKey: "initial-open",
+          url: "https://next.test/",
+          ...(history ? { navigationId: "88888888-8888-4888-8888-888888888888" } : {}),
+        };
+        const result = controller.startInitialNavigation(page, navigation);
+        await held.entered;
+        if (history)
+          expect(navigate).toHaveBeenCalledExactlyOnceWith(
+            result.surfaceId,
+            navigation.url,
+            navigation.navigationId,
+          );
+        expect(result).toMatchObject({ operationKey: "initial-open", navigation: "submitted" });
+        expect(controller.startInitialNavigation(page, navigation)).toEqual(result);
+        expect(
+          page.cdpSession.sent.filter((command) => command.method === "Page.navigate"),
+        ).toHaveLength(1);
+        expect(() =>
+          controller.startInitialNavigation(page, { ...navigation, url: "https://other.test/" }),
+        ).toThrow(/Idempotency/);
+      } finally {
+        held.release();
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
 
   it("attributes only viewer input that reaches the page", async () => {
     const passkeys = new HostRelayAuthenticator(() => undefined);
@@ -2285,6 +2302,176 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  it.each(["address", "initial", "tab-open"] as const)(
+    "refuses unnegotiated attribution for %s navigation and keeps baseline navigation available",
+    async (path) => {
+      const controller = createController();
+      await controller.start();
+      const url = "https://person.test/";
+      const navigationId = globalThis.crypto.randomUUID();
+      try {
+        expect(
+          sink.messages.find((message) => message.type === "browser.snapshot"),
+        ).not.toHaveProperty("navigationAttributionVersion");
+        if (path === "address")
+          await controller.handle({ type: "navigation.go", url, navigationId });
+        else {
+          const attached = await cdpRouter.send(validClaims().sessionId, {
+            method: "Target.attachToTarget",
+            parameters: { targetId: await page.targetId(), flatten: true },
+          });
+          const { sessionId } = attached as { sessionId: string };
+          await controller.handle({
+            type: "cdp.command",
+            requestId: globalThis.crypto.randomUUID(),
+            navigationId,
+            command:
+              path === "initial"
+                ? { method: "Page.navigate", sessionId, parameters: { url } }
+                : {
+                    method: browserHostMethods.openTab,
+                    parameters: { idempotencyKey: "unnegotiated-open", url },
+                  },
+          });
+        }
+        expect(sink.messages).toContainEqual(
+          expect.objectContaining({
+            type: "browser.error",
+            error: expect.objectContaining({ code: "forbidden" }),
+          }),
+        );
+        expect(commandsNamed("Page.navigate", page)).toHaveLength(0);
+        await controller.handle({ type: "navigation.go", url });
+        expect(commandsNamed("Page.navigate", page)).toHaveLength(1);
+        // A ledger attribution must not escape a session admitted by an older Host.
+        page.cdpSession.responses.set("Page.navigate", () => {
+          page.cdpSession.emit("Page.frameNavigated", {
+            frame: { id: "main", loaderId: "person-loader", url },
+          });
+          return { loaderId: "person-loader" };
+        });
+        await ledger.navigate(activeSurfaceId(), url, navigationId);
+        await flushMicrotasks();
+        expect(sink.messages.some((message) => message.type === "navigation.committed")).toBe(
+          false,
+        );
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
+
+  it.each(
+    (["address", "initial", "tab-open"] as const).flatMap((path) =>
+      (["reply-first", "commit-first", "push-state", "redirect"] as const).map((ordering) => ({
+        path,
+        ordering,
+      })),
+    ),
+  )("uses browser attribution for $path navigation ($ordering)", async ({ path, ordering }) => {
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ navigationAttributionVersion: 1 }),
+    );
+    await controller.start();
+    expect(sink.messages.find((message) => message.type === "browser.snapshot")).toHaveProperty(
+      "navigationAttributionVersion",
+      1,
+    );
+    const navigationId = globalThis.crypto.randomUUID();
+    const url = "https://person.test/";
+    let navigatedPage = page;
+    if (path === "tab-open") {
+      const nextPage = new FakePage();
+      vi.spyOn(context, "createPage").mockImplementation(async () => {
+        context.addPage(nextPage);
+        return nextPage;
+      });
+      navigatedPage = nextPage;
+    }
+    const frameId = await navigatedPage.targetId();
+    const commit = () =>
+      navigatedPage.cdpSession.emit("Page.frameNavigated", {
+        frame: { id: "main", loaderId: "person-loader", url: "https://redirect.test/" },
+      });
+    navigatedPage.cdpSession.responses.set("Page.navigate", () => {
+      if (ordering !== "reply-first") {
+        commit();
+        if (ordering === "push-state")
+          navigatedPage.cdpSession.emit("Page.navigatedWithinDocument", {
+            frameId,
+            url: "https://redirect.test/agent-route",
+            navigationType: "historyApi",
+          });
+        if (ordering === "redirect") navigatedPage.navigate("https://agent.test/", "Agent");
+      }
+      return { loaderId: "person-loader" };
+    });
+    try {
+      if (path === "address") await controller.handle({ type: "navigation.go", url, navigationId });
+      else if (path === "tab-open")
+        await controller.handle({
+          type: "cdp.command",
+          requestId: globalThis.crypto.randomUUID(),
+          navigationId,
+          command: {
+            method: browserHostMethods.openTab,
+            parameters: { idempotencyKey: "attributed-open", url },
+          },
+        });
+      else {
+        const attached = await cdpRouter.send(validClaims().sessionId, {
+          method: "Target.attachToTarget",
+          parameters: { targetId: await page.targetId(), flatten: true },
+        });
+        const { sessionId } = attached as { sessionId: string };
+        await controller.handle({
+          type: "cdp.command",
+          requestId: globalThis.crypto.randomUUID(),
+          navigationId,
+          command: { method: "Page.navigate", sessionId, parameters: { url } },
+        });
+      }
+      if (ordering === "reply-first") commit();
+      // No microtask gap: snapshot coalescing may omit the committed document.
+      navigatedPage.navigate("https://agent.test/", "Agent");
+      await flushMicrotasks();
+      expect(sink.messages.filter((message) => message.type === "navigation.committed")).toEqual([
+        expect.objectContaining({
+          navigationId,
+          url: "https://redirect.test/",
+          documentId: expect.any(String),
+          surfaceId: expect.any(String),
+        }),
+      ]);
+      expect(
+        ledger.snapshot().find((surface) => surface.url === "https://agent.test/"),
+      ).not.toHaveProperty("navigationId");
+      if (path === "tab-open") {
+        const before = navigatedPage.cdpSession.sent.filter(
+          (command) => command.method === "Page.navigate",
+        ).length;
+        await controller.handle({
+          type: "cdp.command",
+          requestId: globalThis.crypto.randomUUID(),
+          navigationId: globalThis.crypto.randomUUID(),
+          command: {
+            method: browserHostMethods.openTab,
+            parameters: { idempotencyKey: "attributed-open", url },
+          },
+        });
+        expect(
+          navigatedPage.cdpSession.sent.filter((command) => command.method === "Page.navigate"),
+        ).toHaveLength(before);
+      }
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("coalesces surface churn to the latest state while the output sink is slow", async () => {
     const controller = createController();
     await controller.start();
@@ -2385,10 +2572,11 @@ describe("BrowserController", () => {
   function createController(
     maxPendingCommands?: number,
     outputLimits: { maxPendingMessageBytes?: number; maxPendingMessages?: number } = {},
+    claims: BrowserAttachTicketClaims = validClaims(),
   ): BrowserController {
     return new BrowserController({
       cdpRouter,
-      claims: validClaims(),
+      claims,
       exportSnapshot,
       files,
       ledger,

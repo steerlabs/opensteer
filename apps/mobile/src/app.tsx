@@ -184,7 +184,7 @@ function mobileClient(): MobileRoot {
           },
         })
       : createNetworkHostPort({
-          recentSitesStorage: createBrowsingChoiceStorage(
+          browserPreferencesStorage: createBrowsingChoiceStorage(
             new File(`${root}${storeName}/browsing-choices.json`),
           ),
           fetch: mobileHostFetch,

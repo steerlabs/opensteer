@@ -7428,3 +7428,60 @@ integration("Better Auth 1.7 migration", () => {
     ).rejects.toThrow(/host_oauth_public_client_check/);
   });
 });
+
+integration.sequential("screen presentation removal migration", () => {
+  const databaseName = `opensteer_screen_show_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  let maintenance: Pool;
+  let database: Kysely<DatabaseSchema>;
+
+  function urlFor(name: string): string {
+    const url = new URL(databaseUrl ?? "postgres://unconfigured");
+    url.pathname = `/${name}`;
+    return url.toString();
+  }
+
+  beforeAll(async () => {
+    maintenance = new Pool({ connectionString: urlFor("postgres") });
+    await maintenance.query(`drop database if exists ${databaseName}`);
+    await maintenance.query(`create database ${databaseName}`);
+    database = createDatabase({ connectionString: urlFor(databaseName), maxConnections: 1 });
+  });
+
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${databaseName}`);
+    await maintenance?.end();
+  });
+
+  it("drops a Host's screen.show admissions and refuses new ones", async () => {
+    const migrated = await new Migrator({
+      db: database,
+      provider: migrationProvider(),
+    }).migrateTo("0116_screen_show");
+    if (migrated.error) throw migrated.error;
+    // A Beta Host admitted these before presentation moved onto the voice call.
+    await sql`set session_replication_role = replica`.execute(database);
+    try {
+      for (const action of ["screen.show", "thread.read"])
+        await sql`
+          insert into public.agent_control_requests(
+            run_id, request_id, source_thread_id, action, action_class, request_fingerprint
+          ) values ('run_1', ${randomUUID()}, 'thr_1', ${action}, ${action}, ${"a".repeat(64)})
+        `.execute(database);
+    } finally {
+      await sql`set session_replication_role = origin`.execute(database);
+    }
+    await migrateToLatest(database);
+    const remaining = await sql<{ action: string }>`
+      select action from public.agent_control_requests
+    `.execute(database);
+    expect(remaining.rows.map((row) => row.action)).toEqual(["thread.read"]);
+    await expect(
+      sql`
+        insert into public.agent_control_requests(
+          run_id, request_id, source_thread_id, action, action_class, request_fingerprint
+        ) values ('run_1', ${randomUUID()}, 'thr_1', 'screen.show', 'screen.show', ${"b".repeat(64)})
+      `.execute(database),
+    ).rejects.toThrow(/violates check constraint "agent_control_requests_action/u);
+  });
+});

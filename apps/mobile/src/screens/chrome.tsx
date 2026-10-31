@@ -17,7 +17,7 @@ import { useIsFocused, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AccessibilityInfo, Alert, AppState, ScrollView, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, radius, space, touchTarget } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import {
   AppText,
@@ -519,13 +519,11 @@ const styles = StyleSheet.create({
   actions: { flexDirection: "row", flexWrap: "wrap", gap: space[8] },
   away: { gap: space[12], paddingTop: space[24] },
   connect: {
-    backgroundColor: color.surface,
-    borderColor: color.emberLine,
+    ...material.attention,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: space[12],
-    padding: space[16],
+    padding: space[16] - (1 - StyleSheet.hairlineWidth),
   },
   connectText: { flex: 1, gap: space[4] },
   content: { gap: space[24], paddingTop: space[12] },

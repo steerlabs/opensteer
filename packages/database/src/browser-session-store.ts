@@ -1,3 +1,4 @@
+import { lockBrowserHistory } from "./browser-history-store.js";
 import { z } from "zod";
 import {
   lockCommandIdempotency,
@@ -482,6 +483,15 @@ export async function deleteBrowserProfileInTransaction(
     })
     .where("id", "=", input.profileId)
     .where("archivedAt", "is", null)
+    .execute();
+  await lockBrowserHistory(transaction, input.profileId);
+  await transaction
+    .deleteFrom("browserHistoryEntries")
+    .where("profileId", "=", input.profileId)
+    .execute();
+  await transaction
+    .deleteFrom("browserHistoryIcons")
+    .where("profileId", "=", input.profileId)
     .execute();
   await transaction
     .deleteFrom("browserProfileRevisions")
@@ -2360,21 +2370,4 @@ export async function browserSessionOpenerForBinding(
   return row.home
     ? { kind: "opensteer", threadId: row.threadId }
     : { kind: "task", threadId: row.threadId, runId };
-}
-
-export async function browserSurfaceBelongsToThread(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly sessionId: BrowserSessionId;
-    readonly tabId: import("@opensteer/core").BrowserSurfaceId;
-    readonly threadId: ThreadId;
-  },
-): Promise<boolean> {
-  return !!(await database
-    .selectFrom("browserSessionUses")
-    .select("id")
-    .where("sessionId", "=", input.sessionId)
-    .where("tabId", "=", input.tabId)
-    .where("threadId", "=", input.threadId)
-    .executeTakeFirst());
 }

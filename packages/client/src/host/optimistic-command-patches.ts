@@ -1,4 +1,4 @@
-import { moveQueueItem, type ThreadInputQueue } from "@opensteer/core";
+import type { ThreadInputQueue } from "@opensteer/core";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type {
   BrowserProfileGrantSummary,
@@ -102,12 +102,6 @@ type OptimisticCommandPatch =
       readonly type: Extract<CommandType, "thread.input.cancel">;
       /** When the Host recorded the withdrawal; the marker stands at that moment. */
       readonly withdrawnAt: string;
-    }
-  | {
-      readonly beforeMessageId: string | null;
-      readonly messageId: string;
-      readonly threadId: string;
-      readonly type: Extract<CommandType, "thread.input.move">;
     }
   | {
       readonly thread: ThreadSummary;
@@ -216,7 +210,6 @@ export const optimisticCommandPatches = {
   },
   "thread.execution.update": replaceThread,
   "thread.input.cancel": withdrawQueuedInput,
-  "thread.input.move": moveQueuedInput,
   "thread.input.steer": dropQueuedInput,
   "thread.inputQueue.resume": replaceThread,
   "thread.sendMessage": patchSentMessage,
@@ -308,8 +301,6 @@ export function applyOptimisticCommandPatch(
     case "thread.execution.update":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.input.cancel":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "thread.input.move":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.input.steer":
       return optimisticCommandPatches[patch.type](snapshot, patch);
@@ -622,35 +613,6 @@ function dropQueuedInput(
     inputQueues: {
       ...snapshot.inputQueues,
       [threadId]: { ...queue, items: queue.items.filter((item) => item.message.id !== messageId) },
-    },
-  };
-}
-
-/**
- * The queue takes the new order as soon as the person drops a message, so the
- * tray never snaps back while the Host confirms it. A neighbour the queue no
- * longer holds leaves it as it was; the Host's refusal and reread settle it.
- */
-function moveQueuedInput(
-  snapshot: HostSnapshot,
-  patch: {
-    readonly beforeMessageId: string | null;
-    readonly messageId: string;
-    readonly threadId: string;
-  },
-): HostSnapshot {
-  const queue = snapshot.inputQueues[patch.threadId];
-  const moving = queue?.items.find((item) => item.message.id === patch.messageId);
-  const before =
-    patch.beforeMessageId === null
-      ? null
-      : queue?.items.find((item) => item.message.id === patch.beforeMessageId);
-  if (!queue || !moving || before === undefined) return snapshot;
-  return {
-    ...snapshot,
-    inputQueues: {
-      ...snapshot.inputQueues,
-      [patch.threadId]: { ...queue, items: moveQueueItem(queue.items, moving, before) },
     },
   };
 }

@@ -45,7 +45,7 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgb(255 255 255 / 14%) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -54,7 +54,7 @@ body {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: rgb(255 255 255 / 14%);
+  background: var(--scrollbar-thumb);
   border: 3px solid transparent;
   background-clip: content-box;
   border-radius: var(--radius-full);
@@ -137,27 +137,28 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-8);
-  min-height: 34px;
-  padding: var(--space-6) var(--space-14);
+  gap: var(--space-6);
+  min-height: var(--control-height);
+  padding: var(--space-4) var(--space-12);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--line-strong);
-  background: var(--surface-elevated);
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   color: var(--text);
-  font-size: var(--text-xl);
+  font-size: var(--control-font);
   font-weight: var(--weight-medium);
   line-height: 1.2;
   transition:
     background-color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out),
     color var(--duration-fast) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out);
+    transform var(--duration-fast) var(--ease-spring);
   user-select: none;
 }
 
 .btn:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: var(--line-hover);
+  background-color: var(--fill-plate-hover);
 }
 
 /* A link wearing the button shape is still a button to the eye. */
@@ -166,7 +167,9 @@ a.btn:hover {
 }
 
 .btn:active:not(:disabled) {
-  transform: scale(0.98);
+  /* Pressed in: the top light goes out instead of a shadow appearing. */
+  box-shadow: none;
+  transform: scale(0.97);
 }
 
 .btn:disabled,
@@ -178,26 +181,26 @@ a.btn:hover {
 }
 
 .btn--primary {
-  background: var(--ember);
-  border-color: var(--ember);
+  border-color: var(--rim-accent);
+  background: var(--sheen-accent) var(--fill-accent);
+  box-shadow: var(--edge-accent);
   color: var(--ink-on-ember);
   font-weight: var(--weight-bold);
 }
 
 .btn--primary:hover:not(:disabled) {
-  background: var(--ember-bright);
-  border-color: var(--ember-bright);
+  background-color: var(--fill-accent-hover);
 }
 
 .btn--ghost {
-  background: transparent;
   border-color: transparent;
+  background: transparent;
+  box-shadow: none;
   color: var(--text-soft);
 }
 
 .btn--ghost:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: transparent;
+  background-color: var(--fill-quiet);
   color: var(--text);
 }
 
@@ -207,12 +210,12 @@ a.btn:hover {
 
 .btn--danger:hover:not(:disabled) {
   border-color: var(--red-line);
-  background: var(--red-wash);
+  background-color: var(--red-wash);
 }
 
 .btn--small {
-  min-height: 28px;
-  padding: var(--space-4) var(--space-10);
+  min-height: var(--control-height-sm);
+  padding: var(--space-2) var(--space-10);
   font-size: var(--text-md);
   border-radius: var(--radius-xs);
 }
@@ -225,8 +228,8 @@ a.btn:hover {
 .icon-btn {
   display: inline-grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: var(--control-height);
+  height: var(--control-height);
   border-radius: var(--radius-sm);
   color: var(--muted);
   transition:
@@ -236,8 +239,8 @@ a.btn:hover {
 }
 
 .icon-btn--small {
-  width: 24px;
-  height: 24px;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
 }
 
 .icon-btn--small svg {
@@ -246,8 +249,8 @@ a.btn:hover {
 }
 
 .icon-btn:hover:not(:disabled) {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .icon-btn:active:not(:disabled) {
@@ -290,16 +293,17 @@ a.btn:hover {
 .select-input,
 textarea.text-input {
   width: 100%;
-  min-height: 36px;
-  padding: var(--space-8) var(--space-12);
+  min-height: var(--control-height);
+  padding: var(--space-6) var(--space-10);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
+  border: 1px solid var(--rim-control);
   color: var(--text);
-  font-size: var(--text-xl);
+  font-size: var(--control-font);
   transition:
     border-color var(--duration-fast) var(--ease-out),
     box-shadow var(--duration-fast) var(--ease-out);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .text-input::placeholder {
@@ -309,16 +313,25 @@ textarea.text-input {
 .text-input:focus,
 .select-input:focus {
   outline: none;
-  border-color: var(--ember-line);
-  box-shadow: var(--ring-ember);
+  border-color: var(--ember);
+  box-shadow: var(--edge-plate), var(--ring-ember);
 }
 
 .select-input {
   appearance: none;
   padding-right: var(--space-28);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238e8a86' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%), var(--sheen);
   background-repeat: no-repeat;
-  background-position: right 8px center;
+  background-position:
+    right 12px center,
+    right 8px center,
+    0 0;
+  background-size:
+    4px 4px,
+    4px 4px,
+    100% 100%;
 }
 
 .chip {
@@ -402,13 +415,14 @@ textarea.text-input {
   width: 34px;
   height: 20px;
   padding: 0;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-control);
   border-radius: var(--radius-full);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   cursor: pointer;
   transition:
     background-color 140ms ease,
     border-color 140ms ease;
+  box-shadow: var(--edge-plate);
 }
 
 .switch::after {
@@ -418,15 +432,16 @@ textarea.text-input {
   height: 16px;
   margin: 1px;
   border-radius: var(--radius-full);
-  background: var(--muted);
+  background: var(--text-soft);
   transition:
     transform 140ms ease,
     background-color 140ms ease;
 }
 
 .switch:checked {
-  border-color: var(--ember);
-  background: var(--ember);
+  border-color: var(--rim-accent);
+  background: var(--sheen-accent) var(--fill-accent);
+  box-shadow: var(--edge-accent);
 }
 
 .switch:checked::after {
@@ -434,14 +449,8 @@ textarea.text-input {
   transform: translateX(14px);
 }
 
-.switch:focus-visible {
-  outline: none;
-  border-color: var(--ember-line);
-  box-shadow: var(--ring-ember);
-}
-
 .switch:hover:not(:disabled, :checked) {
-  border-color: var(--line-hover);
+  background-color: var(--fill-plate-hover);
 }
 
 .switch:disabled,
@@ -468,17 +477,17 @@ textarea.text-input {
   gap: var(--space-2);
   max-width: 100%;
   padding: var(--space-2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface-elevated);
+  background: var(--fill-quiet);
 }
 
 .segmented__option {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 34px;
-  padding: var(--space-6) var(--space-14);
-  border: 0;
+  min-height: calc(var(--control-height) - var(--space-6));
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid transparent;
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--muted);
@@ -499,11 +508,10 @@ textarea.text-input {
 }
 
 .segmented__option[aria-checked="true"] {
-  background: var(--surface-hover);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
   color: var(--text);
-  box-shadow:
-    inset 0 0 0 1px var(--line-strong),
-    0 1px 2px rgb(0 0 0 / 40%);
 }
 
 .segmented__option:focus-visible {
@@ -559,7 +567,7 @@ textarea.text-input {
   display: flex;
   align-items: center;
   gap: var(--space-12);
-  padding: var(--space-12) var(--space-16);
+  padding: calc(var(--space-12) - 1px) calc(var(--space-16) - 1px);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -567,31 +575,35 @@ textarea.text-input {
   transition:
     background-color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
+  border: 1px solid transparent;
 }
 
 .option-row--framed {
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
+  padding: var(--space-12) var(--space-16);
 }
 
 .option-row:hover:not(:disabled, .is-unavailable),
 .option-row:focus-visible,
 .option-row:focus-within:not(.is-unavailable) {
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 
 .option-row--framed:hover:not(:disabled, .is-unavailable),
 .option-row--framed:focus-visible,
 .option-row--framed:focus-within:not(.is-unavailable) {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
+  background-color: var(--fill-plate-hover);
 }
 
 .option-row.is-selected,
 .option-row--framed.is-selected {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 
 .option-row:disabled,
@@ -607,11 +619,13 @@ textarea.text-input {
 }
 
 .option-row-group:disabled .option-row:hover {
-  background: transparent;
+  background-color: transparent;
 }
 
 .option-row-group:disabled .option-row.is-selected {
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 
 .option-row__control {
@@ -631,8 +645,10 @@ textarea.text-input {
   place-items: center;
   border: 1px solid var(--ember-line);
   border-radius: var(--radius-sm);
-  background: var(--ember-wash);
+  background: var(--sheen) var(--fill-plate);
   color: var(--ember);
+  border-color: var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .option-row__glyph--letter {
@@ -724,8 +740,9 @@ kbd.kbd {
   min-width: 17px;
   padding: 1px var(--space-6);
   border-radius: 5px;
-  border: 1px solid var(--line-strong);
-  background: var(--surface-raised);
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   color: var(--muted);
   font-size: var(--text-3xs);
   line-height: 1.5;
@@ -736,7 +753,7 @@ kbd.kbd {
   width: 14px;
   height: 14px;
   border-radius: var(--radius-full);
-  border: 2px solid rgb(255 255 255 / 16%);
+  border: 2px solid var(--line-hover);
   border-top-color: var(--ember);
   animation: spin 0.8s linear infinite;
   flex: none;
@@ -826,7 +843,7 @@ kbd.kbd {
 }
 
 .status-dot--idle {
-  background: rgb(255 255 255 / 24%);
+  background: var(--muted-dim);
 }
 
 .status-dot--running {
@@ -844,8 +861,9 @@ kbd.kbd {
   align-items: flex-start;
   padding: var(--space-12) var(--space-14);
   border-radius: var(--radius-md);
-  border: 1px solid var(--line-strong);
-  background: var(--surface-elevated);
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   font-size: var(--text-lg);
   color: var(--text-soft);
 }
@@ -876,20 +894,20 @@ svg.icon {
 
 .notice--error {
   border-color: var(--red-line);
-  background: var(--red-wash);
   color: var(--red-text);
+  background-color: var(--red-wash);
 }
 
 .notice--warn {
   border-color: var(--amber-line);
-  background: var(--amber-wash);
   color: var(--amber-text);
+  background-color: var(--amber-wash);
 }
 
 .notice--accent {
   border-color: var(--ember-line);
-  background: var(--ember-wash);
   color: var(--ember-bright);
+  background-color: var(--ember-wash);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -907,12 +925,15 @@ svg.icon {
   }
 }
 
-/* Touch chrome keeps a full finger-sized hit area. Inline prose links retain
-   their reading rhythm; every control-shaped link is included explicitly. */
-@media (hover: none) {
+/* Wherever a finger can reach the screen — phones, tablets, touch laptops,
+   an iPad with a trackpad — chrome keeps a finger-sized hit area. Buttons get
+   theirs from --control-height. Inline prose links retain their reading
+   rhythm; every control-shaped link is included explicitly. Checkboxes and
+   radios are excluded: the row around one is its target, and a 44px-tall box
+   would slide below its own label. */
+@media (any-pointer: coarse) {
   button,
   summary,
-  .btn,
   .brand-link,
   .sidebar__nav-item,
   .sidebar__place,
@@ -930,11 +951,12 @@ svg.icon {
     height: var(--touch-target);
   }
 
-  input:not(.switch),
-  textarea,
+  input:not(.switch, [type="checkbox"], [type="radio"]),
+  textarea:not(.remote-keyboard-input, .browser-keyboard-input, .phone-display__keyboard),
   select {
     min-height: var(--touch-target);
-    font-size: 16px;
+    /* Below 16px, mobile Safari zooms the page to the field. */
+    font-size: var(--text-input);
   }
 
   .switch {
@@ -943,6 +965,7 @@ svg.icon {
     height: var(--touch-target);
     border: 0;
     background: transparent;
+    box-shadow: none;
   }
 
   .switch::before {
@@ -952,9 +975,10 @@ svg.icon {
     left: 5px;
     width: 34px;
     height: 20px;
-    border: 1px solid var(--line-strong);
+    border: 1px solid var(--rim-control);
     border-radius: var(--radius-full);
-    background: var(--surface-raised);
+    background: var(--sheen) var(--fill-plate);
+    box-shadow: var(--edge-plate);
   }
 
   .switch::after {
@@ -966,16 +990,120 @@ svg.icon {
     margin: 0;
   }
 
-  .switch:checked {
+  .switch:checked,
+  .switch:hover:not(:disabled, :checked) {
+    box-shadow: none;
     background: transparent;
   }
 
   .switch:checked::before {
-    border-color: var(--ember);
-    background: var(--ember);
+    border-color: var(--rim-accent);
+    background: var(--sheen-accent) var(--fill-accent);
+    box-shadow: var(--edge-accent);
   }
 
   .switch:checked::after {
     transform: translateX(14px);
   }
+}
+
+/* Forced colours (Windows High Contrast and the like) drop backgrounds,
+   gradients and shadows. Rims are real borders, so surfaces keep their
+   edges; what has to be restated is focus, which several controls draw as a
+   shadow-only ring, and the chosen item, which is otherwise only a fill. */
+@media (forced-colors: active) {
+  :is(
+    .btn,
+    .text-input,
+    .select-input,
+    .switch,
+    .segmented,
+    .popover,
+    .dialog,
+    .toast,
+    .composer,
+    .input-surface--action,
+    .request-row,
+    .card,
+    .settings-choice,
+    .settings-layout__main,
+    .intg-card,
+    .option-row--framed,
+    .reply__bubble,
+    .msg--user,
+    .input-card,
+    .onboarding__card,
+    .browser-address,
+    .surface-chip,
+    .voice-island,
+    .place-card,
+    .specialist-card,
+    .automation-time,
+    .automations-list,
+    .computers-list,
+    .machine-access__group,
+    .code-editor,
+    .remote-preedit,
+    .remote-editing-error,
+    .streamed-context-menu
+  ) {
+    border-color: CanvasText;
+    background-color: Canvas;
+    color: CanvasText;
+  }
+
+  :is(
+    .settings-navigation__link.is-active,
+    .settings-choice.is-selected,
+    .side-home.is-filled,
+    .side-task.is-filled,
+    .side-tab.is-active,
+    .browser-tab.is-active,
+    .browser-choice__option:has(input:checked),
+    .account-choice__option:has(input:checked),
+    .execution-menu__engine[aria-selected="true"],
+    .action-row--selected,
+    .computer-use__option--on,
+    .surface-chip--active
+  ) {
+    border-color: Highlight;
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  :focus-visible {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
+  }
+
+  .segmented__option[aria-checked="true"],
+  .option-row.is-selected {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .switch:checked,
+  .switch:checked::before {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  .switch:checked::after {
+    background: HighlightText;
+  }
+}
+
+:is(
+    .intg-card,
+    .specialist-card,
+    .hero__suggestion,
+    .chat-btn,
+    .surface-chip,
+    .computer-now__stop,
+    .dictation-keep,
+    .voice-island__end
+  ):active:not(:disabled) {
+  box-shadow: none;
+  transform: scale(0.97);
 }

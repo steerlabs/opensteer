@@ -10,7 +10,6 @@ import {
   workerAssignment,
   type HostSnapshot,
 } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { staleBrowserTabInventoryReason } from "@opensteer/protocol";
 
 import { AppShell } from "../app-shell.js";
@@ -470,9 +469,8 @@ describe("stopping a task and finishing it: one Stop", () => {
 
   it("Chat offers no Done action", async () => {
     await mount("/");
-    await openMenu();
-    expect(menuRow("Mark Done")).toBeNull();
-    expect(menuRow("Reopen")).toBeNull();
+    // Chat has nothing of its own to rename, mark or finish: undocked it has no menu.
+    expect(document.querySelector(".conv-header__menu")).toBeNull();
   });
 
   it("confirms shared Done on running work, freezes sending and reopens the composer", async () => {
@@ -732,10 +730,7 @@ describe("the v7 web review's findings", () => {
       );
       if (!opened) return;
       cleared = true;
-      client.recentSites.clear({
-        kind: "profile",
-        profileId: "bpr_00000000-0000-4000-8000-000000000001",
-      });
+      void client.browserHistory.clear("bpr_00000000-0000-4000-8000-000000000001");
     });
     await click(element(".start-tile[aria-label^='Calendar on']"));
     await settle(120);
@@ -746,86 +741,46 @@ describe("the v7 web review's findings", () => {
     expect(new URLSearchParams(history.at(-1)!.search).has("computerView")).toBe(true);
   });
 
-  it("m1 · only the load a person's own navigation started joins their recent sites", async () => {
-    const personal = {
-      kind: "profile" as const,
-      profileId: "bpr_00000000-0000-4000-8000-000000000001",
-    };
+  it("m1 · typed navigation reaches Host history and its retained icon appears in New tab", async () => {
+    const profileId = "bpr_00000000-0000-4000-8000-000000000001";
     await mount((source) => {
       const reading = placeList(source.getSnapshot()).find(
         (item) => item.kind === "browser" && item.title === "Your reading list",
       )!;
       return `/${tabSearch(reading)}`;
     });
-    const reading = placeList(client.getSnapshot()).find(
-      (item) => item.kind === "browser" && item.title === "Your reading list",
-    )!;
-    if (reading.destination.kind !== "browser" || !reading.destination.tabId)
-      throw new Error("Not a browser tab");
-    const { sessionId, tabId } = reading.destination;
-    const surfaceId = BrowserSurfaceIdSchema.parse(tabId);
-    expect(client.recentSites.list(personal)).toEqual([]);
-    const input = element<HTMLInputElement>(".browser-address input");
-    const submit = async (text: string) => {
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
-          input,
-          text,
-        );
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-      await act(async () => {
-        element(".browser-address").dispatchEvent(
-          new Event("submit", { bubbles: true, cancelable: true }),
-        );
-      });
-      await settle();
-    };
-    const agentGoes = async (url: string) => {
-      await act(async () => {
-        client.sendBrowserCommand(sessionId, { surfaceId, type: "navigation.go", url });
-      });
-      await settle(1_100);
-    };
-    // Revisiting the same URL is a person visit; later agent activity is not.
-    const revisited = new URL(input.value).origin;
-    await submit(input.value);
+    await typeInto(
+      element<HTMLInputElement>(".browser-address input"),
+      "example.com/some/path?q=1",
+    );
+    await pressEnter(element(".browser-address input"));
     await settle(1_100);
-    await agentGoes("https://agent-only.example/private");
-    expect(client.recentSites.list(personal).map((site) => site.origin)).toEqual([revisited]);
-    // Stopped by the person: the navigation is cancelled, and so is the intent.
-    await submit("example.org");
-    await click(element(".browser-controls [aria-label='Stop loading']"));
-    await settle(60);
-    expect(client.recentSites.list(personal).map((site) => site.origin)).toEqual([revisited]);
-    await agentGoes("https://agent-again.example/");
-    expect(client.recentSites.list(personal).map((site) => site.origin)).toEqual([revisited]);
-    // A navigation of the person's own that ends somewhere new is theirs, with its path.
-    await submit("example.com/some/path?q=1");
-    await settle(1_100);
-    expect(client.recentSites.list(personal).map((site) => site.origin)).toEqual([
-      "https://example.com",
-      revisited,
-    ]);
-    const favicon = client.recentSites.list(personal)[0]?.favicon;
-    expect(favicon).toMatch(/^data:image\/png;base64,/u);
-    await agentGoes("https://agent-later.example/");
-    expect(client.recentSites.list(personal).map((site) => site.origin)).toEqual([
-      "https://example.com",
-      revisited,
-    ]);
-    await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
-    expect(
-      element<HTMLImageElement>('.start-tile[title="example.com"] .site-mark').getAttribute("src"),
-    ).toBe(favicon);
-    await typeInto(element<HTMLInputElement>(".start-page__input"), "https://new-site.example");
-    await pressEnter(element(".start-page__input"));
-    await settle(1_100);
-    expect(client.recentSites.list(personal)[0]).toMatchObject({
-      origin: "https://new-site.example",
-      favicon,
+    const result = await client.rpc["browser.history.get"]({ profileId });
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        entries: [{ url: "https://example.com/some/path?q=1", typedCount: 1, visitCount: 1 }],
+        icons: [{ origin: "https://example.com" }],
+      },
     });
-  }, 20_000);
+    const readIcons = client.browserHistory.ports.icons.bind(client.browserHistory.ports);
+    const raster = deferred<Awaited<ReturnType<typeof readIcons>>>();
+    vi.spyOn(client.browserHistory.ports, "icons").mockReturnValueOnce(raster.promise);
+    await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
+    await settle(60);
+    vi.spyOn(HTMLImageElement.prototype, "naturalWidth", "get").mockReturnValue(32);
+    const mark = element('.start-tile[title="example.com"] .site-mark');
+    expect(mark.querySelector("svg")).not.toBeNull();
+    expect(mark.textContent).toBe("");
+    expect(mark.querySelector("img")).toBeNull();
+    const ref = client.browserHistory.iconRef(profileId, "https://example.com")!;
+    await act(async () => raster.resolve(await readIcons(profileId, [ref])));
+    expect(
+      element<HTMLImageElement>('.start-tile[title="example.com"] .site-mark img').getAttribute(
+        "src",
+      ),
+    ).toMatch(/^data:image\/png;base64,/u);
+  });
 
   it("m2 · Clear browsing history and a profile pick leave the keyboard in the search field", async () => {
     const personal = {
@@ -833,9 +788,10 @@ describe("the v7 web review's findings", () => {
       profileId: "bpr_00000000-0000-4000-8000-000000000001",
     };
     await mount("/?panel=browser");
-    act(() =>
-      client.recentSites.record(personal, "https://example.com/", client.recentSites.epoch),
-    );
+    await act(async () => {
+      await client.openBrowserTab({ identity: personal }, { url: "https://example.com/" });
+      await client.browserHistory.load(personal.profileId);
+    });
     if (!document.querySelector(".start-page"))
       await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
     const field = element<HTMLInputElement>(".start-page__input");

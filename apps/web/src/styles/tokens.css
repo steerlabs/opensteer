@@ -26,6 +26,15 @@
   --line: rgb(255 255 255 / 7%);
   --line-strong: rgb(255 255 255 / 12%);
   --line-hover: rgb(255 255 255 / 18%);
+  --scrollbar-thumb: rgb(var(--light) / 14%);
+  --scrim: rgb(0 0 0 / 58%);
+  --scrim-strong: rgb(0 0 0 / 72%);
+  --scrim-light: rgb(0 0 0 / 32%);
+  --mask-ink: #000;
+  /* These are drawings of macOS permission UI, not Opensteer controls. */
+  --macos-control: #4a4a4c;
+  --macos-surface: #2c2c2e;
+  --macos-blue: #0a84ff;
   --ember: #e6beb0;
   --ember-bright: #f1cabe;
   --green: #71c6a5;
@@ -69,6 +78,102 @@
   --ring-red: 0 0 0 3px color-mix(in srgb, var(--red) 9%, transparent);
   --ring-green: 0 0 0 3px color-mix(in srgb, var(--green) 10%, transparent);
 
+  /* ---- Material ----
+     Light comes from the edge, never from shadows. A surface is a fill, a
+     real 1px rim border, and one inset highlight along its top edge. There
+     are four materials and nothing in between:
+       quiet  — a whisper of fill, no edge: hover, resting rows
+       plate  — lit fill, rim and top light: buttons, cards, bubbles, fields,
+                selection. Most things.
+       float  — a plate that sits over content: composer, menus, popovers,
+                toasts, dialogs. The only material with a shadow. Floats
+                that never hold another float — menus, popovers, toasts,
+                result lists — are glass where the person allows it; a
+                blurred element is the backdrop for everything inside it,
+                so a menu opened inside a glass composer would blur nothing
+                and turn see-through. Anything that can open a menu stays
+                opaque.
+       accent — the ember, lit: the one action that matters, the person's
+                own words, send.
+     Two rules hold them together. Something set into another surface — a
+     chip in the composer, the profile in the address bar — is a segment of
+     its host: a quiet fill with no rim or light of its own, its corners
+     concentric with the host's, so the two read as one object. And a mark
+     drawn in its own colour — an avatar, a site's letter tile, the Chat
+     orb — is lit like the accent: --sheen-mark with --edge-mark, the rim a
+     shade deeper than whatever hue it carries. Dots and badges stay flat;
+     at that size an edge is noise.
+     A surface paints `background: var(--sheen) var(--fill-*)`, a border in a
+     --rim-*, and box-shadow from an --edge-* (plus --lift-float on floats).
+     Fills are plain colours so hover and press can glide; the sheen is the
+     one fixed highlight that makes them read as lit. Each edge is drawn for
+     its own fill: light rims on dark fills, a deeper rim of the same hue on
+     the accent. A theme changes the palette above and --light; every state
+     here follows. */
+  --light: 255 255 255;
+  /* What a surface stands on here: the page, until a sheet says otherwise.
+     Anything that must blend into its ground — a header, the fade behind the
+     composer, a badge's cut-out ring — paints with this. */
+  --ground: var(--bg);
+
+  --sheen: linear-gradient(rgb(var(--light) / 3.5%), rgb(var(--light) / 0%));
+  --sheen-accent: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0%));
+  --sheen-mark: linear-gradient(rgb(255 255 255 / 18%), rgb(255 255 255 / 0%) 70%);
+
+  --orb-light: color-mix(in srgb, var(--ember) 20%, var(--text-on-color));
+  --orb-core: color-mix(in srgb, var(--ember) 45%, var(--ink-on-ember));
+
+  --fill-quiet: rgb(var(--light) / 5%);
+  /* A search hit: found, not chosen. */
+  --fill-match: rgb(var(--light) / 2.6%);
+  --fill-plate: rgb(var(--light) / 5%);
+  --fill-plate-hover: rgb(var(--light) / 8%);
+  --fill-accent: var(--ember);
+  --fill-accent-hover: var(--ember-bright);
+  /* The work beside the sidebar: one step up from the ground. */
+  --fill-sheet: color-mix(in srgb, var(--bg), white 2.5%);
+  --fill-float: var(--surface-elevated);
+  --fill-float-hover: color-mix(in srgb, var(--fill-float), rgb(var(--light)) 5%);
+  /* Opaque until the person's settings allow transparency (below). */
+  --fill-glass: var(--fill-float);
+  --blur-glass: none;
+
+  /* Rims. --rim-plate is decoration: a labelled button or a card is found by
+     its words. --rim-control is a boundary a person has to find — a text
+     field, a checkbox, a switch — and holds 3:1 against the ground. */
+  --rim-plate: rgb(var(--light) / 7%);
+  --rim-control: rgb(var(--light) / 34%);
+  --rim-selected: rgb(var(--light) / 12%);
+  --rim-accent: color-mix(in srgb, var(--ember), var(--ink-on-ember) 24%);
+  --rim-attention: color-mix(in srgb, var(--ember) 26%, transparent);
+  --rim-sheet: rgb(var(--light) / 5%);
+
+  --edge-plate: inset 0 1px 0 rgb(var(--light) / 7%);
+  --edge-accent: inset 0 1px 0 rgb(255 255 255 / 50%);
+  --edge-attention: inset 0 1px 0 color-mix(in srgb, var(--ember) 30%, transparent);
+  --edge-sheet: inset 0 1px 0 rgb(var(--light) / 5%);
+  /* A mark's colour is the person's or the site's, so its rim deepens
+     whatever hue is there rather than naming one. */
+  --edge-mark: inset 0 1px 0 rgb(255 255 255 / 24%), inset 0 0 0 1px rgb(0 0 0 / 22%);
+  /* A tinted control (an attention count, a wash-filled pill) keeps its
+     tint and takes the plate's top light. */
+  --edge-tint: inset 0 1px 0 rgb(var(--light) / 10%);
+  --lift-float: 0 12px 32px -16px rgb(0 0 0 / 60%);
+  /* The colour a row's fill composites to over the page, for a badge's
+     cut-out ring that must match what it is cut from. */
+  --cutout-quiet: color-mix(in srgb, var(--bg), rgb(var(--light)) 5%);
+  --cutout-match: color-mix(in srgb, var(--bg), rgb(var(--light)) 2.6%);
+  --cutout-selected: color-mix(in srgb, var(--bg), rgb(var(--light)) 9%);
+  /* The gap between the sidebar's ground and a sheet beside it. */
+  --sheet-gutter: var(--space-6);
+
+  /* ---- Controls ----
+     30px under a mouse or trackpad; 44px wherever a finger can reach the
+     screen, touch laptops and iPads included (below). */
+  --control-height: 30px;
+  --control-height-sm: 26px;
+  --control-font: var(--text-lg);
+
   /* ---- Space ----
      Padding, margin and gap come from here. The rhythm is a 2px grid through
      24px — the dense range this UI actually lives in — and 4px steps above
@@ -97,6 +202,7 @@
   /* The document's inherited size. Prose that declares nothing lands here;
      everything else picks a step from the scale below. */
   --text-root: 15px;
+  --text-input: 16px;
 
   /* ---- Text ----
      The chrome runs in a tight band, so the steps are close together and
@@ -135,13 +241,10 @@
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Menlo, monospace;
 
   --radius-xs: 6px;
-  --radius-sm: 9px;
+  --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-full: 999px;
-
-  --shadow-raised: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 28px rgb(0 0 0 / 34%);
-  --shadow-overlay: 0 2px 6px rgb(0 0 0 / 45%), 0 24px 68px rgb(0 0 0 / 55%);
 
   /* ---- Layers ----
      One ladder for the whole app. Nothing sets a bare z-index; a new surface
@@ -171,4 +274,33 @@
   --duration-fast: 130ms;
   --duration-med: 220ms;
   --duration-slow: 380ms;
+}
+
+/* Glass only when the person has not asked for less transparency. Browsers
+   that cannot answer keep the opaque float above. */
+@media (prefers-reduced-transparency: no-preference) {
+  :root {
+    /* Dense enough that what is behind reads as colour and light, never as
+       words: a menu's own text keeps its contrast over a white page. */
+    --fill-glass: color-mix(in srgb, var(--surface-elevated) 88%, transparent);
+    --blur-glass: blur(28px) saturate(1.6);
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --rim-plate: rgb(var(--light) / 22%);
+    --rim-selected: rgb(var(--light) / 40%);
+    --rim-control: rgb(var(--light) / 55%);
+    --rim-sheet: rgb(var(--light) / 16%);
+    --edge-plate: inset 0 1px 0 rgb(var(--light) / 14%);
+  }
+}
+
+@media (any-pointer: coarse) {
+  :root {
+    --control-height: var(--touch-target);
+    --control-height-sm: var(--touch-target);
+    --control-font: var(--text-2xl);
+  }
 }

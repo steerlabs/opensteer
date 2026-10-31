@@ -1,5 +1,5 @@
 import * as browserProfileStorageStore from "./browser-profile-storage-store.js";
-import { screenPresentationInput } from "./screen-presentation.js";
+import { BrowserHistoryStore } from "./browser-history-store.js";
 import * as taskDone from "./task-done.js";
 import { drainPendingThreadStates } from "./thread-status.js";
 import * as runnerStore from "./runner-store.js";
@@ -208,6 +208,7 @@ export class OpensteerStore {
   readonly requests: RequestStore;
 
   readonly notificationState: NotificationStateStore;
+  readonly browserHistory: BrowserHistoryStore;
 
   constructor(
     database: Kysely<DatabaseSchema>,
@@ -218,6 +219,7 @@ export class OpensteerStore {
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.requests = new RequestStore(database);
     this.notificationState = new NotificationStateStore(database);
+    this.browserHistory = new BrowserHistoryStore(database);
   }
 
   get database(): Kysely<DatabaseSchema> {
@@ -814,14 +816,6 @@ export class OpensteerStore {
     return browserSessionStore.countBrowserSessionAttachments(this.#database, sessionId);
   }
 
-  async browserSurfaceBelongsToThread(input: {
-    readonly sessionId: import("@opensteer/core").BrowserSessionId;
-    readonly tabId: import("@opensteer/core").BrowserSurfaceId;
-    readonly threadId: ThreadId;
-  }): Promise<boolean> {
-    return browserSessionStore.browserSurfaceBelongsToThread(this.#database, input);
-  }
-
   async getThreadBrowserUsage(input: {
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
@@ -1403,6 +1397,7 @@ export class OpensteerStore {
     readonly before?: string;
     readonly maxBytes?: number;
     readonly maxItems?: number;
+    readonly open?: boolean;
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
   }): Promise<{
@@ -1703,7 +1698,6 @@ export class OpensteerStore {
   }
 
   async loadSteerDispatchInput(commandId: CommandRow["id"]): Promise<{
-    readonly bindingGeneration: number;
     readonly message: Message;
     readonly run: Run;
     readonly runId: RunId;
@@ -1841,10 +1835,6 @@ export class OpensteerStore {
   }
 
   /** Tool authority: the live binding and its grant. */
-  screenPresentationInput(input: Parameters<typeof screenPresentationInput>[1]) {
-    return screenPresentationInput(this.#database, input, this.#executionNow);
-  }
-
   async assertActiveGrant(
     input: Parameters<OpensteerStore["assertActiveExecutionBinding"]>[0] & {
       readonly grantId?: GrantId | undefined;

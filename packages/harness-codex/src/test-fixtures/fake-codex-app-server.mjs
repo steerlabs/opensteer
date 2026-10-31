@@ -584,12 +584,10 @@ function handleClientMethod(message) {
                 [
                   ...(threadConfig[`mcp_servers.${name}.enabled_tools`] ?? []).filter(
                     (tool) =>
-                      ((scenario !== "previous-host" && scenario !== "screen-unavailable") ||
-                        tool !== "screen_show") &&
-                      (name !== "opensteer_integrations" ||
-                        ((scenario !== "previous-host" || tool !== "computer") &&
-                          (scenario !== "mcp-missing-required-tool" ||
-                            tool !== "integration_search"))),
+                      name !== "opensteer_integrations" ||
+                      ((scenario !== "previous-host" || tool !== "computer") &&
+                        (scenario !== "mcp-missing-required-tool" ||
+                          tool !== "integration_search")),
                   ),
                   ...(scenario === "mcp-extra-tool" && name === "opensteer_integrations"
                     ? ["unexpected_tool"]
@@ -611,9 +609,6 @@ function handleClientMethod(message) {
           nextCursor: null,
         },
       });
-      break;
-    case "thread/inject_items":
-      send({ id: message.id, result: {} });
       break;
     case "turn/start":
       if (ephemeralThreads.has(message.params.threadId)) {
@@ -663,9 +658,54 @@ function handleClientMethod(message) {
         send({ method: "turn/started", params: { threadId, turn: { id: "voice-handoff" } } });
       }
       break;
+    case "thread/inject_items":
+      send({ id: message.id, result: {} });
+      break;
     case "thread/realtime/appendText":
     case "thread/realtime/appendSpeech":
       send({ id: message.id, result: {} });
+      if (scenario === "voice-agent") {
+        const specs =
+          message.params.text === "invalid"
+            ? [
+                ["unknown", {}],
+                ["show", { link: 4 }],
+                ["send_to_chat", { messages: 6 }],
+                ["show", { link: "x", extra: true }],
+              ]
+            : message.params.text === "queue"
+              ? Array.from({ length: 9 }, () => ["send_to_chat", {}])
+              : [["show", { link: "opensteer://chat" }]];
+        // The delegated speech that starts the agent's turn precedes its tool calls.
+        send({
+          method: "item/started",
+          params: {
+            threadId,
+            turnId: `voice-turn-${message.params.text}`,
+            item: {
+              id: "spoken",
+              type: "userMessage",
+              content: [
+                {
+                  type: "text",
+                  text: "<realtime_delegation>\n  <input>Book a flight &amp; hotel</input>\n  <transcript_delta>user: Book a flight &amp; hotel</transcript_delta>\n</realtime_delegation>",
+                },
+              ],
+            },
+          },
+        });
+        for (const [tool, args] of specs)
+          send({
+            id: randomUUID(),
+            method: "item/tool/call",
+            params: {
+              threadId,
+              turnId: `voice-turn-${message.params.text}`,
+              tool,
+              arguments: args,
+            },
+          });
+      }
       if (scenario === "voice-exit") process.exit(1);
       if (scenario === "voice-interaction")
         send({ id: "voice-tool", method: "item/tool/call", params: { threadId } });

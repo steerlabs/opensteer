@@ -1,6 +1,6 @@
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
-import { VoiceDock, VoiceMic, useVoice } from "../voice/controls.js";
+import { VoiceDock, VoiceMic, useVoice, useVoiceAvailable } from "../voice/controls.js";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationBar, DictationMic, DictationStatus } from "../dictation/controls.js";
@@ -42,6 +42,7 @@ import {
   Alert,
   Pressable,
   StyleSheet,
+  TextInput,
   type TextInputInstance,
   useWindowDimensions,
   View,
@@ -54,17 +55,19 @@ import type {
   ThreadDraftStore,
 } from "../client/thread-drafts.js";
 import { Symbol } from "../ui/symbol.js";
-import { TextInput } from "../ui/text-input.js";
-import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
+import {
+  color,
+  material,
+  controlFontScaleLimit,
+  radius,
+  space,
+  touchTarget,
+  type,
+} from "../theme.js";
 import { appear, enter, exit } from "../ui/motion.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
-import {
-  ComposerBar,
-  ComposerCircleFace,
-  composerControlStyle,
-  composerLaneHeight,
-} from "./composer-bar.js";
+import { ComposerBar, ComposerGlyph, composerLaneHeight } from "./composer-bar.js";
 import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import { composerView } from "./composer-model.js";
 import { ComposerPills } from "./composer-pills.js";
@@ -272,6 +275,7 @@ export function Composer(props: {
   // arithmetic over the state above — including the rule that keeps one message
   // in flight at a time, because a second claim would be a second key for a
   // Thread that has not answered the first.
+  const voiceReady = useVoiceAvailable() && props.voice === true;
   const view = composerView({
     attachments: staged.items.length,
     attachmentsReady,
@@ -285,6 +289,7 @@ export function Composer(props: {
     sending,
     text: displayedText,
     textHidden,
+    voice: voiceReady,
   });
   const canSend =
     view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
@@ -851,11 +856,9 @@ export function Composer(props: {
                     onPresent={hold}
                     onSettle={settle}
                     options={menuOptions}
-                    style={composerControlStyle}
                   >
-                    <ComposerCircleFace icon="plus" />
+                    <ComposerGlyph icon="plus" />
                   </NativeMenu>
-                  {props.voice === true ? <VoiceMic disabled={readOnly || textHidden} /> : null}
                 </View>
               ),
             })}
@@ -925,8 +928,10 @@ export function Composer(props: {
                     />
                   ) : null}
                   {!dictating ? (
-                    <View style={composerControlStyle}>
-                      {view.action === "stop" && !dictating ? (
+                    <View>
+                      {view.action === "voice" ? (
+                        <VoiceMic disabled={readOnly || textHidden} face="disc" />
+                      ) : view.action === "stop" ? (
                         <ComposerAction
                           busy={stopping || props.runStopping}
                           disabled={stopping || props.runStopping || !props.canRespond}
@@ -1129,13 +1134,11 @@ const styles = StyleSheet.create({
   dock: { gap: space[8] },
   failure: { paddingHorizontal: space[12] },
   pending: {
-    backgroundColor: color.surface,
-    borderColor: color.line,
+    ...material.plate,
     borderRadius: radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
     gap: space[4],
-    paddingHorizontal: space[10],
-    paddingVertical: space[8],
+    paddingHorizontal: space[10] - (1 - StyleSheet.hairlineWidth),
+    paddingVertical: space[8] - (1 - StyleSheet.hairlineWidth),
   },
   pendingFoot: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[12] },
   pendingRetry: { justifyContent: "center", minHeight: touchTarget },
@@ -1157,15 +1160,15 @@ const styles = StyleSheet.create({
   },
   lane: { flex: 1, justifyContent: "center", minHeight: composerLaneHeight },
   page: {
+    ...material.control,
     alignItems: "center",
     alignSelf: "flex-start",
-    backgroundColor: color.surfaceRaised,
     borderRadius: radius.full,
     flexDirection: "row",
     gap: space[6],
     maxWidth: 240,
     minHeight: 26,
-    paddingLeft: space[8],
+    paddingLeft: space[8] - 1,
   },
   pageRemove: { alignItems: "center", height: 26, justifyContent: "center", width: 26 },
   pageTitle: { flexShrink: 1 },

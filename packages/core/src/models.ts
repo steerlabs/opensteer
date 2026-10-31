@@ -302,12 +302,12 @@ export const RunnerCapabilitySchema = z.enum([
   "filesystem",
   "model-server-discovery-v1",
   "voice-v1",
+  // Runs a voice call's own agent, which acts through the calling device.
+  "voice-agent-v1",
   "network-egress",
   "native-session-continuation-v1",
   // Carries `requesterTimeZone` in every Run's context.
   "requester-time-zone-v1",
-  // Projects input Message IDs and viewed context, and accepts the screen_show contract.
-  "screen-show-v1",
   // A message steered into a Run and accepted by its engine is answered in that
   // Run, as a turn of its own if the engine was already answering.
   "steer-answer-v1",

@@ -21,6 +21,7 @@ export function browserViewerMessage(
 ): BrowserServerMessage {
   if (message.type === "browser.snapshot") {
     const {
+      navigationAttributionVersion: _navigationAttributionVersion,
       editingVersion: _editingVersion,
       clipboard: _clipboard,
       passkeys: _passkeys,

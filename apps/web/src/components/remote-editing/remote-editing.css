@@ -7,7 +7,7 @@
   opacity: 0.01;
   resize: none;
   overflow: hidden;
-  font-size: 16px;
+  font-size: var(--text-input);
   pointer-events: none;
   z-index: 1;
 }
@@ -15,10 +15,12 @@
   position: absolute;
   z-index: 4;
   max-width: 90%;
-  padding: 3px 6px;
-  color: var(--text, #222);
-  background: var(--surface, #fff);
+  padding: 2px 5px 3px;
+  color: var(--text);
+  background: var(--sheen) var(--surface-elevated);
+  border: 1px solid var(--rim-plate);
   border-bottom: 2px solid currentColor;
+  box-shadow: var(--edge-plate), var(--lift-float);
   white-space: pre-wrap;
   pointer-events: none;
 }
@@ -29,8 +31,9 @@
   bottom: 12px;
   max-width: calc(100% - 24px);
   padding: 6px 10px;
-  color: var(--text, #222);
-  background: var(--surface, #fff);
-  border: 1px solid var(--border, #ccc);
-  border-radius: 6px;
+  color: var(--text);
+  background: var(--sheen) var(--surface-elevated);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-xs);
+  box-shadow: var(--edge-plate), var(--lift-float);
 }

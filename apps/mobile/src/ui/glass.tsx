@@ -1,7 +1,7 @@
 import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from "expo-glass-effect";
 import type { ReactNode } from "react";
 import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
-import { color, radius } from "../theme.js";
+import { material, radius } from "../theme.js";
 
 /**
  * Glass, and the opaque surface that stands in for it.
@@ -9,9 +9,8 @@ import { color, radius } from "../theme.js";
  * The fallback is not a nicety: Liquid Glass exists on iOS 26 and nowhere
  * else, so iOS 18 and every Android build are half the platforms this app
  * ships to and they need a real answer rather than a degraded one. The
- * fallback is `surfaceElevated` with a hairline — the same shape the rest of
- * the app draws a control's edge with — so a composer or a pill reads as the
- * same object on both.
+ * fallback is the opaque float material, with the same rim and top light as
+ * the rest of the chrome. It never samples the content beneath it.
  *
  * Glass is chrome and never holds primary content. It belongs to a composer's
  * capsule, a header's capsule, a jump-to-latest pill: things that float over
@@ -24,12 +23,6 @@ export type GlassShape = "capsule" | "rounded";
 
 export function GlassSurface(props: {
   readonly children: ReactNode;
-  /**
-   * The ground to use where there is no glass. `elevated` is the floating
-   * chrome's own step above the page; `surface` is the quieter one, for glass
-   * that sits inside a group rather than over the transcript.
-   */
-  readonly fallback?: "elevated" | "surface";
   /** Glass that deforms under a touch. Only for chrome a finger acts on. */
   readonly interactive?: boolean;
   readonly radius?: number;
@@ -65,9 +58,10 @@ export function GlassSurface(props: {
     <View
       style={[
         styles.fallback,
-        props.fallback === "surface" ? styles.fallbackSurface : styles.fallbackElevated,
         { borderRadius: corner },
         props.style,
+        // Callers may lay out chrome, but cannot make its ground translucent.
+        { backgroundColor: material.float.backgroundColor },
       ]}
     >
       {props.children}
@@ -97,7 +91,5 @@ export function useLiquidGlass(): boolean {
 }
 
 const styles = StyleSheet.create({
-  fallback: { borderWidth: StyleSheet.hairlineWidth, overflow: "hidden" },
-  fallbackElevated: { backgroundColor: color.surfaceElevated, borderColor: color.lineStrong },
-  fallbackSurface: { backgroundColor: color.surface, borderColor: color.line },
+  fallback: { ...material.float, overflow: "hidden" },
 });

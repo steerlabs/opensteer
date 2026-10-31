@@ -7,7 +7,7 @@ import {
 } from "@opensteer/core";
 import { useMemo, useState, type ReactNode } from "react";
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import { color, radius, space, touchTarget } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import { AppText, Field } from "./primitives.js";
 import { WorkspaceIconGlyph, WorkspaceMark } from "./workspace-mark.js";
 import { Symbol } from "./symbol.js";
@@ -91,7 +91,10 @@ export function IconChoices(props: {
         }}
         disabled={props.disabled}
         onPress={() => props.onChange(null)}
-        style={styles.default}
+        style={[
+          styles.default,
+          (props.value === null || (props.task && props.value === "document")) && styles.selected,
+        ]}
       >
         {props.task ? (
           <WorkspaceIconGlyph color={color.muted} icon="document" size={20} />
@@ -167,7 +170,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: space[12],
     minHeight: target,
-    paddingHorizontal: space[8],
+    paddingHorizontal: space[8] - 1,
   },
   grid: { flex: 1, minHeight: 0, gap: space[12] },
   inline: { gap: space[8] },
@@ -178,10 +181,10 @@ const styles = StyleSheet.create({
     height: 52,
     margin: space[2],
     borderRadius: radius.md,
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: "transparent",
   },
-  selected: { backgroundColor: color.surfaceRaised, borderColor: color.ember },
+  selected: { ...material.selected },
   disabled: { opacity: 0.6 },
   icons: { paddingBottom: space[12] },
 });

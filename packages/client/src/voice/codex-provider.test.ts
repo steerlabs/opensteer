@@ -3,7 +3,7 @@ import type { HostApiClient } from "@opensteer/protocol";
 import { voiceRenewIntervalMs } from "@opensteer/protocol/voice";
 import type { VoiceCallEvent, VoiceMediaPort } from "./contract.js";
 import { createCodexVoiceProvider } from "./codex-provider.js";
-import { voiceTestId } from "./voice.test-support.js";
+import { settle, voiceTestId } from "./voice.test-support.js";
 
 class FakePeer extends EventTarget {
   iceGatheringState = "complete";
@@ -50,7 +50,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function setup() {
+function setup(agent = false) {
   const peer = new FakePeer();
   const track = { enabled: true, stop: vi.fn() };
   const stream = {
@@ -81,6 +81,7 @@ function setup() {
   const provider = createCodexVoiceProvider({
     media,
     rpc,
+    agent,
     environmentId: "environment",
     harnessInstanceId: "account",
     createId: () => voiceTestId,
@@ -92,6 +93,7 @@ function setup() {
     stopPlayback,
     media,
     rpc,
+    agent,
     events,
     abort,
     open: () => provider.open({ signal: abort.signal, onEvent: (event) => events.push(event) }),
@@ -189,10 +191,8 @@ describe("Codex voice provider", () => {
     const f = setup();
     f.peer.iceGatheringState = "gathering";
     const opening = f.open();
-    await vi.waitFor(
-      () => expect(f.peer.setLocalDescription, "local offer was never set").toHaveBeenCalled(),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(f.peer.setLocalDescription, "local offer was never set").toHaveBeenCalled();
     expect(f.rpc["voice.start"]).not.toHaveBeenCalled();
     f.peer.localDescription = { type: "offer", sdp: "with candidates" };
     await vi.advanceTimersByTimeAsync(3_000);
@@ -203,10 +203,8 @@ describe("Codex voice provider", () => {
     const g = setup();
     g.peer.iceGatheringState = "gathering";
     const second = g.open();
-    await vi.waitFor(
-      () => expect(g.peer.setLocalDescription, "second offer was never set").toHaveBeenCalled(),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(g.peer.setLocalDescription, "second offer was never set").toHaveBeenCalled();
     g.peer.iceGatheringState = "complete";
     g.peer.dispatchEvent(new Event("icegatheringstatechange"));
     await (await second).close();
@@ -257,10 +255,8 @@ describe("Codex voice provider", () => {
     );
     const opening = f.open();
     const rejected = expect(opening).rejects.toMatchObject({ failure: "connection-failed" });
-    await vi.waitFor(
-      () => expect(f.rpc["voice.start"], "start was never submitted").toHaveBeenCalled(),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(f.rpc["voice.start"], "start was never submitted").toHaveBeenCalled();
     f.abort.abort();
     await rejected;
     expect(f.track.stop).toHaveBeenCalledTimes(1);
@@ -369,10 +365,8 @@ describe("Codex voice provider", () => {
     f.peer.iceGatheringState = "gathering";
     const opening = f.open();
     const rejected = expect(opening).rejects.toMatchObject({ failure: "connection-failed" });
-    await vi.waitFor(
-      () => expect(f.peer.setLocalDescription, "offer was never set").toHaveBeenCalled(),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(f.peer.setLocalDescription, "offer was never set").toHaveBeenCalled();
     f.abort.abort();
     await rejected;
     expect(f.rpc["voice.stop"]).toHaveBeenCalledWith({
@@ -401,4 +395,23 @@ describe("Codex voice provider", () => {
     expect(f.rpc["voice.stop"]).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
+});
+
+it.each([false, true])("negotiates agent support only when advertised (%s)", async (advertised) => {
+  const f = setup(advertised);
+  f.rpc["voice.start"].mockResolvedValue({
+    ok: true,
+    data: { answer: "answer", agent: advertised },
+  });
+  const call = await f.open();
+  const sent = f.rpc["voice.start"].mock.calls[0]![0];
+  expect("agent" in sent).toBe(advertised);
+  expect(call.agent).toBe(advertised);
+  await call.close();
+});
+it("falls back when the Runner does not accept agent mode", async () => {
+  const f = setup(true);
+  const call = await f.open();
+  expect(call.agent).toBe(false);
+  await call.close();
 });

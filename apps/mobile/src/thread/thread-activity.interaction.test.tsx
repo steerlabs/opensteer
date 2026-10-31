@@ -18,6 +18,7 @@ import { WorkingIndicator } from "./transcript.js";
 // The indicator is drawn by the real component with DOM hosts; the platform
 // primitives and animation drivers are outside this check.
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Pressable: ({ children }: { children?: ReactNode }) => <button>{children}</button>,
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
@@ -26,6 +27,7 @@ vi.mock("react-native-reanimated", () => ({
   default: {
     View: ({ children }: { children?: ReactNode }) => <div data-working>{children}</div>,
   },
+  LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
 vi.mock("../ui/motion.js", () => ({ appear: undefined, exit: undefined }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
@@ -71,6 +73,7 @@ const idleComposer: ComposerState = {
   sending: false,
   text: "",
   textHidden: false,
+  voice: false,
 };
 
 describe("a Thread's activity on the phone", () => {

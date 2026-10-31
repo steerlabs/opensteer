@@ -417,6 +417,201 @@ describe("computer use over the desktop bridge", () => {
     expect(computerUse.ownerViewVersion()).toBeUndefined();
   });
 
+  it.each([
+    "accessibility",
+    "screenRecording",
+    "ownerViewVersion",
+    "ownerInputVersion",
+    "computerUseVersion",
+  ] as const)("announces an actual %s change from a periodic readiness check", async (field) => {
+    const bridge = await startFakeBridge();
+    teardown.push(() => bridge.close());
+    let now = 1_000;
+    const computerUse = new ComputerUseHandler({
+      bridge: { token: bridgeToken, url: bridge.url },
+      now: () => now,
+    });
+    teardown.push(() => computerUse.close());
+    const ready = {
+      permissions: { accessibility: "granted", screenRecording: "granted" },
+      computerUseVersion: 2,
+      ownerViewVersion: 3,
+      ownerInputVersion: 2,
+    };
+    bridge.answer("permissions.get", () => ({ result: ready }));
+    const changed = vi.fn();
+    computerUse.onReadinessChanged(changed);
+    await computerUse.permissions();
+    now += 6_000;
+    await computerUse.permissions();
+    expect(changed).not.toHaveBeenCalled();
+    const result =
+      field === "accessibility" || field === "screenRecording"
+        ? { ...ready, permissions: { ...ready.permissions, [field]: "denied" } }
+        : { ...ready, [field]: undefined };
+    bridge.answer("permissions.get", () => ({ result }));
+    now += 6_000;
+    if (field === "computerUseVersion")
+      await expect(computerUse.permissions()).rejects.toMatchObject({
+        code: "incompatible-version",
+      });
+    else await computerUse.permissions();
+    expect(changed.mock.calls).toEqual([["readiness-changed"]]);
+  });
+
+  it.each([
+    ["status", "reply"],
+    ["operation", "reply"],
+    ["status", "failure"],
+    ["operation", "failure"],
+    ["background", "failure"],
+  ] as const)(
+    "does not restore or invalidate from a %s probe's late %s after a grants refresh",
+    async (path, outcome) => {
+      const bridge = await startFakeBridge();
+      teardown.push(() => bridge.close());
+      let now = 1_000;
+      const computerUse = new ComputerUseHandler({
+        bridge: { token: bridgeToken, url: bridge.url },
+        now: () => now,
+      });
+      teardown.push(() => computerUse.close());
+      const ready = {
+        permissions: { accessibility: "granted", screenRecording: "granted" },
+        computerUseVersion: 2,
+        ownerViewVersion: 3,
+        ownerInputVersion: 2,
+      };
+      bridge.answer("permissions.get", () => ({ result: ready }));
+      await computerUse.permissions();
+      now += 6_000;
+      let release: (() => void) | undefined;
+      bridge.answer("permissions.get", (request, socket) => {
+        release = () =>
+          socket.send(
+            JSON.stringify({
+              kind: "response",
+              id: request.id,
+              ...(outcome === "failure"
+                ? { error: { code: "failed", message: "Obsolete permissions check failed" } }
+                : {
+                    result: {
+                      ...ready,
+                      permissions: { accessibility: "denied", screenRecording: "denied" },
+                    },
+                  }),
+            }),
+          );
+        return "hold";
+      });
+      const changed = vi.fn();
+      computerUse.onReadinessChanged(changed);
+      const stale =
+        path === "background"
+          ? computerUse.revalidateReadiness()
+          : path === "status"
+            ? computerUse.permissions()
+            : computerUse.run(
+                { ...fence, ...frame("stale-probe") },
+                new AbortController().signal,
+                now,
+              );
+      await vi.waitFor(() =>
+        expect(release, "The first permissions probe was not held").toBeDefined(),
+      );
+      let hinted = false;
+      computerUse.onGrantsChanged(() => {
+        hinted = true;
+      });
+      bridge.emit({ kind: "event", event: "grants.changed" });
+      await vi.waitFor(() => expect(hinted, "The grants refresh was not received").toBe(true));
+      bridge.answer("permissions.get", () => ({ result: ready }));
+      await computerUse.permissions();
+      const reads = bridge.requests.length;
+      release!();
+      if (outcome === "failure" && path !== "background")
+        await expect(stale).rejects.toMatchObject({ code: "failed" });
+      else await stale;
+      expect(changed).not.toHaveBeenCalled();
+      await expect(computerUse.permissions()).resolves.toEqual(ready.permissions);
+      expect(bridge.requests).toHaveLength(reads);
+      expect(computerUse.ownerViewVersion()).toBe(3);
+    },
+  );
+
+  it.each(["expired", "cancelled"] as const)(
+    "does not invalidate media for an %s caller's permissions request",
+    async (state) => {
+      const bridge = await startFakeBridge();
+      teardown.push(() => bridge.close());
+      const now = 1_000_000;
+      const computerUse = new ComputerUseHandler({
+        bridge: { token: bridgeToken, url: bridge.url },
+        now: () => now,
+      });
+      teardown.push(() => computerUse.close());
+      await computerUse.permissions();
+      const changed = vi.fn();
+      computerUse.onReadinessChanged(changed);
+      const controller = new AbortController();
+      if (state === "cancelled") controller.abort();
+      const input = { ...fence, ...frame("expired-permissions") };
+      await expect(
+        computerUse.run(
+          input,
+          controller.signal,
+          state === "expired" ? now - input.timeoutMs : now,
+        ),
+      ).rejects.toMatchObject({ code: "failed" });
+      expect(changed).not.toHaveBeenCalled();
+      expect(computerUse.ownerViewVersion()).toBe(3);
+    },
+  );
+
+  it("keeps window sharing available when focus refreshes grants during Passwords inspection", async () => {
+    const fixture = await setup({
+      withProvider: true,
+      passwords: true,
+      probe: () => ({
+        result: {
+          permissions: { accessibility: "granted", screenRecording: "granted" },
+          computerUseVersion: 2,
+          ownerViewVersion: 3,
+          ownerInputVersion: 2,
+        },
+      }),
+    });
+    const computerUse = fixture.computerUse;
+    if (!computerUse) throw Error("Missing fixture computer use");
+    let release: (() => void) | undefined;
+    fixture.bridge.answer("passwords.capabilities", (request, socket) => {
+      release = () =>
+        socket.send(JSON.stringify({ kind: "response", id: request.id, result: { authority: 1 } }));
+      return "hold";
+    });
+    await vi.waitFor(() => expect(release, "The inspection never reached Passwords").toBeDefined());
+    let hinted = false;
+    computerUse.onGrantsChanged(() => {
+      hinted = true;
+    });
+    fixture.bridge.emit({ kind: "event", event: "grants.changed" });
+    await vi.waitFor(() => expect(hinted).toBe(true));
+    expect(computerUse.ownerViewVersion()).toBe(3);
+    fixture.bridge.answer("passwords.capabilities", () => ({ result: { authority: 1 } }));
+    release!();
+    await vi.waitFor(() =>
+      expect(
+        statuses(fixture.events).length,
+        "The held inspection never published status",
+      ).toBeGreaterThan(0),
+    );
+    expect(
+      statuses(fixture.events).every(
+        (status) => status.ownerViewVersion === 3 && status.displayAvailable === true,
+      ),
+    ).toBe(true);
+  });
+
   it("sends window work to the desktop while no helper has reported support, so real work can install it", async () => {
     const fixture = await setup({
       withProvider: true,
@@ -1845,6 +2040,7 @@ async function setup(
       | Omit<HostIntegrationsComputerAppWindows, keyof typeof fence | "module">,
   ): Promise<void>;
   readonly handler: ComputerAppModuleHandler;
+  readonly computerUse: ComputerUseHandler | undefined;
   /** Supersedes the attached stream the way a reconnect does. */
   openStream(): readonly IntegrationsModuleEvent[];
   settled(count: number): Promise<void>;
@@ -1895,6 +2091,7 @@ async function setup(
     bridge,
     events,
     logs,
+    computerUse,
     handle: async (message) =>
       await handler.handleFrame(Buffer.from(JSON.stringify({ ...fence, ...message })), false),
     handler,

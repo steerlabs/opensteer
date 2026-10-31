@@ -24,8 +24,7 @@ import {
 import { createMobileClipboardPort } from "../../modules/remote-text-input/src/clipboard.js";
 import { AppText } from "../ui/primitives.js";
 import { usePaneGeometry } from "../ui/pane.js";
-import { holdRemoteEditing, interact } from "../voice/interaction.js";
-import { color } from "../theme.js";
+import { material } from "../theme.js";
 
 const emptyEditing: DisplayEditingSnapshot = { context: null, receipt: null };
 const getEmptyEditing = () => emptyEditing;
@@ -70,7 +69,6 @@ export function DisplayControls({
   );
   const context = snapshot.display?.generation === picture?.generation ? editing.context : null;
   const [typing, setTyping] = useState(false);
-  useLayoutEffect(() => (held && typing ? holdRemoteEditing() : undefined), [held, typing]);
   const [receipt, setReceipt] = useState<string | null>(null);
   useEffect(() => setReceipt(null), [snapshot.input, snapshot.display?.generation]);
   const proxy = useRef<NativeEditingProxyHandle>(null);
@@ -189,7 +187,6 @@ export function DisplayControls({
     const rawY = (event.nativeEvent.locationY - (height - h) / 2) / h;
     if (phase === "down") {
       if (rawX < 0 || rawX > 1 || rawY < 0 || rawY > 1 || stroke.current) return;
-      interact();
       proxy.current?.interrupt();
       stroke.current = {
         generation: picture.generation,
@@ -253,10 +250,7 @@ export function DisplayControls({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Keyboard"
-            onPress={() => {
-              interact();
-              setTyping(true);
-            }}
+            onPress={() => setTyping(true)}
           >
             <AppText>Keyboard</AppText>
           </Pressable>
@@ -296,13 +290,13 @@ export function DisplayControls({
 }
 const styles = StyleSheet.create({
   controls: {
+    ...material.float,
     position: "absolute",
     bottom: 12,
     left: 12,
     right: 12,
     padding: 12,
     gap: 8,
-    backgroundColor: color.surfaceElevated,
     borderRadius: 12,
   },
   keyboard: { minHeight: 44, flexDirection: "row", alignItems: "center" },

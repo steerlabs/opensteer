@@ -54,6 +54,7 @@ import {
   Keyboard,
   Pressable,
   StyleSheet,
+  TextInput,
   View,
 } from "react-native";
 import {
@@ -64,7 +65,7 @@ import {
 import { operationDetail } from "../client/mobile-client.js";
 import {
   color,
-  controlBorderWidth,
+  material,
   controlFontScaleLimit,
   radius,
   space,
@@ -84,7 +85,6 @@ import { Sheet } from "../ui/sheet.js";
 import { IntegrationConnectSheet } from "./integration-connect-sheet.js";
 import { InstallReview } from "./integration-install-review.js";
 import { Symbol } from "../ui/symbol.js";
-import { TextInput } from "../ui/text-input.js";
 import { requestTitle, requestTitleLine } from "./docked-requests.js";
 import {
   nextRequestSubmission,
@@ -123,9 +123,8 @@ const passwordSignInDeclineId = "password-sign-in-decline";
  *
  * It sits above the bar rather than inside a frame drawn around both, because
  * the bar is one shape with one job and a question is a different object that
- * happens to have arrived. The ember edge is what ties them together: it is the
- * only vertical rule in the app, it points down at the field that answers, and
- * it costs the card no width.
+ * happens to have arrived. An ember rim and top light
+ * distinguish the question from the neutral cards around it.
  *
  * A successful dispatch only means the Host admitted the answer; the Runner
  * may still fail to take it and leave the same Request pending. So the card
@@ -459,7 +458,6 @@ export function RequestCard(props: {
   const askedBy = props.subagentTitle ? `Asked by subagent ${props.subagentTitle}` : null;
   return (
     <View style={[styles.card, props.highlighted && styles.cardHighlighted]}>
-      <View style={styles.edge} />
       <View style={styles.body}>
         <Pressable
           accessibilityLabel={`${review} request: ${requestTitleLine(request)}`}
@@ -1659,30 +1657,27 @@ const indicatorSize = 22;
 const styles = StyleSheet.create({
   body: { flex: 1, gap: space[6], paddingHorizontal: space[12], paddingVertical: space[10] },
   card: {
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.line,
+    ...material.attention,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     overflow: "hidden",
   },
-  cardHighlighted: { backgroundColor: color.emberWash, borderColor: color.emberLine },
-  // Three points, not a hairline: this is the one ember rule in the app and at
-  // a third of a point a 22% tint on near-black is not a line anyone sees.
-  edge: { backgroundColor: color.ember, width: 3 },
+  cardHighlighted: { ...material.attention, backgroundColor: material.selected.backgroundColor },
   checkbox: {
+    ...material.control,
     alignItems: "center",
-    borderColor: color.lineControl,
     borderRadius: radius.xs,
-    borderWidth: 2,
     height: indicatorSize,
     justifyContent: "center",
     // Centres the box on the label's first line, however many lines follow.
     marginTop: (type.body.lineHeight - indicatorSize) / 2,
     width: indicatorSize,
   },
-  checkboxOn: { backgroundColor: color.ember, borderColor: color.ember },
+  checkboxOn: { ...material.accent },
   choice: {
+    borderColor: "transparent",
+    borderRadius: radius.sm,
+    borderWidth: 1,
     alignItems: "flex-start",
     flexDirection: "row",
     gap: space[12],
@@ -1690,8 +1685,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[14],
     paddingVertical: space[10],
   },
-  choicePressed: { backgroundColor: color.surfacePressed },
-  choiceSelected: { backgroundColor: color.emberWash },
+  choicePressed: { ...material.quiet },
+  choiceSelected: { ...material.selected },
   choices: { gap: space[8] },
   disabled: { opacity: 0.45 },
   field: { gap: space[6] },
@@ -1702,11 +1697,9 @@ const styles = StyleSheet.create({
   form: { gap: space[24] },
   highRisk: { color: color.red },
   input: {
+    ...material.control,
     maxHeight: 200,
-    backgroundColor: color.surfaceRaised,
-    borderColor: color.lineControl,
     borderRadius: radius.sm,
-    borderWidth: controlBorderWidth,
     color: color.text,
     marginTop: space[2],
     minHeight: touchTarget,
@@ -1732,20 +1725,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[14],
     paddingVertical: space[12],
   },
-  optionRowPressed: { backgroundColor: color.surfacePressed },
+  optionRowPressed: { ...material.quiet },
   optionText: { flex: 1, gap: space[2] },
   radio: {
+    ...material.control,
     alignItems: "center",
-    borderColor: color.lineControl,
     borderRadius: radius.full,
-    borderWidth: 2,
     height: indicatorSize,
     justifyContent: "center",
     marginTop: (type.body.lineHeight - indicatorSize) / 2,
     width: indicatorSize,
   },
-  radioDot: { backgroundColor: color.ember, borderRadius: radius.full, height: 10, width: 10 },
-  radioOn: { borderColor: color.ember },
+  radioDot: { backgroundColor: color.inkOnEmber, borderRadius: radius.full, height: 10, width: 10 },
+  radioOn: { ...material.accent },
   reviewPressed: { opacity: 0.68 },
   riskBadge: {
     alignItems: "center",
@@ -1767,10 +1759,8 @@ const styles = StyleSheet.create({
   signInLine: { alignItems: "center", flexDirection: "row", gap: space[8] },
   signInLineText: { flexShrink: 1 },
   signInStatus: {
-    backgroundColor: color.surfaceRaised,
-    borderColor: color.line,
+    ...material.plate,
     borderRadius: radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
     gap: space[4],
     paddingHorizontal: space[12],
     paddingVertical: space[10],

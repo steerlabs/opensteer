@@ -94,10 +94,12 @@
 }
 
 .input-surface--action {
-  background: var(--surface-elevated);
-  border: 1px solid var(--ember-line);
+  /* What the agent is asking is read, so the card is opaque; it floats at
+     the foot of the transcript with the ember catching its top edge. */
+  border: 1px solid var(--rim-attention);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-raised);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-attention), var(--lift-float);
   overflow: clip;
   animation: rise-in var(--duration-med) var(--ease-out);
   transition:
@@ -105,38 +107,24 @@
     box-shadow var(--duration-fast) var(--ease-out);
 }
 
-.input-surface--action:focus-within {
-  box-shadow: var(--shadow-raised), var(--ring-ember);
-}
-
 .input-surface--medium {
   border-color: var(--amber-line);
-}
-
-.input-surface--medium:focus-within {
-  box-shadow: var(--shadow-raised), var(--ring-amber);
 }
 
 .input-surface--high {
   border-color: var(--red-line);
 }
 
-.input-surface--high:focus-within {
-  box-shadow: var(--shadow-raised), var(--ring-red);
-}
-
 /* The docked composer sheds its own frame; a hairline divider separates it. */
 .input-surface--action .composer {
   max-width: none;
   margin: 0;
-  background: transparent;
   border: 0;
   border-top: 1px solid var(--line);
   border-radius: 0;
-  box-shadow: none;
-}
-
-.input-surface--action .composer:focus-within {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   box-shadow: none;
 }
 
@@ -216,22 +204,23 @@
   display: flex;
   align-items: center;
   gap: var(--space-10);
-  min-height: 40px;
+  min-height: calc(var(--control-height) + var(--space-8));
   padding: 0 var(--space-14) 0 var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate);
   color: var(--text-soft);
   font-size: var(--text-md);
   text-align: left;
   transition:
-    background var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
 }
 
 .request-row:hover {
-  border-color: var(--ember-line);
-  background: var(--surface-hover);
+  border-color: var(--rim-attention);
+  background-color: var(--fill-float-hover);
   color: var(--text);
 }
 
@@ -403,9 +392,9 @@
 
 .action-row:hover:not(:disabled),
 .action-row:focus-visible {
-  border-color: var(--line);
-  background: var(--surface-hover);
+  border-color: transparent;
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .action-row:disabled {
@@ -418,9 +407,10 @@
 }
 
 .action-row--selected {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
   color: var(--text);
+  box-shadow: var(--edge-plate);
 }
 
 .action-row__key {
@@ -508,7 +498,7 @@ label.action-row input {
 }
 
 .action-advanced {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -528,7 +518,7 @@ label.action-row input {
   padding: var(--space-8) calc(var(--space-20) + env(safe-area-inset-right, 0px))
     calc(var(--space-18) + env(safe-area-inset-bottom, 0px))
     calc(var(--space-20) + env(safe-area-inset-left, 0px));
-  background: linear-gradient(to bottom, transparent, var(--bg) 38%);
+  background: linear-gradient(to bottom, transparent, var(--ground) 38%);
 }
 
 /* The usage-limit line, under the composer it belongs to and at its measure:
@@ -572,16 +562,16 @@ label.action-row input {
   display: grid;
   flex: none;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
   margin-left: auto;
   border-radius: var(--radius-full);
   color: var(--muted-dim);
 }
 
 .usage-notice__dismiss:hover {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .usage-notice__dismiss svg {
@@ -589,336 +579,25 @@ label.action-row input {
   height: 13px;
 }
 
-@media (hover: none) {
+@media (any-pointer: coarse) {
   .usage-notice__dismiss {
     width: var(--touch-target);
     height: var(--touch-target);
   }
 }
 
-/* ---- Queued messages: the tray on the composer ----
-
-   What waits for the current turn to end, docked on the composer and tucked
-   under its top edge so the two read as one dock. Each message is its own
-   card, numbered in the order Runs take them; the next one's number is
-   filled in. The number becomes a grip under the pointer, and a card's
-   actions show on hover and focus. Cards only ever move by transform. */
-
-.queue-tray {
-  position: relative;
-  max-width: var(--composer-max-width);
-  margin: 0 auto calc(var(--space-12) * -1);
-  padding: 0 var(--space-6) calc(var(--space-12) + var(--space-6));
-  border: 1px solid var(--line);
-  border-bottom: 0;
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  background: var(--surface);
-  animation: rise-in var(--duration-med) var(--ease-out);
-}
-
-.queue-tray__head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  min-height: 32px;
-  padding: 0 var(--space-4) 0 var(--space-10);
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
-.queue-tray__count {
-  color: var(--text-soft);
-  font-variant-numeric: tabular-nums;
-}
-
-.queue-tray__label--paused {
-  color: var(--amber-text);
-}
-
-.queue-tray__paused-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-  background: var(--amber);
-}
-
-.queue-tray__fold {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-xs);
-  color: var(--muted);
-  transform: rotate(180deg);
-}
-
-.queue-tray__fold svg {
-  width: 13px;
-  height: 13px;
-}
-
-.queue-tray__fold:hover {
-  background: var(--surface-hover);
-  color: var(--text-soft);
-}
-
-.queue-tray__resume {
-  margin-left: auto;
-}
-
-.queue-tray__list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.queue-card {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: var(--space-10);
-  min-height: 36px;
-  padding: 0 var(--space-4) 0 var(--space-8);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-elevated);
-  color: var(--text-soft);
-  font-size: var(--text-xl);
-  outline: none;
-  user-select: none;
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.queue-card:hover,
-.queue-card:focus-within {
-  border-color: var(--line-strong);
-  color: var(--text);
-}
-
-.queue-card:focus-visible {
-  border-color: var(--ember-line);
-  box-shadow: var(--ring-ember);
-}
-
-.queue-card--busy {
-  opacity: 0.6;
-}
-
-.queue-card__ord {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border: 1px solid var(--line-hover);
-  border-radius: var(--radius-full);
-  color: var(--muted);
-  font-size: var(--text-2xs);
-  font-variant-numeric: tabular-nums;
-  touch-action: none;
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.queue-card--next .queue-card__ord {
-  border-color: transparent;
-  background: var(--text);
-  color: var(--surface);
-  font-weight: var(--weight-strong);
-}
-
-.queue-card__grip {
-  display: none;
-  width: 15px;
-  height: 15px;
-}
-
-/* Under the pointer, a card that can move trades its number for a grip. */
-.queue-card--movable:hover .queue-card__ord,
-.queue-card--lifted .queue-card__ord {
-  border-color: transparent;
-  background: transparent;
-  color: var(--text-soft);
-  cursor: grab;
-}
-
-.queue-card--movable:hover .queue-card__num,
-.queue-card--lifted .queue-card__num {
-  display: none;
-}
-
-.queue-card--movable:hover .queue-card__grip,
-.queue-card--lifted .queue-card__grip {
-  display: block;
-}
-
-.queue-card__text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  line-height: 1.5;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.queue-card__actions {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-2);
-  opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-out);
-}
-
-.queue-card:hover .queue-card__actions,
-.queue-card:focus-within .queue-card__actions {
-  opacity: 1;
-}
-
-.queue-card__action {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-6);
-  height: 26px;
-  padding: 0 var(--space-8) 0 var(--space-6);
-  border-radius: var(--radius-xs);
-  color: var(--text-soft);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-medium);
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.queue-card__action--icon {
-  justify-content: center;
-  width: 26px;
-  padding: 0;
-}
-
-.queue-card__action svg {
-  width: 14px;
-  height: 14px;
-  color: var(--muted);
-}
-
-.queue-card__action:hover:not(:disabled) {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.queue-card__action:hover:not(:disabled) svg {
-  color: var(--text-soft);
-}
-
-.queue-card__action--remove:hover:not(:disabled),
-.queue-card__action--remove:hover:not(:disabled) svg {
-  background: var(--red-wash);
-  color: var(--red);
-}
-
-.queue-card__action:disabled {
-  opacity: 0.45;
-}
-
-.queue-card--lifted {
-  z-index: var(--layer-raised);
-  border-color: var(--line-hover);
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-raised);
-  color: var(--text);
-  cursor: grabbing;
-}
-
-.queue-card--lifted .queue-card__actions {
-  opacity: 0;
-}
-
-.queue-tray--dragging .queue-card:not(.queue-card--lifted) {
-  transition: transform 200ms var(--ease-out);
-}
-
-/* The middle of a long queue, folded into the edges of the cards behind. */
-.queue-tray__stack {
-  display: flex;
-  justify-content: center;
-}
-
-.queue-tray__more {
-  width: calc(100% - var(--space-24));
-  height: 18px;
-  margin-top: calc(var(--space-4) * -1);
-  border: 1px solid var(--line);
-  border-top: 0;
-  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-  background: var(--surface-elevated);
-  color: var(--muted);
-  font-size: var(--text-2xs);
-  font-variant-numeric: tabular-nums;
-}
-
-.queue-tray__more:hover {
-  color: var(--text-soft);
-}
-
-.queue-tray__ghosts {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-/* A pointer that cannot hover still needs to reach the actions, and with them
-   always showing, the words get a second line rather than a few characters. */
-@media (hover: none) {
-  .queue-card__actions {
-    opacity: 1;
-  }
-
-  .queue-card {
-    padding-block: var(--space-6);
-  }
-
-  .queue-card__text {
-    display: -webkit-box;
-    white-space: normal;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .queue-tray {
-    animation: none;
-  }
-
-  .queue-tray--dragging .queue-card:not(.queue-card--lifted) {
-    transition: none;
-  }
-}
-
 .composer {
+  /* What a chip set into it follows to keep its corners concentric. */
+  --composer-radius: var(--radius-lg);
   max-width: var(--composer-max-width);
   margin: 0 auto;
-  background: var(--surface-elevated);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-raised);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--composer-radius);
+  background: var(--sheen) var(--fill-float);
+  box-shadow: var(--edge-plate), var(--lift-float);
   transition:
     border-color var(--duration-fast) var(--ease-out),
     box-shadow var(--duration-fast) var(--ease-out);
-}
-
-.composer:focus-within {
-  border-color: var(--ember-line);
-  box-shadow: var(--shadow-raised), var(--ring-ember);
 }
 
 .composer__input {
@@ -933,6 +612,8 @@ label.action-row input {
   max-height: 240px;
 }
 
+/* Typing needs no frame: the caret says where the words go, and a ring
+   around the whole composer would only say it louder. */
 .composer__input:focus {
   outline: none;
 }
@@ -996,41 +677,66 @@ label.action-row input {
 
 /* Every action on a composer's toolbar — Attach, the microphone, Stop, Send —
    is one square target with a smaller round face inside it: the target is what
-   a pointer or finger needs, the face is what the eye reads. The face is the
-   content box, so one element is both, and the sizes follow the input, never
-   the window: a narrow pane in a wide window keeps desktop targets. */
+   a pointer or finger needs, the face is what the eye reads. The face is its
+   own layer so its rim and top light sit on the disc, not on the target; each
+   button names its material through --face-*. The sizes follow the input,
+   never the window: a narrow pane in a wide window keeps desktop targets. */
 .composer__attach,
 .composer__send,
 .composer__stop {
   --composer-target: 36px;
   --composer-face: 32px;
+  --face-sheen: none;
+  --face-fill: transparent;
+  --face-rim: transparent;
+  --face-edge: none;
+  position: relative;
+  isolation: isolate;
   display: grid;
   flex: none;
   place-items: center;
   box-sizing: border-box;
   width: var(--composer-target);
   height: var(--composer-target);
-  padding: calc((var(--composer-target) - var(--composer-face)) / 2);
   border-radius: var(--radius-full);
-  background-clip: content-box;
   transition:
-    background-color var(--duration-fast) var(--ease-out),
     transform var(--duration-fast) var(--ease-spring),
     opacity var(--duration-fast) var(--ease-out);
 }
 
+.composer__attach::before,
+.composer__send::before,
+.composer__stop::before {
+  content: "";
+  position: absolute;
+  inset: calc((var(--composer-target) - var(--composer-face)) / 2);
+  z-index: -1;
+  border: 1px solid var(--face-rim);
+  border-radius: inherit;
+  background: var(--face-sheen) var(--face-fill);
+  box-shadow: var(--face-edge);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
 .composer__send {
-  background: var(--ember);
+  --face-sheen: var(--sheen-accent);
+  --face-fill: var(--fill-accent);
+  --face-rim: var(--rim-accent);
+  --face-edge: var(--edge-accent);
   color: var(--ink-on-ember);
 }
 
 .composer__send:hover:not(:disabled) {
-  background: var(--ember-bright);
+  --face-fill: var(--fill-accent-hover);
   transform: scale(1.05);
 }
 
 .composer__send:active:not(:disabled),
 .composer__stop:active:not(:disabled) {
+  --face-edge: none;
   transform: scale(0.95);
 }
 
@@ -1046,12 +752,15 @@ label.action-row input {
 /* Stop is the one control that must read at a glance mid-run: the page's own
    ink on a light disc, the inverse of everything around it. */
 .composer__stop {
-  background: var(--text);
+  --face-sheen: var(--sheen-accent);
+  --face-fill: var(--text);
+  --face-rim: color-mix(in srgb, var(--text), var(--bg) 22%);
+  --face-edge: var(--edge-accent);
   color: var(--bg);
 }
 
 .composer__stop:hover:not(:disabled) {
-  background: #ffffff;
+  --face-fill: var(--text-on-color);
   transform: scale(1.05);
 }
 
@@ -1067,7 +776,7 @@ label.action-row input {
 }
 
 /* Touch keeps every toolbar target a finger's size; the faces grow a little. */
-@media (hover: none) {
+@media (any-pointer: coarse) {
   .composer__attach,
   .composer__send,
   .composer__stop {
@@ -1141,8 +850,8 @@ label.action-row input {
 
 .exec-pill:hover:not(:disabled),
 .exec-pill[aria-expanded="true"] {
-  background: var(--surface-hover);
   color: var(--text-soft);
+  background-color: var(--fill-quiet);
 }
 
 .exec-pill:disabled {
@@ -1220,7 +929,7 @@ label.action-row input {
 }
 
 /* A control folded down to its mark is still a finger's width. */
-@media (hover: none) {
+@media (any-pointer: coarse) {
   .exec-pill {
     min-width: var(--touch-target);
   }
@@ -1380,8 +1089,8 @@ label.action-row input {
 }
 
 .picker__row:hover:not(:disabled):not(.picker__row--off) {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .picker__row[aria-checked="true"],
@@ -1450,8 +1159,8 @@ label.action-row input {
 }
 
 .picker__manage:hover {
-  background: var(--surface-hover);
   color: var(--text-soft);
+  background-color: var(--fill-quiet);
 }
 
 .picker__manage svg {
@@ -1533,9 +1242,9 @@ label.action-row input {
 .hero__suggestion {
   text-align: left;
   padding: var(--space-12) var(--space-14);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: transparent;
+  background: var(--sheen) var(--fill-plate);
   color: var(--muted);
   font-size: var(--text-lg);
   line-height: 1.45;
@@ -1543,12 +1252,13 @@ label.action-row input {
     border-color var(--duration-fast) var(--ease-out),
     color var(--duration-fast) var(--ease-out),
     background-color var(--duration-fast) var(--ease-out);
+  box-shadow: var(--edge-plate);
 }
 
 .hero__suggestion:hover {
-  border-color: var(--ember-line);
+  border-color: var(--rim-selected);
   color: var(--text-soft);
-  background: var(--ember-wash);
+  background-color: var(--fill-plate-hover);
 }
 
 /* Who should do it: Opensteer or a specialist, under the composer that will
@@ -1580,8 +1290,8 @@ label.action-row input {
 
 .assignee__button:hover,
 .assignee__button[aria-expanded="true"] {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .assignee__button .brand__mark {
@@ -1690,7 +1400,7 @@ fieldset.action-panel {
   padding: var(--space-8) var(--space-10);
   border-left: 2px solid var(--ember-line);
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  background: var(--fill-quiet);
 }
 
 .composer-quote__mark {
@@ -1751,12 +1461,6 @@ fieldset.action-panel {
   justify-content: flex-end;
 }
 
-.thread__selection-note {
-  margin: 0 0 var(--space-8);
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
 /* Where this reader stopped last time. A position, not an alarm. */
 .unread-divider {
   display: flex;
@@ -1792,20 +1496,20 @@ fieldset.action-panel {
   max-width: calc(100% - var(--space-32));
   padding: var(--space-10) var(--space-16);
   transform: translateX(-50%);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--surface-elevated);
   color: var(--text);
   font-size: var(--text-sm);
-  box-shadow: var(--shadow-raised);
+  box-shadow: var(--edge-plate), var(--lift-float);
   transition:
     background-color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
 }
 
 .transcript__jump:hover:not(:disabled) {
-  background: var(--surface-hover);
   border-color: var(--line-hover);
+  background-color: var(--surface-raised);
 }
 
 .transcript__jump .icon {
@@ -1832,7 +1536,7 @@ fieldset.action-panel {
   gap: var(--space-8);
   padding: var(--space-10) var(--space-16);
   border-bottom: 1px solid var(--line);
-  background: var(--surface-1);
+  background: var(--ground);
 }
 
 .thread-find__bar {
@@ -1872,7 +1576,7 @@ fieldset.action-panel {
 
 .thread-find__result:hover:not(:disabled),
 .thread-find__result:focus-visible {
-  background: var(--surface-2);
+  background-color: var(--fill-quiet);
 }
 
 .thread-find__result-head {
@@ -1940,11 +1644,11 @@ fieldset.action-panel {
   align-items: center;
   gap: var(--space-10);
   width: 100%;
-  min-height: 36px;
+  min-height: var(--control-height);
   padding: var(--space-6) var(--space-10);
-  border: 0;
+  border: 1px solid transparent;
   border-radius: var(--radius-xs);
-  background: transparent;
+  background-color: transparent;
   color: var(--text-soft);
   font-size: var(--text-lg);
   font-weight: var(--weight-medium);
@@ -1955,10 +1659,9 @@ fieldset.action-panel {
   flex-direction: column;
   min-width: 0;
 }
-.execution-menu__engine:hover,
-.execution-menu__engine[aria-selected="true"] {
-  background: var(--surface-hover);
+.execution-menu__engine:hover {
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 .execution-menu__engine > svg,
 .execution-menu__engine .provider-logo {
@@ -1984,6 +1687,13 @@ fieldset.action-panel {
   color: var(--muted);
   font-size: var(--text-2xs);
 }
+.execution-menu__engine[aria-selected="true"] {
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
+  color: var(--text);
+}
+
 .execution-menu__in-use {
   flex: none;
   width: 6px;
@@ -2082,16 +1792,18 @@ fieldset.action-panel {
 }
 .execution-setting__automatic {
   padding: var(--space-2) var(--space-8);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: 999px;
-  background: transparent;
+  background: var(--sheen) var(--fill-plate);
   color: var(--muted);
   font-size: var(--text-2xs);
+  box-shadow: var(--edge-plate);
 }
 .execution-setting__automatic[aria-pressed="true"] {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
   color: var(--ember);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 .execution-setting input[type="range"] {
   width: 100%;
@@ -2151,7 +1863,7 @@ fieldset.action-panel {
   text-align: left;
 }
 .execution-menu__bottom:hover {
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 .execution-menu__bottom svg {
   flex: none;
@@ -2174,7 +1886,7 @@ fieldset.action-panel {
 .execution-menu__exhausted {
   color: var(--red-text);
 }
-.exec-pill__label {
+.exec-pill .exec-pill__label {
   color: var(--text-soft);
 }
 .exec-summary {
@@ -2222,7 +1934,11 @@ fieldset.action-panel {
     background: transparent;
     overflow: auto hidden;
     scrollbar-width: none;
-    mask-image: linear-gradient(to right, black calc(100% - var(--space-28)), transparent);
+    mask-image: linear-gradient(
+      to right,
+      var(--mask-ink) calc(100% - var(--space-28)),
+      transparent
+    );
   }
   .execution-menu__engines::-webkit-scrollbar {
     display: none;
@@ -2235,11 +1951,13 @@ fieldset.action-panel {
   }
   .execution-menu__engine {
     width: auto;
-    min-height: 44px;
+    min-height: var(--control-height);
     padding: var(--space-8) var(--space-14);
     border-radius: 999px;
-    background: var(--surface-raised);
+    background: var(--sheen) var(--fill-plate);
     white-space: nowrap;
+    border: 1px solid transparent;
+    box-shadow: var(--edge-plate);
   }
   .execution-menu__engine > span {
     flex-direction: row;
@@ -2247,8 +1965,10 @@ fieldset.action-panel {
     gap: var(--space-6);
   }
   .execution-menu__engine[aria-selected="true"] {
-    background: var(--text);
-    color: var(--bg);
+    color: var(--text);
+    border-color: var(--rim-selected);
+    background: var(--sheen) var(--fill-plate-hover);
+    box-shadow: var(--edge-plate);
   }
   .execution-menu__in-use {
     margin-left: 0;

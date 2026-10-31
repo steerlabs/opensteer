@@ -46,7 +46,6 @@ function onPlatform(platform: NodeJS.Platform): void {
 function fixture() {
   let observe = (_event: DesktopBrowserSocketObservation) => {};
   let input = () => {};
-  let personInput = () => {};
   const passkeyConsumerToken = vi.fn<() => string | null>(() => null);
   const manager = new DesktopBrowserPresentationManager({
     transport: {
@@ -113,12 +112,6 @@ function fixture() {
           input = () => {};
         };
       },
-      observeHumanInput: (listener: () => void) => {
-        personInput = listener;
-        return () => {
-          personInput = () => {};
-        };
-      },
     },
     onEvent: () => () => {},
     release: vi.fn(),
@@ -146,7 +139,6 @@ function fixture() {
     unregister,
     passkeyConsumerToken,
     input: () => input(),
-    personInput: () => personInput(),
   };
 }
 
@@ -335,21 +327,6 @@ it("attributes native page input only to the window's admitted presentation cons
   f.surface.passkeyInput.mockClear();
   f.input();
   expect(f.surface.passkeyInput).not.toHaveBeenCalled();
-});
-
-it("tells the window that the person used its shown page, never what they did", async () => {
-  const f = fixture();
-  f.native.waitForPaint = () => Promise.resolve();
-  f.socket("admitted");
-  const target = await f.manager.present(f.sender, f.request);
-  await Promise.resolve();
-  const pageInputs = () =>
-    f.contents.send.mock.calls.filter(([, event]) => event?.type === "page-input");
-  f.personInput();
-  expect(pageInputs()).toEqual([[expect.any(String), { type: "page-input" }]]);
-  f.manager.release(f.sender, target);
-  f.personInput();
-  expect(pageInputs()).toHaveLength(1);
 });
 
 it.each(["release", "replacement", "failure", "zero-size"] as const)(

@@ -20,7 +20,7 @@ import type {
   ApprovedComputerApp,
   OwnerWindowInfo,
 } from "@opensteer/protocol";
-import type { RecentSitesStore } from "./recent-sites.js";
+import type { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserIdentityChoice } from "./start-page-model.js";
 import type {
   ChannelAccessPolicy,
@@ -127,6 +127,7 @@ export type BrowserTabOpenInput =
     };
 export interface BrowserTabOpenOptions {
   readonly url?: string;
+  readonly typed?: boolean;
   readonly viewport?: { readonly width: number; readonly height: number };
   readonly idempotencyKey?: string;
 }
@@ -274,6 +275,19 @@ export interface ThreadSummary {
   unread: boolean;
   updatedAt: string;
   workspaceId: string;
+}
+
+/**
+ * An automation anchored to a conversation, as much of it as that
+ * conversation shows: an archived one is gone, so it is never held.
+ */
+export interface ThreadAutomation {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: "schedule" | "webhook" | "watch";
+  readonly paused: boolean;
+  /** When a schedule next fires; null for a watch, a webhook or a paused one. */
+  readonly nextFireAt: string | null;
 }
 
 /**
@@ -744,6 +758,12 @@ export interface HostSnapshot {
    * task details read it here and nowhere else.
    */
   assignments: Record<string, AssignmentSummary>;
+  /**
+   * The automations anchored to each conversation this client has open, read
+   * with its assignments. A conversation not read yet, or on a Host that cannot
+   * list them by conversation, has no entry.
+   */
+  threadAutomations: Readonly<Record<string, readonly ThreadAutomation[]>>;
   /** Null until the Host has identified the deployment owning this session. */
   deploymentId: string | null;
   requests: Record<string, Request[]>;
@@ -838,6 +858,7 @@ export interface HostSnapshot {
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-v1; absent on older Hosts. */
   voiceAvailable?: boolean;
+  voiceAgentAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
@@ -1002,9 +1023,8 @@ export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
 export interface HostClient {
-  readonly screenPresentation?: import("../screen/contract.js").ScreenPresentationTransport;
   readonly browserPasskeys?: BrowserPasskeys;
-  readonly recentSites: RecentSitesStore;
+  readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   retainComputerView(
     viewId: string,
@@ -1248,16 +1268,6 @@ export interface HostClient {
    * the Thread mutations below call it themselves once the Host accepts.
    */
   rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences>;
-  /**
-   * Stands one of the reader's own queued messages in front of another, or
-   * at the back when `beforeMessageId` is null. The snapshot's queue takes the
-   * new order at once; a refusal rereads the Host's order and is rethrown.
-   */
-  moveThreadInput(
-    threadId: string,
-    messageId: string,
-    beforeMessageId: string | null,
-  ): Promise<void>;
   /** Lets a queue a Stop paused admit work again. Idempotent on the Host. */
   resumeThreadInputQueue(threadId: string): Promise<void>;
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void;

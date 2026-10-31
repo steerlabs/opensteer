@@ -263,7 +263,7 @@ class RunnerConnection(
             else AttemptEnd.Violation("The Host sent a frame this phone cannot read: ${unreadable.message}")
         }
         if (end is AttemptEnd.Refused && end.error.reason == "agent-phone-outdated" && identity.enrolled) {
-            updater?.check(identity, required = true)?.let { end = AttemptEnd.UpdateFailed(it) }
+            updateEnding(updater?.check(identity, required = true))?.let { end = it }
         }
         val enrolled = identity.enrolled || welcomed
         when (val decision = policy.next(end, enrolled, identity.deploymentName)) {
@@ -287,6 +287,12 @@ class RunnerConnection(
                 waitFor(elapsed() + delay)
             }
         }
+    }
+
+    private fun updateEnding(result: PhoneUpdateResult?): AttemptEnd? = when (result) {
+        null, PhoneUpdateResult.Current -> null
+        is PhoneUpdateResult.Pending -> AttemptEnd.UpdatePending(result.detail)
+        is PhoneUpdateResult.Failed -> AttemptEnd.UpdateFailed(result.detail)
     }
 
     /** Waits for the stored identity to change, doing posted work meanwhile. */
@@ -358,7 +364,7 @@ class RunnerConnection(
                 is HostDiscovery.Result.Unreachable -> return AttemptEnd.Unreachable(result.detail)
             }
         }
-        updater?.check(identity, required = false)?.let { throw Ended(AttemptEnd.UpdateFailed(it)) }
+        updateEnding(updater?.check(identity, required = false))?.let { throw Ended(it) }
         val primary = Socket("/internal/v1/runners", identity.hostUrl)
         try {
             val welcome = authenticate(primary, identity)

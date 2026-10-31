@@ -21,7 +21,16 @@ export function createVoiceHandlers(dependencies: {
     "environmentIsAvailableToUser" | "listAgentHarnessInstancesForUser" | "getHarnessCatalog"
   >;
   readonly runners: Pick<RunnerRegistry, "voice">;
-}): Pick<HostApiHandlers, "voice.start" | "voice.renew" | "voice.say" | "voice.stop"> {
+}): Pick<
+  HostApiHandlers,
+  | "voice.start"
+  | "voice.renew"
+  | "voice.say"
+  | "voice.stop"
+  | "voice.next"
+  | "voice.answer"
+  | "voice.context"
+> {
   const relay = async (
     environmentId: EnvironmentId,
     command: RunnerVoiceCommand,
@@ -73,6 +82,7 @@ export function createVoiceHandlers(dependencies: {
           sessionId: input.sessionId,
           harnessInstanceId: input.harnessInstanceId,
           offer: input.offer,
+          ...(input.agent ? { agent: true } : {}),
         },
         context,
       );
@@ -82,7 +92,25 @@ export function createVoiceHandlers(dependencies: {
           reason: "voice-refused",
           message: "Codex returned no voice answer.",
         });
-      return rpcSuccess({ answer: result.answer });
+      return rpcSuccess({
+        answer: result.answer,
+        ...(input.agent ? { agent: result.agent === true } : {}),
+      });
+    },
+    "voice.next": async (input, context) => {
+      const { environmentId, ...address } = input;
+      const result = await relay(environmentId, { ...address, action: "next" }, context);
+      return rpcSuccess({ call: result.call ?? null });
+    },
+    "voice.answer": async (input, context) => {
+      const { environmentId, ...address } = input;
+      await relay(environmentId, { ...address, action: "answer" }, context);
+      return rpcSuccess({});
+    },
+    "voice.context": async (input, context) => {
+      const { environmentId, ...address } = input;
+      await relay(environmentId, { ...address, action: "context" }, context);
+      return rpcSuccess({});
     },
     "voice.renew": async (input, context) => {
       await relay(

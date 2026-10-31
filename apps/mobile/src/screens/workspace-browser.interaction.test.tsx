@@ -42,6 +42,8 @@ const state = vi.hoisted(() => ({
   routes: [] as { name: string; params?: object }[],
   /** The pair's own measured surface, as its reserved-regions provider reports it. */
   pair: { height: 760, width: 390 },
+  /** What every laid-out view measures, once a test lays the screen out. */
+  layout: null as { height: number; width: number } | null,
   regions: [] as import("react-native-reserved-regions").ReservedRegion[],
   regionsReady: true,
   keyboard: false,
@@ -192,15 +194,20 @@ vi.mock("react-native", () => ({
   View: ({
     children,
     accessibilityLabel,
+    onLayout,
     style,
     testID,
   }: {
     children?: ReactNode;
     accessibilityLabel?: string;
+    onLayout?: (event: { nativeEvent: { layout: { height: number; width: number } } }) => void;
     style?: unknown;
     testID?: string;
   }) => (
     <div
+      ref={(node) => {
+        if (node && onLayout && state.layout) onLayout({ nativeEvent: { layout: state.layout } });
+      }}
       aria-label={accessibilityLabel}
       data-style={testID === undefined ? undefined : JSON.stringify(flatten(style))}
       data-testid={testID}
@@ -368,6 +375,7 @@ afterEach(() => {
   state.setParams.mockReset();
   state.routes = [];
   state.pair = { height: 760, width: 390 };
+  state.layout = null;
   state.regions = [];
   state.regionsReady = true;
   state.keyboard = false;
@@ -441,6 +449,7 @@ function setup(
   params: Partial<SurfacesRoute> = {},
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
+  state.hostClient.prepareBrowserProfile ??= vi.fn();
   state.hostClient.browserViewerState = () => liveFeed;
   state.hostClient.browserFrames = { subscribe: () => () => undefined };
   state.snapshot = options.snapshot ?? snapshot([]);
@@ -783,64 +792,71 @@ describe("mobile conversation pages", () => {
     expect(state.dispatch).toHaveBeenCalledOnce();
   });
 
-  it("replaces only the selected pending route with the returned tab and address ready", async () => {
-    const gate = Promise.withResolvers<{ sessionId: string; tabId: string }>();
-    const beginBrowserTabOpen = vi.fn(() => ({
-      idempotencyKey: "phone-open",
-      result: gate.promise,
-    }));
-    state.hostClient = {
-      beginBrowserTabOpen,
-      browserViewerState: () => liveFeed,
-      browserFrames: { subscribe: () => () => undefined },
-    };
-    const { container, render, route } = setup({ sessionId: "chosen" });
-    state.snapshot = snapshot([session("chosen", child.id)]);
-    render();
-    await pressAsync(menu(), "New tab");
-    expect(beginBrowserTabOpen).toHaveBeenCalledExactlyOnceWith({ sessionId: "chosen" });
-    state.routes = [
-      {
+  it.each([false, true])(
+    "opens at the valid page size and replaces only the selected pending route (oversized=%s)",
+    async (oversized) => {
+      state.layout = { height: 612.4, width: oversized ? 8000 : 389.6 };
+      const gate = Promise.withResolvers<{ sessionId: string; tabId: string }>();
+      const beginBrowserTabOpen = vi.fn(() => ({
+        idempotencyKey: "phone-open",
+        result: gate.promise,
+      }));
+      state.hostClient = {
+        beginBrowserTabOpen,
+        browserViewerState: () => liveFeed,
+        browserFrames: { subscribe: () => () => undefined },
+      };
+      const { container, render, route } = setup({ sessionId: "chosen" });
+      state.snapshot = snapshot([session("chosen", child.id)]);
+      render();
+      await pressAsync(menu(), "New tab");
+      expect(beginBrowserTabOpen).toHaveBeenCalledExactlyOnceWith(
+        { sessionId: "chosen" },
+        oversized ? undefined : { viewport: { height: 612, width: 390 } },
+      );
+      state.routes = [
+        {
+          name: "WorkspaceBrowser",
+          params: {
+            deploymentId: "deployment-a",
+            threadId: "thread-parent",
+            pendingBrowserTab: "phone-open",
+          },
+        },
+      ];
+      await act(async () => gate.resolve({ sessionId: "chosen", tabId: "new-page" }));
+      expect(state.dispatch).toHaveBeenLastCalledWith({
+        type: "REPLACE",
         name: "WorkspaceBrowser",
         params: {
           deploymentId: "deployment-a",
           threadId: "thread-parent",
-          pendingBrowserTab: "phone-open",
+          sessionId: "chosen",
+          tabId: "new-page",
+          editAddress: true,
         },
-      },
-    ];
-    await act(async () => gate.resolve({ sessionId: "chosen", tabId: "new-page" }));
-    expect(state.dispatch).toHaveBeenLastCalledWith({
-      type: "REPLACE",
-      name: "WorkspaceBrowser",
-      params: {
+      });
+      route.params = {
         deploymentId: "deployment-a",
         threadId: "thread-parent",
         sessionId: "chosen",
         tabId: "new-page",
         editAddress: true,
-      },
-    });
-    route.params = {
-      deploymentId: "deployment-a",
-      threadId: "thread-parent",
-      sessionId: "chosen",
-      tabId: "new-page",
-      editAddress: true,
-    };
-    state.snapshot = snapshot([
-      {
-        ...session("chosen", child.id),
-        tabs: [
-          { id: "new-page", active: false, title: "", url: "about:blank" },
-        ] as BrowserSessionSummary["tabs"],
-      },
-    ]);
-    render();
-    expect(
-      container.querySelector<HTMLInputElement>('input[aria-label="Website address"]')?.value,
-    ).toBe("");
-  });
+      };
+      state.snapshot = snapshot([
+        {
+          ...session("chosen", child.id),
+          tabs: [
+            { id: "new-page", active: false, title: "", url: "about:blank" },
+          ] as BrowserSessionSummary["tabs"],
+        },
+      ]);
+      render();
+      expect(
+        container.querySelector<HTMLInputElement>('input[aria-label="Website address"]')?.value,
+      ).toBe("");
+    },
+  );
 
   it.each([false, true])(
     "returns after a successful close, reviewing held work: %s",

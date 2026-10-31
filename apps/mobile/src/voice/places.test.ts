@@ -1,41 +1,30 @@
 import { expect, it, vi } from "vitest";
-import { placeList } from "@opensteer/client/host";
-import { MockHostClient } from "@opensteer/client/mock";
-import { heardPlaces } from "./places.js";
+import type { HostClient } from "@opensteer/client/host";
+import { voicePlaces } from "./places.js";
 
-it("carries the page in front when heard, only while it shows the same document", async () => {
-  const host = new MockHostClient({ automations: "absent", latencyMs: 0 });
-  await host.load();
-  const tab = placeList(host.getSnapshot()).find((place) => place.destination.kind === "browser")!;
-  if (tab.destination.kind !== "browser") throw new Error("Missing browser place");
-  const { sessionId, tabId } = tab.destination;
+it("includes only the focused browser route's web page", async () => {
   const candidate = {
-    sessionId,
-    tabId,
-    documentId: tab.browser!.documentId!,
+    sessionId: "bsn_12345678-1234-4123-8123-123456789abc",
+    tabId: "tab:test",
+    documentId: "document:test",
     title: "Page",
     url: "https://example.com/path",
-  } as Awaited<ReturnType<MockHostClient["readBrowserContextCandidate"]>>;
-  const read = vi.spyOn(host, "readBrowserContextCandidate").mockResolvedValue(candidate);
-  const heard = heardPlaces(host, {
+  };
+  const readBrowserContextCandidate = vi.fn().mockResolvedValue(candidate);
+  const host = { readBrowserContextCandidate } as unknown as HostClient;
+  const route = {
     name: "WorkspaceBrowser",
-    params: { deploymentId: "dep", scope: "workspace", sessionId, tabId },
-  });
-  // Read later, after the screen has moved on: still exactly that page.
-  expect(await heard()).toEqual([{ ...candidate, auto: true, type: "browser-page" }]);
-  expect(read).toHaveBeenCalledWith(sessionId, tabId);
-  read.mockResolvedValue({ ...candidate, documentId: "another-document" });
-  expect(await heard()).toEqual([]);
-  read.mockResolvedValue({ ...candidate, url: "about:blank" });
-  expect(await heard()).toEqual([]);
-
-  read.mockClear();
-  for (const hidden of [
-    undefined,
-    { name: "Home" },
-    { name: "WorkspaceBrowser", params: {} },
-    { name: "WorkspaceBrowser", params: { sessionId, tabId: "gone" } },
-  ])
-    expect(await heardPlaces(host, hidden)()).toEqual([]);
-  expect(read).not.toHaveBeenCalled();
+    params: { sessionId: candidate.sessionId, tabId: candidate.tabId },
+  };
+  expect(await voicePlaces(host, route)).toEqual([
+    { ...candidate, auto: true, type: "browser-page" },
+  ]);
+  expect(readBrowserContextCandidate).toHaveBeenCalledWith(candidate.sessionId, candidate.tabId);
+  readBrowserContextCandidate.mockResolvedValue({ ...candidate, url: "about:blank" });
+  expect(await voicePlaces(host, route)).toEqual([]);
+  readBrowserContextCandidate.mockClear();
+  for (const hidden of [undefined, { name: "Home" }, { name: "WorkspaceBrowser", params: {} }]) {
+    expect(await voicePlaces(host, hidden)).toEqual([]);
+  }
+  expect(readBrowserContextCandidate).not.toHaveBeenCalled();
 });

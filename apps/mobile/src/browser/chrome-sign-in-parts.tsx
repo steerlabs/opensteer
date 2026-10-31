@@ -3,7 +3,7 @@ import type { BrowserSourceInspection } from "@opensteer/protocol/browser-source
 import { useEffect, useState, type ReactNode } from "react";
 import { AppState, Pressable, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, controlBorderWidth, radius, space, touchTarget } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 
 /** How often a visible sign-in asks Chrome again. Inspecting reads no sign-in. */
@@ -98,17 +98,18 @@ export function ChromeChoices(props: { readonly children: ReactNode }): ReactNod
 
 const styles = StyleSheet.create({
   choice: {
-    borderColor: color.lineControl,
+    ...material.control,
     borderRadius: radius.sm,
-    borderWidth: controlBorderWidth,
     gap: space[2],
     justifyContent: "center",
     minHeight: touchTarget,
     paddingHorizontal: space[12],
     paddingVertical: space[8],
   },
-  choiceChecked: { backgroundColor: color.emberWash, borderColor: color.ember },
+  // The chosen Chrome keeps a control's boundary, in the accent: a radio with
+  // no dot has to say which it is with an edge that holds 3:1.
+  choiceChecked: { backgroundColor: material.selected.backgroundColor, borderColor: color.ember },
   choiceDisabled: { opacity: 0.5 },
   choices: { gap: space[8] },
-  pressed: { opacity: 0.68 },
+  pressed: { ...material.platePressed, opacity: 0.68 },
 });

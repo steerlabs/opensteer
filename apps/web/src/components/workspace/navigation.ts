@@ -5,7 +5,6 @@ import {
   parseNavigationInput,
   type WorkspaceSurfaceDestination as SurfaceDestination,
 } from "@opensteer/client/host";
-import { interact } from "./interaction.js";
 
 /**
  * The address has two axes and this module is the only thing that writes
@@ -13,9 +12,7 @@ import { interact } from "./interaction.js";
  * the query names the place in the middle. Every explicit choice pushes exactly
  * one history entry; canonicalising an old address replaces once. A Host event
  * navigates only when it takes the place in the middle away, and then once, by
- * replace ([place succession](./place-succession.ts)). Every explicit choice
- * also counts as the person's [interaction](./interaction.ts); an agent's
- * presentation and the Host's rewrites do not.
+ * replace ([place succession](./place-succession.ts)).
  */
 
 /**
@@ -396,8 +393,6 @@ export interface WorkspaceNavigation {
   ) => void;
   /** Back from Settings to the conversation and place left for it, or Home if opened there. */
   readonly leaveSettings: () => void;
-  /** The browser's Back, counted as the person's choice before the history answers. */
-  readonly back: () => void;
   /** The path of a conversation: Chat at the root, a task under /threads. */
   readonly threadPath: (threadId: string) => string;
   /** Task row, task line, the menu under a name: the conversation only. */
@@ -413,6 +408,8 @@ export interface WorkspaceNavigation {
     idempotencyKey: string,
     destination: SurfaceDestination,
   ) => void;
+  /** Includes synchronous choices made since the last render. */
+  readonly address: () => Address;
   /** Tab row, viewfinder, chip: the place only (opens Work from Talk). */
   readonly showPlace: (destination: SurfaceDestination) => void;
   /** A mark on a tab: that place and that conversation, as one entry. */
@@ -446,20 +443,9 @@ export interface WorkspaceNavigation {
     /** The answer takes the start page's own history entry, as a new tab's page does. */
     readonly replace?: boolean;
   }) => (destination: SurfaceDestination) => void;
-  /** The address as it is now, including choices made since the last render. */
-  readonly address: () => Address;
-  /**
-   * An agent's presentation: the conversation, the place, or both as one
-   * entry, each axis left alone when not named. It is not the person's choice,
-   * so it outdates no presentation; showing what is already shown adds nothing.
-   */
-  readonly present: (target: {
-    readonly path?: string;
-    readonly place?: SurfaceDestination;
-  }) => void;
 }
 
-export interface Address {
+interface Address {
   readonly pathname: string;
   readonly search: string;
 }
@@ -483,20 +469,9 @@ export function useWorkspaceNavigation(
   // every explicit place choice outdates a place operation still under way.
   const placeEpoch = useRef(0);
   const operation = useRef(0);
-  // The address a presentation wrote, so its arrival is not counted as the person's.
-  const presented = useRef<Address | null>(null);
   if (seen.current !== location) {
     if (placeOnly(seen.current.search).toString() !== placeOnly(search).toString())
       placeEpoch.current += 1;
-    const arrival = presented.current;
-    presented.current = null;
-    // A replace is a redirect, a canonical rewrite or a Host succession; the
-    // person's own replaces counted where they were chosen.
-    if (
-      navigationType !== "REPLACE" &&
-      (arrival?.pathname !== location.pathname || arrival.search !== search)
-    )
-      interact();
     // A replaced address was a redirect or rewrite, never a place to return to.
     if (!isSettingsPath(seen.current.pathname) && navigationType !== "REPLACE")
       settingsReturn.current = { pathname: seen.current.pathname, search: seen.current.search };
@@ -519,14 +494,8 @@ export function useWorkspaceNavigation(
     (
       selection: PlaceSelection,
       pathname?: string,
-      options: {
-        readonly replace?: boolean;
-        readonly state?: unknown;
-        /** Neither the person's choice nor counted as one: a presentation or a succession. */
-        readonly chosen?: false;
-      } = {},
+      options: { readonly replace?: boolean; readonly state?: unknown } = {},
     ) => {
-      if (options.chosen !== false) interact();
       placeEpoch.current += 1;
       if (selection.kind === "talk") rememberTalk({ deploymentId, userId });
       else if (selection.kind === "launcher") rememberNewTab({ deploymentId, userId });
@@ -549,7 +518,6 @@ export function useWorkspaceNavigation(
   const conversationHref = useCallback((to: string): To => areaAddress(to, search), [search]);
   const openPage = useCallback<WorkspaceNavigation["openPage"]>(
     (to, options) => {
-      interact();
       const target = areaAddress(to, latest.current.search);
       void navigate(target, {
         ...(options?.replace ? { replace: true } : {}),
@@ -559,17 +527,12 @@ export function useWorkspaceNavigation(
     },
     [navigate],
   );
-  const leaveSettings = useCallback<WorkspaceNavigation["leaveSettings"]>(() => {
-    interact();
-    void navigate(settingsReturn.current);
-  }, [navigate]);
-  const back = useCallback(() => {
-    interact();
-    void navigate(-1);
-  }, [navigate]);
+  const leaveSettings = useCallback<WorkspaceNavigation["leaveSettings"]>(
+    () => void navigate(settingsReturn.current),
+    [navigate],
+  );
   const openConversation = useCallback<WorkspaceNavigation["openConversation"]>(
     (path, options) => {
-      interact();
       const params = placeOnly(latest.current.search);
       if (options?.messageId) params.set("messageId", options.messageId);
       go(
@@ -603,7 +566,7 @@ export function useWorkspaceNavigation(
         return;
       const selected = placeSelection(new URLSearchParams(latest.current.search));
       if (selected.kind === "pending" && selected.idempotencyKey === idempotencyKey)
-        choosePlace({ kind: "place", destination }, undefined, { chosen: false, replace: true });
+        choosePlace({ kind: "place", destination }, undefined, { replace: true });
     },
     [choosePlace, deploymentId, userId],
   );
@@ -616,8 +579,8 @@ export function useWorkspaceNavigation(
       choosePlace({ kind: "place", destination }, path),
     [choosePlace],
   );
-  const openLauncher = useCallback(
-    (options: Parameters<WorkspaceNavigation["showLauncher"]>[0] & { chosen?: false } = {}) => {
+  const showLauncher = useCallback<WorkspaceNavigation["showLauncher"]>(
+    (options = {}) => {
       const covered = placeSelection(new URLSearchParams(latest.current.search));
       // A start page opened over another keeps covering what that one covered.
       const from = options.replace
@@ -629,7 +592,6 @@ export function useWorkspaceNavigation(
             : null;
       openings += 1;
       choosePlace({ kind: "launcher" }, undefined, {
-        ...(options.chosen === false ? { chosen: false } : {}),
         replace: options.replace === true,
         state: {
           startFrom: from,
@@ -641,10 +603,6 @@ export function useWorkspaceNavigation(
       });
     },
     [choosePlace],
-  );
-  const showLauncher = useCallback<WorkspaceNavigation["showLauncher"]>(
-    (options) => openLauncher(options),
-    [openLauncher],
   );
   const leaveLauncher = useCallback(
     (from: string | null) => {
@@ -658,13 +616,10 @@ export function useWorkspaceNavigation(
   const succeedPlace = useCallback(
     (successor: SurfaceDestination | null) => {
       if (successor)
-        choosePlace({ kind: "place", destination: successor }, undefined, {
-          chosen: false,
-          replace: true,
-        });
-      else openLauncher({ chosen: false, replace: true });
+        choosePlace({ kind: "place", destination: successor }, undefined, { replace: true });
+      else showLauncher({ replace: true });
     },
-    [choosePlace, openLauncher],
+    [choosePlace, showLauncher],
   );
   const hideComputer = useCallback(() => choosePlace({ kind: "talk" }), [choosePlace]);
   const showComputer = useCallback(
@@ -680,7 +635,6 @@ export function useWorkspaceNavigation(
   );
   const beginPlaceOperation = useCallback(
     (options: { readonly replace?: boolean } = {}) => {
-      interact();
       operation.current += 1;
       const mine = operation.current;
       const epoch = placeEpoch.current;
@@ -695,22 +649,9 @@ export function useWorkspaceNavigation(
   );
 
   const address = useCallback(() => latest.current, []);
-  const present = useCallback<WorkspaceNavigation["present"]>(
-    ({ path, place }) => {
-      const before = latest.current;
-      if (place) choosePlace({ kind: "place", destination: place }, path, { chosen: false });
-      // The conversation already shown keeps its address, anchor and all.
-      else if (path !== undefined && path !== before.pathname)
-        go({ pathname: path, search: searchString(placeOnly(before.search)) });
-      if (latest.current !== before) presented.current = latest.current;
-    },
-    [choosePlace, go],
-  );
-
   return useMemo(
     () => ({
       address,
-      back,
       beginPlaceOperation,
       conversationHref,
       hideComputer,
@@ -719,7 +660,6 @@ export function useWorkspaceNavigation(
       openConversation,
       openPage,
       placeSearch,
-      present,
       showComputer,
       showLauncher,
       showPendingBrowserTab,
@@ -731,7 +671,6 @@ export function useWorkspaceNavigation(
     }),
     [
       address,
-      back,
       beginPlaceOperation,
       conversationHref,
       hideComputer,
@@ -740,7 +679,6 @@ export function useWorkspaceNavigation(
       openConversation,
       openPage,
       placeSearch,
-      present,
       showComputer,
       showLauncher,
       showPendingBrowserTab,

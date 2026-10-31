@@ -177,8 +177,7 @@ vi.mock("../thread/composer-bar.js", () => ({
       {action}
     </div>
   ),
-  ComposerCircleFace: () => null,
-  composerControlStyle: {},
+  ComposerGlyph: () => null,
   composerLaneHeight: 44,
 }));
 vi.mock("../ui/composer-action.js", () => ({

@@ -241,7 +241,6 @@ export const hostApiVersion = 48;
  * advertise capabilities an older client has never heard of.
  */
 export const HostCapabilitySchema = z.enum([
-  "screen-show-v1",
   "workspace-tab-reopen-v1",
   "iphone-apps-v1",
   "ownerViewWindows",
@@ -267,6 +266,11 @@ export const HostCapabilitySchema = z.enum([
    * (`thread.icon.set`) and a specialist's colour (`workspace.color.set`).
    */
   "task-marks-v1",
+  /**
+   * A conversation's family can be read without its history: `triggers.list`
+   * filters by `anchorThreadId`, and `thread.assignments.list` by `open`.
+   */
+  "task-family-v1",
   /** A subscription may omit snapshot message history and its windows. */
   "snapshot-messages-omit-v1",
   "shared-task-done-v1",
@@ -274,6 +278,8 @@ export const HostCapabilitySchema = z.enum([
   "browser-profile-manage-v1",
   /** Clients can hold a voice call through `voice.*` (see docs/voice.md). */
   "voice-v1",
+  /** A call can run its own agent: `agent` on `voice.start`, then `voice.next`, `voice.answer` and `voice.context`. */
+  "voice-agent-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

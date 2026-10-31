@@ -170,7 +170,7 @@ describe("start page projection", () => {
             title: "",
             typedCount: 0,
             visitCount: 1,
-            lastVisit: now().getTime(),
+            lastVisitAt: now().toISOString(),
           },
         ],
       });
@@ -291,7 +291,7 @@ describe("start page projection", () => {
           title: "",
           typedCount: 0,
           visitCount: 1,
-          lastVisit: now().getTime(),
+          lastVisitAt: now().toISOString(),
         },
       ];
       const recent = (query: string) =>

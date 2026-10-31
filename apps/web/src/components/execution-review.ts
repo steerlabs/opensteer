@@ -13,8 +13,6 @@ import {
 /** What the reader agreed to when a session-ending choice was applied. */
 export interface ReviewedContinuation {
   readonly expectedProviderSessionId: string | null;
-  /** True when the reviewed choice was starting the same AI over again. */
-  readonly fresh: boolean;
 }
 
 /** Everything a review settled before its choice is applied. */
@@ -173,27 +171,6 @@ export function switchConsequence(
   review: Extract<ExecutionSwitchReview, { kind: "fresh" | "incompatible" }>,
 ): string {
   return `Your messages stay here. ${review.engineName} starts fresh, with recent messages, your shared notes, and access to earlier conversation.`;
-}
-
-/**
- * What the next authorized work will run on, or nothing at all when the queue
- * makes that claim false. A paused queue or waiting inputs mean the next turn
- * is not the reader's next message, so no promise is made about it.
- */
-export function nextTurnNote(input: {
-  readonly engineName: string;
-  readonly queuedCount: number;
-  readonly paused: boolean;
-}): string | null {
-  if (input.paused) {
-    return input.queuedCount > 0
-      ? `Paused · ${input.queuedCount} ${input.queuedCount === 1 ? "message" : "messages"} waiting`
-      : "Paused";
-  }
-  if (input.queuedCount > 0) {
-    return `${input.queuedCount} ${input.queuedCount === 1 ? "message is" : "messages are"} already waiting to run`;
-  }
-  return `Your next message will use ${input.engineName}.`;
 }
 
 /**

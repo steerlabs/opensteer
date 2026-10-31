@@ -1,7 +1,7 @@
 import type { ClientLifecycle, HttpHostClientOptions } from "@opensteer/client/host";
 import {
   HttpHostClient,
-  type RecentSitesStorage,
+  type BrowserPreferencesStorage,
   type WebSocketClient,
 } from "@opensteer/client/host";
 import { browserClientLifecycle } from "./browser-lifecycle.js";
@@ -35,17 +35,17 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
       ? {}
       : { bufferedResponses: options.bufferedResponses }),
     lifecycle: options.lifecycle ?? browserClientLifecycle(),
-    recentSitesStorage: browserRecentSitesStorage,
+    browserPreferencesStorage,
     viewerPlatform: /Mac|iPhone|iPad|iPod/u.test(navigator.platform) ? "mac" : "pc",
     ...(options.webSocketFactory ? { webSocketFactory: options.webSocketFactory } : {}),
   });
 }
 
 /**
- * Recent sites live in this browser's own storage. Reaching it can throw
- * (storage turned off); the store treats a throw as no storage at all.
+ * Browser preferences use device storage; old local history is removed at startup.
  */
-export const browserRecentSitesStorage: RecentSitesStorage = {
+export const browserPreferencesStorage: BrowserPreferencesStorage = {
+  keys: () => Object.keys(window.localStorage),
   getItem: (key) => window.localStorage.getItem(key),
   setItem: (key, value) => window.localStorage.setItem(key, value),
   removeItem: (key) => window.localStorage.removeItem(key),

@@ -188,6 +188,8 @@ const BrowserInitialNavigationUrlSchema = z
 export const InitialNavigationSchema = z.strictObject({
   operationKey: z.string().min(1).max(255),
   url: BrowserInitialNavigationUrlSchema.optional(),
+  /** Host-issued only when navigation attribution is negotiated. */
+  navigationId: z.uuid().optional(),
 });
 export type InitialNavigation = z.infer<typeof InitialNavigationSchema>;
 
@@ -256,6 +258,8 @@ export const BrowserAttachTicketClaimsSchema = z
     navigationVersion: z.literal(1).optional(),
     initialNavigationVersion: z.literal(1).optional(),
     initialNavigation: InitialNavigationSchema.optional(),
+    /** Host opt-in to navigation IDs and committed-document reports. */
+    navigationAttributionVersion: z.literal(1).optional(),
     /**
      * The Host understands the editing contract (`editing.ts`): the runtime may
      * put `editingVersion` in its snapshot, accept editing commands and emit
@@ -519,7 +523,11 @@ const BaselineBrowserClientMessageSchema = z
       ...browserBase,
       surfaceId: BrowserSurfaceIdSchema.optional(),
       type: z.literal("navigation.go"),
+      /** Host-issued; never trusted from a consumer. */
+      navigationId: z.uuid().optional(),
       url: z.url(),
+      /** The person typed this address; their browsing history ranks it for completion. */
+      typed: z.boolean().optional(),
     }),
     z.strictObject({
       ...browserBase,
@@ -681,6 +689,8 @@ const BaselineBrowserClientMessageSchema = z
       ...browserRequestBase,
       command: BrowserCdpCommandSchema,
       actorToken: z.uuid().optional(),
+      /** Host-only attribution for Page.navigate and Opensteer.openTab. */
+      navigationId: z.uuid().optional(),
       type: z.literal("cdp.command"),
     }),
     /**
@@ -762,6 +772,8 @@ const BrowserSnapshotSchema = z
     passkeyConsumerToken: z.uuid().optional(),
     targetedStreamingVersion: z.literal(1).optional(),
     inputLanesVersion: z.literal(1).optional(),
+    /** Runtime → Host only; permits Host-issued navigationId on navigation commands. */
+    navigationAttributionVersion: z.literal(1).optional(),
     /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
     /** Only v2 carries this flag; v1 implies an isolated engine clipboard. */
@@ -801,11 +813,22 @@ export const BrowserRuntimeActivitySchema = z.strictObject({
 });
 export type BrowserRuntimeActivity = z.infer<typeof BrowserRuntimeActivitySchema>;
 
+/** Runtime → Host only: one fact per Host-issued navigation, independent of surface churn. */
+export const BrowserNavigationCommittedSchema = z.strictObject({
+  type: z.literal("navigation.committed"),
+  navigationId: z.uuid(),
+  surfaceId: BrowserSurfaceIdSchema,
+  documentId: z.string().min(1).max(255),
+  url: z.url(),
+});
+export type BrowserNavigationCommitted = z.infer<typeof BrowserNavigationCommittedSchema>;
+
 const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   BrowserPasskeyOfferSchema,
   BrowserPasskeyWithdrawnSchema,
   BrowserPasskeyNoticeSchema,
   BrowserRuntimeActivitySchema,
+  BrowserNavigationCommittedSchema,
   BrowserSnapshotSchema,
   z.strictObject({
     type: z.literal("browser.workspace-tabs"),
@@ -1214,6 +1237,47 @@ export const BrowserTabIconInputSchema = z.strictObject({
 export const BrowserTabIconResultSchema = z.object({ favicon: BrowserFaviconSchema.nullable() });
 export type BrowserTabIconInput = z.infer<typeof BrowserTabIconInputSchema>;
 export type BrowserTabIconResult = z.infer<typeof BrowserTabIconResultSchema>;
+
+/** A browsing-history address: web only, without credentials. */
+export const BrowserHistoryUrlSchema = z
+  .url()
+  .max(2048)
+  .refine((value) => {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+  }, "Only HTTP and HTTPS addresses without credentials enter browsing history.");
+export const browserHistoryMaxEntries = 300;
+export const browserHistoryRetentionMs = 90 * 86_400_000;
+/** A page a person loaded in one browser profile, at the address it committed. */
+export const BrowserHistoryEntrySchema = z.object({
+  url: BrowserHistoryUrlSchema,
+  title: z.string().max(200),
+  typedCount: z.number().int().nonnegative().safe(),
+  visitCount: z.number().int().positive().safe(),
+  lastVisitAt: z.iso.datetime(),
+});
+export type BrowserHistoryEntry = z.infer<typeof BrowserHistoryEntrySchema>;
+export const BrowserHistoryInputSchema = z.strictObject({ profileId: BrowserProfileIdSchema });
+/** A profile's history, newest first, and the retained icon of each site in it. */
+export const BrowserHistorySchema = z.object({
+  entries: z.array(BrowserHistoryEntrySchema).max(browserHistoryMaxEntries),
+  icons: z
+    .array(z.object({ origin: BrowserHistoryUrlSchema, iconRef: BrowserTabIconRefSchema }))
+    .max(browserHistoryMaxEntries),
+});
+export type BrowserHistory = z.infer<typeof BrowserHistorySchema>;
+export const browserHistoryIconsMaxRefs = 24;
+export const BrowserHistoryIconsInputSchema = z.strictObject({
+  profileId: BrowserProfileIdSchema,
+  iconRefs: z.array(BrowserTabIconRefSchema).min(1).max(browserHistoryIconsMaxRefs),
+});
+/** The asked icons the profile's history still retains; a ref it no longer holds is absent. */
+export const BrowserHistoryIconsSchema = z.object({
+  icons: z
+    .array(z.object({ iconRef: BrowserTabIconRefSchema, favicon: BrowserFaviconSchema }))
+    .max(browserHistoryIconsMaxRefs),
+});
+export type BrowserHistoryIcons = z.infer<typeof BrowserHistoryIconsSchema>;
 
 export const browserHostMethods = {
   openTab: "Opensteer.openTab",
@@ -1767,6 +1831,8 @@ const browserTabOpenFields = {
     )
     .optional(),
   url: BrowserInitialNavigationUrlSchema.optional(),
+  /** The person typed `url`; their browsing history ranks it for completion. */
+  typed: z.boolean().optional(),
   idempotencyKey: z.string().min(1).max(255),
 };
 export const BrowserSessionTabOpenCommandSchema = z.strictObject({

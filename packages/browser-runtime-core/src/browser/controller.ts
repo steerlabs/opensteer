@@ -363,9 +363,12 @@ export class BrowserController {
     };
     if (!previous) {
       this.openedTabs.set(navigation.operationKey, { fingerprint, tabId: result.surfaceId });
-      page.submitNavigation(
-        navigation.url === undefined ? "about:blank" : safeNavigationUrl(navigation.url),
-      );
+      const url = navigation.url === undefined ? "about:blank" : safeNavigationUrl(navigation.url);
+      if (navigation.navigationId && this.claims.navigationAttributionVersion === 1)
+        void this.ledger
+          .navigate(result.surfaceId, url, navigation.navigationId)
+          .catch(() => undefined);
+      else page.submitNavigation(url);
     }
     return result;
   }
@@ -407,6 +410,9 @@ export class BrowserController {
       surfaces,
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
+      ...(this.claims.navigationAttributionVersion === 1
+        ? { navigationAttributionVersion: 1 }
+        : {}),
       ...(this.editing
         ? {
             editingVersion: this.claims.editingVersion,
@@ -566,6 +572,14 @@ export class BrowserController {
   }
 
   private enqueue(message: BrowserClientMessage): Promise<void> {
+    if (
+      (message.type === "navigation.go" || message.type === "cdp.command") &&
+      message.navigationId !== undefined &&
+      this.claims.navigationAttributionVersion !== 1
+    )
+      return this.enqueueFailure(
+        new BrowserRuntimeError("forbidden", "Browser navigation attribution was not negotiated."),
+      );
     const extension =
       editingMessageKinds.has(message.type) ||
       (message.type === "input.key" &&
@@ -1460,7 +1474,11 @@ export class BrowserController {
 
     if (message.type === "navigation.go") {
       this.ledger.recordHumanActivity(active.surface.id, { kind: "navigation" });
-      await cdp.send("Page.navigate", { url: safeNavigationUrl(message.url) });
+      await this.ledger.navigate(
+        active.surface.id,
+        safeNavigationUrl(message.url),
+        message.navigationId,
+      );
       return;
     }
     if (message.type === "navigation.reload") {
@@ -2140,6 +2158,11 @@ export class BrowserController {
   }
 
   private onLedgerEvent(event: SurfaceLedgerEvent): void {
+    if (event.type === "navigation.committed") {
+      if (!this.closed && this.claims.navigationAttributionVersion === 1)
+        void this.send(event).catch(() => undefined);
+      return;
+    }
     if (
       !this.closed &&
       this.initialSnapshotQueued &&
@@ -2207,28 +2230,33 @@ export class BrowserController {
     void this.send({ dialog, type: "browser.dialog.changed" }).catch(() => undefined);
   }
 
+  private publishSurfaceSnapshot(): Promise<void> {
+    const surfaces = this.ledger.snapshot();
+    this.deliveredSurfaces = new Set(surfaces.map((surface) => surface.id));
+    const shown = surfaces.find((surface) => surface.active)?.id ?? null;
+    const turned = shown !== this.deliveredActive;
+    this.deliveredActive = shown;
+    const sent = this.send({
+      surfaces,
+      type: "browser.surfaces.changed",
+      inventoryRevision: this.ledger.inventoryRevision,
+    });
+    if (turned) void sent.then(() => this.screencast.viewersShown(shown)).catch(() => undefined);
+    const held = this.heldDialog;
+    if (held && this.deliveredSurfaces.has(held.surfaceId)) {
+      this.heldDialog = null;
+      void this.send({ dialog: held, type: "browser.dialog.changed" }).catch(() => undefined);
+    }
+    return sent;
+  }
+
   private queueLatestSurfaceSnapshot(): void {
     if (this.closed || this.surfaceSnapshotQueued) return;
     this.surfaceSnapshotQueued = true;
     queueMicrotask(() => {
       const revision = this.surfaceRevision;
-      const surfaces = this.ledger.snapshot();
-      this.deliveredSurfaces = new Set(surfaces.map((surface) => surface.id));
-      const shown = surfaces.find((surface) => surface.active)?.id ?? null;
-      const turned = shown !== this.deliveredActive;
-      this.deliveredActive = shown;
-      const sent = this.send({
-        surfaces,
-        type: "browser.surfaces.changed",
-        inventoryRevision: this.ledger.inventoryRevision,
-      });
+      const sent = this.publishSurfaceSnapshot();
       this.surfaceSnapshotTail = sent;
-      if (turned) void sent.then(() => this.screencast.viewersShown(shown)).catch(() => undefined);
-      const held = this.heldDialog;
-      if (held && this.deliveredSurfaces.has(held.surfaceId)) {
-        this.heldDialog = null;
-        void this.send({ dialog: held, type: "browser.dialog.changed" }).catch(() => undefined);
-      }
       void sent
         .catch(() => undefined)
         .finally(() => {
@@ -2241,10 +2269,12 @@ export class BrowserController {
   private async sendFrame(frame: Parameters<BrowserControllerSink["sendFrame"]>[0]): Promise<void> {
     await Promise.resolve();
     // Geometry must be announced before its pixels, even when another list is in flight.
-    while (this.surfaceSnapshotQueued) {
-      await this.surfaceSnapshotTail;
+    let announced: Promise<void>;
+    do {
+      announced = this.surfaceSnapshotTail;
+      await announced;
       await Promise.resolve();
-    }
+    } while (this.surfaceSnapshotQueued || announced !== this.surfaceSnapshotTail);
     const surface = this.ledger.binding(frame.header.surfaceId)?.surface;
     if (surface?.geometryRevision !== frame.header.geometryRevision) return;
     if (!this.closed)
@@ -2289,6 +2319,18 @@ export class BrowserController {
       command.sessionId === undefined
         ? null
         : this.cdpRouter.attachedTargetId(this.claims.sessionId, command.sessionId);
+    if (message.navigationId && command.method === "Page.navigate" && pageTargetId) {
+      this.cdpRouter.admitPageCommand(this.claims.sessionId, command);
+      const surfaceId = this.ledger.surfaceIdForTarget(pageTargetId);
+      if (!surfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      const result = await this.ledger.navigate(
+        surfaceId,
+        safeNavigationUrl(z.string().parse(command.parameters?.url)),
+        message.navigationId,
+      );
+      await this.send({ type: "cdp.result", requestId: message.requestId, result });
+      return;
+    }
     if (pageTargetId) this.ledger.recordAgentCommand(pageTargetId);
     const attachTargetId =
       command.method === "Target.attachToTarget" && typeof command.parameters?.targetId === "string"
@@ -2520,7 +2562,7 @@ export class BrowserController {
       ).safeParse(parameters);
       if (!parsed.success)
         throw new BrowserRuntimeError("bad_message", "Invalid tab-open parameters.");
-      const { idempotencyKey, url: requestedUrl } = parsed.data;
+      const { idempotencyKey, url: requestedUrl, viewport } = parsed.data;
       const url = requestedUrl === undefined ? undefined : safeNavigationUrl(requestedUrl);
       const fingerprint = createHash("sha256")
         .update(JSON.stringify({ url: requestedUrl }))
@@ -2537,6 +2579,7 @@ export class BrowserController {
         const opened = await this.ledger.openSurface({
           activate: false,
           ...(surfaceId ? { surfaceId } : {}),
+          ...(viewport ? { viewport: { devicePixelRatio: 1, ...viewport } } : {}),
         });
         tabId = opened.id;
         // Retain the identity before navigation: a lost response must never create another page.
@@ -2547,7 +2590,7 @@ export class BrowserController {
           const binding = this.ledger.binding(tabId);
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
           this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
-          void binding.cdp.send("Page.navigate", { url }).catch(() => undefined);
+          void this.ledger.navigate(tabId, url, message.navigationId).catch(() => undefined);
         }
       }
       // A coalesced inventory notice may still be in flight. Publish this replacement

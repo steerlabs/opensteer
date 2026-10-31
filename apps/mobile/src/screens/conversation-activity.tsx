@@ -31,6 +31,7 @@ export type ConversationActivityScreenProps = StaticScreenProps<{
   readonly threadId: string;
   /** The reply to show, by its turn's key. Absent, the reply under way or else the latest. */
   readonly turnKey?: string | undefined;
+  readonly messageId?: string | undefined;
 }>;
 
 /**
@@ -49,6 +50,7 @@ export function ConversationActivityScreen(props: ConversationActivityScreenProp
   }
   return (
     <ReplyActivity
+      messageId={props.route.params.messageId ?? null}
       deploymentId={deploymentId}
       hostClient={selection.hostClient}
       threadId={threadId}
@@ -62,6 +64,7 @@ function ReplyActivity(props: {
   readonly hostClient: HostClient;
   readonly threadId: string;
   readonly turnKey: string | null;
+  readonly messageId: string | null;
 }): ReactNode {
   const { deploymentId, hostClient, threadId, turnKey } = props;
   const navigation = useNavigation();
@@ -142,6 +145,7 @@ function ReplyActivity(props: {
           </AppText>
         ) : (
           <ConversationSteps
+            reveal={props.messageId}
             entries={activity.steps}
             highlightRequestId={null}
             live={live}

@@ -997,7 +997,7 @@ describe("runnerWebSocketUrl", () => {
     try {
       await connection.run(abort.signal);
       expect(descriptorCapabilities).toEqual(
-        expect.arrayContaining(["thread-title-v1", "thread-icon-v1", "screen-show-v1"]),
+        expect.arrayContaining(["thread-title-v1", "thread-icon-v1"]),
       );
       expect(descriptorModules).toEqual({
         shell: {

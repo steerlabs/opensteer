@@ -248,6 +248,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       clipboard: browser.editing === 1 || browser.clipboard === true,
       targetControl: browser.targetControl === 1,
       navigationVersion: browser.navigationVersion === 1,
+      navigationAttributionVersion: browser.navigationAttributionVersion === 1,
       workspaceTabRestoreVersion: browser.workspaceTabRestoreVersion === 1,
       captureRegion: browser.captureRegion === 1,
       rasterDemand: browser.rasterDemand === 1,

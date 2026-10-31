@@ -1,4 +1,13 @@
-import { DesktopWebLinkDeliverySchema, DesktopWebLinkSchema } from "@opensteer/protocol/desktop";
+import {
+  type DesktopAgentPhoneAdbBridge,
+  DesktopAgentPhoneAdbOpenSchema,
+  DesktopAgentPhoneAdbOpenResultSchema,
+  DesktopAgentPhoneAdbCallSchema,
+  DesktopAgentPhoneAdbResultSchema,
+  DesktopAgentPhoneAdbSessionSchema,
+  DesktopWebLinkDeliverySchema,
+  DesktopWebLinkSchema,
+} from "@opensteer/protocol/desktop";
 import type { DictationPort } from "@opensteer/protocol/dictation";
 import type { ViewerClipboardBridge } from "@opensteer/client/editing";
 import {
@@ -337,6 +346,35 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       ipcRenderer.removeListener(desktopBridgeChannels.localVisibilityChanged, receive);
     };
   },
+  agentPhoneAdb: {
+    open: async (input) =>
+      DesktopAgentPhoneAdbOpenResultSchema.parse(
+        await invoke(
+          desktopBridgeChannels.agentPhoneAdbOpen,
+          DesktopAgentPhoneAdbOpenSchema.parse(input),
+        ),
+      ),
+    call: async (input) =>
+      DesktopAgentPhoneAdbResultSchema.parse(
+        await invoke(
+          desktopBridgeChannels.agentPhoneAdbCall,
+          DesktopAgentPhoneAdbCallSchema.parse(input),
+        ),
+      ),
+    close: async (input) => {
+      await invoke(
+        desktopBridgeChannels.agentPhoneAdbClose,
+        DesktopAgentPhoneAdbSessionSchema.parse(input),
+      );
+    },
+    onAuthorize: (listener) => {
+      const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
+        listener(DesktopAgentPhoneAdbSessionSchema.parse(value));
+      ipcRenderer.on(desktopBridgeChannels.agentPhoneAdbAuthorize, receive);
+      return () =>
+        ipcRenderer.removeListener(desktopBridgeChannels.agentPhoneAdbAuthorize, receive);
+    },
+  } satisfies DesktopAgentPhoneAdbBridge,
   readAgentPhoneArtifact: async () =>
     DesktopReadAgentPhoneArtifactResultSchema.parse(
       await invoke<DesktopAgentPhoneArtifact | null>(desktopBridgeChannels.readAgentPhoneArtifact),

@@ -322,7 +322,10 @@ function Grid(props: {
     <Screen edgeToEdge>
       <SurfaceGrid
         active={props.active}
-        emptyDetail="Tabs and apps this conversation uses appear here."
+        empty={{
+          title: "No tabs yet",
+          detail: "Tabs and apps this conversation uses appear here.",
+        }}
         header={<View style={styles.notices}>{props.notices}</View>}
         hostClient={props.hostClient}
         loading={props.loading && props.tiles.length === 0}
@@ -1243,14 +1246,10 @@ const styles = StyleSheet.create({
     borderTopRightRadius: radius.xl,
     borderTopWidth: StyleSheet.hairlineWidth,
     bottom: 0,
-    elevation: 12,
+    zIndex: 12,
     left: 0,
     position: "absolute",
     right: 0,
-    shadowColor: "#000",
-    shadowOffset: { height: -4, width: 0 },
-    shadowOpacity: 0.45,
-    shadowRadius: 16,
     top: "14%",
   },
 });

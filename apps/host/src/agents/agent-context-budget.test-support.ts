@@ -1,21 +1,14 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import {
-  createId,
-  RunnerCapabilitySchema,
-  type AgentCapabilityProfileId,
-  type Thread,
-  type Workspace,
-} from "@opensteer/core";
+import type { AgentCapabilityProfileId } from "@opensteer/core";
 import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 import { IntegrationToolsMcpService } from "../integrations/integration-tools-mcp-service.js";
-import type { AgentControlRunScope } from "./agent-control-service.js";
 
 type AgentOptions = ConstructorParameters<typeof AgentToolsMcpService>[0];
 type IntegrationOptions = ConstructorParameters<typeof IntegrationToolsMcpService>[0];
 
 export async function measureMcpContext(profileId: AgentCapabilityProfileId) {
-  // Measure the complete eligible inventory, including negotiated tools, without executing handlers.
+  // Registration must not call handler dependencies or require live credentials.
   const unavailable = new Proxy(
     {},
     {
@@ -24,18 +17,10 @@ export async function measureMcpContext(profileId: AgentCapabilityProfileId) {
       },
     },
   );
-  const threadId = createId("thread");
-  const run = { threadId, requestedBy: createId("user") } as AgentControlRunScope;
   const product = new AgentToolsMcpService({
-    allowMainChatRunScreenShow: true,
-    runnerCapabilities: async () => RunnerCapabilitySchema.options,
     agentControl: unavailable as AgentOptions["agentControl"],
     publicUrl: new URL("http://localhost"),
-    store: {
-      getThreadForOwner: async () =>
-        ({ id: threadId, role: "conversation", capabilityProfileId: profileId }) as Thread,
-      findMainWorkspaceForOwner: async () => ({ homeThreadId: threadId }) as Workspace,
-    },
+    store: unavailable as AgentOptions["store"],
     tokens: unavailable as AgentOptions["tokens"],
   });
   const integrations = new IntegrationToolsMcpService({
@@ -55,7 +40,6 @@ export async function measureMcpContext(profileId: AgentCapabilityProfileId) {
     product: await product.createServer({
       control: unavailable as AgentOptions["agentControl"],
       profileId,
-      run,
       scope: "run",
       subjectId: "context-budget",
       toolContractVersion: null,

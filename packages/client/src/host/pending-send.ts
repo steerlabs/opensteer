@@ -88,7 +88,6 @@ export function createPendingSendStore(storage: PendingSendStorage) {
     ) {
       throw new Error("The saved pending send does not match this thread.");
     }
-    Reflect.deleteProperty(result.data, "screenPresentation");
     return result.data;
   };
   return {
@@ -97,9 +96,7 @@ export function createPendingSendStore(storage: PendingSendStorage) {
       return raw === null ? null : parse(raw, scope);
     },
     claim(scope: PendingSendScope, command: PendingSendCommand): PendingSendCommand {
-      const durable = { ...command };
-      Reflect.deleteProperty(durable, "screenPresentation");
-      const parsed = parse(JSON.stringify(durable), scope);
+      const parsed = parse(JSON.stringify(command), scope);
       const previous = this.read(scope);
       if (previous !== null) {
         if (JSON.stringify(previous) !== JSON.stringify(parsed)) {

@@ -367,8 +367,10 @@ describe("Host signing keys", () => {
         capabilities: [
           "chat-attachments",
           "voice-v1",
+          "voice-agent-v1",
           "thread-titles-v1",
           "task-marks-v1",
+          "task-family-v1",
           "snapshot-messages-omit-v1",
           "shared-task-done-v1",
           "iphone-apps-v1",
@@ -427,8 +429,10 @@ describe("Host signing keys", () => {
         capabilities: [
           "chat-attachments",
           "voice-v1",
+          "voice-agent-v1",
           "thread-titles-v1",
           "task-marks-v1",
+          "task-family-v1",
           "snapshot-messages-omit-v1",
           "shared-task-done-v1",
           "iphone-apps-v1",
@@ -2175,6 +2179,43 @@ describe("thread event history route", () => {
       const missing = await injectRpcRequest(app, "thread.events.list", { threadId });
       expect(missing.statusCode).toBe(404);
       expect(missing.json()).toMatchObject({ error: { code: "not_found" } });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("browser start command attribution", () => {
+  it("attributes only an authenticated person's explicit start", async () => {
+    const ownerId = createId("user");
+    const workspaceId = createId("workspace");
+    const profileId = "bpr_00000000-0000-4000-8000-000000000001";
+    const start = vi
+      .fn()
+      .mockRejectedValue(new OpensteerError({ code: "conflict", message: "test start" }));
+    const app = await createHostServer({
+      authenticator: { authenticateUser: async () => ownerId } as never,
+      browser: { start } as never,
+      discovery: testDiscovery,
+    });
+    try {
+      const response = await injectRpcRequest(app, "commands.dispatch", {
+        type: "browser.session.start",
+        workspaceId,
+        idempotencyKey: "person-browser-start",
+        input: { profileId, initialUrl: "https://person.example/" },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(start).toHaveBeenCalledExactlyOnceWith(
+        {
+          ownerId,
+          workspaceId,
+          profileId,
+          initialUrl: "https://person.example/",
+          reuseExisting: false,
+        },
+        { typed: false },
+      );
     } finally {
       await app.close();
     }

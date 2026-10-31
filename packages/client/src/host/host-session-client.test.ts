@@ -1455,6 +1455,27 @@ describe("HttpHostClient harness authentication", () => {
 });
 
 describe("HttpHostClient durable realtime", () => {
+  it("routes viewer-wide history notices to the history cache", async () => {
+    const workspace = makeWorkspace();
+    const socket = new FakeSocket();
+    const client = createHttpHostClient({
+      fetch: async () => json(bootstrap([workspace])),
+      refreshIntervalMs: 0,
+      webSocketFactory: () => socket,
+    });
+    try {
+      await client.load();
+      socket.open();
+      socket.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
+      const changed = vi.spyOn(client.browserHistory, "changed");
+      const profileId = createId("browserProfile");
+      socket.receive({ type: "host.browser-history-changed", profileId });
+      expect(changed).toHaveBeenCalledExactlyOnceWith(profileId);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("invalidates Trigger reads when a program-only occurrence changes", async () => {
     const workspace = makeWorkspace();
     const sockets: FakeSocket[] = [];
@@ -1479,6 +1500,251 @@ describe("HttpHostClient durable realtime", () => {
     expect(client.getSnapshot().triggerRevision).toBe(before + 1);
     expect(listener).toHaveBeenCalled();
     client.dispose();
+  });
+
+  it.each([true, false])(
+    "holds every open child however long the history, without paging settled history (family %s)",
+    async (family) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const mock = new MockHostClient({ latencyMs: 0 });
+      const seed = Object.values(mock.getSnapshot().assignments).find((a) => a.status === "open")!;
+      const older = { ...seed, parentThreadId: thread.id };
+      const recent = Array.from({ length: 100 }, () => ({
+        ...older,
+        id: createId("delegation"),
+        status: "completed" as const,
+        finishedAt: now,
+      }));
+      const reads: { readonly open: unknown; readonly before: unknown }[] = [];
+      const client = createHttpHostClient({
+        capabilities: family ? ["task-family-v1"] : [],
+        refreshIntervalMs: 0,
+        webSocketFactory: () => new FakeSocket(),
+        fetch: async (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          if (url.pathname === "/v1/rpc/thread.assignments.list") {
+            const payload = rpcPayload(url, init);
+            reads.push({ open: payload.open, before: payload.before });
+            // The open set spans two pages; history has more than the newest page.
+            const assignments = payload.open ? (payload.before ? [older] : []) : recent;
+            const more = payload.open ? !payload.before : true;
+            return json({
+              assignments,
+              threadId: thread.id,
+              window: {
+                byteCount: 1,
+                hasMore: more,
+                itemCount: assignments.length,
+                nextBefore: more ? "older" : null,
+                totalItems: 101,
+              },
+            });
+          }
+          return json({ ...bootstrap([workspace]), threads: [thread] });
+        },
+      });
+      await client.load();
+      client.observeThread(thread.id);
+      await vi.waitFor(() => expect(reads).toHaveLength(family ? 3 : 1), { timeout: 1000 });
+      await vi.waitFor(
+        () =>
+          expect(Object.keys(client.getSnapshot().assignments)).toHaveLength(family ? 101 : 100),
+        { timeout: 1000 },
+      );
+      expect(reads.filter(({ open }) => open === undefined)).toEqual([
+        { open: undefined, before: undefined },
+      ]);
+      expect(client.getSnapshot().assignments[older.id] !== undefined).toBe(family);
+      client.dispose();
+      mock.dispose();
+    },
+  );
+
+  it.each([true, false])(
+    "loads task automations only with capability (%s), coalescing notices and preserving unchanged arrays",
+    async (enabled) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const socket = new FakeSocket();
+      const mock = new MockHostClient({ latencyMs: 0 });
+      const listed = await mock.rpc["triggers.list"]({});
+      if (!listed.ok) throw new Error(listed.error.message);
+      const triggers = listed.data.triggers
+        .filter((t) => t.kind === "schedule" && t.status === "active")
+        .slice(0, 1);
+      let reads = 0;
+      let hold: ReturnType<typeof Promise.withResolvers<Response>> | undefined;
+      const client = createHttpHostClient({
+        capabilities: enabled ? ["task-family-v1"] : [],
+        refreshIntervalMs: 0,
+        webSocketFactory: () => socket,
+        fetch: async (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          if (url.pathname === "/v1/rpc/triggers.list") {
+            reads++;
+            expect(rpcPayload(url, init)).toEqual({ anchorThreadId: thread.id });
+            return hold ? hold.promise : json({ triggers });
+          }
+          return json(bootstrap([workspace]));
+        },
+      });
+      await client.load();
+      socket.open();
+      socket.receive({
+        type: "host.snapshot",
+        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      });
+      client.observeThread(thread.id);
+      if (!enabled) {
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        await client.refresh();
+        expect(reads).toBe(0);
+      } else {
+        await vi.waitFor(
+          () => expect(client.getSnapshot().threadAutomations[thread.id]).toHaveLength(1),
+          { timeout: 1000 },
+        );
+        const held = client.getSnapshot().threadAutomations[thread.id];
+        hold = Promise.withResolvers<Response>();
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        expect(reads).toBe(2);
+        const answer = hold;
+        hold = undefined;
+        answer.resolve(json({ triggers }));
+        await vi.waitFor(() => expect(reads).toBe(3), { timeout: 1000 });
+        expect(client.getSnapshot().threadAutomations[thread.id]).toBe(held);
+        socket.receive({
+          type: "host.snapshot",
+          snapshot: { ...workspaceSnapshot(workspace, "1"), threads: [thread] },
+        });
+        await vi.waitFor(() => expect(reads).toBe(4), { timeout: 1000 });
+      }
+      client.dispose();
+      mock.dispose();
+    },
+  );
+
+  it("reads a conversation's automations afresh when it is opened again, after a failure, and after a replayed reconnect", async () => {
+    const workspace = makeWorkspace();
+    const a = makeThread(workspace.id);
+    const b = makeThread(workspace.id);
+    const mock = new MockHostClient({ latencyMs: 0 });
+    const listed = await mock.rpc["triggers.list"]({});
+    if (!listed.ok) throw new Error(listed.error.message);
+    const trigger = listed.data.triggers.find((t) => t.kind === "schedule")!;
+    const reads: string[] = [];
+    let fail = false;
+    let gate: Promise<void> | null = null;
+    const sockets: FakeSocket[] = [];
+    const client = createHttpHostClient({
+      capabilities: ["task-family-v1"],
+      random: () => 0,
+      reconnectBaseDelayMs: 1,
+      reconnectMaxDelayMs: 2,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      fetch: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname === "/v1/rpc/triggers.list") {
+          const anchor = String(rpcPayload(url, init).anchorThreadId);
+          reads.push(anchor);
+          if (gate !== null && anchor === a.id) {
+            const held = gate;
+            gate = null;
+            await held;
+          }
+          if (fail) return json({ error: { code: "internal", message: "down" } }, 500);
+          // Named for the read that answered, so a test can see which one it holds.
+          return json({
+            triggers:
+              anchor === a.id
+                ? [{ ...trigger, anchorThreadId: a.id, name: `Read ${reads.length}` }]
+                : [],
+          });
+        }
+        return json(bootstrap([workspace]));
+      },
+    });
+    await client.load();
+    sockets[0]!.open();
+    sockets[0]!.receive({
+      type: "host.snapshot",
+      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [a, b] },
+    });
+    sockets[0]!.receive({
+      sequence: sequence("0"),
+      type: "host.synchronized",
+      workspaceId: workspace.id,
+    });
+    const held = () => client.getSnapshot().threadAutomations[a.id]?.[0]?.name;
+    const holds = async (name: string) =>
+      vi.waitFor(() => expect(held(), `holds ${name}`).toBe(name), { timeout: 1000 });
+
+    client.activateThread(a.id);
+    await holds("Read 1");
+    // Opened again after another conversation: read afresh.
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    await vi.waitFor(() => expect(held()).toMatch(/^Read [2-9]/u), { timeout: 1000 });
+
+    // A failed read keeps what was held and is retried when it is opened again.
+    const readsOfA = () => reads.filter((id) => id === a.id).length;
+    const beforeFailure = readsOfA();
+    fail = true;
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    await vi.waitFor(() => expect(readsOfA(), "the failing read").toBe(beforeFailure + 1), {
+      timeout: 1000,
+    });
+    const failed = reads.length;
+    expect(held()).toMatch(/^Read /u);
+    fail = false;
+    await vi.waitFor(
+      () => {
+        client.activateThread(b.id);
+        client.activateThread(a.id);
+        expect(Number(held()?.slice(5))).toBeGreaterThan(failed);
+      },
+      { timeout: 1000 },
+    );
+
+    // Opened again while a read from before is still out: that answer may
+    // predate a change made meanwhile, so one more read follows it.
+    const release = Promise.withResolvers<void>();
+    gate = release.promise;
+    const beforeReopen = readsOfA();
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    await vi.waitFor(() => expect(readsOfA(), "the held read").toBe(beforeReopen + 1), {
+      timeout: 1000,
+    });
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    release.resolve();
+    await vi.waitFor(() => expect(readsOfA(), "the read after it").toBe(beforeReopen + 2), {
+      timeout: 1000,
+    });
+
+    // A triggers notice lost while away is recovered when the stream replays.
+    const before = held();
+    sockets[0]!.serverClose();
+    await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 1000 });
+    sockets[1]!.open();
+    sockets[1]!.receive({
+      sequence: sequence("0"),
+      type: "host.synchronized",
+      workspaceId: workspace.id,
+    });
+    await vi.waitFor(() => expect(held()).not.toBe(before), { timeout: 1000 });
+    client.dispose();
+    mock.dispose();
   });
 
   it("loads conversation browser facts separately and preserves other scopes across bootstrap", async () => {
@@ -6121,135 +6387,6 @@ describe("HttpHostClient voice capability", () => {
   });
 });
 
-describe("HttpHostClient screen presentation", () => {
-  it.each([false, true])(
-    "opts in only on Main when the Host supports it (%s)",
-    async (supported) => {
-      const main = makeWorkspace();
-      const other = { ...makeWorkspace("Project"), kind: "specialized" as const };
-      const sockets: FakeSocket[] = [];
-      const platform = fakeLifecycle({ network: "online", visibility: "foreground" });
-      const client = createHttpHostClient({
-        capabilities: supported ? ["screen-show-v1"] : [],
-        lifecycle: platform.lifecycle,
-        refreshIntervalMs: 0,
-        fetch: async () => json(bootstrap([main, other])),
-        webSocketFactory: () => {
-          const socket = new FakeSocket();
-          sockets.push(socket);
-          return socket;
-        },
-      });
-      try {
-        await client.load();
-        client.activateWorkspace(other.id);
-        for (const socket of sockets) socket.open();
-        const mainSocket = sockets.find((socket) => parseSent(socket, 0).workspaceId === main.id)!;
-        const otherSocket = sockets.find(
-          (socket) => parseSent(socket, 0).workspaceId === other.id,
-        )!;
-        expect(mainSocket).toBeDefined();
-        expect(otherSocket).toBeDefined();
-        expect(parseSent(mainSocket, 0).screenShow).toBe(supported ? true : undefined);
-        expect(parseSent(otherSocket, 0).screenShow).toBeUndefined();
-        const ready = { type: "host.screen.ready", endpointRef: "a".repeat(64), serverTime: 100 };
-        otherSocket.receiveRaw(ready);
-        expect(client.screenPresentation.getEndpoint()).toBeNull();
-        mainSocket.receiveRaw(ready);
-        expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe(
-          supported ? ready.endpointRef : undefined,
-        );
-        platform.enterBackground();
-        expect(client.screenPresentation.getEndpoint()).toBeNull();
-        mainSocket.receiveRaw(ready);
-        expect(client.screenPresentation.getEndpoint()).toBeNull();
-        platform.enterForeground();
-        if (supported) {
-          expect(mainSocket.closeEvents).toEqual([{ code: 1000, reason: "Presentation resumed" }]);
-          const replacement = sockets.at(-1)!;
-          replacement.open();
-          mainSocket.receiveRaw(ready);
-          expect(client.screenPresentation.getEndpoint()).toBeNull();
-          replacement.receiveRaw({ ...ready, endpointRef: "b".repeat(64) });
-          expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe("b".repeat(64));
-        } else {
-          expect(mainSocket.closeEvents).toEqual([]);
-        }
-      } finally {
-        client.dispose();
-      }
-    },
-  );
-
-  it("rejects malformed screen frames without logging routing credentials", async () => {
-    const main = makeWorkspace();
-    const socket = new FakeSocket();
-    const diagnostics = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const client = createHttpHostClient({
-      capabilities: ["screen-show-v1"],
-      refreshIntervalMs: 0,
-      fetch: async () => json(bootstrap([main])),
-      webSocketFactory: () => socket,
-    });
-    try {
-      await client.load();
-      socket.open();
-      socket.receiveRaw({
-        type: "host.screen.show",
-        endpointRef: "PRIVATE-ENDPOINT-SENTINEL",
-        target: { conversationId: "PRIVATE-TARGET-SENTINEL" },
-      });
-      expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
-      expect(client.screenPresentation.getEndpoint()).toBeNull();
-      expect(diagnostics).toHaveBeenCalledOnce();
-      expect(JSON.stringify(diagnostics.mock.calls)).not.toContain("PRIVATE-");
-    } finally {
-      client.dispose();
-      diagnostics.mockRestore();
-    }
-  });
-
-  it("replaces a clock-poisoned Main endpoint and recovers without accepting its old readiness", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(100_000);
-    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
-    const main = makeWorkspace();
-    const sockets: FakeSocket[] = [];
-    const client = createHttpHostClient({
-      capabilities: ["screen-show-v1"],
-      refreshIntervalMs: 0,
-      fetch: async () => json(bootstrap([main])),
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    const stop = client.screenPresentation.subscribe(vi.fn());
-    try {
-      await client.load();
-      const first = sockets[0]!;
-      first.open();
-      first.receive({ type: "host.screen.ready", endpointRef: "a".repeat(64), serverTime: 1_000 });
-      expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe("a".repeat(64));
-      vi.setSystemTime(160_000);
-      expect(client.screenPresentation.getEndpoint()).toBeNull();
-      expect(first.closeEvents).toEqual([{ code: 1000, reason: "Presentation clock refreshed" }]);
-      expect(sockets).toHaveLength(2);
-      const second = sockets[1]!;
-      second.open();
-      first.receive({ type: "host.screen.ready", endpointRef: "a".repeat(64), serverTime: 2_000 });
-      expect(client.screenPresentation.getEndpoint()).toBeNull();
-      second.receive({ type: "host.screen.ready", endpointRef: "b".repeat(64), serverTime: 2_000 });
-      expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe("b".repeat(64));
-    } finally {
-      stop();
-      client.dispose();
-      clock.mockRestore();
-    }
-  });
-});
-
 describe("HttpHostClient title capability", () => {
   it("refreshes capability evidence, strips generation for older Hosts and refuses unavailable or invalid renames", async () => {
     const workspace = makeWorkspace();
@@ -10392,6 +10529,8 @@ describe("HttpHostClient owner views", () => {
         const url = new URL(input instanceof Request ? input.url : input.toString());
         if (url.pathname.endsWith("/commands.dispatch")) {
           const payload = rpcPayload(url, init);
+          if (payload.type === "browser.history.clear" || payload.type === "browser.history.remove")
+            return json({ type: payload.type });
           if (
             typeof payload.type === "string" &&
             /^(computer\.view|browser\.tab)\./u.test(payload.type)
@@ -10993,7 +11132,7 @@ describe("HttpHostClient owner views", () => {
     host.client.dispose();
   });
 
-  it("finishes an open the Host granted although recent sites were cleared meanwhile, and refuses one for a viewer who left", async () => {
+  it("finishes an open the Host granted although history was cleared meanwhile, and refuses one for a viewer who left", async () => {
     const { machine, view } = await ownerViewWorld();
     const sessionId = createBrowserSessionId();
     const workspaceId = WorkspaceIdSchema.parse(createId("workspace"));
@@ -11038,19 +11177,20 @@ describe("HttpHostClient owner views", () => {
     const viewOpen = host.client.openComputerView(view.machineId, view.target);
     const tabOpen = host.client.openBrowserTab(
       { identity: { kind: "guest" } },
-      { url: "https://example.com/" },
+      { url: "https://example.com/", typed: true },
     );
-    // A recent site recorded before the clear is fenced; the domain answers are not.
-    const epoch = host.client.recentSites.epoch;
-    host.client.recentSites.clear(personal);
-    host.client.recentSites.record(personal, "https://late.example/", epoch);
+    expect(host.commands.find((command) => command.type === "browser.tab.open")).toMatchObject({
+      typed: true,
+    });
+    // Clearing history has no effect on unrelated domain answers.
+    await host.client.browserHistory.clear(personal.profileId);
     gate.resolve();
     await expect(viewOpen).resolves.toMatchObject({ viewId: view.viewId });
     await expect(tabOpen).resolves.toMatchObject({ sessionId, tabId: "page-1" });
     expect(
       host.client.getSnapshot().browserSessions.some((session) => session.id === sessionId),
     ).toBe(true);
-    expect(host.client.recentSites.list(personal)).toEqual([]);
+    expect(host.client.browserHistory.entries(personal.profileId)).toEqual([]);
 
     // The person who asked is no longer the one signed in: the answer is not adopted.
     gate = deferred<void>();
@@ -13434,3 +13574,180 @@ it.each([false, true])(
     }
   },
 );
+
+describe("attachment reads", () => {
+  const boundedRead = (client: HttpHostClient, id: string, signal?: AbortSignal) =>
+    withTimeout(client.readAttachment(id, signal), 1_000, {
+      timeoutError: () => new Error("Attachment read did not settle"),
+    });
+  const content = (size = 4) => ({
+    ok: true as const,
+    data: {
+      bytes: new Uint8Array(size),
+      metadata: {
+        contentType: "image/png",
+        etag: "immutable",
+        modifiedAt: null,
+        sizeBytes: size,
+        truncated: false as const,
+      },
+    },
+  });
+  function attachmentRpc(client: HttpHostClient) {
+    const rpc = vi.fn<(typeof client.rpc)["attachment.content"]>();
+    Object.defineProperty(client.rpc, "attachment.content", { value: rpc });
+    return rpc;
+  }
+  function pendingRead() {
+    const client = createHttpHostClient({ refreshIntervalMs: 0 });
+    let complete!: (value: ReturnType<typeof content>) => void;
+    const pending = new Promise<ReturnType<typeof content>>((resolve) => {
+      complete = resolve;
+    });
+    const rpc = attachmentRpc(client).mockReturnValue(pending);
+    return { client, rpc, complete };
+  }
+
+  it("shares concurrent reads, isolates cancellation, and caches completed bytes", async () => {
+    const { client, rpc, complete } = pendingRead();
+    try {
+      const abort = new AbortController();
+      const first = boundedRead(client, "image", abort.signal);
+      const rejected = expect(first).rejects.toMatchObject({ name: "AbortError" });
+      const second = boundedRead(client, "image");
+      abort.abort();
+      await rejected;
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(rpc.mock.calls[0]![1]?.signal?.aborted).toBe(false);
+      complete(content());
+      expect((await second).size).toBe(4);
+      expect((await boundedRead(client, "image")).size).toBe(4);
+      expect(rpc).toHaveBeenCalledTimes(1);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("keeps the request through synchronous cleanup and remount, then cancels when unused", async () => {
+    const { client, rpc } = pendingRead();
+    try {
+      const a = new AbortController();
+      const first = boundedRead(client, "image", a.signal);
+      const firstRejected = expect(first).rejects.toMatchObject({ name: "AbortError" });
+      a.abort();
+      const b = new AbortController();
+      const second = boundedRead(client, "image", b.signal);
+      const secondRejected = expect(second).rejects.toMatchObject({ name: "AbortError" });
+      await firstRejected;
+      expect(rpc).toHaveBeenCalledTimes(1);
+      const signal = rpc.mock.calls[0]![1]!.signal!;
+      expect(signal.aborted).toBe(false);
+      b.abort();
+      expect(signal.aborted).toBe(false);
+      await secondRejected;
+      expect(signal.aborted).toBe(true);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("aborts active reads and refuses cached bytes after disposal", async () => {
+    const { client, rpc, complete } = pendingRead();
+    try {
+      const completed = boundedRead(client, "cached");
+      complete(content());
+      await completed;
+      rpc.mockImplementationOnce(() => new Promise(() => undefined));
+      const pending = boundedRead(client, "pending");
+      const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      client.dispose();
+      await rejected;
+      expect(rpc.mock.calls[1]![1]!.signal!.aborted).toBe(true);
+      await expect(boundedRead(client, "cached")).rejects.toMatchObject({ name: "AbortError" });
+      expect(rpc).toHaveBeenCalledTimes(2);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("evicts least recently used bytes and excludes oversized items", async () => {
+    const client = createHttpHostClient({ refreshIntervalMs: 0 });
+    const rpc = attachmentRpc(client).mockResolvedValue(content(12 * 1024 * 1024));
+    try {
+      await boundedRead(client, "a");
+      await boundedRead(client, "b");
+      await boundedRead(client, "a");
+      await boundedRead(client, "c");
+      await boundedRead(client, "a");
+      expect(rpc).toHaveBeenCalledTimes(3);
+      await boundedRead(client, "b");
+      expect(rpc).toHaveBeenCalledTimes(4);
+      rpc.mockResolvedValue(content(33 * 1024 * 1024));
+      await boundedRead(client, "large");
+      await boundedRead(client, "large");
+      expect(rpc).toHaveBeenCalledTimes(6);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("does not cache failures or issue a request for an already aborted caller", async () => {
+    const client = createHttpHostClient({ refreshIntervalMs: 0 });
+    const rpc = attachmentRpc(client)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(content());
+    try {
+      await expect(boundedRead(client, "image")).rejects.toThrow("offline");
+      await boundedRead(client, "image");
+      expect(rpc).toHaveBeenCalledTimes(2);
+      await expect(boundedRead(client, "other", AbortSignal.abort())).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      expect(rpc).toHaveBeenCalledTimes(2);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it.each(["sign-out", "user", "deployment"] as const)(
+    "clears bytes and in-flight reads on %s",
+    async (change) => {
+      let payload = bootstrap([]);
+      let authenticated = true;
+      const client = createHttpHostClient({
+        refreshIntervalMs: 0,
+        fetch: async (input) => {
+          const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+          if (path === "/v1/rpc/auth.config") return json(payload.identityConfig);
+          return authenticated ? json(payload) : json({ error: unauthorizedError() }, 401);
+        },
+      });
+      try {
+        await client.load();
+        const rpc = attachmentRpc(client).mockResolvedValue(content());
+        await boundedRead(client, "image");
+        let complete!: (value: ReturnType<typeof content>) => void;
+        rpc.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              complete = resolve;
+            }),
+        );
+        const pending = boundedRead(client, "pending");
+        const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+        if (change === "sign-out") authenticated = false;
+        else if (change === "user")
+          payload = { ...payload, user: { ...payload.user, id: createId("user") } };
+        else payload = { ...payload, deploymentId: createId("deployment") };
+        await client.refresh();
+        await rejected;
+        complete(content());
+        await boundedRead(client, "image");
+        await boundedRead(client, "pending");
+        expect(rpc).toHaveBeenCalledTimes(4);
+      } finally {
+        client.dispose();
+      }
+    },
+  );
+});

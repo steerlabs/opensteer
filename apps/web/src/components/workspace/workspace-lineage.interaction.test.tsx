@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
+import { ThreadIdSchema, createId } from "@opensteer/core";
 import type { HostSnapshot } from "@opensteer/client/host";
 import type { MockHostClient } from "@opensteer/client/mock";
 import { click, element, history, mount, settle } from "./workspace.interaction.test-support.js";
@@ -46,6 +46,14 @@ function withHelper(
             { ...list, entries: unlisted(list.entries) },
           ]),
         ),
+        // A helper hands nothing out and runs no automations of its own, so its
+        // header shows only the way back.
+        assignments: Object.fromEntries(
+          Object.entries(snapshot.assignments).filter(
+            ([, assignment]) => assignment.parentThreadId !== helper.id,
+          ),
+        ),
+        threadAutomations: { ...snapshot.threadAutomations, [helper.id]: [] },
       };
       cache.set(snapshot, held);
     }
@@ -111,4 +119,166 @@ describe("a helper's place among the reader's tasks", () => {
     expect(element(".conv-header").classList.contains("conv-header--trail")).toBe(false);
     expect(current()).toEqual([]);
   });
+});
+
+function withFamily(
+  client: MockHostClient,
+  earlierOnly = false,
+  parentOf: (snapshot: HostSnapshot) => string = (snapshot) => snapshot.homeThreadId!,
+) {
+  const read = client.getSnapshot.bind(client);
+  const base = read();
+  const firstAssignment = Object.values(base.assignments)[0]!;
+  const assignments = [
+    firstAssignment,
+    ...base.threads
+      .filter((thread) => thread.role === "work" && thread.id !== firstAssignment.workerThread.id)
+      .slice(0, 5)
+      .map((thread) => ({
+        ...firstAssignment,
+        id: createId("delegation"),
+        workerThread: {
+          ...firstAssignment.workerThread,
+          id: ThreadIdSchema.parse(thread.id),
+          title: thread.title,
+        },
+      })),
+  ];
+  const parent = ThreadIdSchema.parse(parentOf(base));
+  const first = assignments[0]!;
+  const cache = new WeakMap<HostSnapshot, HostSnapshot>();
+  vi.spyOn(client, "getSnapshot").mockImplementation(() => {
+    const snapshot = read();
+    let held = cache.get(snapshot);
+    if (!held) {
+      held = {
+        ...snapshot,
+        waitingRequests: earlierOnly
+          ? []
+          : [
+              {
+                ...base.waitingRequests[0]!,
+                assignments: [
+                  { id: first.id, parentThreadId: parent, workerThread: first.workerThread },
+                ],
+              },
+            ],
+        assignments: Object.fromEntries(
+          assignments.map((assignment, index) => [
+            assignment.id,
+            {
+              ...assignment,
+              parentThreadId: parent,
+              status: earlierOnly || index > 0 ? ("completed" as const) : ("open" as const),
+              finishedAt: earlierOnly || index > 0 ? new Date().toISOString() : null,
+            },
+          ]),
+        ),
+        threadAutomations: earlierOnly
+          ? {}
+          : {
+              [parent]: [
+                {
+                  id: "family-automation",
+                  name: "Morning check",
+                  kind: "schedule",
+                  paused: false,
+                  nextFireAt: new Date(Date.now() + 3600_000).toISOString(),
+                },
+              ],
+            },
+      };
+      cache.set(snapshot, held);
+    }
+    return held;
+  });
+  return { first, count: assignments.length, parent };
+}
+
+describe("the conversation's family", () => {
+  it("shows running work, automations and collapsed earlier work, and returns focus on Escape", async () => {
+    await mount((client) => {
+      withFamily(client);
+      return "/";
+    });
+    const button = element<HTMLButtonElement>(".task-family-button");
+    expect(button.getAttribute("aria-label")).toContain("1 task running");
+    expect(button.getAttribute("aria-label")).toContain("1 automation");
+    expect(button.getAttribute("aria-label")).toContain("one needs you");
+    expect(button.querySelector(".task-family-button__attention")).not.toBeNull();
+    await click(button);
+    expect(element('[aria-label="Running"]').textContent).toContain("Running · 1");
+    expect(element('[aria-label="Automations"]').textContent).toContain("Morning check");
+    expect(element<HTMLAnchorElement>(".task-family a").getAttribute("href")).toContain(
+      "/automations/family-automation",
+    );
+    const earlier = element('[aria-label="Earlier"]');
+    {
+      expect(earlier.querySelector(".task-family__row")).toBeNull();
+      await click(element<HTMLButtonElement>(".task-family__toggle"));
+      expect(earlier.querySelector(".task-family__row")).not.toBeNull();
+    }
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await settle();
+    expect(document.querySelector(".popover--task-family")).toBeNull();
+    expect(document.activeElement).toBe(button);
+    expect(document.querySelector(".conv-header__menu")).toBeNull();
+    await click(button);
+    await click(element<HTMLAnchorElement>(".task-family a"));
+    expect(history.at(-1)!.path).toBe("/automations/family-automation");
+    expect(document.querySelector(".popover--task-family")).toBeNull();
+  });
+
+  it("shows earlier-only work expanded", async () => {
+    let count = 0;
+    await mount((client) => {
+      count = withFamily(client, true).count;
+      return "/";
+    });
+    expect(element(".task-family-button").textContent).toBe(`${count} earlier`);
+    await click(element(".task-family-button"));
+    expect(document.querySelectorAll('[aria-label="Earlier"] .task-family__row')).toHaveLength(4);
+    await click(
+      [...document.querySelectorAll<HTMLButtonElement>(".task-family button")].find(
+        (button) => button.textContent === "Show all",
+      )!,
+    );
+    expect(document.querySelectorAll('[aria-label="Earlier"] .task-family__row')).toHaveLength(
+      count,
+    );
+    expect(document.querySelector('[aria-label="Running"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Automations"]')).toBeNull();
+  });
+});
+
+it("closes the family when another header control is pressed", async () => {
+  let parent = "";
+  await mount((client) => {
+    parent = withFamily(client, false, (snapshot) => {
+      const workers = new Set<string>(
+        Object.values(snapshot.assignments).map(({ workerThread }) => workerThread.id),
+      );
+      return snapshot.threads.find(
+        ({ id, role }) => role === "work" && id !== snapshot.homeThreadId && !workers.has(id),
+      )!.id;
+    }).parent;
+    return `/threads/${parent}`;
+  });
+  await click(element(".task-family-button"));
+  expect(document.querySelector(".popover--task-family")).not.toBeNull();
+  const menu = element(".conv-header__menu");
+  menu.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  await click(menu);
+  expect(document.querySelector(".popover--task-family")).toBeNull();
+  expect(document.querySelector(".popover--conversation-menu")).not.toBeNull();
+});
+
+it("keeps children out of a task's title menu", async () => {
+  await mount((client) => {
+    const { first } = withFamily(client);
+    return `/threads/${first.workerThread.id}`;
+  });
+  await click(element(".conv-header__menu"));
+  expect(element(".popover--conversation-menu").textContent).not.toContain("Started here");
+  expect(document.querySelector(".popover--conversation-menu .task-family__row")).toBeNull();
 });

@@ -1342,6 +1342,82 @@ export const DesktopChooseUsbDeviceInputSchema = z.strictObject({
 });
 export type DesktopChooseUsbDeviceInput = z.infer<typeof DesktopChooseUsbDeviceInputSchema>;
 
+/** A Desktop setup session reaches only a USB device already chosen by this frame. */
+export const DesktopAgentPhoneUsbIdentitySchema = z.strictObject({
+  vendorId: z.number().int().min(0).max(65_535),
+  productId: z.number().int().min(0).max(65_535),
+  serialNumber: boundedUtf8String(0, 256),
+});
+export type DesktopAgentPhoneUsbIdentity = z.infer<typeof DesktopAgentPhoneUsbIdentitySchema>;
+export const DesktopAgentPhoneAdbSessionSchema = z.strictObject({ sessionId: z.uuid() });
+export const DesktopAgentPhoneAdbOpenSchema = DesktopAgentPhoneAdbSessionSchema.extend({
+  device: DesktopAgentPhoneUsbIdentitySchema,
+});
+export const DesktopAgentPhoneAdbOpenResultSchema = z.enum(["direct", "connected"]);
+export const DesktopAgentPhoneAdbCallSchema = z.discriminatedUnion("kind", [
+  DesktopAgentPhoneAdbSessionSchema.extend({
+    kind: z.literal("getProp"),
+    key: boundedUtf8String(1, 256).regex(/^[a-zA-Z0-9_.-]+$/u),
+  }),
+  DesktopAgentPhoneAdbSessionSchema.extend({
+    kind: z.literal("shell"),
+    argv: z.array(boundedUtf8String(0, 16_384)).min(1).max(64),
+  }),
+  DesktopAgentPhoneAdbSessionSchema.extend({
+    kind: z.literal("install"),
+    bytes: z
+      .instanceof(Uint8Array)
+      .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= agentPhoneApkMaxBytes),
+  }),
+  DesktopAgentPhoneAdbSessionSchema.extend({
+    kind: z.literal("readFile"),
+    path: boundedUtf8String(1, 4_096),
+    maxBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(64 * 1_024 * 1_024),
+  }),
+]);
+export const DesktopAgentPhoneAdbResultSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("getProp"), value: boundedUtf8String(0, 65_536) }),
+  z.strictObject({
+    kind: z.literal("shell"),
+    value: z.strictObject({
+      exitCode: z.number().int(),
+      stdout: boundedUtf8String(0, 1_024 * 1_024),
+      stderr: boundedUtf8String(0, 1_024 * 1_024),
+    }),
+  }),
+  z.strictObject({
+    kind: z.literal("install"),
+    value: z.union([
+      z.strictObject({ ok: z.literal(true) }),
+      z.strictObject({ ok: z.literal(false), output: boundedUtf8String(0, 65_536) }),
+    ]),
+  }),
+  z.strictObject({
+    kind: z.literal("readFile"),
+    value: z
+      .instanceof(Uint8Array)
+      .refine((bytes) => bytes.byteLength <= 64 * 1_024 * 1_024)
+      .nullable(),
+  }),
+]);
+export type DesktopAgentPhoneAdbOpen = z.infer<typeof DesktopAgentPhoneAdbOpenSchema>;
+export type DesktopAgentPhoneAdbCall = z.infer<typeof DesktopAgentPhoneAdbCallSchema>;
+export type DesktopAgentPhoneAdbResult = z.infer<typeof DesktopAgentPhoneAdbResultSchema>;
+export interface DesktopAgentPhoneAdbBridge {
+  open(
+    input: DesktopAgentPhoneAdbOpen,
+  ): Promise<z.infer<typeof DesktopAgentPhoneAdbOpenResultSchema>>;
+  call(input: DesktopAgentPhoneAdbCall): Promise<DesktopAgentPhoneAdbResult>;
+  close(input: z.infer<typeof DesktopAgentPhoneAdbSessionSchema>): Promise<void>;
+  onAuthorize(
+    listener: (input: z.infer<typeof DesktopAgentPhoneAdbSessionSchema>) => void,
+  ): () => void;
+}
+
 export const desktopWebUrlMaxBytes = 8192;
 export const DesktopWebUrlSchema = z
   .string()
@@ -1525,8 +1601,6 @@ export const DesktopBrowserPresentationEventSchema = z.discriminatedUnion("type"
   }),
   z.strictObject({ key: DesktopForwardedKeySchema, type: z.literal("key") }),
   z.strictObject({ focused: z.boolean(), type: z.literal("window-focus") }),
-  /** The person pressed or typed into this window's shown page; never what or where. */
-  z.strictObject({ type: z.literal("page-input") }),
 ]);
 export type DesktopBrowserPresentationEvent = z.infer<typeof DesktopBrowserPresentationEventSchema>;
 
@@ -1633,6 +1707,7 @@ export interface OpensteerDesktopBridge {
   onLocalVisibilityChanged(listener: (visible: boolean) => void): () => void;
   /** The Agent Phone app this build carries, or null when it carries none. */
   readAgentPhoneArtifact(): Promise<DesktopAgentPhoneArtifact | null>;
+  agentPhoneAdb?: DesktopAgentPhoneAdbBridge;
   /** Several phones answered a WebUSB request from this page; the person picks one. */
   onUsbDeviceChoice(listener: (choice: DesktopUsbDeviceChoice) => void): () => void;
   /** Answers the open USB choice with the person's pick, or declines it. */

@@ -11,11 +11,11 @@ import {
   type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import type { StaticScreenProps } from "@react-navigation/native";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { space, touchTarget } from "../theme.js";
+import { material, space, touchTarget } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Field, Notice, RowGroup, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
@@ -66,11 +66,20 @@ export function BrowserProfilesScreen({
       </Screen>
     );
   }
-  return <SignedInBrowserProfiles hostClient={hostClient} />;
+  return (
+    <SignedInBrowserProfiles
+      key={deploymentId}
+      hostClient={hostClient}
+      deploymentId={deploymentId}
+    />
+  );
 }
 
 /** Keyed by who is signed in, so a changed account never sees the last one's browser profiles. */
-function SignedInBrowserProfiles(props: { readonly hostClient: HostClient }): ReactNode {
+function SignedInBrowserProfiles(props: {
+  readonly hostClient: HostClient;
+  readonly deploymentId: string;
+}): ReactNode {
   const userId = useHostSelector(props.hostClient, selectUserId);
   if (userId === null) {
     return (
@@ -86,7 +95,14 @@ function SignedInBrowserProfiles(props: { readonly hostClient: HostClient }): Re
   return <BrowserProfilesSettings key={userId} {...props} />;
 }
 
-function BrowserProfilesSettings({ hostClient }: { readonly hostClient: HostClient }): ReactNode {
+function BrowserProfilesSettings({
+  hostClient,
+  deploymentId,
+}: {
+  readonly hostClient: HostClient;
+  readonly deploymentId: string;
+}): ReactNode {
+  const navigation = useNavigation();
   const snapshot = useHostSelector(hostClient, selectSnapshot);
   const online = canRespondToRequests(snapshot);
   const rows = browserProfileSettingsRows(snapshot);
@@ -140,6 +156,9 @@ function BrowserProfilesSettings({ hostClient }: { readonly hostClient: HostClie
                 snapshot={snapshot}
                 hostClient={hostClient}
                 online={online}
+                onHistory={() =>
+                  navigation.navigate("BrowserHistory", { deploymentId, profileId: row.profile.id })
+                }
               />
             ))}
           </RowGroup>
@@ -203,11 +222,13 @@ function ProfileRow({
   snapshot,
   hostClient,
   online,
+  onHistory,
 }: {
   readonly row: BrowserProfileSettingsRow;
   readonly snapshot: HostSnapshot;
   readonly hostClient: HostClient;
   readonly online: boolean;
+  readonly onHistory: () => void;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const [specialistsShown, setSpecialistsShown] = useState(false);
@@ -266,7 +287,7 @@ function ProfileRow({
         style={styles.rowHead}
       >
         {row.identity.kind === "profile" ? (
-          <View style={[styles.identity, { backgroundColor: row.identity.tint }]}>
+          <View style={[styles.identity, material.mark, { backgroundColor: row.identity.tint }]}>
             <AppText role="bodyMedium">{row.identity.initial}</AppText>
           </View>
         ) : null}
@@ -280,6 +301,12 @@ function ProfileRow({
       {!expanded ? null : (
         <>
           <View style={styles.actions}>
+            <SecondaryButton
+              label="Browsing history"
+              accessibilityLabel={`Browsing history for ${row.profile.name}`}
+              compact
+              onPress={onHistory}
+            />
             {snapshot.browserProfileManageAvailable ? (
               <>
                 <SecondaryButton

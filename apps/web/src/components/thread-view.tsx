@@ -1,6 +1,6 @@
 import { threadMark } from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
-import { useId, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useId, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
 import { placeContentLabel, type ModelSelection, type Request } from "@opensteer/core";
 import {
@@ -47,7 +47,6 @@ import { useShell } from "./app-shell.js";
 import { ExecutionControls } from "./execution-controls.js";
 import {
   applyThreadExecution,
-  nextTurnNote,
   reviewExecutionSwitch,
   reviewFreshStart,
   type ReviewedChoice,
@@ -206,7 +205,6 @@ function ThreadView({
   const [returning, setReturning] = useState(false);
   const [switchingAccount, setSwitchingAccount] = useState(false);
   const [finding, setFinding] = useState(false);
-  const [selectionNote, setSelectionNote] = useState<string | null>(null);
   // A reply's Activity while it is open: which reply, the control that opened
   // it, where it hangs, and a message a search or a link asked to be shown in
   // it. What the reply under way or a reply's menu opened, that reply owns;
@@ -235,7 +233,6 @@ function ThreadView({
   useEffect(() => {
     // Handed over once; opening this conversation again starts from its own draft.
     setRestoredDraft(null);
-    setSelectionNote(null);
     setHistorical(false);
     setActivityView(null);
   }, [composerKey]);
@@ -288,9 +285,9 @@ function ThreadView({
     return () => cancelAnimationFrame(frame);
   }, [dockedRequests, focusTarget, openRequest, openRequestId, requests]);
   const conversational = thread.role === "conversation";
-  // In work, a message waiting behind the current turn stands in the tray above
-  // the composer, not in the conversation, until a Run takes it. A conversation
-  // has no tray: the reader's own waiting words are a sent bubble at its foot.
+  // In work, a message waiting behind the current turn stands unsent at the
+  // conversation's foot until a Run takes it. In a conversation the reply under
+  // way takes it, so the reader's own waiting words are a sent bubble there.
   const conversation = useMemo(
     () =>
       withoutOwnAssignment(
@@ -360,24 +357,6 @@ function ThreadView({
         selection,
         threadId: thread.id,
       });
-      // Honest, and nothing more: the pill names what was chosen, and this
-      // says what the next authorized work will use — or, when the queue
-      // makes that claim false, says nothing about what runs next.
-      setSelectionNote(
-        [
-          reviewed?.continuation?.fresh
-            ? `${target.engineName} · ${target.accountName} started fresh.`
-            : `Now using ${target.engineName} · ${target.accountName}.`,
-          // Chat is never paused and keeps no queue: what is sent joins the reply.
-          nextTurnNote({
-            engineName: target.engineName,
-            paused: !conversational && thread.inputQueuePaused,
-            queuedCount: conversational ? 0 : (inputQueue?.items.length ?? 0),
-          }),
-        ]
-          .filter((part): part is string => part !== null)
-          .join(" "),
-      );
       return true;
     } catch (error) {
       reportActionError(error);
@@ -692,6 +671,16 @@ function ThreadView({
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
+  /** A message taken back from the queue returns to this composer to be reworded. */
+  const editQueued = useCallback(
+    (message: Omit<ComposerRestore, "key">) =>
+      setRestoredDraft((current) => ({
+        composer: composerKey,
+        restore: { ...message, key: (current?.restore.key ?? 0) + 1 },
+      })),
+    [composerKey],
+  );
+
   /* ---- Quoting an update ---- */
 
   /** Quotes a message into this conversation's own composer, focused and unsent. */
@@ -924,6 +913,19 @@ function ThreadView({
                 waitingRequests={snapshot.waitingRequests}
                 assignments={snapshot.assignments}
                 inputQueuePaused={thread.inputQueuePaused}
+                queued={
+                  inputQueue && thread.role === "work" ? (
+                    <QueuedMessages
+                      client={hostClient}
+                      disabled={!canRespond || thread.status === "archived"}
+                      onEdit={editQueued}
+                      onError={reportActionError}
+                      queue={inputQueue}
+                      viewerUserId={snapshot.user?.id ?? null}
+                      workspaces={snapshot.workspaces}
+                    />
+                  ) : null
+                }
                 homeThreadId={snapshot.homeThreadId}
                 askAbout={askAbout}
                 {...(conversational
@@ -1023,25 +1025,6 @@ function ThreadView({
       ) : null}
 
       <div className="composer-dock">
-        {selectionNote ? (
-          <p className="thread__selection-note" role="status">
-            {selectionNote}
-          </p>
-        ) : null}
-        {inputQueue && thread.role === "work" ? (
-          <QueuedMessages
-            client={hostClient}
-            disabled={!canRespond || thread.status === "archived"}
-            onEdit={(message) =>
-              setRestoredDraft((current) => ({
-                composer: composerKey,
-                restore: { ...message, key: (current?.restore.key ?? 0) + 1 },
-              }))
-            }
-            onError={reportActionError}
-            queue={inputQueue}
-          />
-        ) : null}
         <InputSurface
           autoContext={home}
           voice={home}

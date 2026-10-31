@@ -4664,7 +4664,9 @@ export function migrationProvider() {
         "0114_run_started_by": runStartedByMigration,
         "0115_better_auth_17": betterAuth17Migration,
         "0116_screen_show": screenShowMigration,
-        "0117_native_browser_profiles": nativeBrowserProfilesMigration,
+        "0117_remove_screen_show": removeScreenShowMigration,
+        "0118_browser_history": browserHistoryMigration,
+        "0119_native_browser_profiles": nativeBrowserProfilesMigration,
       };
     },
   };
@@ -6291,6 +6293,58 @@ export const screenShowMigration: Migration = {
         .raw(`alter table agent_control_requests add constraint ${name} ${next}`)
         .execute(database);
     }
+  },
+};
+
+/** Voice moved screen changes onto the call's own agent; no Run requests them any more. */
+export const removeScreenShowMigration: Migration = {
+  async up(database) {
+    await sql`
+      delete from agent_control_requests
+      where action = 'screen.show' or action_class = 'screen.show'
+    `.execute(database);
+    for (const column of ["action", "action_class"] as const) {
+      const name = `agent_control_requests_${column}_check`;
+      const result = await sql<{ definition: string }>`
+        select pg_get_constraintdef(oid) as definition from pg_constraint
+        where conrelid = 'agent_control_requests'::regclass and conname = ${name}
+      `.execute(database);
+      const definition = result.rows[0]?.definition;
+      const added = ", 'screen.show'::text";
+      if (!definition?.includes(added))
+        throw new Error(`Cannot narrow ${name} after screen presentation`);
+      await sql.raw(`alter table agent_control_requests drop constraint ${name}`).execute(database);
+      await sql
+        .raw(
+          `alter table agent_control_requests add constraint ${name} ${definition.replace(added, "")}`,
+        )
+        .execute(database);
+    }
+  },
+};
+
+export const browserHistoryMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table browser_history_entries (
+        profile_id text not null references browser_profiles(id) on delete cascade,
+        url text not null,
+        origin text not null,
+        title varchar(200) not null,
+        typed_count integer not null check (typed_count >= 0),
+        visit_count integer not null check (visit_count > 0),
+        last_visit_at timestamptz not null,
+        primary key (profile_id, url)
+      );
+      create index browser_history_entries_newest on browser_history_entries (profile_id, last_visit_at desc, url);
+      create table browser_history_icons (
+        profile_id text not null references browser_profiles(id) on delete cascade,
+        origin text not null,
+        icon_ref text not null,
+        favicon text not null,
+        primary key (profile_id, origin)
+      );
+    `.execute(database);
   },
 };
 

@@ -40,11 +40,13 @@ import {
   turnComputer,
   turnState,
   workRows,
+  traceWindow,
   workSummary,
   workspaceMonogram,
   messageAuthorName,
   messageFoldLines,
   turnFolds,
+  turnOpen,
   turnWords,
   type ActivityStepHead,
   type ActivityTone,
@@ -210,6 +212,7 @@ export function AgentTranscript({
   threadId = null,
   unreadBoundarySequence = null,
   inputQueuePaused = false,
+  queued = null,
   viewerUserId = null,
   workspaces = noWorkspaces,
 }: {
@@ -267,6 +270,11 @@ export function AgentTranscript({
    */
   unreadBoundarySequence?: string | null;
   inputQueuePaused?: boolean;
+  /**
+   * What waits behind the current turn, drawn at the conversation's foot
+   * after its live status, inside the transcript so it reads like messages.
+   */
+  queued?: ReactNode;
   viewerUserId?: string | null;
   workspaces?: readonly WorkspaceSummary[];
 }) {
@@ -339,13 +347,18 @@ export function AgentTranscript({
                                     <Fragment key={key}>
                                       {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
                                       {group.kind === "turn" ? (
-                                        <TurnView turn={group.turn} turnKey={group.key} />
+                                        <TurnView
+                                          turn={group.turn}
+                                          turnKey={group.key}
+                                          reveal={revealMessage}
+                                        />
                                       ) : group.kind === "delegation" ? (
                                         <DelegationNotice delegation={group.entry} />
                                       ) : group.kind === "assignment" ? (
                                         renderTask?.([group.entry])
                                       ) : (
-                                        <Message
+                                        <TranscriptMessage
+                                          joinedRun={group.joinedRun === true}
                                           reveal={
                                             revealMessage?.id === group.entry.id
                                               ? revealMessage
@@ -367,6 +380,7 @@ export function AgentTranscript({
                                   ) : (
                                     <WorkingIndicator label={indicator.label} />
                                   )}
+                                  {queued}
                                 </RunPictures>
                               </Speakers>
                             </TranscriptBrowsers>
@@ -387,12 +401,30 @@ export function AgentTranscript({
 
 /* ---- A turn ---- */
 
-function TurnView({ turn, turnKey }: { turn: Turn; turnKey: string }) {
+function TurnView({
+  turn,
+  turnKey,
+  reveal,
+}: {
+  turn: Turn;
+  turnKey: string;
+  reveal: { readonly id: string } | null;
+}) {
   const live = useContext(TranscriptLive);
   const conversation = useContext(ConversationMode);
   const renderTask = useContext(TaskViews);
-  // Open for as long as the reader is on the task: steps they opened stay open.
-  const [opened, setOpened] = useState(false);
+  const [chosen, setChosen] = useState<boolean | null>(null);
+  const open = turnOpen(turn, chosen);
+  const handledReveal = useRef<typeof reveal>(null);
+  const targetInWork =
+    reveal !== null &&
+    turn.work.some((entry) => entry.kind === "message" && entry.id === reveal.id);
+  const hiddenTarget = targetInWork && !turnWords(turn).some((entry) => entry.id === reveal.id);
+  useLayoutEffect(() => {
+    if (conversation || !targetInWork || handledReveal.current === reveal) return;
+    handledReveal.current = reveal;
+    if (hiddenTarget) setChosen(true);
+  }, [conversation, reveal, hiddenTarget, targetInWork]);
   if (conversation) return <ConversationTurn turn={turn} turnKey={turnKey} />;
   const spoken = turn.reply ?? turn.work.find((entry) => entry.kind === "message");
   const outcome = turn.run !== null && showsRunOutcome(turn.run);
@@ -401,8 +433,9 @@ function TurnView({ turn, turnKey }: { turn: Turn; turnKey: string }) {
     <div className="turn" data-run-id={turn.runId ?? undefined}>
       <AgentByline author={spoken?.kind === "message" ? spoken.author : null} />
       <TurnContent
-        fold={turnFolds(turn) ? { open: opened, onToggle: () => setOpened(!opened) } : undefined}
+        fold={turnFolds(turn) ? { open, onToggle: () => setChosen(!open) } : undefined}
         turn={turn}
+        reveal={reveal?.id ?? null}
         live={live}
       />
       {turn.continued || placesUnderOutcome ? null : (
@@ -1183,6 +1216,7 @@ export function ConversationActivity({
           <div className="activity__body" ref={bodyRef}>
             {activity !== null && activity.steps.length > 0 ? (
               <TurnContent
+                reveal={reveal}
                 entries={activity.steps}
                 live={live}
                 status={false}
@@ -1239,17 +1273,19 @@ export function ConversationActivity({
 }
 
 function TurnContent({
+  reveal = null,
   entries,
   fold,
   live,
   status = true,
   turn,
 }: {
+  reveal?: string | null;
   /** What of the turn to draw; all of its work unless a conversation keeps its reply apart. */
   entries?: readonly WorkEntry[];
   /**
    * Given, the turn's steps fold behind its status line, which opens them in
-   * place. Folded, only what the agent wrote is drawn: the steps are not
+   * place. Folded, only the last word is drawn; the earlier trace is not
    * mounted at all.
    */
   fold?: { readonly open: boolean; readonly onToggle: () => void } | undefined;
@@ -1261,6 +1297,7 @@ function TurnContent({
   status?: boolean;
   turn: Turn;
 }) {
+  const [showAll, setShowAll] = useState(false);
   const active = turnState(turn) !== "settled";
   const folded = fold !== undefined && !fold.open;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
@@ -1269,6 +1306,7 @@ function TurnContent({
     () => workRows(folded ? turnWords(turn) : (entries ?? turn.work)),
     [entries, folded, turn],
   );
+  const trace = traceWindow(rows, { showAll: folded || showAll, keep: reveal });
   return (
     <div className="turn__content">
       {summary === null ? null : (
@@ -1278,7 +1316,12 @@ function TurnContent({
           {...(fold ? { onToggle: fold.onToggle, open: fold.open } : {})}
         />
       )}
-      {rows.map((row) => (
+      {trace.hidden > 0 ? (
+        <button className="trace__earlier" type="button" onClick={() => setShowAll(true)}>
+          Show {trace.hidden} earlier {trace.hidden === 1 ? "step" : "steps"}
+        </button>
+      ) : null}
+      {trace.rows.map((row) => (
         <WorkRowView active={active} key={row.key} live={live} row={row} turn={turn} />
       ))}
     </div>
@@ -1668,17 +1711,23 @@ function Reply({ message, streaming }: { message: MessageEntry; streaming: boole
 /**
  * Message direction is a delivery contract. Conversation presentation also
  * considers authorship so another agent's update never looks like the reader's words.
+ * A queued message is drawn as it will be once sent; only its edge says it waits.
  */
-function Message({
+export function TranscriptMessage({
   message,
   reveal,
   askAbout,
+  joinedRun = false,
+  queued = false,
   viewerUserId,
   workspaces,
 }: {
   message: MessageEntry;
   reveal: { readonly id: string } | null;
   askAbout?: AskAbout | undefined;
+  /** It joined the turn under way, which a task says because the person chose to. */
+  joinedRun?: boolean;
+  queued?: boolean;
   viewerUserId: string | null;
   workspaces: readonly WorkspaceSummary[];
 }) {
@@ -1711,29 +1760,55 @@ function Message({
     );
   }
 
+  // In a conversation every message joins the reply under way, so only a task marks it.
+  const steered = joinedRun && !conversation;
   if (message.author.kind === "human" && message.author.userId === viewerUserId) {
-    return <OwnMessage message={message} reveal={reveal} viewerUserId={viewerUserId} />;
+    return (
+      <OwnMessage
+        message={message}
+        queued={queued}
+        reveal={reveal}
+        steered={steered}
+        viewerUserId={viewerUserId}
+      />
+    );
   }
 
   return (
     <InputMessage
       message={message}
       askAbout={askAbout}
+      queued={queued}
       reveal={reveal}
+      steered={steered}
       viewerUserId={viewerUserId}
       workspaces={workspaces}
     />
   );
 }
 
+/** Above a message that joined the turn under way rather than waiting for the next. */
+function SteerMark() {
+  return (
+    <span className="msg__steer" title="Sent into the turn while it ran">
+      <Icon name="corner-down-right" />
+      Steer
+    </span>
+  );
+}
+
 /** The reader's own message: their words in full, folded only once they run long. */
 function OwnMessage({
   message,
+  queued,
   reveal,
+  steered,
   viewerUserId,
 }: {
   message: MessageEntry;
+  queued: boolean;
   reveal: { readonly id: string } | null;
+  steered: boolean;
   viewerUserId: string | null;
 }) {
   const [open, setOpen] = useState(reveal !== null);
@@ -1741,7 +1816,11 @@ function OwnMessage({
     if (reveal !== null) setOpen(true);
   }, [reveal]);
   return (
-    <div className="msg--user-row" data-message-id={message.id}>
+    <div
+      className={queued ? "msg--user-row msg--queued" : "msg--user-row"}
+      data-message-id={message.id}
+    >
+      {steered ? <SteerMark /> : null}
       <MessagePages pages={message.pages ?? []} />
       <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
@@ -1986,13 +2065,17 @@ function updateSource(
 function InputMessage({
   message,
   askAbout,
+  queued,
   reveal,
+  steered,
   viewerUserId,
   workspaces,
 }: {
   message: MessageEntry;
   reveal: { readonly id: string } | null;
   askAbout?: AskAbout | undefined;
+  queued: boolean;
+  steered: boolean;
   viewerUserId: string | null;
   workspaces: readonly WorkspaceSummary[];
 }) {
@@ -2017,9 +2100,16 @@ function InputMessage({
 
   return (
     <div
-      className={conversation ? "msg--input msg--input--conversation" : "msg--input"}
+      className={[
+        "msg--input",
+        conversation ? "msg--input--conversation" : "",
+        queued ? "msg--queued" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       data-message-id={message.id}
     >
+      {steered ? <SteerMark /> : null}
       <article className="input-card">
         <header
           className="input-card__from"

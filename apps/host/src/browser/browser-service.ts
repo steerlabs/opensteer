@@ -14,6 +14,7 @@ import {
   WorkspaceTabStore,
   OpensteerStore,
   type BrowserTabGroupStore,
+  type BrowserHistoryStore,
 } from "@opensteer/database";
 import type { WorkspaceTabLineage, BrowserWorkspaceTabDescriptor } from "@opensteer/protocol";
 import { createHash, randomUUID } from "node:crypto";
@@ -45,6 +46,7 @@ import {
   type WorkspaceId,
 } from "@opensteer/core";
 import {
+  BrowserHistoryUrlSchema,
   BrowserClientMessageSchema,
   BrowserContextCandidateSchema,
   previousReleaseEligibility,
@@ -509,6 +511,7 @@ export interface BrowserRuntimeTarget {
   /** The Runtime observes a target without starting a screencast. */
   readonly targetControl?: boolean;
   readonly navigationVersion?: boolean;
+  readonly navigationAttributionVersion?: boolean;
   readonly workspaceTabRestoreVersion?: boolean;
   readonly captureRegion?: boolean;
   readonly rasterDemand?: boolean;
@@ -604,6 +607,8 @@ type BrowserCdpWireResponse = Extract<
 
 interface BrowserServiceOptions {
   readonly personal?: boolean;
+  readonly history?: BrowserHistoryStore;
+  readonly onHistoryChanged?: (ownerId: UserId, profileId: BrowserProfileId) => void;
   readonly passkeys?: boolean;
   readonly passkeyOwnOrigins?: () => readonly string[];
   readonly onProfilesChanged?: (ownerId: UserId, workspaceId: WorkspaceId) => void;
@@ -685,6 +690,9 @@ export class BrowserService {
     { actor: BrowserActor; activity: BrowserRuntimeActivity; order: number; at: number }
   >();
   readonly #latestPlaces = new Map<UserId, Map<ThreadId, ThreadPlaceReference>>();
+  readonly #history: BrowserHistoryStore | undefined;
+  readonly #historyTails = new Map<BrowserProfileId, Promise<unknown>>();
+  readonly #onHistoryChanged: NonNullable<BrowserServiceOptions["onHistoryChanged"]>;
   readonly #workspaceTabs: WorkspaceTabStore | undefined;
   readonly #tabGroups: BrowserTabGroupStore | undefined;
   readonly #endedCatalogs = new Map<BrowserSessionId, BrowserTabCatalog>();
@@ -758,6 +766,12 @@ export class BrowserService {
     this.#passkeys = options.passkeys === true;
     this.#passkeyOwnOrigins =
       options.passkeyOwnOrigins ?? (() => [options.profileStateBaseUrl.origin]);
+    this.#history =
+      options.history ??
+      (options.repository instanceof OpensteerStore
+        ? options.repository.browserHistory
+        : undefined);
+    this.#onHistoryChanged = options.onHistoryChanged ?? (() => undefined);
     this.#workspaceTabs = options.workspaceTabs;
     this.#tabGroups = options.tabGroups;
     this.#onCatalogChanged = options.onCatalogChanged ?? (() => undefined);
@@ -792,6 +806,7 @@ export class BrowserService {
     await this.#workspaceTabs?.suspend();
     await this.#workspaceTabs?.prune();
     await this.#tabGroups?.prune();
+    await this.pruneHistory();
     for (const event of failed.events) this.#onWorkspaceEvent(event);
   }
 
@@ -1215,9 +1230,17 @@ export class BrowserService {
   /**
    * Opens a session. One a person opens from a conversation belongs to that
    * conversation from the start, before any Run has used it.
+   * Restored sessions keep their opener, so visit attribution is a caller opt-in.
    */
-  async start(input: StartBrowserSessionInput): Promise<StartBrowserSessionResult> {
-    const finish = await this.#prepareStart(input);
+  async start(
+    input: StartBrowserSessionInput,
+    personNavigation?: { readonly typed: boolean },
+  ): Promise<StartBrowserSessionResult> {
+    const finish = await this.#prepareStart(
+      input,
+      undefined,
+      personNavigation ? { ownerId: input.ownerId, typed: personNavigation.typed } : undefined,
+    );
     const result = await finish();
     if (input.threadId) {
       this.announceUsage(
@@ -1504,6 +1527,58 @@ export class BrowserService {
     });
   }
 
+  #historyOperation<T>(profileId: BrowserProfileId, operation: () => Promise<T>): Promise<T> {
+    const pending = (this.#historyTails.get(profileId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(operation);
+    this.#historyTails.set(profileId, pending);
+    void pending
+      .finally(() => {
+        if (this.#historyTails.get(profileId) === pending) this.#historyTails.delete(profileId);
+      })
+      .catch(() => undefined);
+    return pending;
+  }
+
+  async pruneHistory(): Promise<void> {
+    try {
+      for (const { ownerId, profileId } of (await this.#history?.prune()) ?? [])
+        this.#onHistoryChanged(ownerId, profileId);
+    } catch {
+      this.#onError(new Error("Browser history persistence failed"));
+    }
+  }
+
+  async readHistory(ownerId: UserId, profileId: BrowserProfileId) {
+    if (!this.#history) throw new Error("Browser history store unavailable");
+    return this.#historyOperation(profileId, () => this.#history!.list(profileId, ownerId));
+  }
+
+  async readHistoryIcons(
+    ownerId: UserId,
+    input: { profileId: BrowserProfileId; iconRefs: readonly string[] },
+  ) {
+    if (!this.#history) throw new Error("Browser history store unavailable");
+    return this.#historyOperation(input.profileId, () =>
+      this.#history!.icons(input.profileId, ownerId, input.iconRefs),
+    );
+  }
+
+  async forgetHistory(
+    ownerId: UserId,
+    input: { profileId: BrowserProfileId; idempotencyKey: string; url?: string },
+  ) {
+    if (!(await this.#repository.getBrowserProfile(input.profileId, ownerId)))
+      throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+    if (!this.#history) throw new Error("Browser history store unavailable");
+    const changed = await this.#historyOperation(input.profileId, () =>
+      input.url === undefined
+        ? this.#history!.clear({ ...input, ownerId })
+        : this.#history!.remove({ ...input, url: input.url, ownerId }),
+    );
+    if (changed) this.#onHistoryChanged(ownerId, input.profileId);
+  }
+
   openTab(ownerId: UserId, input: BrowserTabOpenCommand): Promise<BrowserTabOpenResult> {
     const parsed = BrowserTabOpenCommandSchema.parse(input);
     const command = parsed.url ? { ...parsed, url: safeNavigationUrl(parsed.url) } : parsed;
@@ -1588,6 +1663,7 @@ export class BrowserService {
             (openedTabId) => {
               tabId = openedTabId;
             },
+            command.url ? { ownerId, typed: command.typed === true } : undefined,
           );
           const openingBinding = binding;
           pendingFinish = async () => {
@@ -1679,18 +1755,24 @@ export class BrowserService {
             "browser-session-unavailable",
             "This browser is not ready to open a page. Try again shortly.",
           );
+        const navigationId = command.url
+          ? broker.beginHistoryNavigation(ownerId, command.typed === true)
+          : undefined;
         const response = await broker.requestCdp({
           type: "cdp.command",
           requestId: randomUUID(),
+          ...(navigationId ? { navigationId } : {}),
           command: {
             method: browserHostMethods.openTab,
             parameters: {
               idempotencyKey: binding.initialPageOperationKey,
               ...(command.url === undefined ? {} : { url: command.url }),
+              ...(command.viewport === undefined ? {} : { viewport: command.viewport }),
             },
           },
         });
         const { tabId } = z.object({ tabId: BrowserSurfaceIdSchema }).parse(response.result);
+        broker.bindHistoryNavigation(navigationId, tabId);
         binding = { ...binding, outcome: { kind: "opened", tabId } };
         await this.#repository.settleBrowserTabOpen(binding);
       }
@@ -3429,6 +3511,7 @@ export class BrowserService {
         ),
       );
       await Promise.allSettled([...this.#brokers.values()].map((broker) => broker.stop()));
+      await Promise.allSettled(this.#historyTails.values());
       await this.#workspaceTabs?.suspend();
       this.#brokers.clear();
     })();
@@ -3438,18 +3521,20 @@ export class BrowserService {
   #prepareStart(
     input: StartBrowserSessionInput,
     onInitialPage?: (tabId: BrowserSurfaceId) => void,
+    personNavigation?: { ownerId: UserId; typed: boolean },
   ): Promise<() => Promise<StartBrowserSessionResult>> {
     return this.#serializeKey(
       input.profileId
         ? `profile-admission:${input.profileId}`
         : `start:${input.ownerId}:${input.workspaceId}`,
-      () => this.#admitStart(input, onInitialPage),
+      () => this.#admitStart(input, onInitialPage, personNavigation),
     );
   }
 
   async #admitStart(
     input: StartBrowserSessionInput,
     onInitialPage?: (tabId: BrowserSurfaceId) => void,
+    personNavigation?: { ownerId: UserId; typed: boolean },
   ): Promise<() => Promise<StartBrowserSessionResult>> {
     if (this.#closed) throw unavailable("The Host browser service is shutting down.");
     const workspace = await this.#repository.getWorkspaceForOwner(input.workspaceId, input.ownerId);
@@ -3602,10 +3687,19 @@ export class BrowserService {
     if (input.tabGroupId && input.initialSurfaceId)
       await this.#workspaceTabs?.bind(input.tabGroupId, sessionId, input.initialSurfaceId);
     this.#onSessionsChanged(record.workspaceId, [record.id]);
+    const initialHistoryNavigation =
+      profile &&
+      initialUrl &&
+      personNavigation &&
+      target.initialNavigationVersion &&
+      target.navigationAttributionVersion
+        ? { ...personNavigation, navigationId: randomUUID() }
+        : undefined;
     const ticket = this.#signer.issue({
       access: "full-control",
       ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
+      ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
       ...(target.editing
         ? {
             editingVersion: target.editing,
@@ -3627,6 +3721,9 @@ export class BrowserService {
             initialNavigationVersion: 1 as const,
             initialNavigation: {
               operationKey: input.initialPageOperationKey ?? sessionId,
+              ...(initialHistoryNavigation
+                ? { navigationId: initialHistoryNavigation.navigationId }
+                : {}),
               ...(initialUrl ? { url: initialUrl } : {}),
             },
           }
@@ -3656,6 +3753,14 @@ export class BrowserService {
       throw browserStartUnavailable(correlationId, stage, error);
     }
     const broker = new HostedBrowserBroker({
+      profileId: record.profileId,
+      ...(initialHistoryNavigation ? { initialHistoryNavigation } : {}),
+      historyWrite: (operation) => {
+        if (!this.#history || !profile) return;
+        void this.#historyOperation(profile.id, async () => {
+          if (await operation(this.#history!)) this.#onHistoryChanged(profile.ownerId, profile.id);
+        }).catch(() => this.#onError(new Error("Browser history persistence failed")));
+      },
       groupId: input.tabGroupId ?? sessionId,
       ...(input.initialSurfaceId && restoredTab?.favicon
         ? {
@@ -3746,7 +3851,7 @@ export class BrowserService {
           initialTabId = ready.surfaceId;
         } else if (initialUrl) {
           stage = "legacy-first-navigation";
-          initialTabId = await navigateInitiallyLegacy(broker, initialUrl);
+          initialTabId = await navigateInitiallyLegacy(broker, initialUrl, personNavigation);
         }
         await this.#flushCatalogNotice(sessionId, record.workspaceId);
         if (initialTabId) onInitialPage?.(initialTabId);
@@ -4140,6 +4245,9 @@ interface PendingStateImport {
 }
 
 interface HostedBrowserBrokerOptions {
+  readonly initialHistoryNavigation?: { navigationId: string; ownerId: UserId; typed: boolean };
+  readonly profileId: BrowserProfileId | null;
+  readonly historyWrite: (operation: (store: BrowserHistoryStore) => Promise<boolean>) => void;
   readonly navigation: boolean;
   readonly groupId: BrowserSessionId;
   readonly restoredIcon?: {
@@ -4173,6 +4281,111 @@ interface HostedBrowserBrokerOptions {
 }
 
 class HostedBrowserBroker {
+  readonly profileId: BrowserProfileId | null;
+  readonly #historyWrite: HostedBrowserBrokerOptions["historyWrite"];
+  readonly #historyNavigations = new Map<
+    string,
+    { ownerId: UserId; typed: boolean; surfaceId?: BrowserSurfaceId }
+  >();
+  readonly #historyDocuments = new Map<
+    string,
+    { surfaceId: BrowserSurfaceId; url: string; title: string }
+  >();
+  readonly #historyIcons = new Map<BrowserSurfaceId, string>();
+
+  beginHistoryNavigation(ownerId: UserId, typed: boolean, surfaceId?: BrowserSurfaceId) {
+    if (!this.profileId || this.#snapshot?.navigationAttributionVersion !== 1) return undefined;
+    const navigationId = randomUUID();
+    this.#historyNavigations.set(navigationId, {
+      ownerId,
+      typed,
+      ...(surfaceId ? { surfaceId } : {}),
+    });
+    if (this.#historyNavigations.size > 256)
+      this.#historyNavigations.delete(this.#historyNavigations.keys().next().value!);
+    return navigationId;
+  }
+
+  cancelHistoryNavigation(navigationId: string | undefined) {
+    if (navigationId) this.#historyNavigations.delete(navigationId);
+  }
+
+  bindHistoryNavigation(navigationId: string | undefined, surfaceId: BrowserSurfaceId) {
+    const navigation = navigationId ? this.#historyNavigations.get(navigationId) : undefined;
+    if (navigation) navigation.surfaceId = surfaceId;
+  }
+
+  #recordHistoryCommit(
+    event: Extract<BrowserServerMessage, { type: "navigation.committed" }>,
+  ): void {
+    const profileId = this.profileId;
+    const navigation = this.#historyNavigations.get(event.navigationId);
+    if (
+      !profileId ||
+      !navigation ||
+      (navigation.surfaceId && navigation.surfaceId !== event.surfaceId)
+    )
+      return;
+    this.#historyNavigations.delete(event.navigationId);
+    if (!BrowserHistoryUrlSchema.safeParse(event.url).success) return;
+    const surface = this.#snapshot?.surfaces.find(
+      (surface) => surface.id === event.surfaceId && surface.documentId === event.documentId,
+    );
+    const title = surface?.title.slice(0, 200) ?? "";
+    const favicon = surface ? (surface.favicon ?? this.#surfaceIcon(surface)?.favicon) : undefined;
+    this.#historyDocuments.set(event.documentId, {
+      surfaceId: event.surfaceId,
+      url: event.url,
+      title,
+    });
+    // A previous icon write may have found no history, or clear may have erased it.
+    this.#historyIcons.delete(event.surfaceId);
+    if (favicon)
+      this.#historyIcons.set(event.surfaceId, `${new URL(event.url).origin}\0${favicon}`);
+    this.#historyWrite((store) =>
+      store.recordVisit({
+        profileId,
+        ownerId: navigation.ownerId,
+        url: event.url,
+        title,
+        typed: navigation.typed,
+        ...(favicon ? { favicon } : {}),
+      }),
+    );
+  }
+
+  #reconcileHistory(surfaces: readonly BrowserSurface[]): void {
+    const profileId = this.profileId;
+    if (!profileId) return;
+    for (const [id, navigation] of this.#historyNavigations)
+      if (navigation.surfaceId && !surfaces.some((surface) => surface.id === navigation.surfaceId))
+        this.#historyNavigations.delete(id);
+    for (const [id, document] of this.#historyDocuments)
+      if (
+        !surfaces.some((surface) => surface.id === document.surfaceId && surface.documentId === id)
+      )
+        this.#historyDocuments.delete(id);
+    for (const id of this.#historyIcons.keys())
+      if (!surfaces.some((surface) => surface.id === id)) this.#historyIcons.delete(id);
+    for (const surface of surfaces) {
+      const document = surface.documentId
+        ? this.#historyDocuments.get(surface.documentId)
+        : undefined;
+      if (document && document.title !== surface.title.slice(0, 200)) {
+        document.title = surface.title.slice(0, 200);
+        const { url, title } = document;
+        this.#historyWrite((store) => store.retitle({ profileId, url, title }));
+      }
+      const icon = this.#surfaceIcon(surface);
+      if (!icon || !BrowserHistoryUrlSchema.safeParse(surface.url).success) continue;
+      const origin = new URL(surface.url).origin;
+      const fingerprint = `${origin}\0${icon.favicon}`;
+      if (this.#historyIcons.get(surface.id) === fingerprint) continue;
+      this.#historyIcons.set(surface.id, fingerprint);
+      this.#historyWrite((store) => store.retainIcon({ profileId, origin, favicon: icon.favicon }));
+    }
+  }
+
   readonly #navigation: boolean;
   get navigationVersion(): 1 | undefined {
     return this.#navigation && this.live ? 1 : undefined;
@@ -4317,6 +4530,12 @@ class HostedBrowserBroker {
 
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
+    this.profileId = options.profileId;
+    this.#historyWrite = options.historyWrite;
+    if (options.initialHistoryNavigation) {
+      const { navigationId, ownerId, typed } = options.initialHistoryNavigation;
+      this.#historyNavigations.set(navigationId, { ownerId, typed });
+    }
     this.passkeys = options.passkeys;
     this.passkeyOwnOrigins = options.passkeyOwnOrigins;
     this.#passkeys = options.passkeys
@@ -4607,7 +4826,7 @@ class HostedBrowserBroker {
         new OpensteerError({ code: "conflict", message: "CDP request ID is already active." }),
       );
     }
-    return new Promise((resolve, reject) => {
+    return new Promise<BrowserCdpResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pendingCdpRequests.delete(parsed.requestId);
         reject(
@@ -4936,6 +5155,10 @@ class HostedBrowserBroker {
       this.#handleCdpResponse(message);
       return false;
     }
+    if (message.type === "navigation.committed") {
+      this.#recordHistoryCommit(message);
+      return false;
+    }
     if (message.type === "browser.activity") {
       this.#onActivity(message);
       return false;
@@ -4994,6 +5217,7 @@ class HostedBrowserBroker {
         throw new Error("Browser editing was not negotiated by this Host.");
       this.#snapshot = message;
       this.#reconcileIcons(message.surfaces);
+      this.#reconcileHistory(message.surfaces);
       this.#inventoryRevision = message.inventoryRevision ?? 1;
       if (message.dialog) this.#dialogs.set(message.dialog.surfaceId, message.dialog);
       await this.#onState("ready");
@@ -5026,6 +5250,7 @@ class HostedBrowserBroker {
         if (!message.surfaces.some((surface) => surface.id === surfaceId))
           this.#editingContexts.delete(surfaceId);
       this.#reconcileIcons(message.surfaces);
+      this.#reconcileHistory(message.surfaces);
       if (previousIcons !== this.#durableIconRefs()) {
         this.#durableRevision++;
         this.#onTabsChanged();
@@ -5646,6 +5871,22 @@ class HostedBrowserBroker {
       !outlet.editing
     )
       this.#unaddressedKeySenders.add(outlet.clipboardToken);
+    let navigationId: string | undefined;
+    if (message.type === "navigation.go") {
+      // Consumers cannot choose an attribution id, even if they know another viewer's id.
+      navigationId = outlet.userId
+        ? this.beginHistoryNavigation(
+            outlet.userId,
+            message.typed === true,
+            BrowserSurfaceIdSchema.optional().parse(
+              message.surfaceId ??
+                outlet.surfaceId ??
+                this.#snapshot?.surfaces.find((surface) => surface.active)?.id,
+            ),
+          )
+        : undefined;
+      message = { ...message, navigationId };
+    }
     return this.#sendCommand(
       (message.type === "input.key" && this.targetedStreaming) ||
         ((this.#snapshot?.editingVersion !== undefined || outlet.editing) &&
@@ -5657,7 +5898,10 @@ class HostedBrowserBroker {
             message.type === "clipboard.paste-data"))
         ? { ...message, consumerToken: outlet.clipboardToken }
         : message,
-    );
+    ).catch((error: unknown) => {
+      if (navigationId) this.#historyNavigations.delete(navigationId);
+      throw error;
+    });
   }
 
   #reconcileStreaming(): Promise<void> {
@@ -5928,6 +6172,9 @@ class HostedBrowserBroker {
   ): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
     this.#settled = true;
+    this.#historyNavigations.clear();
+    this.#historyDocuments.clear();
+    this.#historyIcons.clear();
     for (const raster of this.#runtimeRaster.values()) if (raster.timer) clearTimeout(raster.timer);
     this.#runtimeRaster.clear();
     this.#passkeys?.close();

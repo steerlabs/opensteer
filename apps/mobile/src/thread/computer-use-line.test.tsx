@@ -6,6 +6,7 @@ import { expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 vi.mock("@opensteer/client/react", () => ({ useComputerUseStop: () => null }));
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   Pressable: (props: {
     accessibilityState?: { expanded?: boolean };
     children?: ReactNode;

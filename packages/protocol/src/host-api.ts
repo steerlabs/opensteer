@@ -1,4 +1,3 @@
-import { ScreenPresentationInputSchema } from "./screen-presentation.js";
 import {
   WorkspaceTabsInputSchema,
   WorkspaceTabLineageSchema,
@@ -167,6 +166,11 @@ import {
   BrowserTabCatalogViewSchema,
   BrowserTabIconInputSchema,
   BrowserTabIconResultSchema,
+  BrowserHistoryIconsInputSchema,
+  BrowserHistoryIconsSchema,
+  BrowserHistoryInputSchema,
+  BrowserHistorySchema,
+  BrowserHistoryUrlSchema,
   browserUsageRunBatchSize,
   ThreadBrowserUsageSchema,
   CreateBrowserProfileGrantResponseSchema,
@@ -229,7 +233,11 @@ import {
 } from "./runner.js";
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
 import {
+  VoiceAnswerInputSchema,
+  VoiceContextInputSchema,
   VoiceEmptyResultSchema,
+  VoiceNextInputSchema,
+  VoiceNextResultSchema,
   VoiceRenewInputSchema,
   VoiceSayInputSchema,
   VoiceStartInputSchema,
@@ -458,7 +466,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.sendMessage"),
-    screenPresentation: ScreenPresentationInputSchema.optional(),
     quotedMessageId: MessageIdSchema.optional(),
   }),
   z.strictObject({
@@ -984,6 +991,19 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     sessionId: z.string().min(1),
     type: z.literal("browser.session.close"),
   }),
+  /** Forgets one address from the person's own profile's history, and its site's icon when unused. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    profileId: BrowserProfileIdSchema,
+    url: BrowserHistoryUrlSchema,
+    type: z.literal("browser.history.remove"),
+  }),
+  /** Forgets the person's own profile's whole history and its retained icons. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    profileId: BrowserProfileIdSchema,
+    type: z.literal("browser.history.clear"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     input: CreateTriggerHttpBodySchema,
@@ -1299,6 +1319,8 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("browser.profile.prepare") }),
   z.object({ type: z.literal("browser.session.close") }),
+  z.object({ type: z.literal("browser.history.remove") }),
+  z.object({ type: z.literal("browser.history.clear") }),
   z.object({
     revision: TriggerRevisionViewSchema,
     trigger: TriggerViewSchema,
@@ -1340,6 +1362,12 @@ export const hostApi = defineRpc({
   "workspace.tabs.get": declaration("GET", WorkspaceTabsInputSchema, WorkspaceTabLineageSchema),
   "browser.tabs.get": declaration("GET", BrowserTabCatalogInputSchema, BrowserTabCatalogViewSchema),
   "browser.tabIcon.get": declaration("GET", BrowserTabIconInputSchema, BrowserTabIconResultSchema),
+  "browser.history.get": declaration("GET", BrowserHistoryInputSchema, BrowserHistorySchema),
+  "browser.history.icons.get": declaration(
+    "GET",
+    BrowserHistoryIconsInputSchema,
+    BrowserHistoryIconsSchema,
+  ),
   /**
    * Where an Android phone reaches this Deployment now, as the Host itself
    * knows it — the target `runner.enrollment.createPhone` pairs with, read
@@ -1488,6 +1516,16 @@ export const hostApi = defineRpc({
   "voice.say": declaration("POST", VoiceSayInputSchema, VoiceEmptyResultSchema),
   /** Ends a call. Ending one that is already over succeeds. */
   "voice.stop": declaration("POST", VoiceStopInputSchema, VoiceEmptyResultSchema),
+  /**
+   * The call agent's next tool call for this device, held open briefly while
+   * there is none. Unanswered calls are delivered again. Requires
+   * `voice-agent-v1` and a call started with `agent`.
+   */
+  "voice.next": declaration("POST", VoiceNextInputSchema, VoiceNextResultSchema),
+  /** This device's result for one tool call; answering twice keeps the first. */
+  "voice.answer": declaration("POST", VoiceAnswerInputSchema, VoiceEmptyResultSchema),
+  /** Replaces what the call's agent knows the person sees and can open. */
+  "voice.context": declaration("POST", VoiceContextInputSchema, VoiceEmptyResultSchema),
   "integration.authorization.get": declaration(
     "GET",
     z.strictObject({ attemptId: IntegrationAuthorizationAttemptIdSchema }),
@@ -1632,7 +1670,13 @@ export const hostApi = defineRpc({
   ),
   "thread.assignments.list": declaration(
     "GET",
-    z.strictObject({ threadId: ThreadIdSchema }).extend(durablePageInputSchema.shape),
+    z
+      .strictObject({
+        /** Only work still under way, however far back it was handed out. Needs `task-family-v1`. */
+        open: z.boolean().optional(),
+        threadId: ThreadIdSchema,
+      })
+      .extend(durablePageInputSchema.shape),
     z.object({
       assignments: z.array(AssignmentSummarySchema).max(100),
       threadId: ThreadIdSchema,
@@ -1721,7 +1765,11 @@ export const hostApi = defineRpc({
   ),
   "triggers.list": declaration(
     "GET",
-    z.strictObject({ workspaceId: WorkspaceIdSchema.optional() }),
+    z.strictObject({
+      workspaceId: WorkspaceIdSchema.optional(),
+      /** Only those that run in this conversation. Needs `task-family-v1`. */
+      anchorThreadId: ThreadIdSchema.optional(),
+    }),
     z.object({ triggers: z.array(TriggerSummaryViewSchema).max(100) }),
   ),
   "workspace.catalog.list": declaration("GET", durablePageInputSchema, WorkspaceCatalogPageSchema),

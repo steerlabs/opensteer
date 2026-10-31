@@ -28,13 +28,14 @@
 .transcript--conversation .msg--user {
   max-width: min(82%, 560px);
   margin: var(--space-4) 0;
-  padding: var(--space-12) var(--space-16);
-  background: var(--ember);
-  border-color: transparent;
-  border-radius: 22px 22px 6px 22px;
+  padding: var(--space-8) var(--space-14);
+  border-color: var(--rim-accent);
+  border-radius: 18px 18px 5px 18px;
+  background: var(--sheen-accent) var(--fill-accent);
+  box-shadow: var(--edge-accent);
   color: var(--ink-on-ember);
-  font-size: var(--text-root);
-  line-height: 1.6;
+  font-size: var(--text-2xl);
+  line-height: 1.55;
 }
 
 .transcript--conversation .msg--user::selection {
@@ -61,16 +62,17 @@
 }
 
 .reply__bubble {
-  padding: var(--space-12) var(--space-16);
-  border: 1px solid transparent;
-  border-radius: 22px 22px 22px 6px;
-  background: var(--surface-elevated);
+  padding: var(--space-8) var(--space-14);
+  border: 1px solid var(--rim-plate);
+  border-radius: 18px 18px 18px 5px;
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   overflow-wrap: anywhere;
 }
 
 .reply__bubble .md-prose {
-  font-size: var(--text-root);
-  line-height: 1.65;
+  font-size: var(--text-2xl);
+  line-height: 1.6;
 }
 
 .reply__bubble .msg--assistant__body {
@@ -91,10 +93,12 @@
   display: flex;
   gap: var(--space-2);
   padding: 3px;
-  border: 1px solid var(--line-strong);
+  /* One per message, so it floats without glass: a blur per reply would cost
+     a compositing layer for every bubble on screen. */
+  border: 1px solid var(--rim-plate);
   border-radius: 10px;
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-raised);
+  background: var(--sheen) var(--surface-raised);
+  box-shadow: var(--edge-plate), var(--lift-float);
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--duration-fast) var(--ease-out);
@@ -124,14 +128,14 @@
   color: var(--muted);
   cursor: pointer;
   transition:
-    background var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
     color var(--duration-fast) var(--ease-out);
 }
 
 .reply__action:hover,
 .reply__action[aria-expanded="true"] {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .reply__action .icon {
@@ -157,23 +161,24 @@
   align-items: center;
   height: 38px;
   padding: 0 var(--space-16);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: 18px 18px 18px 6px;
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
   font: inherit;
+  box-shadow: var(--edge-plate);
 }
 
 .typing__body--opens {
   cursor: pointer;
   transition:
-    background var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
 }
 
 .typing__body--opens:hover,
 .typing__body--opens[aria-expanded="true"] {
   border-color: var(--line-strong);
-  background: var(--surface-hover);
+  background-color: var(--fill-plate-hover);
 }
 
 .typing__dots {
@@ -209,7 +214,9 @@
   padding: 0;
   overflow: hidden;
   border-radius: 18px;
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--surface-elevated);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .activity__head {
@@ -273,7 +280,7 @@
   align-items: center;
   align-self: flex-start;
   gap: var(--space-6);
-  min-height: 36px;
+  min-height: var(--control-height);
   padding: var(--space-4) 0;
   border: 0;
   background: none;
@@ -339,7 +346,7 @@ a.update-line__source:hover {
   flex: none;
   align-items: center;
   gap: var(--space-6);
-  min-height: 32px;
+  min-height: var(--control-height);
   padding: 0;
   border: 0;
   background: none;
@@ -384,7 +391,7 @@ a.update-line__source:hover {
   margin-left: calc(var(--space-8) * -1);
 }
 
-@media (hover: none) and (pointer: coarse) {
+@media (any-pointer: coarse) {
   .update-line__toggle {
     min-height: var(--touch-target);
   }
@@ -395,10 +402,8 @@ a.update-line__source:hover {
 }
 
 .composer--conversation {
+  --composer-radius: 24px;
   container: conversation-composer / inline-size;
-  border-radius: 28px;
-  background: var(--surface);
-  box-shadow: 0 4px 24px rgb(0 0 0 / 12%);
 }
 
 /* One line — Attach, the words, the controls — while what the field shows
@@ -409,15 +414,18 @@ a.update-line__source:hover {
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  padding: var(--space-6);
+  padding: var(--space-4) var(--space-6);
 }
 
+/* A line the height of the toolbar's targets, so words and controls share
+   one centre. Touch raises both through --control-height and the composer's
+   own target size. */
 .composer--conversation .composer__input {
   flex: 1 0 33%;
   min-width: 0;
-  padding: var(--space-10) var(--space-4);
-  font-size: var(--text-root);
-  min-height: 44px;
+  min-height: calc(var(--control-height) + var(--space-6));
+  padding: var(--space-8) var(--space-6);
+  font-size: var(--text-2xl);
 }
 
 .composer--conversation .composer__footer {
@@ -483,9 +491,16 @@ a.update-line__source:hover {
   }
 }
 
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .composer--conversation .composer__input {
-    font-size: 16px;
+    min-height: var(--touch-target);
+    font-size: var(--text-input);
+  }
+
+  /* A phone is held further from the eye than its pixel density suggests. */
+  .transcript--conversation .msg--user,
+  .reply__bubble .md-prose {
+    font-size: var(--text-root);
   }
 
   .message-disclosure {
@@ -498,8 +513,8 @@ a.update-line__source:hover {
   }
 
   .reply__action {
-    width: 36px;
-    height: 36px;
+    width: var(--touch-target);
+    height: var(--touch-target);
   }
 }
 
@@ -514,7 +529,7 @@ a.update-line__source:hover {
 
   .composer--conversation .composer__input {
     /* Keep typing from zooming the page on mobile Safari. */
-    font-size: 16px;
+    font-size: var(--text-input);
   }
 }
 

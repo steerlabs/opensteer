@@ -32,11 +32,12 @@ import { ToastProvider } from "./toast.js";
  * reply, and what a reply did opens on request. A work Thread keeps its queue.
  *
  * What can go wrong, in the app as a person uses it:
- *   G1  Chat while busy shows a queue tray, Steer, Edit, Remove, reorder,
- *       Paused or Resume, or calls Send "Queue message"; the person's message
- *       is not drawn as a sent bubble at the foot of the conversation.
- *   G2  A work Thread loses its tray, Steer, Edit, Remove, reorder, the pause a
- *       Stop leaves, Resume, or its "Queue message" label.
+ *   G1  Chat while busy shows queued messages, Steer, Edit, Remove, Paused or
+ *       Resume, or calls Send "Queue message"; the person's message is not
+ *       drawn as a sent bubble at the foot of the conversation.
+ *   G2  A work Thread's waiting message is not drawn unsent at the foot of the
+ *       conversation, or loses Steer, Edit, Remove, the pause a Stop leaves,
+ *       Resume, or its "Queue message" label; a steered message is not marked.
  *   G4  With an approval docked, typing answers or declines the approval
  *       instead of sending a message, or the approval's buttons disappear.
  *   G7  Waiting shows anything but the typing bubble: a steps toggle, counters
@@ -271,7 +272,7 @@ describe("Chat while Opensteer is replying", () => {
     expect(named(node, "Queue message")).toBeUndefined();
     await click(button(node, "Send message"));
 
-    expect(node.querySelector(".queue-tray")).toBeNull();
+    expect(node.querySelector(".queued")).toBeNull();
     for (const absent of [
       "Steer the current run with this message",
       "Edit this message",
@@ -310,7 +311,7 @@ describe("Chat while Opensteer is replying", () => {
     expect(option(node, "Allow once")).toBeDefined();
     expect(option(node, "Not now")).toBeDefined();
     expect(conversationOrder(node).at(-1)).toBe("you:Make it friendlier");
-    expect(node.querySelector(".queue-tray")).toBeNull();
+    expect(node.querySelector(".queued")).toBeNull();
 
     // Answered with its button, the reply goes on and takes the message in.
     await click(option(node, "Allow once")!);
@@ -340,15 +341,14 @@ describe("Chat while Opensteer is replying", () => {
     await click(button(node, "Send message"));
     await vi.waitFor(() => expect(conversationOrder(node).at(-1)).toBe("reply"));
     expect(conversationOrder(node).slice(-2)).toEqual(["you:Just Thursday then", "reply"]);
-    expect(node.querySelector(".queue-tray")).toBeNull();
+    expect(node.querySelector(".queued")).toBeNull();
   });
 });
 
 describe("a work Thread keeps its queue (G2, G11)", () => {
-  it("queues behind the run with Steer, Edit, Remove and reorder, and Stop pauses until Resume", async () => {
+  it("queues unsent at the foot with Steer, Edit and Remove, and Stop pauses until Resume", async () => {
     stubLayout();
     const client = new MockHostClient({ latencyMs: 0 });
-    const moved = vi.spyOn(client, "moveThreadInput");
     const node = await mount(client, `/threads/${liveWorkThreadId}`);
     expect(named(node, "Stop the run")).toBeDefined();
     expect(named(node, "Stop the reply")).toBeUndefined();
@@ -361,25 +361,38 @@ describe("a work Thread keeps its queue (G2, G11)", () => {
     await type(node, "And tag the release");
     await click(button(node, "Queue message"));
 
-    const tray = node.querySelector<HTMLElement>(".queue-tray");
-    expect(tray).not.toBeNull();
-    expect(tray?.textContent).toContain("Then rename the branch");
-    // Waiting work stays out of the conversation until a Run takes it.
-    expect(node.querySelector(".transcript")?.textContent).not.toContain("Then rename the branch");
+    // Waiting work stands unsent at the conversation's foot, after the turn under way.
+    const queued = node.querySelector<HTMLElement>(".transcript .queued");
+    expect(queued?.previousElementSibling?.classList.contains("queued")).toBe(false);
+    expect(node.querySelector(".transcript")?.lastElementChild).toBe(queued);
+    const bubbles = [...queued!.querySelectorAll(".msg--queued .msg--user")];
+    expect(bubbles.map((bubble) => bubble.textContent)).toEqual([
+      "Then rename the branch",
+      "And tag the release",
+    ]);
     for (const name of [
       "Steer the current run with this message",
       "Edit this message",
       "Remove this message from the queue",
     ]) {
-      expect(named(tray!, name), name).toBeDefined();
+      expect(named(queued!, name), name).toBeDefined();
     }
-    const [first] = [...tray!.querySelectorAll<HTMLElement>("li[tabindex]")];
-    await press(first!, "ArrowDown", { altKey: true });
-    expect(moved).toHaveBeenCalledOnce();
+
+    // Steered, it joins the turn under way: sent where it stands, and marked.
+    await click(button(queued!, "Steer the current run with this message"));
+    await vi.waitFor(() => {
+      const sent = [...node.querySelectorAll(".transcript .msg--user-row:not(.msg--queued)")].find(
+        (row) => row.textContent?.includes("Then rename the branch"),
+      );
+      expect(sent?.querySelector(".msg__steer")?.textContent).toBe("Steer");
+    });
+    expect(
+      [...node.querySelectorAll(".queued .msg--user")].map((bubble) => bubble.textContent),
+    ).toEqual(["And tag the release"]);
 
     await click(button(node, "Stop the run"));
     await vi.waitFor(() =>
-      expect(node.querySelector(".queue-tray")?.textContent).toContain("Paused"),
+      expect(node.querySelector(".transcript .queued__paused")?.textContent).toContain("Paused"),
     );
     expect(named(node, "Resume")).toBeDefined();
   });
@@ -502,10 +515,12 @@ describe("Run details", () => {
   it("leaves the header the conversation's name, and names its way in by what it opens (F3)", async () => {
     stubLayout();
     const chat = await mount(new MockHostClient({ latencyMs: 0 }));
-    // The name is Chat's, with Opensteer's orb; its one button switches conversation.
+    // The name is Chat's, with Opensteer's orb, and plain: what Chat started
+    // is its family's, beside the name, not a menu under it.
     const heading = chat.querySelector(".conv-header h1");
     expect(heading?.querySelector(".conv-header__name")?.textContent).toBe("Chat");
-    expect(heading?.querySelector("button")?.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(heading?.querySelector("button")).toBeNull();
+    expect(chat.querySelector(".task-family-button")?.getAttribute("aria-haspopup")).toBe("dialog");
     expect(chat.querySelector(".conv-header .chat-orb")).not.toBeNull();
     const typing = chat.querySelector<HTMLButtonElement>(".transcript .typing button");
     expect(typing?.getAttribute("aria-label")).toMatch(/what Opensteer is doing/i);

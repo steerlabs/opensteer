@@ -22,3 +22,4 @@ export * from "./workspace-tab-store.js";
 export * from "./browser-tab-group-store.js";
 
 export * from "./browser-profile-storage-store.js";
+export { BrowserHistoryStore } from "./browser-history-store.js";

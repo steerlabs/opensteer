@@ -1,17 +1,37 @@
 import { z } from "zod";
 import type { BrowserIdentityChoice } from "./start-page-model.js";
-import type { RecentSitesScope, RecentSitesStorage } from "./recent-sites.js";
+import type { ViewerIdentity } from "./viewer-scope.js";
+
+export interface BrowserPreferencesStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+  keys(): readonly string[];
+}
 
 /** Device-local preference scoped to the signed-in person and deployment. */
 export class BrowserPreferences {
-  #scope: RecentSitesScope | null = null;
+  #scope: ViewerIdentity | null = null;
   #enabled = true;
   #choice: BrowserIdentityChoice | null = null;
-  readonly storage: RecentSitesStorage | undefined;
-  constructor(storage?: RecentSitesStorage) {
+  readonly storage: BrowserPreferencesStorage | undefined;
+  constructor(storage?: BrowserPreferencesStorage) {
     this.storage = storage;
+    try {
+      for (const key of storage?.keys() ?? [])
+        if (
+          [
+            "opensteer.browsing-history.v2",
+            "opensteer.browsing-history.v1",
+            "opensteer.recent-sites.v1",
+          ].some((prefix) => key.startsWith(prefix))
+        )
+          storage?.removeItem(key);
+    } catch {
+      /* Storage can be disabled. */
+    }
   }
-  setScope(scope: RecentSitesScope | null): void {
+  setScope(scope: ViewerIdentity | null): void {
     if (scope?.deploymentId === this.#scope?.deploymentId && scope?.userId === this.#scope?.userId)
       return;
     this.#scope = scope;

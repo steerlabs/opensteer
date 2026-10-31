@@ -261,6 +261,7 @@ function baseSnapshot(): HostSnapshot {
     taskMarksAvailable: true,
     iphoneAppsAvailable: true,
     assignments: {},
+    threadAutomations: {},
     waitingRequests: [],
     browserAvailable: false,
     browserPlacements: [],

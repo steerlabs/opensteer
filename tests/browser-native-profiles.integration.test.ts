@@ -369,6 +369,25 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
     );
   }
   expect(await site.observed("conversion")).toEqual(expected);
+  await vi.waitFor(
+    async () => {
+      const history = await stack.api["browser.history.get"]({ profileId: profile.id });
+      expect(history, "Native initial navigation did not record its committed visit").toMatchObject(
+        {
+          ok: true,
+          data: {
+            entries: [
+              expect.objectContaining({
+                url: site.origin + "/delayed?id=conversion",
+                visitCount: 1,
+              }),
+            ],
+          },
+        },
+      );
+    },
+    { timeout: 5000 },
+  );
   expect(await row()).toMatchObject({
     storageState: "local",
     revision: 1,
@@ -465,7 +484,8 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
       baseUrl: stack.hostOrigin,
       capabilities: ["browser-profile-prepare-v1"],
       refreshIntervalMs: 0,
-      recentSitesStorage: {
+      browserPreferencesStorage: {
+        keys: () => [],
         getItem: (key) =>
           key.startsWith("opensteer.browse-with.v1:")
             ? JSON.stringify({ kind: "profile", profileId: profile.id })
@@ -670,6 +690,20 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
     idempotencyKey: randomUUID(),
   });
   expect(deleted.ok).toBe(true);
+  expect(
+    await stack.host.store.database
+      .selectFrom("browserHistoryEntries")
+      .selectAll()
+      .where("profileId", "=", profile.id)
+      .execute(),
+  ).toEqual([]);
+  expect(
+    await stack.host.store.database
+      .selectFrom("browserHistoryIcons")
+      .selectAll()
+      .where("profileId", "=", profile.id)
+      .execute(),
+  ).toEqual([]);
   await vi.waitFor(
     async () => {
       const deletion = await stack.host.store.database
