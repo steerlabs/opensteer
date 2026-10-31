@@ -440,7 +440,7 @@ integration("control-plane notification boundary", () => {
         .map(({ status }) => status)
         .sort();
     expect(await statuses()).toEqual(["dropped", "pending", "pending"]);
-    await notifications.claimDueDeliveries({ limit: 1, now });
+    await expect(notifications.claimDueDeliveries({ limit: 1, now })).resolves.toEqual([]);
     expect(await statuses()).toEqual(["dropped", "dropped", "pending"]);
   });
 

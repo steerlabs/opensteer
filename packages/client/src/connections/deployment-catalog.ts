@@ -9,7 +9,6 @@ import {
   HostDiscoveryDocumentSchema,
   HostDiscoveryEnvelopeSchema,
   HostBootstrapMethodSchema,
-  HostCapabilitySchema,
   HostDescriptorSchema,
   PersonalHostAccessRouteEnvelopeSchema,
   hostKeyFingerprint,
@@ -125,8 +124,13 @@ const deploymentConnectionInputCommon = {
    */
   authority: HostDiscoveryEnvelopeSchema,
   bootstrapMethods: z.array(HostBootstrapMethodSchema).max(4),
-  /** Null/absent until this connection has a verified descriptor. */
-  capabilities: z.array(HostCapabilitySchema).max(32).nullable().optional(),
+  /** Cached optional features can outlive the release that recognized them. */
+  capabilities: z
+    .array(z.string().min(1).max(64))
+    .max(32)
+    .transform((names) => [...knownHostCapabilities(names)])
+    .nullable()
+    .optional(),
   kind: DeploymentDisplayKindSchema,
   name: boundedName,
   source: DeploymentConnectionSourceSchema,
