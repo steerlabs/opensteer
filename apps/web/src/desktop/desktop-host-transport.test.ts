@@ -1,3 +1,4 @@
+import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import type {
   DesktopHostWebSocketEvent,
   OpensteerDesktopBridge,
@@ -198,6 +199,26 @@ describe("Desktop Host renderer adapter", () => {
       path: "/v1/workspaces?limit=10",
     });
     await expect(response.json()).resolves.toEqual({ ok: true });
+  });
+
+  it("relays bootstrap summaries through the existing request bridge", async () => {
+    const hostRequest = vi.fn(async () => ({
+      ok: true,
+      data: { body: "{}", headers: { contentType: "application/json" }, status: 200 },
+    }));
+    const fetch = createDesktopHostFetch(
+      { hostRequest } as unknown as OpensteerDesktopBridge,
+      "https://home.test",
+    );
+    const summary = JSON.stringify({ windowMs: 3000, triggers: { load: 6 }, starts: { load: 6 } });
+    await fetch("https://home.test/v1/rpc/bootstrap.get", {
+      headers: { [bootstrapDiagnosticHeader]: summary },
+    });
+    expect(hostRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: expect.objectContaining({ bootstrapDiagnostics: summary }),
+      }),
+    );
   });
 
   it("rejects cross-Deployment requests and renderer-controlled privileged headers", async () => {

@@ -1,4 +1,9 @@
 import {
+  BootstrapReadDiagnostics,
+  bootstrapDiagnosticHeader,
+} from "@opensteer/shared/bootstrapDiagnostics";
+import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
+import {
   SequenceSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
@@ -1770,6 +1775,52 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
+  it("carries one count-only summary after repeated loads recreate the client", async () => {
+    const diagnostics = new BootstrapReadDiagnostics();
+    const trigger = vi
+      .spyOn(bootstrapReadDiagnostics, "trigger")
+      .mockImplementation(diagnostics.trigger.bind(diagnostics));
+    const start = vi
+      .spyOn(bootstrapReadDiagnostics, "start")
+      .mockImplementation(diagnostics.start.bind(diagnostics));
+    const take = vi
+      .spyOn(bootstrapReadDiagnostics, "takeSummary")
+      .mockImplementation(diagnostics.takeSummary.bind(diagnostics));
+    const summaries: (string | null)[] = [];
+    try {
+      for (let index = 0; index < 12; index++) {
+        const client = createHttpHostClient({
+          refreshIntervalMs: 0,
+          webSocketFactory: () => new FakeSocket(),
+          fetch: async (input, init) => {
+            const request = new Request(input, init);
+            if (new URL(request.url).pathname.endsWith("bootstrap.get"))
+              summaries.push(request.headers.get(bootstrapDiagnosticHeader));
+            return json(bootstrap([]));
+          },
+        });
+        try {
+          await client.load();
+        } finally {
+          client.dispose();
+        }
+      }
+      expect(summaries).toHaveLength(12);
+      expect(summaries.filter(Boolean)).toHaveLength(1);
+      expect(JSON.parse(summaries[5]!)).toEqual({
+        windowMs: expect.any(Number),
+        triggers: { load: 6 },
+        starts: { load: 6 },
+      });
+      expect(summaries.slice(0, 5)).toEqual(Array(5).fill(null));
+      expect(summaries.slice(6)).toEqual(Array(6).fill(null));
+    } finally {
+      trigger.mockRestore();
+      start.mockRestore();
+      take.mockRestore();
+    }
+  });
+
   it.each(["host.browser-sessions-changed", "host.machines.changed"] as const)(
     "refreshes thread-visible bootstrap state on %s without a mounted Computers page",
     async (noticeType) => {
@@ -1937,6 +1988,8 @@ describe("HttpHostClient durable realtime", () => {
     sockets[0]!.open();
     sockets[0]!.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
 
+    const triggers = vi.spyOn(bootstrapReadDiagnostics, "trigger");
+    const starts = vi.spyOn(bootstrapReadDiagnostics, "start");
     // Starting: one read begins. Ready lands twice while it is still out.
     sockets[0]!.receive({ type: "host.browser-sessions-changed", workspaceId: workspace.id });
     await vi.waitUntil(() => releases.length === 1);
@@ -1954,6 +2007,17 @@ describe("HttpHostClient durable realtime", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(reads).toBe(3);
+    expect(triggers.mock.calls.map(([reason]) => reason)).toEqual([
+      "host.browser-sessions-changed",
+      "host.browser-sessions-changed",
+      "host.browser-sessions-changed",
+    ]);
+    expect(starts.mock.calls.map(([reason]) => reason)).toEqual([
+      "host.browser-sessions-changed",
+      "host.browser-sessions-changed",
+    ]);
+    triggers.mockRestore();
+    starts.mockRestore();
     client.dispose();
   });
 

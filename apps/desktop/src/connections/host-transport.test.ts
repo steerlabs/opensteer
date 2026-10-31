@@ -508,6 +508,37 @@ describe("DesktopHostTransport", () => {
     expect(observed).toHaveLength(4);
   });
 
+  it("logs only sanitized anomalous bootstrap summaries, once per minute", async () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test");
+    const log = vi.fn();
+    const request = vi.fn(async () => new Response("{}"));
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], selected.authority.document.deploymentId),
+      log,
+      network: { openWebSocket: () => socket(), request },
+    });
+    const summary = JSON.stringify({ windowMs: 3000, triggers: { load: 6 }, starts: { load: 6 } });
+    const read = (bootstrapDiagnostics?: string) =>
+      transport.request({
+        headers: { bootstrapDiagnostics },
+        method: "GET",
+        path: "/v1/rpc/bootstrap.get?input=%7B%7D",
+      });
+    await read();
+    await read(
+      JSON.stringify({ windowMs: 1, triggers: {}, starts: { load: 6 }, url: "PRIVATE-VALUE" }),
+    );
+    expect(log).not.toHaveBeenCalled();
+    await read(summary);
+    await read(summary);
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      "host.bootstrap.loop",
+      expect.objectContaining({ triggers: '{"load":6}', starts: '{"load":6}' }),
+    );
+    expect(request).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE-VALUE");
+  });
+
   it("routes bounded requests only through the selected catalog Host", async () => {
     const first = deployment("Home", "https://home.connect.opensteer.test");
     const second = deployment("Cloud", "https://cloud.opensteer.test");

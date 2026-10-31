@@ -1,3 +1,5 @@
+import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
+import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import {
   HostApiErrorSchema,
   AttachmentContentMetadataSchema,
@@ -162,6 +164,7 @@ async function request<Name extends keyof typeof hostApi>(
   if (declaration.method === "GET" || "binaryRequest" in declaration) {
     url.searchParams.set("input", serialized);
   }
+  const diagnostic = name === "bootstrap.get" ? bootstrapReadDiagnostics.takeSummary() : undefined;
   const deadline = new HostResponseDeadline(call?.signal);
   const maximumBytes = declaration.stream
     ? name === "attachment.content"
@@ -195,6 +198,7 @@ async function request<Name extends keyof typeof hostApi>(
           : {}),
         credentials: "include",
         headers: {
+          ...(diagnostic ? { [bootstrapDiagnosticHeader]: JSON.stringify(diagnostic) } : {}),
           accept: declaration.stream ? "*/*" : "application/json",
           // Every rpc request states the epoch this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
