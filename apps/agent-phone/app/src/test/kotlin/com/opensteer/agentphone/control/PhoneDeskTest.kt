@@ -1091,6 +1091,21 @@ class PhoneDeskTest {
         assertEquals("opensteer-app", desk.displayProtection())
     }
 
+    @Test fun independentOwnerAdmissionDoesNotNeedATaskAndPowerWorksBehindKeyguard() {
+        desk.windowsChanged()
+        assertTrue(desk.ownerAdmission(null, true))
+        assertTrue(!desk.ownerAdmission(a, true))
+        desk.displayChanged(DisplayState(1080, 2400, 0, interactive = false, locked = true, secureLock = true))
+        assertTrue(!desk.ownerAdmission(null, true))
+        assertTrue(desk.ownerAdmission(null, false, power = true))
+        desk.paused = true
+        assertTrue(!desk.ownerAdmission(null, false, power = true))
+        desk.paused = false
+        desk.windowChanged(true)
+        assertTrue(!desk.ownerAdmission(null, true))
+        assertTrue(desk.ownerAdmission(null, false, power = true))
+    }
+
     @Test fun ownerAdmissionUsesEventCacheAndStillChecksSessionAndProtection() {
         observe()
         desk.windowsChanged()

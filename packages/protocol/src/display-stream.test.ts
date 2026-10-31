@@ -474,3 +474,100 @@ describe("display viewer recovery and close contract", () => {
     expect(isRetryableDisplayViewerClose(4999)).toBe(false);
   });
 });
+
+describe("phone owner control wire", () => {
+  const source = {
+    kind: "owner-view",
+    viewId: "cvw_44444444-4444-4444-8444-444444444444",
+    generation: 1,
+  };
+  it("accepts exactly one legacy or source address for inputs and replies", () => {
+    for (const address of [{ sessionId }, { source }]) {
+      expect(
+        HostToIntegrationsModuleMessageSchema.safeParse({
+          ...fence,
+          type: "host.integrations.display.input",
+          streamId,
+          ...input,
+          ...address,
+        }).success,
+      ).toBe(true);
+      expect(
+        HostToIntegrationsModuleMessageSchema.safeParse({
+          ...fence,
+          type: "host.integrations.display.input-reset",
+          streamId,
+          ...address,
+        }).success,
+      ).toBe(true);
+      expect(
+        IntegrationsModuleEventSchema.safeParse({
+          ...fence,
+          type: "runner.integrations.display.input-result",
+          streamId,
+          geometry: 1,
+          sequence: 0,
+          outcome: "dispatched",
+          ...address,
+        }).success,
+      ).toBe(true);
+    }
+    for (const address of [{}, { sessionId, source }]) {
+      expect(
+        HostToIntegrationsModuleMessageSchema.safeParse({
+          ...fence,
+          type: "host.integrations.display.input",
+          streamId,
+          ...input,
+          ...address,
+        }).success,
+      ).toBe(false);
+      expect(
+        IntegrationsModuleEventSchema.safeParse({
+          ...fence,
+          type: "runner.integrations.display.input-result",
+          streamId,
+          geometry: 1,
+          sequence: 0,
+          outcome: "dispatched",
+          ...address,
+        }).success,
+      ).toBe(false);
+    }
+  });
+  it("bounds input authority to current demand and power carries no geometry", () => {
+    const demand = {
+      ...fence,
+      type: "host.integrations.display.demand",
+      display: "main",
+      streamId,
+      revision: 1,
+      sources: [source],
+    };
+    expect(
+      HostToIntegrationsModuleMessageSchema.safeParse({ ...demand, inputSources: [source] })
+        .success,
+    ).toBe(true);
+    expect(
+      HostToIntegrationsModuleMessageSchema.safeParse({
+        ...demand,
+        sources: [],
+        inputSources: [source],
+      }).success,
+    ).toBe(false);
+    const power = { type: "display.power", action: "wake", sequence: 0 };
+    expect(DisplayViewerClientMessageSchema.safeParse(power).success).toBe(true);
+    expect(DisplayViewerClientMessageSchema.safeParse({ ...power, geometry: 1 }).success).toBe(
+      false,
+    );
+    expect(
+      HostToIntegrationsModuleMessageSchema.safeParse({
+        ...fence,
+        ...power,
+        type: "host.integrations.display.power",
+        source,
+        streamId,
+      }).success,
+    ).toBe(true);
+  });
+});

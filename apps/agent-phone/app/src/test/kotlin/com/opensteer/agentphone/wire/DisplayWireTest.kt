@@ -34,6 +34,22 @@ class DisplayWireTest {
         val input = IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) as DisplayMessage.Input
         assertEquals(0L, input.sequence)
     }
+    @Test fun ownerAddressIsExclusiveAndNormalized() {
+        val frame = ((vectors.fields.getValue("hostFrames") as JsonArray).items.map { (it as JsonObject).fields.getValue("frame") as JsonObject }
+            .first { it.fields["type"] == jsonOf("host.integrations.display.input") })
+        val fields = LinkedHashMap(frame.fields)
+        val source = DisplaySource.Owner("cvw_77777777-7777-4777-8777-777777777777", 1)
+        fields["events"] = JsonArray(listOf(jsonObject("kind" to jsonOf("nav"), "to" to jsonOf("back"))))
+        fields["source"] = source.json()
+        assertThrows(Exception::class.java) { IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) }
+        fields.remove("sessionId")
+        val input = IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) as DisplayMessage.Input
+        assertEquals(source, input.source)
+        assertTrue(input.sourceAddressed)
+        fields.remove("source")
+        assertThrows(Exception::class.java) { IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) }
+    }
+
     @Test fun previousReleaseHostFramesRemainStrictlyReadable() {
         val input = ((vectors.fields.getValue("hostFrames") as JsonArray).items.map { (it as JsonObject).fields.getValue("frame") as JsonObject }
             .first { it.fields["type"] == jsonOf("host.integrations.display.input") })

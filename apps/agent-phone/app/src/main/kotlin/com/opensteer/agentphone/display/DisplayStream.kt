@@ -28,6 +28,9 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
     @Volatile private var current: Active? = null
     private class Active(val request: DisplayMessage.Start, val operations: PhoneOperations, val send: (JsonObject) -> Unit) {
         @Volatile var sources = request.sources
+        @Volatile var inputSources = request.inputSources.orEmpty()
+        @Volatile var personSource: DisplaySource? = null
+        var powerSequence = -1L
         var revision = request.revision
         var acquiring = false
         @Volatile var capture: ProjectionCapture? = null
@@ -66,6 +69,7 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
                 // The lane waits on done(): a failed key release must never stall the person's next batch.
                 try {
                     ownerFocusEditor = null
+                    current?.personSource = null
                     runCatching { device.personEdit { editing.reset(); device.clearOwnerText() } }
                         .onFailure { android.util.Log.w("OpensteerDisplay", "Person input reset could not release keys: ${it.javaClass.simpleName}") }
                     publishEditing()
@@ -107,11 +111,14 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
                         } }
                     }.onFailure { encoderError(active) } }
                 is DisplayMessage.Demand -> current?.let { active ->
-                    if (message.revision > active.revision) { active.revision = message.revision; active.sources = message.sources; reconcile() }
+                    if (message.revision > active.revision) { active.revision = message.revision; active.sources = message.sources; active.inputSources = if (active.request.phoneOwnerControl == 1) message.inputSources.orEmpty() else emptyList(); reconcile() }
                 }
                 is DisplayMessage.Control -> Unit
                 is DisplayMessage.Input -> input(message)
-                is DisplayMessage.InputReset -> if (current?.request?.sharedInput == 1) personLane.reset()
+                is DisplayMessage.InputReset -> current?.let { active ->
+                    if (active.request.sharedInput == 1 && addressNegotiated(active, message.sourceAddressed) && message.source in active.sources) personLane.reset()
+                }
+                is DisplayMessage.Power -> power(message)
             }
         }
     }
@@ -119,7 +126,7 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
     fun protectionChanged(protected: Boolean) {
         val revision = if (protected) protectionRevision.incrementAndGet() else protectionRevision.get()
         val active = current
-        if (active?.inputAvailable == true && desk.activeSession?.id?.let { desk.displayTaskLive(it) } != true) {
+        if (active?.inputAvailable == true && active.sources.none { admitted(active, it, false) }) {
             active.inputAvailable = false
             personLane.reset()
         }
@@ -135,6 +142,8 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
     }
     fun lost() {
         val active = current
+        active?.sources = emptyList()
+        active?.inputSources = emptyList()
         active?.capture?.protect { clearQueue(active) }
         active?.inputAvailable = false
         personLane.reset()
@@ -269,7 +278,8 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
         }
         handler.removeCallbacks(expiry)
         active.operations.displayDeadline(active.sources)?.let { deadline -> handler.postDelayed(expiry, (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1)) }
-        val available = desk.activeSession?.id?.let { session -> active.sources.any { it == DisplaySource.Task(session) } && desk.ownerAdmission(session, false) } == true
+        if (active.personSource?.let { !admitted(active, it, false) } == true) personLane.reset()
+        val available = active.sources.any { admitted(active, it, false) }
         if (active.inputAvailable && !available) personLane.reset()
         active.inputAvailable = available
     }
@@ -406,15 +416,56 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
     }
     private fun publishEditing() {
         val active = current ?: return
-        val session = desk.activeSession?.id ?: return
-        if (active.request.sharedInput != 1 || active.request.editingVersion != 1 || active.generation < 1 || active.protected ||
-            active.sources.none { it == DisplaySource.Task(session) && active.operations.displayUnavailable(it) == null } || !desk.ownerAdmission(session, true)) return
-        active.send(DisplayWire.editingContext(active.request.fence, active.request.streamId, session, active.generation,
-            device.readEditing { editing.context(active.sourceWidth, active.sourceHeight) }))
+        if (active.request.sharedInput != 1 || active.request.editingVersion != 1 || active.generation < 1 || active.protected) return
+        val context = device.readEditing { editing.context(active.sourceWidth, active.sourceHeight) }
+        for (source in active.sources) {
+            if (!admitted(active, source, true)) continue
+            active.send(DisplayWire.editingContext(active.request.fence, active.request.streamId, (source as? DisplaySource.Task)?.sessionId,
+                active.generation, context, source.takeIf { active.request.phoneOwnerControl == 1 }))
+        }
     }
+
+    private fun addressNegotiated(active: Active, sourceAddressed: Boolean): Boolean =
+        sourceAddressed == (active.request.phoneOwnerControl == 1)
+
+    /** Source liveness and the Host's current write projection are separate fences. */
+    private fun admitted(active: Active, source: DisplaySource, touch: Boolean, power: Boolean = false): Boolean =
+        current === active && source in active.sources && active.operations.displayUnavailable(source) == null &&
+            (if (active.request.phoneOwnerControl == 1) source in active.inputSources else source is DisplaySource.Task) &&
+            desk.ownerAdmission((source as? DisplaySource.Task)?.sessionId, touch, power)
+
+    private fun power(message: DisplayMessage.Power) {
+        val active = current ?: return
+        if (active.request.phoneOwnerControl != 1) return
+        if (message.sequence <= active.powerSequence) { active.send(DisplayWire.powerResult(message, false)); return }
+        active.powerSequence = message.sequence
+        fun apply() {
+            var dispatched = false
+            try {
+                if (admitted(active, message.source, false, power = true)) {
+                    if (message.action == "lock") {
+                        // Lock is an ordered person-lane barrier, including any agent contact still on the display.
+                        val released = java.util.concurrent.CompletableFuture<Unit>()
+                        gestures.scheduler.cancel { released.complete(Unit) }
+                        released.get(7, TimeUnit.SECONDS)
+                        if (admitted(active, message.source, false, power = true))
+                            dispatched = context.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)
+                    } else {
+                        val budget = Budget(SystemClock::elapsedRealtime, SystemClock.elapsedRealtime() + 7000, Cancellation())
+                        dispatched = device.wake(budget) { check(admitted(active, message.source, false, power = true)) } == Effect.DONE
+                    }
+                }
+            } catch (_: Exception) { dispatched = false }
+            active.send(DisplayWire.powerResult(message, dispatched))
+            handler.post { if (current === active) reconcile() }
+        }
+        if (message.action == "lock") personLane.reset(::apply)
+        else executor.ownerInput { apply() }
+    }
+
     private fun input(message: DisplayMessage.Input) {
         val active = current ?: return
-        if (active.request.sharedInput != 1 || message.controlId != null) return
+        if (active.request.sharedInput != 1 || message.controlId != null || !addressNegotiated(active, message.sourceAddressed)) return
         fun receipt(result: OwnerEditing.Result) {
             result.clipboard?.let { clipboard ->
                 active.send(DisplayWire.editingReply(message, "clipboard", "sequence" to jsonOf(message.sequence), "outcome" to jsonOf(clipboard.outcome),
@@ -423,7 +474,7 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
             active.send(DisplayWire.editingReply(message, "input-result", "sequence" to jsonOf(message.sequence), "outcome" to jsonOf(result.outcome),
                 *(result.reason?.let { arrayOf("reason" to jsonOf(it)) } ?: emptyArray())))
         }
-        if (active.request.streamId != message.streamId || active.sources.none { it == DisplaySource.Task(message.sessionId) && active.operations.displayUnavailable(it) == null }) return
+        if (active.request.streamId != message.streamId || !admitted(active, message.source, false)) { receipt(OwnerEditing.Result("refused", "unavailable")); return }
         val bytes = message.events.sumOf { event -> when (event) {
             is DisplayInput.Insert -> event.text.length * 2
             is DisplayInput.Paste -> event.text.length * 2
@@ -436,9 +487,9 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
                 receipt(OwnerEditing.Result("refused", "unsupported", OwnerEditing.Clipboard("refused"))); return@submit
             }
             fun allowed(touch: Boolean): Boolean = valid() && current === active && active.generation == message.geometry &&
-                active.state == "live" && (!touch || !active.protected) &&
-                active.sources.any { it == DisplaySource.Task(message.sessionId) && active.operations.displayUnavailable(it) == null } &&
-                desk.ownerAdmission(message.sessionId, touch) && valid()
+                active.state == "live" && !active.protected &&
+                admitted(active, message.source, touch) && valid()
+            active.personSource = message.source
             fun point(x: Double, y: Double) = DisplayPoint((x * (active.sourceWidth - 1)).toInt(), (y * (active.sourceHeight - 1)).toInt())
             fun idle() {
                 val done = java.util.concurrent.CompletableFuture<Unit>()
@@ -460,7 +511,7 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
                                     ownerFocusEditor = device.ownerEditorAt(at)
                                     val started = java.util.concurrent.CompletableFuture<Boolean>()
                                     gestures.scheduler.down(at, { allowed(true) }, onStarted = { started.complete(it) }, time = event.t.toLong())
-                                    check(started.get())
+                                    check(started.get(7, TimeUnit.SECONDS))
                                 }
                                 "move" -> gestures.scheduler.move(at, event.t.toLong())
                                 "up" -> { gestures.scheduler.up(at, event.t.toLong()); idle() }

@@ -565,6 +565,357 @@
       }
     },
     {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.start",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "dataTicket": "eyJhbGciOiJFZERTQSJ9.eyJ4IjoxfQ.c2ln",
+        "revision": 0,
+        "sources": [
+          {
+            "kind": "owner-view",
+            "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+            "generation": 1
+          }
+        ],
+        "maxLongSide": 1280,
+        "maxFps": 30,
+        "editingVersion": 1,
+        "displayCut": 1,
+        "sharedInput": 1,
+        "phoneOwnerControl": 1,
+        "inputSources": [
+          {
+            "kind": "owner-view",
+            "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+            "generation": 1
+          }
+        ]
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.demand",
+        "display": "main",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "revision": 2,
+        "sources": [
+          {
+            "kind": "owner-view",
+            "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+            "generation": 1
+          }
+        ],
+        "inputSources": []
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.input",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        },
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "geometry": 1,
+        "sequence": 2,
+        "events": [
+          {
+            "kind": "pointer",
+            "phase": "down",
+            "x": 0.25,
+            "y": 0.75,
+            "t": 1000
+          },
+          {
+            "kind": "pointer",
+            "phase": "move",
+            "x": 0.5,
+            "y": 0.5,
+            "t": 1032.5
+          },
+          {
+            "kind": "pointer",
+            "phase": "up",
+            "x": 0.75,
+            "y": 0.25,
+            "t": 1064
+          },
+          {
+            "kind": "pointer",
+            "phase": "cancel",
+            "x": 0.75,
+            "y": 0.25,
+            "t": 1065
+          },
+          {
+            "kind": "scroll",
+            "x": 0.5,
+            "y": 0.5,
+            "dx": -0.25,
+            "dy": 1
+          },
+          {
+            "kind": "nav",
+            "to": "back"
+          },
+          {
+            "kind": "nav",
+            "to": "home"
+          },
+          {
+            "kind": "nav",
+            "to": "recents"
+          },
+          {
+            "kind": "nav",
+            "to": "notifications"
+          },
+          {
+            "kind": "text",
+            "insert": "milk, eggs ✓"
+          },
+          {
+            "kind": "text",
+            "deleteBackward": 2
+          },
+          {
+            "kind": "text",
+            "submit": true
+          }
+        ]
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.input-reset",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        },
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "sequence": 3,
+        "action": "wake",
+        "type": "host.integrations.display.power",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        }
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "sequence": 3,
+        "action": "lock",
+        "type": "host.integrations.display.power",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        }
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.input",
+        "source": {
+          "kind": "task-session",
+          "sessionId": "cus_99999999-9999-4999-8999-999999999999"
+        },
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "geometry": 1,
+        "sequence": 2,
+        "events": [
+          {
+            "kind": "pointer",
+            "phase": "down",
+            "x": 0.25,
+            "y": 0.75,
+            "t": 1000
+          },
+          {
+            "kind": "pointer",
+            "phase": "move",
+            "x": 0.5,
+            "y": 0.5,
+            "t": 1032.5
+          },
+          {
+            "kind": "pointer",
+            "phase": "up",
+            "x": 0.75,
+            "y": 0.25,
+            "t": 1064
+          },
+          {
+            "kind": "pointer",
+            "phase": "cancel",
+            "x": 0.75,
+            "y": 0.25,
+            "t": 1065
+          },
+          {
+            "kind": "scroll",
+            "x": 0.5,
+            "y": 0.5,
+            "dx": -0.25,
+            "dy": 1
+          },
+          {
+            "kind": "nav",
+            "to": "back"
+          },
+          {
+            "kind": "nav",
+            "to": "home"
+          },
+          {
+            "kind": "nav",
+            "to": "recents"
+          },
+          {
+            "kind": "nav",
+            "to": "notifications"
+          },
+          {
+            "kind": "text",
+            "insert": "milk, eggs ✓"
+          },
+          {
+            "kind": "text",
+            "deleteBackward": 2
+          },
+          {
+            "kind": "text",
+            "submit": true
+          }
+        ]
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "type": "host.integrations.display.input-reset",
+        "source": {
+          "kind": "task-session",
+          "sessionId": "cus_99999999-9999-4999-8999-999999999999"
+        },
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "sequence": 3,
+        "action": "wake",
+        "type": "host.integrations.display.power",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "source": {
+          "kind": "task-session",
+          "sessionId": "cus_99999999-9999-4999-8999-999999999999"
+        }
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "sequence": 3,
+        "action": "lock",
+        "type": "host.integrations.display.power",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "source": {
+          "kind": "task-session",
+          "sessionId": "cus_99999999-9999-4999-8999-999999999999"
+        }
+      }
+    },
+    {
       "channel": "display-data",
       "frame": {
         "type": "display.ack",
@@ -782,6 +1133,129 @@
         "streamId": "dsp_11111111-1111-4111-8111-111111111111",
         "geometry": 1,
         "type": "runner.integrations.display.editing"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "sequence": 0,
+        "outcome": "refused",
+        "reason": "unavailable",
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        },
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "geometry": 1,
+        "type": "runner.integrations.display.input-result"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "sequence": 1,
+        "outcome": "copied",
+        "text": "milk, eggs ✓",
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        },
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "geometry": 1,
+        "type": "runner.integrations.display.clipboard"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "context": {
+          "contextId": "11111111-1111-4111-8111-111111111111",
+          "field": {
+            "kind": "text",
+            "multiline": false,
+            "sensitive": false,
+            "inputMode": "text"
+          },
+          "caret": {
+            "x": 0.25,
+            "y": 0.5,
+            "height": 0.025
+          }
+        },
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        },
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "geometry": 1,
+        "type": "runner.integrations.display.editing"
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "sequence": 3,
+        "outcome": "dispatched",
+        "type": "runner.integrations.display.power-result",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        }
+      }
+    },
+    {
+      "channel": "integrations",
+      "frame": {
+        "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+        "connectionGeneration": 3,
+        "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+        "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+        "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+        "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+        "module": "integrations",
+        "sequence": 3,
+        "outcome": "refused",
+        "reason": "unavailable",
+        "type": "runner.integrations.display.power-result",
+        "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+        "source": {
+          "kind": "owner-view",
+          "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+          "generation": 1
+        }
       }
     }
   ],

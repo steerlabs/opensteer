@@ -1434,6 +1434,12 @@ export const RunnerIntegrationsModuleSchema = z.object({
     .positive()
     .transform((version) => (version === 1 ? version : undefined))
     .optional(),
+  phoneOwnerControl: z
+    .number()
+    .int()
+    .positive()
+    .transform((version) => (version === 1 ? version : undefined))
+    .optional(),
   platform: ComputerAppPlatformSchema,
   // Android, Mac and iPhone have independent protocol versions.
   protocolVersion: z.number().int().positive().optional(),

@@ -36,6 +36,24 @@ class PersonInputLaneTest {
         clean.removeFirst()()
     }
 
+    @Test fun lockBarrierReleasesBeforeEffectAndSurvivesAProtectionReset() {
+        val work = ArrayDeque<() -> Unit>(); val clean = ArrayDeque<() -> Unit>(); val seen = ArrayList<String>()
+        val lane = PersonInputLane({ work += it }, { seen += "interrupt" }, { clean += it })
+        val stream = PersonInputLane.Stream()
+        lane.submit(stream, 0, 1, 1, 100, 1, { seen += it }, { seen += "contact" })
+        work.removeFirst()()
+        lane.submit(stream, 1, 1, 1, 100, 1, { seen += it }, { fail("Queued input survived lock") })
+        lane.reset { seen += "lock" }
+        work.removeFirst()()
+        work.removeFirst()()
+        assertFalse(seen.contains("lock"))
+        lane.reset()
+        clean.removeFirst()()
+        assertEquals("lock", seen.last())
+        while (work.isNotEmpty()) work.removeFirst()()
+        while (clean.isNotEmpty()) clean.removeFirst()()
+    }
+
     @Test fun streamSequenceGeometryAndQueueBoundsSurviveResets() {
         val work = ArrayDeque<() -> Unit>(); val refused = ArrayList<String>()
         val lane = PersonInputLane({ work += it }, {}, { it() }); val stream = PersonInputLane.Stream()

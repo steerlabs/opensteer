@@ -308,6 +308,7 @@ export const DisplayViewerStateSchema = z.strictObject({
    * shared input and this viewer is allowed to use it.
    */
   sharedInput: z.literal(1).optional(),
+  phoneOwnerControl: z.literal(1).optional(),
 });
 export type DisplayViewerState = z.infer<typeof DisplayViewerStateSchema>;
 /**
@@ -344,6 +345,17 @@ export const DisplayInputResultSchema = z.strictObject({
   reason: DisplayInputRefusalSchema.optional(),
 });
 export type DisplayInputResult = z.infer<typeof DisplayInputResultSchema>;
+export const DisplayPowerSchema = z.strictObject({
+  type: z.literal("display.power"),
+  sequence: DisplaySequenceSchema,
+  action: z.enum(["wake", "lock"]),
+});
+export const DisplayPowerResultSchema = z.strictObject({
+  type: z.literal("display.power.result"),
+  sequence: DisplaySequenceSchema,
+  outcome: z.enum(["dispatched", "refused"]),
+  reason: DisplayInputRefusalSchema.optional(),
+});
 /** The focused field on the target, caret in normalized picture coordinates. */
 export const DisplayEditingSchema = z.strictObject({
   type: z.literal("display.editing"),
@@ -362,12 +374,14 @@ export type DisplayClipboard = z.infer<typeof DisplayClipboardSchema>;
 export const DisplayViewerServerMessageSchema = z.discriminatedUnion("type", [
   DisplayViewerStateSchema,
   DisplayInputResultSchema,
+  DisplayPowerResultSchema,
   DisplayEditingSchema,
   DisplayClipboardSchema,
 ]);
 export type DisplayViewerServerMessage = z.infer<typeof DisplayViewerServerMessageSchema>;
 export const DisplayViewerClientMessageSchema = z.discriminatedUnion("type", [
   DisplayAckSchema,
+  DisplayPowerSchema,
   z.strictObject({ type: z.literal("display.viewport"), maxLongSide: DisplayMaxLongSideSchema }),
   // The viewer lost its decoder state and needs a fresh decodable start.
   z.strictObject({ type: z.literal("display.keyframe") }),
