@@ -8,7 +8,7 @@ import { createDatabase } from "@opensteer/database";
  */
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunnerId } from "@opensteer/core";
 import {
@@ -114,6 +114,7 @@ it.each([
     endedMs: number;
     status: string;
     error?: string;
+    failureLoadAverage?: readonly number[];
   }[] = [];
   const evidence: Record<string, unknown> = {};
   const hostLog: string[] = [];
@@ -265,6 +266,10 @@ it.each([
     } catch (error) {
       record.status = "failed";
       record.error = redaction.error(error);
+      record.failureLoadAverage = loadavg();
+      process.stdout.write(
+        `Agent Phone phase failed: ${name}; load=${record.failureLoadAverage.join(",")}\n`,
+      );
       throw error;
     } finally {
       record.endedMs = performance.now();
@@ -3042,6 +3047,7 @@ it.each([
     completed = true;
   } catch (error) {
     failure = redaction.error(error);
+    evidence.failureLoadAverage = loadavg();
     throw error;
   } finally {
     for (const close of cleanup.reverse()) {
