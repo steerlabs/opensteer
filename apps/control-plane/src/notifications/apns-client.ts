@@ -92,11 +92,13 @@ export class ApnsClient {
           aps: {
             alert: { body: input.message.body, title: input.message.title },
             sound: "default",
+            "thread-id": `${input.message.data.deploymentId}:${input.message.data.threadId}`,
+            ...(input.message.data.preview ? { "mutable-content": 1 } : {}),
           },
         }),
         headers: {
           authorization: `bearer ${await this.#token()}`,
-          "apns-collapse-id": input.collapseKey.slice(0, 64),
+          "apns-collapse-id": input.collapseKey,
           "apns-expiration": String(Math.floor(input.expiresAt.getTime() / 1_000)),
           "apns-priority": "10",
           "apns-push-type": "alert",
@@ -105,8 +107,8 @@ export class ApnsClient {
         },
         path: `/3/device/${encodeURIComponent(input.token)}`,
       });
-    } catch (error) {
-      return { outcome: apnsOutcome(error), status: "retry" };
+    } catch {
+      return { outcome: "apns:transport", status: "retry" };
     }
     if (response.status === 200) return { outcome: "accepted", status: "delivered" };
     const reason = apnsReason(response.body);
@@ -144,16 +146,10 @@ function apnsReason(body: string): string {
   if (!body) return "unknown";
   try {
     const parsed = ApnsFailureSchema.safeParse(JSON.parse(body));
-    return parsed.success ? parsed.data.reason : "unknown";
+    return parsed.success && apnsReasons.has(parsed.data.reason) ? parsed.data.reason : "unknown";
   } catch {
     return "unknown";
   }
-}
-
-function apnsOutcome(error: unknown): string {
-  return error instanceof Error
-    ? `apns:transport:${error.message.slice(0, 200)}`
-    : "apns:transport";
 }
 
 /**
@@ -226,3 +222,34 @@ class Http2Connection {
     return session;
   }
 }
+
+const apnsReasons = new Set([
+  "BadDeviceToken",
+  "Unregistered",
+  "DeviceTokenNotForTopic",
+  "TooManyRequests",
+  "InternalServerError",
+  "ServiceUnavailable",
+  "Shutdown",
+  "BadCollapseId",
+  "BadExpirationDate",
+  "BadMessageId",
+  "BadPriority",
+  "BadTopic",
+  "DuplicateHeaders",
+  "IdleTimeout",
+  "MissingDeviceToken",
+  "MissingTopic",
+  "PayloadEmpty",
+  "TopicDisallowed",
+  "BadCertificate",
+  "BadCertificateEnvironment",
+  "ExpiredProviderToken",
+  "Forbidden",
+  "InvalidProviderToken",
+  "MissingProviderToken",
+  "BadPath",
+  "MethodNotAllowed",
+  "PayloadTooLarge",
+  "TooManyProviderTokenUpdates",
+]);
