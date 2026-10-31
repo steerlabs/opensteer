@@ -7,13 +7,11 @@ export class DisplayViewerBitrate {
   #sampleAt: number | null = null;
   #bytes = 0;
   #lastFlow: number | null = null;
-  #congestedAt = -Infinity;
   #healthySince: number | null = null;
   #queuedSince: number | null = null;
   #reducedAt = -Infinity;
 
   stall(now: number): void {
-    this.#congestedAt = now;
     this.#healthySince = null;
     if (now - this.#reducedAt < 2_000) return;
     const elapsed = now - (this.#sampleAt ?? now);
@@ -45,10 +43,7 @@ export class DisplayViewerBitrate {
     }
     const elapsed = now - (this.#sampleAt ?? now);
     if (elapsed < 2_000) return;
-    if (now - this.#congestedAt <= 2_000) {
-      this.stall(now);
-      this.#healthySince = null;
-    } else if (this.cap !== null && now - (this.#healthySince ?? now) >= 8_000) {
+    if (this.cap !== null && now - (this.#healthySince ?? now) >= 8_000) {
       this.cap = this.cap * 1.2 >= maximumBitrate ? null : Math.round(this.cap * 1.2);
       this.#healthySince = now;
     }

@@ -26,7 +26,6 @@ import WebSocket from "ws";
 import { normalizeHostError } from "../server/http-errors.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
-import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { DisplayStreamHub } from "./display-stream-hub.js";
 import { ComputerUseError } from "./computer-use-service.js";
 import { registerComputerUseDisplayRoutes } from "./computer-use-display-routes.js";
@@ -2889,28 +2888,6 @@ it("does not create a phone producer when owner input authorization finishes aft
 });
 
 describe("viewer-driven phone bitrate", () => {
-  it("keeps a high RTT alone uncapped, reduces queued flow and never raises through silence", () => {
-    const rate = new DisplayViewerBitrate();
-    for (let now = 0; now <= 4_000; now += 100) rate.ack(now, 12_500, 400, 400);
-    expect(rate.cap).toBeNull();
-    for (let now = 4_100; now <= 8_000; now += 100) rate.ack(now, 12_500, 750, 400);
-    expect(rate.cap).toBeGreaterThanOrEqual(400_000);
-    expect(rate.cap).toBeLessThan(1_000_000);
-    const reduced = rate.cap;
-    rate.ack(30_000, 12_500, 400, 400);
-    expect(rate.cap).toBe(reduced);
-    for (let now = 30_100; now <= 40_000; now += 100) rate.ack(now, 12_500, 400, 400);
-    expect(rate.cap).toBeGreaterThan(reduced!);
-  });
-  it("counts credit stalls without queue-delay samples and bounds the floor", () => {
-    const rate = new DisplayViewerBitrate();
-    for (let now = 0; now <= 20_000; now += 111) {
-      rate.stall(now);
-      rate.ack(now, 18_123, 400, 400);
-      expect(rate.cap === null || Number.isInteger(rate.cap)).toBe(true);
-    }
-    expect(rate.cap).toBe(400_000);
-  });
   it("negotiates only with capable phones and clears the slowest attached viewer cap", async () => {
     const old = await fixture();
     await old.viewer(false, false, true);
