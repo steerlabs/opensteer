@@ -674,6 +674,7 @@ export async function listThreadAssignmentsForOwner(
     readonly before?: string;
     readonly maxBytes?: number;
     readonly maxItems?: number;
+    readonly open?: boolean;
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
   },
@@ -702,7 +703,7 @@ export async function listThreadAssignmentsForOwner(
         .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst();
       if (!thread) return null;
-      const base = transaction
+      let base = transaction
         .selectFrom("delegations")
         .innerJoin("threads as workerThread", "workerThread.id", "delegations.childThreadId")
         .innerJoin(
@@ -725,6 +726,7 @@ export async function listThreadAssignmentsForOwner(
             expressions("delegations.parentThreadId", "=", input.threadId),
           ]),
         );
+      if (input.open) base = base.where("delegations.status", "=", "open");
       let query = base.selectAll("delegations");
       if (anchor) {
         query = query.where((expressions) =>
