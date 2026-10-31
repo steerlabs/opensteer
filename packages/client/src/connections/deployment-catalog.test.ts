@@ -614,6 +614,62 @@ describe("DeploymentCatalogStore", () => {
     expect(files.text(catalogPath)).toBe(serialized);
   });
 
+  it("loads retired and future optional capabilities without losing saved connections", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
+    const first = persistedDeployment({ name: "Home" });
+    const second = persistedDeployment({ name: "Work" });
+    const catalog = {
+      deployments: [
+        { ...first, capabilities: ["native-oauth", "screen-show-v1", "invented-later"] },
+        second,
+      ],
+      revision: 7,
+      schemaVersion: emptyDeploymentCatalog().schemaVersion,
+      selectedDeploymentId: second.authority.document.deploymentId,
+      updatedAt: "2026-08-11T10:00:00.000Z",
+    };
+    const serialized = JSON.stringify(catalog);
+    files.put(catalogPath, serialized);
+
+    await expect(store.load()).resolves.toEqual({
+      ...catalog,
+      deployments: [{ ...first, capabilities: ["native-oauth"] }, second],
+    });
+    expect(files.text(catalogPath)).toBe(serialized);
+
+    const selected = await store.select(first.authority.document.deploymentId);
+    expect(selected.selectedDeploymentId).toBe(first.authority.document.deploymentId);
+    expect(selected.deployments.map(({ authority }) => authority)).toEqual([
+      first.authority,
+      second.authority,
+    ]);
+    expect(selected.deployments[0]?.capabilities).toEqual(["native-oauth"]);
+    await expect(store.load()).resolves.toEqual(selected);
+  });
+
+  it.each([
+    { name: "non-string", capabilities: [1] },
+    { name: "empty", capabilities: [""] },
+    { name: "overlong", capabilities: ["x".repeat(65)] },
+    { name: "oversized", capabilities: Array<string>(33).fill("native-oauth") },
+  ])("still rejects $name cached capabilities", async ({ capabilities }) => {
+    const files = new MemoryPrivateFilesystem();
+    const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
+    const current = persistedDeployment({ name: "Home" });
+    const serialized = JSON.stringify({
+      deployments: [{ ...current, capabilities }],
+      revision: 1,
+      schemaVersion: emptyDeploymentCatalog().schemaVersion,
+      selectedDeploymentId: current.authority.document.deploymentId,
+      updatedAt: "2026-08-11T10:00:00.000Z",
+    });
+    files.put(catalogPath, serialized);
+
+    await expect(store.load()).rejects.toThrow("incompatible or corrupt");
+    expect(files.text(catalogPath)).toBe(serialized);
+  });
+
   it("fails closed on a catalog of its own version it cannot read", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
