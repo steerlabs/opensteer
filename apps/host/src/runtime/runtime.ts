@@ -768,6 +768,8 @@ export async function createHostRuntime(
         ...(config.account ? [config.account.issuer.origin] : []),
       ],
       ...(options.browserActivityClock ? { activityClock: options.browserActivityClock } : {}),
+      onHistoryChanged: (ownerId, profileId) =>
+        realtime.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
       // The viewer rereads its whole browser bootstrap, profiles included;
       // reusing this notice keeps older clients working.
       onProfilesChanged: (ownerId, workspaceId) =>
@@ -2404,6 +2406,7 @@ export async function createHostRuntime(
     );
     const attachmentGcTimer = setInterval(
       () => {
+        void browser.pruneHistory();
         void attachments
           .collectGarbage()
           .catch((error: unknown) => app.log.warn({ err: error }, "Attachment cleanup failed"));

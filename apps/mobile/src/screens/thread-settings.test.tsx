@@ -170,6 +170,20 @@ describe("Expo engine/account/model journeys", () => {
     navigation.goBack.mockClear();
   });
 
+  it("is one list the sheet can size, with nothing pinned beside it", async () => {
+    // iOS sizes a form sheet's list to each detent; a sibling pinned below it
+    // stays where the smaller detent left it and the list runs on underneath.
+    for (const draft of [false, true]) {
+      await mount(draft);
+      const sheet = document.body.firstElementChild!.firstElementChild!;
+      expect(sheet.getAttribute("data-scroll")).toBe("y");
+      expect(sheet.nextElementSibling).toBeNull();
+      expect(sheet.querySelector('[aria-label="This conversation"]')).not.toBeNull();
+      await act(async () => root?.unmount());
+      document.body.replaceChildren();
+    }
+  });
+
   it("browses engines and accounts without committing and reviews incompatible accounts", async () => {
     await mount();
     await browseSecond();

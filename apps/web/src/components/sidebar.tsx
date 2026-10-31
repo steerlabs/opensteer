@@ -1108,13 +1108,7 @@ const TabRowItem = memo(function TabRowItem({
         type="button"
       >
         <span aria-hidden className="place-mark-badged">
-          {place.loading ? (
-            <span className="place-mark place-mark--loading">
-              <span className="spinner" />
-            </span>
-          ) : (
-            <PlaceMark hostClient={hostClient} icon={place.icon} site={place.site} />
-          )}
+          <PlaceMark hostClient={hostClient} icon={place.icon} />
           {badge ? (
             <span className="pbadge">
               <ProfileAvatar identity={badge} size={14} />

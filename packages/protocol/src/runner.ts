@@ -1255,6 +1255,12 @@ export const RunnerBrowserModuleSchema = z
       .positive()
       .transform((version) => (version === 1 ? version : undefined))
       .optional(),
+    navigationAttributionVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
     workspaceTabRestoreVersion: z
       .number()
       .int()

@@ -72,6 +72,8 @@ export function createHostApiHandlers(
     | "browser.tabs.get"
     | "workspace.tabs.get"
     | "browser.tabIcon.get"
+    | "browser.history.get"
+    | "browser.history.icons.get"
     | "thread.browserUsage.get"
     | "attachment.get"
     | "attachment.upload"

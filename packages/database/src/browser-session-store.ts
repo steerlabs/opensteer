@@ -1,3 +1,4 @@
+import { lockBrowserHistory } from "./browser-history-store.js";
 import { z } from "zod";
 import {
   lockCommandIdempotency,
@@ -457,6 +458,15 @@ export async function deleteBrowserProfile(
       .set({ archivedAt: now, updatedAt: now })
       .where("id", "=", input.profileId)
       .where("archivedAt", "is", null)
+      .execute();
+    await lockBrowserHistory(transaction, input.profileId);
+    await transaction
+      .deleteFrom("browserHistoryEntries")
+      .where("profileId", "=", input.profileId)
+      .execute();
+    await transaction
+      .deleteFrom("browserHistoryIcons")
+      .where("profileId", "=", input.profileId)
       .execute();
     await transaction
       .deleteFrom("browserProfileRevisions")

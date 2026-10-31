@@ -308,6 +308,12 @@ export async function handOverFirstMessage(input: {
   readonly draftKey: string;
   readonly drafts: ThreadDraftStore;
   readonly files: FirstMessageAttachmentDraftScope;
+  /**
+   * Leave the source screen. Called once the destination holds the message
+   * and before the source's copy is cleared: cleared first, the source would
+   * draw its empty starter again for a frame on the way out.
+   */
+  readonly onReady: () => void;
   readonly threadId: string;
   readonly userId: string;
 }): Promise<PendingCommand> {
@@ -329,6 +335,7 @@ export async function handOverFirstMessage(input: {
   // and only the Thread's copies of the files are referenced from here on.
   const owed = drafts.readPending(deploymentId, userId, threadId);
   if (owed === null) throw new Error("Your message was not saved on this phone.");
+  input.onReady();
   const cleared = await drafts.clearPending(
     deploymentId,
     userId,

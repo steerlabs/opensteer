@@ -1,3 +1,4 @@
+import { BrowserHistoryStore } from "./browser-history-store.js";
 import {
   publishPersonNotification,
   type PersonNotificationInput,
@@ -211,6 +212,7 @@ export class OpensteerStore {
   readonly requests: RequestStore;
 
   readonly notificationState: NotificationStateStore;
+  readonly browserHistory: BrowserHistoryStore;
 
   constructor(
     database: Kysely<DatabaseSchema>,
@@ -221,6 +223,7 @@ export class OpensteerStore {
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.requests = new RequestStore(database);
     this.notificationState = new NotificationStateStore(database);
+    this.browserHistory = new BrowserHistoryStore(database);
   }
 
   get database(): Kysely<DatabaseSchema> {

@@ -9,10 +9,12 @@ it("projects passkey fields only to opted-in viewers while preserving old snapsh
     sessionId: "bsn_e2799da2-9fe9-438e-a160-47e275ee2703",
     state: "ready",
     surfaces: [],
+    navigationAttributionVersion: 1,
     passkeys: "native",
     passkeyConsumerToken: "e2799da2-9fe9-438e-a160-47e275ee2703",
   });
   const old = browserViewerMessage(snapshot);
+  expect(old).not.toHaveProperty("navigationAttributionVersion");
   expect(old).not.toHaveProperty("passkeys");
   expect(old).not.toHaveProperty("passkeyConsumerToken");
   expect(

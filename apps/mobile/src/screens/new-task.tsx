@@ -290,24 +290,26 @@ function NewTask(props: {
           ...creation,
           ...(generateTitle ? { generateTitle: true } : {}),
         });
+        let opened = false;
         const owed = await handOverFirstMessage({
           claimed,
           deploymentId,
           draftKey,
           drafts,
           files,
+          onReady: () => {
+            const active = client.getSnapshot().selection;
+            opened =
+              mounted.current &&
+              active.deploymentId === deploymentId &&
+              active.hostClient === hostClient &&
+              hostClient.getSnapshot().user?.id === userId &&
+              onStarted(thread.id);
+          },
           threadId: thread.id,
           userId,
         });
-        const active = client.getSnapshot().selection;
-        if (
-          mounted.current &&
-          active.deploymentId === deploymentId &&
-          active.hostClient === hostClient &&
-          hostClient.getSnapshot().user?.id === userId &&
-          onStarted(thread.id)
-        )
-          return;
+        if (opened) return;
         // The reader left while the task was being made, so no composer is
         // about to send this. It goes now, under the key it was claimed with;
         // if it cannot, it stays owed and the task's composer sends it when

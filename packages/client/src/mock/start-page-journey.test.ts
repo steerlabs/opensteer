@@ -134,14 +134,11 @@ describe("start page mock journey", () => {
         kind: "profile",
         profileId: client.getSnapshot().browserProfiles[0]!.id,
       } as const;
-      client.recentSites.record(
-        profile,
-        "https://recent.example/private",
-        client.recentSites.epoch,
-      );
-      expect(client.recentSites.list(profile)).toHaveLength(1);
+      await client.openBrowserTab({ identity: profile }, { url: "https://recent.example/private" });
+      await client.browserHistory.load(profile.profileId);
+      expect(client.browserHistory.entries(profile.profileId)).toHaveLength(1);
       await client.rpc["auth.signOut"]({});
-      expect(client.recentSites.list(profile)).toEqual([]);
+      expect(client.browserHistory.entries(profile.profileId)).toEqual([]);
       await expect(client.openComputerView(app.machineId, app.target)).rejects.toMatchObject({
         code: "unauthorized",
       });

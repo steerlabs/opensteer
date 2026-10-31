@@ -12,9 +12,13 @@ const state = vi.hoisted(() => ({
     title: string;
   },
   hostClient: null as unknown,
+  navigate: vi.fn(),
 }));
 
-vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
+vi.mock("@react-navigation/native", () => ({
+  useIsFocused: () => true,
+  useNavigation: () => ({ navigate: state.navigate }),
+}));
 vi.mock("@opensteer/client/react", () => ({
   useHostSelector: (client: { getSnapshot: () => unknown }, select: (value: unknown) => unknown) =>
     select(client.getSnapshot()),
@@ -221,6 +225,11 @@ describe("mobile browser profiles", () => {
     expect(text()).toContain("Opensteer can use every profile.");
     expect(text().indexOf("Personal")).toBeLessThan(text().indexOf("Work"));
     await press("Work, Opensteer and Research");
+    await press("Browsing history for Work");
+    expect(state.navigate).toHaveBeenCalledWith("BrowserHistory", {
+      deploymentId: "deployment-a",
+      profileId: "bpr_work",
+    });
     await press("Rename Work");
     await typeName("Studio");
     await press("Save");

@@ -1426,6 +1426,23 @@ interface BrowserProfileTable {
   updatedAt: Timestamp;
 }
 
+interface BrowserHistoryEntryTable {
+  profileId: BrowserProfileId;
+  url: string;
+  origin: string;
+  title: string;
+  typedCount: number;
+  visitCount: number;
+  lastVisitAt: Timestamp;
+}
+
+interface BrowserHistoryIconTable {
+  profileId: BrowserProfileId;
+  origin: string;
+  iconRef: string;
+  favicon: string;
+}
+
 interface BrowserProfileRevisionTable {
   profileId: BrowserProfileId;
   revision: number;
@@ -2072,6 +2089,8 @@ export interface DatabaseSchema {
   credentials: CredentialTable;
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
+  browserHistoryEntries: BrowserHistoryEntryTable;
+  browserHistoryIcons: BrowserHistoryIconTable;
   browserProfileRevisions: BrowserProfileRevisionTable;
   browserSessions: BrowserSessionTable;
   workspaceTabs: WorkspaceTabTable;

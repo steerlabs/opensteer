@@ -533,7 +533,7 @@ function TabResult({
     >
       <span className="side-tab__main">
         <span aria-hidden className="place-mark-badged">
-          <PlaceMark hostClient={hostClient} icon={place.icon} site={place.site} />
+          <PlaceMark hostClient={hostClient} icon={place.icon} />
           {(badges || profileMatch) && place.identity ? (
             <span className={profileMatch ? "pbadge side-result__profile-match" : "pbadge"}>
               <ProfileAvatar identity={place.identity} size={14} />

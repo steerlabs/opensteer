@@ -46,13 +46,15 @@ import { join, resolve } from "node:path";
 import { sql } from "kysely";
 import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
 import WebSocket from "ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { HostConfig } from "../../../packages/config/src/index.js";
 import { createDatabase, migrateToLatest } from "../../../packages/database/src/index.js";
 import {
   decodeBrowserFrameEnvelope,
+  BrowserServerMessageSchema,
   hostApiVersionHeader,
   personalWebBuildId,
+  type BrowserSurface,
   type HostToRunnerMessage,
   type RunnerConnectionFence,
 } from "@opensteer/protocol";
@@ -426,12 +428,13 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
 
     /** Navigates the live session and returns what the synthetic server saw. */
     const visit = async (viewer: Viewer, host: string, path = "/account") => {
-      const since = Date.now();
-      viewer.send({ type: "navigation.go", url: url(host, path) });
+      // Consecutive visits can share a millisecond; timestamps cannot identify their requests.
+      const requestIndex = site.requests.length;
+      await viewer.navigate(url(host, path));
       return waitForValue(`the hosted browser to request ${host}${path}`, async () =>
-        site.requests.find(
-          (request) => request.at >= since && request.host === host && request.path === path,
-        ),
+        site.requests
+          .slice(requestIndex)
+          .find((request) => request.host === host && request.path === path),
       );
     };
     const signedIn = (request: SiteRequest, name: SiteName) =>
@@ -444,6 +447,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       const first = await visit(viewerOne, "www.alpha.test");
       expect(first.cookies.size).toBe(0);
       const second = await visit(viewerOne, "www.alpha.test");
+      expect(second).not.toBe(first);
       expect(hasAnonymous(second)).toBe(true);
       expect(second.cookies.get("e2e-anon-only")).toMatch(/^anon-/u);
       expect(signedIn(second, "alpha")).toBe(false);
@@ -1183,12 +1187,18 @@ class Viewer {
   readonly #socket: WebSocket;
   readonly #frames: { at: number; bytes: Uint8Array; encoding: string }[] = [];
   readonly #closed: Promise<void>;
+  #surfaces: BrowserSurface[] = [];
 
   private constructor(socket: WebSocket) {
     this.#socket = socket;
     this.#closed = new Promise((done) => socket.once("close", () => done()));
     socket.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
-      if (!isBinary) return;
+      if (!isBinary) {
+        const message = BrowserServerMessageSchema.parse(JSON.parse(data.toString()));
+        if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
+          this.#surfaces = message.surfaces;
+        return;
+      }
       const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
       try {
         const frame = decodeBrowserFrameEnvelope(new Uint8Array(bytes));
@@ -1235,6 +1245,22 @@ class Viewer {
 
   send(message: Record<string, unknown>): void {
     this.#socket.send(JSON.stringify(message));
+  }
+
+  async navigate(url: string): Promise<void> {
+    const previous = this.#surfaces.find((surface) => surface.active);
+    if (!previous) throw new Error("The browser has no active surface.");
+    this.send({ type: "navigation.go", url });
+    // A request reaching the server does not prove Chromium accepted its Set-Cookie.
+    await vi.waitFor(
+      () => {
+        const surface = this.#surfaces.find((candidate) => candidate.id === previous.id);
+        expect(surface?.url, `the browser to commit ${url}`).toBe(url);
+        expect(surface?.documentId, `a new document for ${url}`).not.toBe(previous.documentId);
+        expect(surface?.loading, `the browser to finish loading ${url}`).not.toBe(true);
+      },
+      { timeout: 20_000 },
+    );
   }
 
   closed(): Promise<void> {

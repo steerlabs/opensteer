@@ -168,6 +168,11 @@ import {
   BrowserTabCatalogViewSchema,
   BrowserTabIconInputSchema,
   BrowserTabIconResultSchema,
+  BrowserHistoryIconsInputSchema,
+  BrowserHistoryIconsSchema,
+  BrowserHistoryInputSchema,
+  BrowserHistorySchema,
+  BrowserHistoryUrlSchema,
   browserUsageRunBatchSize,
   ThreadBrowserUsageSchema,
   CreateBrowserProfileGrantResponseSchema,
@@ -990,6 +995,19 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     sessionId: z.string().min(1),
     type: z.literal("browser.session.close"),
   }),
+  /** Forgets one address from the person's own profile's history, and its site's icon when unused. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    profileId: BrowserProfileIdSchema,
+    url: BrowserHistoryUrlSchema,
+    type: z.literal("browser.history.remove"),
+  }),
+  /** Forgets the person's own profile's whole history and its retained icons. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    profileId: BrowserProfileIdSchema,
+    type: z.literal("browser.history.clear"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     input: CreateTriggerHttpBodySchema,
@@ -1307,6 +1325,8 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ profile: BrowserProfileSchema, type: z.literal("browser.profile.rename") }),
   z.object({ type: z.literal("browser.profile.delete") }),
   z.object({ type: z.literal("browser.session.close") }),
+  z.object({ type: z.literal("browser.history.remove") }),
+  z.object({ type: z.literal("browser.history.clear") }),
   z.object({
     revision: TriggerRevisionViewSchema,
     trigger: TriggerViewSchema,
@@ -1348,6 +1368,12 @@ export const hostApi = defineRpc({
   "workspace.tabs.get": declaration("GET", WorkspaceTabsInputSchema, WorkspaceTabLineageSchema),
   "browser.tabs.get": declaration("GET", BrowserTabCatalogInputSchema, BrowserTabCatalogViewSchema),
   "browser.tabIcon.get": declaration("GET", BrowserTabIconInputSchema, BrowserTabIconResultSchema),
+  "browser.history.get": declaration("GET", BrowserHistoryInputSchema, BrowserHistorySchema),
+  "browser.history.icons.get": declaration(
+    "GET",
+    BrowserHistoryIconsInputSchema,
+    BrowserHistoryIconsSchema,
+  ),
   /**
    * Where an Android phone reaches this Deployment now, as the Host itself
    * knows it — the target `runner.enrollment.createPhone` pairs with, read

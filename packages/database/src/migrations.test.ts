@@ -125,8 +125,9 @@ const releasedMigrationNames = [
   "0115_better_auth_17",
   "0116_screen_show",
   "0117_remove_screen_show",
-  "0118_person_notifications",
-  "0119_notification_preview_keys",
+  "0118_browser_history",
+  "0119_person_notifications",
+  "0120_notification_preview_keys",
 ];
 
 describe("migration names", () => {

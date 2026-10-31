@@ -4665,8 +4665,9 @@ export function migrationProvider() {
         "0115_better_auth_17": betterAuth17Migration,
         "0116_screen_show": screenShowMigration,
         "0117_remove_screen_show": removeScreenShowMigration,
-        "0118_person_notifications": personNotificationsMigration,
-        "0119_notification_preview_keys": notificationPreviewKeysMigration,
+        "0118_browser_history": browserHistoryMigration,
+        "0119_person_notifications": personNotificationsMigration,
+        "0120_notification_preview_keys": notificationPreviewKeysMigration,
       };
     },
   };
@@ -6320,6 +6321,31 @@ export const removeScreenShowMigration: Migration = {
         )
         .execute(database);
     }
+  },
+};
+
+export const browserHistoryMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table browser_history_entries (
+        profile_id text not null references browser_profiles(id) on delete cascade,
+        url text not null,
+        origin text not null,
+        title varchar(200) not null,
+        typed_count integer not null check (typed_count >= 0),
+        visit_count integer not null check (visit_count > 0),
+        last_visit_at timestamptz not null,
+        primary key (profile_id, url)
+      );
+      create index browser_history_entries_newest on browser_history_entries (profile_id, last_visit_at desc, url);
+      create table browser_history_icons (
+        profile_id text not null references browser_profiles(id) on delete cascade,
+        origin text not null,
+        icon_ref text not null,
+        favicon text not null,
+        primary key (profile_id, origin)
+      );
+    `.execute(database);
   },
 };
 

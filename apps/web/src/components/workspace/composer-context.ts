@@ -30,7 +30,7 @@ export interface ContextChip {
   readonly site: string | null;
   /**
    * The place's own mark. A page's icon is read live while its tab shows that
-   * page and remembered after it moves on; until one is known, the site's letter.
+   * page and remembered after it moves on; a neutral mark until an icon is available.
    */
   readonly icon: PlaceItem["icon"];
   /** The place's newest picture when the chip was made, captured once. */
@@ -457,7 +457,7 @@ function showsPage(place: PlaceItem, chip: ContextChip): boolean {
   return chip.part?.type !== "browser-page" || chip.part.documentId === place.browser?.documentId;
 }
 
-/** The mark a part names by itself: its app's, its phone's, or its site's letter. */
+/** The mark a part names by itself: its app's, its phone's, or a neutral site mark. */
 function partMark(part: PlacePart): PlaceItem["icon"] {
   return part.type === "computer-app"
     ? { app: part.app, kind: "app", machineId: part.machineId }

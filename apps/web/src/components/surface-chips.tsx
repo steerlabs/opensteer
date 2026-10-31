@@ -135,7 +135,7 @@ export function SurfaceChip({
       ) : surface.phone ? (
         <Icon name="phone" />
       ) : (
-        <SiteMark favicon={surface.favicon} site={surface.site} />
+        <SiteMark favicon={surface.favicon ?? null} />
       )}
       <span className="surface-chip__title">{surface.title}</span>
       {acting ? <span aria-hidden className="live-dot" /> : null}
