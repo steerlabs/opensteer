@@ -6,8 +6,8 @@ import {
   type HostNotificationPublication,
 } from "@opensteer/control-plane-protocol";
 import {
-  NotificationPreviewEnvelopeSchema,
   NotificationIdSchema,
+  NotificationPreviewEnvelopeSchema,
   createId,
   notificationExpiryMilliseconds,
   type DeploymentId,
@@ -419,18 +419,15 @@ integration("control-plane notification boundary", () => {
   it("claims a fresh delivery while an expired backlog drains in bounded batches", async () => {
     await registerPhone({ accountId: ownerId, installationId: "backlog-installation" });
     const authority = await store.authenticateHostCredential(`Bearer ${hostCredential}`);
-    await notifications.ingest(
-      authority,
-      publication({
-        notificationId: NotificationIdSchema.parse("ntf_ffffffff-ffff-4fff-bfff-fffffffffff1"),
-      }),
-    );
-    await notifications.ingest(
-      authority,
-      publication({
-        notificationId: NotificationIdSchema.parse("ntf_ffffffff-ffff-4fff-bfff-fffffffffff2"),
-      }),
-    );
+    // The fresh delivery sorts below the expired ones, so dropping the backlog
+    // and claiming in one transaction would lock rows out of ascending order.
+    for (const suffix of ["fffffffffff1", "fffffffffff2"])
+      await notifications.ingest(
+        authority,
+        publication({
+          notificationId: NotificationIdSchema.parse(`ntf_ffffffff-ffff-4fff-bfff-${suffix}`),
+        }),
+      );
     now = new Date(now.getTime() + 180_000);
     const fresh = publication({
       notificationId: NotificationIdSchema.parse("ntf_00000000-0000-4000-8000-000000000001"),

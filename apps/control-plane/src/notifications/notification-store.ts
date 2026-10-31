@@ -375,8 +375,9 @@ export class ControlPlaneNotificationStore {
           .selectNoFrom(sql<Date>`clock_timestamp()`.as("now"))
           .executeTakeFirstOrThrow()
       ).now;
-    // Commit each bounded cleanup before claiming: live delivery IDs need not
-    // follow expired IDs, so retaining cleanup locks would reverse lock order.
+    // One bounded statement per claim, in its own transaction: a backlog of
+    // expired rows drains over successive claims without delaying fresh
+    // deliveries, and neither transaction locks rows out of ascending order.
     await this.#database
       .updateTable("notificationDeliveries")
       .set({
