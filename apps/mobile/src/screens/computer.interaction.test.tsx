@@ -6,6 +6,8 @@ import { ComputerScreen } from "./computer.js";
 
 const state = vi.hoisted(() => ({
   dispatch: vi.fn(),
+  cancelAutoWake: vi.fn(),
+  focused: true,
   open: vi.fn(async () => ({ viewId: "phone-view", generation: 2 })),
   snapshot: {
     machines: [
@@ -39,7 +41,7 @@ vi.mock("react-native", () => ({
   ActivityIndicator: () => null,
 }));
 vi.mock("@react-navigation/native", () => ({
-  useNavigation: () => ({ dispatch: state.dispatch, setOptions: vi.fn(), isFocused: () => true }),
+  useNavigation: () => ({ dispatch: state.dispatch, setOptions: vi.fn(), isFocused: () => state.focused }),
   StackActions: { push: (name: string, params: unknown) => ({ name, params }) },
 }));
 vi.mock("@opensteer/client/react", () => ({
@@ -49,6 +51,7 @@ vi.mock("@opensteer/client/integrations", () => ({
   isIphone: () => false,
   computerUseView: () => null,
   phoneUseView: () => ({ access: "read-write", state: { kind: "ready" } }),
+  sharedDisplayStreams: () => ({ cancelAutoWake: state.cancelAutoWake }),
 }));
 vi.mock("@opensteer/client/computers", () => ({
   computerRole: () => null,
@@ -120,6 +123,33 @@ it("opens the approved phone as an independent workspace owner view", async () =
       },
     });
   } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it("cancels the Open wake when the person leaves before the phone opens", async () => {
+  state.dispatch.mockClear();
+  state.open.mockImplementationOnce(async () => {
+    state.focused = false;
+    return { viewId: "phone-view", generation: 3 };
+  });
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <ComputerScreen route={{ params: { deploymentId: "deployment", machineId: "phone" } }} />,
+      ),
+    );
+    await act(async () => container.querySelector("button")!.click());
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(state.cancelAutoWake).toHaveBeenCalledWith({
+      kind: "owner-view",
+      viewId: "phone-view",
+      generation: 3,
+    });
+  } finally {
+    state.focused = true;
     await act(async () => root.unmount());
   }
 });

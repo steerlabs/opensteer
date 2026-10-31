@@ -25,6 +25,7 @@ import { workspaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { threadReturn } from "../navigation-state.js";
 import { ComputerUseBlock, PhoneUseBlock } from "../computers/computer-use-block.js";
+import { openPhoneOwnerView } from "../computers/open-phone-owner-view.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { IphoneAppsBlock } from "../iphone-apps/iphone-apps-block.js";
@@ -124,21 +125,19 @@ function ComputerDetail(props: {
     setOpeningPhone(true);
     setOpenFailure(null);
     try {
-      const apps = await props.hostClient.listApprovedComputerApps();
-      const target = apps.find(
-        (app) => app.machineId === props.machineId && app.target.kind === "phone",
-      )?.target;
-      if (!mounted.current || !navigation.isFocused()) return;
-      if (!target) throw new Error("This phone is no longer approved for viewing.");
-      const view = await props.hostClient.openComputerView(props.machineId, target);
-      if (mounted.current && navigation.isFocused())
+      const source = await openPhoneOwnerView(
+        props.hostClient,
+        props.machineId,
+        () => mounted.current && navigation.isFocused(),
+      );
+      if (source)
         navigation.dispatch(
           StackActions.push(
             "WorkspaceBrowser",
             workspaceRoute(props.deploymentId, {
               kind: "phone",
               machineId: props.machineId,
-              source: { kind: "owner-view", viewId: view.viewId, generation: view.generation },
+              source,
             }),
           ),
         );

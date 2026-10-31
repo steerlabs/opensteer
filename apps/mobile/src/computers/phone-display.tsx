@@ -24,6 +24,7 @@ import {
 } from "react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { workspaceRoute } from "../browser/surface-route.js";
+import { openPhoneOwnerView } from "./open-phone-owner-view.js";
 import { useSurfaceHeader } from "../browser/surface-header.js";
 import { color } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
@@ -562,23 +563,20 @@ export function ComputerOwnerView(props: {
     setReopening(true);
     setFailure(null);
     try {
-      const apps = await hostClient.listApprovedComputerApps();
-      const target = apps.find(
-        (app) => app.machineId === props.machineId && app.target.kind === "phone",
-      )?.target;
-      if (!mounted.current || !navigation.isFocused()) return;
-      if (!target) throw new Error("This phone is no longer approved for viewing.");
-      const opened = await hostClient.openComputerView(props.machineId, target);
-      const snapshot = hostClient.getSnapshot();
-      if (mounted.current && navigation.isFocused() && snapshot.deploymentId)
+      const deploymentId = hostClient.getSnapshot().deploymentId;
+      const source = await openPhoneOwnerView(
+        hostClient,
+        props.machineId,
+        () =>
+          mounted.current &&
+          navigation.isFocused() &&
+          hostClient.getSnapshot().deploymentId === deploymentId,
+      );
+      if (source && deploymentId)
         navigation.dispatch(
           StackActions.replace(
             "WorkspaceBrowser",
-            workspaceRoute(snapshot.deploymentId, {
-              kind: "phone",
-              machineId: props.machineId,
-              source: { kind: "owner-view", viewId: opened.viewId, generation: opened.generation },
-            }),
+            workspaceRoute(deploymentId, { kind: "phone", machineId: props.machineId, source }),
           ),
         );
     } catch (error) {
