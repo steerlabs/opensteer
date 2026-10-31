@@ -1949,7 +1949,7 @@ describe("native Electron profiles", () => {
       const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
       const beforeRecovery = electron.views.length;
       for (const [event, listener] of vi.mocked(app.on).mock.calls)
-        if (event === "child-process-gone")
+        if ((event as string) === "child-process-gone")
           (listener as (event: unknown, details: unknown) => void)(
             {},
             { type: "Utility", serviceName: "network.mojom.NetworkService" },
