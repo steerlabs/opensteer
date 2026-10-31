@@ -293,14 +293,19 @@ describe("selection actions own exactly their axis, one history entry each", () 
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
   });
 
-  it("a task in the header's menu: only the conversation", async () => {
+  it("a task in the header's family: only the conversation", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const middle = element(".place");
     await click(element(".conv-header__menu"));
+    expect(element(".popover--conversation-menu").textContent).not.toContain("Started here");
+    expect(document.querySelector(".popover--conversation-menu .task-family__row")).toBeNull();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await settle();
+    await click(element(".task-family-button"));
     // The menu is this conversation's: no search across every task, which the sidebar has.
     expect(document.querySelector(".popover--conversation-menu input")).toBeNull();
-    const target = element<HTMLButtonElement>(".conversation-menu__task");
+    const target = element<HTMLButtonElement>(".task-family__row");
     expect(target.getAttribute("aria-label")).toMatch(/, (Working|Needs you)$/u);
     const before = history.length;
     await click(target);
