@@ -549,7 +549,10 @@ export interface HttpHostClientOptions {
 }
 
 export class HttpHostClient {
-  readonly screenPresentation = new SocketScreenPresentationTransport();
+  readonly screenPresentation = new SocketScreenPresentationTransport(undefined, (socket) => {
+    const channel = [...this.#channels.values()].find((candidate) => candidate.socket === socket);
+    if (channel) this.#replaceChannel(channel, "Presentation clock refreshed");
+  });
   readonly browserPasskeys: BrowserPasskeys;
   readonly recentSites: RecentSitesStore;
   readonly browserPreferences: BrowserPreferences;

@@ -5279,6 +5279,9 @@ class MockHostState {
   >();
   executeCommandOnce(input: HostApiCommand): ReturnType<typeof executeMockCommand> {
     const command = hostApi["commands.dispatch"].payload.parse(input);
+    // Presentation eligibility is transient, not part of the accepted message's content.
+    if (command.type === "thread.sendMessage")
+      Reflect.deleteProperty(command, "screenPresentation");
     if (
       command.type !== "thread.sendMessage" &&
       command.type !== "thread.icon.set" &&

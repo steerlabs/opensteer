@@ -113,6 +113,22 @@ export class ScreenPresentationController {
     this.#invalidate();
   }
 
+  /** Optional UI context cannot make queued work depend on a retired interaction. */
+  inputContext(captured: ScreenPresentationInput | undefined): ScreenPresentationInput | undefined {
+    const utterance = this.#utterance;
+    if (!captured || !utterance || utterance.context !== captured) return undefined;
+    const endpoint = this.#transport.getEndpoint();
+    return !this.#disposed &&
+      this.#utterance === utterance &&
+      this.#voiceSessionId === captured.voiceSessionId &&
+      endpoint?.endpointRef === captured.endpointRef &&
+      this.#timers.now() < utterance.expiresAt &&
+      this.#port.capture().interactionRevision === captured.interactionRevision &&
+      !this.#port.blocked()
+      ? captured
+      : undefined;
+  }
+
   dispose(): void {
     this.#disposed = true;
     this.stop();
@@ -122,7 +138,7 @@ export class ScreenPresentationController {
 
   #invalidate(): void {
     this.#utterance = null;
-    for (const operation of [...this.#operations.values()]) {
+    for (const operation of this.#operations.values()) {
       operation.cancel();
       this.#settle(
         operation,
@@ -174,6 +190,10 @@ export class ScreenPresentationController {
     this.#timers.clear(operation.timer);
     this.#operations.delete(operation.message.operationId);
     this.#receipts.set(operation.message.operationId, receipt);
+    if (this.#receipts.size > receiptLimit) {
+      const oldest = this.#receipts.keys().next().value;
+      if (oldest !== undefined) this.#receipts.delete(oldest);
+    }
     this.#acknowledge(operation.message, receipt);
   }
 
@@ -196,7 +216,7 @@ export class ScreenPresentationController {
       this.#acknowledge(message, ended);
       return;
     }
-    if (utterance.operationId !== null || this.#receipts.size >= receiptLimit) {
+    if (utterance.operationId !== null) {
       this.#acknowledge(message, { outcome: "unavailable", reason: "already-requested" });
       return;
     }

@@ -6105,6 +6105,46 @@ describe("HttpHostClient screen presentation", () => {
       diagnostics.mockRestore();
     }
   });
+
+  it("replaces a clock-poisoned Main endpoint and recovers without accepting its old readiness", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    const main = makeWorkspace();
+    const sockets: FakeSocket[] = [];
+    const client = createHttpHostClient({
+      capabilities: ["screen-show-v1"],
+      refreshIntervalMs: 0,
+      fetch: async () => json(bootstrap([main])),
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const stop = client.screenPresentation.subscribe(vi.fn());
+    try {
+      await client.load();
+      const first = sockets[0]!;
+      first.open();
+      first.receive({ type: "host.screen.ready", endpointRef: "a".repeat(64), serverTime: 1_000 });
+      expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe("a".repeat(64));
+      vi.setSystemTime(160_000);
+      expect(client.screenPresentation.getEndpoint()).toBeNull();
+      expect(first.closeEvents).toEqual([{ code: 1000, reason: "Presentation clock refreshed" }]);
+      expect(sockets).toHaveLength(2);
+      const second = sockets[1]!;
+      second.open();
+      first.receive({ type: "host.screen.ready", endpointRef: "a".repeat(64), serverTime: 2_000 });
+      expect(client.screenPresentation.getEndpoint()).toBeNull();
+      second.receive({ type: "host.screen.ready", endpointRef: "b".repeat(64), serverTime: 2_000 });
+      expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe("b".repeat(64));
+    } finally {
+      stop();
+      client.dispose();
+      clock.mockRestore();
+    }
+  });
 });
 
 describe("HttpHostClient title capability", () => {

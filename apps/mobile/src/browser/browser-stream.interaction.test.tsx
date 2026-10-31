@@ -427,14 +427,14 @@ describe.each(["image", "picture"] as const)(
       emit();
       await decode();
       const first = touch(200, 300);
-      act(() => native.gestures?.onPanResponderGrant?.(first.event, first.gesture));
+      await act(() => native.gestures?.onPanResponderGrant?.(first.event, first.gesture));
       emit(surfaceId, {
         frameId: 2,
         geometryRevision: 8,
         watchToken: "00000000-0000-4000-8000-000000000002",
       });
       await decode();
-      act(() => native.gestures?.onPanResponderRelease?.(first.event, first.gesture));
+      await act(() => native.gestures?.onPanResponderRelease?.(first.event, first.gesture));
       expect(send).not.toHaveBeenCalled();
       const multi = {
         ...first.event,

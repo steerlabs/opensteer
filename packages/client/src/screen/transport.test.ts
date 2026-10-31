@@ -1,7 +1,9 @@
 import { createId } from "@opensteer/core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocketClient } from "../host/host-session-client.js";
 import { SocketScreenPresentationTransport } from "./transport.js";
+
+afterEach(() => vi.useRealTimers());
 
 function socket() {
   return {
@@ -27,9 +29,9 @@ describe("screen presentation socket binding", () => {
     expect(transport.receive(other, ready)).toBe(false);
     expect(transport.getEndpoint()).toBeNull();
     expect(transport.receive(main, ready)).toBe(true);
-    expect(transport.getEndpoint()?.serverTimeUpperBound()).toBe(2_500);
+    expect(transport.getEndpoint()?.serverTimeUpperBound()).toBe(2_000 + 500 * 1.001 + 5);
     now = 650;
-    expect(transport.getEndpoint()?.serverTimeUpperBound()).toBe(2_550);
+    expect(transport.getEndpoint()?.serverTimeUpperBound()).toBe(2_000 + 550 * 1.001 + 5);
     const operationId = "12345678-1234-4123-8123-123456789abc";
     const show = {
       type: "host.screen.show",
@@ -77,5 +79,102 @@ describe("screen presentation socket binding", () => {
     expect(transport.getEndpoint()).toBeNull();
     transport.receive(second, { ...ready, endpointRef: "b".repeat(64) });
     expect(transport.getEndpoint()?.endpointRef).toBe("b".repeat(64));
+  });
+
+  it("retires a clock discontinuity and accepts a fresh endpoint without reviving old frames", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    let now = 100;
+    const renew = vi.fn();
+    const transport = new SocketScreenPresentationTransport(() => now, renew);
+    const first = socket();
+    const second = socket();
+    const unsubscribe = transport.subscribe(vi.fn());
+    transport.begin(first);
+    transport.receive(first, {
+      type: "host.screen.ready",
+      endpointRef: "a".repeat(64),
+      serverTime: 500,
+    });
+    expect(transport.getEndpoint()).not.toBeNull();
+    vi.setSystemTime(160_000);
+    expect(transport.getEndpoint()).toBeNull();
+    expect(renew).toHaveBeenCalledExactlyOnceWith(first);
+    now = 200;
+    transport.begin(second);
+    transport.receive(second, {
+      type: "host.screen.ready",
+      endpointRef: "b".repeat(64),
+      serverTime: 700,
+    });
+    expect(transport.getEndpoint()?.endpointRef).toBe("b".repeat(64));
+    transport.receive(first, {
+      type: "host.screen.ready",
+      endpointRef: "a".repeat(64),
+      serverTime: 800,
+    });
+    expect(transport.getEndpoint()?.endpointRef).toBe("b".repeat(64));
+    unsubscribe();
+    transport.clear();
+  });
+
+  it("bounds supported clock-rate error and refreshes an aged sample only while voice observes it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    let now = 0;
+    const renew = vi.fn();
+    const transport = new SocketScreenPresentationTransport(() => now, renew);
+    const main = socket();
+    transport.begin(main);
+    transport.receive(main, {
+      type: "host.screen.ready",
+      endpointRef: "a".repeat(64),
+      serverTime: 1_000,
+    });
+    const unsubscribe = transport.subscribe(vi.fn());
+    now = 299_000;
+    vi.setSystemTime(399_000);
+    expect(transport.getEndpoint()?.serverTimeUpperBound()).toBeGreaterThanOrEqual(
+      1_000 + now * 1.001,
+    );
+    now = 300_000;
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(transport.getEndpoint()).toBeNull();
+    expect(renew).toHaveBeenCalledExactlyOnceWith(main);
+    unsubscribe();
+    transport.clear();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("renews an unusably slow handshake instead of poisoning all later requests", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    let now = 0;
+    const renew = vi.fn();
+    const transport = new SocketScreenPresentationTransport(() => now, renew);
+    const first = socket();
+    const second = socket();
+    const unsubscribe = transport.subscribe(vi.fn());
+    transport.begin(first);
+    now = 6_000;
+    vi.setSystemTime(106_000);
+    transport.receive(first, {
+      type: "host.screen.ready",
+      endpointRef: "a".repeat(64),
+      serverTime: 5_000,
+    });
+    expect(transport.getEndpoint()).toBeNull();
+    expect(renew).toHaveBeenCalledExactlyOnceWith(first);
+    transport.begin(second);
+    now += 50;
+    vi.setSystemTime(106_050);
+    transport.receive(second, {
+      type: "host.screen.ready",
+      endpointRef: "b".repeat(64),
+      serverTime: 6_000,
+    });
+    expect(transport.getEndpoint()?.endpointRef).toBe("b".repeat(64));
+    unsubscribe();
+    transport.clear();
   });
 });

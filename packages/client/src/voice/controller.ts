@@ -456,16 +456,17 @@ export class VoiceController {
     if (this.#session !== session) return;
     const places = await capturedPlaces;
     if (this.#session !== session) return;
-    const command: PendingSendCommand & { readonly screenPresentation?: ScreenPresentationInput } =
-      {
-        type: "thread.sendMessage",
-        threadId,
-        delivery: "queue",
-        content: [{ type: "text", text }, ...places],
-        idempotencyKey: `voice:${session.id}:${turnId}`,
-        ...(screenPresentation ? { screenPresentation } : {}),
-      };
-    const result = await this.#attempt(session, () => host.dispatch(command));
+    const command: PendingSendCommand = {
+      type: "thread.sendMessage",
+      threadId,
+      delivery: "queue",
+      content: [{ type: "text", text }, ...places],
+      idempotencyKey: `voice:${session.id}:${turnId}`,
+    };
+    const result = await this.#attempt(session, () => {
+      const current = session.presentation?.inputContext(screenPresentation);
+      return host.dispatch({ ...command, ...(current ? { screenPresentation: current } : {}) });
+    });
     if (this.#session !== session || result.type !== "thread.sendMessage") return;
     const pending = session.pending.get(turnId);
     if (pending) {

@@ -1,5 +1,6 @@
 import { createId, type ScreenPresentationReceipt } from "@opensteer/core";
 import { ScreenShowMessageSchema, type ScreenShowMessage } from "@opensteer/protocol";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScreenPresentationController } from "./controller.js";
 import type {
@@ -194,6 +195,34 @@ describe("message-scoped screen presentation", () => {
       () => expect(f.navigated, "fresh utterance did not present").toHaveBeenCalledOnce(),
       { timeout: 100 },
     );
+  });
+
+  it("keeps presenting beyond the receipt limit without replaying an evicted operation", async () => {
+    const f = setup();
+    for (let index = 0; index < 258; index += 1) {
+      if (index > 0) f.controller.captureUtterance();
+      const message = {
+        ...f.message,
+        operationId: `12345678-1234-4123-8123-${index.toString(16).padStart(12, "0")}`,
+        utteranceSequence: index + 1,
+      };
+      const acknowledged = Promise.withResolvers<void>();
+      f.acknowledge.mockImplementationOnce(() => acknowledged.resolve());
+      f.emit(message);
+      await withTimeout(acknowledged.promise, 100, {
+        timeoutError: () => new Error(`utterance ${index + 1} never settled`),
+      });
+      expect(f.navigated, `utterance ${index + 1} never presented`).toHaveBeenCalledTimes(
+        index + 1,
+      );
+    }
+    f.move();
+    f.emit({ ...f.message, operationId: "12345678-1234-4123-8123-000000000000" });
+    expect(f.navigated).toHaveBeenCalledTimes(258);
+    expect(f.acknowledge).toHaveBeenLastCalledWith("12345678-1234-4123-8123-000000000000", {
+      outcome: "superseded",
+      reason: "interaction-ended",
+    });
   });
 
   it("rejects an expired arrival and treats lost confirmation as uncertain", async () => {

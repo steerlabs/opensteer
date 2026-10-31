@@ -31,9 +31,15 @@ must reach every capability URL the Host mints. See [Computers](computers.md).
 Requested screen presentations use transient Host memory, never persisted routing
 credentials or a person-wide broadcast. A committed human input binds to the exact
 Main subscription socket that issued its endpoint, user and login; replay cannot
-rebind it. Readiness and dispatch deadlines share a Host monotonic clock. Clients
-conservatively bound that clock using their subscribe round trip, not wall-clock
-synchronization. See [Voice](voice.md).
+rebind it. Readiness and dispatch deadlines share a Host monotonic clock. The
+client's conservative estimate assumes relative clock-rate error at most 1,000
+ppm and adds that age-dependent uncertainty. Wall/monotonic disagreement,
+backgrounding and reconnect retire the sample and its input opportunities. Active
+voice renews samples within five minutes; idle clients do not keep reconnecting.
+A handshake taking half the dispatch window is unusable and renewed, with
+renewals bounded to one per 30 seconds. This is a supported clock assumption,
+not unconditional synchronization across suspension or arbitrary clock changes.
+See [Voice](voice.md).
 
 ## Credentials and machine-local ownership
 

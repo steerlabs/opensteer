@@ -68,6 +68,10 @@ undocumented Codex API; every engine pin bump must re-qualify a live call.
   still reject a superseded utterance, changed interaction or expired deadline
   immediately before committing its route. This is one presentation, never a
   continuing Follow mode; an uncertain acknowledgement cannot cause another send.
+  Manual navigation, Back, editing, opening a blocking sheet or drawer, leaving
+  the foreground, or a later utterance supersedes a pending presentation. On
+  mobile, showing Chat returns to the existing stack root, just like the sidebar;
+  other presented screens return with Back.
 - While a call is on, the client speaks Chat's new durable replies and
   announces new "needs you" Requests by Thread title only, never their
   contents. Approvals still need a tap or Face ID.

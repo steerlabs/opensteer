@@ -7,7 +7,7 @@ import type { ScreenShowMessage } from "@opensteer/protocol";
 
 export interface ScreenPresentationEndpoint {
   readonly endpointRef: string;
-  /** Setup-round-trip clock estimate; suspension retires the endpoint and its sample. */
+  /** Conservative under the supported clock-rate budget; an invalid sample retires the endpoint. */
   serverTimeUpperBound(): number;
 }
 
