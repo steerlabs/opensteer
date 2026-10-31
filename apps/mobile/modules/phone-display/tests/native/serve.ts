@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import path from "node:path";
@@ -174,6 +174,26 @@ async function check(input: z.infer<typeof Check>) {
   }
 }
 
+/** Whether the activity manager logs this app's activity stopped within `ms`. */
+function stopEvent(ms: number) {
+  adb("logcat", "-b", "events", "-c");
+  const events = spawn("adb", ["-s", serial!, "logcat", "-b", "events", "-s", "wm_on_stop_called"]);
+  return new Promise<boolean>((resolve) => {
+    const done = (value: boolean) => {
+      clearTimeout(timer);
+      events.kill();
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(false), ms);
+    let text = "";
+    events.stdout.on("data", (chunk: Buffer) => {
+      text += chunk.toString();
+      if (text.includes(`${bundle}.MainActivity`)) done(true);
+    });
+    events.once("exit", () => done(false));
+  });
+}
+
 async function body(request: AsyncIterable<unknown>) {
   let text = "";
   for await (const chunk of request) {
@@ -239,16 +259,11 @@ const server = createServer((request, response) => {
       const parsed = Check.parse(input);
       if (udid) simctl("launch", udid, "com.apple.Preferences");
       else {
-        adb("shell", "am", "start", "-W", "-a", "android.settings.SETTINGS");
         // Android stops the app only after the other activity has settled; a
         // person leaving the app gets there, a quick relaunch while paused does not.
-        const deadline = Date.now() + 5_000;
-        let state = "";
-        while (state !== "STOPPED" && Date.now() < deadline)
-          state =
-            /state=(\w+)/.exec(
-              adb("shell", "dumpsys", "activity", "-p", bundle, "activities").toString(),
-            )?.[1] ?? "";
+        const stopped = stopEvent(5_000);
+        adb("shell", "am", "start", "-W", "-a", "android.settings.SETTINGS");
+        const state = (await stopped) ? "STOPPED" : "not stopped within 5000 ms";
         record(`stopped:${parsed.step}`, state === "STOPPED", { state });
       }
       const outcome = await check({ ...parsed, gone: true, ms: 5_000 });

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the generated Expo Android project in Release with journey.tsx as its
 # bundle entry, then checks real pixels on one owned headless emulator. It
-# creates, boots and deletes its own AVD, selects it only by serial, and never
-# stops an ADB server it did not start.
+# creates, boots and deletes its own AVD, and selects it only by serial through
+# the already-running shared ADB server, which it never starts or stops.
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 mobile="$root/apps/mobile"
@@ -17,7 +17,6 @@ avd="phone-display-$$"
 name="android-$api"
 emulator_pid=""
 coordinator=""
-adb_started=0
 phase="prerequisites"
 cleanup() {
   status="$?"
@@ -27,7 +26,6 @@ cleanup() {
     wait "$emulator_pid" 2>/dev/null || true
   fi
   "$avdmanager" delete avd -n "$avd" >/dev/null 2>&1 || true
-  if [[ "$adb_started" == 1 ]]; then adb kill-server >/dev/null 2>&1 || true; fi
   printf '{"exitCode": %s, "phase": "%s"}\n' "$status" "$phase" > "$evidence/harness-exit.json"
 }
 trap cleanup EXIT
@@ -47,7 +45,10 @@ for candidate in $(seq 5584 -2 5554); do
 done
 [[ -n "$port" ]] || { echo "No free emulator port" >&2; exit 2; }
 serial="emulator-$port"
-if adb start-server 2>&1 | grep -q 'daemon started'; then adb_started=1; fi
+if ! lsof -nP -iTCP:"${ANDROID_ADB_SERVER_PORT:-5037}" -sTCP:LISTEN >/dev/null; then
+  echo "Start the shared ADB server first (adb start-server); this harness never owns it" >&2
+  exit 2
+fi
 
 cd "$mobile"
 phase="prebuild"
