@@ -24,6 +24,7 @@ import {
 import { createMobileClipboardPort } from "../../modules/remote-text-input/src/clipboard.js";
 import { AppText } from "../ui/primitives.js";
 import { usePaneGeometry } from "../ui/pane.js";
+import { interact } from "../voice/interaction.js";
 import { color } from "../theme.js";
 
 const emptyEditing: DisplayEditingSnapshot = { context: null, receipt: null };
@@ -187,6 +188,7 @@ export function DisplayControls({
     const rawY = (event.nativeEvent.locationY - (height - h) / 2) / h;
     if (phase === "down") {
       if (rawX < 0 || rawX > 1 || rawY < 0 || rawY > 1 || stroke.current) return;
+      interact();
       proxy.current?.interrupt();
       stroke.current = {
         generation: picture.generation,
