@@ -86,29 +86,38 @@ final class MessagesSenderTests: XCTestCase {
       var all: [String] { lock.withLock { arguments } }
     }
     let runs = Runs()
+    let (started, startedSignal) = AsyncStream<Void>.makeStream()
+    let (release, releaseSignal) = AsyncStream<Void>.makeStream()
     let outbox = MessagesOutbox(run: { request in
       runs.add(request.arguments[0])
-      try? await Task.sleep(nanoseconds: 200_000_000)
+      startedSignal.yield()
+      // The first send holds Messages until the second's time has run out.
+      for await _ in release { break }
       return OsascriptOutcome(exitCode: 0)
     })
     let script = MessagesSender.addressScript
     async let slow = outbox.run(
       OsascriptRequest(script: script, arguments: ["slow"], timeout: 30), budget: .unlimited)
-    try? await Task.sleep(nanoseconds: 20_000_000)
-    let late = await {
+    for await _ in started { break }
+    let requestEnd = Date().addingTimeInterval(0.05)
+    async let late: HelperError? = {
       do {
         _ = try await outbox.run(
           OsascriptRequest(script: script, arguments: ["late"], timeout: 30),
-          budget: WorkBudget(requestEnd: Date().addingTimeInterval(0.05)))
+          budget: WorkBudget(requestEnd: requestEnd))
         return nil
       } catch let error as HelperError {
         return error
       } catch {
         return nil
       }
-    }() as HelperError?
+    }()
+    try await Task.sleep(nanoseconds: UInt64(max(0, requestEnd.timeIntervalSinceNow) * 1e9) + 1_000_000)
+    releaseSignal.yield()
+    releaseSignal.finish()
+    let refused = await late
     _ = try await slow
-    XCTAssertEqual(late?.code, .failed)
+    XCTAssertEqual(refused?.code, .failed)
     XCTAssertEqual(runs.all, ["slow"])
   }
 
