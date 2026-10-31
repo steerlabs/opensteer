@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const fakes = vi.hoisted(() => ({
   prepare: vi.fn(async () => undefined),
+  nativeProfilesAvailable: true,
   close: vi.fn(),
   runtime: vi.fn(),
   launcher: vi.fn(),
@@ -15,6 +16,9 @@ vi.mock("../browser/electron-browser-launcher.js", () => ({
   ElectronBrowserLauncher: class {
     constructor(options: unknown) {
       fakes.launcher(options);
+    }
+    get nativeProfilesAvailable() {
+      return fakes.nativeProfilesAvailable;
     }
     prepare = fakes.prepare;
     close = fakes.close;
@@ -69,6 +73,27 @@ describe("local browser composition", () => {
     await handle.stop();
     expect(fakes.close).toHaveBeenCalled();
     await rm(directory, { recursive: true, force: true });
+  });
+  it("advertises Guest and legacy only when native-profile encryption is unavailable", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "local-browser-composition-"));
+    fakes.nativeProfilesAvailable = false;
+    try {
+      const handle = await startLocalBrowserRuntime({
+        downloads: { accept: vi.fn() },
+        pagePolicyPreloadPath: "/page.cjs",
+        profileRoot: directory,
+        runtimeId: "guest-only",
+      });
+      try {
+        expect(fakes.runtime.mock.calls.at(-1)![0]).not.toHaveProperty("localProfiles");
+        expect(fakes.start).toHaveBeenCalled();
+      } finally {
+        await handle.stop();
+      }
+    } finally {
+      fakes.nativeProfilesAvailable = true;
+      await rm(directory, { recursive: true, force: true });
+    }
   });
   it("closes preparation resources if preparing fails", async () => {
     fakes.prepare.mockRejectedValueOnce(new Error("cannot prepare"));

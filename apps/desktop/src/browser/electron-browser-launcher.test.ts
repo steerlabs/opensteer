@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
 import type { LocalProfileBinding } from "@opensteer/protocol";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
-import { SurfaceLedger } from "@opensteer/browser-runtime-core";
+import { SurfaceLedger, type BrowserLaunchRequest } from "@opensteer/browser-runtime-core";
 import type { BaseWindow } from "electron";
 import { describe, expect, it, vi } from "vitest";
 
@@ -1812,6 +1812,7 @@ describe("native Electron profiles", () => {
     const decrypt = vi.spyOn(safeStorage, "decryptStringAsync");
     try {
       await f.launcher.prepare();
+      expect(f.launcher.nativeProfilesAvailable).toBe(true);
       expect(encrypt).toHaveBeenCalledWith("opensteer-desktop-protected-storage-readiness-v1");
       expect(decrypt).toHaveBeenCalledExactlyOnceWith(
         Buffer.from("opensteer-desktop-protected-storage-readiness-v1"),
@@ -1824,6 +1825,86 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
+  it.each(["unavailable", "basic_text"])(
+    "keeps Guest and legacy browsing available with %s native-profile encryption",
+    async (provider) => {
+      const f = await fixture();
+      const { session } = await import("electron");
+      const { VerifiedDesktopSecretCryptography } =
+        await import("../secrets/verified-secret-cryptography.js");
+      const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+      const available = vi
+        .spyOn(VerifiedDesktopSecretCryptography.prototype, "isAsyncEncryptionAvailable")
+        .mockResolvedValue(provider !== "unavailable");
+      const backend = vi
+        .spyOn(VerifiedDesktopSecretCryptography.prototype, "getSelectedStorageBackend")
+        .mockReturnValue("basic_text");
+      const sessions = vi.mocked(session.fromPath).mock.calls.length;
+      try {
+        await expect(f.launcher.prepare()).resolves.toBeUndefined();
+        expect(f.launcher.nativeProfilesAvailable).toBe(false);
+        for (const storage of [
+          { kind: "guest" },
+          { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+        ] satisfies BrowserLaunchRequest["storage"][]) {
+          const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+          const browser = await f.launcher.launch({
+            sessionId,
+            partitionKey: `session:${sessionId}`,
+            initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+            storage,
+          });
+          expect(browser.context.pages()).toHaveLength(1);
+          await browser.close();
+        }
+        await expect(f.launch(true)).rejects.toThrow(/encryption is unavailable/u);
+        await expect(
+          f.launcher.localProfiles.importAndFlush({
+            directory: f.directory,
+            binding: f.binding,
+            snapshot: { cookies: [], origins: [] },
+            signal: new AbortController().signal,
+          }),
+        ).rejects.toThrow(/encryption is unavailable/u);
+        expect(vi.mocked(session.fromPath).mock.calls).toHaveLength(sessions);
+        expect(await readdir(f.root)).toEqual([]);
+      } finally {
+        available.mockRestore();
+        backend.mockRestore();
+        Object.defineProperty(process, "platform", platform);
+        f.launcher.close();
+        await rm(f.root, { recursive: true, force: true });
+      }
+    },
+  );
+  it("reopens a prepared host after ordinary capacity eviction without retiring its Session", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      const before = vi.mocked(session.fromPath).mock.calls.length;
+      const prepared = await f.launch(true);
+      expect(prepared.context.pages()).toEqual([]);
+      await prepared.close();
+      const reopened = await f.launch();
+      expect(reopened.context.pages()).toHaveLength(1);
+      await reopened.close();
+      expect(vi.mocked(session.fromPath).mock.calls).toHaveLength(before);
+      expect(profile.clearCache).not.toHaveBeenCalled();
+      expect(profile.clearStorageData).not.toHaveBeenCalled();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it("waits for origin import completion, verifies cookies and commits localStorage before ready", async () => {
     const f = await fixture();
     const { session } = await import("electron");
@@ -1831,7 +1912,8 @@ describe("native Electron profiles", () => {
     const committed = new Promise<void>((resolve) => {
       finish = resolve;
     });
-    electron.storage = () => committed;
+    const importing = vi.fn(() => committed);
+    electron.storage = importing;
     try {
       const initializing = f.launcher.localProfiles.importAndFlush({
         directory: f.directory,
@@ -1845,13 +1927,7 @@ describe("native Electron profiles", () => {
         },
         signal: new AbortController().signal,
       });
-      await vi.waitFor(
-        () =>
-          expect(
-            electron.views.filter((view) => "executeJavaScriptInIsolatedWorld" in view.webContents),
-          ).not.toHaveLength(0),
-        { timeout: 1000 },
-      );
+      await vi.waitFor(() => expect(importing).toHaveBeenCalled(), { timeout: 1000 });
       const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
       expect(profile.flushStorageData).not.toHaveBeenCalled();
       finish();

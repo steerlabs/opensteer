@@ -65,6 +65,7 @@ import {
 import {
   acquireElectronLocalProfile,
   prepareElectronLocalProfiles,
+  requireElectronLocalProfiles,
   releaseElectronLocalProfile,
   type ElectronLocalProfile,
 } from "./electron-local-profile.js";
@@ -144,6 +145,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     release: releaseElectronLocalProfile,
     importAndFlush: async (input) => {
       input.signal.throwIfAborted();
+      await requireElectronLocalProfiles();
+      input.signal.throwIfAborted();
       const profile = acquireElectronLocalProfile({
         ...input,
         root: this.#localProfileRoot,
@@ -205,6 +208,11 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     },
   };
   #preparation: Promise<void> | undefined;
+  #nativeProfilesAvailable = false;
+
+  get nativeProfilesAvailable(): boolean {
+    return this.#nativeProfilesAvailable;
+  }
 
   constructor(options: ElectronBrowserLauncherOptions) {
     if (!path.isAbsolute(options.pagePolicyPreloadPath)) {
@@ -222,7 +230,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   prepare(): Promise<void> {
     this.#preparation ??= (async () => {
       await app.whenReady();
-      await prepareElectronLocalProfiles();
+      this.#nativeProfilesAvailable = await prepareElectronLocalProfiles();
       const sessionId = createBrowserSessionId();
       const browser = await this.launch({
         initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
@@ -253,6 +261,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   async launch(request: BrowserLaunchRequest, signal?: AbortSignal): Promise<LaunchedBrowser> {
     signal?.throwIfAborted();
     if (request.storage.kind === "local") {
+      await requireElectronLocalProfiles();
+      signal?.throwIfAborted();
       const started = performance.now();
       const timing: PageOpenTiming = (stage) =>
         this.#onLocalProfileOpenTiming?.({ stage, elapsedMs: performance.now() - started });
@@ -645,8 +655,7 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
     this.#onProfileClose?.();
     await this.context.close();
     if (this.#localProfile) {
-      if (!this.#admitted) await this.#localProfile.retire();
-      else {
+      if (this.#admitted) {
         await this.#profileSession.cookies.flushStore();
         await this.#localProfile.mirror.flush();
       }

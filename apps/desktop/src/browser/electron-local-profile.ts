@@ -14,12 +14,18 @@ const cryptography = new VerifiedDesktopSecretCryptography(safeStorage);
 let watchingNetworkService = false;
 
 /** Provider consent is resolved at engine startup; actual profile keys stay lazy. */
-export async function prepareElectronLocalProfiles(): Promise<void> {
-  if (
-    !(await cryptography.isAsyncEncryptionAvailable()) ||
-    (process.platform === "linux" &&
-      ["basic_text", "unknown"].includes(cryptography.getSelectedStorageBackend()))
-  )
+export async function prepareElectronLocalProfiles(): Promise<boolean> {
+  return (
+    (await cryptography.isAsyncEncryptionAvailable()) &&
+    !(
+      process.platform === "linux" &&
+      ["basic_text", "unknown"].includes(cryptography.getSelectedStorageBackend())
+    )
+  );
+}
+
+export async function requireElectronLocalProfiles(): Promise<void> {
+  if (!(await prepareElectronLocalProfiles()))
     throw persistenceFailure(
       new ProtectedStorageUnavailableError("Protected storage unavailable."),
     );

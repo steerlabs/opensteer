@@ -72,7 +72,14 @@ export async function startLocalBrowserRuntime(
   const preparation = launcher.prepare();
   const log = options.logPath ? new RotatingPersonalLog(options.logPath) : null;
   const diagnostics = new BoundedPersonalLog(16 * 1_024, [], (line) => log?.append("stderr", line));
-  const profileStorage = { localProfiles: { root: profileRoot } };
+  await preparation.catch((error: unknown) => {
+    launcher.close();
+    log?.close();
+    throw error;
+  });
+  const profileStorage = launcher.nativeProfilesAvailable
+    ? { localProfiles: { root: profileRoot } }
+    : {};
   const runtime = new BrowserRuntime({
     onCheckpointFailure: ({ error, ...diagnostic }) =>
       logShutdownError(
@@ -115,7 +122,6 @@ export async function startLocalBrowserRuntime(
     runtime,
   });
   try {
-    await preparation;
     const address = await server.start();
     const unregisterPresentation = options.registerPresentationSource?.(runtime);
     return {
