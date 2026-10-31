@@ -1,4 +1,5 @@
 import { CompleteProfileInitializationSchema } from "@opensteer/protocol";
+import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { createVoiceHandlers } from "./voice/voice-handlers.js";
 import { browserProfileCheckpointHeader } from "@opensteer/protocol";
 import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
@@ -487,7 +488,7 @@ export async function createHostServer(
     release:
       dependencies.phoneUpdateRelease ??
       (() => dependencies.staticDistribution?.service.agentPhoneRelease ?? null),
-    changed: () => notifyMachinesChanged(dependencies.realtime),
+    changed: () => notifyMachinesChanged(dependencies.realtime, "machine.access"),
   });
   app.addHook("onClose", async () => phoneUpdates.close());
   const auxiliaryChallenges = new RunnerChallengeAdmission(maxChallengedChannelRuntimeConnections);
@@ -1152,6 +1153,11 @@ export async function createHostServer(
     "bootstrap.get": async (_input, context) => {
       const session = requireRpcSession(context);
       const ownerId = session.user.id;
+      const diagnosticHeader = context.headers[bootstrapDiagnosticHeader];
+      if (diagnosticHeader !== undefined) {
+        const diagnostic = dependencies.realtime.bootstrapDiagnostics.report(diagnosticHeader);
+        if (diagnostic) app.log.warn(diagnostic, "host.bootstrap.loop");
+      }
       const homeWorkspace = await dependencies.workspaces
         .ensureMainWorkspace(ownerId)
         .catch((error: unknown) => {
@@ -2525,7 +2531,7 @@ export async function createHostServer(
         if (revoked.cancelledRequestIds.length > 0) {
           dependencies.integrations.continuations.notify();
         }
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { type: command.type };
       }
       case "machine.rename": {
@@ -2536,7 +2542,7 @@ export async function createHostServer(
           command.name,
           { allowDeployment },
         );
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { type: command.type };
       }
       case "machine.access.update": {
@@ -2571,7 +2577,7 @@ export async function createHostServer(
         // A replay wrote nothing, but the row it is replaying is what this
         // caller is about to read back, and the revision it reports is already
         // live for everybody else.
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { outcome: "updated" as const, revision: result.revision, type: command.type };
       }
       case "machine.access.session.stop": {
@@ -2605,7 +2611,7 @@ export async function createHostServer(
           runnerKind: "managed",
         });
         // A pending computer is a row on the list, so minting one changes it.
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return {
           enrollmentId: enrollment.enrollmentId,
           expiresAt: enrollment.expiresAt,
@@ -2622,7 +2628,7 @@ export async function createHostServer(
           name: command.name,
           runnerKind: "local",
         });
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return {
           enrollmentId: enrollment.enrollmentId,
           expiresAt: enrollment.expiresAt,
@@ -2642,7 +2648,7 @@ export async function createHostServer(
           name: command.name,
           ...(command.profile ? { profile: command.profile } : {}),
         });
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return {
           enrollmentId: enrollment.enrollmentId,
           expiresAt: enrollment.expiresAt,
@@ -2659,7 +2665,7 @@ export async function createHostServer(
           ownerId: userId,
         });
         // A retired enrollment leaves the pending computers.
-        if (state === "retired") notifyMachinesChanged(dependencies.realtime);
+        if (state === "retired") notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { state, type: command.type };
       }
       case "browser.session.start": {
@@ -2942,7 +2948,7 @@ export async function createHostServer(
       async (identity) => {
         if (dependencies.runners.isRunnerConnected(identity.runnerId)) return;
         if (await dependencies.store.recordRunnerUpdateRequired(identity)) {
-          notifyMachinesChanged(dependencies.realtime);
+          notifyMachinesChanged(dependencies.realtime, "machine.command");
         }
       },
       dependencies.phoneUpdateRelease ??

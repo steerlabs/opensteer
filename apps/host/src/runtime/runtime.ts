@@ -667,7 +667,7 @@ export async function createHostRuntime(
       knownDefinitionIds: () => computerAppDefinitionIds,
       onPhoneDisplayCapability: (status) =>
         app.log.info(status, "Phone display capability changed"),
-      onChanged: () => notifyMachinesChanged(realtime),
+      onChanged: () => notifyMachinesChanged(realtime, "computer-apps.status"),
       onComputerUseEvent: (runnerId, event) => computerUse?.handleHelperEvent(runnerId, event),
       onRunnerDetached: (runnerId, reason) => {
         computerViews?.disconnect(runnerId);
@@ -730,7 +730,7 @@ export async function createHostRuntime(
       // A live session is a row on the machines list and a card in its Thread,
       // so opening, closing, gaining an app or acting is a change to publish.
       onError: (error) => reportComputerUseSweepError(error),
-      onSessionsChanged: () => notifyMachinesChanged(realtime),
+      onSessionsChanged: () => notifyMachinesChanged(realtime, "computer-use.sessions"),
       onPresenceChanged: (ownerUserId, sessions) =>
         notifyComputerPresence(realtime, ownerUserId, sessions),
       authorizer: store,
@@ -768,7 +768,12 @@ export async function createHostRuntime(
           .where("id", "=", profileId)
           .executeTakeFirstOrThrow();
         const main = await store.findMainWorkspaceForOwner(profile.ownerId);
-        if (main) realtime.publishBrowserSessionsChanged(main.id, [profile.ownerId]);
+        if (main)
+          realtime.publishBrowserSessionsChanged(
+            main.id,
+            [profile.ownerId],
+            "browser.profile-reconciled",
+          );
       },
     });
     const runnerBrowsers = new RunnerBrowserRuntimeRouter({
@@ -784,7 +789,8 @@ export async function createHostRuntime(
           .execute();
         for (const { ownerId } of owners) {
           const main = await store.findMainWorkspaceForOwner(ownerId);
-          if (main) realtime.publishBrowserSessionsChanged(main.id, [ownerId]);
+          if (main)
+            realtime.publishBrowserSessionsChanged(main.id, [ownerId], "browser.profile-deletions");
         }
       },
     });
@@ -810,7 +816,7 @@ export async function createHostRuntime(
       // The viewer rereads its whole browser bootstrap, profiles included;
       // reusing this notice keeps older clients working.
       onProfilesChanged: (ownerId, workspaceId) =>
-        realtime.publishBrowserSessionsChanged(workspaceId, [ownerId]),
+        realtime.publishBrowserSessionsChanged(workspaceId, [ownerId], "browser.profiles"),
       tabGroups: browserTabGroups,
       workspaceTabs: new WorkspaceTabStore(database),
       onCatalogChanged: (sessionId) => {
@@ -833,13 +839,15 @@ export async function createHostRuntime(
       },
       onPlaceNotice: (ownerId, notice) => realtime.sendToUsers([ownerId], notice),
       profileStateBaseUrl: config.canonicalOrigin,
-      onSessionsChanged: (workspaceId, sessionIds) => {
+      onSessionsChanged: (workspaceId, sessionIds, source) => {
         // Catalog visibility is viewer-wide, independent of socket subscriptions.
         void Promise.all(sessionIds.map((sessionId) => store.listBrowserSessionViewers(sessionId)))
           .then((sessions) =>
-            realtime.publishBrowserSessionsChanged(workspaceId, [
-              ...new Set(sessions.flatMap((session) => session?.userIds ?? [])),
-            ]),
+            realtime.publishBrowserSessionsChanged(
+              workspaceId,
+              [...new Set(sessions.flatMap((session) => session?.userIds ?? []))],
+              source,
+            ),
           )
           .catch((error: unknown) => reportBrowserPresenceError(error));
       },
@@ -863,7 +871,11 @@ export async function createHostRuntime(
       if (membership.state !== "active")
         browser.revokePlaceReader(membership.userId, membership.workspaceId);
       browser.invalidatePlaceAuthority(membership.workspaceId);
-      realtime.publishBrowserSessionsChanged(membership.workspaceId, [membership.userId]);
+      realtime.publishBrowserSessionsChanged(
+        membership.workspaceId,
+        [membership.userId],
+        "browser.membership",
+      );
     });
     closeBrowserSession = (sessionId) => browser.closeAuthSession(sessionId);
     let reportBrowserSignInError: (error: unknown) => void = () => undefined;
@@ -1463,7 +1475,7 @@ export async function createHostRuntime(
         void computerViews
           ?.revalidate()
           .catch((error: unknown) => reportComputerUseSweepError(error));
-        notifyMachinesChanged(realtime);
+        notifyMachinesChanged(realtime, "integration.connections");
         void channelService?.syncRuntimes();
       },
       onRequestsChanged: () => notifyIntegrationContinuations(),
@@ -1611,7 +1623,7 @@ export async function createHostRuntime(
         },
         onShellFullDiskAccess: async (identity, value) => {
           await store.setRunnerShellFullDiskAccess(identity.runnerId, value);
-          notifyMachinesChanged(realtime);
+          notifyMachinesChanged(realtime, "runner.shell-access");
           if (value) await machineFullDiskAccess.fulfillForMachine(identity.runnerId);
         },
         authorize: async (identity) => authorizeRunnerRegistration(store, identity),
@@ -1689,7 +1701,7 @@ export async function createHostRuntime(
           // Before the recovery work, which is retried until it succeeds: the
           // row is already offline, and a repeated "reread the list" costs a
           // reader nothing.
-          notifyMachinesChanged(realtime);
+          notifyMachinesChanged(realtime, "runner.disconnect");
           // A lost connection costs a Run nothing: it keeps executing on its
           // lease and reattaches. A revoked Runner can never come back, so its
           // Runs end now; a replaced boot's are settled by the new boot's attach.
@@ -1784,7 +1796,7 @@ export async function createHostRuntime(
             if (!(await confirmRunnerRegistration(store, runners, identity))) return;
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
-            notifyMachinesChanged(realtime);
+            notifyMachinesChanged(realtime, "runner.registered");
             // macOS applies a Full Disk Access grant only once the app has quit
             // and reopened, so the grant usually arrives as a fresh registration
             // whose descriptor already says so — never as a change message.
@@ -2179,7 +2191,7 @@ export async function createHostRuntime(
       groups: browserTabGroups,
       browser,
       publish: (workspaceId, ownerIds) =>
-        realtime.publishBrowserSessionsChanged(workspaceId, ownerIds),
+        realtime.publishBrowserSessionsChanged(workspaceId, ownerIds, "browser.groups"),
     });
     const agentControl = new AgentControlService({
       browserTabs,

@@ -53,9 +53,9 @@ const refusedNotice = "The page is reconnecting. Try again in a moment.";
  * navigation, New tab, Fit and Close. The person and the agent use the page at
  * the same time; nothing here takes it from either.
  *
- * The picture is as tall as the page's own shape at this width, so it sits at
- * the top with no band above or below it and the conversation has the rest.
- * Where that is more than the screen has, it shrinks and fits by its height.
+ * The picture is as tall as the page's own shape at this width, so the whole
+ * page is always in view. Where that is more than the room it is given, it
+ * shrinks and fits by its height.
  *
  * Negotiated fields use the native editing proxy. Baseline sessions retain plain typing.
  * The address draft stays as the person left it when the page changes.

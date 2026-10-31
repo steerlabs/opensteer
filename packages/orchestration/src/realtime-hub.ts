@@ -1,4 +1,8 @@
 import {
+  BootstrapNoticeDiagnostics,
+  type BootstrapNoticeSource,
+} from "@opensteer/shared/bootstrapDiagnostics";
+import {
   compareSequence,
   OpensteerError,
   zeroSequence,
@@ -517,6 +521,7 @@ function liveFrameBytes(frame: LiveFrame): number {
 }
 
 export class RealtimeHub {
+  readonly bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
   readonly #store: OpensteerStore;
   readonly #gapFillDelayMs: number;
   readonly #gapFillTimeoutMs: number;
@@ -769,7 +774,12 @@ export class RealtimeHub {
    * that socket's problem alone: these messages carry no sequence and nothing
    * replays them, so one slow reader must not hold up the rest.
    */
-  sendToUsers(userIds: Iterable<UserId>, message: HostToClientMessage): void {
+  sendToUsers(
+    userIds: Iterable<UserId>,
+    message: HostToClientMessage,
+    source: BootstrapNoticeSource = "unspecified",
+  ): void {
+    this.bootstrapDiagnostics.record(message.type, source);
     for (const userId of userIds) {
       for (const sink of this.#connections.get(userId) ?? []) {
         void sink.send(message).catch(() => undefined);
@@ -785,7 +795,8 @@ export class RealtimeHub {
    * asked about. Anything that carries a fact about one machine goes to
    * `sendToUsers` with the people entitled to it.
    */
-  broadcast(message: HostToClientMessage): void {
+  broadcast(message: HostToClientMessage, source: BootstrapNoticeSource = "unspecified"): void {
+    this.bootstrapDiagnostics.record(message.type, source);
     for (const sinks of this.#connections.values()) {
       for (const sink of sinks) void sink.send(message).catch(() => undefined);
     }
@@ -898,7 +909,12 @@ export class RealtimeHub {
     this.#publishWorkspaceNotice({ type: "host.triggers-changed", workspaceId });
   }
 
-  publishBrowserSessionsChanged(workspaceId: WorkspaceId, viewerUserIds: readonly UserId[]): void {
+  publishBrowserSessionsChanged(
+    workspaceId: WorkspaceId,
+    viewerUserIds: readonly UserId[],
+    source: BootstrapNoticeSource = "unspecified",
+  ): void {
+    this.bootstrapDiagnostics.record("host.browser-sessions-changed", source);
     for (const userId of viewerUserIds) {
       this.#sendViewerMessage(userId, { type: "host.browser-sessions-changed", workspaceId });
     }

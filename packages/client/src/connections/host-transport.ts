@@ -30,6 +30,7 @@ export interface HostTransportRequest {
   readonly headers: {
     readonly accept?: string | undefined;
     readonly apiVersion?: string | undefined;
+    readonly bootstrapDiagnostics?: string | undefined;
     readonly contentType?: string | undefined;
     readonly idempotencyKey?: string | undefined;
   };

@@ -1,3 +1,7 @@
+import {
+  BootstrapNoticeDiagnostics,
+  bootstrapDiagnosticHeader,
+} from "@opensteer/shared/bootstrapDiagnostics";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -1935,6 +1939,7 @@ describe("Personal sharing boundary", () => {
         kind: "personal" as const,
       },
     });
+    const diagnostics = new BootstrapNoticeDiagnostics();
     const app = await createHostServer({
       requestResponseVault: {} as never,
       agentControl: {} as never,
@@ -1980,7 +1985,7 @@ describe("Personal sharing boundary", () => {
       egress: {} as never,
       files: {} as never,
       harnessAuthenticationCoordinator: {} as never,
-      realtime: testRealtime(),
+      realtime: testRealtime({ bootstrapDiagnostics: diagnostics }),
       runnerAuthenticator: {} as never,
       runners: { identityForEnvironment: () => undefined } as never,
       securityEffects: {} as never,
@@ -2013,6 +2018,31 @@ describe("Personal sharing boundary", () => {
       const bootstrap = await injectRpcRequest(app, "bootstrap.get", {});
       expect(bootstrap.statusCode).toBe(200);
       expect(rpcData(bootstrap)).toMatchObject({ workspaceSharingAvailable: false });
+      const warn = vi.spyOn(app.log, "warn");
+      const diagnostic = JSON.stringify({
+        windowMs: 3600,
+        triggers: { "host.machines.changed": 6 },
+        starts: { "host.machines.changed": 6 },
+      });
+      diagnostics.record("host.machines.changed", "computer-apps.status");
+      const observed = await injectRpcRequest(
+        app,
+        "bootstrap.get",
+        {},
+        { [bootstrapDiagnosticHeader]: diagnostic },
+      );
+      expect(observed.statusCode).toBe(200);
+      expect(rpcData(observed)).toEqual(rpcData(bootstrap));
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          starts: '{"host.machines.changed":6}',
+          notices: '{"host.machines.changed/computer-apps.status":1}',
+        }),
+        "host.bootstrap.loop",
+      );
+      await injectRpcRequest(app, "bootstrap.get", {}, { [bootstrapDiagnosticHeader]: diagnostic });
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
 
       const issued = await injectRpcRequest(app, "commands.dispatch", {
         idempotencyKey: "personal-share-attempt",

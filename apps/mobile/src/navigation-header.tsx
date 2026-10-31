@@ -6,8 +6,8 @@ import type {
 } from "@react-navigation/native-stack";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, Text, View, type HostInstance } from "react-native";
-import { BrowserButton } from "./browser/browser-button.js";
 import { agentWorkingLabel } from "./browser/acting-dot.js";
+import type { SurfaceGlyph } from "./browser/agent-surface.js";
 import { useSidebarControl, useSidebarDocked } from "./sidebar/sidebar-context.js";
 import { color, headerFontScaleLimit, radius, space, touchTarget } from "./theme.js";
 import { useHostValue } from "./ui/mobile-client-context.js";
@@ -30,6 +30,7 @@ export type HeaderActionSpec = {
   readonly icon?:
     | "arrow.triangle.branch"
     | "gearshape"
+    | SurfaceGlyph
     | "line.3.horizontal"
     | "plus"
     | "rectangle.on.rectangle"
@@ -39,6 +40,25 @@ export type HeaderActionSpec = {
   readonly onPress: () => void;
   readonly tintColor?: string;
   readonly variant?: "done" | "plain" | "prominent";
+};
+
+/**
+ * What every screen in the stack starts from. The bar has one ground,
+ * `headerStyle`. At rest against the scroll edge iOS draws the same bar unless
+ * a large style gives it another ground, which would also land under a
+ * conversation's transparent bar, glass or blur, and hide what scrolls under
+ * it. Where the status bar sits in iPhone Duo's vertical bar, that ground
+ * starts below the top of the screen and leaves a strip of conversation
+ * showing above it.
+ */
+export const stackScreenOptions: NativeStackNavigationOptions = {
+  contentStyle: { backgroundColor: color.background },
+  headerBackButtonDisplayMode: "minimal",
+  headerLargeTitleStyle: { color: color.text, fontWeight: "700" },
+  headerShadowVisible: false,
+  headerStyle: { backgroundColor: color.background },
+  headerTintColor: color.ember,
+  headerTitleStyle: { color: color.text, fontSize: 17, fontWeight: "600" },
 };
 
 /**
@@ -102,39 +122,73 @@ function nativeHeaderItem(action: HeaderActionSpec): NativeStackHeaderItem {
 }
 
 /**
- * A conversation's Tabs control in its bar. On iOS it is a native bar item,
- * so UIKit can move it into a vertical bar, keep it in its overflow and give it
- * its own pointer and keyboard focus; a custom view would be left behind. It
- * is green while an agent is acting, and says so in its name, so the state
- * does not rest on colour. Android draws the word with the green dot.
+ * What a conversation's agent is using, as a control in its bar: a globe for
+ * a page, a laptop for a Mac app, a phone for a phone. It is there only while
+ * the agent uses one, green while it acts, and opens exactly that page or app.
+ *
+ * On iOS it is a native bar item, so UIKit can move it into a vertical bar,
+ * keep it in its overflow and give it its own pointer and keyboard focus; a
+ * custom view would be left behind. Its name says what the colour does.
  */
 export function browserHeaderActions(
-  acting: boolean,
-  visible: boolean,
-  onPress: () => void,
+  surface: {
+    readonly acting: boolean;
+    readonly glyph: SurfaceGlyph;
+    readonly onPress: () => void;
+  } | null,
   family?: { readonly action: HeaderActionSpec; readonly content: ReactNode },
 ): NativeStackNavigationOptions {
-  const tabs: HeaderActionSpec = {
-    accessibilityHint: "Opens this conversation's tabs and apps",
-    accessibilityLabel: acting ? `Tabs, ${agentWorkingLabel.toLowerCase()}` : "Tabs",
-    icon: "rectangle.on.rectangle",
-    label: "Tabs",
-    onPress,
-    ...(acting ? { tintColor: color.green } : {}),
-  };
+  const watch: HeaderActionSpec | null =
+    surface === null
+      ? null
+      : {
+          accessibilityHint: `Shows the ${surfaceNoun[surface.glyph]} the agent is using`,
+          accessibilityLabel: surface.acting
+            ? `${surfaceName[surface.glyph]}, ${agentWorkingLabel.toLowerCase()}`
+            : surfaceName[surface.glyph],
+          icon: surface.glyph,
+          label: surfaceName[surface.glyph],
+          onPress: surface.onPress,
+          ...(surface.acting ? { tintColor: color.green } : {}),
+        };
   return {
     headerRight: () => (
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space[8] }}>
+      <View style={styles.trailing}>
         {family?.content}
-        {visible ? <BrowserButton acting={acting} onPress={onPress} /> : null}
+        {watch === null || surface === null ? null : (
+          <Pressable
+            accessibilityHint={watch.accessibilityHint}
+            accessibilityLabel={watch.accessibilityLabel}
+            accessibilityRole="button"
+            onPress={watch.onPress}
+            style={({ pressed }) => [styles.icon, pressed && styles.pressed]}
+          >
+            <Symbol
+              name={surface.glyph}
+              size={22}
+              tint={surface.acting ? color.green : color.text}
+            />
+          </Pressable>
+        )}
       </View>
     ),
     unstable_headerRightItems: () => [
       ...(family ? [nativeHeaderItem(family.action)] : []),
-      ...(visible ? [nativeHeaderItem(tabs)] : []),
+      ...(watch === null ? [] : [nativeHeaderItem(watch)]),
     ],
   };
 }
+
+const surfaceName: Readonly<Record<SurfaceGlyph, string>> = {
+  globe: "Page",
+  laptopcomputer: "Mac app",
+  smartphone: "Phone",
+};
+const surfaceNoun: Readonly<Record<SurfaceGlyph, string>> = {
+  globe: "page",
+  laptopcomputer: "Mac app",
+  smartphone: "phone",
+};
 
 const selectAttention = (snapshot: HostSnapshot): number =>
   attentionCount(snapshot.waitingRequests);
@@ -247,6 +301,10 @@ function HeaderAction(props: HeaderActionSpec): ReactNode {
 
 const styles = StyleSheet.create({
   headerAction: { justifyContent: "center", minHeight: touchTarget },
+  // Material's own icon button: a 48-point target around a 24-point glyph.
+  icon: { alignItems: "center", height: 48, justifyContent: "center", width: 48 },
+  pressed: { opacity: 0.6 },
+  trailing: { alignItems: "center", flexDirection: "row", gap: space[8] },
   // Material's own icon button: a 48-point target around a 24-point glyph.
   menu: {
     alignItems: "center",

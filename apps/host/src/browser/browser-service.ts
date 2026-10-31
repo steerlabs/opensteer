@@ -6,6 +6,7 @@ import {
   type CompleteProfileInitialization,
   type PendingBrowserProfileDeletion,
 } from "@opensteer/protocol";
+import type { BootstrapNoticeSource } from "@opensteer/shared/bootstrapDiagnostics";
 import { BrowserCatalogRevisions } from "./browser-catalog-revisions.js";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
@@ -631,6 +632,7 @@ interface BrowserServiceOptions {
   readonly onSessionsChanged: (
     workspaceId: WorkspaceId,
     sessionIds: readonly BrowserSessionId[],
+    source: BootstrapNoticeSource,
   ) => void;
   /**
    * What a person sees about one browser changed: its page, or whether an
@@ -726,6 +728,7 @@ export class BrowserService {
   readonly #onSessionsChanged: (
     workspaceId: WorkspaceId,
     sessionIds: readonly BrowserSessionId[],
+    source: BootstrapNoticeSource,
   ) => void;
   readonly #onPresenceChanged: NonNullable<BrowserServiceOptions["onPresenceChanged"]>;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
@@ -1051,7 +1054,7 @@ export class BrowserService {
       idempotencyKey,
     );
     const group = await this.readWorkspaceTabs(ownerId, row.groupId);
-    this.#onSessionsChanged(group.session.workspaceId, [group.session.id]);
+    this.#onSessionsChanged(group.session.workspaceId, [group.session.id], "browser.tabs");
     return {
       type: "workspace.tab.reopen" as const,
       tabId: BrowserSurfaceIdSchema.parse(row.id),
@@ -1069,7 +1072,7 @@ export class BrowserService {
       const broker = session ? this.#brokers.get(session.id) : undefined;
       if (session && broker?.live)
         await this.#disposeWorkspaceTab(ownerId, session.workspaceId, session.id, tabId, broker);
-      if (session) this.#onSessionsChanged(session.workspaceId, [session.id]);
+      if (session) this.#onSessionsChanged(session.workspaceId, [session.id], "browser.tabs");
     });
     return {
       type: "workspace.tab.close" as const,
@@ -2328,7 +2331,7 @@ export class BrowserService {
         const { tabs, closed, revision, dirty } = broker.durableCatalog();
         if (dirty) {
           if (await this.#workspaceTabs.record(sessionId, tabs, closed))
-            this.#onSessionsChanged(workspaceId, [sessionId]);
+            this.#onSessionsChanged(workspaceId, [sessionId], "browser.catalog-flush");
           broker.acknowledgeClosed(closed, revision);
         }
       }
@@ -2499,7 +2502,7 @@ export class BrowserService {
             .flatMap((credit) => credit.catalogSessionIds ?? []),
         ),
       ];
-      this.#onSessionsChanged(workspaceId, sessionIds);
+      this.#onSessionsChanged(workspaceId, sessionIds, "browser.usage");
     }
   }
 
@@ -2723,6 +2726,7 @@ export class BrowserService {
       this.#onSessionsChanged(
         workspaceId,
         records.filter((record) => record.workspaceId === workspaceId).map((record) => record.id),
+        "browser.detach",
       );
     }
     return detached;
@@ -2759,6 +2763,7 @@ export class BrowserService {
               session.workspaceId === input.workspaceId && session.profileId === input.profileId,
           )
           .map((session) => session.id),
+        "browser.grant-revoked",
       );
     }
     return detached;
@@ -3686,7 +3691,7 @@ export class BrowserService {
     });
     if (input.tabGroupId && input.initialSurfaceId)
       await this.#workspaceTabs?.bind(input.tabGroupId, sessionId, input.initialSurfaceId);
-    this.#onSessionsChanged(record.workspaceId, [record.id]);
+    this.#onSessionsChanged(record.workspaceId, [record.id], "browser.start");
     const initialHistoryNavigation =
       profile &&
       initialUrl &&
@@ -3802,7 +3807,8 @@ export class BrowserService {
         const endedBroker = this.#brokers.get(sessionId);
         await this.#flushCatalogNotice(sessionId, record.workspaceId, endedBroker);
         await this.#workspaceTabs?.suspend(sessionId);
-        if (this.#workspaceTabs) this.#onSessionsChanged(record.workspaceId, [sessionId]);
+        if (this.#workspaceTabs)
+          this.#onSessionsChanged(record.workspaceId, [sessionId], "browser.terminal");
         const previous = endedBroker?.catalog(() => []);
         if (previous)
           this.#endedCatalogs.set(sessionId, {
@@ -4008,7 +4014,7 @@ export class BrowserService {
         tabId: null,
       }),
     ]);
-    if (attached) this.#onSessionsChanged(record.workspaceId, [record.id]);
+    if (attached) this.#onSessionsChanged(record.workspaceId, [record.id], "browser.attach");
     this.announceUsage(credits);
   }
 
@@ -4158,7 +4164,11 @@ export class BrowserService {
   }): Promise<BrowserSessionRecord> {
     const transitioned = await this.#repository.transitionBrowserSession(input);
     for (const event of transitioned.events) this.#onWorkspaceEvent(event);
-    this.#onSessionsChanged(transitioned.session.workspaceId, [transitioned.session.id]);
+    this.#onSessionsChanged(
+      transitioned.session.workspaceId,
+      [transitioned.session.id],
+      "browser.transition",
+    );
     return transitioned.session;
   }
 

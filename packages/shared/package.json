@@ -10,6 +10,7 @@
     "./atomicPrivateFile": "./src/atomicPrivateFile.ts",
     "./base64url": "./src/base64url.ts",
     "./boundedAsyncInbox": "./src/boundedAsyncInbox.ts",
+    "./bootstrapDiagnostics": "./src/bootstrapDiagnostics.ts",
     "./boundedJson": "./src/boundedJson.ts",
     "./browserPresentation": "./src/browserPresentation.ts",
     "./canonicalJson": "./src/canonicalJson.ts",

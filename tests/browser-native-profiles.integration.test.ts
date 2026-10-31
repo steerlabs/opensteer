@@ -1,3 +1,4 @@
+import { RealtimeHub } from "../packages/orchestration/src/realtime-hub.js";
 import { RunnerBrowserRuntimeRouter } from "../apps/host/src/browser/runner-browser-runtime.js";
 import { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
 import { spawn } from "node:child_process";
@@ -212,6 +213,7 @@ async function stateSite() {
 
 it("converts, retains, restarts, reconciles and erases native profiles through the real Host and Runner", async () => {
   await access(chromium.executablePath());
+  const broadNotices = vi.spyOn(RealtimeHub.prototype, "publishBrowserSessionsChanged");
   const browser = await browserProcess();
   let journeyAssertionsComplete = false;
   let warmTimings: BrowserOpenTiming[] = [];
@@ -781,6 +783,16 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
         .executeTakeFirstOrThrow();
       expect(deletion.state, "Runtime did not acknowledge physical profile erasure").toBe(
         "deleted",
+      );
+      expect(broadNotices).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Array),
+        "browser.profile-reconciled",
+      );
+      expect(broadNotices).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Array),
+        "browser.profile-deletions",
       );
     },
     { timeout: 10_000 },
