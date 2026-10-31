@@ -275,6 +275,8 @@ export const HostCapabilitySchema = z.enum([
   "browser-profile-manage-v1",
   /** Clients can hold a voice call through `voice.*` (see docs/voice.md). */
   "voice-v1",
+  /** A call can run its own agent: `agent` on `voice.start`, then `voice.next`, `voice.answer` and `voice.context`. */
+  "voice-agent-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 
