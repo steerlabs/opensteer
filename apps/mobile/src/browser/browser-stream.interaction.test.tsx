@@ -437,12 +437,17 @@ describe.each(["image", "picture"] as const)(
           touches: [first.event.nativeEvent, { ...first.event.nativeEvent, identifier: 2 }],
         },
       } as GestureResponderEvent;
-      act(() => {
-        native.gestures?.onPanResponderGrant?.(first.event, first.gesture);
-        native.gestures?.onPanResponderMove?.(multi, touch(200, 330, 0, 30).gesture);
-        native.gestures?.onPanResponderRelease?.(first.event, first.gesture);
-      });
-      expect(send).not.toHaveBeenCalled();
+      for (const phase of ["onPanResponderStart", "onPanResponderMove"] as const) {
+        act(() => {
+          native.gestures?.onPanResponderGrant?.(first.event, first.gesture);
+          native.gestures?.[phase]?.(
+            multi,
+            phase === "onPanResponderStart" ? first.gesture : touch(200, 330, 0, 30).gesture,
+          );
+          native.gestures?.onPanResponderRelease?.(first.event, first.gesture);
+        });
+        expect(send).not.toHaveBeenCalled();
+      }
     });
 
     it("scrolls the page under a drag without clicking it", async () => {

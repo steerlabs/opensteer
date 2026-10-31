@@ -754,7 +754,7 @@ run("Browser Sessions through a whole deployment", () => {
     const watchRefusal = await watchClosed;
     expect(watchRefusal).toEqual({
       code: 4002,
-      reason: "Watch can only subscribe, acknowledge, or unsubscribe.",
+      reason: "Watch can only manage its picture subscription and receipts.",
     });
     await new Promise((resolve) => setTimeout(resolve, 750));
     const watchResizes = site.seen.filter(

@@ -367,6 +367,9 @@ export function BrowserStream({
     return PanResponder.create({
       onStartShouldSetPanResponder: usable,
       onMoveShouldSetPanResponder: usable,
+      onPanResponderStart: (event) => {
+        if (event.nativeEvent.touches.length > 1) held.current = null;
+      },
       onPanResponderGrant: (event) => {
         if (event.nativeEvent.touches?.length > 1) {
           held.current = null;

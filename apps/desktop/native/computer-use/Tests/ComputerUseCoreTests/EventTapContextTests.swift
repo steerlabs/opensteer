@@ -7,7 +7,7 @@ final class EventTapContextTests: XCTestCase {
   func testRegistrationOutlivesTheOwnerAndStoppedCallbacksPassThrough() {
     var calls = 0
     var owner: EventTap.Context? = EventTap.Context { _, _ in calls += 1; return nil }
-    weak let observed = owner
+    weak var observed = owner
     let registration = Unmanaged.passRetained(owner!).toOpaque()
     let event = CGEvent(source: nil)!
 
