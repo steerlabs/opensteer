@@ -839,14 +839,6 @@ function ThreadPaneForUser(
     }),
     [deploymentId, hostClient, navigation, surfaceTurns, threadId],
   );
-  const engineName = useCallback(
-    (harnessInstanceId: string): string | null =>
-      threadPlacementOptions(snapshot.environments, snapshot.harnesses).find(
-        (option) => option.harnessInstanceId === harnessInstanceId,
-      )?.engineName ?? null,
-    [snapshot.environments, snapshot.harnesses],
-  );
-
   /**
    * Quotes a published update into Chat's composer and goes back to Chat.
    *
@@ -968,7 +960,6 @@ function ThreadPaneForUser(
               onOpenReplyUnderWay={conversational ? openLatestActivity : undefined}
               onReply={conversational ? replyWith : undefined}
               live={live}
-              engineName={engineName}
               group={item.group}
               open={openRows.has(item.group.key)}
               onToggleOpen={toggleRow}
@@ -992,7 +983,6 @@ function ThreadPaneForUser(
       anchorMessageId,
       askAbout,
       conversational,
-      engineName,
       hostClient,
       live,
       openActivity,

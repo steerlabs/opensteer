@@ -776,6 +776,11 @@ final class EngineTests: XCTestCase {
     XCTAssertEqual(AudioQueue.meter(audio), 0)
     audio.floatChannelData![0].update(repeating: 2, count: Int(audio.frameLength))
     XCTAssertEqual(AudioQueue.meter(audio), 1)
+    let levels = AudioQueue()
+    levels.append(audio)
+    levels.append(buffer())
+    XCTAssertEqual(levels.takeLevel(), 1)
+    XCTAssertEqual(levels.takeLevel(), 0)
   }
   func testCoalescingPreservesFinalizedAndLimitsArrays() throws {
     var tracker = ResultTracker()

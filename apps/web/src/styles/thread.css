@@ -540,8 +540,8 @@ label.action-row input {
   gap: var(--space-10);
   width: 100%;
   max-width: var(--composer-max-width);
-  min-height: 32px;
-  margin: var(--space-4) auto 0;
+  min-height: 24px;
+  margin: 0 auto;
   padding-left: var(--space-14);
   color: var(--muted);
   font-size: var(--text-sm);
@@ -572,8 +572,8 @@ label.action-row input {
   display: grid;
   flex: none;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   margin-left: auto;
   border-radius: var(--radius-full);
   color: var(--muted-dim);

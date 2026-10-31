@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   DictationController,
+  dictationDisplayLevel,
   dictationDownloadStatus,
   dictationElapsed,
   dictationLabels,
@@ -18,6 +19,7 @@ import {
   type DictationSnapshot,
 } from "@opensteer/client/dictation";
 import { Icon } from "./icon.js";
+import { useMediaQuery } from "../ui-utils.js";
 
 export const DictationContext = createContext<DictationController | null>(null);
 const absent: DictationSnapshot = {
@@ -193,27 +195,28 @@ const waveBars = 64;
 
 function LevelMeter({ controller, active }: { controller: DictationController; active: boolean }) {
   const bars = useRef<HTMLSpanElement | null>(null);
+  const reduced = useMediaQuery("(prefers-reduced-motion: reduce)");
   useEffect(() => {
-    if (!active) return;
+    const elements = [...(bars.current?.querySelectorAll("i") ?? [])];
+    const history = Array<number>(waveBars).fill(3 / 22);
+    const paint = () =>
+      elements.forEach((bar, index) => {
+        bar.style.transform = `scaleY(${history[index]})`;
+      });
+    paint();
+    if (!active || reduced) return;
     performance.mark("dictation-listening");
     let first = true;
-    let last = 0;
-    const history = Array<number>(waveBars).fill(0);
     return controller.subscribeLevel((level) => {
       if (first) {
         performance.mark("dictation-first-level");
         first = false;
       }
-      const now = performance.now();
-      if (now - last < 100) return;
-      last = now;
       history.shift();
-      history.push(level);
-      bars.current?.querySelectorAll("i").forEach((bar, index) => {
-        bar.style.height = `${3 + (history[index] ?? 0) * 19}px`;
-      });
+      history.push((3 + dictationDisplayLevel(level) * 19) / 22);
+      paint();
     });
-  }, [active, controller]);
+  }, [active, controller, reduced]);
   return (
     <span ref={bars} className="dictation-level" aria-hidden="true">
       {Array.from({ length: waveBars }, (_, index) => (

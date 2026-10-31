@@ -12,6 +12,7 @@ export { insertDictationText, joinDictationText } from "./text.js";
 export type { DictationSelection } from "./text.js";
 export {
   dictationLabels,
+  dictationDisplayLevel,
   dictationStartLabel,
   dictationDownloadStatus,
   dictationElapsed,
