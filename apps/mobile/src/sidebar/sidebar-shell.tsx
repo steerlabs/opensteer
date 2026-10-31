@@ -50,7 +50,7 @@ import {
   SidebarVisibleContext,
   type SidebarControl,
 } from "./sidebar-context.js";
-import { setDrawerOpen } from "../voice/interaction.js";
+import { interact, setDrawerOpen } from "../voice/interaction.js";
 import { SidebarPanel, type SidebarActions, type SidebarDestination } from "./sidebar-panel.js";
 
 /**
@@ -277,6 +277,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   }, [visible]);
 
   const leave = useCallback(() => {
+    interact();
     restoreFocus.current = false;
     drawer.current?.closeDrawer();
   }, []);
