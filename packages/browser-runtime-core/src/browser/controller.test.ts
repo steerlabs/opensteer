@@ -1763,6 +1763,57 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  it("changes targeted raster demand while retaining a drag and authoritative geometry", async () => {
+    const controller = createController();
+    await controller.start();
+    const surfaceId = activeSurfaceId();
+    try {
+      await controller.handle({ type: "stream.subscribe", surfaceId });
+      const geometry = { ...ledger.active()!.surface };
+      const point = { surfaceId, viewportWidth: 1280, viewportHeight: 720, x: 0.25, y: 0.25 };
+      await controller.handle({ type: "input.pointer", action: "down", button: "left", ...point });
+      await controller.handle({ type: "stream.demand", surfaceId, density: 0.75 });
+      expect(command("Page.startScreencast", page)?.parameters).toMatchObject({
+        maxWidth: 960,
+        maxHeight: 540,
+      });
+      expect(ledger.active()!.surface).toEqual(geometry);
+      expect(commandsNamed("Emulation.setDeviceMetricsOverride", page)).toHaveLength(1);
+      await controller.handle({ type: "input.pointer", action: "move", button: "none", ...point });
+      expect(command("Input.dispatchMouseEvent", page)?.parameters).toMatchObject({
+        type: "mouseMoved",
+        button: "left",
+        buttons: 1,
+        x: 320,
+        y: 180,
+      });
+      page.cdpSession.emit("Page.screencastFrame", {
+        data: jpeg(960, 540).toString("base64"),
+        metadata: { deviceHeight: 720, deviceWidth: 1280 },
+        sessionId: 1,
+      });
+      await flushMicrotasks();
+      expect(sink.frames.at(-1)?.header).toMatchObject({
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        rasterWidth: 960,
+        rasterHeight: 540,
+      });
+      const starts = commandsNamed("Page.startScreencast", page).length;
+      await controller.handle({ type: "stream.demand", surfaceId, density: 0.75 });
+      expect(commandsNamed("Page.startScreencast", page)).toHaveLength(starts);
+      await controller.handle({ type: "input.pointer", action: "up", button: "left", ...point });
+      expect(command("Input.dispatchMouseEvent", page)?.parameters).toMatchObject({
+        type: "mouseReleased",
+        button: "left",
+        buttons: 0,
+      });
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("names the held button on moves so drags select text instead of hovering", async () => {
     const controller = createController();
     await controller.start();

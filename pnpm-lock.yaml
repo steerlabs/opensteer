@@ -118,6 +118,9 @@ patchedDependencies:
   playwright-core@1.62.1:
     hash: 11e913a3b90dcc03be58d7e4ed3e11752dabb77b2e310ff7e4c60175c1b01b05
     path: patches/playwright-core@1.62.1.patch
+  react-native-webrtc@155.0.1:
+    hash: 86693b0efd5f1c8f40ec75b1bb8ccedc60c67e9de6fb35b006ef4914a2253bb6
+    path: patches/react-native-webrtc@155.0.1.patch
 
 importers:
 
@@ -875,7 +878,7 @@ importers:
         version: 15.16.0(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0))(react@19.3.0)
       react-native-webrtc:
         specifier: 'catalog:'
-        version: 155.0.1(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0))
+        version: 155.0.1(patch_hash=86693b0efd5f1c8f40ec75b1bb8ccedc60c67e9de6fb35b006ef4914a2253bb6)(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0))
       react-native-worklets:
         specifier: 0.13.0
         version: 0.13.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0))(react@19.3.0)
@@ -14543,7 +14546,7 @@ snapshots:
       react: 19.3.0
       react-native: 0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0)
 
-  react-native-webrtc@155.0.1(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0)):
+  react-native-webrtc@155.0.1(patch_hash=86693b0efd5f1c8f40ec75b1bb8ccedc60c67e9de6fb35b006ef4914a2253bb6)(react-native@0.88.0(@babel/core@7.29.7)(@react-native/metro-config@0.88.0(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.3.0)):
     dependencies:
       base64-js: 1.5.1
       debug: 4.3.4

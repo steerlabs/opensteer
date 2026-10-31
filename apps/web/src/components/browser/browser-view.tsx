@@ -218,6 +218,8 @@ export function PlaceBrowserView({
       const release = hostClient.retainBrowserViewer(sessionId, tabId, {
         picture: !native,
         captureRegion: true,
+        frameWindow: true,
+        rasterDemand: true,
       });
       const previous = retained.current;
       if (previous) {

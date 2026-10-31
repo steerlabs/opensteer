@@ -93,6 +93,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   }),
 }));
 vi.mock("react-native", () => ({
+  PixelRatio: { get: () => 3 },
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
   ActivityIndicator: () => null,
   Alert: { alert: vi.fn() },
@@ -288,6 +289,7 @@ vi.mock("../thread/composer-menu.js", () => ({
     </div>
   ),
 }));
+vi.mock("../computers/phone-display-native.js", () => ({ nativePictureView: () => null }));
 vi.mock("../browser/browser-stream.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../browser/browser-stream.js")>()),
   BrowserStream: ({

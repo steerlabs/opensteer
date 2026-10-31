@@ -131,6 +131,23 @@ final class OwnerInputStateTests: XCTestCase {
     XCTAssertEqual(pill?.status, "Sharing Fixture")
   }
 
+  func testConcurrentViewsOfOneAppKeepSharingUntilTheLastViewLeaves() {
+    var model = OverlayModel()
+    let app = OverlayModel.App(key: "fixture", name: "Fixture", access: .readWrite, path: "/Fixture.app")
+    let first = OverlayModel.Session(id: "phone", threadTitle: nil, apps: [app], ownerInput: true)
+    let second = OverlayModel.Session(id: "tablet", threadTitle: nil, apps: [app], ownerInput: true)
+    let now = Date()
+    model.update(sessions: [first, second], ending: .ended, at: now)
+    XCTAssertEqual(model.presentation(at: now).pill?.status, "Sharing Fixture")
+    XCTAssertEqual(model.presentation(at: now).pill?.icons.count, 1)
+    model.update(sessions: [second, first], ending: .ended, at: now)
+    XCTAssertEqual(model.presentation(at: now).pill?.controls, .session)
+    model.update(sessions: [second], ending: .ended, at: now)
+    XCTAssertEqual(model.presentation(at: now).pill?.status, "Sharing Fixture")
+    model.update(sessions: [], ending: .ended, at: now)
+    XCTAssertEqual(model.presentation(at: now).pill?.status, "Computer use ended")
+  }
+
   func testCaptureIncarnationNeverAcceptsRetiredSamples() {
     let fence = OwnerSampleFence()
     let old = fence.current
@@ -159,10 +176,35 @@ final class OwnerInputStateTests: XCTestCase {
     XCTAssertEqual(mailbox.pop(), 1)
     XCTAssertFalse(mailbox.finishIfEmpty())
     XCTAssertEqual(mailbox.pop(), 2)
-    XCTAssertTrue(mailbox.finishIfEmpty())
-    XCTAssertTrue(mailbox.append(3))
+    XCTAssertFalse(mailbox.hasPending)
+    // The focus watch still owns the drain. A new batch joins it and can be
+    // observed without consuming its reservation or scheduling a second drain.
+    XCTAssertFalse(mailbox.append(3))
+    XCTAssertTrue(mailbox.hasPending)
+    XCTAssertTrue(mailbox.hasPending)
     XCTAssertEqual(mailbox.pop(), 3)
     XCTAssertTrue(mailbox.finishIfEmpty())
+    XCTAssertTrue(mailbox.append(4))
+    XCTAssertEqual(mailbox.pop(), 4)
+    XCTAssertTrue(mailbox.finishIfEmpty())
+  }
+
+  func testInputDuringTheWatchCannotRenewTheFiveSecondBurst() {
+    let burst = OwnerInputBurst(started: 10)
+    for arrival in [10.0, 10.1, 10.3, 12, 14.999] {
+      XCTAssertTrue(burst.acceptsInput(at: arrival))
+    }
+    XCTAssertFalse(burst.acceptsInput(at: 15))
+    XCTAssertFalse(burst.acceptsInput(at: 15.001))
+  }
+
+  func testRefusedBurstCannotResumeWhenAnotherBatchArrivesDuringItsWatch() {
+    var burst = OwnerInputBurst(started: 10)
+    XCTAssertTrue(burst.acceptsInput(at: 10.1))
+    burst.end()
+    XCTAssertFalse(burst.acceptsInput(at: 10.2))
+    XCTAssertFalse(burst.acceptsInput(at: 14))
+    XCTAssertTrue(OwnerInputBurst(started: 10.5).acceptsInput(at: 10.5))
   }
 
   func testFocusRoundsShareOneNonblockingGate() async {

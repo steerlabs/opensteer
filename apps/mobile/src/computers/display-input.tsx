@@ -8,6 +8,7 @@ import {
 import type { DisplayInputEvent } from "@opensteer/protocol";
 import {
   useEffect,
+  useLayoutEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -22,6 +23,7 @@ import {
 } from "../../modules/remote-text-input/src/editing-proxy.js";
 import { createMobileClipboardPort } from "../../modules/remote-text-input/src/clipboard.js";
 import { AppText } from "../ui/primitives.js";
+import { usePaneGeometry } from "../ui/pane.js";
 import { color } from "../theme.js";
 
 const emptyEditing: DisplayEditingSnapshot = { context: null, receipt: null };
@@ -81,7 +83,7 @@ export function DisplayControls({
     [lease],
   );
   const clipboard = useMemo(createMobileClipboardPort, []);
-  const size = useRef({ width: 0, height: 0 });
+  const size = useRef({ width: 0, height: 0, x: 0, y: 0 });
   const stroke = useRef<{
     generation: number;
     x: number;
@@ -148,6 +150,32 @@ export function DisplayControls({
       : lease.input(geometry, events));
   const sendOperation = (operation: EditingOperation): boolean =>
     session !== null && submit(() => session.send(operation));
+  const cancelStroke = () => {
+    const current = stroke.current;
+    if (!current) return;
+    stroke.current = null;
+    send(
+      [
+        phone
+          ? { kind: "pointer", phase: "cancel", x: current.x, y: current.y, t: current.t }
+          : {
+              kind: "mouse",
+              phase: "cancel",
+              x: current.x,
+              y: current.y,
+              button: "left",
+              modifiers: [],
+            },
+      ],
+      current.generation,
+    );
+  };
+  const cancelMovedStroke = useRef(cancelStroke);
+  cancelMovedStroke.current = cancelStroke;
+  const geometry = usePaneGeometry();
+  useLayoutEffect(() => {
+    cancelMovedStroke.current();
+  }, [geometry]);
   const touch = (phase: "down" | "move" | "up" | "cancel", event: GestureResponderEvent) => {
     if (!held || !picture) return;
     const { width, height } = size.current;
@@ -203,31 +231,13 @@ export function DisplayControls({
         onLayout={(event) => {
           const next = event.nativeEvent.layout;
           const previous = size.current;
-          const heldStroke = stroke.current;
-          if (heldStroke && (previous.width !== next.width || previous.height !== next.height)) {
-            send(
-              [
-                phone
-                  ? {
-                      kind: "pointer",
-                      phase: "cancel",
-                      x: heldStroke.x,
-                      y: heldStroke.y,
-                      t: heldStroke.t,
-                    }
-                  : {
-                      kind: "mouse",
-                      phase: "cancel",
-                      x: heldStroke.x,
-                      y: heldStroke.y,
-                      button: "left",
-                      modifiers: [],
-                    },
-              ],
-              heldStroke.generation,
-            );
-            stroke.current = null;
-          }
+          if (
+            previous.width !== next.width ||
+            previous.height !== next.height ||
+            previous.x !== next.x ||
+            previous.y !== next.y
+          )
+            cancelStroke();
           size.current = next;
         }}
         onTouchStart={(event) => touch("down", event)}

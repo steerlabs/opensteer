@@ -461,6 +461,11 @@ retry. Clipboard chords cannot access the Host pasteboard: copy is an explicit n
 AX selection read, paste is literal AX/Unicode text. Image/file paste metadata refuses
 before any upload. There is no Host pasteboard or file-transfer route.
 
+The after-input watch protects focus without imposing a pause between person batches:
+new input may join the guarded round while it watches. Waiting input in another lane
+ends that extension, and continuous arrivals cannot renew the burst's time limit.
+The final input still receives the full watch before the round releases protection.
+
 Editing context exposes only field kind, multiline/sensitive metadata and normalized
 caret bounds. Focus/selection changes rotate its opaque ID. Replacement verifies exact
 UTF-16 before/after using AX, chooses insertion before changing selection and refuses

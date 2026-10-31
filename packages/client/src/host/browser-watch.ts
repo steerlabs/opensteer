@@ -1,10 +1,11 @@
 import {
+  type BrowserRasterDensity,
   type BrowserServerMessage,
   BrowserServerMessageSchema,
   TargetedBrowserClientMessageSchema,
   decodeBrowserFrameEnvelope,
 } from "@opensteer/protocol";
-import type { BrowserFrameView, BrowserCommand } from "./client.js";
+import type { BrowserFrameView, BrowserCommand, BrowserRasterDemand } from "./client.js";
 import type { WebSocketClient } from "./host-session-client.js";
 export interface BrowserWatchState {
   /** The current socket has received its first authorized snapshot. */
@@ -23,16 +24,19 @@ interface Watch {
   holds: number;
   pictureHolds: number;
   captureRegionHolds: number;
+  frameWindowHolds: number;
+  rasterDemandHolds: number;
+  /** The density this socket last asked for since its latest subscription. */
+  demanded: BrowserRasterDensity | null;
   synchronized: boolean;
   socket: WebSocketClient | null;
   state: BrowserWatchState;
-  awaiting: string | null;
+  readonly awaiting: Map<string, { readonly receivedAt: number; claimed: boolean }>;
   timer: ReturnType<typeof setTimeout> | null;
   attempt: number;
   terminal: boolean;
   sequence: number;
   generation: number;
-  receivedAt: number;
 }
 /** One producer per exact target, with newest-frame storage and Watch credit. */
 export class BrowserWatchStore {
@@ -53,6 +57,9 @@ export class BrowserWatchStore {
   #keepControlOnly = false;
   #allowed: (sessionId: string, surfaceId: string) => boolean = () => true;
   readonly #targets = new Map<string, Watch>();
+  /** Presenter leases by exact target; a lease may exist before or after its target. */
+  readonly #demands = new Map<string, Map<object, BrowserRasterDensity>>();
+  readonly #demandPending = new Set<string>();
   readonly #listeners = new Map<string, Set<() => void>>();
   readonly #statusListeners = new Map<string, Set<() => void>>();
   readonly #statuses = new Map<string, BrowserWatchState>();
@@ -72,6 +79,8 @@ export class BrowserWatchStore {
   readonly mode: "watch" | "control";
   readonly retryDelay: (attempt: number) => number;
   readonly captureRegions: () => boolean;
+  readonly frameWindows: () => boolean;
+  readonly rasterDemands: () => boolean;
   readonly onMessage:
     ((sessionId: string, message: BrowserServerMessage, surfaceId: string) => void) | undefined;
   readonly onDisconnect: ((sessionId: string, surfaceId: string) => void) | undefined;
@@ -83,9 +92,13 @@ export class BrowserWatchStore {
     retryDelay: (attempt: number) => number,
     captureRegions: () => boolean = () => false,
     onDisconnect?: (sessionId: string, surfaceId: string) => void,
+    frameWindows: () => boolean = () => false,
+    rasterDemands: () => boolean = () => false,
   ) {
+    this.rasterDemands = rasterDemands;
     this.onDisconnect = onDisconnect;
     this.captureRegions = captureRegions;
+    this.frameWindows = frameWindows;
     this.connect = connect;
     this.mode = mode;
     this.onMessage = onMessage;
@@ -143,7 +156,13 @@ export class BrowserWatchStore {
   retain(
     sessionId: string,
     surfaceId: string,
-    options: { readonly picture?: boolean; readonly captureRegion?: boolean } = {},
+    options: {
+      readonly picture?: boolean;
+      readonly captureRegion?: boolean;
+      readonly frameWindow?: boolean;
+      /** This holder's presenter states its raster density through `rasterDemand`. */
+      readonly rasterDemand?: boolean;
+    } = {},
   ): () => void {
     const picture = options.picture !== false;
     const key = this.#key(sessionId, surfaceId);
@@ -157,32 +176,41 @@ export class BrowserWatchStore {
         holds: 0,
         pictureHolds: 0,
         captureRegionHolds: 0,
+        frameWindowHolds: 0,
+        rasterDemandHolds: 0,
+        demanded: null,
         synchronized: false,
         socket: null,
         state: empty,
-        awaiting: null,
+        awaiting: new Map(),
         timer: null,
         attempt: 0,
         terminal: false,
         sequence: 0,
         generation: 0,
-        receivedAt: 0,
       };
       this.#targets.set(key, target);
     }
     const hadPictures = target.pictureHolds > 0;
     const previouslyOptedIn = target.captureRegionHolds === target.pictureHolds;
+    const previouslyWindowed = target.frameWindowHolds === target.pictureHolds;
     const captureRegion = picture && options.captureRegion === true;
+    const frameWindow = picture && options.frameWindow === true;
+    const rasterDemand = picture && options.rasterDemand === true;
     target.holds++;
     if (picture) target.pictureHolds++;
     if (captureRegion) target.captureRegionHolds++;
+    if (frameWindow) target.frameWindowHolds++;
+    if (rasterDemand) target.rasterDemandHolds++;
     if (
       target.synchronized &&
       (hadPictures !== target.pictureHolds > 0 ||
-        previouslyOptedIn !== (target.captureRegionHolds === target.pictureHolds))
+        previouslyOptedIn !== (target.captureRegionHolds === target.pictureHolds) ||
+        previouslyWindowed !== (target.frameWindowHolds === target.pictureHolds))
     )
       this.#subscribeTarget(target);
     this.#diagnose({ stage: "retain", holds: target.holds });
+    if (picture) this.#scheduleDemand(key);
     if (
       !this.#paused(target) &&
       this.#allowed(sessionId, surfaceId) &&
@@ -197,12 +225,17 @@ export class BrowserWatchStore {
       released = true;
       this.#diagnose({ stage: "release", holds: current.holds - 1 });
       const previouslyOptedIn = current.captureRegionHolds === current.pictureHolds;
+      const previouslyWindowed = current.frameWindowHolds === current.pictureHolds;
       if (picture) current.pictureHolds--;
       if (captureRegion) current.captureRegionHolds--;
+      if (frameWindow) current.frameWindowHolds--;
+      if (rasterDemand) current.rasterDemandHolds--;
       if (--current.holds > 0) {
+        if (picture) this.#scheduleDemand(key);
         if (
           (picture && current.pictureHolds === 0) ||
-          previouslyOptedIn !== (current.captureRegionHolds === current.pictureHolds)
+          previouslyOptedIn !== (current.captureRegionHolds === current.pictureHolds) ||
+          previouslyWindowed !== (current.frameWindowHolds === current.pictureHolds)
         )
           this.#subscribeTarget(current);
         return;
@@ -214,11 +247,82 @@ export class BrowserWatchStore {
       this.#notify(current);
     };
   }
+  /**
+   * One presenter's raster need for an exact target. It asks for the densest
+   * raster until it has measured; the target asks for its leases' maximum.
+   */
+  rasterDemand(sessionId: string, surfaceId: string): BrowserRasterDemand {
+    const key = this.#key(sessionId, surfaceId);
+    const lease = {};
+    let leases = this.#demands.get(key);
+    if (!leases) {
+      leases = new Map();
+      this.#demands.set(key, leases);
+    }
+    leases.set(lease, 2);
+    this.#scheduleDemand(key);
+    let released = false;
+    return {
+      update: (density) => {
+        if (released || leases.get(lease) === density) return;
+        leases.set(lease, density);
+        this.#scheduleDemand(key);
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        leases.delete(lease);
+        if (!leases.size && this.#demands.get(key) === leases) this.#demands.delete(key);
+        this.#scheduleDemand(key);
+      },
+    };
+  }
+  /** React remounts and resize bursts settle within one turn; only the result is sent. */
+  #scheduleDemand(key: string): void {
+    if (this.#demandPending.has(key)) return;
+    this.#demandPending.add(key);
+    queueMicrotask(() => {
+      this.#demandPending.delete(key);
+      const target = this.#targets.get(key);
+      if (target) this.#sendDemand(target);
+    });
+  }
+  #sendDemand(target: Watch): void {
+    if (
+      !this.rasterDemands() ||
+      !target.synchronized ||
+      target.socket?.readyState !== 1 ||
+      target.pictureHolds === 0
+    )
+      return;
+    const leases = this.#demands.get(this.#key(target.sessionId, target.surfaceId));
+    // A holder that never states its need, such as an older presenter, keeps the densest raster.
+    const density: BrowserRasterDensity =
+      target.rasterDemandHolds === target.pictureHolds && leases?.size
+        ? [...leases.values()].reduce((max, value) => (value > max ? value : max))
+        : 2;
+    if (density === target.demanded) return;
+    target.demanded = density;
+    target.socket.send(
+      JSON.stringify(
+        TargetedBrowserClientMessageSchema.parse({
+          type: "stream.demand",
+          surfaceId: target.surfaceId,
+          density,
+        }),
+      ),
+    );
+  }
+  claim(sessionId: string, surfaceId: string, token: string): void {
+    const receipt = this.#targets.get(this.#key(sessionId, surfaceId))?.awaiting.get(token);
+    if (receipt) receipt.claimed = true;
+  }
   accept(sessionId: string, surfaceId: string, token: string): void {
     const target = this.#targets.get(this.#key(sessionId, surfaceId));
-    if (target?.awaiting !== token) return;
-    this.#diagnose({ stage: "credit", durationMs: performance.now() - target.receivedAt });
-    target.awaiting = null;
+    const receipt = target?.awaiting.get(token);
+    if (!target || !receipt) return;
+    this.#diagnose({ stage: "credit", durationMs: performance.now() - receipt.receivedAt });
+    target.awaiting.delete(token);
     if (target.socket?.readyState === 1)
       target.socket.send(
         JSON.stringify(
@@ -285,6 +389,7 @@ export class BrowserWatchStore {
     this.#listeners.clear();
     this.#statuses.clear();
     this.#statusListeners.clear();
+    this.#demands.clear();
   }
   #open(target: Watch): void {
     if (this.#paused(target) || !this.#allowed(target.sessionId, target.surfaceId)) return;
@@ -311,7 +416,7 @@ export class BrowserWatchStore {
       this.onDisconnect?.(target.sessionId, target.surfaceId);
       target.socket = null;
       target.synchronized = false;
-      target.awaiting = null;
+      target.awaiting.clear();
       target.terminal = true;
       socket.close(4002, "Targeted browser protocol required");
       this.#set(target, {
@@ -407,9 +512,12 @@ export class BrowserWatchStore {
           !frame.header.watchToken
         )
           throw new Error("The browser frame does not match the subscribed target and geometry.");
-        if (target.awaiting) this.accept(target.sessionId, target.surfaceId, target.awaiting);
-        target.awaiting = frame.header.watchToken ?? null;
-        target.receivedAt = performance.now();
+        if (target.awaiting.has(frame.header.watchToken) || target.awaiting.size >= 8)
+          throw new Error("Browser frame receipts exceeded the negotiated window.");
+        target.awaiting.set(frame.header.watchToken, {
+          receivedAt: performance.now(),
+          claimed: false,
+        });
         this.#diagnose({
           stage: "receipt",
           frameId: frame.header.frameId,
@@ -441,7 +549,7 @@ export class BrowserWatchStore {
       this.onDisconnect?.(target.sessionId, target.surfaceId);
       target.socket = null;
       target.synchronized = false;
-      target.awaiting = null;
+      target.awaiting.clear();
       target.terminal = event.code === 4002 || event.code === 4003;
       // A login that ended takes its picture with it, though the next may see it again.
       this.#set(
@@ -460,6 +568,8 @@ export class BrowserWatchStore {
     });
   }
   #subscribeTarget(target: Watch): void {
+    for (const token of target.awaiting.keys())
+      this.accept(target.sessionId, target.surfaceId, token);
     target.socket?.send(
       JSON.stringify(
         TargetedBrowserClientMessageSchema.parse({
@@ -469,20 +579,29 @@ export class BrowserWatchStore {
           this.captureRegions()
             ? { captureRegion: true }
             : {}),
+          ...(target.pictureHolds > 0 &&
+          target.frameWindowHolds === target.pictureHolds &&
+          this.frameWindows()
+            ? { frameWindow: 1 }
+            : {}),
           surfaceId: target.surfaceId,
           ...(target.pictureHolds ? {} : { frames: false }),
         }),
       ),
     );
+    // Each subscription states its demand afresh rather than trusting what the Host kept.
+    target.demanded = null;
+    this.#scheduleDemand(this.#key(target.sessionId, target.surfaceId));
   }
   #close(target: Watch): void {
     this.onDisconnect?.(target.sessionId, target.surfaceId);
     if (target.timer) clearTimeout(target.timer);
     target.timer = null;
     const socket = target.socket;
-    if (target.awaiting) this.accept(target.sessionId, target.surfaceId, target.awaiting);
+    for (const token of target.awaiting.keys())
+      this.accept(target.sessionId, target.surfaceId, token);
     target.socket = null;
-    target.awaiting = null;
+    target.awaiting.clear();
     target.synchronized = false;
     this.#diagnose({ stage: "local-close", code: 1000, reason: "target-released" });
     socket?.close(1000, "Target released");
@@ -497,6 +616,19 @@ export class BrowserWatchStore {
   #set(target: Watch, state: BrowserWatchState): void {
     const before = target.state;
     target.state = state;
+    if (before.frame !== state.frame) {
+      // An imperative presenter may still be decoding the previous delivery.
+      // A batched subscriber may never see it: only unclaimed replacements
+      // are the store's to discard. Clearing retires all deliveries.
+      if (state.frame === null)
+        for (const token of target.awaiting.keys())
+          this.accept(target.sessionId, target.surfaceId, token);
+      else if (before.frame?.header.watchToken) {
+        const token = before.frame.header.watchToken;
+        if (!target.awaiting.get(token)?.claimed)
+          this.accept(target.sessionId, target.surfaceId, token);
+      }
+    }
     if (
       before.admitted !== state.admitted ||
       before.admissionId !== state.admissionId ||

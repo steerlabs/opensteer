@@ -384,6 +384,7 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("expo", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   return {
+    requireOptionalNativeModule: () => null,
     requireNativeView: () =>
       React.forwardRef(function NativeDisplay(_props: object, ref) {
         React.useImperativeHandle(ref, () => ({

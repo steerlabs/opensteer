@@ -51,13 +51,13 @@ class TargetSocket implements WebSocketClient {
       surfaces: [{ id: surfaceId, active: true, title: "Page", url: "about:blank" }],
     });
   }
-  picture() {
+  picture(sequence = 1) {
     const header = new TextEncoder().encode(
       JSON.stringify({
         encoding: "jpeg",
-        frameId: 1,
+        frameId: sequence,
         geometryRevision: 1,
-        watchToken: "00000000-0000-4000-8000-000000000001",
+        watchToken: `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`,
         surfaceId,
         viewportWidth: 800,
         viewportHeight: 600,
@@ -82,6 +82,235 @@ class TargetSocket implements WebSocketClient {
 }
 
 describe("BrowserWatchStore", () => {
+  describe("raster demand", () => {
+    const flush = async () => {
+      for (let turn = 0; turn < 3; turn++) await Promise.resolve();
+    };
+    const sent = (socket: TargetSocket) =>
+      socket.sent.map((message) => JSON.parse(message) as Record<string, unknown>);
+    const demands = (socket: TargetSocket) =>
+      sent(socket)
+        .filter((message) => message.type === "stream.demand")
+        .map((message) => message.density);
+    const create = (sockets: TargetSocket[], supported = true) =>
+      new BrowserWatchStore(
+        () => {
+          const socket = new TargetSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        "control",
+        undefined,
+        () => 0,
+        () => false,
+        undefined,
+        () => false,
+        () => supported,
+      );
+
+    it("asks one target for its panes' maximum without resubscribing or touching input", async () => {
+      const sockets: TargetSocket[] = [];
+      const store = create(sockets);
+      const first = store.rasterDemand(sessionId, surfaceId);
+      const releaseFirst = store.retain(sessionId, surfaceId, { rasterDemand: true });
+      const releaseSecond = store.retain(sessionId, surfaceId, { rasterDemand: true });
+      const socket = sockets[0]!;
+      socket.open();
+      await flush();
+      expect(demands(socket)).toEqual([]);
+      socket.admit();
+      const second = store.rasterDemand(sessionId, surfaceId);
+      await flush();
+      // Unmeasured panes ask for the densest raster.
+      expect(demands(socket)).toEqual([2]);
+      first.update(1);
+      second.update(0.75);
+      first.update(1.25);
+      await flush();
+      expect(demands(socket)).toEqual([2, 1.25]);
+      first.release();
+      first.release();
+      first.update(2);
+      await flush();
+      expect(demands(socket)).toEqual([2, 1.25, 0.75]);
+      // A remount inside one turn sends nothing.
+      second.release();
+      const remounted = store.rasterDemand(sessionId, surfaceId);
+      remounted.update(0.75);
+      await flush();
+      expect(demands(socket)).toEqual([2, 1.25, 0.75]);
+      expect(sent(socket).filter((message) => message.type === "stream.subscribe")).toHaveLength(1);
+      expect(
+        sent(socket).filter(
+          (message) => message.type === "stream.demand" && "inputSequence" in message,
+        ),
+      ).toEqual([]);
+      expect(socket.sent.some((message) => message.includes("input.cancel"))).toBe(false);
+      expect(socket.closes).toEqual([]);
+      remounted.release();
+      releaseSecond();
+      releaseFirst();
+      store.dispose();
+    });
+
+    it("keeps the densest raster while any picture holder does not state demand", async () => {
+      const sockets: TargetSocket[] = [];
+      const store = create(sockets);
+      const release = store.retain(sessionId, surfaceId, { rasterDemand: true });
+      const lease = store.rasterDemand(sessionId, surfaceId);
+      lease.update(1);
+      const socket = sockets[0]!;
+      socket.open();
+      socket.admit();
+      await flush();
+      expect(demands(socket)).toEqual([1]);
+      const silent = store.retain(sessionId, surfaceId);
+      const following = store.retain(sessionId, surfaceId, { picture: false });
+      await flush();
+      expect(demands(socket)).toEqual([1, 2]);
+      silent();
+      await flush();
+      expect(demands(socket)).toEqual([1, 2, 1]);
+      release();
+      lease.release();
+      await flush();
+      // Following without pictures asks for no raster at all.
+      expect(demands(socket)).toEqual([1, 2, 1]);
+      following();
+      store.dispose();
+    });
+
+    it("never sends demand to a Host that does not advertise it", async () => {
+      const sockets: TargetSocket[] = [];
+      const store = create(sockets, false);
+      const release = store.retain(sessionId, surfaceId, { rasterDemand: true });
+      const lease = store.rasterDemand(sessionId, surfaceId);
+      sockets[0]!.open();
+      sockets[0]!.admit();
+      lease.update(0.75);
+      await flush();
+      expect(demands(sockets[0]!)).toEqual([]);
+      lease.release();
+      release();
+      store.dispose();
+    });
+
+    it("restates demand on each authorized socket and forgets released leases", async () => {
+      const sockets: TargetSocket[] = [];
+      const store = create(sockets);
+      const release = store.retain(sessionId, surfaceId, { rasterDemand: true });
+      const lease = store.rasterDemand(sessionId, surfaceId);
+      lease.update(1.5);
+      sockets[0]!.open();
+      sockets[0]!.admit();
+      await flush();
+      expect(demands(sockets[0]!)).toEqual([1.5]);
+      store.reconnect();
+      const replacement = sockets[1]!;
+      replacement.open();
+      await flush();
+      expect(demands(replacement)).toEqual([]);
+      replacement.admit();
+      await flush();
+      expect(demands(replacement)).toEqual([1.5]);
+      lease.release();
+      release();
+      await flush();
+      expect(replacement.closes).toMatchObject([{ code: 1000 }]);
+      // Nothing of the released lease remains for the next holder.
+      const again = store.retain(sessionId, surfaceId, { rasterDemand: true });
+      sockets[2]!.open();
+      sockets[2]!.admit();
+      await flush();
+      expect(demands(sockets[2]!)).toEqual([2]);
+      again();
+      store.dispose();
+    });
+  });
+
+  it.each([false, true])(
+    "negotiates pipelining only when the Host supports it (%s)",
+    (supported) => {
+      const socket = new TargetSocket();
+      const store = new BrowserWatchStore(
+        () => socket,
+        "watch",
+        undefined,
+        () => 100,
+        () => false,
+        undefined,
+        () => supported,
+      );
+      const release = store.retain(sessionId, surfaceId, { frameWindow: true });
+      socket.open();
+      socket.admit();
+      expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+        type: "stream.subscribe",
+        surfaceId,
+        ...(supported ? { frameWindow: 1 } : {}),
+      });
+      release();
+      store.dispose();
+    },
+  );
+
+  it("requires every picture holder to support pipelining and settles receipts only on presentation or retirement", () => {
+    const socket = new TargetSocket();
+    const store = new BrowserWatchStore(
+      () => socket,
+      "control",
+      undefined,
+      () => 100,
+      () => false,
+      undefined,
+      () => true,
+    );
+    const release = store.retain(sessionId, surfaceId, { frameWindow: true });
+    socket.open();
+    socket.admit();
+    socket.picture(1);
+    store.claim(sessionId, surfaceId, "00000000-0000-4000-8000-000000000001");
+    socket.picture(2);
+    const acknowledgements = () =>
+      socket.sent
+        .map((message) => JSON.parse(message))
+        .filter((message) => message.type === "stream.ack");
+    // The presenter can still be decoding picture 1 while picture 2 waits.
+    // Replacing the store's newest frame is not a presentation or a discard.
+    expect(acknowledgements()).toEqual([]);
+    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000001");
+    expect(acknowledgements().map((message) => message.token)).toEqual([
+      "00000000-0000-4000-8000-000000000001",
+    ]);
+    const legacy = store.retain(sessionId, surfaceId);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ type: "stream.subscribe", surfaceId });
+    expect(acknowledgements()).toHaveLength(2);
+    legacy();
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({ frameWindow: 1 });
+    socket.picture(3);
+    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000002");
+    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000003");
+    socket.picture(4);
+    store.claim(sessionId, surfaceId, "00000000-0000-4000-8000-000000000004");
+    socket.picture(5);
+    store.claim(sessionId, surfaceId, "00000000-0000-4000-8000-000000000005");
+    expect(acknowledgements()).toHaveLength(3);
+    socket.receive({ type: "browser.stream.state", surfaceId, state: "capacity" });
+    expect(socket.closes).toEqual([]);
+    expect(store.get(sessionId, surfaceId).frame).toBeNull();
+    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000004");
+    socket.picture(6);
+    socket.picture(7);
+    expect(acknowledgements()).toHaveLength(6);
+    release();
+    expect(acknowledgements().map((message) => message.token)).toEqual(
+      [1, 2, 3, 4, 5, 6, 7].map(
+        (sequence) => `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`,
+      ),
+    );
+    store.dispose();
+  });
+
   it("ignores another surface's events until the Host answers its subscription", () => {
     const sessionId = `bsn_${crypto.randomUUID()}`;
     const socket = new TargetSocket();

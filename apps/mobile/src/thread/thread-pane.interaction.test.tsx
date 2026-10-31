@@ -157,6 +157,7 @@ vi.mock("react-native", async () => {
     ScrollView: ({ children }: Children) => <div>{children}</div>,
     KeyboardAvoidingView: ({ children }: Children) => <div>{children}</div>,
     PanResponder: { create: () => ({ panHandlers: {} }) },
+    PixelRatio: { get: () => 3 },
     Platform: { OS: "ios", select: (choices: { default?: unknown; ios?: unknown }) => choices.ios },
     Pressable: (props: {
       readonly accessibilityHint?: string;
@@ -339,6 +340,7 @@ vi.mock("@expo/ui/community/menu", () => ({
     </div>
   ),
 }));
+vi.mock("../computers/phone-display-native.js", () => ({ nativePictureView: () => null }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Heavy: "heavy", Light: "light", Medium: "medium" },

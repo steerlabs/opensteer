@@ -54,6 +54,9 @@ const displayGopCacheFrames = 600;
 const displayMaxViewers = 8;
 // Credit is decoder feedback, not proof that the network drained its writes.
 const displaySocketBufferedBytes = 8 * 1_024 * 1_024;
+const displayReplayBudgetMs = 500;
+const displayDeliveryEstimateLifetimeMs = 5_000;
+const displayCongestionRefreshMs = 2_000;
 
 interface CachedFrame {
   readonly sequence: number;
@@ -90,7 +93,7 @@ interface Viewer {
   readonly source: DisplaySource;
   readonly actor: UserId;
   readonly socket: WebSocket;
-  readonly outstanding: Map<number, number>;
+  readonly outstanding: Map<number, { readonly bytes: number; readonly sentAt: number }>;
   // Sent before a decoder reset; their acks must not credit repeated sequences.
   readonly discarded: number[];
   maxLongSide: number;
@@ -101,6 +104,8 @@ interface Viewer {
   replayIndex: number | null;
   replayThrough: number | null;
   slowSince: number | null;
+  recoverySample: { readonly bytes: number; readonly sentAt: number } | null;
+  deliveryEstimate: { readonly bytesPerMs: number; readonly measuredAt: number } | null;
   removalTrigger?: string;
 }
 interface PendingInput {
@@ -152,7 +157,7 @@ interface Stream {
   cache: CachedFrame[];
   cacheBytes: number;
   refreshAt: number;
-  refreshPending: boolean;
+  refreshPendingAt: number | null;
   stopAt: number | null;
 }
 export interface DisplayStreamHubOptions {
@@ -386,7 +391,7 @@ export class DisplayStreamHub {
         cache: [],
         cacheBytes: 0,
         refreshAt: -Infinity,
-        refreshPending: false,
+        refreshPendingAt: null,
         stopAt: null,
         holder: null,
         holderSequence: -1,
@@ -462,6 +467,8 @@ export class DisplayStreamHub {
       replayIndex: null,
       replayThrough: null,
       slowSince: null,
+      recoverySample: null,
+      deliveryEstimate: null,
     };
     attached.viewers.add(viewer);
     attached.authorities.set(displaySourceKey(source), { source, actor });
@@ -613,7 +620,10 @@ export class DisplayStreamHub {
               this.#skip(stream, viewer);
               continue;
             }
-            if (viewer.waiting) viewer.keyframePending = false;
+            if (viewer.waiting) {
+              viewer.keyframePending = false;
+              viewer.recoverySample = null;
+            }
             viewer.waiting = false;
             viewer.slowSince = null;
             this.#sendFrame(viewer, { sequence: header.sequence, bytes: envelope });
@@ -782,6 +792,7 @@ export class DisplayStreamHub {
     )
       return;
     if (current.generation !== next.generation || next.state !== "live") {
+      for (const viewer of stream.viewers) viewer.recoverySample = null;
       this.#resetInput(stream);
       for (const pending of stream.pending.values()) {
         if (!stream.viewers.has(pending.viewer)) continue;
@@ -869,6 +880,7 @@ export class DisplayStreamHub {
       viewer.discarded.push(...viewer.outstanding.keys());
       viewer.outstanding.clear();
       viewer.bytes = 0;
+      viewer.recoverySample = null;
       viewer.replayIndex = null;
       viewer.replayThrough = null;
       viewer.waiting = true;
@@ -888,15 +900,26 @@ export class DisplayStreamHub {
       // a GOP can legitimately output sequences older than a prior acknowledgement.
       if (!viewer.outstanding.has(message.sequence)) return;
       // Decoder outputs in stream order: acknowledgement returns all earlier credits.
-      for (const [sequence, bytes] of viewer.outstanding)
+      for (const [sequence, frame] of viewer.outstanding)
         if (sequence <= message.sequence) {
           viewer.outstanding.delete(sequence);
-          viewer.bytes -= bytes;
+          viewer.bytes -= frame.bytes;
         }
       // Any valid acknowledgement is progress, even while a byte-only replay
       // still has more than four frames outstanding.
       viewer.slowSince = null;
-      if (viewer.waiting && viewer.outstanding.size === 0) this.#replay(stream, viewer);
+      if (viewer.waiting && viewer.outstanding.size === 0) {
+        const sample = viewer.recoverySample;
+        viewer.recoverySample = null;
+        const now = this.#now();
+        if (sample && now > sample.sentAt)
+          viewer.deliveryEstimate = {
+            bytesPerMs: sample.bytes / (now - sample.sentAt),
+            measuredAt: now,
+          };
+        if (!this.#replay(stream, viewer) && stream.state.state === "live")
+          this.#refresh(stream, displayCongestionRefreshMs);
+      }
       if (viewer.replayIndex !== null) this.#drainCache(stream, viewer);
       return;
     }
@@ -1115,11 +1138,20 @@ export class DisplayStreamHub {
     );
   }
   #sendFrame(viewer: Viewer, frame: CachedFrame): void {
-    viewer.outstanding.set(frame.sequence, frame.bytes.byteLength);
+    viewer.outstanding.set(frame.sequence, {
+      bytes: frame.bytes.byteLength,
+      sentAt: this.#now(),
+    });
     viewer.bytes += frame.bytes.byteLength;
     this.#binary(viewer.socket, frame.bytes);
   }
   #skip(stream: Stream, viewer: Viewer): void {
+    // Measure an actual credit stall, not idle time between capture updates.
+    // The sample includes network and decoder delay, both of which affect how
+    // long this viewer would spend catching up on a cached dependency chain.
+    const oldest = viewer.outstanding.values().next().value;
+    if (!viewer.recoverySample && oldest)
+      viewer.recoverySample = { bytes: viewer.bytes, sentAt: oldest.sentAt };
     viewer.replayIndex = null;
     viewer.replayThrough = null;
     viewer.waiting = true;
@@ -1130,6 +1162,17 @@ export class DisplayStreamHub {
     if (!this.#viewerLive(stream, viewer)) return false;
     const last = stream.cache.at(-1);
     if (!last) return false;
+    const estimate = viewer.deliveryEstimate;
+    if (
+      stream.cache.length > 1 &&
+      estimate &&
+      this.#now() - estimate.measuredAt < displayDeliveryEstimateLifetimeMs &&
+      stream.cacheBytes > estimate.bytesPerMs * displayReplayBudgetMs
+    ) {
+      viewer.slowSince ??= this.#now();
+      return false;
+    }
+    viewer.recoverySample = null;
     viewer.replayIndex = 0;
     viewer.replayThrough = last.sequence;
     viewer.keyframePending = false;
@@ -1162,13 +1205,14 @@ export class DisplayStreamHub {
     }
   }
 
-  #refresh(stream: Stream): void {
-    if (this.#now() - stream.refreshAt < displayRefreshCoalescingMs) {
-      stream.refreshPending = true;
+  #refresh(stream: Stream, minimumIntervalMs = displayRefreshCoalescingMs): void {
+    const after = stream.refreshAt + minimumIntervalMs;
+    if (this.#now() < after) {
+      stream.refreshPendingAt = Math.min(stream.refreshPendingAt ?? Infinity, after);
       return;
     }
     stream.refreshAt = this.#now();
-    stream.refreshPending = false;
+    stream.refreshPendingAt = null;
     this.#send(stream, {
       ...stream.fence,
       type: "host.integrations.display.refresh",
@@ -1293,12 +1337,13 @@ export class DisplayStreamHub {
         }
       if (
         stream.state.state === "live" &&
-        stream.refreshPending &&
+        stream.refreshPendingAt !== null &&
         [...stream.viewers].some((viewer) => viewer.waiting) &&
-        this.#now() - stream.refreshAt >= displayRefreshCoalescingMs
+        this.#now() >= stream.refreshPendingAt
       )
         this.#refresh(stream);
-      else if (![...stream.viewers].some((viewer) => viewer.waiting)) stream.refreshPending = false;
+      else if (![...stream.viewers].some((viewer) => viewer.waiting))
+        stream.refreshPendingAt = null;
     }
   }
   #sourceLive(source: DisplaySource, actor: UserId, runnerId: RunnerId): boolean {

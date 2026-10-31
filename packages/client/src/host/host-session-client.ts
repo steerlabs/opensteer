@@ -632,6 +632,8 @@ export class HttpHostClient {
       this.#browserEditing.disconnect(sessionId, surfaceId);
       this.browserPasskeys.disconnect(sessionId, surfaceId);
     },
+    () => this.#capabilities?.includes("browser-frame-window-v1") === true,
+    () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
   );
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
@@ -639,6 +641,9 @@ export class HttpHostClient {
     undefined,
     (attempt) => this.#reconnectDelay(attempt),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
+    undefined,
+    () => this.#capabilities?.includes("browser-frame-window-v1") === true,
+    () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
   );
   #targetedBrowserSocket(
     sessionId: string,
@@ -1208,6 +1213,9 @@ export class HttpHostClient {
   readonly browserFrames: BrowserFrameStore = {
     editing: this.#browserEditing,
     scope: this.#browserPresentationScope,
+    claim: (sessionId, surfaceId, token) => {
+      if (surfaceId) this.#targetedControl.claim(sessionId, surfaceId, token);
+    },
     accept: (sessionId, surfaceId, token) => {
       if (surfaceId) this.#targetedControl.accept(sessionId, surfaceId, token);
       else {
@@ -1219,6 +1227,8 @@ export class HttpHostClient {
       surfaceId
         ? this.#targetedControl.get(sessionId, surfaceId).frame
         : (this.#browserFrameValues.get(sessionId) ?? null),
+    rasterDemand: (sessionId, surfaceId) =>
+      this.#targetedControl.rasterDemand(sessionId, surfaceId),
     subscribe: (sessionId, listener, surfaceId) => {
       if (surfaceId) return this.#targetedControl.subscribe(sessionId, surfaceId, listener);
       if (this.#disposed) return () => undefined;
@@ -1233,12 +1243,16 @@ export class HttpHostClient {
   };
   readonly browserWatchFrames: BrowserFrameStore = {
     scope: this.#browserPresentationScope,
+    claim: (sessionId, surfaceId, token) => {
+      if (surfaceId) this.#targetedWatch.claim(sessionId, surfaceId, token);
+    },
     accept: (sessionId, surfaceId, token) =>
       this.acceptBrowserWatchFrame(sessionId, token, surfaceId),
     get: (sessionId, surfaceId) =>
       surfaceId
         ? this.#targetedWatch.get(sessionId, surfaceId).frame
         : (this.#browserWatchFrameValues.get(sessionId) ?? null),
+    rasterDemand: (sessionId, surfaceId) => this.#targetedWatch.rasterDemand(sessionId, surfaceId),
     subscribe: (sessionId, listener, surfaceId) => {
       if (surfaceId) return this.#targetedWatch.subscribe(sessionId, surfaceId, listener);
       const listeners = this.#browserWatchFrameListeners.get(sessionId) ?? new Set<() => void>();
@@ -2492,7 +2506,12 @@ export class HttpHostClient {
   readonly retainBrowserViewer = (
     sessionId: string,
     surfaceId?: string,
-    options?: { readonly picture?: boolean; readonly captureRegion?: boolean },
+    options?: {
+      readonly picture?: boolean;
+      readonly captureRegion?: boolean;
+      readonly frameWindow?: boolean;
+      readonly rasterDemand?: boolean;
+    },
   ): (() => void) => {
     if (options?.picture === false && !this.#capabilities?.includes("browser-target-control-v1"))
       throw new Error("This Host does not advertise browser-target-control-v1.");
@@ -2506,7 +2525,11 @@ export class HttpHostClient {
   readonly retainBrowserWatch = (
     sessionId: string,
     surfaceId?: string,
-    options?: { readonly captureRegion?: boolean },
+    options?: {
+      readonly captureRegion?: boolean;
+      readonly frameWindow?: boolean;
+      readonly rasterDemand?: boolean;
+    },
   ): (() => void) =>
     surfaceId
       ? this.#targetedWatch.retain(sessionId, surfaceId, options)
@@ -2515,7 +2538,7 @@ export class HttpHostClient {
   #retainBrowser(
     sessionId: string,
     mode: "control" | "watch",
-    options?: { readonly captureRegion?: boolean },
+    options?: { readonly captureRegion?: boolean; readonly frameWindow?: boolean },
   ): () => void {
     if (this.#disposed) return () => undefined;
     const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
@@ -2596,6 +2619,13 @@ export class HttpHostClient {
   }
 
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void {
+    if (
+      command.type === "stream.subscribe" &&
+      !this.#capabilities?.includes("browser-frame-window-v1")
+    ) {
+      const { frameWindow: _frameWindow, ...legacy } = command;
+      command = legacy;
+    }
     if (
       command.type === "navigation.reload" &&
       command.ignoreCache !== undefined &&

@@ -3,7 +3,9 @@ set -euo pipefail
 [[ -f "$HOME/.opensteer-test-guest" || ( "$HOME" == /Users/admin && -d "$HOME/opensteer-job" ) ]] || { echo 'Use pnpm test:vm'; exit 2; }
 out="${OPENSTEER_JOURNEY_OUT:-$HOME/opensteer-job/artifacts/window-groups}"
 mkdir -p "$out"
-exec > >(tee "$out/runner.log") 2>&1
+# A crashed journey can leave app children holding stdout. A tee pipe would
+# keep the VM's command open after the result, preventing export and teardown.
+exec > "$out/runner.log" 2>&1
 if [[ -n "${OPENSTEER_JOURNEY_APPS:-}" ]]; then
   work="$OPENSTEER_JOURNEY_APPS"
 else

@@ -249,6 +249,7 @@ final class MacOwnerInputWorker {
   private var contextID = UUID().uuidString
   private var element: AXUIElement?
   private var selection: CFRange?
+  private var contextUnpublished = false
   private let shortcutPolicy = OwnerShortcutPolicy()
 
   nonisolated init() {}
@@ -280,6 +281,7 @@ final class MacOwnerInputWorker {
       }
       let current = Locked<MacOwnerInput.Batch?>(batch)
       await lease.mutations.beginPerson()
+      let burst = Locked(OwnerInputBurst(started: ProcessInfo.processInfo.systemUptime))
       lease.burstActive.withLock { $0 = true }
       var enteredFocus = false
       do {
@@ -295,12 +297,19 @@ final class MacOwnerInputWorker {
         try lease.check(map)
         enteredFocus = true
         _ = try await enforcer.guardedPerson(window: lease.binding.window.element, prepare: true, keys: true,
-          finalCheck: { try lease.check(map) }, check: { try lease.check(map) }
+          finalCheck: { try lease.check(map) }, check: { try lease.check(map) },
+          hasPendingInput: {
+            lease.active.current && !lease.guardFailed.current
+              && !lease.mutations.hasWaitingInput
+              && burst.current.acceptsInput(at: ProcessInfo.processInfo.systemUptime)
+              && lease.mailbox.hasPending
+          }
         ) { proceed in
-          await self.consumeBurst(lease, current: current, proceed: proceed)
+          if current.current == nil { current.withLock { $0 = lease.mailbox.pop() } }
+          await self.consumeBurst(lease, current: current, burst: burst, proceed: proceed)
         }
         // The quiet wait and focus watch can include an external caret change.
-        if let map = lease.producer.inputMap { await publishContext(lease, map: map) }
+        await publishUnlessPending(lease)
       } catch {
         let refusal = error as? MacOwnerInput.Refusal
         MacVideoDiagnostic.write(["event": "owner-input-preparation-refused", "streamId": lease.streamID,
@@ -322,8 +331,8 @@ final class MacOwnerInputWorker {
   }
 
   private func consumeBurst(_ lease: MacOwnerAttachment, current: Locked<MacOwnerInput.Batch?>,
+                            burst: Locked<OwnerInputBurst>,
                             proceed: @escaping @Sendable () throws -> Void) async {
-    let burstEnd = ProcessInfo.processInfo.systemUptime + 5
     while let batch = current.withLock({ value in defer { value = nil }; return value }) {
       let gate: @Sendable () throws -> Void = {
         guard ProcessInfo.processInfo.systemUptime < batch.deadline else { throw MacOwnerInput.Refusal("unsupported") }
@@ -331,9 +340,11 @@ final class MacOwnerInputWorker {
       }
       let result = await run(batch.params, lease: lease, reservation: batch.reservation, proceed: gate)
       batch.reply.resume(returning: result)
-      if result.outcome == "stale" { return }
+      if contextUnpublished { await publishUnlessPending(lease) }
+      if result.outcome != "dispatched" { burst.withLock { $0.end() }; return }
       guard lease.active.current, !lease.guardFailed.current,
-        ProcessInfo.processInfo.systemUptime < burstEnd else {
+        burst.current.acceptsInput(at: ProcessInfo.processInfo.systemUptime) else {
+        burst.withLock { $0.end() }
         if !lease.active.current { await cleanup(lease) }
         return
       }
@@ -364,8 +375,9 @@ final class MacOwnerInputWorker {
       try await dispatch(params, lease: lease, map: map, proceed: proceed)
       if changesEditing {
         lease.mutations.notePersonEdit()
+        // Not published from here: input still queued would invalidate it at once.
         contextID = UUID().uuidString
-        await publishContext(lease, map: map, ownChange: true)
+        contextUnpublished = true
       }
       lease.count("outcome.dispatched")
       return MacOwnerInput.Result(sequence: params.sequence, outcome: "dispatched")
@@ -567,22 +579,30 @@ final class MacOwnerInputWorker {
     guard AXValueGetValue(ax, .cfRange, &range), range.location >= 0, range.length >= 0 else { return nil }
     return range
   }
-  private func refresh(_ focused: Focused, revision: Int, ownChange: Bool = false) {
-    if !ownChange, revision != contextRevision { contextID = UUID().uuidString }
+  private func refresh(_ focused: Focused, revision: Int) {
+    if revision != contextRevision { contextID = UUID().uuidString }
     contextRevision = revision
     let next = focused.secure ? nil : range(focused.element)
     if element.map({ !CFEqual($0, focused.element) }) ?? true {
       contextID = UUID().uuidString
-    } else if !ownChange, selection?.location != next?.location || selection?.length != next?.length {
+    } else if selection?.location != next?.location || selection?.length != next?.length {
       contextID = UUID().uuidString
     }
     element = focused.element; selection = next
   }
-  func publishContext(_ lease: MacOwnerAttachment, map: MacOwnerInputMap, ownChange: Bool = false) async {
+  /// Checked on this actor: a context read between a dispatch and its effect
+  /// is never offered while that or later input is still queued.
+  func publishUnlessPending(_ lease: MacOwnerAttachment, idle: Bool = false) async {
+    guard lease.admission.pendingBatches == 0, !idle || !lease.burstActive.current,
+      let map = lease.producer.inputMap else { return }
+    contextUnpublished = false
+    await publishContext(lease, map: map)
+  }
+  func publishContext(_ lease: MacOwnerAttachment, map: MacOwnerInputMap) async {
     guard lease.active.current else { return }
     do {
       let focused = try keyboard(lease, map: map, secureMetadata: true)
-      refresh(focused, revision: lease.mutations.revision, ownChange: ownChange)
+      refresh(focused, revision: lease.mutations.revision)
       var caret: MacOwnerInput.Caret?
       if !focused.secure, var selected = selection {
         selected.length = 0

@@ -75,24 +75,34 @@ function collect(socket: WebSocket) {
     media: () => frames.filter((f) => f.binary).map((f) => decodeDisplayViewerFrame(f.bytes)),
     send: (value: unknown) => socket.send(JSON.stringify(value)),
     received: async (check: () => boolean) => {
-      const messages = on(socket, "message", { close: ["close"] });
+      const messages = on(socket, "message", {
+        close: ["close"],
+        signal: AbortSignal.timeout(3_000),
+      });
       try {
         while (!check()) {
           if ((await messages.next()).done)
             throw new Error("Display socket closed before expected frames arrived");
         }
+      } catch (cause) {
+        throw new Error("Display socket did not deliver the expected frames", { cause });
       } finally {
         await messages.return?.();
       }
     },
     roundTrip: async () => {
-      const pongs = on(socket, "pong", { close: ["close"] });
+      const pongs = on(socket, "pong", {
+        close: ["close"],
+        signal: AbortSignal.timeout(3_000),
+      });
       try {
         // Host message handlers are synchronous after admission. A pong follows
         // their processing and all preceding Host writes on this same socket.
         socket.ping();
         if ((await pongs.next()).done)
           throw new Error("Display socket closed before the Host round trip completed");
+      } catch (cause) {
+        throw new Error("Display socket did not complete the Host round trip", { cause });
       } finally {
         await pongs.return?.();
       }
@@ -1955,6 +1965,121 @@ describe("phone display Host sockets", () => {
     f.advance(10_001);
     f.hub.sweep();
     expect(await slow.closed).toBe(1013);
+  });
+  it("refreshes an expensive recovery without replaying old motion or holding back a fast viewer", async () => {
+    const f = await fixture();
+    const slow = await f.viewer();
+    const fast = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    const payload = new Uint8Array(100_000);
+    for (let sequence = 1; sequence <= 5; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, payload));
+      await fast.received(() => fast.media().length === sequence);
+      fast.send({ type: "display.ack", sequence });
+      await fast.roundTrip();
+    }
+    await slow.roundTrip();
+    expect(slow.media()).toHaveLength(4);
+    f.advance(800);
+    // Four delivered frames took 800ms. Replaying the five-frame GOP would
+    // consume another second before showing the current picture.
+    for (let sequence = 1; sequence <= 4; sequence++) slow.send({ type: "display.ack", sequence });
+    await slow.roundTrip();
+    expect(slow.media()).toHaveLength(4);
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(1);
+    phone.socket.send(f.frame(6, false, 1, payload));
+    await fast.received(() => fast.media().length === 6);
+    await slow.roundTrip();
+    expect(slow.media()).toHaveLength(4);
+    phone.socket.send(f.frame(7, true, 1, payload));
+    await slow.received(() => slow.media().length === 5);
+    await fast.received(() => fast.media().length === 7);
+    expect(slow.media().at(-1)?.header).toMatchObject({ sequence: 7, key: true });
+    expect(fast.media().map((frame) => frame.header.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("keeps a complete static keyframe usable even after slow recovery", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 5; sequence++)
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(100_000)));
+    await phone.received(() => phone.json().length === 5);
+    await viewer.roundTrip();
+    f.advance(800);
+    viewer.send({ type: "display.ack", sequence: 4 });
+    await viewer.roundTrip();
+    expect(viewer.media()).toHaveLength(4);
+    phone.socket.send(f.frame(6, true, 1, new Uint8Array(400_000)));
+    await viewer.received(() => viewer.media().length === 5);
+    viewer.send({ type: "display.ack", sequence: 6 });
+    await viewer.roundTrip();
+    // Its capture time is old, but a static picture is still current. A decoder
+    // reset must reuse it instead of continually requesting the same large key.
+    f.advance(1_000);
+    viewer.send({ type: "display.keyframe" });
+    await viewer.received(() => viewer.media().length === 6);
+    expect(viewer.media().at(-1)?.header).toMatchObject({ sequence: 6, key: true });
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(1);
+  });
+  it("coalesces expensive recoveries across viewers without delaying a decoder reset", async () => {
+    const f = await fixture();
+    const a = await f.viewer();
+    const b = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 5; sequence++)
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(100_000)));
+    await phone.received(() => phone.json().length === 5);
+    await a.roundTrip();
+    await b.roundTrip();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    f.advance(800);
+    a.send({ type: "display.ack", sequence: 4 });
+    await a.roundTrip();
+    expect(refreshes()).toHaveLength(1);
+    f.advance(800);
+    b.send({ type: "display.ack", sequence: 4 });
+    await b.roundTrip();
+    f.hub.sweep();
+    expect(refreshes()).toHaveLength(1);
+    // A decoder error has its existing shorter recovery deadline; congestion
+    // recovery must not hold that urgent request behind the two-second budget.
+    b.send({ type: "display.keyframe" });
+    await b.roundTrip();
+    expect(refreshes()).toHaveLength(2);
+    phone.socket.send(f.frame(6, true));
+    await a.received(() => a.media().length === 5);
+    await b.received(() => b.media().length === 5);
+    f.advance(2_000);
+    f.hub.sweep();
+    expect(refreshes()).toHaveLength(2);
+  });
+  it("expires a slow delivery estimate instead of retaining it across network changes", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 5; sequence++)
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(100_000)));
+    await phone.received(() => phone.json().length === 5);
+    await viewer.roundTrip();
+    f.advance(800);
+    viewer.send({ type: "display.ack", sequence: 4 });
+    await viewer.roundTrip();
+    expect(viewer.media()).toHaveLength(4);
+    f.advance(5_001);
+    viewer.send({ type: "display.keyframe" });
+    await viewer.received(() => viewer.media().length === 9);
+    expect(
+      viewer
+        .media()
+        .slice(4)
+        .map((frame) => frame.header.sequence),
+    ).toEqual([1, 2, 3, 4, 5]);
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(1);
   });
   it("enforces byte credit and ignores unknown or duplicate acknowledgements", async () => {
     const f = await fixture();

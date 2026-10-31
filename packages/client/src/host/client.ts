@@ -3,6 +3,7 @@ import type { SavedViewReadiness } from "./saved-host-view.js";
 import type { BrowserEditingStore } from "./browser-editing.js";
 import type { BrowserPreferences } from "./browser-preferences.js";
 import type {
+  BrowserRasterDensity,
   WorkspaceTabLineage,
   WorkspaceTabActivateResultSchema,
   WorkspaceTabReopenResultSchema,
@@ -609,13 +610,27 @@ export interface BrowserProfileGrantSummary {
 export type BrowserStartIdentity =
   { readonly kind: "fresh" } | { readonly kind: "profile"; readonly profileId: string };
 
+/** A presenter's hold on the raster density it needs; see `BrowserFrameStore.rasterDemand`. */
+export interface BrowserRasterDemand {
+  update: (density: BrowserRasterDensity) => void;
+  release: () => void;
+}
+
 export interface BrowserFrameStore {
   readonly editing?: BrowserEditingStore;
   /** Application/auth scope shared by Control and Watch picture presenters. */
   readonly scope?: object;
+  /** Hold this delivery until accept; unclaimed replacements can be discarded by the store. */
+  claim?: (sessionId: string, surfaceId: string | undefined, token: string) => void;
   accept?: (sessionId: string, surfaceId: string | undefined, token: string) => void;
   get: (sessionId: string, surfaceId?: string) => BrowserFrameView | null;
   subscribe: (sessionId: string, listener: () => void, surfaceId?: string) => () => void;
+  /**
+   * Leases the raster density one presenter of an exact target needs. Holders
+   * retained with `rasterDemand` share their leases' maximum; until measured a
+   * lease asks for 2.
+   */
+  rasterDemand?: (sessionId: string, surfaceId: string) => BrowserRasterDemand;
 }
 
 /**
@@ -1099,14 +1114,23 @@ export interface HostClient {
   readonly retainBrowserViewer: (
     sessionId: string,
     surfaceId?: string,
-    options?: { readonly picture?: boolean; readonly captureRegion?: boolean },
+    options?: {
+      readonly picture?: boolean;
+      readonly captureRegion?: boolean;
+      readonly frameWindow?: boolean;
+      readonly rasterDemand?: boolean;
+    },
   ) => () => void;
   /** Reads the verified Host descriptor's optional target-control capability. */
   readonly browserTargetControlAvailable?: () => Promise<boolean | null>;
   readonly retainBrowserWatch: (
     sessionId: string,
     surfaceId?: string,
-    options?: { readonly captureRegion?: boolean },
+    options?: {
+      readonly captureRegion?: boolean;
+      readonly frameWindow?: boolean;
+      readonly rasterDemand?: boolean;
+    },
   ) => () => void;
   /**
    * Opens the owner's live display socket for one phone session, under this

@@ -105,6 +105,7 @@ export class ScreencastController {
   private readonly onDialogChanged: (dialog: BrowserDialog | null) => void;
   private streaming = false;
   private captureRegions = false;
+  private rasterDemand = 2;
   private unsupportedCapture: number | null = null;
   private readonly onError: ScreencastControllerOptions["onError"];
   private unsubscribe: (() => void) | null = null;
@@ -218,6 +219,24 @@ export class ScreencastController {
       x: (x * (capture?.width ?? geometry.width)) / active.pageScale,
       y: (y * (capture?.height ?? geometry.height)) / active.pageScale,
     };
+  }
+
+  /** Changes capture resolution without changing the surface's input geometry. */
+  setRasterDemand(density: 0.75 | 1 | 1.25 | 1.5 | 2): Promise<void> {
+    if (this.closed) throw new BrowserRuntimeError("conflict", "The browser stream is closed.");
+    if (this.rasterDemand === density) return Promise.resolve();
+    this.rasterDemand = density;
+    this.active?.castAbort?.abort();
+    return this.mutex.run(async () => {
+      const active = this.active;
+      if (this.closed || !active || !this.streaming) return;
+      active.castAbort?.abort();
+      if (active.casting) {
+        active.casting = false;
+        void active.cdp.send("Page.stopScreencast").catch(() => undefined);
+      }
+      await this.castActive(active, "raster-demand");
+    });
   }
 
   /**
@@ -643,7 +662,10 @@ export class ScreencastController {
         active.geometryRevision =
           this.ledger.binding(active.surfaceId)?.surface.geometryRevision ?? 0;
         const region = capture ?? size;
-        const raster = screencastRaster(region, capture?.rasterScale);
+        const raster = screencastRaster(
+          region,
+          Math.min(this.rasterDemand, capture?.rasterScale ?? 2),
+        );
         this.diagnose({
           stage: "cast-start",
           reason,
@@ -829,7 +851,7 @@ function captureDescriptor(capture: PageCapture): BrowserCaptureDescriptor {
 }
 
 /** At most two raster pixels per page DIP, reduced to the stream's resource bound. */
-function screencastRaster(size: PageSize, density = 2): PageSize {
+export function screencastRaster(size: PageSize, density = 2): PageSize {
   const width = size.width * Math.min(2, density);
   const height = size.height * Math.min(2, density);
   const shrink = Math.min(

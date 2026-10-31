@@ -1313,6 +1313,13 @@ export const RunnerBrowserModuleSchema = z
       .positive()
       .transform((version) => (version === 1 ? version : undefined))
       .optional(),
+    /** Targeted capture density changes preserve page geometry and held input. */
+    rasterDemand: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
     /** Explicit top-left capture regions and capture-revision aiming. */
     captureRegion: z
       .number()

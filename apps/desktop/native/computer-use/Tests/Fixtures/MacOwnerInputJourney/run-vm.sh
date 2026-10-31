@@ -7,12 +7,11 @@ export OPENSTEER_WINDOW_GROUP_CASES=members
 base_out="$HOME/opensteer-job/artifacts/mac-owner"
 mkdir -p "$base_out" "$HOME/Applications"
 work=$(mktemp -d "${OPENSTEER_LEGACY_TEMP_ROOT:-$HOME/Applications}/opensteer-owner-input.XXXXXX")
+# The journey stops the apps it launched by their own handles and records
+# them in owned-apps.json; anything a crashed journey leaves dies with the
+# disposable VM.
 cleanup() {
   status=$?
-  pkill -TERM -f "$work/" 2>/dev/null || true
-  for attempt in 1 2 3 4 5; do pgrep -f "$work/" >/dev/null || break; sleep 0.2; done
-  pkill -KILL -f "$work/" 2>/dev/null || true
-  pgrep -fl "$work/" > "$base_out/remaining-processes.txt" || true
   rm -rf "$work"
   exit "$status"
 }
@@ -45,8 +44,5 @@ for engine in "${engines[@]}"; do
   mv "$HOME/opensteer-job/artifacts/window-groups" "$base_out/$engine"
   printf '%s\n' "$status" > "$base_out/$engine/exit-code.txt"
   if [[ "$status" != 0 ]]; then result=1; fi
-  pkill -TERM -f "$work/" 2>/dev/null || true
-  for attempt in 1 2 3 4 5; do pgrep -f "$work/" >/dev/null || break; sleep 0.2; done
-  pkill -KILL -f "$work/" 2>/dev/null || true
 done
 exit "$result"

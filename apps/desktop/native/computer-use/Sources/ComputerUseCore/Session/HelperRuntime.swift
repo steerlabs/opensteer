@@ -1253,10 +1253,9 @@ public final class HelperRuntime {
       else { reason = nil }
       if let reason { releaseOwnerInput(lease, reason: reason) }
       else if lease.admission.pendingBatches == 0, !lease.burstActive.current,
-        let map = lease.producer.inputMap,
         lease.contextPending.withLock({ value in if value { return false }; value = true; return true }) {
         Task {
-          await lease.worker.publishContext(lease, map: map)
+          await lease.worker.publishUnlessPending(lease, idle: true)
           lease.contextPending.withLock { $0 = false }
         }
       }

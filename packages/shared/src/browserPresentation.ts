@@ -46,3 +46,19 @@ export function browserFrameContentRect(
     top: container.top + (align === "center" ? (container.height - height) / 2 : 0),
   };
 }
+
+/** Choose the smallest supported raster density that covers the displayed pixels. */
+export function browserRasterDensity(
+  displayedWidth: number,
+  contentWidth: number,
+  devicePixelRatio: number,
+): 0.75 | 1 | 1.25 | 1.5 | 2 {
+  if (
+    ![displayedWidth, contentWidth, devicePixelRatio].every(
+      (value) => Number.isFinite(value) && value > 0,
+    )
+  )
+    return 2;
+  const required = (displayedWidth * devicePixelRatio) / contentWidth;
+  return ([0.75, 1, 1.25, 1.5, 2] as const).find((density) => density >= required) ?? 2;
+}

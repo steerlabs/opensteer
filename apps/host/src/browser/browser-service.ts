@@ -83,6 +83,7 @@ import {
   type BrowserProfileAccess,
   type BrowserClientMessage,
   type BrowserBinaryFrameHeader,
+  type BrowserRasterDensity,
   type BrowserPlacement,
   type BrowserPlacementSelector,
   type BrowserProfile,
@@ -492,6 +493,7 @@ export interface BrowserRuntimeTarget {
   readonly navigationVersion?: boolean;
   readonly workspaceTabRestoreVersion?: boolean;
   readonly captureRegion?: boolean;
+  readonly rasterDemand?: boolean;
   readonly passkeys?: boolean;
   readonly editing?: 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
@@ -3459,6 +3461,7 @@ export class BrowserService {
       navigation: target.navigationVersion === true,
       targetControl: target.targetControl === true,
       captureRegion: target.captureRegion === true,
+      rasterDemand: target.rasterDemand === true,
       passkeys: target.passkeys === true && this.#passkeys,
       passkeyOwnOrigins: this.#passkeyOwnOrigins,
       editing: target.editing,
@@ -3943,6 +3946,7 @@ interface HostedBrowserBrokerOptions {
   readonly sharedControl: boolean;
   readonly targetControl: boolean;
   readonly captureRegion: boolean;
+  readonly rasterDemand: boolean;
   readonly editing: 1 | 2 | undefined;
   readonly passkeys: boolean;
   readonly passkeyOwnOrigins: () => readonly string[];
@@ -4010,6 +4014,15 @@ class HostedBrowserBroker {
   readonly #catalogGeneration = Date.now();
   readonly #catalogRevisions = new BrowserCatalogRevisions();
   readonly #runtimeTargets = new Map<string, boolean>();
+  readonly #runtimeRaster = new Map<
+    string,
+    {
+      density: BrowserRasterDensity;
+      wanted: BrowserRasterDensity;
+      lowerAt: number;
+      timer: NodeJS.Timeout | null;
+    }
+  >();
   readonly #latestFrames = new Map<string, { frame: Buffer; header: BrowserBinaryFrameHeader }>();
   readonly #frameIds = new Map<string, number>();
   readonly #onPageChanged: () => void;
@@ -4081,6 +4094,7 @@ class HostedBrowserBroker {
   readonly sharedControl: boolean;
   readonly targetControl: boolean;
   readonly captureRegion: boolean;
+  readonly rasterDemand: boolean;
   readonly editing: 1 | 2 | undefined;
   readonly passkeys: boolean;
   readonly passkeyOwnOrigins: () => readonly string[];
@@ -4130,6 +4144,7 @@ class HostedBrowserBroker {
     this.sharedControl = options.sharedControl;
     this.targetControl = options.targetControl;
     this.captureRegion = options.captureRegion;
+    this.rasterDemand = options.rasterDemand;
     this.editing = options.editing;
     this.clipboard = options.clipboard;
     this.computer = options.computer;
@@ -5245,11 +5260,14 @@ class HostedBrowserBroker {
         return Promise.reject(
           new OpensteerError({ code: "not_found", message: "Browser tab not found." }),
         );
+      const frameWindow =
+        message.type === "stream.subscribe" && !!surfaceId && message.frameWindow === 1;
       const captureRegion = message.type === "stream.subscribe" && message.captureRegion === true;
       if (
         outlet.subscription === subscription &&
         outlet.surfaceId === surfaceId &&
-        outlet.captureRegion === captureRegion
+        outlet.captureRegion === captureRegion &&
+        outlet.frameWindow === frameWindow
       )
         return Promise.resolve();
       if (
@@ -5266,7 +5284,10 @@ class HostedBrowserBroker {
         subscription: outlet.subscription,
         surfaceId: outlet.surfaceId,
         captureRegion: outlet.captureRegion,
+        frameWindow: outlet.frameWindow,
+        rasterDensity: outlet.rasterDensity,
       };
+      if (outlet.surfaceId !== surfaceId || outlet.subscription === null) outlet.rasterDensity = 2;
       outlet.surfaceId = surfaceId;
       outlet.subscription = subscription;
       this.#passkeys?.refresh();
@@ -5281,6 +5302,7 @@ class HostedBrowserBroker {
       const context = shown && this.#editingContexts.get(shown.id);
       if (outlet.editing && context && context.geometryRevision === shown.geometryRevision)
         void outlet.sendText(JSON.stringify(context)).catch(() => undefined);
+      outlet.frameWindow = frameWindow;
       outlet.captureRegion = captureRegion;
       outlet.resetSubscription();
       outlet.subscription = subscription;
@@ -5299,10 +5321,24 @@ class HostedBrowserBroker {
           outlet.resetSubscription();
           outlet.subscription = previous.subscription;
           outlet.captureRegion = previous.captureRegion;
+          outlet.frameWindow = previous.frameWindow;
+          outlet.rasterDensity = previous.rasterDensity;
           outlet.surfaceId = previous.surfaceId;
         }
         throw error;
       });
+    }
+    if (message.type === "stream.demand") {
+      if (outlet.subscription !== "frames" || outlet.surfaceId !== message.surfaceId)
+        return Promise.reject(
+          new OpensteerError({
+            code: "conflict",
+            message: "Raster demand must name this viewer's picture.",
+          }),
+        );
+      if (outlet.rasterDensity === message.density) return Promise.resolve();
+      outlet.rasterDensity = message.density;
+      return this.#reconcileStreaming();
     }
     if (message.type === "stream.ack")
       return message.surfaceId && message.surfaceId !== outlet.surfaceId
@@ -5312,7 +5348,7 @@ class HostedBrowserBroker {
       return Promise.reject(
         new OpensteerError({
           code: "forbidden",
-          message: "Watch can only subscribe, acknowledge, or unsubscribe.",
+          message: "Watch can only manage its picture subscription and receipts.",
         }),
       );
     }
@@ -5463,6 +5499,7 @@ class HostedBrowserBroker {
 
   #reconcileStreaming(): Promise<void> {
     const operation = this.#streamReconcileTail.then(async () => {
+      if (this.#settled) return;
       const surfaces = new Set<string>(this.#snapshot?.surfaces.map((surface) => surface.id));
       const targets = new Set(
         [...this.#consumers.values()].flatMap((consumer) =>
@@ -5496,6 +5533,9 @@ class HostedBrowserBroker {
             surfaceId: BrowserSurfaceIdSchema.parse(target),
           });
           this.#runtimeTargets.delete(target);
+          const raster = this.#runtimeRaster.get(target);
+          if (raster?.timer) clearTimeout(raster.timer);
+          this.#runtimeRaster.delete(target);
         }
       for (const [target, frames] of wanted)
         if (this.#runtimeTargets.get(target) !== frames) {
@@ -5507,6 +5547,53 @@ class HostedBrowserBroker {
           });
           this.#runtimeTargets.set(target, frames);
         }
+      if (this.rasterDemand && this.targetedStreaming) {
+        for (const [target, frames] of wanted) {
+          let raster = this.#runtimeRaster.get(target);
+          if (!raster) {
+            raster = { density: 2, wanted: 2, lowerAt: 0, timer: null };
+            this.#runtimeRaster.set(target, raster);
+          }
+          if (!frames) {
+            if (raster.timer) clearTimeout(raster.timer);
+            raster.timer = null;
+            raster.wanted = raster.density;
+            raster.lowerAt = 0;
+            continue;
+          }
+          let density: BrowserRasterDensity = 0.75;
+          for (const viewer of this.#consumers.values())
+            if (
+              viewer.subscription === "frames" &&
+              (viewer.surfaceId === target || (viewer.surfaceId === null && active === target))
+            )
+              density = Math.max(density, viewer.rasterDensity) as BrowserRasterDensity;
+          const now = performance.now();
+          if (density !== raster.wanted) {
+            if (raster.timer) clearTimeout(raster.timer);
+            raster.timer = null;
+            raster.wanted = density;
+            raster.lowerAt = now + 1_000;
+          }
+          if (density === raster.density) continue;
+          if (density < raster.density && now < raster.lowerAt) {
+            raster.timer ??= setTimeout(() => {
+              raster.timer = null;
+              void this.#reconcileStreaming().catch(() => undefined);
+            }, raster.lowerAt - now);
+            raster.timer.unref();
+            continue;
+          }
+          if (raster.timer) clearTimeout(raster.timer);
+          raster.timer = null;
+          await this.#sendCommand({
+            type: "stream.demand",
+            surfaceId: BrowserSurfaceIdSchema.parse(target),
+            density,
+          });
+          raster.density = density;
+        }
+      }
       for (const target of this.#frameIds.keys())
         if (!admitted.has(target)) this.#frameIds.delete(target);
       if (!legacy) {
@@ -5678,6 +5765,8 @@ class HostedBrowserBroker {
   ): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
     this.#settled = true;
+    for (const raster of this.#runtimeRaster.values()) if (raster.timer) clearTimeout(raster.timer);
+    this.#runtimeRaster.clear();
     this.#passkeys?.close();
     if (state === "failed") {
       console.error("browser.session.failed", this.#sessionId, this.#failure ?? "unknown");
@@ -5766,15 +5855,27 @@ export class BrowserConsumerAttachment {
 const consumerAccessRecheckMs = 5_000;
 /** How long a Watch viewer may hold a picture before it is let go as stalled. */
 const watchAcknowledgementTimeoutMs = 15_000;
+const browserFrameCreditBytes = 1_024 * 1_024;
+const browserFrameCreditMax = 4;
+// Beyond this receipt delay, sending more pictures only risks a long stale queue.
+const browserFramePipelineDelayMs = 500;
+const browserFrameQueueBudgetMs = 32;
+const browserFrameRateEstimateMs = 10_000;
 
 /**
- * One viewer's end of a session. Frames are sent one at a time; a newer one
- * waiting replaces an older one, so a slow viewer sees the latest picture
- * rather than a queue. Every viewer also returns each frame's token when it
- * is done with the picture, which is its credit for the next: a token that is
- * not the outstanding one is simply late and changes nothing.
+ * Each viewer has independent credit and one replaceable pending picture.
+ * Negotiated viewers pipeline only while receipt timing permits, pacing writes
+ * to avoid converting a frame-rate improvement into older pictures on screen.
  */
-class BrowserConsumerOutlet {
+export class BrowserConsumerOutlet {
+  frameWindow = false;
+  #window = 1;
+  #baselineDelay = Infinity;
+  readonly #receiptDelays: number[] = [];
+  #deliveryRate: { bytesPerMs: number; at: number } | null = null;
+  #lastReceipt: { sentAt: number; acknowledgedAt: number } | null = null;
+  #paceAt = 0;
+  #paceTimer: NodeJS.Timeout | null = null;
   userId: UserId | null = null;
   passkeys: PasskeyMode | undefined;
   authorized: () => Promise<boolean> = async () => false;
@@ -5794,7 +5895,10 @@ class BrowserConsumerOutlet {
   #closed = false;
   #frameInFlight = false;
   #pending: { readonly frame: Buffer; readonly header: BrowserBinaryFrameHeader } | null = null;
-  #outstanding: { readonly token: string; readonly timer: NodeJS.Timeout } | null = null;
+  #outstanding = new Map<
+    string,
+    { sentAt: number; bytes: number; timer: NodeJS.Timeout; saturated: boolean }
+  >();
   readonly diagnostics: {
     editing?: Readonly<Record<string, number>>;
     stage: string;
@@ -5804,7 +5908,6 @@ class BrowserConsumerOutlet {
     code?: number;
     reason?: string;
   }[] = [];
-  #sentAt = 0;
   #diagnose(record: (typeof this.diagnostics)[number]): void {
     if (this.diagnostics.length === 256) this.diagnostics.shift();
     const diagnostic = { ...record, editing: { ...this.editingCounters } };
@@ -5821,6 +5924,7 @@ class BrowserConsumerOutlet {
   subscription: null | "frames" | "control" = null;
   surfaceId: string | null = null;
   captureRegion = false;
+  rasterDensity: BrowserRasterDensity = 2;
   editing: 1 | 2 | undefined;
   clipboard = false;
   #captureRefusal: number | null = null;
@@ -5894,9 +5998,30 @@ class BrowserConsumerOutlet {
       }
       return;
     }
-    if (this.#frameInFlight || this.#outstanding) {
+    if (
+      this.#frameInFlight ||
+      this.#outstanding.size >= this.#window ||
+      (this.#outstanding.size > 0 &&
+        [...this.#outstanding.values()].reduce((sum, item) => sum + item.bytes, 0) +
+          frame.byteLength -
+          frame.readUInt32BE(0) +
+          Buffer.byteLength(
+            JSON.stringify({ ...header, watchToken: "00000000-0000-0000-0000-000000000000" }),
+          ) >
+          browserFrameCreditBytes)
+    ) {
       if (this.#pending) this.#diagnose({ stage: "drop", frameId: this.#pending.header.frameId });
       this.#pending = { frame, header };
+      return;
+    }
+    if (this.frameWindow && performance.now() < this.#paceAt) {
+      if (this.#pending) this.#diagnose({ stage: "drop", frameId: this.#pending.header.frameId });
+      this.#pending = { frame, header };
+      this.#paceTimer ??= setTimeout(() => {
+        this.#paceTimer = null;
+        this.#flushPending();
+      }, this.#paceAt - performance.now());
+      this.#paceTimer.unref();
       return;
     }
     this.#lastFrameId = header.frameId;
@@ -5913,12 +6038,23 @@ class BrowserConsumerOutlet {
         watchAcknowledgementTimeoutMs,
       );
       timer.unref();
-      this.#outstanding = { token, timer };
       const { capture: _capture, ...legacyHeader } = header;
       outbound = watchFrameEnvelope(frame, this.captureRegion ? header : legacyHeader, token);
+      this.#outstanding.set(token, {
+        sentAt: performance.now(),
+        bytes: outbound.byteLength,
+        timer,
+        saturated: this.#outstanding.size + 1 >= this.#window,
+      });
     }
     const started = performance.now();
-    this.#sentAt = started;
+    if (this.frameWindow && this.#window > 1)
+      this.#paceAt =
+        started +
+        Math.max(
+          this.#baselineDelay / this.#window,
+          this.#deliveryRate ? outbound.byteLength / this.#deliveryRate.bytesPerMs : 0,
+        );
     void this.peer.send(outbound, true).then(
       () => {
         this.#diagnose({
@@ -5928,17 +6064,61 @@ class BrowserConsumerOutlet {
           durationMs: performance.now() - started,
         });
         this.#frameInFlight = false;
-        if (!this.#outstanding) this.#flushPending();
+        this.#flushPending();
       },
       () => this.#end(browserViewerCloseCodes.tryAgain, "Slow browser consumer"),
     );
   }
 
   acknowledge(token: string): Promise<void> {
-    if (this.#outstanding?.token !== token) return Promise.resolve();
-    this.#diagnose({ stage: "credit", durationMs: performance.now() - this.#sentAt });
-    clearTimeout(this.#outstanding.timer);
-    this.#outstanding = null;
+    const receipt = this.#outstanding.get(token);
+    if (!receipt) return Promise.resolve();
+    const delay = performance.now() - receipt.sentAt;
+    this.#diagnose({ stage: "credit", durationMs: delay });
+    clearTimeout(receipt.timer);
+    this.#outstanding.delete(token);
+    // A path change must be able to retire the old minimum. The bounded
+    // recent window also keeps one delayed receipt from defining the baseline.
+    const previousBaseline = this.#baselineDelay;
+    this.#receiptDelays.push(delay);
+    if (this.#receiptDelays.length > 16) this.#receiptDelays.shift();
+    this.#baselineDelay = Math.min(...this.#receiptDelays);
+    if (this.#baselineDelay > previousBaseline * 1.25) this.#deliveryRate = null;
+    const now = performance.now();
+    if (this.frameWindow) {
+      const previous = this.#lastReceipt;
+      const spacing = previous ? now - previous.acknowledgedAt : 0;
+      // Concurrent writes whose receipts spread farther apart than their sends
+      // expose serialization or decoder pressure. Pace at that delivery rate
+      // rather than filling the link's queue with already-outdated pictures.
+      if (
+        previous &&
+        receipt.sentAt < previous.acknowledgedAt &&
+        spacing > receipt.sentAt - previous.sentAt + 5
+      )
+        this.#deliveryRate = { bytesPerMs: receipt.bytes / spacing, at: now };
+      else if (this.#deliveryRate && now - this.#deliveryRate.at > browserFrameRateEstimateMs)
+        this.#deliveryRate = null;
+      const ceiling = this.#deliveryRate
+        ? Math.max(
+            1,
+            Math.min(
+              browserFrameCreditMax,
+              Math.floor(
+                ((this.#baselineDelay + browserFrameQueueBudgetMs) *
+                  this.#deliveryRate.bytesPerMs) /
+                  receipt.bytes,
+              ),
+            ),
+          )
+        : browserFrameCreditMax;
+      this.#window = Math.min(this.#window, ceiling);
+      if (delay > 1.25 * this.#baselineDelay + 10)
+        this.#window = Math.max(1, Math.floor(this.#window / 2));
+      else if (receipt.saturated && delay <= browserFramePipelineDelayMs)
+        this.#window = Math.min(ceiling, this.#window + 1);
+      this.#lastReceipt = { sentAt: receipt.sentAt, acknowledgedAt: now };
+    }
     if (!this.#frameInFlight) this.#flushPending();
     return Promise.resolve();
   }
@@ -5950,8 +6130,16 @@ class BrowserConsumerOutlet {
 
   /** Subscribing again starts over: no credit owed, no picture waiting. */
   resetSubscription(): void {
-    if (this.#outstanding) clearTimeout(this.#outstanding.timer);
-    this.#outstanding = null;
+    for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
+    this.#outstanding.clear();
+    this.#window = 1;
+    this.#baselineDelay = Infinity;
+    this.#receiptDelays.length = 0;
+    this.#deliveryRate = null;
+    this.#lastReceipt = null;
+    this.#paceAt = 0;
+    if (this.#paceTimer) clearTimeout(this.#paceTimer);
+    this.#paceTimer = null;
     this.#pending = null;
     this.#lastFrameId = -1;
   }
@@ -5975,8 +6163,16 @@ class BrowserConsumerOutlet {
     this.legacyClipboard.close();
     this.legacyClipboardKeys.clear();
     this.#pending = null;
-    if (this.#outstanding) clearTimeout(this.#outstanding.timer);
-    this.#outstanding = null;
+    for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
+    this.#outstanding.clear();
+    this.#window = 1;
+    this.#baselineDelay = Infinity;
+    this.#receiptDelays.length = 0;
+    this.#deliveryRate = null;
+    this.#lastReceipt = null;
+    this.#paceAt = 0;
+    if (this.#paceTimer) clearTimeout(this.#paceTimer);
+    this.#paceTimer = null;
     clearInterval(this.#accessTimer);
     this.#onClose();
   }
