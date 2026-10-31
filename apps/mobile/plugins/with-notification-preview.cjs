@@ -69,8 +69,10 @@ function project(project, config) {
       CODE_SIGN_ENTITLEMENTS: `${targetName}/${targetName}.entitlements`,
       APPLICATION_EXTENSION_API_ONLY: "YES",
       SKIP_INSTALL: "YES",
-      MARKETING_VERSION: parent.MARKETING_VERSION || config.version || "1.0",
-      CURRENT_PROJECT_VERSION: parent.CURRENT_PROJECT_VERSION || config.ios?.buildNumber || "1",
+      // Expo writes the app's version into its Info.plist from config, leaving the
+      // template's MARKETING_VERSION behind; an extension must match the app.
+      MARKETING_VERSION: config.version ?? "1.0",
+      CURRENT_PROJECT_VERSION: config.ios?.buildNumber ?? "1",
       IPHONEOS_DEPLOYMENT_TARGET: parent.IPHONEOS_DEPLOYMENT_TARGET || "16.4",
       ...(parent.DEVELOPMENT_TEAM ? { DEVELOPMENT_TEAM: parent.DEVELOPMENT_TEAM } : {}),
       TARGETED_DEVICE_FAMILY: '"1,2"',
