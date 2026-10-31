@@ -42,6 +42,25 @@ export type HeaderActionSpec = {
 };
 
 /**
+ * What every screen in the stack starts from. The bar has one ground,
+ * `headerStyle`. At rest against the scroll edge iOS draws the same bar unless
+ * a large style gives it another ground, which would also land under a
+ * conversation's transparent bar, glass or blur, and hide what scrolls under
+ * it. Where the status bar sits in iPhone Duo's vertical bar, that ground
+ * starts below the top of the screen and leaves a strip of conversation
+ * showing above it.
+ */
+export const stackScreenOptions: NativeStackNavigationOptions = {
+  contentStyle: { backgroundColor: color.background },
+  headerBackButtonDisplayMode: "minimal",
+  headerLargeTitleStyle: { color: color.text, fontWeight: "700" },
+  headerShadowVisible: false,
+  headerStyle: { backgroundColor: color.background },
+  headerTintColor: color.ember,
+  headerTitleStyle: { color: color.text, fontSize: 17, fontWeight: "600" },
+};
+
+/**
  * A header's own actions. iOS receives native bar button descriptions so UIKit
  * owns their appearance and accessibility; Android receives the equivalent
  * React header controls from the stable slots.
