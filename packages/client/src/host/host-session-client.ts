@@ -1631,7 +1631,9 @@ export class HttpHostClient {
 
   activateThread(threadId: string): void {
     const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
+    const previous = this.#activeThreadId;
     this.#activeThreadId = threadId;
+    if (previous !== null && previous !== threadId) this.#forgetAutomationsUnlessShown(previous);
     this.#ensureInputQueue(threadId);
     this.#ensureAssignments(threadId);
     this.#ensureAutomations(threadId);
@@ -1683,6 +1685,7 @@ export class HttpHostClient {
       const count = this.#observedThreads.get(threadId) ?? 0;
       if (count <= 1) this.#observedThreads.delete(threadId);
       else this.#observedThreads.set(threadId, count - 1);
+      this.#forgetAutomationsUnlessShown(threadId);
     };
   }
 
@@ -1755,6 +1758,12 @@ export class HttpHostClient {
       });
   }
 
+  /**
+   * A conversation's automations are known only while it is shown: no notice
+   * says what changed in one off screen, so it is read afresh each time it is
+   * opened, and a shown one again whenever its Workspace says triggers changed
+   * or its stream comes back. Shown again while unchanged, it is not reread.
+   */
   #ensureAutomations(threadId: string, again = false): void {
     if (
       this.#disposed ||
@@ -1775,7 +1784,9 @@ export class HttpHostClient {
       .finally(() => {
         if (this.#automationReads.get(threadId) !== read) return;
         this.#automationReads.delete(threadId);
-        this.#readAutomations.add(threadId);
+        // A failure counts as read while it is shown, so a streaming
+        // conversation does not ask again with every event; opening it again does.
+        if (this.#showsThread(threadId)) this.#readAutomations.add(threadId);
         if (read.again) this.#ensureAutomations(threadId, true);
       });
   }
@@ -1887,6 +1898,18 @@ export class HttpHostClient {
 
   #showsThread(threadId: string): boolean {
     return threadId === this.#activeThreadId || this.#observedThreads.has(threadId);
+  }
+
+  #forgetAutomationsUnlessShown(threadId: string): void {
+    if (!this.#showsThread(threadId)) this.#readAutomations.delete(threadId);
+  }
+
+  /** What a triggers notice, or a stream that may have missed one, means for one Workspace. */
+  #refreshShownAutomations(workspaceId: string): void {
+    for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
+      if (threadId !== null && this.#threadWorkspace.get(threadId) === workspaceId)
+        this.#ensureAutomations(threadId, true);
+    }
   }
 
   /**
@@ -4513,10 +4536,7 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.triggers-changed") {
-      for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
-        if (threadId !== null && this.#threadWorkspace.get(threadId) === message.workspaceId)
-          this.#ensureAutomations(threadId, true);
-      }
+      this.#refreshShownAutomations(message.workspaceId);
       this.#update({
         ...this.#snapshot,
         triggerRevision: this.#snapshot.triggerRevision + 1,
@@ -4601,8 +4621,10 @@ export class HttpHostClient {
     if (reconnected) this.#reread();
     this.#sendAck(channel);
     this.#recomputeConnection();
-    // A task notice sent while this socket was away is lost with it.
+    // A task notice sent while this socket was away is lost with it, and so is
+    // a triggers notice.
     this.#rereadTasks();
+    if (reconnected) this.#refreshShownAutomations(message.workspaceId);
     // A usage notice sent while this socket was away is lost: a shown
     // conversation of this Workspace that was read before is read again now,
     // and one not shown is read whole when it next is. One shown while the
