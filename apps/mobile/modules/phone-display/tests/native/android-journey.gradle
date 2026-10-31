@@ -1,0 +1,11 @@
+// A Release build refuses cleartext HTTP, and the journey reaches its
+// coordinator at http://10.0.2.2. Only this journey build allows it.
+gradle.afterProject { project ->
+  if (project.path == ':app') {
+    def manifest = new File(project.buildDir, 'phone-display-journey/AndroidManifest.xml')
+    manifest.parentFile.mkdirs()
+    manifest.text = '<manifest xmlns:android="http://schemas.android.com/apk/res/android">' +
+      '<application android:usesCleartextTraffic="true"/></manifest>'
+    project.android.sourceSets.release.manifest.srcFile(manifest)
+  }
+}

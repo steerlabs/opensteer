@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.media.MediaCodec
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
@@ -165,9 +166,11 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
           // React Native owns the parent layout pass; requesting one does not
           // reliably relayout these Android children when codec geometry arrives.
           post { layoutPicture() }
-          val decoder = MediaCodec.createDecoderByType("video/avc")
+          val format = MediaFormat.createVideoFormat("video/avc", width, height)
+          // The first AVC decoder may not take this size (the emulator's starts at 96 × 96) and then never outputs.
+          val decoder = MediaCodec.createByCodecName(requireNotNull(decoders.findDecoderForFormat(format)))
           try {
-            decoder.configure(MediaFormat.createVideoFormat("video/avc", width, height).apply { setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1_048_576) }, surface.holder.surface, null, 0)
+            decoder.configure(format.apply { setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1_048_576) }, surface.holder.surface, null, 0)
             decoder.setOnFrameRenderedListener({ _, _, _ -> post {
               if (wanted == epoch && stamp == revision && available && visible && attached && cover.visibility != View.GONE) { cover.visibility = View.GONE; onReady(mapOf("epoch" to wanted, "width" to width, "height" to height)) }
             } }, worker)
@@ -222,6 +225,10 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
   override fun onDetachedFromWindow() {
     attached = false; reset(epoch)
     super.onDetachedFromWindow()
+  }
+
+  private companion object {
+    val decoders by lazy { MediaCodecList(MediaCodecList.REGULAR_CODECS) }
   }
 }
 

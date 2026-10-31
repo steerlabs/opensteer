@@ -5,11 +5,18 @@ import path from "node:path";
 import { inflateSync } from "node:zlib";
 import { z } from "zod";
 
-// Coordinator for journey.tsx in one owned simulator: serves fixtures, records
-// the journey's events and assertions, and checks real screenshot pixels.
-const udid = z.string().min(1).parse(process.env.OPENSTEER_PHONE_DISPLAY_UDID);
+// Coordinator for journey.tsx in one owned iOS simulator or Android emulator:
+// serves fixtures, records the journey's events and assertions, and checks real
+// screenshot pixels.
+const udid = process.env.OPENSTEER_PHONE_DISPLAY_UDID;
+const serial = process.env.OPENSTEER_PHONE_DISPLAY_SERIAL;
+if (!udid === !serial) throw new Error("Set exactly one owned simulator UDID or Android serial");
 const device = z.string().min(1).parse(process.env.OPENSTEER_PHONE_DISPLAY_DEVICE);
 const bundle = "com.opensteer.mobile";
+const adb = (...args: string[]) =>
+  execFileSync("adb", ["-s", serial!, ...args], { maxBuffer: 64 * 1024 * 1024 });
+const simctl = (...args: string[]) =>
+  execFileSync("xcrun", ["simctl", ...args], { stdio: "ignore" });
 const directory = path.join(
   z.string().min(1).parse(process.env.OPENSTEER_PHONE_DISPLAY_EVIDENCE_DIR),
   device,
@@ -54,7 +61,7 @@ const palette = [
   [0, 0, 0],
 ] as const;
 
-/** Decodes an 8-bit, non-interlaced RGB or RGBA PNG, which is what simctl writes. */
+/** Decodes an 8-bit, non-interlaced RGB or RGBA PNG, which is what simctl and screencap write. */
 function decodePng(file: Buffer) {
   let offset = 8;
   let width = 0;
@@ -129,9 +136,8 @@ function classify(color: number[]) {
 let shot = 0;
 function screenshot(step: string) {
   const file = path.join(directory, `${String(++shot).padStart(3, "0")}-${step}.png`);
-  execFileSync("xcrun", ["simctl", "io", udid, "screenshot", "--type=png", file], {
-    stdio: "ignore",
-  });
+  if (udid) simctl("io", udid, "screenshot", "--type=png", file);
+  else writeFileSync(file, adb("exec-out", "screencap", "-p"));
   return { file, image: decodePng(readFileSync(file)) };
 }
 
@@ -182,6 +188,7 @@ function finish(failed: boolean, message?: string) {
   const report = {
     device,
     udid,
+    serial,
     source: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     passed: !failed && started && results.length > 0 && results.every((result) => result.passed),
     message,
@@ -227,12 +234,24 @@ const server = createServer((request, response) => {
       // Another app takes the foreground until the journey's pixels are off
       // screen, then the journey's app returns as a person would.
       const parsed = Check.parse(input);
-      execFileSync("xcrun", ["simctl", "launch", udid, "com.apple.Preferences"], {
-        stdio: "ignore",
-      });
+      if (udid) simctl("launch", udid, "com.apple.Preferences");
+      else {
+        adb("shell", "am", "start", "-W", "-a", "android.settings.SETTINGS");
+        // Android stops the app only after the other activity has settled; a
+        // person leaving the app gets there, a quick relaunch while paused does not.
+        const deadline = Date.now() + 5_000;
+        let state = "";
+        while (state !== "STOPPED" && Date.now() < deadline)
+          state =
+            /state=(\w+)/.exec(
+              adb("shell", "dumpsys", "activity", "-p", bundle, "activities").toString(),
+            )?.[1] ?? "";
+        record(`stopped:${parsed.step}`, state === "STOPPED", { state });
+      }
       const outcome = await check({ ...parsed, gone: true, ms: 5_000 });
       record(`pixels:${parsed.step}`, outcome.passed, { gone: true, ...outcome });
-      execFileSync("xcrun", ["simctl", "launch", udid, bundle], { stdio: "ignore" });
+      if (udid) simctl("launch", udid, bundle);
+      else adb("shell", "am", "start", "-W", "-n", `${bundle}/.MainActivity`);
     } else if (url.pathname === "/done") {
       const { failed, message } = z
         .object({ failed: z.boolean(), message: z.string().optional() })
