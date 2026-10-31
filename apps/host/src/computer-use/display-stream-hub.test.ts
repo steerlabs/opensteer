@@ -1579,23 +1579,80 @@ describe("phone display Host sockets", () => {
     f.apps.detach(f.peer, "revoked");
     expect(await viewer.closed).toBe(4003);
   });
-  it.each(["retryable", "access", "unknown", "blocked"] as const)(
+  it.each(["retryable", "access", "unknown"] as const)(
     "classifies %s periodic authorization failures",
     async (kind) => {
       vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
       const f = await fixture();
       const viewer = await f.viewer();
-      const resume = kind === "blocked" ? f.pauseAuthorization() : () => undefined;
       if (kind === "retryable")
         f.failAuthorization(new ComputerUseError("failed", "Authority unavailable", true));
       if (kind === "access")
         f.failAuthorization(new ComputerUseError("unsupported", "Owner changed"));
       if (kind === "unknown") f.failAuthorization(new Error("Authority unavailable"));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await viewer.closed).toBe(kind === "access" ? 4003 : 1013);
+    },
+  );
+  it.each(["authorized", "revoked"] as const)(
+    "keeps slow authorization pending without losing or reviving viewing (%s)",
+    async (outcome) => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const f = await fixture();
+      const viewer = await f.viewer();
+      const phone = await f.phone();
+      await f.state();
+      await viewer.roundTrip();
+      let resume!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      let settled = false;
+      const authorization = vi.spyOn(f.hub, "authorize").mockImplementationOnce(async () => {
+        try {
+          await blocked;
+          return f.runnerId;
+        } finally {
+          settled = true;
+        }
+      });
       try {
-        await vi.advanceTimersByTimeAsync(kind === "blocked" ? 10_000 : 5_000);
-        expect(await viewer.closed).toBe(kind === "access" ? 4003 : 1013);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(authorization).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(f.serverViewers[0]!.readyState).toBe(WebSocket.OPEN);
+        expect(authorization).toHaveBeenCalledTimes(1);
+        if (outcome === "revoked") {
+          f.end();
+          await vi.waitFor(
+            () =>
+              expect(viewer.socket.readyState, "revoked viewer did not close").toBe(
+                WebSocket.CLOSED,
+              ),
+            { timeout: 2_000 },
+          );
+        }
+        resume();
+        await vi.waitFor(() => expect(settled, "delayed authorization did not settle").toBe(true), {
+          timeout: 2_000,
+        });
+        if (outcome === "authorized") {
+          await viewer.roundTrip();
+          phone.socket.send(f.frame(1, true));
+          await viewer.received(() => viewer.media().length === 1);
+          expect(viewer.socket.readyState).toBe(WebSocket.OPEN);
+        } else {
+          f.hub.sweep();
+          expect(viewer.socket.readyState).toBe(WebSocket.CLOSED);
+          expect(f.sent.filter((m) => m.type === "host.integrations.display.start")).toHaveLength(
+            1,
+          );
+        }
       } finally {
         resume();
+        await vi.waitFor(() => expect(settled, "delayed authorization did not drain").toBe(true), {
+          timeout: 2_000,
+        });
       }
     },
   );
