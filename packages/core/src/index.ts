@@ -24,6 +24,7 @@ export * from "./tool-arguments.js";
 export * from "./tool-output.js";
 export * from "./workspace-icons.js";
 export * from "./computer-view.js";
+export * from "./screen-presentation.js";
 
 export * from "./browser-tab-order.js";
 export * from "./browser-tabs.js";

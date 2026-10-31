@@ -1,6 +1,5 @@
-import { autoPlacePart } from "./workspace/composer-context.js";
-import { destinationPlaceKey } from "./workspace/navigation.js";
-import { useBrowserTabStrip } from "@opensteer/client/react";
+import { useScreenPresentation } from "./workspace/screen-presentation.js";
+import { interact } from "./workspace/interaction.js";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext, VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { useDictation } from "./dictation.js";
@@ -301,26 +300,19 @@ export function AppShell({
     { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
     snapshot.homeThreadId,
   );
-  const routerNavigate = useNavigate();
   const { controller: dictation } = useDictation();
-  const voicePlaces = useBrowserTabStrip(hostClient).ordered;
+  const presentation = useScreenPresentation(hostClient, nav);
+  // A spoken "go back" or "show …" is the person's own choice, made through
+  // the same calls as a click, so it outdates any presentation still pending.
   const voice = useVoiceRuntime(
     hostClient,
     (target) => {
-      if (target.kind === "back") void routerNavigate(-1);
+      if (target.kind === "back") nav.back();
       else if (target.kind === "place") nav.showPlace(target.destination);
       else nav.openConversation(target.kind === "chat" ? "/" : nav.threadPath(target.threadId));
     },
     dictation,
-    async () => {
-      const selection = placeSelection(new URLSearchParams(location.search));
-      const key = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
-      const part = await autoPlacePart(
-        hostClient,
-        voicePlaces.find((place) => place.key === key) ?? null,
-      );
-      return part ? [part] : [];
-    },
+    presentation,
   );
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;
@@ -487,6 +479,8 @@ export function AppShell({
             useApp:
               useComputerViewOnThisMac && viewedDeploymentId && localActivationReady
                 ? async (view, app) => {
+                    // Going to the real app is the person's choice; what they do there is out of sight.
+                    interact();
                     return useComputerViewOnThisMac(
                       DesktopUseComputerViewInputSchema.parse({
                         ...view,
@@ -551,7 +545,11 @@ export function AppShell({
     [openConversation],
   );
   const closeMobileNavigation = useCallback(() => setMobileNavigationOpen(false), []);
-  const openMobileNavigation = useCallback(() => setMobileNavigationOpen(true), []);
+  const openMobileNavigation = useCallback(() => {
+    // Opening the drawer is the person's own step, like opening any modal.
+    interact();
+    setMobileNavigationOpen(true);
+  }, []);
   const openNewWorkspace = useCallback(() => {
     setNewWorkspaceError(null);
     setNewWorkspaceOpen(true);

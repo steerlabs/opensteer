@@ -19,19 +19,28 @@ import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import {
   AssignmentSummarySchema,
   createId,
+  type ScreenPresentationReceipt,
   RunIdSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
   type Request,
   type ThreadInputQueue,
 } from "@opensteer/core";
-import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
+import {
+  ScreenShowMessageSchema,
+  type ComputerUseSessionSummary,
+  type MachineSummary,
+  type ScreenShowMessage,
+} from "@opensteer/protocol";
+import { ScreenPresentationController } from "@opensteer/client/screen";
 import { act, useState, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-drafts.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
 import { VoiceContext, VoiceOverlay, type VoiceControls } from "../voice/controls.js";
+import { observeInteraction } from "../voice/interaction.js";
+import { mobileScreenPresentation, type PresentationNavigator } from "../voice/presentation.js";
 
 /*
  * One conversation on the phone, drawn by the real pane, transcript, composer
@@ -56,7 +65,9 @@ import { VoiceContext, VoiceOverlay, type VoiceControls } from "../voice/control
  *     leaves an empty row between the person's messages;
  *   - Stop pauses Chat and asks for Resume before the next message.
  *   - replies in one Run borrow each other's app and phone chips, or lose
- *     chips from a stretch before a message that joined the reply.
+ *     chips from a stretch before a message that joined the reply;
+ *   - a screen voice asked for before the person focused or typed in the
+ *     composer still moves them once they leave it.
  * What can go wrong in a task: any of that leaks into it, and its tray loses
  * a control.
  */
@@ -186,7 +197,9 @@ vi.mock("react-native", async () => {
         nativeEvent: { selection: { start: number; end: number } };
       }) => void;
       readonly accessibilityLabel?: string;
+      readonly onBlur?: () => void;
       readonly onChangeText?: (text: string) => void;
+      readonly onFocus?: () => void;
       readonly placeholder?: string;
       readonly value?: string;
     }) => {
@@ -199,7 +212,9 @@ vi.mock("react-native", async () => {
       return (
         <textarea
           aria-label={props.accessibilityLabel}
+          onBlur={() => props.onBlur?.()}
           onChange={(event) => props.onChangeText?.(event.currentTarget.value)}
+          onFocus={() => props.onFocus?.()}
           onSelect={(event) =>
             props.onSelectionChange?.({
               nativeEvent: {
@@ -3140,7 +3155,7 @@ it("docks voice above a task composer, floats without one and ignores unfocused 
         </VoiceContext>,
       ),
     );
-  const bar = '[aria-label="Voice: Listening"]';
+  const bar = '[aria-label="Voice: Talking to Chat"]';
   await draw(true);
   expect(container.querySelector('[aria-label="Task"]')?.querySelector(bar)).not.toBeNull();
   expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).toBeNull();
@@ -3187,8 +3202,8 @@ it("offers voice on Chat's first message but not on a new task composer", async 
       </VoiceContext>,
     ),
   );
-  expect(hasButton(container, "Talk to Opensteer")).toBe(true);
-  await press(container, "Talk to Opensteer");
+  expect(hasButton(container, "Talk to Chat")).toBe(true);
+  await press(container, "Talk to Chat");
   expect(voice.controller.start).toHaveBeenCalledOnce();
   const staged = {
     items: [],
@@ -3224,7 +3239,129 @@ it("offers voice on Chat's first message but not on a new task composer", async 
       </VoiceContext>,
     ),
   );
-  expect(hasButton(container, "Talk to Opensteer")).toBe(false);
+  expect(hasButton(container, "Talk to Chat")).toBe(false);
   await act(async () => voice.move("listening"));
-  expect(container.querySelector('[aria-label="Voice: Listening"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Voice: Talking to Chat"]')).not.toBeNull();
+});
+
+/**
+ * A voice call on this phone with the real presentation port and the shared
+ * controller over it. The device sees editing only while a field is focused,
+ * and no keyboard ever rises, as with a hardware keyboard.
+ */
+function voicePresentation(hostClient: HostClient) {
+  const endpointRef = "a".repeat(64);
+  let state = {
+    key: "stack",
+    index: 0,
+    routes: [{ key: "home", name: "Home", params: { deploymentId } as object }],
+  };
+  const dispatch = vi.fn((action: { name: string; params: object }) => {
+    state = {
+      ...state,
+      index: state.index + 1,
+      routes: [...state.routes, { key: `route-${state.index + 1}`, ...action }],
+    };
+  });
+  const navigator: PresentationNavigator = {
+    isReady: () => true,
+    getRootState: () => state,
+    getCurrentRoute: () => state.routes[state.index],
+    getCurrentOptions: () => ({}),
+    canGoBack: () => state.index > 0,
+    goBack: () => undefined,
+    dispatch: dispatch as unknown as PresentationNavigator["dispatch"],
+    addListener: () => () => undefined,
+  };
+  const presentation = mobileScreenPresentation({
+    navigator,
+    device: {
+      active: () => true,
+      editing: () => document.activeElement instanceof HTMLTextAreaElement,
+      covered: () => false,
+      macVideo: true,
+      observe: observeInteraction,
+    },
+    hostClient,
+    deploymentId: () => deploymentId,
+  });
+  const listeners = new Set<(message: ScreenShowMessage | null) => void>();
+  const receipts = new Map<string, ScreenPresentationReceipt>();
+  const controller = new ScreenPresentationController({
+    port: presentation.port,
+    transport: {
+      getEndpoint: () => ({ endpointRef, serverTimeUpperBound: () => 0 }),
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      acknowledge: (operationId, receipt) => receipts.set(operationId, receipt),
+    },
+  });
+  controller.start(crypto.randomUUID());
+  return {
+    dispatch,
+    /** The person finishes speaking: what they see now is what a presentation may replace. */
+    hear: () => controller.captureUtterance().context!,
+    /** Main Chat asks to show this task for what was heard; resolves with the phone's receipt. */
+    async show(heard: {
+      utteranceSequence: number;
+      interactionRevision: number;
+      voiceSessionId: string;
+    }) {
+      const operationId = crypto.randomUUID();
+      const message = ScreenShowMessageSchema.parse({
+        type: "host.screen.show",
+        endpointRef,
+        operationId,
+        messageId: createId("message"),
+        voiceSessionId: heard.voiceSessionId,
+        utteranceSequence: heard.utteranceSequence,
+        interactionRevision: heard.interactionRevision,
+        deadlineAt: 6_000,
+        target: { conversationId: workId },
+      });
+      for (const listener of listeners) listener(message);
+      await vi.waitFor(
+        () => expect(receipts.has(operationId), "the phone never answered").toBe(true),
+        { timeout: 1_000 },
+      );
+      return receipts.get(operationId);
+    },
+    dispose: () => {
+      controller.dispose();
+      presentation.dispose();
+    },
+  };
+}
+
+describe("a voice presentation while the person edits", () => {
+  it("is outdated by focusing or typing in the composer, even once the field is left", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container } = await mount(host, workId);
+    const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')!;
+    const call = voicePresentation(host.client);
+    try {
+      // Focused and left again before the request arrives.
+      const focused = call.hear();
+      await act(async () => field.focus());
+      await act(async () => field.blur());
+      await expect(call.show(focused)).resolves.toEqual({ outcome: "superseded" });
+
+      // Heard while the field was already focused, then typed into and left.
+      await act(async () => field.focus());
+      const typed = call.hear();
+      await type(container, "Message", "Actually, wait");
+      await act(async () => field.blur());
+      await expect(call.show(typed)).resolves.toEqual({ outcome: "superseded" });
+      expect(call.dispatch).not.toHaveBeenCalled();
+      expect(field.value).toBe("Actually, wait");
+
+      // Nothing done since it was heard: the task comes to the front.
+      await expect(call.show(call.hear())).resolves.toEqual({ outcome: "applied" });
+      expect(call.dispatch).toHaveBeenCalledOnce();
+    } finally {
+      call.dispose();
+    }
+  });
 });

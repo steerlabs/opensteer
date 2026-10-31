@@ -16,6 +16,7 @@
     "./integrations": "./src/integrations/index.ts",
     "./mock": "./src/mock/index.ts",
     "./react": "./src/react/index.ts",
+    "./screen": "./src/screen/index.ts",
     "./test-support": "./src/test-support/index.ts",
     "./voice": "./src/voice/index.ts"
   },

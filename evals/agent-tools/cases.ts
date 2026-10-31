@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  MessageIdSchema,
+  MessageQuoteSchema,
+  ScreenPresentationContextSchema,
+} from "@opensteer/core";
 
 const regex = z.string().superRefine((value, ctx) => {
   try {
@@ -37,7 +42,19 @@ export const CaseSchema = z.strictObject({
     .min(1)
     .optional(),
   fixtures: z.record(fixturePath, z.string()).default({}),
-  turns: z.array(z.string().min(1)).min(1),
+  turns: z
+    .array(
+      z.union([
+        z.string().min(1),
+        z.strictObject({
+          text: z.string().min(1),
+          messageId: MessageIdSchema,
+          presentationContext: ScreenPresentationContextSchema.optional(),
+          quote: MessageQuoteSchema.optional(),
+        }),
+      ]),
+    )
+    .min(1),
   mocks: z.record(z.string(), z.json()).default({}),
   expect: z.strictObject({
     calls: z.array(call).default([]),

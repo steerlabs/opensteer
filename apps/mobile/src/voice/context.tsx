@@ -1,15 +1,34 @@
-import { voicePlaces } from "./places.js";
-import { VoiceController, type VoiceTarget } from "@opensteer/client/voice";
-import { StackActions } from "@react-navigation/native";
+import { VoiceController } from "@opensteer/client/voice";
 import { randomUUID } from "expo-crypto";
 import { useEffect, useState, type ReactNode } from "react";
-import { workspaceRoute } from "../browser/surface-route.js";
+import { AppState, Keyboard, Platform, TextInput } from "react-native";
 import { useDictation } from "../dictation/context.js";
 import { navigationRef } from "../navigation-ref.js";
 import { useVoiceBackgroundStop } from "../platform/use-voice-background-stop.js";
 import { voiceMediaPort } from "../platform/voice.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { VoiceContext } from "./controls.js";
+import { mobileScreenPresentation, type PresentationDevice } from "./presentation.js";
+import { drawerOpen, observeInteraction, remoteEditing } from "./interaction.js";
+
+const device: PresentationDevice = {
+  active: () => AppState.currentState === "active",
+  editing: () => TextInput.State.currentlyFocusedInput() != null || remoteEditing(),
+  covered: drawerOpen,
+  macVideo: Platform.OS !== "ios",
+  observe(listener) {
+    const keyboard = Keyboard.addListener("keyboardDidShow", listener);
+    const stopInteraction = observeInteraction(listener);
+    const app = AppState.addEventListener("change", (state) => {
+      if (state !== "active") listener();
+    });
+    return () => {
+      keyboard.remove();
+      app.remove();
+      stopInteraction();
+    };
+  },
+};
 
 /**
  * The runtime's one voice controller for the attached Host: a new Host ends
@@ -23,12 +42,18 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
   const [controller, setController] = useState<VoiceController | null>(null);
   useEffect(() => {
     if (!hostClient) return;
+    const presentation = mobileScreenPresentation({
+      navigator: navigationRef,
+      device,
+      hostClient,
+      deploymentId: () => client.getSnapshot().selection.deploymentId,
+    });
     const created = new VoiceController({
       hostClient,
       media: voiceMediaPort,
-      navigate: (target) => show(client.getSnapshot().selection.deploymentId, target),
+      navigate: presentation.show,
+      presentation: presentation.port,
       createId: randomUUID,
-      places: () => voicePlaces(hostClient, navigationRef.getCurrentRoute()),
       onStart: async () => {
         const owner = dictation.getSnapshot().owner;
         if (owner) await dictation.stop(owner);
@@ -37,6 +62,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
     setController(created);
     return () => {
       created.dispose();
+      presentation.dispose();
       setController(null);
     };
   }, [client, dictation, hostClient]);
@@ -51,19 +77,4 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
 function BackgroundStop({ controller }: { readonly controller: VoiceController }): null {
   useVoiceBackgroundStop(controller);
   return null;
-}
-
-function show(deploymentId: string | null, target: VoiceTarget): void {
-  if (!deploymentId || !navigationRef.isReady()) return;
-  if (target.kind === "back") {
-    if (navigationRef.canGoBack()) navigationRef.goBack();
-  } else if (target.kind === "chat") navigationRef.navigate("Home", { deploymentId });
-  else if (target.kind === "thread")
-    navigationRef.dispatch(
-      StackActions.push("Thread", { deploymentId, threadId: target.threadId }),
-    );
-  else
-    navigationRef.dispatch(
-      StackActions.push("WorkspaceBrowser", workspaceRoute(deploymentId, target.destination)),
-    );
 }

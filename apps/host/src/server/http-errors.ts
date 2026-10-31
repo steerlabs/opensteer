@@ -31,7 +31,7 @@ export function normalizeHostError(error: unknown): NormalizedHostError {
         code: "bad_request",
         message:
           error instanceof z.ZodError
-            ? `Request is invalid: ${formatIssues(error.issues)}`
+            ? `Request is invalid: ${formatIssues(error.issues.map((issue) => (issue.path.includes("screenPresentation") ? { path: ["screenPresentation"], message: "Invalid presentation context" } : issue)))}`
             : "Request contains invalid JSON",
         retryable: false,
       },
