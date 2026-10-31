@@ -126,6 +126,7 @@ const releasedMigrationNames = [
   "0116_screen_show",
   "0117_remove_screen_show",
   "0118_person_notifications",
+  "0119_notification_preview_keys",
 ];
 
 describe("migration names", () => {

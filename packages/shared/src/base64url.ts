@@ -58,3 +58,21 @@ export function decodeBase64Url(value: string): Uint8Array {
   }
   return bytes;
 }
+
+/** Boundary predicate for a canonical, unpadded base64url byte range. */
+export function canonicalBase64urlByteLength(
+  value: string,
+  minimum: number,
+  maximum: number,
+): boolean {
+  try {
+    const length = decodeBase64Url(value).byteLength;
+    return length >= minimum && length <= maximum;
+  } catch {
+    return false;
+  }
+}
+
+export function canonicalBase64urlBytes(value: string, length: number): boolean {
+  return canonicalBase64urlByteLength(value, length, length);
+}

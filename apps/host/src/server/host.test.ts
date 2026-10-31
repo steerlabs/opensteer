@@ -54,6 +54,7 @@ import {
 import {
   createHostServer as createProductionHostServer,
   RunnerChallengeAdmission,
+  advertisedCapabilities,
 } from "../server.js";
 import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
 import { WorkspaceService } from "../workspace/workspace-service.js";
@@ -4557,3 +4558,101 @@ function volume(
     updated_unix: now,
   };
 }
+
+it("registers phone previews as a session mutation without durable command admission", async () => {
+  const session = testAuthenticatedSession(createId("user"));
+  const register = vi.fn(async () => undefined);
+  const unregister = vi.fn(async () => undefined);
+  const authenticator = new HostAuthenticator({
+    identity: {
+      nativeOpenIdConfiguration: () => undefined,
+      authenticateNativeAccessToken: async () => ({
+        absoluteExpiresAt: new Date(session.absoluteExpiresAt),
+        application: "mobile",
+        clientId: "opensteer-mobile",
+        createdAt: new Date(session.createdAt),
+        expiresAt: new Date(session.expiresAt),
+        sessionId: session.id,
+        subject: session.user.id,
+      }),
+      requireSession: async () => session,
+      userSessionProfile: async () => session.user,
+    } as never,
+    publicUrl: new URL("https://opensteer.example"),
+  });
+  const previews = {
+    register,
+    unregister,
+  } as unknown as import("../notifications/notification-preview-service.js").NotificationPreviewService;
+  const app = await createProductionHostServer(
+    hostServerTestDependencies({
+      authenticator,
+      discovery: testDiscovery,
+      notificationPreviews: previews,
+    }),
+  );
+  try {
+    const capabilityDependencies = {
+      attachments: {} as never,
+      authenticator,
+      notificationPreviews: previews,
+    };
+    expect(advertisedCapabilities(capabilityDependencies)).toContain("notification-preview-v1");
+    expect(advertisedCapabilities({ attachments: {} as never, authenticator })).not.toContain(
+      "notification-preview-v1",
+    );
+    const command = {
+      type: "notification.preview.register",
+      installationId: "phone-installation",
+      accountId: `acct_${crypto.randomUUID()}`,
+      keyId: Buffer.alloc(16).toString("base64url"),
+      key: Buffer.alloc(32).toString("base64url"),
+    };
+    const headers = { authorization: "Bearer native-phone" };
+    const response = await injectRpcRequest(app, "commands.dispatch", command, headers);
+    expect(rpcData(response)).toEqual({
+      type: command.type,
+      installationId: command.installationId,
+      keyId: command.keyId,
+      registered: true,
+    });
+    expect(register).toHaveBeenCalledWith({
+      ...command,
+      userId: session.user.id,
+      authSessionId: session.id,
+    });
+    expect(response.body).not.toContain(command.key);
+    const invalid = await injectRpcRequest(
+      app,
+      "commands.dispatch",
+      { ...command, key: "secret-invalid-key" },
+      headers,
+    );
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body).not.toContain("secret-invalid-key");
+    expect(register).toHaveBeenCalledTimes(1);
+    const spoof = await injectRpcRequest(
+      app,
+      "commands.dispatch",
+      { ...command, userId: createId("user") },
+      headers,
+    );
+    expect(spoof.statusCode).toBe(400);
+    const removal = {
+      type: "notification.preview.unregister",
+      installationId: command.installationId,
+      keyId: command.keyId,
+    };
+    expect(rpcData(await injectRpcRequest(app, "commands.dispatch", removal, headers))).toEqual({
+      ...removal,
+      unregistered: true,
+    });
+    expect(unregister).toHaveBeenCalledWith({
+      ...removal,
+      userId: session.user.id,
+      authSessionId: session.id,
+    });
+  } finally {
+    await app.close();
+  }
+});

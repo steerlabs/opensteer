@@ -9,6 +9,8 @@ import {
   type RegisterNotificationDeviceRequest,
 } from "@opensteer/control-plane-protocol";
 import {
+  NotificationPreviewEnvelopeSchema,
+  type NotificationPreviewEnvelope,
   maximumNotificationDevicesPerAccount,
   notificationExpiryMilliseconds,
   type DeploymentId,
@@ -39,6 +41,8 @@ const fanOutRecipientChunkSize = 32;
 
 /** One delivery the worker has taken responsibility for. */
 export interface ClaimedNotificationDelivery {
+  readonly installationId: string;
+  readonly preview: NotificationPreviewEnvelope | null;
   readonly apsEnvironment: "development" | "production" | null;
   readonly attempts: number;
   readonly deploymentId: DeploymentId;
@@ -207,6 +211,7 @@ export class ControlPlaneNotificationStore {
           leaseToken: null,
           providerOutcome: input.outcome.slice(0, 512),
           status: "dropped",
+          preview: null,
         })
         .where("deviceId", "=", input.deviceId)
         .where("status", "=", "pending")
@@ -299,13 +304,17 @@ export class ControlPlaneNotificationStore {
       publication.recipientAccountIds,
     );
     if (reachable.length === 0) return 0;
-    const devices: { readonly id: string }[] = [];
+    const devices: {
+      readonly id: string;
+      readonly accountId: ControlPlaneAccountId;
+      readonly installationId: string;
+    }[] = [];
     for (let index = 0; index < reachable.length; index += fanOutRecipientChunkSize) {
       const chunk = reachable.slice(index, index + fanOutRecipientChunkSize);
       devices.push(
         ...(await transaction
           .selectFrom("notificationDevices")
-          .select(["id"])
+          .select(["id", "accountId", "installationId"])
           .where("accountId", "in", chunk)
           .where("disabledAt", "is", null)
           .where(
@@ -321,11 +330,17 @@ export class ControlPlaneNotificationStore {
     await transaction
       .insertInto("notificationDeliveries")
       .values(
-        deviceIds.map((deviceId) => ({
+        devices.map((device) => ({
+          preview:
+            publication.previews?.find(
+              (preview) =>
+                preview.accountId === device.accountId &&
+                preview.installationId === device.installationId,
+            )?.preview ?? null,
           attempts: 0,
           createdAt: window.now,
           deploymentId: publication.deploymentId,
-          deviceId,
+          deviceId: device.id,
           expiresAt: window.expiresAt,
           kind: publication.kind,
           messageId: publication.messageId ?? null,
@@ -361,6 +376,30 @@ export class ControlPlaneNotificationStore {
             .selectNoFrom(sql<Date>`clock_timestamp()`.as("now"))
             .executeTakeFirstOrThrow()
         ).now;
+      const expired = await transaction
+        .selectFrom("notificationDeliveries")
+        .select(["notificationId", "deviceId"])
+        .where("status", "=", "pending")
+        .where("expiresAt", "<=", now)
+        .orderBy("notificationId", "asc")
+        .orderBy("deviceId", "asc")
+        .forNoKeyUpdate()
+        .skipLocked()
+        .execute();
+      for (const row of expired)
+        await transaction
+          .updateTable("notificationDeliveries")
+          .set({
+            status: "dropped",
+            preview: null,
+            completedAt: now,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            providerOutcome: "expired",
+          })
+          .where("notificationId", "=", row.notificationId)
+          .where("deviceId", "=", row.deviceId)
+          .execute();
       const rows = await transaction
         .selectFrom("notificationDeliveries")
         .innerJoin(
@@ -369,6 +408,8 @@ export class ControlPlaneNotificationStore {
           "notificationDeliveries.deviceId",
         )
         .select([
+          "notificationDeliveries.preview as preview",
+          "notificationDevices.installationId as installationId",
           "notificationDeliveries.attempts as attempts",
           "notificationDeliveries.deploymentId as deploymentId",
           "notificationDeliveries.deviceId as deviceId",
@@ -385,6 +426,7 @@ export class ControlPlaneNotificationStore {
           "notificationDevices.tokenHash as tokenHash",
         ])
         .where("notificationDeliveries.status", "=", "pending")
+        .where("notificationDeliveries.expiresAt", ">", now)
         .where("notificationDeliveries.nextAttemptAt", "<=", now)
         .where("notificationDevices.disabledAt", "is", null)
         .where((expression) =>
@@ -417,6 +459,8 @@ export class ControlPlaneNotificationStore {
           .returning("attempts")
           .executeTakeFirstOrThrow();
         claimed.push({
+          installationId: row.installationId,
+          preview: row.preview === null ? null : parsedPreview(row.preview),
           apsEnvironment: row.apsEnvironment,
           attempts: updated.attempts,
           deploymentId: row.deploymentId,
@@ -477,6 +521,7 @@ export class ControlPlaneNotificationStore {
       .updateTable("notificationDeliveries")
       .set({
         completedAt: this.#now(),
+        preview: null,
         leaseExpiresAt: null,
         leaseToken: null,
         providerOutcome: input.outcome.slice(0, 512),
@@ -612,4 +657,10 @@ function deviceFromRow(row: {
     runOutcomesEnabled: row.runOutcomesEnabled,
     updatedAt: row.updatedAt.toISOString(),
   });
+}
+
+function parsedPreview(value: unknown): NotificationPreviewEnvelope {
+  const parsed = NotificationPreviewEnvelopeSchema.safeParse(value);
+  if (!parsed.success) throw new Error("Stored notification preview is invalid");
+  return parsed.data;
 }

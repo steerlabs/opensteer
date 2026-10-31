@@ -4666,6 +4666,7 @@ export function migrationProvider() {
         "0116_screen_show": screenShowMigration,
         "0117_remove_screen_show": removeScreenShowMigration,
         "0118_person_notifications": personNotificationsMigration,
+        "0119_notification_preview_keys": notificationPreviewKeysMigration,
       };
     },
   };
@@ -6356,5 +6357,25 @@ const personNotificationsMigration: Migration = {
         `alter table agent_control_requests add constraint agent_control_requests_action_check ${definition.replace("'thread.message'::text", "'thread.message'::text, 'person.notify'::text")}`,
       )
       .execute(database);
+  },
+};
+
+export const notificationPreviewKeysMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table notification_preview_keys (
+        user_id text not null references users(id) on delete cascade,
+        installation_id text not null,
+        auth_session_id text not null references auth_sessions(id) on delete cascade,
+        account_id text not null,
+        key_id text not null,
+        encrypted_key bytea not null,
+        encryption_key_version integer not null,
+        created_at timestamptz not null,
+        updated_at timestamptz not null,
+        primary key (user_id, installation_id)
+      );
+      create index notification_preview_keys_auth_session_id on notification_preview_keys(auth_session_id);
+    `.execute(database);
   },
 };

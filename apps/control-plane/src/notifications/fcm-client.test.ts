@@ -1,3 +1,4 @@
+import { maximumPreviewMessage } from "./notification-preview.test-support.js";
 import { generateKeyPairSync } from "node:crypto";
 import { createId } from "@opensteer/core";
 import { decodeJwt } from "jose";
@@ -87,7 +88,6 @@ describe("FcmClient", () => {
     expect(JSON.parse(message?.body ?? "{}")).toEqual({
       message: {
         android: {
-          collapse_key: `${threadId}:run-failed`,
           notification: { channel_id: "default", tag: `${threadId}:run-failed` },
           priority: "high",
           ttl: "120s",
@@ -104,8 +104,8 @@ describe("FcmClient", () => {
     });
   });
 
-  it.each(["UNREGISTERED", "NOT_FOUND", "INVALID_ARGUMENT"])(
-    "ends the registration on %s",
+  it.each(["NOT_FOUND", "INVALID_ARGUMENT"])(
+    "preserves the registration on ambiguous %s",
     async (errorCode) => {
       const { instance } = client(
         () =>
@@ -116,11 +116,76 @@ describe("FcmClient", () => {
       );
 
       await expect(send(instance)).resolves.toEqual({
-        outcome: `fcm:${errorCode}`,
-        status: "unregistered",
+        outcome: `fcm:404:${errorCode}`,
+        status: "rejected",
       });
     },
   );
+
+  it("sends maximum previews data-only within the FCM application limit", async () => {
+    const { calls, instance } = client(() => new Response("{}", { status: 200 }));
+    const message = maximumPreviewMessage();
+    await instance.send({ expiresAt, message, collapseKey: "osn1_" + "x".repeat(43), token });
+    const payload = JSON.parse(calls.find((call) => call.url !== tokenUri)!.body).message;
+    const { token: target, ...application } = payload;
+    expect(target).toBe(token);
+    expect(Buffer.byteLength(JSON.stringify(application))).toBeLessThanOrEqual(4096);
+    expect(payload.notification).toBeUndefined();
+    expect(payload.android).toEqual({ priority: "high", ttl: "120s" });
+    expect(payload.data.preview).toBe(message.data.preview);
+  });
+
+  it("does not treat an untyped UNREGISTERED detail as token revocation", async () => {
+    const { instance } = client(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: { status: "NOT_FOUND", details: [{ errorCode: "UNREGISTERED" }] },
+          }),
+          { status: 404 },
+        ),
+    );
+    await expect(send(instance)).resolves.toEqual({
+      status: "rejected",
+      outcome: "fcm:404:NOT_FOUND",
+    });
+  });
+
+  it("disables only a typed UNREGISTERED FCM detail", async () => {
+    const { instance } = client(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              status: "NOT_FOUND",
+              details: [
+                {
+                  "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+                  errorCode: "UNREGISTERED",
+                },
+              ],
+            },
+          }),
+          { status: 404 },
+        ),
+    );
+    await expect(send(instance)).resolves.toEqual({
+      outcome: "fcm:UNREGISTERED",
+      status: "unregistered",
+    });
+  });
+
+  it("does not report provider bodies or thrown payloads", async () => {
+    const secret = "private-ciphertext";
+    const { instance } = client(() => {
+      throw new Error(secret);
+    });
+    expect(JSON.stringify(await send(instance))).not.toContain(secret);
+    const unknown = client(
+      () => new Response(JSON.stringify({ error: { status: secret } }), { status: 400 }),
+    );
+    expect(JSON.stringify(await send(unknown.instance))).not.toContain(secret);
+  });
 
   it("retries a throttled or broken Google", async () => {
     const { instance } = client(

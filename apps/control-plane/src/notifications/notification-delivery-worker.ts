@@ -1,6 +1,9 @@
-import { safeMessage } from "@opensteer/shared/safeMessage";
 import type { NotificationDevicePlatform } from "@opensteer/control-plane-protocol";
-import { notificationMessage, type NotificationMessage } from "./notification-message.js";
+import {
+  notificationCollapseId,
+  notificationMessage,
+  type NotificationMessage,
+} from "./notification-message.js";
 import type {
   ClaimedNotificationDelivery,
   ControlPlaneNotificationStore,
@@ -20,9 +23,8 @@ export type NotificationDeliveryWorkerStore = Pick<
 export type PushSender = (input: {
   readonly apsEnvironment: "development" | "production" | null;
   /**
-   * What a newer alert replaces on the phone: the same kind of alert about
-   * the same Thread. A reply never covers an approval still waiting on the
-   * person.
+   * Replies and failures replace the same kind of alert in this Deployment's
+   * Thread. Each Request has its own identity so another Request cannot cover it.
    */
   readonly collapseKey: string;
   readonly expiresAt: Date;
@@ -132,7 +134,7 @@ export class NotificationDeliveryWorker {
           leaseToken: delivery.leaseToken,
           nextAttemptAt: this.#backoff(delivery.attempts),
           notificationId: delivery.notificationId,
-          outcome: safeMessage(error, safeMessageOptions).slice(0, 512),
+          outcome: "notification-delivery-error",
         });
       }
     }
@@ -167,10 +169,20 @@ export class NotificationDeliveryWorker {
     const result: PushDeliveryResult = sender
       ? await sender({
           apsEnvironment: delivery.apsEnvironment,
-          collapseKey: `${delivery.threadId}:${delivery.kind}`,
+          collapseKey: notificationCollapseId(delivery),
           expiresAt: delivery.expiresAt,
           message: notificationMessage({
             deploymentId: delivery.deploymentId,
+            ...(delivery.preview
+              ? {
+                  preview: {
+                    envelope: delivery.preview,
+                    installationId: delivery.installationId,
+                    notificationId: delivery.notificationId,
+                    expiresAt: delivery.expiresAt,
+                  },
+                }
+              : {}),
             kind: delivery.kind,
             messageId: delivery.messageId ?? null,
             requestId: delivery.requestId,
@@ -230,7 +242,7 @@ export class NotificationDeliveryWorker {
       this.#onSettledFailure({
         notificationId: delivery.notificationId,
         platform: delivery.platform,
-        providerOutcome: outcome.replaceAll(delivery.token, "[redacted]"),
+        providerOutcome: outcome,
       });
     } catch {
       // Reporting cannot turn a settled delivery back into a retry.
@@ -269,19 +281,11 @@ export class NotificationDeliveryWorker {
     this.#timer.unref();
   }
 
-  #report(error: unknown): void {
+  #report(_error: unknown): void {
     try {
-      this.#onError(new Error(safeMessage(error, safeMessageOptions)));
+      this.#onError(new Error("Notification delivery failed"));
     } catch {
       // Reporting cannot stop delivery or control-plane shutdown.
     }
   }
 }
-
-const safeMessageOptions = {
-  fallback: "Notification delivery failed",
-  redactions: [
-    { pattern: /Bearer\s+[^\s]+/giu, replacement: "Bearer [redacted]" },
-    { pattern: /bearer\s+[^\s]+/gu, replacement: "bearer [redacted]" },
-  ],
-} as const;

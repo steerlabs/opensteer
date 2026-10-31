@@ -167,6 +167,18 @@ export interface AuthAccountTable {
   updatedAt: Timestamp;
 }
 
+export interface NotificationPreviewKeyTable {
+  userId: UserId;
+  installationId: string;
+  authSessionId: AuthSessionId;
+  accountId: string;
+  keyId: string;
+  encryptedKey: Buffer;
+  encryptionKeyVersion: number;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
 export interface AuthSessionTable {
   id: AuthSessionId;
   userId: UserId;
@@ -1992,6 +2004,7 @@ export interface DatabaseSchema {
   users: UserTable;
   authAccounts: AuthAccountTable;
   authSessions: AuthSessionTable;
+  notificationPreviewKeys: NotificationPreviewKeyTable;
   personalRemoteAccess: PersonalRemoteAccessTable;
   personalRemoteAccountLink: PersonalRemoteAccountLinkTable;
   personalRemotePairingCodes: PersonalRemotePairingCodeTable;

@@ -1,3 +1,4 @@
+import { notificationCollapseId } from "./notification-message.js";
 import {
   ControlPlaneAccountIdSchema,
   HostNotificationPublicationSchema,
@@ -5,6 +6,7 @@ import {
   type HostNotificationPublication,
 } from "@opensteer/control-plane-protocol";
 import {
+  NotificationPreviewEnvelopeSchema,
   createId,
   notificationExpiryMilliseconds,
   type DeploymentId,
@@ -334,6 +336,125 @@ integration("control-plane notification boundary", () => {
     expect(rows).toEqual([{ accountId: memberId, installationId: "install-beta-00001" }]);
   });
 
+  it("matches previews by Account AND installation, keeps first receipt and erases settled ciphertext", async () => {
+    const installationId = "shared-installation";
+    await registerPhone({ accountId: ownerId, installationId });
+    await registerPhone({ accountId: ownerId, installationId: "generic-installation" });
+    await registerPhone({ accountId: memberId, installationId });
+    const authority = await store.authenticateHostCredential(`Bearer ${hostCredential}`);
+    const preview = NotificationPreviewEnvelopeSchema.parse({
+      version: 1,
+      keyId: Buffer.alloc(16).toString("base64url"),
+      nonce: Buffer.alloc(12).toString("base64url"),
+      ciphertext: Buffer.alloc(17).toString("base64url"),
+    });
+    const published = publication({
+      recipientAccountIds: [ownerId, memberId],
+      previews: [{ accountId: ownerId, installationId, preview }],
+    });
+    await expect(notifications.ingest(authority, published)).resolves.toEqual({ deliveries: 3 });
+    await notifications.ingest(authority, {
+      ...published,
+      previews: [{ accountId: memberId, installationId, preview }],
+    });
+    const rows = await database
+      .selectFrom("notificationDeliveries")
+      .innerJoin("notificationDevices", "notificationDevices.id", "notificationDeliveries.deviceId")
+      .select([
+        "notificationDevices.accountId",
+        "notificationDevices.installationId",
+        "notificationDeliveries.preview",
+      ])
+      .execute();
+    expect(rows.filter((row) => row.preview !== null)).toEqual([
+      { accountId: ownerId, installationId, preview },
+    ]);
+    const sent = await sendDue();
+    expect(sent).toHaveLength(3);
+    expect(sent.filter((input) => input.message.data.preview !== undefined)).toHaveLength(1);
+    expect(
+      sent.find((input) => input.message.data.preview !== undefined)?.message.data,
+    ).toMatchObject({
+      installationId,
+      notificationId: published.notificationId,
+      expiresAt: published.expiresAt,
+      preview: JSON.stringify(preview),
+    });
+    expect(
+      (await database.selectFrom("notificationDeliveries").select("preview").execute()).every(
+        (row) => row.preview === null,
+      ),
+    ).toBe(true);
+  });
+
+  it("erases expired previews even for disabled phones and future retry times", async () => {
+    await registerPhone({ accountId: ownerId, installationId: "expiry-installation" });
+    const authority = await store.authenticateHostCredential(`Bearer ${hostCredential}`);
+    const preview = NotificationPreviewEnvelopeSchema.parse({
+      version: 1,
+      keyId: Buffer.alloc(16).toString("base64url"),
+      nonce: Buffer.alloc(12).toString("base64url"),
+      ciphertext: Buffer.alloc(17).toString("base64url"),
+    });
+    const published = publication({
+      previews: [{ accountId: ownerId, installationId: "expiry-installation", preview }],
+    });
+    await notifications.ingest(authority, published);
+    await database.updateTable("notificationDevices").set({ disabledAt: now }).execute();
+    await database
+      .updateTable("notificationDeliveries")
+      .set({ nextAttemptAt: new Date(now.getTime() + 86400000) })
+      .execute();
+    now = new Date(Date.parse(published.expiresAt));
+    expect(await notifications.claimDueDeliveries({ now })).toEqual([]);
+    expect(
+      await database
+        .selectFrom("notificationDeliveries")
+        .select(["status", "preview", "providerOutcome"])
+        .execute(),
+    ).toEqual([{ status: "dropped", preview: null, providerOutcome: "expired" }]);
+  });
+
+  it("retains preview only during unexpired retries and clears it when disabling a device", async () => {
+    await registerPhone({ accountId: ownerId, installationId: "retry-installation" });
+    const authority = await store.authenticateHostCredential(`Bearer ${hostCredential}`);
+    const preview = NotificationPreviewEnvelopeSchema.parse({
+      version: 1,
+      keyId: Buffer.alloc(16).toString("base64url"),
+      nonce: Buffer.alloc(12).toString("base64url"),
+      ciphertext: Buffer.alloc(17).toString("base64url"),
+    });
+    await notifications.ingest(
+      authority,
+      publication({
+        previews: [{ accountId: ownerId, installationId: "retry-installation", preview }],
+      }),
+    );
+    const delivery = (await notifications.claimDueDeliveries({ now }))[0]!;
+    await notifications.retryDelivery({
+      ...delivery,
+      nextAttemptAt: new Date(now.getTime() + 1000),
+      outcome: "retry",
+    });
+    expect(
+      (
+        await database
+          .selectFrom("notificationDeliveries")
+          .select("preview")
+          .executeTakeFirstOrThrow()
+      ).preview,
+    ).toEqual(preview);
+    await notifications.disableDevice({ ...delivery, outcome: "fcm:UNREGISTERED" });
+    expect(
+      (
+        await database
+          .selectFrom("notificationDeliveries")
+          .select("preview")
+          .executeTakeFirstOrThrow()
+      ).preview,
+    ).toBeNull();
+  });
+
   it("turns one publication into a delivery for every reachable Account's phone", async () => {
     const owner = await registerPhone({ accountId: ownerId });
     const member = await registerPhone({ accountId: memberId });
@@ -377,7 +498,7 @@ integration("control-plane notification boundary", () => {
           },
           title: "Opensteer",
         },
-        collapseKey: `${published.threadId}:reply-published`,
+        collapseKey: notificationCollapseId(published),
         token: "r".repeat(64),
       },
     ]);

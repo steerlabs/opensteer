@@ -19,7 +19,14 @@ const FcmFailureSchema = z
     error: z
       .object({
         details: z
-          .array(z.object({ errorCode: z.string().min(1).max(128) }).loose())
+          .array(
+            z
+              .object({
+                "@type": z.string().optional(),
+                errorCode: z.string().min(1).max(128).optional(),
+              })
+              .loose(),
+          )
           .max(16)
           .optional(),
         message: z.string().max(512).optional(),
@@ -74,21 +81,21 @@ export class FcmClient {
           body: JSON.stringify({
             message: {
               android: {
-                // `collapse_key` only folds messages Google is still holding
-                // for an offline phone; `tag` is what replaces a notification
-                // already in the drawer, the way `apns-collapse-id` does on
-                // iOS. Both name the Thread and kind, so each shows one alert.
-                collapse_key: input.collapseKey,
-                // Android takes sound and importance from the channel, not the
-                // message, so the channel the app defines has to be named
-                // here; without it the phone falls back to a channel of
-                // `expo-notifications`' own making.
-                notification: { channel_id: androidNotificationChannelId, tag: input.collapseKey },
+                ...(input.message.data.preview
+                  ? {}
+                  : {
+                      notification: {
+                        channel_id: androidNotificationChannelId,
+                        tag: input.collapseKey,
+                      },
+                    }),
                 priority: "high",
                 ttl: `${remainingSeconds}s`,
               },
               data: input.message.data,
-              notification: { body: input.message.body, title: input.message.title },
+              ...(input.message.data.preview
+                ? {}
+                : { notification: { body: input.message.body, title: input.message.title } }),
               token: input.token,
             },
           }),
@@ -102,18 +109,15 @@ export class FcmClient {
           signal: AbortSignal.timeout(15_000),
         },
       );
-    } catch (error) {
-      return { outcome: fcmTransportOutcome(error), status: "retry" };
+    } catch {
+      return { outcome: "fcm:transport", status: "retry" };
     }
     if (response.ok) {
       await response.body?.cancel();
       return { outcome: "accepted", status: "delivered" };
     }
     const reason = await fcmReason(response);
-    if (reason === "UNREGISTERED" || reason === "NOT_FOUND" || reason === "INVALID_ARGUMENT") {
-      // FCM answers INVALID_ARGUMENT for a malformed registration token as well
-      // as for a malformed message; the message shape here is fixed, so the
-      // token is what changed.
+    if (reason === "UNREGISTERED") {
       return { outcome: `fcm:${reason}`, status: "unregistered" };
     }
     if (response.status === 429 || response.status >= 500) {
@@ -178,9 +182,27 @@ async function fcmReason(response: Response): Promise<string> {
   }
   const parsed = FcmFailureSchema.safeParse(body);
   if (!parsed.success) return "unknown";
-  return parsed.data.error.details?.[0]?.errorCode ?? parsed.data.error.status ?? "unknown";
+  if (
+    parsed.data.error.details?.some(
+      (detail) =>
+        detail["@type"] === "type.googleapis.com/google.firebase.fcm.v1.FcmError" &&
+        detail.errorCode === "UNREGISTERED",
+    )
+  )
+    return "UNREGISTERED";
+  const status = parsed.data.error.status;
+  return status && fcmReasons.has(status) ? status : "unknown";
 }
 
-function fcmTransportOutcome(error: unknown): string {
-  return error instanceof Error ? `fcm:transport:${error.message.slice(0, 200)}` : "fcm:transport";
-}
+const fcmReasons = new Set([
+  "INVALID_ARGUMENT",
+  "NOT_FOUND",
+  "UNAVAILABLE",
+  "INTERNAL",
+  "RESOURCE_EXHAUSTED",
+  "QUOTA_EXCEEDED",
+  "SENDER_ID_MISMATCH",
+  "THIRD_PARTY_AUTH_ERROR",
+  "UNAUTHENTICATED",
+  "PERMISSION_DENIED",
+]);

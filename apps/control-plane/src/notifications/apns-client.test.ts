@@ -1,3 +1,4 @@
+import { maximumPreviewMessage } from "./notification-preview.test-support.js";
 import { generateKeyPairSync } from "node:crypto";
 import { createId } from "@opensteer/core";
 import { decodeProtectedHeader, decodeJwt } from "jose";
@@ -84,11 +85,54 @@ describe("ApnsClient", () => {
     expect(request?.headers["apns-collapse-id"]).toBe(`${threadId}:request-opened`);
     expect(request?.headers["apns-expiration"]).toBe(String(expiresAt.getTime() / 1_000));
     expect(JSON.parse(request?.body ?? "{}")).toMatchObject({
-      aps: { alert: { body: "Opensteer needs your approval", title: "Opensteer" } },
+      aps: {
+        alert: { body: "Opensteer needs you", title: "Opensteer" },
+        "thread-id": `${deploymentId}:${threadId}`,
+      },
       deploymentId,
       kind: "request-opened",
       threadId,
     });
+  });
+
+  it("fits a maximum preview in APNs and requests native decryption", async () => {
+    const transport = vi.fn<ApnsTransport>(async () => ({ body: "", status: 200 }));
+    const message = maximumPreviewMessage();
+    await client(transport).send({
+      apsEnvironment: "development",
+      expiresAt,
+      message,
+      collapseKey: "osn1_" + "x".repeat(43),
+      token,
+    });
+    const request = transport.mock.calls[0]![0];
+    expect(Buffer.byteLength(request.body)).toBeLessThanOrEqual(4096);
+    const payload = JSON.parse(request.body);
+    expect(payload.aps).toEqual({
+      alert: { body: "Opensteer needs you", title: "Opensteer" },
+      sound: "default",
+      "mutable-content": 1,
+      "thread-id": `${message.data.deploymentId}:${message.data.threadId}`,
+    });
+    expect(payload.preview).toBe(message.data.preview);
+  });
+
+  it("does not expose arbitrary provider or transport text", async () => {
+    const secret = "private-ciphertext";
+    expect(
+      JSON.stringify(
+        await send(
+          client(async () => {
+            throw new Error(secret);
+          }),
+        ),
+      ),
+    ).not.toContain(secret);
+    expect(
+      JSON.stringify(
+        await send(client(async () => ({ body: JSON.stringify({ reason: secret }), status: 400 }))),
+      ),
+    ).not.toContain(secret);
   });
 
   it("reuses one provider token inside its lifetime and mints a new one after", async () => {

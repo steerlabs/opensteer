@@ -83,6 +83,8 @@ const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   compatibleModelHint: "packages/harness/src/compatible-endpoint.ts",
   createPrivateFileAtomically: "packages/shared/src/atomicPrivateFile.ts",
   decodeBase64Url: "packages/shared/src/base64url.ts",
+  canonicalBase64urlBytes: "packages/shared/src/base64url.ts",
+  canonicalBase64urlByteLength: "packages/shared/src/base64url.ts",
   Deferred: "packages/harness/src/deferred.ts",
   delay: "packages/shared/src/delay.ts",
   describeConnectionAccess: "packages/client/src/connections/connection-resolver.ts",

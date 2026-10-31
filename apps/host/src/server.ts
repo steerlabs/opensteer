@@ -348,6 +348,7 @@ const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeyS
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
@@ -1629,6 +1630,32 @@ export async function createHostServer(
         });
         dependencies.realtime.publishNotificationPreference(userId, preference);
         return { type: command.type, ...preference };
+      }
+      case "notification.preview.register":
+      case "notification.preview.unregister": {
+        const previews = dependencies.notificationPreviews;
+        if (!previews)
+          throw new OpensteerError({
+            code: "bad_request",
+            message: "Notification previews are unavailable",
+          });
+        const identity = { userId, authSessionId: session.id };
+        if (command.type === "notification.preview.register") {
+          await previews.register({ ...command, ...identity });
+          return {
+            type: command.type,
+            installationId: command.installationId,
+            keyId: command.keyId,
+            registered: true,
+          };
+        }
+        await previews.unregister({ ...command, ...identity });
+        return {
+          type: command.type,
+          installationId: command.installationId,
+          keyId: command.keyId,
+          unregistered: true,
+        };
       }
       case "viewer.timeZone.update":
         return {
@@ -3079,11 +3106,12 @@ export async function advertisedBootstrapMethods(
 export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
-    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys"
+    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys" | "notificationPreviews"
   >,
 ): readonly HostCapability[] {
   return [
     "chat-attachments",
+    ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-v1",
     "voice-agent-v1",
     "thread-titles-v1",
