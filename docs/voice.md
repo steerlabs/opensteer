@@ -1,16 +1,17 @@
 # Voice
 
 Voice is an input and output mode of the person's client, like dictation. A
-call can only do what that client already does: send the person's words to
-Chat, change what the screen shows, and tell the person things. Nothing about a
+call has its own agent that decides, turn by turn, whether to answer, change
+what the screen shows, or hand work to Chat. It acts only through the client
+holding the call, so it can do nothing that client could not. Nothing about a
 call is durable, and no voice state carries authority.
 
 ## Ownership
 
 - **Client** ([`packages/client/src/voice`](../packages/client/src/voice)) owns
-  the call: microphone, WebRTC, routing what was heard, and choosing what to
-  say. Audio flows between the device and the vendor only; it never reaches a
-  Host or Runner.
+  the call: microphone, WebRTC, carrying out the agent's tool calls, and what
+  the agent is told the person sees. Audio flows between the device and the
+  vendor only; it never reaches a Host or Runner.
 - **Host** relays `voice.*` without keeping state. Every call, not just start,
   re-resolves the authorized profile for (user, environment, account), so
   revocation ends a call within one lease.
@@ -18,7 +19,8 @@ call is durable, and no voice state carries authority.
   credential never leaves that computer. It owns the call's life: idempotent
   start per client-chosen session id, one call per person per Runner (the
   newest replaces the older), a renewable lease and a hard cap
-  ([`voice.ts`](../packages/protocol/src/voice.ts)).
+  ([`voice.ts`](../packages/protocol/src/voice.ts)), and the agent's pending
+  tool calls.
 
 The vendor sits behind `VoiceProvider` and the platform behind
 `VoiceMediaPort` ([contract](../packages/client/src/voice/contract.ts)). A
@@ -28,38 +30,54 @@ implements the same provider without the Runner.
 ## Codex realtime
 
 Stage 1 uses Codex's realtime voice on a ChatGPT plan. It is an experimental,
-undocumented Codex API; every engine pin bump must re-qualify a live call.
+undocumented Codex API; every engine pin bump must re-qualify a live call
+(`pnpm test:engines` drives one, with speech, on the person's own login).
 
-- Only V3 over WebRTC works on a plan, and the app-server defaults WebRTC to
-  V1, which the plan path refuses. Always send `version: "v3"`.
+- Only V3 over WebRTC works on a plan; the websocket transport needs an API
+  key. The app-server defaults WebRTC to V1, which the plan path refuses, so
+  always send `version: "v3"`. Text output needs V2, so the call speaks.
 - The browser's `oai-events` data channel delivers the voice events (the
   person's finished utterance is a user `turn.done`). Never write to that
   channel: an event the backend does not accept closes the call.
-- Every voice handoff starts or steers a Codex turn on the attached thread,
-  and nothing turns that off. The call therefore runs on its own app-server
-  and ephemeral thread with the title-generation lockdown (no tools, MCP,
-  skills or project instructions; read-only; interactions refused), and any
-  turn that starts is interrupted at once.
+- The voice model is generative: it fills, paraphrases and claims to act
+  whatever its instructions say, so it is never the one that acts. Codex
+  delegates each finished utterance to a turn of the call's own thread; that
+  turn is the agent, and the voice speaks its final message only after its
+  tools have returned. Keep Codex's built-in realtime prompt and its automatic
+  hand-back: overriding either lets the voice speak for itself.
+- The agent's thread keeps the title-generation lockdown (read-only, no MCP,
+  skills, project instructions or approvals) and gets exactly the dynamic
+  tools the client carries out, at low reasoning effort for latency.
+  `thread/inject_items` updates its context, including mid-turn.
+- `thread/realtime/appendText` adds context only; it never starts a turn.
 - Codex keeps a TRACE SQLite log, including realtime events, in the account's
   state home with its own 10-day retention, exactly as Codex's own voice does;
   no setting disables it. The call cannot move that home: a fresh one blocks
   app-server startup until it has backfilled every session in the Codex home.
   Only the call's text `log_dir` lives in its private temporary directory.
-- The voice model is generative. Instructions do not stop it answering simple
-  questions itself or claiming it will act, and it does not follow structured
-  formats. So it is never the router: every finished utterance goes to Chat
-  unless the client's own navigation grammar takes it, and Chat stays the
-  source of truth. Text sent with `appendSpeech` is spoken as a faithful
-  paraphrase, shortened when long.
 
-## Routing and speaking
+## The call's agent
 
-- Navigation takes only whole utterances that start with a navigation verb
-  and name exactly one Chat, task or place; "open" is not one ("open a PR" is
-  work). Everything else is sent to Chat verbatim, as the person's message.
+- No rule routes an utterance. The agent's instructions explain what it is
+  for and what it cannot do (it forgets everything when the call ends and
+  cannot do work itself), and it decides.
+- Tool calls reach the device by long-polling `voice.next`. The Runner keeps a
+  call until it is answered and delivers it again, so the client carries out
+  each call id at most once per session and repeats its first answer. An
+  unanswered call fails with an unknown outcome, never as "nothing happened".
+- Links name exactly what was offered: a place link is an opaque per-call
+  reference to the exact destination, including an owner view's generation,
+  and resolves only while that destination is still offered.
+- Hand-off is the agent's decision but the person's words: Chat receives the
+  person's own recent utterances verbatim, never text the agent wrote. Titles
+  and pages in the agent's context are untrusted, and Chat treats a human
+  message as instructions.
 - While a call is on, the client speaks Chat's new durable replies and
   announces new "needs you" Requests by Thread title only, never their
   contents. Approvals still need a tap or Face ID.
+- A call negotiates the agent with `voice-agent-v1` on Host and Runner. Without
+  it the call is legacy: the client sends every finished utterance to Chat
+  verbatim and nothing else changes the screen.
 
 ## Privacy
 
