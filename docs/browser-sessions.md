@@ -461,11 +461,17 @@ nonsecret tombstone to refuse stale tickets and reconcile Host DB rollback.
 Native profile storage belongs permanently to its bound computer, storage root
 and engine. Creation may leave a profile unplaced; its first supported open fixes
 that placement. Reconnect, update, eviction and reenrollment cannot move it.
-An exclusive OS root lock covers the engine's writing lifetime, including retained
-Electron Sessions. Missing native data, root identity or mismatched markers refuse
-opening; never create an empty replacement, use another computer or substitute
-Guest. Chromium owns recovery within its databases; marker validation is not an
-internal corruption check.
+Missing native data, root identity or mismatched markers refuse opening; never
+create an empty replacement, use another computer or substitute Guest. Chromium
+owns recovery within its databases; marker validation is not an internal
+corruption check.
+
+The caller holds exclusive ownership of the profile root for its process lifetime:
+the desktop application lock covers its Deployment roots, and the standalone
+runtime holds an OS file lock. Logical runtime restarts may re-acquire a root in
+the same process, but cannot erase directories still retained by Electron
+Sessions. Their deletion tombstones are completed after process exit, before
+any persistent Session opens that directory again.
 
 The [storage contract](../packages/protocol/src/browser-profile-storage.ts) advances
 `vault` → `initializing` → `local` once. Conversion freezes one exact vault revision

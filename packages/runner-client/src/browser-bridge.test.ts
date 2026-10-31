@@ -10,7 +10,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
 import { LocalBrowserRuntimeBridge } from "./browser-bridge.js";
 
-async function fixture() {
+async function fixture(capabilities: object = {}) {
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
@@ -20,6 +20,7 @@ async function fixture() {
         sessionCount: 1,
         profileHostCount: 1,
         checkpointFailures: 0,
+        ...capabilities,
       }),
     );
   });
@@ -53,6 +54,22 @@ async function fixture() {
 }
 
 describe("LocalBrowserRuntimeBridge", () => {
+  it("advertises only capabilities reported by the prepared runtime, with exact storage identity", async () => {
+    const localProfileStorage = { storageInstanceId: randomUUID(), engine: "electron" };
+    const f = await fixture({ localProfiles: 1, localProfileStorage, initialNavigationVersion: 1 });
+    const old = await fixture();
+    try {
+      expect(await f.bridge.capabilities()).toEqual({
+        localProfiles: 1,
+        localProfileStorage,
+        initialNavigationVersion: 1,
+      });
+      expect(await old.bridge.capabilities()).toEqual({});
+    } finally {
+      await f.close();
+      await old.close();
+    }
+  });
   it("waits for negotiated readiness rather than the transport upgrade", async () => {
     const f = await fixture();
     const held = gate({ label: "runtime initial page", deadlineMs: 2000 });

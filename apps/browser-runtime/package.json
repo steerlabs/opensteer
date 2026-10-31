@@ -5,8 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsup",
-    "dev": "tsx watch src/main.ts",
+    "build": "tsup --config tsup.config.ts",
+    "dev": "tsup --watch --onSuccess 'node dist/main.js'",
     "start": "node dist/main.js",
     "test": "pnpm -w exec vitest run apps/browser-runtime",
     "typecheck": "tsc --noEmit"

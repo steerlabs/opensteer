@@ -294,6 +294,7 @@ describe("BrowserRuntime", () => {
 
     const attachment = await runtime.attach("signed-ticket", sink);
     expect(runtime.health()).toEqual({
+      initialNavigationVersion: 1,
       checkpointFailures: 0,
       profileHostCount: 1,
       runtimeId: "runtime_test",

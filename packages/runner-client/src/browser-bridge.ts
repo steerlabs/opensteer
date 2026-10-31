@@ -30,6 +30,12 @@ const LocalHealthSchema = z.object({
   runtimeId: z.string().min(1).max(255),
   sessionId: z.string().max(255).nullable().optional(),
   state: z.enum(["closed", "closing", "idle", "ready", "starting"]),
+  localProfiles: z.literal(1).optional().catch(undefined),
+  localProfileStorage: z
+    .object({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema })
+    .optional()
+    .catch(undefined),
+  initialNavigationVersion: z.literal(1).optional().catch(undefined),
 });
 
 export interface BrowserChannelSink {
@@ -160,27 +166,43 @@ export class LocalBrowserRuntimeBridge {
     this.#attachKeysHeader = encoded;
   }
 
+  async #readHealth() {
+    const response = await fetch(new URL("/health", this.#url), {
+      headers: { accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok) throw new BrowserRelayError("Browser health is unavailable.");
+    const health = LocalHealthSchema.parse(
+      JSON.parse(await readBoundedText(response, { maximumBytes: 32 * 1_024 })),
+    );
+    if (health.runtimeId !== this.#runtimeId)
+      throw new BrowserRelayError("Browser runtime identity does not match configuration.");
+    return health;
+  }
+
+  /** Facts from the running engine, before the Host negotiates its auxiliary stream. */
+  async capabilities() {
+    const health = await this.#readHealth();
+    return {
+      ...(health.localProfiles === 1 && health.localProfileStorage
+        ? { localProfiles: 1 as const, localProfileStorage: health.localProfileStorage }
+        : {}),
+      ...(health.initialNavigationVersion === 1 ? { initialNavigationVersion: 1 as const } : {}),
+    };
+  }
+
   async health(): Promise<BrowserRuntimeHealth> {
     const checkedAt = new Date().toISOString();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2_000);
-    timeout.unref();
     try {
-      const response = await fetch(new URL("/health", this.#url), {
-        headers: { accept: "application/json" },
-        redirect: "error",
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`health returned ${response.status}`);
-      const text = await readBoundedText(response, {
-        maximumBytes: 32 * 1_024,
-        sizeError: () => new Error("Browser health response exceeded its limit."),
-      });
-      const health = LocalHealthSchema.parse(JSON.parse(text));
-      if (health.runtimeId !== this.#runtimeId) {
-        throw new Error("browser runtime identity does not match configuration");
-      }
-      return { ...health, sessionId: health.sessionId ?? null, checkedAt, detail: null };
+      const health = await this.#readHealth();
+      return {
+        runtimeId: health.runtimeId,
+        state: health.state,
+        sessionId: health.sessionId ?? null,
+        checkedAt,
+        detail: null,
+      };
     } catch {
       return {
         checkedAt,
@@ -189,8 +211,6 @@ export class LocalBrowserRuntimeBridge {
         sessionId: null,
         state: "unavailable",
       };
-    } finally {
-      clearTimeout(timeout);
     }
   }
 

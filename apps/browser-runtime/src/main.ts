@@ -6,8 +6,10 @@ import {
   BrowserRuntimeServer,
   Ed25519AttachTicketVerifier,
   HttpBrowserProfileStateClient,
+  HttpProfileInitializationClient,
   defaultAttachTicketReplayLedgerPath,
   sessionFilesRoot,
+  type BrowserRuntimeOptions,
 } from "@opensteer/browser-runtime-core";
 import { randomUUID } from "node:crypto";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
@@ -21,9 +23,20 @@ import {
 } from "@opensteer/runner-client";
 import { PlaywrightChromiumLauncher } from "./browser/playwright-launcher.js";
 import { readBrowserRuntimeConfig } from "./config.js";
+import { acquireProfileRootLock } from "./profile-root-lock.js";
 
 async function main(): Promise<void> {
   const config = readBrowserRuntimeConfig();
+  const releaseRoot = await acquireProfileRootLock(config.profileRoot);
+  try {
+    await start(config);
+  } catch (error) {
+    releaseRoot();
+    throw error;
+  }
+}
+
+async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promise<void> {
   const publicKeys = new Map(config.publicKeys);
   const staticKeyIds = new Set(publicKeys.keys());
   const relayKeyIds = new Set<string>();
@@ -39,7 +52,7 @@ async function main(): Promise<void> {
     ...(config.proxyUrl ? { proxyUrl: config.proxyUrl } : {}),
   });
   await launcher.prepare();
-  const runtimeOptions = {
+  const runtimeOptions: BrowserRuntimeOptions = {
     localProfiles: { root: config.profileRoot },
     checkpointIntervalMs: config.checkpointIntervalMs,
     checkpointRetryMs: config.checkpointRetryMs,
@@ -52,6 +65,15 @@ async function main(): Promise<void> {
         ? { trustedHttpOrigin: config.profileStateTrustedHttpOrigin }
         : {},
     ),
+    initializationClient: new HttpProfileInitializationClient(
+      config.profileStateTrustedHttpOrigin
+        ? { trustedHttpOrigin: config.profileStateTrustedHttpOrigin }
+        : {},
+    ),
+    onOpenTiming: (timing) =>
+      process.stdout.write(
+        `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
+      ),
     runtimeId: config.runtimeId,
     sessionFilesRoot: sessionFilesRoot(config.profileRoot),
     ticketVerifier,
@@ -93,26 +115,34 @@ async function main(): Promise<void> {
     port: config.port,
     runtime,
   });
+  await runtime.prepare();
   const address = await server.start();
   process.stdout.write(
     `${JSON.stringify({ event: "browser-runtime.ready", host: address.host, port: address.port })}\n`,
   );
 
-  const relay = config.relay
-    ? await startBrowserRelay({
-        bridgeToken: config.relay.bridgeToken,
-        controlCaPath: config.relay.controlCaPath,
-        dataDirectory: config.relay.dataDirectory,
-        enrollmentToken: config.relay.enrollmentToken,
-        hostUrl: config.relay.hostUrl,
-        headless: config.headless,
-        passkeys: launcher.passkeys,
-        localPort: address.port,
-        name: config.relay.name,
-        mode: config.relay.mode,
-        runtimeId: config.runtimeId,
-      })
-    : undefined;
+  const relay = await (async () => {
+    try {
+      return config.relay
+        ? await startBrowserRelay({
+            bridgeToken: config.relay.bridgeToken,
+            controlCaPath: config.relay.controlCaPath,
+            dataDirectory: config.relay.dataDirectory,
+            enrollmentToken: config.relay.enrollmentToken,
+            hostUrl: config.relay.hostUrl,
+            headless: config.headless,
+            passkeys: launcher.passkeys,
+            localPort: address.port,
+            name: config.relay.name,
+            mode: config.relay.mode,
+            runtimeId: config.runtimeId,
+          })
+        : undefined;
+    } catch (error) {
+      await server.close();
+      throw error;
+    }
+  })();
 
   let closing = false;
   const close = async () => {
@@ -120,6 +150,7 @@ async function main(): Promise<void> {
     closing = true;
     await relay?.close();
     await server.close();
+    // The OS closes the root-lock descriptor when this process exits.
   };
   process.once("SIGINT", () => void close().catch(fail));
   process.once("SIGTERM", () => void close().catch(fail));
@@ -165,6 +196,7 @@ async function startBrowserRelay(options: {
     runtimeId: options.runtimeId,
     url: new URL(`http://127.0.0.1:${options.localPort}`),
   });
+  const capabilities = await bridge.capabilities();
   const module = new BrowserModuleRelay(bridge);
   const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
   const connection = new RunnerModuleConnection({
@@ -176,6 +208,7 @@ async function startBrowserRelay(options: {
       modules: {
         browser: {
           runtimeId: options.runtimeId,
+          ...capabilities,
           profileSnapshotVersion: browserProfileSnapshotVersion,
           stateImport: true,
           fileStaging: true,

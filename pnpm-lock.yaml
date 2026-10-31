@@ -505,9 +505,6 @@ importers:
       electron-updater:
         specifier: 6.8.11
         version: 6.8.11
-      fs-native-extensions:
-        specifier: 1.5.2
-        version: 1.5.2
       sharp:
         specifier: 'catalog:'
         version: 0.35.5(@types/node@26.2.0)
@@ -1321,9 +1318,6 @@ importers:
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../shared
-      fs-native-extensions:
-        specifier: 1.5.2
-        version: 1.5.2
       ws:
         specifier: 'catalog:'
         version: 8.21.3

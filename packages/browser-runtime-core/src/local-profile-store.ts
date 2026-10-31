@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, openSync } from "node:fs";
 import { lstat, mkdir, readdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { z } from "zod";
 import {
   FrozenProfileSeedSchema,
@@ -18,11 +16,7 @@ import {
   replacePrivateFileAtomically,
   securePrivateDirectory,
 } from "@opensteer/shared/atomicPrivateFile";
-import {
-  ensurePrivateDirectory,
-  noFollowFlag,
-  syncDirectory,
-} from "@opensteer/shared/privateFiles";
+import { ensurePrivateDirectory, syncDirectory } from "@opensteer/shared/privateFiles";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { BrowserRuntimeError } from "./errors.js";
 
@@ -35,9 +29,10 @@ const markerSchema = z.strictObject({
 });
 type Marker = z.infer<typeof markerSchema>;
 type Tombstone = Extract<HeldLocalProfile, { phase: "deleted" }>;
-// Electron owns fromPath Sessions beyond logical runtime shutdown. Keep the descriptor
-// reachable until process exit, even when the runtime itself is collected.
-const retainedLocks = new Set<LocalProfileStore>();
+// Root exclusivity across processes belongs to the caller. Logical runtimes may
+// restart while Electron's path-keyed Sessions still own their native stores.
+const activeRoots = new Set<string>();
+const retainedDirectories = new Set<string>();
 
 export function sameLocalBinding(left: LocalProfileBinding, right: LocalProfileBinding): boolean {
   return Object.keys(LocalProfileBindingSchema.shape).every(
@@ -54,22 +49,14 @@ function invalid(message = "The local browser profile storage is invalid."): Bro
 /** The one disk authority shared by Electron and Chromium; callers serialize each profile. */
 export class LocalProfileStore {
   private readonly attempted = new Set<string>();
-  private retained = false;
   private closed = false;
   readonly root: string;
   readonly storageInstanceId: string;
   readonly engine: BrowserEngine;
-  private readonly descriptor: number;
-  private constructor(
-    root: string,
-    storageInstanceId: string,
-    engine: BrowserEngine,
-    descriptor: number,
-  ) {
+  private constructor(root: string, storageInstanceId: string, engine: BrowserEngine) {
     this.root = root;
     this.storageInstanceId = storageInstanceId;
     this.engine = engine;
-    this.descriptor = descriptor;
   }
 
   static async acquire(root: string, engine: BrowserEngine): Promise<LocalProfileStore> {
@@ -77,21 +64,15 @@ export class LocalProfileStore {
       throw new TypeError("localProfiles.root must be an absolute normalized path.");
     await securePrivateDirectory(root);
     const canonical = await realpath(root);
-    const descriptor = openSync(
-      path.join(canonical, ".owner.lock"),
-      constants.O_CREAT | constants.O_RDWR | noFollowFlag(),
-      0o600,
-    );
+    if (activeRoots.has(canonical))
+      throw invalid("This local browser profile storage is already in use.");
+    activeRoots.add(canonical);
     try {
-      // Native addon resolution must stay relative to the installed app after bundling.
-      const { tryLock } = createRequire(import.meta.url)("fs-native-extensions") as {
-        tryLock(descriptor: number): boolean;
-      };
-      if (!tryLock(descriptor))
-        throw invalid("This local browser profile storage is already in use.");
       let identity = await readJson(path.join(canonical, "storage.v1.json"), identitySchema);
       if (!identity) {
-        const entries = (await readdir(canonical)).filter((entry) => entry !== ".owner.lock");
+        const entries = (await readdir(canonical)).filter(
+          (entry) => entry !== ".owner.lock" && entry !== ".opensteer-runtime",
+        );
         if (entries.length)
           throw invalid("The browser profile root identity is missing over existing data.");
         identity = { version: 1, storageInstanceId: randomUUID() };
@@ -100,20 +81,16 @@ export class LocalProfileStore {
           JSON.stringify(identity),
         );
       }
-      const store = new LocalProfileStore(
-        canonical,
-        identity.storageInstanceId,
-        engine,
-        descriptor,
-      );
-      // A new exclusive owner is proof that the previous process has released all
-      // browser-writing ownership. Erase tombstoned trees before engine creation.
+      const store = new LocalProfileStore(canonical, identity.storageInstanceId, engine);
+      // A same-process re-acquire is not proof that Electron released its Session.
+      // After process exit this registry is empty, so erasure precedes fromPath.
       for (const claim of await store.tombstones()) {
-        if (claim.phase === "deleted") await store.erase(claim.binding, claim.deletionId);
+        if (!retainedDirectories.has(store.directory(claim.binding)))
+          await store.erase(claim.binding, claim.deletionId);
       }
       return store;
     } catch (error) {
-      closeSync(descriptor);
+      activeRoots.delete(canonical);
       throw error;
     }
   }
@@ -190,7 +167,7 @@ export class LocalProfileStore {
     const marker = await this.inspect(binding, seed);
     if (marker?.phase === "ready")
       throw invalid("A ready native browser profile must never be reimported.");
-    if (this.attempted.has(binding.profileId))
+    if (this.attempted.has(binding.profileId) || retainedDirectories.has(this.directory(binding)))
       throw invalid("Profile initialization is fenced until this process exits.");
     const profile = this.profile(binding);
     await ensurePrivateDirectory(path.join(this.root, "profiles"));
@@ -242,6 +219,8 @@ export class LocalProfileStore {
     return claim;
   }
   async erase(binding: LocalProfileBinding, deletionId: string): Promise<void> {
+    if (retainedDirectories.has(this.directory(binding)))
+      throw invalid("The browser profile directory is retained until this process exits.");
     await this.tombstone(binding, deletionId);
     await realDirectoryIfPresent(path.join(this.root, "profiles"));
     await rm(this.profile(binding), { force: true, recursive: true });
@@ -291,16 +270,16 @@ export class LocalProfileStore {
     }
     return claims;
   }
-  engineOwnsDirectory(): void {
-    if (this.engine === "electron") {
-      this.retained = true;
-      retainedLocks.add(this);
-    }
+  engineOwnsDirectory(binding: LocalProfileBinding): void {
+    if (this.engine === "electron") this.retainDirectory(binding);
+  }
+  retainDirectory(binding: LocalProfileBinding): void {
+    retainedDirectories.add(this.directory(binding));
   }
   async close(): Promise<void> {
-    if (this.closed || this.retained) return;
+    if (this.closed) return;
     this.closed = true;
-    closeSync(this.descriptor);
+    activeRoots.delete(this.root);
   }
 }
 async function readJson<T>(filename: string, schema: z.ZodType<T>): Promise<T | undefined> {

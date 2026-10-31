@@ -1,7 +1,7 @@
-import * as atomicFiles from "@opensteer/shared/atomicPrivateFile";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import * as atomicFiles from "@opensteer/shared/atomicPrivateFile";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,37 +34,89 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 describe("LocalProfileStore", () => {
-  it("keeps Electron ownership through logical close and releases the OS lock on process death", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "native-process-lock-"));
+  it("accepts existing replay/session metadata without mistaking it for native profile data", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "native-metadata-"));
     roots.push(root);
+    await mkdir(path.join(root, ".opensteer-runtime", "session-files"), { recursive: true });
+    const store = await LocalProfileStore.acquire(root, "chromium");
+    stores.push(store);
+    expect(store.storageInstanceId).toEqual(expect.any(String));
+  });
+  it("re-acquires an Electron root after logical close without erasing retained tombstones", async () => {
+    const { root, store, binding: chromium } = await setup();
+    await store.close();
+    const owner = await LocalProfileStore.acquire(root, "electron");
+    stores.push(owner);
+    const binding = { ...chromium, engine: "electron" as const };
+    const directory = await owner.initialize(binding, seed);
+    owner.engineOwnsDirectory(binding);
+    await writeFile(path.join(directory, "live"), "owned");
+    await owner.tombstone(binding, "00000000-0000-4000-8000-000000000003");
+    await owner.close();
+    const next = await LocalProfileStore.acquire(root, "electron");
+    stores.push(next);
+    expect(await readFile(path.join(directory, "live"), "utf8")).toBe("owned");
+    expect(await next.inventory()).toEqual([
+      expect.objectContaining({ phase: "deleted", erasure: "pending-restart" }),
+    ]);
+  });
+  it("fences interrupted Electron initialization across runtimes in the same process", async () => {
+    const { root, store, binding: chromium } = await setup();
+    await store.close();
+    const owner = await LocalProfileStore.acquire(root, "electron");
+    stores.push(owner);
+    const binding = { ...chromium, engine: "electron" as const };
+    const directory = await owner.initialize(binding, seed);
+    owner.engineOwnsDirectory(binding);
+    await writeFile(path.join(directory, "live"), "owned");
+    await owner.close();
+    const next = await LocalProfileStore.acquire(root, "electron");
+    stores.push(next);
+    await expect(next.initialize(binding, seed)).rejects.toThrow(/process/);
+    expect(await readFile(path.join(directory, "live"), "utf8")).toBe("owned");
+  });
+  it("erases an earlier process's Electron tombstone before the next engine can open it", async () => {
+    const { root, store, binding: chromium } = await setup();
+    await store.close();
+    const binding = { ...chromium, engine: "electron" as const };
     const script = `import { LocalProfileStore } from ${JSON.stringify(new URL("./local-profile-store.ts", import.meta.url).href)};
       const store = await LocalProfileStore.acquire(process.argv[1], "electron");
-      store.engineOwnsDirectory(); await store.close(); process.send({storageInstanceId:store.storageInstanceId});
-      process.on("message", () => process.exit(0));`;
+      const binding = JSON.parse(process.argv[2]); const seed = JSON.parse(process.argv[3]);
+      await store.initialize(binding, seed); store.engineOwnsDirectory(binding);
+      await store.tombstone(binding, "00000000-0000-4000-8000-000000000003"); await store.close();`;
     const child = spawn(
       process.execPath,
-      ["--import", "tsx", "--input-type", "module", "-e", script, root],
-      { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+      [
+        "--import",
+        "tsx",
+        "--input-type",
+        "module",
+        "-e",
+        script,
+        root,
+        JSON.stringify(binding),
+        JSON.stringify(seed),
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
     );
     const exited = once(child, "exit");
     try {
-      const [ready] = await withTimeout(once(child, "message"), 5000, {
-        timeoutError: () => new Error("lock owner never became ready"),
+      const [code] = await withTimeout(exited, 3000, {
+        timeoutError: () => new Error("Earlier Electron owner never exited"),
       });
-      await expect(LocalProfileStore.acquire(root, "electron")).rejects.toThrow(/in use/);
-      child.kill("SIGKILL");
-      await withTimeout(exited, 2000, {
-        timeoutError: () => new Error("owned lock process never exited"),
-      });
+      expect(code).toBe(0);
       const next = await LocalProfileStore.acquire(root, "electron");
       stores.push(next);
-      expect(next.storageInstanceId).toBe(
-        (ready as { storageInstanceId: string }).storageInstanceId,
-      );
+      expect(await next.inventory()).toEqual([
+        expect.objectContaining({ phase: "deleted", erasure: "deleted" }),
+      ]);
+      await expect(
+        readFile(path.join(root, "profiles", binding.profileId, "binding.v1.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      await withTimeout(exited, 2000, {
-        timeoutError: () => new Error("owned lock process cleanup stalled"),
+      await withTimeout(exited, 3000, {
+        timeoutError: () => new Error("Earlier Electron owner cleanup stalled"),
       });
     }
   });
@@ -96,7 +148,7 @@ describe("LocalProfileStore", () => {
     },
   );
 
-  it("holds an exclusive OS lock and preserves root identity", async () => {
+  it("holds exclusive in-process ownership and preserves root identity", async () => {
     const { root, store } = await setup();
     await expect(LocalProfileStore.acquire(root, "chromium")).rejects.toThrow(/in use/);
     await store.close();
