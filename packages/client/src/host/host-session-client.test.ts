@@ -1563,6 +1563,7 @@ describe("HttpHostClient durable realtime", () => {
     const trigger = listed.data.triggers.find((t) => t.kind === "schedule")!;
     const reads: string[] = [];
     let fail = false;
+    let gate: Promise<void> | null = null;
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       capabilities: ["task-family-v1"],
@@ -1580,6 +1581,11 @@ describe("HttpHostClient durable realtime", () => {
         if (url.pathname === "/v1/rpc/triggers.list") {
           const anchor = String(rpcPayload(url, init).anchorThreadId);
           reads.push(anchor);
+          if (gate !== null && anchor === a.id) {
+            const held = gate;
+            gate = null;
+            await held;
+          }
           if (fail) return json({ error: { code: "internal", message: "down" } }, 500);
           // Named for the read that answered, so a test can see which one it holds.
           return json({
@@ -1634,6 +1640,23 @@ describe("HttpHostClient durable realtime", () => {
       },
       { timeout: 1000 },
     );
+
+    // Opened again while a read from before is still out: that answer may
+    // predate a change made meanwhile, so one more read follows it.
+    const release = Promise.withResolvers<void>();
+    gate = release.promise;
+    const beforeReopen = readsOfA();
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    await vi.waitFor(() => expect(readsOfA(), "the held read").toBe(beforeReopen + 1), {
+      timeout: 1000,
+    });
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    release.resolve();
+    await vi.waitFor(() => expect(readsOfA(), "the read after it").toBe(beforeReopen + 2), {
+      timeout: 1000,
+    });
 
     // A triggers notice lost while away is recovered when the stream replays.
     const before = held();

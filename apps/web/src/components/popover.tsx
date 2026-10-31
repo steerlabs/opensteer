@@ -46,7 +46,8 @@ interface PopoverProps {
   /**
    * Where focus goes back to on close, when that is not the anchor: a panel
    * opened from a control elsewhere hangs where it belongs and still returns
-   * the reader to what they pressed.
+   * the reader to what they pressed. A press on it is the control's own, not
+   * one outside; the rest of the anchor is outside like anything else.
    */
   returnFocusTo?: HTMLElement | null;
   role?: "dialog" | "menu";
@@ -185,7 +186,8 @@ function PopoverContent({
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
-      if ((panel && withinPanel(panel, target)) || anchor.contains(target)) return;
+      const pressed = returnFocusRef.current ?? anchor;
+      if ((panel && withinPanel(panel, target)) || pressed.contains(target)) return;
       if (native) {
         event.preventDefault();
         event.stopPropagation();

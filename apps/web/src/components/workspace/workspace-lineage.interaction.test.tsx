@@ -121,7 +121,11 @@ describe("a helper's place among the reader's tasks", () => {
   });
 });
 
-function withFamily(client: MockHostClient, earlierOnly = false) {
+function withFamily(
+  client: MockHostClient,
+  earlierOnly = false,
+  parentOf: (snapshot: HostSnapshot) => string = (snapshot) => snapshot.homeThreadId!,
+) {
   const read = client.getSnapshot.bind(client);
   const base = read();
   const firstAssignment = Object.values(base.assignments)[0]!;
@@ -140,7 +144,7 @@ function withFamily(client: MockHostClient, earlierOnly = false) {
         },
       })),
   ];
-  const parent = ThreadIdSchema.parse(base.homeThreadId);
+  const parent = ThreadIdSchema.parse(parentOf(base));
   const first = assignments[0]!;
   const cache = new WeakMap<HostSnapshot, HostSnapshot>();
   vi.spyOn(client, "getSnapshot").mockImplementation(() => {
@@ -188,7 +192,7 @@ function withFamily(client: MockHostClient, earlierOnly = false) {
     }
     return held;
   });
-  return { first, count: assignments.length };
+  return { first, count: assignments.length, parent };
 }
 
 describe("the conversation's family", () => {
@@ -245,6 +249,28 @@ describe("the conversation's family", () => {
     expect(document.querySelector('[aria-label="Running"]')).toBeNull();
     expect(document.querySelector('[aria-label="Automations"]')).toBeNull();
   });
+});
+
+it("closes the family when another header control is pressed", async () => {
+  let parent = "";
+  await mount((client) => {
+    parent = withFamily(client, false, (snapshot) => {
+      const workers = new Set<string>(
+        Object.values(snapshot.assignments).map(({ workerThread }) => workerThread.id),
+      );
+      return snapshot.threads.find(
+        ({ id, role }) => role === "work" && id !== snapshot.homeThreadId && !workers.has(id),
+      )!.id;
+    }).parent;
+    return `/threads/${parent}`;
+  });
+  await click(element(".task-family-button"));
+  expect(document.querySelector(".popover--task-family")).not.toBeNull();
+  const menu = element(".conv-header__menu");
+  menu.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  await click(menu);
+  expect(document.querySelector(".popover--task-family")).toBeNull();
+  expect(document.querySelector(".popover--conversation-menu")).not.toBeNull();
 });
 
 it("keeps children out of a task's title menu", async () => {

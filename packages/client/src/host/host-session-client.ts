@@ -1631,12 +1631,11 @@ export class HttpHostClient {
 
   activateThread(threadId: string): void {
     const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
-    const previous = this.#activeThreadId;
+    const opened = !this.#showsThread(threadId);
     this.#activeThreadId = threadId;
-    if (previous !== null && previous !== threadId) this.#forgetAutomationsUnlessShown(previous);
     this.#ensureInputQueue(threadId);
     this.#ensureAssignments(threadId);
-    this.#ensureAutomations(threadId);
+    this.#ensureAutomations(threadId, opened);
     this.#ensureBrowserUsage(threadId, "missing");
     if (!thread) {
       // A deep link can reference a Thread the snapshot has not loaded yet.
@@ -1664,6 +1663,7 @@ export class HttpHostClient {
    * so observing it again, or reconnecting, resumes its stream.
    */
   observeThread(threadId: string): () => void {
+    const opened = !this.#showsThread(threadId);
     this.#observedThreads.set(threadId, (this.#observedThreads.get(threadId) ?? 0) + 1);
     if (!this.#snapshot.transcriptWindows[threadId]) {
       this.#update({
@@ -1676,7 +1676,7 @@ export class HttpHostClient {
     this.#ensureThreadHydration(threadId);
     this.#ensureRequests(threadId);
     this.#ensureAssignments(threadId);
-    this.#ensureAutomations(threadId);
+    this.#ensureAutomations(threadId, opened);
     this.#ensureBrowserUsage(threadId, "missing");
     let held = true;
     return () => {
@@ -1685,7 +1685,6 @@ export class HttpHostClient {
       const count = this.#observedThreads.get(threadId) ?? 0;
       if (count <= 1) this.#observedThreads.delete(threadId);
       else this.#observedThreads.set(threadId, count - 1);
-      this.#forgetAutomationsUnlessShown(threadId);
     };
   }
 
@@ -1761,8 +1760,9 @@ export class HttpHostClient {
   /**
    * A conversation's automations are known only while it is shown: no notice
    * says what changed in one off screen, so it is read afresh each time it is
-   * opened, and a shown one again whenever its Workspace says triggers changed
-   * or its stream comes back. Shown again while unchanged, it is not reread.
+   * opened (after any read still under way, which may predate the change),
+   * and a shown one again whenever its Workspace says triggers changed or its
+   * stream comes back. Shown again while unchanged, it is not reread.
    */
   #ensureAutomations(threadId: string, again = false): void {
     if (
@@ -1784,9 +1784,9 @@ export class HttpHostClient {
       .finally(() => {
         if (this.#automationReads.get(threadId) !== read) return;
         this.#automationReads.delete(threadId);
-        // A failure counts as read while it is shown, so a streaming
-        // conversation does not ask again with every event; opening it again does.
-        if (this.#showsThread(threadId)) this.#readAutomations.add(threadId);
+        // A failure counts as read too, so a streaming conversation does not
+        // ask again with every event; opening it again does.
+        this.#readAutomations.add(threadId);
         if (read.again) this.#ensureAutomations(threadId, true);
       });
   }
@@ -1898,10 +1898,6 @@ export class HttpHostClient {
 
   #showsThread(threadId: string): boolean {
     return threadId === this.#activeThreadId || this.#observedThreads.has(threadId);
-  }
-
-  #forgetAutomationsUnlessShown(threadId: string): void {
-    if (!this.#showsThread(threadId)) this.#readAutomations.delete(threadId);
   }
 
   /** What a triggers notice, or a stream that may have missed one, means for one Workspace. */

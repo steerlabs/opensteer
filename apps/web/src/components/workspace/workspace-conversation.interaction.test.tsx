@@ -686,8 +686,8 @@ describe("task titles", () => {
 
   it("hides rename for Chat and an older Host", async () => {
     await mount("/");
-    await click(element(".conv-header__menu"));
-    expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
+    // Chat has nothing of its own to rename, mark or finish: undocked it has no menu.
+    expect(document.querySelector(".conv-header__menu")).toBeNull();
     act(() => root?.unmount());
     setRoot(null);
     client.dispose();

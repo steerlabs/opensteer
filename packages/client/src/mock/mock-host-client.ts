@@ -9709,27 +9709,6 @@ class MockHostState {
         ],
       },
     });
-    const completed = this.createTask(
-      home,
-      homeRun,
-      { ...script, title: "Check restaurant hours" },
-      at(-100),
-    );
-    this.publishAssignment({
-      ...completed.assignment,
-      status: "completed",
-      finishedAt: at(-95),
-      updatedAt: at(-95),
-      returnStatus: "delivered",
-    });
-    this.activeRuns.delete(completed.assignment.workerThreadId);
-    this.update({
-      ...this.snapshot,
-      runQueue: this.snapshot.runQueue.filter((run) => run.id !== completed.run.id),
-      threads: this.snapshot.threads.map((thread) =>
-        thread.id === completed.assignment.workerThreadId ? { ...thread, status: "idle" } : thread,
-      ),
-    });
     const { assignment, run } = this.createTask(home, homeRun, script, at(2));
     this.upsertEntry(
       home.id,
