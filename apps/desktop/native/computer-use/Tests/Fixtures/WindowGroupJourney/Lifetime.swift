@@ -26,7 +26,7 @@ import ApplicationServices
       windowToken: AXWindowToken(element: bound.element))
     // Deliberately do not call watch(): no destroy notification reaches this owner.
     let owner = OwnerViewWindow.Binding(target: target, element: bound.element)
-    let initialGroup = try owner.group()
+    _ = try owner.group()
     let initialRevision = owner.lifecycleRevision
     let binding = MacVideoBinding(owner)
     let states = Locked<[MacVideoState]>([])
@@ -59,14 +59,6 @@ import ApplicationServices
       status == .invalidUIElement && owner.lifecycleRevision == initialRevision,
       "Missed-destroy fixture did not establish an invalid retained AX identity without notification"
     )
-    do {
-      _ = try await WindowCapture.plan(processIdentifier: bound.process.processIdentifier,
-        keyWindow: initialGroup.root, group: initialGroup)
-      throw JourneyFailure.failed("Capture planned a window absent after its discovery snapshot")
-    } catch let error as HelperError {
-      try require(error.code == .staleObservation && error != SessionWindows.closed,
-        "Capture enumeration incorrectly declared the retained window closed")
-    }
     do {
       _ = try owner.group()
       throw JourneyFailure.failed("Destroyed owner AX remained live")

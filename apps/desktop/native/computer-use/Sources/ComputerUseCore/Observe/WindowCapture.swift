@@ -90,12 +90,20 @@ public enum WindowCapture {
   }
 
   @WorkActor
+  static func shareableContent() async throws -> (windows: [SCWindow], displays: [SCDisplay]) {
+    let content = try await SCShareableContent.excludingDesktopWindows(
+      true, onScreenWindowsOnly: false)
+    return (content.windows, content.displays)
+  }
+
+  @WorkActor
   static func plan(
     processIdentifier: pid_t,
     keyWindow: WindowIdentity,
     screenRecordingGranted: Bool = CGPreflightScreenCaptureAccess(),
     outputMaxLongSide: Int? = nil,
-    group suppliedGroup: WindowGroup?
+    group suppliedGroup: WindowGroup?,
+    content: @WorkActor () async throws -> (windows: [SCWindow], displays: [SCDisplay]) = shareableContent
   ) async throws -> Plan {
     guard screenRecordingGranted else { throw screenRecordingRequired }
 
@@ -112,12 +120,9 @@ public enum WindowCapture {
       else { throw SessionWindows.closed }
       group = try WindowGroup.resolve(window: window, process: process, lifecycleRevision: 0)
     }
-    let content: SCShareableContent
+    let snapshot: (windows: [SCWindow], displays: [SCDisplay])
     do {
-      content = try await SCShareableContent.excludingDesktopWindows(
-        true,
-        onScreenWindowsOnly: false
-      )
+      snapshot = try await content()
     } catch {
       let nativeError = error as NSError
       Log.observe.error(
@@ -131,7 +136,7 @@ public enum WindowCapture {
     }
 
     guard
-      let root = content.windows.first(where: {
+      let root = snapshot.windows.first(where: {
         $0.windowID == keyWindow.windowID && $0.owningApplication?.processID == processIdentifier
       })
     else {
@@ -142,13 +147,13 @@ public enum WindowCapture {
     if group.alone {
       return planAlone(root, keyWindow: group.root, outputMaxLongSide: outputMaxLongSide)
     }
-    guard let display = content.displays.first(where: { $0.displayID == group.displayID }) else {
+    guard let display = snapshot.displays.first(where: { $0.displayID == group.displayID }) else {
       throw HelperError(
         .unsupported,
         "The window is not on a display this Mac can capture; ask the person to move it.")
     }
     let memberIDs = Set(group.members.map(\.window.windowID))
-    let capturedWindows = content.windows.filter {
+    let capturedWindows = snapshot.windows.filter {
       memberIDs.contains($0.windowID) && $0.owningApplication?.processID == processIdentifier
         && $0.isOnScreen && $0.frame.width > 0 && $0.frame.height > 0
     }

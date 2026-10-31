@@ -37,6 +37,20 @@ final class CaptureLayoutTests: XCTestCase {
     XCTAssertEqual(before.captureLayout, after.captureLayout)
   }
 
+  @WorkActor
+  func testMissingCaptureRootDoesNotDeclareTheRetainedWindowClosed() async {
+    let selected = group()
+    do {
+      _ = try await WindowCapture.plan(processIdentifier: 42, keyWindow: selected.root,
+        screenRecordingGranted: true, group: selected, content: { ([], []) })
+      XCTFail("A missing capture window must invalidate the plan")
+    } catch let error as HelperError {
+      XCTAssertEqual(error.code, .staleObservation)
+      XCTAssertNotEqual(error, SessionWindows.closed,
+        "A capture listing is not authority for a retained window's lifetime")
+    } catch { XCTFail("Unexpected capture failure: \(error)") }
+  }
+
   func testContainedMemberChurnKeepsTheCaptureMapping() {
     let root = member()
     let sharingChrome = member(83, x: 26, y: 36, width: 66, height: 20)
