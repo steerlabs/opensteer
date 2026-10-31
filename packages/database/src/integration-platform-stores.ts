@@ -1409,9 +1409,9 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
           .execute();
         // Managed qualification does not change an own-app grant. Only translate the exact
         // old contract; app/revision/callback pins and every connection state remain intact.
-        await transaction
-          .updateTable("integrationConnections")
-          .set({ authorizationDigest: correctedDigest })
+        const connections = await transaction
+          .selectFrom("integrationConnections")
+          .select("id")
           .where("integrationDefinitionId", "=", catalog.id)
           .where("provider", "=", catalog.provider)
           .where("connectionKind", "=", "provider-account")
@@ -1419,7 +1419,19 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
           .where("authorizationDigest", "=", authorizationDigest(installed))
           .where(sql<boolean>`application_source ->> 'kind' = 'deployment-oauth'`)
           .where("status", "!=", "revoked")
+          .orderBy("id", "asc")
+          .forNoKeyUpdate()
           .execute();
+        if (connections.length > 0)
+          await transaction
+            .updateTable("integrationConnections")
+            .set({ authorizationDigest: correctedDigest })
+            .where(
+              "id",
+              "in",
+              connections.map(({ id }) => id),
+            )
+            .execute();
         return 1;
       });
     }
