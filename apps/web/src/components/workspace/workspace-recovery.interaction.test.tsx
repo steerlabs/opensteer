@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -134,10 +135,24 @@ describe("the review's findings", () => {
     const target = placeList(client.getSnapshot()).find((item) => item.kind === "browser")!;
     if (target.destination.kind !== "browser" || !target.destination.tabId)
       throw new Error("Not a browser tab");
-    const { sessionId, tabId } = target.destination;
-    const opened = deferred<{ readonly sessionId: string; readonly tabId: string }>();
-    const open = vi.spyOn(client, "openBrowserTab");
-    open.mockImplementationOnce(() => opened.promise as never);
+    const result = await client.openBrowserTab(target.destination.sessionId);
+    const { tabId } = result;
+    const gates = [deferred<void>(), deferred<void>()];
+    let commands = 0;
+    const dispatch = client.rpc["commands.dispatch"];
+    const delayed: typeof dispatch = async (command, options) => {
+      if (command.type !== "browser.tab.open") return dispatch(command, options);
+      await withTimeout(gates[commands++]!.promise, 2_000, {
+        timeoutError: () => new Error("The start page browser command was never released."),
+      });
+      return { ok: true, data: result };
+    };
+    Object.defineProperty(client, "rpc", {
+      value: new Proxy(client.rpc, {
+        get: (target, name) => (name === "commands.dispatch" ? delayed : Reflect.get(target, name)),
+      }),
+    });
+    const open = vi.spyOn(client, "beginBrowserTabOpen");
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
     expect(element(".place").className).toContain("place--launcher");
     expect(open).not.toHaveBeenCalled();
@@ -147,19 +162,21 @@ describe("the review's findings", () => {
       { identity: { kind: "guest" } },
       expect.objectContaining({ url: "https://example.com/" }),
     );
-    // Choosing a conversation meanwhile keeps the start page as it was.
+    const pendingKey = client.getSnapshot().pendingBrowserTabs![0]!.idempotencyKey;
+    expect(new URLSearchParams(history.at(-1)!.search).get("pendingBrowserTab")).toBe(pendingKey);
+    expect(element(".place").textContent).toContain("example.com");
+    // Choosing a conversation meanwhile keeps the pending tab selected.
     const threadId = firstTaskId();
     await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
     expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
-    expect(element<HTMLInputElement>(".start-page__input").value).toBe("example.com");
-    await act(async () => opened.resolve({ sessionId, tabId }));
+    expect(new URLSearchParams(history.at(-1)!.search).get("pendingBrowserTab")).toBe(pendingKey);
+    expect(element(".place").textContent).toContain("example.com");
+    await act(async () => gates[0]!.resolve());
     await settle(50);
     // The answer shows its tab in place of the start page and keeps the conversation now open.
     expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
     expect(new URLSearchParams(history.at(-1)!.search).get("browserTab")).toBe(tabId);
     // Asked again, then another place chosen before the answer: the choice stands.
-    const late = deferred<{ readonly sessionId: string; readonly tabId: string }>();
-    open.mockImplementationOnce(() => late.promise as never);
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
     await typeInto(element<HTMLInputElement>(".start-page__input"), "example.org");
     await pressEnter(element(".start-page__input"));
@@ -168,7 +185,7 @@ describe("the review's findings", () => {
     )!;
     await click(element(`.side-tab[data-place-key="${chosen.key}"] .side-tab__main`));
     const before = history.length;
-    await act(async () => late.resolve({ sessionId, tabId }));
+    await act(async () => gates[1]!.resolve());
     await settle(50);
     expect(history.length).toBe(before);
     expect(element(".place").getAttribute("data-place-key")).toBe(chosen.key);

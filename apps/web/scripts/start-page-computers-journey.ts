@@ -407,11 +407,11 @@ try {
     await openStartPage();
     await page.evaluate(() => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const open = client.openBrowserTab.bind(client);
+      const open = client.beginBrowserTabOpen.bind(client);
       Reflect.set(
         client,
-        "openBrowserTab",
-        (...args: Parameters<MockHostClient["openBrowserTab"]>) => {
+        "beginBrowserTabOpen",
+        (...args: Parameters<MockHostClient["beginBrowserTabOpen"]>) => {
           Reflect.set(window, "openedAt", args[1]?.viewport ?? null);
           return open(...args);
         },
@@ -424,7 +424,8 @@ try {
       .evaluate((node) => node.getBoundingClientRect().height);
     await field.press("Enter");
     // The mock has two computers, so the New tab asks which one to browse on.
-    await page.locator(".start-page__refusal-actions button", { hasText: "Mac mini" }).click();
+    await page.getByRole("button", { name: "Open on Mac mini", exact: true }).click();
+    await page.locator(".browser-address input").waitFor();
     const stage = page.locator(".browser-stage");
     await stage.waitFor();
     const observed = {

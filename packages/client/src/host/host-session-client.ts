@@ -787,6 +787,12 @@ export class HttpHostClient {
   };
   readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
+    // Authenticated RPC callers need not load a workspace's presentation first.
+    if (!viewerScopeOf(this.#snapshot))
+      return this.#openBrowserTab(
+        typeof target === "string" ? { sessionId: target } : target,
+        options,
+      );
     return this.beginBrowserTabOpen(target, options).result;
   }
   async #openBrowserTab(target: BrowserTabOpenInput, options: BrowserTabOpenOptions) {

@@ -10574,6 +10574,28 @@ describe("HttpHostClient owner views", () => {
     }
   }
 
+  it("opens authoritative tabs before loading presentation scope without publishing pending rows", async () => {
+    const opened = await browserOpenWorld();
+    const host = ownerViewHost(
+      () => [],
+      async () => json(opened),
+    );
+    try {
+      const target = { identity: { kind: "guest" as const } };
+      const options = { url: "https://pending.example/", idempotencyKey: "before-load" };
+      const opening = host.client.openBrowserTab(target, options);
+      expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
+      await expect(opening).resolves.toEqual(opened);
+      expect(host.commands).toEqual([{ type: "browser.tab.open", ...target, ...options }]);
+      expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
+      expect(host.sockets).toEqual([]);
+      await host.client.load();
+      expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    } finally {
+      host.client.dispose();
+    }
+  });
+
   it("publishes a pending browser row synchronously before dispatch and joins the same key", async () => {
     const opened = await browserOpenWorld();
     const gate = deferred<void>();

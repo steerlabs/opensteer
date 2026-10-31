@@ -6,7 +6,7 @@ import {
   type NavigationProp,
   type ParamListBase,
 } from "@react-navigation/native";
-import type { BrowserTabOpenHandle, HostClient } from "@opensteer/client/host";
+import type { BrowserTabOpenHandle, BrowserTabOpenInput, HostClient } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
@@ -69,6 +69,7 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
   const pending = useHostSelector(hostClient, (snapshot) =>
     snapshot.pendingBrowserTabs?.find((row) => row.idempotencyKey === route.pendingBrowserTab),
   );
+  const placements = useHostSelector(hostClient, (snapshot) => snapshot.browserPlacements);
   const close = () => {
     if (route.pendingBrowserTab) hostClient.dismissPendingBrowserTab(route.pendingBrowserTab);
     navigation.goBack();
@@ -77,7 +78,9 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
     pending?.state === "unknown"
       ? "Opening status unknown"
       : pending?.state === "failed"
-        ? "Couldn’t open this tab"
+        ? pending.error?.code === "browser-placement-ambiguous"
+          ? "Which computer should this tab open on?"
+          : "Couldn’t open this tab"
         : pending
           ? "Opening…"
           : "This opening is no longer available";
@@ -88,10 +91,12 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
     title,
     menu: [{ id: "close", icon: "xmark", label: "Close tab", onPress: close }],
   });
-  const retry = () => {
+  const retry = (target?: BrowserTabOpenInput) => {
     if (!pending || pending.state === "opening") return;
-    const opening = hostClient.beginBrowserTabOpen(pending.target, {
+    const opening = hostClient.beginBrowserTabOpen(target ?? pending.target, {
       ...(pending.url === undefined ? {} : { url: pending.url }),
+      ...(pending.typed === undefined ? {} : { typed: pending.typed }),
+      ...(pending.viewport ? { viewport: pending.viewport } : {}),
       ...(pending.state === "unknown" ? { idempotencyKey: pending.idempotencyKey } : {}),
     });
     if (opening.idempotencyKey !== pending.idempotencyKey)
@@ -116,9 +121,28 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
         {pending && pending.state !== "opening" ? (
           <SecondaryButton
             label={pending.state === "unknown" ? "Check again" : "Retry"}
-            onPress={retry}
+            onPress={() => retry()}
           />
         ) : null}
+        {pending?.state === "failed" &&
+        pending.error?.code === "browser-placement-ambiguous" &&
+        "identity" in pending.target
+          ? placements
+              .filter((placement) => placement.available)
+              .map((placement) => (
+                <SecondaryButton
+                  key={placement.runnerId}
+                  label={`Open on ${placement.label}`}
+                  onPress={() => {
+                    if ("identity" in pending.target)
+                      retry({
+                        ...pending.target,
+                        placement: { kind: "runner", runnerId: placement.runnerId },
+                      });
+                  }}
+                />
+              ))
+          : null}
         <SecondaryButton label="Close tab" onPress={close} />
       </View>
     </Screen>

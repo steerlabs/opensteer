@@ -1,8 +1,10 @@
-import { memo, type ReactNode } from "react";
+import { memo, useEffect, useRef, type ReactNode } from "react";
+import { useLocation } from "react-router";
 import type { BrowserTabOpenInput, HostClient, PendingBrowserTab } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { Icon } from "../icon.js";
 import { useWorkspace } from "./workspace-context.js";
+import { startPageLink } from "./navigation.js";
 
 export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: {
   readonly hostClient: HostClient;
@@ -12,19 +14,31 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
 }) {
   const { hostClient, idempotencyKey } = props;
   const { nav } = useWorkspace();
+  const { state } = useLocation();
+  const address = startPageLink(state)?.address;
   const pending = useHostSelector(hostClient, (snapshot) =>
     snapshot.pendingBrowserTabs?.find((row) => row.idempotencyKey === idempotencyKey),
   );
+  const missingOnArrival = useRef(!pending);
   const placements = useHostSelector(hostClient, (snapshot) => snapshot.browserPlacements);
+  useEffect(() => {
+    if (missingOnArrival.current && !pending && address)
+      nav.showLauncher({ replace: true, address, open: false });
+  }, [pending, address, nav]);
   const retry = (target?: BrowserTabOpenInput) => {
     if (!pending || pending.state === "opening") return;
     const opening = hostClient.beginBrowserTabOpen(target ?? pending.target, {
       ...(pending.url === undefined ? {} : { url: pending.url }),
+      ...(pending.typed === undefined ? {} : { typed: pending.typed }),
+      ...(pending.viewport ? { viewport: pending.viewport } : {}),
       ...(pending.state === "unknown" ? { idempotencyKey } : {}),
     });
     if (opening.idempotencyKey !== idempotencyKey)
       hostClient.dismissPendingBrowserTab(idempotencyKey);
-    nav.showPendingBrowserTab(opening.idempotencyKey, { replace: true });
+    nav.showPendingBrowserTab(opening.idempotencyKey, {
+      replace: true,
+      ...(pending.url === undefined ? {} : { address: pending.url }),
+    });
     void opening.result.then(
       (opened) =>
         nav.replacePendingBrowserTab(opening.idempotencyKey, {
@@ -39,7 +53,9 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
     pending?.state === "unknown"
       ? "Opening status unknown"
       : pending?.state === "failed"
-        ? "Couldn’t open this tab"
+        ? pending.error?.code === "browser-placement-ambiguous"
+          ? "Which computer should this tab open on?"
+          : "Couldn’t open this tab"
         : pending
           ? "Opening…"
           : "This opening is no longer available";
@@ -67,7 +83,11 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
           {props.trailing}
         </div>
         <div className="browser-stage">
-          <div className="place-state" role="status" aria-busy={pending?.state === "opening"}>
+          <div
+            className="place-state"
+            role={pending?.state === "failed" ? "alert" : "status"}
+            aria-busy={pending?.state === "opening"}
+          >
             <p className="place-state__title">{title}</p>
             {pending?.error ? (
               <p>
@@ -81,7 +101,9 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
                 {pending.state === "unknown" ? "Check again" : "Retry"}
               </button>
             ) : null}
-            {pending?.error?.code === "browser-placement-ambiguous" && "identity" in pending.target
+            {pending?.state === "failed" &&
+            pending.error?.code === "browser-placement-ambiguous" &&
+            "identity" in pending.target
               ? placements
                   .filter((placement) => placement.available)
                   .map((placement) => (
@@ -150,7 +172,10 @@ const PendingRow = memo(function PendingRow({
         aria-current={active ? "true" : undefined}
         onClick={() => {
           onOpen();
-          nav.showPendingBrowserTab(pending.idempotencyKey);
+          nav.showPendingBrowserTab(
+            pending.idempotencyKey,
+            pending.url === undefined ? undefined : { address: pending.url },
+          );
         }}
       >
         <Icon name="globe" />
