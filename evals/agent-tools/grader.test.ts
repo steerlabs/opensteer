@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parseCases } from "./cases.js";
 import { grade, majority, partialMatch } from "./grader.js";
@@ -68,4 +69,11 @@ describe("trajectory grading failure modes", () => {
     expect(majority([true, false])).toBe(false);
     expect(majority([true, false, true])).toBe(true);
   });
+});
+
+it("parses all orchestration cases including person notification guards", async () => {
+  const cases = parseCases(
+    await readFile(new URL("./cases/orchestration.ndjson", import.meta.url), "utf8"),
+  );
+  expect(cases.filter((value) => value.id.startsWith("person-notify-"))).toHaveLength(7);
 });

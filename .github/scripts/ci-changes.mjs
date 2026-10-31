@@ -198,10 +198,15 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
     }
     // This standalone Gradle project intentionally has no Node workspace
     // manifest. It is the sole APK producer named by the Android lane.
-    if (file.startsWith("apps/agent-phone/")) {
+    if (
+      file.startsWith("apps/agent-phone/") ||
+      file.startsWith("apps/mobile/modules/notification-preview/android/")
+    ) {
       androidSource = true;
       continue;
     }
+    // The preview vector is also read by the Android tests; its package still owns it.
+    if (file === "packages/core/src/fixtures/notification-preview-v1.json") androidSource = true;
     const owners = [...baseGraph, ...graph].filter((p) => file.startsWith(p.dir + "/"));
     if (!owners.length) {
       all = true;

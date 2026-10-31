@@ -60,3 +60,24 @@ acceptance, reuse one journey for the affected flow and record whether the saved
 opens and the requested interactions work; do not add an artifact per edge case. Run
 GUI/native automated journeys through `pnpm test:vm`; reserve physical devices for their assigned
 owner. Keep device identifiers and private configuration out of published receipts.
+
+## Private preview signing and acceptance
+
+Tim alone registers/enables the explicit App IDs `com.opensteer.mobile` and
+`com.opensteer.mobile.NotificationService`, creates App Group
+`group.com.opensteer.mobile.notifications`, associates both App IDs, and regenerates
+or permits provisioning profiles for both targets. Agents never access Apple account
+credentials or signing material. Both targets carry application-groups only for
+preview sharing: do not add keychain-access-groups. Preview Keychain items explicitly
+use the App Group identifier; existing login credentials retain their default group.
+Parent retains Push Notifications; extension needs no APNs key/topic or background
+mode. Account APNs topic stays `com.opensteer.mobile`.
+
+After Tim supplies provisioning, verify both embedded targets' entitlements and
+signed physical-device delivery with the reserved device owner: authenticated text,
+generic text on tamper/expiry/missing key, before first unlock, reinstall marker,
+Deployment and Account sign-out, and foreground suppression. On Android deliver two
+successive same-Thread alerts, tap A then B, and verify both navigate. Inspect the
+merged manifest for one MESSAGING_EVENT service (Opensteer's subclass). Never record
+keys, tokens or decoded payloads in evidence. An unsigned build does not qualify
+these checks.

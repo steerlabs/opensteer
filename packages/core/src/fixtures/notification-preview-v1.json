@@ -1,0 +1,13 @@
+{
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "nonce": "AAECAwQFBgcICQoL",
+  "keyId": "AAECAwQFBgcICQoLDA0ODw",
+  "installationId": "AAECAwQFBgcICQoLDA0ODxAR",
+  "deploymentId": "dep_00000000-0000-4000-8000-000000000001",
+  "notificationId": "ntf_00000000-0000-4000-8000-000000000002",
+  "kind": "reply-published",
+  "deepLink": "com.opensteer.mobile:/deployments/dep_00000000-0000-4000-8000-000000000001/threads/thr_00000000-0000-4000-8000-000000000003?messageId=msg_00000000-0000-4000-8000-000000000004",
+  "expiresAt": "2026-10-31T12:15:00.000Z",
+  "plaintext": "{\"version\":1,\"title\":\"Opensteer\",\"body\":\"Build passed. You can review it.\"}",
+  "ciphertext": "PCCgfreWq3TjY626ncsMBPe64hbKWRAMXQmW8XgMcpAtMsyTy7gwolbmCoTk4whIjyoT6D74g4NQ4gp6eY3VnJVKrx-k8U8VMnbXdeOoSsDOP-HznpTfyjdRKw"
+}

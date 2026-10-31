@@ -4666,7 +4666,9 @@ export function migrationProvider() {
         "0116_screen_show": screenShowMigration,
         "0117_remove_screen_show": removeScreenShowMigration,
         "0118_browser_history": browserHistoryMigration,
-        "0119_native_browser_profiles": nativeBrowserProfilesMigration,
+        "0119_person_notifications": personNotificationsMigration,
+        "0120_notification_preview_keys": notificationPreviewKeysMigration,
+        "0121_native_browser_profiles": nativeBrowserProfilesMigration,
       };
     },
   };
@@ -6344,6 +6346,63 @@ export const browserHistoryMigration: Migration = {
         favicon text not null,
         primary key (profile_id, origin)
       );
+    `.execute(database);
+  },
+};
+
+const personNotificationsMigration: Migration = {
+  async up(database) {
+    await database.schema
+      .alterTable("messages")
+      .addColumn("addressed_to_user_id", "text")
+      .execute();
+    await database.schema
+      .alterTable("agent_control_requests")
+      .addColumn("result_message_id", "text")
+      .execute();
+    await sql`alter table agent_control_requests
+      drop constraint agent_control_requests_action_mapping_check,
+      add constraint agent_control_requests_action_mapping_check check (
+        action_class = case
+          when action = 'workspace.list' then 'workspace.inspect'
+          when action = 'person.notify' then 'thread.message'
+          else action end
+      )`.execute(database);
+    const result = await sql<{
+      definition: string;
+    }>`select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = 'public.agent_control_requests'::regclass and conname = 'agent_control_requests_action_check'`.execute(
+      database,
+    );
+    const definition = result.rows[0]?.definition;
+    if (!definition?.includes("'thread.message'::text"))
+      throw new Error("Cannot extend agent-control actions for person notifications");
+    await sql`alter table agent_control_requests drop constraint agent_control_requests_action_check`.execute(
+      database,
+    );
+    await sql
+      .raw(
+        `alter table agent_control_requests add constraint agent_control_requests_action_check ${definition.replace("'thread.message'::text", "'thread.message'::text, 'person.notify'::text")}`,
+      )
+      .execute(database);
+  },
+};
+
+export const notificationPreviewKeysMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table notification_preview_keys (
+        user_id text not null references users(id) on delete cascade,
+        installation_id text not null,
+        auth_session_id text not null references auth_sessions(id) on delete cascade,
+        account_id text not null,
+        key_id text not null,
+        encrypted_key bytea not null,
+        encryption_key_version integer not null,
+        created_at timestamptz not null,
+        updated_at timestamptz not null,
+        primary key (user_id, installation_id)
+      );
+      create index notification_preview_keys_auth_session_id on notification_preview_keys(auth_session_id);
     `.execute(database);
   },
 };

@@ -276,6 +276,7 @@ jobs:
           path: |
             packages/apple-data/.build
             packages/apple-dictation/.build
+            apps/mobile/modules/notification-preview/ios/.build
             apps/mobile/modules/iphone-apps/ios/.build
             apps/desktop/native/computer-use/.build
             apps/desktop/native/passwords/.build
@@ -308,6 +309,7 @@ jobs:
         shell: bash
         run: |
           swift test --package-path packages/apple-data
+          swift test --package-path apps/mobile/modules/notification-preview/ios
           swift test --package-path apps/mobile/modules/iphone-apps/ios
           swift test --package-path apps/mobile/modules/dictation/ios
           swift test --package-path apps/mobile/modules/phone-display/ios
@@ -381,7 +383,7 @@ jobs:
           set -o pipefail
           {
             OPENSTEER_WRITE_AGENT_PHONE_VECTORS=1 pnpm exec vitest run packages/runner-auth/src/agent-phone-vectors.test.ts
-            (cd apps/agent-phone && OPENSTEER_WRITE_WIRE_FIXTURE=1 ./gradlew :app:lint :app:testDebugUnitTest :app:assembleDebug :fixture:assembleDebug --no-daemon --rerun-tasks)
+            (cd apps/agent-phone && OPENSTEER_WRITE_WIRE_FIXTURE=1 ./gradlew :notification-preview-tests:test :app:lint :app:testDebugUnitTest :app:assembleDebug :fixture:assembleDebug --no-daemon --rerun-tasks)
             git diff --exit-code -- packages/runner-auth/fixtures/agent-phone-vectors.json apps/agent-phone/app/src/test/resources/wire-fixture.json
             pnpm exec vitest run packages/runner-auth/src/agent-phone-vectors.test.ts packages/runner-auth/src/agent-phone-wire.test.ts
           } 2>&1 | tee "$RUNNER_TEMP/evidence/android.log"

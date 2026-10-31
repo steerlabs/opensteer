@@ -46,6 +46,7 @@ import {
   type DecidedNotification,
   type NotificationPublication,
 } from "./notification-store.js";
+import { messageFromRow } from "./thread-row-mappers.js";
 import { NotificationStateStore } from "./notification-state.js";
 import { issueRunGrant } from "./run-grants.js";
 import { encodeWindowCursor, jsonValue } from "./store-primitives.js";
@@ -1121,6 +1122,9 @@ integration("notification decision boundary", () => {
       const {
         createFixture,
         appendCompletedReply,
+        appendReply,
+        addThread,
+        database,
         text,
         decideCommitted,
         notificationState,
@@ -1130,7 +1134,28 @@ integration("notification decision boundary", () => {
       const fixture = await createFixture("grace", true);
       const read = await appendCompletedReply(fixture, text("You saw this one."));
       const unread = await appendCompletedReply(fixture, text("You did not see this one."));
+      const active = await addThread(fixture, { suffix: "addressed-grace" });
+      const intermediate = await appendReply(active, text("Still working."));
+      const addressed = await appendReply(active, text("Milestone ready."));
+      const row = await database
+        .updateTable("messages")
+        .set({ addressedToUserId: active.ownerId })
+        .where("id", "=", addressed.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const addressedEvent = await database.transaction().execute((transaction) =>
+        appendHostWorkspaceEvent(transaction, {
+          type: "message.created",
+          data: { input: null, message: messageFromRow(row), addressedToUserId: active.ownerId },
+          environmentId: active.environmentId,
+          workspaceId: active.workspaceId,
+          threadId: active.threadId,
+          runId: active.runId,
+        }),
+      );
       await decideCommitted(fixture);
+      await decideCommitted(active);
+      expect(BigInt(addressed.sequence)).toBe(BigInt(intermediate.sequence) + 1n);
 
       await notificationState.markRead({
         threadId: fixture.threadId,
@@ -1138,8 +1163,16 @@ integration("notification decision boundary", () => {
         userId: fixture.ownerId,
       });
 
+      await notificationState.markRead({
+        threadId: active.threadId,
+        throughSequence: addressed.sequence,
+        userId: active.ownerId,
+      });
+      expect(await notifications.decide(addressedEvent)).toEqual([]);
       const claimed = await publicationEntries();
-      expect(claimed.map(({ messageId }) => messageId).sort()).toEqual([read.id, unread.id].sort());
+      expect(claimed.map(({ messageId }) => messageId).sort()).toEqual(
+        [read.id, unread.id, addressed.id].sort(),
+      );
       const reasons = new Map(
         await Promise.all(
           claimed.map(
@@ -1150,6 +1183,7 @@ integration("notification decision boundary", () => {
       );
       expect(reasons.get(read.id)).toBe("Reply was read before publication");
       expect(reasons.get(unread.id)).toBeNull();
+      expect(reasons.get(addressed.id)).toBe("Reply was read before publication");
     });
 
     it("skips a reply that has no words or files to show", async ({ storeFixture }) => {

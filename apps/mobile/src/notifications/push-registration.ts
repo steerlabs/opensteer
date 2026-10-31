@@ -175,6 +175,18 @@ export class PushRegistration {
     this.#options = options;
   }
 
+  registeredAccountSubject(): Promise<string | null> {
+    return this.#queue.run(async () =>
+      this.#state.status === "registered"
+        ? ((await this.#load()).registered?.accountSubject ?? null)
+        : null,
+    );
+  }
+
+  installationId(): Promise<string> {
+    return this.#queue.run(async () => (await this.#load()).installationId);
+  }
+
   getSnapshot = (): PushRegistrationState => this.#state;
 
   subscribe = (listener: () => void): (() => void) => {

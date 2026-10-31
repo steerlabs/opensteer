@@ -2566,6 +2566,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         type: command.type,
       });
     }
+    case "notification.preview.register":
+      return rpcSuccess({
+        type: command.type,
+        installationId: command.installationId,
+        keyId: command.keyId,
+        registered: true,
+      });
     // The preview's agents have no clock of the person's to keep.
     case "viewer.timeZone.update":
       return rpcSuccess({ timeZone: command.timeZone, type: command.type });

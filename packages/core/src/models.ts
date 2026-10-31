@@ -319,6 +319,7 @@ export const RunnerCapabilitySchema = z.enum([
   // and reports it on `runner.thread-title`.
   "thread-icon-v1",
   "task-done-v1",
+  "person-notify-v1",
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
 
@@ -766,6 +767,7 @@ export const MessageViewSchema = z
   .object({
     ...messageShape,
     author: MessageAuthorViewSchema,
+    addressedToUserId: UserIdSchema.optional(),
     /**
      * How an input was delivered, where a read has its Thread input at hand.
      * Runners never receive it: their Message contract stays strict.

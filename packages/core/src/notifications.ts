@@ -1,3 +1,4 @@
+import { canonicalBase64urlBytes, canonicalBase64urlByteLength } from "@opensteer/shared/base64url";
 import { z } from "zod";
 import {
   MessageIdSchema,
@@ -8,6 +9,14 @@ import {
   WorkspaceIdSchema,
 } from "./ids.js";
 import { IsoDateTimeSchema } from "./models.js";
+
+export const PersonNotifyMessageSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((s) => s.isWellFormed(), "Message must be valid Unicode")
+  .refine((s) => s.trim().length > 0, "Message must contain visible text")
+  .refine((s) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(s), "Message must be one line");
 
 /**
  * What a person is told about: Opensteer replied to them, Opensteer needs their
@@ -32,13 +41,13 @@ export const notificationPushWindowMilliseconds = 15 * 60_000;
 /** The heading of a notification a person's own client shows. */
 export const notificationTitleMaxCharacters = 120;
 
-/** The excerpt a person's own client shows. It never leaves their Deployment. */
+/** The excerpt shown locally or sealed for a registered phone. */
 export const notificationBodyMaxCharacters = 180;
 
 /**
  * One notification as the recipient's own clients receive it. Title and body
- * are drawn from the person's Deployment for the person's own screens; the
- * Account, which relays push, receives identifiers only.
+ * are drawn from the person's Deployment. The Account relays only identifiers
+ * and per-installation authenticated ciphertext, never this plaintext.
  */
 export const NotificationViewSchema = z.object({
   body: z.string().min(1).max(notificationBodyMaxCharacters),
@@ -78,7 +87,46 @@ export const maximumNotificationDevicesPerAccount = 16;
  * on the phone *and* be named on the wire: `expo-notifications` reads this id
  * from the FCM message and falls back to a channel of its own — called
  * "Miscellaneous" — when it finds none. One channel is the whole vocabulary:
- * the fixed phrases are all the same kind of interruption, and a person who
+ * alerts are all the same kind of interruption, and a person who
  * wants fewer of them turns one of the two switches off in the app.
  */
 export const androidNotificationChannelId = "default";
+
+/** Stable push registration identity, shared by the Account and Host. */
+export const NotificationInstallationIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/u);
+export const NotificationPreviewKeyIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{22}$/u)
+  .refine((value) => canonicalBase64urlBytes(value, 16));
+export const NotificationPreviewKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{43}$/u)
+  .refine((value) => canonicalBase64urlBytes(value, 32));
+export const NotificationPreviewEnvelopeSchema = z.strictObject({
+  version: z.literal(1),
+  keyId: NotificationPreviewKeyIdSchema,
+  nonce: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{16}$/u)
+    .refine((value) => canonicalBase64urlBytes(value, 12)),
+  ciphertext: z
+    .string()
+    .min(23)
+    .max(2752)
+    .refine((value) => canonicalBase64urlByteLength(value, 17, 2064)),
+});
+export type NotificationPreviewEnvelope = z.infer<typeof NotificationPreviewEnvelopeSchema>;
+export const NotificationPreviewPlaintextSchema = z.strictObject({
+  version: z.literal(1),
+  title: z
+    .string()
+    .min(1)
+    .max(notificationTitleMaxCharacters)
+    .refine((value) => value.isWellFormed()),
+  body: z
+    .string()
+    .min(1)
+    .max(notificationBodyMaxCharacters)
+    .refine((value) => value.isWellFormed()),
+});
+export type NotificationPreviewPlaintext = z.infer<typeof NotificationPreviewPlaintextSchema>;

@@ -1,5 +1,10 @@
 import * as browserProfileStorageStore from "./browser-profile-storage-store.js";
 import { BrowserHistoryStore } from "./browser-history-store.js";
+import {
+  publishPersonNotification,
+  type PersonNotificationInput,
+  type PersonNotificationResult,
+} from "./person-notification-store.js";
 import * as taskDone from "./task-done.js";
 import { drainPendingThreadStates } from "./thread-status.js";
 import * as runnerStore from "./runner-store.js";
@@ -2111,6 +2116,10 @@ export class OpensteerStore {
     readonly workspaceId?: WorkspaceId;
   }): Promise<TaskPage> {
     return snapshotStore.taskPageForUser(this.#database, this.notificationState, input);
+  }
+
+  publishPersonNotification(input: PersonNotificationInput): Promise<PersonNotificationResult> {
+    return publishPersonNotification(this.#database, input);
   }
 
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {

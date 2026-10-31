@@ -12,6 +12,7 @@ import {
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   MessageIdSchema,
+  PersonNotifyMessageSchema,
   PlaceContentPartSchema,
   MessageSchema,
   MessageContentSchema,
@@ -217,6 +218,11 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     observationId: z.string().trim().min(1).max(255).optional(),
     threadId: z.union([ThreadIdSchema, z.literal("home")]),
     type: z.literal("thread.message"),
+  }),
+  z.strictObject({
+    type: z.literal("person.notify"),
+    requestId: z.uuid(),
+    message: PersonNotifyMessageSchema,
   }),
   z.strictObject({
     ...requestBase,
@@ -586,6 +592,11 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
     ...responseBase,
     result: DeliveredThreadInputResultSchema,
     type: z.literal("thread.message.result"),
+  }),
+  z.strictObject({
+    type: z.literal("person.notify.result"),
+    requestId: z.uuid(),
+    messageId: MessageIdSchema,
   }),
   z.strictObject({
     ...responseBase,

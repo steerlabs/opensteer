@@ -1,4 +1,6 @@
 import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
+import { NotificationPreviewKeyStore } from "@opensteer/database";
+import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
 import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
 import { ComputerViewService } from "../computer-use/computer-view-service.js";
 import { DisplayStreamHub } from "../computer-use/display-stream-hub.js";
@@ -1320,6 +1322,16 @@ export async function createHostRuntime(
       database,
       options.notificationTiming?.now ? { now: options.notificationTiming.now } : {},
     );
+    const notificationIssuer = accountAttachment?.issuer ?? personalAccountIssuer;
+    const notificationPreviews =
+      notificationTarget && notificationIssuer
+        ? new NotificationPreviewService({
+            issuer: notificationIssuer.origin,
+            store: new NotificationPreviewKeyStore(database),
+            vault: integrationVault,
+            onError: (code) => console.warn(code),
+          })
+        : undefined;
     // Recovery below can publish before the authority publisher exists.
     let resolveNotificationAuthority!: () => void;
     const notificationAuthorityReady = new Promise<void>((resolve) => {
@@ -1334,6 +1346,7 @@ export async function createHostRuntime(
               ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
               hostInstanceId: deployment.activeHostInstanceId,
               target: notificationTarget,
+              ...(notificationPreviews ? { previews: notificationPreviews } : {}),
             }),
           }
         : {}),
@@ -2358,6 +2371,7 @@ export async function createHostRuntime(
     const app = await createHostServer(
       {
         passkeys: config.passkeys === true,
+        ...(notificationPreviews ? { notificationPreviews } : {}),
         ...(accountAdoptionControlClient
           ? {
               accountAdoption: {

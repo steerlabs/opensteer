@@ -30,6 +30,7 @@ export async function runReply(
       .where("threadId", "=", run.threadId)
       .where("runId", "=", run.id)
       .where("kind", "=", "assistant")
+      .where("addressedToUserId", "is", null)
       .$if(before !== null, (query) => query.where("sequence", "<", before ?? "0"))
       .orderBy("sequence", "desc")
       .limit(1)

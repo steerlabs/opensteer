@@ -68,6 +68,7 @@ export type AgentControlAction =
   | "thread.delegate"
   | "thread.list"
   | "thread.message"
+  | "person.notify"
   | "thread.read"
   | "thread.write"
   | "trigger.read"
@@ -166,6 +167,7 @@ const actionClasses: Readonly<Record<AgentControlAction, AgentControlActionClass
   "thread.delegate": "thread.delegate",
   "thread.list": "thread.list",
   "thread.message": "thread.message",
+  "person.notify": "thread.message",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
   "trigger.read": "trigger.read",

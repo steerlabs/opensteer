@@ -1,3 +1,5 @@
+import { NotificationStore } from "./notification-store.js";
+import { runReply } from "./run-reply.js";
 import type { StoreFixture } from "./store.integration.test-support.js";
 import { jsonValue } from "./store-primitives.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -34,6 +36,121 @@ import {
 } from "./store.integration.test-support.js";
 
 describeStore("PostgreSQL store", (it) => {
+  it("publishes addressed messages atomically with exact replay and no Run completion", async ({
+    storeFixture,
+  }) => {
+    const { createRunFixture, enqueueHumanTrigger, store, bindAgentControlRun, database } =
+      storeFixture;
+    const fixture = await createRunFixture("person-notify");
+    const source = await enqueueHumanTrigger({
+      content: [{ type: "text", text: "Work" }],
+      idempotencyKey: "person-notify-seed",
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+    });
+    await store.claimCommand(source.command.id, "notify-dispatcher");
+    const binding = await bindAgentControlRun(fixture, source.run.id, "person-notify");
+    const admission = {
+      ...binding,
+      action: "person.notify" as const,
+      requestFingerprint: createHash("sha256").update("milestone").digest("hex"),
+      requestId: randomUUID(),
+      runId: source.run.id,
+      sourceThreadId: fixture.thread.id,
+    };
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        store.publishPersonNotification({ admission, message: "Milestone passed." }),
+      ),
+    );
+    expect(new Set(results.map((result) => result.message.id)).size).toBe(1);
+    expect(results.flatMap((result) => result.events)).toHaveLength(1);
+    expect(results.flatMap((result) => result.events)[0]).toMatchObject({
+      type: "message.created",
+      data: { addressedToUserId: fixture.userId, input: null },
+    });
+    const row = await database
+      .selectFrom("messages")
+      .selectAll()
+      .where("id", "=", results[0]!.message.id)
+      .executeTakeFirstOrThrow();
+    expect(row.addressedToUserId).toBe(fixture.userId);
+    expect(
+      await database
+        .transaction()
+        .execute((transaction) =>
+          runReply(transaction, { id: source.run.id, threadId: fixture.thread.id }),
+        ),
+    ).toBeNull();
+    const notifications = await new NotificationStore(database).decide(
+      results.flatMap((result) => result.events)[0]!,
+    );
+    expect(notifications).toMatchObject([
+      {
+        userId: fixture.userId,
+        view: { kind: "reply-published", messageId: row.id, body: "Milestone passed." },
+      },
+    ]);
+    const history = await store.threadMessagePageForOwner({
+      ownerId: fixture.userId,
+      threadId: fixture.thread.id,
+      aroundMessageId: row.id,
+    });
+    expect(history?.messages.find((message) => message.id === row.id)).toMatchObject({
+      addressedToUserId: fixture.userId,
+    });
+    expect(results[0]!.message).not.toHaveProperty("addressedToUserId");
+    const run = await database
+      .selectFrom("runs")
+      .select("status")
+      .where("id", "=", source.run.id)
+      .executeTakeFirstOrThrow();
+    expect(["starting", "running", "waiting"]).toContain(run.status);
+    await expect(
+      store.publishPersonNotification({
+        admission: {
+          ...admission,
+          requestFingerprint: createHash("sha256").update("changed").digest("hex"),
+        },
+        message: "Changed",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      store.publishPersonNotification({
+        admission: { ...admission, requestedBy: createId("user") },
+        message: "Milestone passed.",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    for (let index = 1; index < agentControlActionLimits["thread.message"]; index += 1) {
+      await store.admitAgentControlRequest({
+        ...admission,
+        action: "thread.message",
+        requestId: randomUUID(),
+        requestFingerprint: createHash("sha256").update(`shared-quota-${index}`).digest("hex"),
+      });
+    }
+    await expect(
+      store.publishPersonNotification({
+        admission: { ...admission, requestId: randomUUID() },
+        message: "Milestone passed.",
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      details: { actionClass: "thread.message", limit: 32 },
+    });
+    await expect(
+      store.publishPersonNotification({ admission, message: "Milestone passed." }),
+    ).resolves.toMatchObject({ wasDuplicate: true, message: { id: row.id }, events: [] });
+    await database
+      .updateTable("runs")
+      .set({ status: "completed" })
+      .where("id", "=", source.run.id)
+      .execute();
+    await expect(
+      store.publishPersonNotification({ admission, message: "Milestone passed." }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
   it("serializes durable per-Run admission and charges an exact retry only once", async ({
     storeFixture,
   }) => {

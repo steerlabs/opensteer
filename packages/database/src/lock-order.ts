@@ -182,6 +182,7 @@ export const databaseLockOrder = [
   "users",
   "account_directory_projections",
   "auth_sessions",
+  "notification_preview_keys",
   "host_account_adoption_proofs",
   "account_directory_provider",
   "auth_accounts",

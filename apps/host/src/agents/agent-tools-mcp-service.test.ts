@@ -373,6 +373,7 @@ describe("AgentToolsMcpService", () => {
       "thread_list",
       "thread_delegate",
       "assignment_cancel",
+      "person_notify",
       "thread_message",
       "thread_write",
       "browser_profile_list",
@@ -582,6 +583,7 @@ describe("AgentToolsMcpService", () => {
       "thread_list",
       "thread_delegate",
       "assignment_cancel",
+      "person_notify",
       "thread_message",
       "thread_write",
       "browser_profile_list",
@@ -712,6 +714,7 @@ describe("AgentToolsMcpService", () => {
         { name: "thread_list" },
         { name: "thread_delegate" },
         { name: "assignment_cancel" },
+        { name: "person_notify" },
         { name: "thread_message" },
         { name: "thread_write" },
         { name: "browser_profile_list" },
@@ -852,6 +855,7 @@ describe("AgentToolsMcpService", () => {
       "thread_list",
       "thread_delegate",
       "assignment_cancel",
+      "person_notify",
       "thread_message",
       "thread_write",
       "browser_profile_list",
@@ -1000,6 +1004,7 @@ function runnerRelease(input: {
 }): readonly string[] {
   return [
     "task-done-v1",
+    ...(input.previousRelease ? [] : ["person-notify-v1"]),
     ...(input.legacyEnvironment ? [] : ["environment-list-v1"]),
     ...(input.previousRelease ? [] : ["browser-profile-create-v1"]),
   ];
@@ -1272,7 +1277,9 @@ it.each([
     expect(served.filter((name) => previousTools.some((tool) => tool === name)).sort()).toEqual(
       [...previousTools].sort(),
     );
-    const current = toolsForCapabilityProfile(profile).map(({ name }) => name);
+    const current = toolsForCapabilityProfile(profile)
+      .map(({ name }) => name)
+      .filter((name) => name !== "person_notify");
     expect(served.filter((name) => current.some((tool) => tool === name)).sort()).toEqual(
       [...current].sort(),
     );
@@ -1452,7 +1459,10 @@ it.each([false, true])(
                   ]
           : toolsForCapabilityProfile(profile)
               .map(({ name }) => name)
-              .filter((name) => name !== "environment_list");
+              .filter(
+                (name) =>
+                  name !== "environment_list" && (name !== "person_notify" || !legacyBrowser),
+              );
         expect(
           legacy
             .filter(({ name }) => expectedLegacyNames.includes(name))
@@ -1494,7 +1504,9 @@ it.each([false, true])(
         expect(current.some(({ name }) => name === "browser_sign_in")).toBe(
           legacyBrowser && profile !== "trigger",
         );
-        const currentNames = toolsForCapabilityProfile(profile).map(({ name }) => name);
+        const currentNames = toolsForCapabilityProfile(profile)
+          .map(({ name }) => name)
+          .filter((name) => name !== "person_notify" || !legacyBrowser);
         // These are the enabled names the release-local Codex inventory check compares.
         expect(
           current
@@ -1541,3 +1553,44 @@ it.each([false, true])(
     );
   },
 );
+
+it("pins person_notify to the calling Runner capability and returns the exact message receipt", async () => {
+  let supported = true;
+  const messageId = createId("message");
+  const handle = vi.fn(async (_token: string, value: unknown) => {
+    const request = AgentControlRequestSchema.parse(value);
+    return { type: "person.notify.result" as const, requestId: request.requestId, messageId };
+  });
+  const fixture = await startService({
+    agentControl: { handle } as unknown as AgentControlService,
+    profiles: { token: "delegated" },
+    runnerCapabilities: async () => (supported ? ["person-notify-v1"] : []),
+  });
+  const client = await connectClient(fixture.url, "token");
+  try {
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("person_notify");
+    const result = await client.callTool({
+      name: "person_notify",
+      arguments: { message: "Ready for review." },
+    });
+    expect(result.structuredContent).toEqual({ messageId });
+    expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ messageId }) }]);
+    expect(handle).toHaveBeenCalledWith(
+      "token",
+      expect.objectContaining({
+        type: "person.notify",
+        requestId: expect.any(String),
+        message: "Ready for review.",
+      }),
+    );
+    supported = false;
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("person_notify");
+    await fixture.service.close();
+    expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain(
+      "person_notify",
+    );
+  } finally {
+    await client.close();
+    await fixture.service.close();
+  }
+});
