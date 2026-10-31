@@ -212,7 +212,6 @@ export function groupTranscriptEntries(
       slots.push({ group: { entry, key: entry.id, kind: "message" }, kind: "group" });
       open = { after: entry.id, entries: [], kind: "stretch", runId: entry.runId };
       slots.push(open);
-      nodeStretch.clear();
       continue;
     }
     if (entry.kind === "message" && (entry.messageKind === "input" || entry.runId === null)) {
@@ -775,10 +774,9 @@ function joinedTurn(turns: readonly Turn[]): Turn {
 
 /**
  * How far into a transcript its reader has been shown, by the Host's message
- * sequence. What a Run writes in a conversation is shown only once the Run has
- * ended — as its reply or among its steps — so reading stops short of the
- * first thing a Run still under way has written. A Run whose own entry is on a
- * page not loaded is under way while its turn still is.
+ * sequence. Active intermediate messages hold back the watermark until a reply
+ * or addressed message settles their stretch, even if the Run continues.
+ * A Run whose own entry is not loaded is under way while its turn still is.
  */
 export function observedSequence(
   entries: readonly TranscriptEntry[],
@@ -787,7 +785,18 @@ export function observedSequence(
   let unshown: bigint | null = null;
   if (conversation) {
     const runs = new Map<string, RunEntry>();
+    const addressed = new Map<string, bigint>();
     for (const entry of entries) {
+      if (
+        entry.kind === "message" &&
+        entry.addressedToUserId &&
+        entry.published !== false &&
+        entry.runId &&
+        entry.sequence !== undefined
+      ) {
+        const sequence = BigInt(entry.sequence);
+        if (sequence > (addressed.get(entry.runId) ?? -1n)) addressed.set(entry.runId, sequence);
+      }
       if (entry.kind === "run" && entry.runId !== null) runs.set(entry.runId, entry);
     }
     for (const group of groupTranscriptEntries(entries)) {
@@ -801,6 +810,8 @@ export function observedSequence(
       for (const entry of group.turn.work) {
         if (entry.kind !== "message" || entry.sequence === undefined) continue;
         const sequence = BigInt(entry.sequence);
+        // An addressed message makes the preceding stretch observable while its Run continues.
+        if (sequence <= (addressed.get(entry.runId ?? "") ?? -1n)) continue;
         if (unshown === null || sequence < unshown) unshown = sequence;
       }
     }

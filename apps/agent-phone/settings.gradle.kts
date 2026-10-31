@@ -17,3 +17,5 @@ dependencyResolutionManagement {
 rootProject.name = "opensteer-agent-phone"
 
 include(":app", ":fixture")
+
+include(":notification-preview-tests")

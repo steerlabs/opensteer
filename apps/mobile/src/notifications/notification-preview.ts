@@ -41,7 +41,7 @@ export class NotificationPreviews {
   reconcile(): Promise<void> {
     const attachment = this.#attachment;
     const current = () => this.#attachment === attachment && attachment?.current();
-    return this.#run(async () => {
+    return (async () => {
       const native = this.native;
       if (
         !native ||
@@ -62,15 +62,17 @@ export class NotificationPreviews {
         return;
       const installationId = await this.push.installationId();
       if (!current()) return;
-      const key = await native.key(attachment.deploymentId);
-      if (!current()) return;
+      const key = await this.#run(async () =>
+        current() ? native.key(attachment.deploymentId) : null,
+      );
+      if (!key || !current()) return;
       await attachment.dispatch({
         type: "notification.preview.register",
         installationId,
         accountId: ControlPlaneAccountIdSchema.parse(accountId),
         ...key,
       });
-    }).catch(() => {});
+    })().catch(() => {});
   }
   /** Invalidate immediately; erase before the caller revokes its credentials. */
   clear(deploymentId: string | null): Promise<void> {
@@ -80,9 +82,12 @@ export class NotificationPreviews {
       if (this.native?.notificationPreviewVersion === 1) await this.native.erase(deploymentId);
     }).catch(() => {});
   }
-  #run(work: () => Promise<void>): Promise<void> {
+  #run<T>(work: () => Promise<T>): Promise<T> {
     const result = this.#queue.then(work);
-    this.#queue = result.catch(() => {});
+    this.#queue = result.then(
+      () => {},
+      () => {},
+    );
     return result;
   }
 }

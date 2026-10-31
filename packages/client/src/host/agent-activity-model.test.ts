@@ -17,6 +17,8 @@ import type {
   TranscriptEntry,
 } from "./client.js";
 import {
+  observedSequence,
+  incomingTranscriptMessages,
   activityFeedPresentation,
   conversationActivityTurn,
   conversationTurn,
@@ -2131,4 +2133,68 @@ it("places an addressed message between Run stretches and reveals its exact anch
   expect(groups[1]).toMatchObject({ key: "addressed", entry: addressed });
   expect(groups[2]).toMatchObject({ turn: { work: [after] } });
   expect(conversationTurnRevealing(groups, addressed.id)).toBeNull();
+});
+
+it.each([true, false])(
+  "keeps child task rows reachable across an addressed message (nested already running: %s)",
+  (nestedRunning) => {
+    const child: Extract<TranscriptEntry, { kind: "node" }> = {
+      kind: "node",
+      id: "child",
+      nodeId: "child",
+      parentNodeId: null,
+      runId: "run-a",
+      createdAt: at(1),
+      completedAt: null,
+      model: null,
+      originCallId: null,
+      prompt: "Research",
+      result: null,
+      status: "running",
+      title: "Research",
+    };
+    const nested = { ...child, id: "nested", nodeId: "nested", parentNodeId: "child" };
+    const first = tool({ nodeId: "child" });
+    const second = tool({ nodeId: "nested" });
+    const groups = groupTranscriptEntries([
+      child,
+      ...(nestedRunning ? [nested] : []),
+      message({ addressedToUserId: "person" }),
+      first,
+      ...(nestedRunning ? [] : [nested]),
+      second,
+    ]);
+    const owner = groups.find(
+      (group) => group.kind === "turn" && group.turn.work.some((entry) => entry.id === child.id),
+    );
+    if (owner?.kind !== "turn") throw new Error("Missing child task row");
+    expect(workRows(owner.turn.work)).toEqual([
+      expect.objectContaining({ kind: "subagent", entry: child }),
+    ]);
+    expect(owner.turn.subagentWork.child).toEqual(
+      nestedRunning ? [nested, first] : [first, nested],
+    );
+    expect(owner.turn.subagentWork.nested).toEqual([second]);
+    expect(workRows(owner.turn.subagentWork.child!)).toContainEqual(
+      expect.objectContaining({ kind: "subagent", entry: nested }),
+    );
+    expect(workRows(owner.turn.subagentWork.nested!)).toHaveLength(1);
+  },
+);
+it("marks an addressed message read beyond the active Run's intermediate message", () => {
+  const notification = message({ id: "notification", sequence: "3", addressedToUserId: "person" });
+  const entries = [
+    message({ messageKind: "input", sequence: "1" }),
+    run({ status: "running" }),
+    message({ sequence: "2" }),
+    notification,
+  ];
+  expect(incomingTranscriptMessages(entries, "person", true)).toContain(notification);
+  expect(observedSequence(entries, true)).toBe("3");
+  expect(observedSequence([...entries, message({ sequence: "4" })], true)).toBe("3");
+  expect(
+    groupTranscriptEntries(entries).some(
+      (group) => group.kind === "turn" && group.turn.run?.status === "running",
+    ),
+  ).toBe(true);
 });

@@ -41,6 +41,7 @@ apps/agent-phone/.kotlin/
 apps/agent-phone/build/
 apps/agent-phone/app/build/
 apps/agent-phone/fixture/build/
+apps/agent-phone/notification-preview-tests/build/
 
 # Native Expo phone decoder build output.
 apps/mobile/modules/*/android/build/

@@ -1,7 +1,9 @@
+import { NotificationPreviews } from "./notification-preview.js";
+import { createId } from "@opensteer/core";
 import { DeviceLimitReachedError, PushNotConfiguredError } from "@opensteer/client/connections";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import type { RegisterNotificationDeviceRequest } from "@opensteer/control-plane-protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   PushRegistration,
   type NotificationDeviceRegistry,
@@ -436,4 +438,55 @@ describe("PushRegistration", () => {
 
     expect(registry.registrations).toHaveLength(1);
   });
+});
+
+it("erases previews and settles sign-out when a concurrent push refresh is refused", async () => {
+  let refuse = false;
+  let release!: () => void;
+  const refresh = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let previews!: NotificationPreviews;
+  const f = open({
+    signedInSubject: async () => {
+      if (refuse) {
+        await refresh;
+        await previews.clear(null);
+        return null;
+      }
+      return subject;
+    },
+  });
+  const native = {
+    notificationPreviewVersion: 1,
+    prepare: vi.fn(async () => {}),
+    key: vi.fn(async () => ({ keyId: "key", key: "key" })),
+    erase: vi.fn(async () => {}),
+  };
+  previews = new NotificationPreviews(native, f.registration, async () => subject);
+  await f.registration.start();
+  refuse = true;
+  const sync = f.registration.sync();
+  previews.attach({
+    deploymentId: createId("deployment"),
+    capabilities: ["notification-preview-v1"],
+    current: () => true,
+    dispatch: vi.fn(async () => {}),
+  });
+  const reconcile = previews.reconcile();
+  release();
+  let settled = false;
+  const done = Promise.all([sync, reconcile]).then(async () => {
+    await f.registration.signOut();
+    settled = true;
+  });
+  await vi.waitFor(
+    () => {
+      expect(native.erase, "refused refresh must erase native previews").toHaveBeenCalledWith(null);
+      expect(settled, "push refresh and Account sign-out must settle").toBe(true);
+    },
+    { timeout: 1000 },
+  );
+  await done;
+  f.registration.stop();
 });

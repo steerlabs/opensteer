@@ -1,4 +1,5 @@
 import ExpoModulesCore
+
 public final class NotificationPreviewModule: Module {
   private let store = PreviewKeyStore()
   public func definition() -> ModuleDefinition {

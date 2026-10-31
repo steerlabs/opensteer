@@ -557,3 +557,25 @@ test("release native proof uses release inputs and the hosted release toolchain"
   assert.equal(task.runner, "macos-26");
   assert.equal(task.xcode, "/Applications/Xcode_26.6.app/Contents/Developer");
 });
+test("notification preview native suites select their existing lanes", () => {
+  const graph = readGraph(process.cwd());
+  assert.ok(
+    decide(
+      ["apps/mobile/modules/notification-preview/ios/Sources/NotificationPreview/Preview.swift"],
+      graph,
+    ).nativeMac.includes("iphone"),
+  );
+  assert.equal(
+    decide(
+      [
+        "apps/mobile/modules/notification-preview/android/src/main/java/com/opensteer/notificationpreview/PreviewCrypto.kt",
+      ],
+      graph,
+    ).lanes.android,
+    true,
+  );
+  assert.equal(
+    decide(["packages/core/src/fixtures/notification-preview-v1.json"], graph).lanes.android,
+    true,
+  );
+});
