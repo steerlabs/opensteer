@@ -42,6 +42,7 @@ import {
 } from "@opensteer/browser-runtime-core/page-policy";
 import {
   siteCookieReplacementBatch,
+  BrowserRuntimeError,
   type BrowserContext,
   type BrowserLaunchRequest,
   type BrowserLauncher,
@@ -122,7 +123,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
         partitionKey: `session:${sessionId}`,
         sessionId,
-        snapshot: EmptyBrowserProfileSnapshot,
+        storage: { kind: "guest" },
       });
       try {
         const page = browser.context.pages()[0]!;
@@ -145,6 +146,15 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   }
 
   async launch(request: BrowserLaunchRequest): Promise<LaunchedBrowser> {
+    if (request.storage.kind === "local") {
+      throw new BrowserRuntimeError(
+        "conflict",
+        "This launcher does not support native profiles yet.",
+        { reason: "browser-local-profiles-unsupported" },
+      );
+    }
+    const snapshot =
+      request.storage.kind === "legacy" ? request.storage.snapshot : EmptyBrowserProfileSnapshot;
     const authenticator = request.authenticator ?? this.#authenticator;
     const partition = electronBrowserPartition(request.partitionKey);
     const profileSession = electronSession.fromPartition(partition, {
@@ -161,7 +171,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     try {
       // The first page holds a blank document until launch returns, so it
       // opens while the saved sites restore; nothing can navigate it before.
-      await joined([context.createPage(), context.importSnapshot(request.snapshot)]);
+      await joined([context.createPage(), context.importSnapshot(snapshot)]);
       return new ElectronLaunchedBrowser(context, profileSession, this.#clipboard);
     } catch (error) {
       await context.close().catch(() => undefined);
@@ -1490,6 +1500,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       return Promise.reject(new Error("Electron browser navigation scheme is not allowed."));
     }
     return this.#webContents.loadURL(url);
+  }
+
+  submitNavigation(url: string): void {
+    // Loading and failure remain page observations, independent of submission.
+    void this.loadInitialUrl(url).catch(() => undefined);
   }
 
   cdp(): Promise<CdpSession> {

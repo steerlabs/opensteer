@@ -134,7 +134,7 @@ async function run(): Promise<void> {
     initialViewport: { devicePixelRatio: 1, height: 480, width: 640 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000099",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000099"),
-    snapshot,
+    storage: { kind: "legacy", snapshot },
   };
   const first = await launcher.launch(request);
   const exported = await first.exportSnapshot();
@@ -143,14 +143,17 @@ async function run(): Promise<void> {
     ...request,
     partitionKey: "session:bsn_00000000-0000-4000-8000-000000000100",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000100"),
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "guest" },
   });
   if ((await isolated.exportSnapshot()).cookies.length !== 0)
     throw new Error("A fresh partition saw another profile's cookies");
   assertRoundTrip(await first.exportSnapshot(), "concurrent isolated export");
   await isolated.close();
   await first.close();
-  const reopened = await launcher.launch({ ...request, snapshot: exported });
+  const reopened = await launcher.launch({
+    ...request,
+    storage: { kind: "legacy", snapshot: exported },
+  });
   const restored = await reopened.exportSnapshot();
   assertRoundTrip(restored, "reopened export");
   await reopened.close();

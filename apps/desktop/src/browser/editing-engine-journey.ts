@@ -52,7 +52,7 @@ async function main(): Promise<void> {
       sessionId,
       partitionKey: `session:${sessionId}`,
       initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     await runEditingEngineJourney(browser, `http://127.0.0.1:${address.port}/`, evidence);
   } catch (error) {

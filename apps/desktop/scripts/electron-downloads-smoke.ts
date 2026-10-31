@@ -210,7 +210,7 @@ async function run(): Promise<void> {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000901",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000901"),
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
   };
   const launcher = new ElectronBrowserLauncher({
     downloads,

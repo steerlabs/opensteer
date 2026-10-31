@@ -133,6 +133,73 @@ function descriptor() {
 }
 
 describe("the owning Runner descriptor reader", () => {
+  it("preserves released browser descriptors exactly", () => {
+    const wire = descriptor();
+    const browser = {
+      runtimeId: "browser",
+      profileSnapshotVersion: 1,
+      stateImport: true,
+      targetControl: 1,
+    };
+    expect(
+      RunnerDescriptorSchema.parse({ ...wire, modules: { ...wire.modules, browser } }).modules
+        .browser,
+    ).toEqual(browser);
+  });
+
+  it("negotiates local storage and initial navigation independently without losing other modules", () => {
+    const wire = descriptor();
+    const storage = {
+      storageInstanceId: "11111111-1111-4111-8111-111111111111",
+      engine: "electron",
+    };
+    const parse = (additions: Record<string, unknown>) =>
+      RunnerDescriptorSchema.parse({
+        ...wire,
+        modules: {
+          ...wire.modules,
+          browser: { runtimeId: "browser", stateImport: true, ...additions },
+        },
+      });
+    expect(
+      parse({
+        localProfiles: 1,
+        localProfileStorage: { ...storage, future: true },
+        initialNavigationVersion: 1,
+      }).modules.browser,
+    ).toEqual({
+      runtimeId: "browser",
+      stateImport: true,
+      localProfiles: 1,
+      localProfileStorage: storage,
+      initialNavigationVersion: 1,
+    });
+    for (const additions of [
+      { localProfiles: 2, localProfileStorage: storage },
+      { localProfiles: 1 },
+      { localProfiles: 1, localProfileStorage: { ...storage, engine: "future" } },
+      { localProfiles: 1, localProfileStorage: { ...storage, storageInstanceId: "boot" } },
+    ]) {
+      const parsed = parse({ ...additions, initialNavigationVersion: 1 });
+      expect(parsed.modules.browser).toEqual({
+        runtimeId: "browser",
+        stateImport: true,
+        initialNavigationVersion: 1,
+      });
+      expect(parsed.modules.agents?.environmentIds).toEqual(wire.modules.agents.environmentIds);
+      expect(parsed.modules.messaging?.capabilities).toHaveLength(1);
+    }
+    expect(
+      parse({ localProfiles: 1, localProfileStorage: storage, initialNavigationVersion: 2 }).modules
+        .browser,
+    ).toEqual({
+      runtimeId: "browser",
+      stateImport: true,
+      localProfiles: 1,
+      localProfileStorage: storage,
+      initialNavigationVersion: undefined,
+    });
+  });
   it("accepts the computer tool and ignores unknown future Mac computer-use versions", () => {
     const wire = descriptor();
     const current = RunnerDescriptorSchema.parse({

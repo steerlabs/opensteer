@@ -11,7 +11,6 @@ import {
   SessionCdpRouter,
 } from "@opensteer/browser-core";
 import {
-  EmptyBrowserProfileSnapshot,
   type BrowserProfileSnapshot,
   type BrowserOriginCaptureFailure,
 } from "@opensteer/browser-profile/snapshot";
@@ -20,6 +19,7 @@ import {
   type BrowserAttachTicketClaims,
   type BrowserSessionId,
   type BrowserSurfaceId,
+  type InitialPageReady,
 } from "@opensteer/protocol";
 import { AsyncMutex, settleCleanup } from "./async.js";
 import type {
@@ -172,6 +172,7 @@ function browserHostKey(claims: BrowserAttachTicketClaims): BrowserPartitionKey 
 }
 
 export class BrowserAttachment {
+  readonly initialPage?: InitialPageReady;
   private closePromise: Promise<void> | null = null;
   private readonly controller: BrowserController;
   private readonly detach: () => Promise<void>;
@@ -404,6 +405,16 @@ export class BrowserRuntime implements NativePresentationSource {
         throw new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down.");
       }
       const verified = await this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId });
+      if (
+        verified.identity.kind === "profile-local" ||
+        verified.initialNavigationVersion !== undefined
+      ) {
+        throw new BrowserRuntimeError(
+          "conflict",
+          "This browser runtime does not support native profile attachment yet.",
+          { reason: "browser-local-profiles-unsupported" },
+        );
+      }
       const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
       if (this.sessions.has(claims.sessionId)) {
         throw new BrowserRuntimeError("conflict", "The Browser Session is already attached.");
@@ -480,7 +491,9 @@ export class BrowserRuntime implements NativePresentationSource {
             initialViewport: this.initialViewport,
             partitionKey: hostKey,
             sessionId: claims.sessionId,
-            snapshot: profileState?.snapshot ?? EmptyBrowserProfileSnapshot,
+            storage: profileState
+              ? { kind: "legacy", snapshot: profileState.snapshot }
+              : { kind: "guest" },
           });
           rootPage = browser.context.pages()[0] ?? null;
           if (!rootPage) throw new BrowserRuntimeError("internal", "Browser has no root page.");

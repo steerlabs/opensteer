@@ -238,7 +238,7 @@ async function run(): Promise<void> {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000001",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002"),
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
   };
   const launcher = new ElectronBrowserLauncher({
     downloads: smokeDownloads,
@@ -1217,7 +1217,7 @@ async function run(): Promise<void> {
   await ledger.close();
   await first.close();
 
-  first = await launcher.launch({ ...request, snapshot });
+  first = await launcher.launch({ ...request, storage: { kind: "legacy", snapshot } });
   progress("second-launched");
   ledger = new SurfaceLedger(first.context, {
     initialViewport: request.initialViewport,
@@ -1574,7 +1574,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000009",
     sessionId,
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
   });
   // Every visible size and cast start any channel, or the launcher itself,
   // sends to this browser's pages, so the launcher's redraws and each tab's
@@ -4390,7 +4390,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
       partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000019",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000019"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
     });
     const initial = isolated.context.pages()[0]!;
     const owned = new SurfaceLedger(isolated.context, { rootPages: [initial] });

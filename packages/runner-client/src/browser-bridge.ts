@@ -8,6 +8,7 @@ import {
   type BrowserAttachPublicKey,
   type BrowserClientMessage,
   type BrowserServerMessage,
+  type BrowserBridgeAttached,
 } from "@opensteer/protocol";
 import {
   validateBrowserRuntimeFrame,
@@ -148,7 +149,7 @@ export class LocalBrowserRuntimeBridge {
     channelId: BrowserChannelId,
     attachTicket: string,
     sink: BrowserChannelSink,
-  ): Promise<void> {
+  ): Promise<BrowserBridgeAttached> {
     if (this.#channels.has(channelId)) {
       throw new BrowserRelayError("The browser relay channel already exists.");
     }
@@ -212,6 +213,7 @@ export class LocalBrowserRuntimeBridge {
     try {
       await waitForOpen(socket, 5_000);
       attached = true;
+      return { type: "browser.attached" };
     } catch (error) {
       this.#channels.delete(channelId);
       socket.terminate();

@@ -12,6 +12,8 @@ interface IssueBrowserAttachTicketInput {
   readonly access: "full-control";
   readonly passkeys?: 1;
   readonly navigationVersion?: 1;
+  readonly initialNavigationVersion?: 1;
+  readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
   readonly editingVersion?: 1 | 2;
   readonly clipboard?: boolean;
   readonly workspaceTabRestoreVersion?: 1;
@@ -75,6 +77,12 @@ export class BrowserAttachTicketSigner {
           }
         : {}),
       ...(input.navigationVersion === 1 ? { navigationVersion: 1 } : {}),
+      ...(input.initialNavigationVersion !== undefined || input.initialNavigation !== undefined
+        ? {
+            initialNavigationVersion: input.initialNavigationVersion,
+            initialNavigation: input.initialNavigation,
+          }
+        : {}),
       ...(input.workspaceTabRestoreVersion
         ? {
             workspaceTabRestoreVersion: input.workspaceTabRestoreVersion,

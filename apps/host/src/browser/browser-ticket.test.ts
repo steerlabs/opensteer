@@ -8,6 +8,27 @@ import { describe, expect, it } from "vitest";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 
 describe("BrowserAttachTicketSigner", () => {
+  it("binds initial navigation to the signed ticket", () => {
+    const keys = generateKeyPairSync("ed25519");
+    const initialNavigation = { operationKey: "open:1", url: "https://example.test/" };
+    const ticket = new BrowserAttachTicketSigner({
+      keyId: "host-primary",
+      privateKey: keys.privateKey,
+    }).issue({
+      access: "full-control",
+      identity: { kind: "fresh" },
+      runtimeId: "browser",
+      sessionId: createBrowserSessionId(),
+      subject: "usr_owner",
+      initialNavigationVersion: 1,
+      initialNavigation,
+    });
+    expect(
+      BrowserAttachTicketClaimsSchema.parse(
+        JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString()),
+      ),
+    ).toMatchObject({ initialNavigationVersion: 1, initialNavigation });
+  });
   it("issues a ticket accepted by Browser Runtime's verifier", async () => {
     const keys = generateKeyPairSync("ed25519");
     const now = new Date("2026-08-09T18:00:00.000Z");

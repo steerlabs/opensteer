@@ -264,7 +264,7 @@ async function launch(
     sessionId,
     partitionKey: `${fresh ? "session" : "profile"}:${sessionId}`,
     initialViewport: { width: 640, height: 480, devicePixelRatio: 1 },
-    snapshot,
+    storage: { kind: "legacy", snapshot },
   });
   open.add(browser);
   return browser;
@@ -816,7 +816,7 @@ async function deltaChecks() {
         sessionId: createBrowserSessionId(),
         partitionKey: `profile:${createBrowserSessionId()}`,
         initialViewport: { width: 640, height: 480, devicePixelRatio: 1 },
-        snapshot,
+        storage: { kind: "legacy", snapshot },
       });
     const one = await capped(1);
     try {

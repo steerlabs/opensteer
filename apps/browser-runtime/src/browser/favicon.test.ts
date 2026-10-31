@@ -27,7 +27,7 @@ it("resolves and refreshes real page icons as decodable bounded rasters", async 
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: `session:${validClaims().sessionId}`,
     sessionId: validClaims().sessionId,
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "guest" },
   });
   cleanup.push(() => browser.close());
   const ledger = new SurfaceLedger(browser.context);

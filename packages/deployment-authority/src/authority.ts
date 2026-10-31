@@ -249,6 +249,8 @@ export const HostCapabilitySchema = z.enum([
   /** Browser viewers can observe a target without requesting pictures. */
   "browser-target-control-v1",
   "browser-passkeys-v1",
+  "browser-local-profiles-v1",
+  "browser-initial-navigation-v1",
   "browser-capture-region-v1",
   "browser-frame-window-v1",
   "browser-raster-demand-v1",

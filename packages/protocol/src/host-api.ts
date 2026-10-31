@@ -154,6 +154,7 @@ import { z } from "zod";
 import {
   BrowserProfileNameSchema,
   BrowserProfileSchema,
+  BrowserProfileDeletionSchema,
   CreateBrowserProfileBodySchema,
   BrowserContextCandidateInputSchema,
   BrowserContextCandidateSchema,
@@ -1286,7 +1287,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   CreateBrowserProfileGrantResponseSchema.extend({ type: z.literal("browser.profile.grant") }),
   z.object({ type: z.literal("browser.profileGrant.revoke") }),
   z.object({ profile: BrowserProfileSchema, type: z.literal("browser.profile.rename") }),
-  z.object({ type: z.literal("browser.profile.delete") }),
+  z.object({
+    type: z.literal("browser.profile.delete"),
+    deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
+  }),
   z.object({ type: z.literal("browser.session.close") }),
   z.object({
     revision: TriggerRevisionViewSchema,

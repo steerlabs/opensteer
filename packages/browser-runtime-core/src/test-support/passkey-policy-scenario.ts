@@ -259,7 +259,7 @@ async function runScenario(options: {
     initialViewport: { devicePixelRatio: 1, height: 720, width: 1_280 },
     partitionKey: `session:${sessionId}`,
     sessionId,
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "guest" },
   });
   try {
     const [page] = browser.context.pages();

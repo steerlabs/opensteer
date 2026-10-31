@@ -203,7 +203,7 @@ describe("Chromium child environment", () => {
         initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
         partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000001",
         sessionId: claims.sessionId,
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
       });
 
       expect(

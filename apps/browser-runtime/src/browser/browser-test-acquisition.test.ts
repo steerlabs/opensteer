@@ -16,7 +16,7 @@ const request = {
   initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
   partitionKey: `session:${validClaims().sessionId}` as const,
   sessionId: validClaims().sessionId,
-  snapshot: { cookies: [], origins: [] },
+  storage: { kind: "guest" as const },
 };
 const options = { chromiumSandbox: false, executablePath: process.execPath, headless: true };
 

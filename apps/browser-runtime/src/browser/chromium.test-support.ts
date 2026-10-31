@@ -144,7 +144,7 @@ async function startFollowSession(options: { readonly path?: string } = {}) {
     initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
     partitionKey: `profile:${claims.identity.profileId}`,
     sessionId: claims.sessionId,
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
   });
   cleanup.push(() => browser.close());
   const cdpLog: CdpLogEntry[] = [];
@@ -703,6 +703,7 @@ function observeContext(
     const existing = wrapped.get(page);
     if (existing) return existing;
     const observed: BrowserPage = {
+      submitNavigation: (url) => page.submitNavigation(url),
       agentCdp: () => page.agentCdp(),
       cdp: async () => {
         const targetId = await page.targetId();

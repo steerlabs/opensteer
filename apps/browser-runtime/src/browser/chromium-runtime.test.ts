@@ -83,7 +83,7 @@ describe("real Chromium runtime", () => {
       initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
       partitionKey: `session:${randomUUID()}`,
       sessionId: validClaims().sessionId,
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     cleanup.push(() => browser.close());
     const pageCdp = await browser.context.pages()[0]!.cdp();
@@ -194,7 +194,7 @@ describe("real Chromium runtime", () => {
       initialViewport: { devicePixelRatio: 1, width: 800, height: 600 },
       partitionKey: `session:${claims.sessionId}`,
       sessionId: claims.sessionId,
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     cleanup.push(() => browser.close());
     const root = browser.context.pages()[0];
@@ -874,7 +874,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       initialViewport: { devicePixelRatio: 1, ...agentSize },
       partitionKey: `profile:${claims.identity.profileId}`,
       sessionId: claims.sessionId,
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
     });
     cleanup.push(() => browser.close());
     const root = browser.context.pages()[0];
@@ -1640,7 +1640,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: `profile:${claims.identity.profileId}`,
       sessionId: claims.sessionId,
-      snapshot: { cookies, origins: [] },
+      storage: { kind: "legacy", snapshot: { cookies, origins: [] } },
     });
     cleanup.push(() => browser.close());
     const exported = await browser.exportSnapshot();
@@ -1676,7 +1676,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: `profile:${claims.identity.profileId}`,
       sessionId: claims.sessionId,
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
     });
     const firstPage = first.context.pages()[0];
     if (!firstPage) throw new Error("Expected an initial Chromium page.");
@@ -1766,7 +1766,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: `profile:${claims.identity.profileId}`,
       sessionId: claims.sessionId,
-      snapshot,
+      storage: { kind: "legacy", snapshot },
     });
     cleanup.push(() => restored.close());
     const restoredPage = restored.context.pages()[0];
@@ -1948,7 +1948,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: `profile:${claims.identity.profileId}`,
       sessionId: claims.sessionId,
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
     });
     cleanup.push(() => browser.close());
     const ledger = new SurfaceLedger(browser.context, {
@@ -2010,7 +2010,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: `profile:${claims.identity.profileId}`,
       sessionId: claims.sessionId,
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
     });
     cleanup.push(() => browser.close());
     const ledger = new SurfaceLedger(browser.context, {
@@ -2318,7 +2318,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: `profile:${claims.identity.profileId}`,
       sessionId: claims.sessionId,
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
     });
     cleanup.push(() => browser.close());
     const ledger = new SurfaceLedger(browser.context, {

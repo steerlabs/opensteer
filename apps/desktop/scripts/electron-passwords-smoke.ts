@@ -524,7 +524,7 @@ async function harness(
     initialViewport: { width: 900, height: 720, devicePixelRatio: 1 },
     sessionId,
     partitionKey,
-    snapshot: options.snapshot ?? EmptyBrowserProfileSnapshot,
+    storage: { kind: "legacy", snapshot: options.snapshot ?? EmptyBrowserProfileSnapshot },
   });
   const page = browser.context.pages()[0]!;
   const targetId = await page.targetId();

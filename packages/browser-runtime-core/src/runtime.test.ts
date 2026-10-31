@@ -3,7 +3,6 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { describe, expect, it, vi } from "vitest";
 import { defaultBrowserViewport } from "@opensteer/browser-core";
 import { BrowserSessionIdSchema, browserStateImportRuntimeTimeoutMs } from "@opensteer/protocol";
-import { EmptyBrowserProfileSnapshot } from "@opensteer/browser-profile/snapshot";
 import type { BrowserLauncher } from "./browser/backend.js";
 import { BrowserRuntimeError } from "./errors.js";
 import type { BrowserProfileStateClient } from "./profile-state-client.js";
@@ -170,7 +169,7 @@ describe("BrowserRuntime", () => {
         expect(runtime.health().profileHostCount).toBe(0);
         const next = await runtime.attach("next", new FakeSink());
         expect(launcher.launchCount).toBe(2);
-        expect(launcher.lastRequest?.snapshot).toEqual(state.snapshot);
+        expect(launcher.lastRequest?.storage).toEqual({ kind: "legacy", snapshot: state.snapshot });
         await next.close();
       } finally {
         await runtime.shutdown();
@@ -254,7 +253,10 @@ describe("BrowserRuntime", () => {
     });
 
     const attachment = await runtime.attach("signed-ticket", new FakeSink());
-    expect(launcher.lastRequest?.snapshot).toEqual(profileStateClient.snapshot);
+    expect(launcher.lastRequest?.storage).toEqual({
+      kind: "legacy",
+      snapshot: profileStateClient.snapshot,
+    });
     await attachment.close();
 
     expect(profileStateClient.commits).toEqual([
@@ -884,7 +886,7 @@ describe("BrowserRuntime", () => {
     expect(launcher.lastRequest).toMatchObject({
       partitionKey: "session:bsn_00000000-0000-4000-8000-000000000002",
       sessionId: "bsn_00000000-0000-4000-8000-000000000002",
-      snapshot: EmptyBrowserProfileSnapshot,
+      storage: { kind: "guest" },
     });
 
     await attachment.close();

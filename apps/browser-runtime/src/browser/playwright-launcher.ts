@@ -10,6 +10,7 @@ import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/br
 import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
 import {
   captureBrowserProfileSnapshot,
+  EmptyBrowserProfileSnapshot,
   type BrowserOriginCaptureFailure,
   type BrowserCookie,
   type BrowserProfileSnapshot,
@@ -29,6 +30,7 @@ import {
 } from "@opensteer/browser-runtime-core/page-policy";
 import {
   siteCookieReplacementBatch,
+  BrowserRuntimeError,
   type BrowserContext,
   type BrowserLaunchRequest,
   type BrowserLauncher,
@@ -246,6 +248,15 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
   }
 
   async launch(request: BrowserLaunchRequest, signal?: AbortSignal): Promise<LaunchedBrowser> {
+    if (request.storage.kind === "local") {
+      throw new BrowserRuntimeError(
+        "conflict",
+        "This launcher does not support native profiles yet.",
+        { reason: "browser-local-profiles-unsupported" },
+      );
+    }
+    const snapshot =
+      request.storage.kind === "legacy" ? request.storage.snapshot : EmptyBrowserProfileSnapshot;
     signal?.throwIfAborted();
     await access(this.executablePath, constants.X_OK);
     await this.prepare();
@@ -267,7 +278,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       const openDialogs = new Map<Page, Dialog>();
       const context = await browser.newContext({
         acceptDownloads: false,
-        storageState: { cookies: [], origins: request.snapshot.origins },
+        storageState: { cookies: [], origins: snapshot.origins },
         // The Runtime's ledger alone sizes pages. A Playwright viewport would
         // be a second emulator that Playwright re-applies on its own, such as
         // around a screenshot, putting a page back to the size it opened at.
@@ -306,10 +317,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         throw new Error("Chromium did not expose one isolated browser context.");
       }
       const browserContextId = contexts.browserContextIds[0];
-      if (request.snapshot.cookies.length > 0) {
+      if (snapshot.cookies.length > 0) {
         await browserCdp.send("Storage.setCookies", {
           browserContextId,
-          cookies: request.snapshot.cookies.map(browserCookieToCdp),
+          cookies: snapshot.cookies.map(browserCookieToCdp),
         });
       }
       const launched = new PlaywrightLaunchedBrowser(
@@ -318,7 +329,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         browserCdp,
         browserContextId,
         openDialogs,
-        request.snapshot,
+        snapshot,
         authenticator,
         providerConfig,
       );
@@ -521,6 +532,10 @@ class PlaywrightContextHandle implements BrowserContext {
 }
 
 class PlaywrightPageHandle implements BrowserPage {
+  submitNavigation(url: string): void {
+    // Loading and failure remain page observations, independent of submission.
+    void this.page.goto(url).catch(() => undefined);
+  }
   private cdpPromise: Promise<CdpSession> | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;

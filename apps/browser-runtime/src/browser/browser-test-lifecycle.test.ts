@@ -28,7 +28,7 @@ describe("Chromium journey timeout cancellation", () => {
         initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
         partitionKey: `session:${validClaims().sessionId}`,
         sessionId: validClaims().sessionId,
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       });
       const inventory = (await browser.cdp.send("SystemInfo.getProcessInfo")) as {
         processInfo: Array<{ id: number; type: string }>;

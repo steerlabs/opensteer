@@ -121,7 +121,7 @@ async function run(): Promise<void> {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000071",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000072"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
     };
     let browser = await launcher.launch(request);
     cleanup.push(() => browser.close());
@@ -533,7 +533,7 @@ async function run(): Promise<void> {
     await ledger.close();
     await browser.close();
 
-    browser = await launcher.launch({ ...request, snapshot });
+    browser = await launcher.launch({ ...request, storage: { kind: "legacy", snapshot } });
     cleanup.push(() => browser.close());
     const restoredLedger = new SurfaceLedger(browser.context, {
       initialViewport: request.initialViewport,

@@ -66,7 +66,7 @@ async function startActionJourney(id: string, report: Record<string, unknown>) {
     initialViewport: { width: 1000, height: 700, devicePixelRatio: 1 },
     partitionKey: `session:${claims.sessionId}`,
     sessionId: claims.sessionId,
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "guest" },
   });
   const root = browser.context.pages()[0]!;
   const targetId = await root.targetId();

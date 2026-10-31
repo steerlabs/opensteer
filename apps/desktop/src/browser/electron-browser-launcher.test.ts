@@ -204,7 +204,7 @@ describe("ElectronBrowserLauncher focus", () => {
         sessionId,
         partitionKey: `session:${sessionId}`,
         initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       });
       try {
         expect(browser.clipboard).toBe(supported ? clipboard : undefined);
@@ -227,7 +227,7 @@ describe("ElectronBrowserLauncher focus", () => {
       initialViewport: { devicePixelRatio: 1, height: 1600, width: 2560 },
       partitionKey: "session:bsn_00000000-0000-4000-8000-000000000003",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
 
     expect(electron.hosts).not.toHaveLength(0);
@@ -267,7 +267,7 @@ describe("Electron input attribution", () => {
         initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
         partitionKey: "session:bsn_00000000-0000-4000-8000-000000000004",
         sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000004"),
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       });
       const page = browser.context.pages()[0]!;
       const presentation = electronPagePresentation(page)!;
@@ -332,7 +332,7 @@ describe("Electron title reads at teardown", () => {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "session:bsn_00000000-0000-4000-8000-000000000006",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000006"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     const contents = electron.views.at(-1)!.webContents;
     const held = Promise.withResolvers<unknown>();
@@ -403,7 +403,7 @@ async function hubPage(session: string) {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: `session:${sessionId}`,
     sessionId: BrowserSessionIdSchema.parse(sessionId),
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "guest" },
   });
   const page = browser.context.pages()[0]!;
   const contents = electron.views.at(-1)!.webContents;
@@ -771,7 +771,7 @@ describe("Electron geometry lifecycle", () => {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "session:bsn_00000000-0000-4000-8000-000000000005",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000005"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     const page = browser.context.pages()[0]!;
     const native = electronPagePresentation(page)!;
@@ -1303,7 +1303,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
       partitionKey: "session:security",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     try {
       const view = electron.views.at(-1)!;
@@ -1345,7 +1345,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
             initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
             partitionKey: key,
             sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-            snapshot: { cookies: [], origins: [] },
+            storage: { kind: "guest" },
           }),
         );
         expect(electron.views.at(-1)!.options.webPreferences).toMatchObject({
@@ -1371,7 +1371,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
         partitionKey: "session:race",
         sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       });
       try {
         const page = browser.context.pages()[0]!,
@@ -1449,7 +1449,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
       partitionKey: "session:provenance",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     try {
       const page = browser.context.pages()[0]!,
@@ -1491,7 +1491,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
         partitionKey: "session:independent-provenance",
         sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002"),
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       });
       try {
         const otherActivity = vi.fn();
@@ -1584,7 +1584,7 @@ it.each([false, true])(
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "session:bsn_00000000-0000-4000-8000-000000000099",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000099"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     try {
       try {
@@ -1650,7 +1650,7 @@ it("closes a failed provider bootstrap without retrying an initial domain enable
         initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
         partitionKey: "session:bsn_00000000-0000-4000-8000-000000000098",
         sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000098"),
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       })
       .catch(() => undefined);
     expect(attempts).toBe(1);
@@ -1677,7 +1677,7 @@ it("updates provider header policy disabled, enabled, disabled on the same Sessi
         sessionId,
         partitionKey: `session:${sessionId}`,
         initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
         ...(provider
           ? {
               authenticator: {

@@ -5,7 +5,11 @@ import type {
   BrowserProfileSnapshot,
   BrowserOriginCaptureFailure,
 } from "@opensteer/browser-profile/snapshot";
-import type { BrowserCaptureDescriptor, BrowserSessionId } from "@opensteer/protocol/browser";
+import type {
+  BrowserCaptureDescriptor,
+  BrowserSessionId,
+  LocalProfileBinding,
+} from "@opensteer/protocol/browser";
 
 export interface CdpSession extends CdpChannel {
   /** Keeps native compositing demanded across an atomic screencast restart. */
@@ -51,8 +55,13 @@ export interface PageCapturePort {
   subscribe(listener: () => void): () => void;
 }
 
+export interface BrowserPageNavigation {
+  /** Submits navigation synchronously and observes its completion/errors separately. */
+  submitNavigation(url: string): void;
+}
+
 /** Engine operations never own native focus; active-surface selection belongs to the ledger. */
-export interface BrowserPage {
+export interface BrowserPage extends BrowserPageNavigation {
   readonly capture?: PageCapturePort;
   /**
    * Observes compositing after geometry acknowledgement, outside its lock.
@@ -108,12 +117,26 @@ export interface BrowserContext {
  */
 export type BrowserPartitionKey = `profile:${string}` | `session:${string}`;
 
+export type BrowserLaunchStorage =
+  | { kind: "guest" }
+  | { kind: "legacy"; snapshot: BrowserProfileSnapshot }
+  | { kind: "local"; binding: LocalProfileBinding; directory: string };
+
+export interface NativeProfileConversionEngine {
+  importAndFlush(input: {
+    directory: string;
+    binding: LocalProfileBinding;
+    snapshot: BrowserProfileSnapshot;
+    signal: AbortSignal;
+  }): Promise<void>;
+}
+
 export interface BrowserLaunchRequest {
   authenticator?: import("../passkeys/authenticator.js").PasskeyAuthenticator;
   initialViewport: Viewport;
   partitionKey: BrowserPartitionKey;
   sessionId: BrowserSessionId;
-  snapshot: BrowserProfileSnapshot;
+  storage: BrowserLaunchStorage;
 }
 
 /** One clipboard representation as the engine holds it. */

@@ -1,4 +1,5 @@
 import { iphoneIntegrationsProtocolVersion, iphoneOutdatedReason } from "./iphone-apps.js";
+import { BrowserEngineSchema } from "./browser-profile-storage.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
 import {
@@ -1241,6 +1242,12 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
   .object({
+    localProfiles: z.literal(1).optional().catch(undefined),
+    localProfileStorage: z
+      .object({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema })
+      .optional()
+      .catch(undefined),
+    initialNavigationVersion: z.literal(1).optional().catch(undefined),
     /** Page-provider contract, available only after the engine Security probe. */
     passkeys: z
       .number()
@@ -1346,10 +1353,11 @@ export const RunnerBrowserModuleSchema = z
     /** Required for editing v2; true means the engine isolates clipboard operations. */
     clipboard: z.boolean().optional(),
   })
-  .transform(({ editing, clipboard, ...module }) => {
+  .transform(({ editing, clipboard, localProfiles, localProfileStorage, ...module }) => {
     const version = editing === 2 && clipboard === undefined ? undefined : editing;
     return {
       ...module,
+      ...(localProfiles === 1 && localProfileStorage ? { localProfiles, localProfileStorage } : {}),
       ...(version ? { editing: version } : {}),
       ...(version === 2 ? { clipboard } : {}),
     };

@@ -101,6 +101,7 @@ import type {
 import type { IntegrationAdapterSnapshot } from "@opensteer/integration-core/adapter";
 import type {
   BrowserSessionId,
+  BrowserEngine,
   BrowserSessionOpenerRecord,
   BrowserTabOpenBinding,
   HarnessInstanceCatalog,
@@ -1403,14 +1404,40 @@ interface CredentialVaultCanaryTable {
   createdAt: Timestamp;
 }
 
-interface BrowserProfileTable {
+export interface BrowserProfileTable {
   id: BrowserProfileId;
   ownerId: UserId;
   name: string;
   revision: Generated<number>;
+  storageState: Generated<"vault" | "initializing" | "local">;
+  storageBindingVersion: Generated<1 | null>;
+  storageDeploymentId: Generated<DeploymentId | null>;
+  storageRunnerId: Generated<RunnerId | null>;
+  storageInstanceId: Generated<string | null>;
+  storageBindingId: Generated<string | null>;
+  storageEngine: Generated<BrowserEngine | null>;
+  frozenSeedRevision: ColumnType<string | null, number | null | undefined, number | null>;
+  frozenSeedDigest: Generated<string | null>;
+  initializationTokenHash: Generated<string | null>;
+  initializationTokenExpiresAt: NullableTimestamp;
   archivedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
+}
+
+export interface BrowserProfileDeletionTable {
+  deletionId: string;
+  profileId: BrowserProfileId;
+  bindingVersion: 1;
+  deploymentId: DeploymentId;
+  runnerId: RunnerId;
+  storageInstanceId: string;
+  bindingId: string;
+  engine: BrowserEngine;
+  state: "pending-computer" | "pending-restart" | "deleted";
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  deletedAt: NullableTimestamp;
 }
 
 interface BrowserProfileRevisionTable {
@@ -2058,6 +2085,7 @@ export interface DatabaseSchema {
   credentials: CredentialTable;
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
+  browserProfileDeletions: BrowserProfileDeletionTable;
   browserProfileRevisions: BrowserProfileRevisionTable;
   browserSessions: BrowserSessionTable;
   workspaceTabs: WorkspaceTabTable;
