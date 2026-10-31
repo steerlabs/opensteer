@@ -42,7 +42,6 @@ import {
   Alert,
   Pressable,
   StyleSheet,
-  TextInput,
   type TextInputInstance,
   useWindowDimensions,
   View,
@@ -55,6 +54,7 @@ import type {
   ThreadDraftStore,
 } from "../client/thread-drafts.js";
 import { Symbol } from "../ui/symbol.js";
+import { TextInput } from "../ui/text-input.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { appear, enter, exit } from "../ui/motion.js";
 import { ComposerAction } from "../ui/composer-action.js";
