@@ -7,6 +7,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import {
   NotificationPreviewEnvelopeSchema,
+  NotificationIdSchema,
   createId,
   notificationExpiryMilliseconds,
   type DeploymentId,
@@ -418,10 +419,22 @@ integration("control-plane notification boundary", () => {
   it("claims a fresh delivery while an expired backlog drains in bounded batches", async () => {
     await registerPhone({ accountId: ownerId, installationId: "backlog-installation" });
     const authority = await store.authenticateHostCredential(`Bearer ${hostCredential}`);
-    await notifications.ingest(authority, publication());
-    await notifications.ingest(authority, publication());
+    await notifications.ingest(
+      authority,
+      publication({
+        notificationId: NotificationIdSchema.parse("ntf_ffffffff-ffff-4fff-bfff-fffffffffff1"),
+      }),
+    );
+    await notifications.ingest(
+      authority,
+      publication({
+        notificationId: NotificationIdSchema.parse("ntf_ffffffff-ffff-4fff-bfff-fffffffffff2"),
+      }),
+    );
     now = new Date(now.getTime() + 180_000);
-    const fresh = publication();
+    const fresh = publication({
+      notificationId: NotificationIdSchema.parse("ntf_00000000-0000-4000-8000-000000000001"),
+    });
     await notifications.ingest(authority, fresh);
     const claimed = await notifications.claimDueDeliveries({ limit: 1, now });
     expect(claimed.map(({ notificationId }) => notificationId)).toEqual([fresh.notificationId]);
@@ -430,7 +443,7 @@ integration("control-plane notification boundary", () => {
         .map(({ status }) => status)
         .sort();
     expect(await statuses()).toEqual(["dropped", "pending", "pending"]);
-    await notifications.claimDueDeliveries({ limit: 1, now });
+    await expect(notifications.claimDueDeliveries({ limit: 1, now })).resolves.toEqual([]);
     expect(await statuses()).toEqual(["dropped", "dropped", "pending"]);
   });
 

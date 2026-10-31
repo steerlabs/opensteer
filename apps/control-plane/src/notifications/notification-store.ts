@@ -368,44 +368,44 @@ export class ControlPlaneNotificationStore {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new TypeError("Notification delivery claim limit must be between 1 and 100");
     }
+    const now =
+      input.now ??
+      (
+        await this.#database
+          .selectNoFrom(sql<Date>`clock_timestamp()`.as("now"))
+          .executeTakeFirstOrThrow()
+      ).now;
+    // Commit each bounded cleanup before claiming: live delivery IDs need not
+    // follow expired IDs, so retaining cleanup locks would reverse lock order.
+    await this.#database
+      .updateTable("notificationDeliveries")
+      .set({
+        status: "dropped",
+        preview: null,
+        completedAt: now,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        providerOutcome: "expired",
+      })
+      .where((eb) =>
+        eb(
+          eb.refTuple("notificationId", "deviceId"),
+          "in",
+          eb
+            .selectFrom("notificationDeliveries as expired")
+            .select(["expired.notificationId", "expired.deviceId"])
+            .where("expired.status", "=", "pending")
+            .where("expired.expiresAt", "<=", now)
+            .orderBy("expired.notificationId", "asc")
+            .orderBy("expired.deviceId", "asc")
+            .limit(limit)
+            .forNoKeyUpdate()
+            .skipLocked()
+            .$asTuple("notificationId", "deviceId"),
+        ),
+      )
+      .execute();
     return this.#database.transaction().execute(async (transaction) => {
-      const now =
-        input.now ??
-        (
-          await transaction
-            .selectNoFrom(sql<Date>`clock_timestamp()`.as("now"))
-            .executeTakeFirstOrThrow()
-        ).now;
-      // One bounded statement per claim: a backlog of expired rows drains over
-      // successive claims instead of delaying the fresh deliveries behind it.
-      await transaction
-        .updateTable("notificationDeliveries")
-        .set({
-          status: "dropped",
-          preview: null,
-          completedAt: now,
-          leaseToken: null,
-          leaseExpiresAt: null,
-          providerOutcome: "expired",
-        })
-        .where((eb) =>
-          eb(
-            eb.refTuple("notificationId", "deviceId"),
-            "in",
-            eb
-              .selectFrom("notificationDeliveries as expired")
-              .select(["expired.notificationId", "expired.deviceId"])
-              .where("expired.status", "=", "pending")
-              .where("expired.expiresAt", "<=", now)
-              .orderBy("expired.notificationId", "asc")
-              .orderBy("expired.deviceId", "asc")
-              .limit(limit)
-              .forNoKeyUpdate()
-              .skipLocked()
-              .$asTuple("notificationId", "deviceId"),
-          ),
-        )
-        .execute();
       const rows = await transaction
         .selectFrom("notificationDeliveries")
         .innerJoin(
