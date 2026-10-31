@@ -36,6 +36,7 @@ import CoreMedia
     }
     for index in 0..<60 {
       let eventAt = Int64(DispatchTime.now().uptimeNanoseconds / 1000)
+      let deadline = UInt64(eventAt) * 1000 + 1_000_000_000
       let receipt = try await send([
         ["kind": "key", "action": "down", "code": "KeyL", "key": "l", "modifiers": [], "text": "l"],
         ["kind": "key", "action": "up", "code": "KeyL", "key": "l", "modifiers": []],
@@ -43,13 +44,23 @@ import CoreMedia
       try require(receipt["outcome"] as? String == "dispatched", "Latency key was refused")
       let sequence = try (receipt["sequence"] as? NSNumber).unwrap("latency input sequence").intValue
       var measured = false
-      for _ in 0..<12 {
-        _ = try await wire.request("display.refresh", ["streamId": stream])
-        let (geometry, annex) = try await media.keyframe(stream)
+      var refreshedPTS: Int64?
+      while DispatchTime.now().uptimeNanoseconds < deadline,
+        let frame = try await media.nextMediaFrame(until: deadline) {
+        let geometry = try (frame.header["generation"] as? NSNumber).unwrap("latency frame generation").intValue
         try require(geometry == generation, "Stable latency typing changed capture generation")
-        let pts = try (media.lastMediaHeader?["ptsUs"] as? NSNumber).unwrap("latency frame PTS").int64Value
+        let pts = try (frame.header["ptsUs"] as? NSNumber).unwrap("latency frame PTS").int64Value
         guard pts + offset - uncertainty >= eventAt else { continue }
-        let image = try await VideoEvidence.decode(annex)
+        if frame.header["key"] as? Bool != true {
+          // The fixture decodes independent keys. Request one only after a new
+          // capture arrives: refreshing a warm picture cannot make it fresh.
+          if refreshedPTS != pts {
+            refreshedPTS = pts
+            _ = try await wire.request("display.refresh", ["streamId": stream], timeoutMs: 1000, until: deadline)
+          }
+          continue
+        }
+        let image = try await VideoEvidence.decode(frame.annex)
         let decodedAt = Int64(DispatchTime.now().uptimeNanoseconds / 1000)
         let bitmap = NSBitmapImageRep(cgImage: image)
         let x = Int((markerX - crop.minX) / crop.width * Double(image.width))
@@ -60,6 +71,7 @@ import CoreMedia
         guard green ? color.greenComponent > color.redComponent + 0.4
           : color.redComponent > color.greenComponent + 0.4 else { continue }
         let drawnAt = Int64(try person.drawDecoded(image))
+        try require(UInt64(drawnAt) * 1000 <= deadline, "Changed latency marker missed its one-second deadline")
         let rows = try diagnostics()
         let dispatch = try rows.first(where: {
           $0["event"] as? String == "owner-input-dispatch" && $0["streamId"] as? String == stream
@@ -84,7 +96,7 @@ import CoreMedia
         measured = true
         break
       }
-      try require(measured, "No causally fresh changed marker reached the native latency viewer")
+      try require(measured, "No causally fresh changed marker reached the native latency viewer within one second")
     }
     try await Contracts.command(out, "owner-latency-end")
     try await Contracts.command(out, "owner-state")

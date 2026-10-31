@@ -86,21 +86,27 @@ import Darwin
       }
     }.value
   }
+  func nextMediaFrame(until deadline: UInt64? = nil) async throws
+    -> (header: [String: Any], annex: Data, frame: Data)? {
+    guard let frame = try await nextFrame(until: deadline) else { return nil }
+    guard frame.count > 4 else { throw JourneyFailure.failed("Truncated native media") }
+    let length = frame.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+    guard length > 0, length < frame.count - 4 else { throw JourneyFailure.failed("Bad native media header") }
+    let header = try JSONSerialization.jsonObject(with: frame.subdata(in: 4..<(4 + length))) as! [String: Any]
+    let sequence = (header["sequence"] as! NSNumber).intValue
+    let ack = try Frame.encode(JSONSerialization.data(withJSONObject: ["type": "display.ack", "sequence": sequence]))
+    let written = ack.withUnsafeBytes { Darwin.write(client, $0.baseAddress, $0.count) }
+    try require(written == ack.count, "Native media ended before its acknowledgment")
+    return (header, frame.subdata(in: (4 + length)..<frame.count), frame)
+  }
   func keyframe(_ stream: String) async throws -> (Int, Data) {
     for _ in 0..<120 {
-      let frame = try await nextFrame()
-      guard frame.count > 4 else { throw JourneyFailure.failed("Truncated native media") }
-      let length = frame.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
-      guard length > 0, length < frame.count - 4 else { throw JourneyFailure.failed("Bad native media header") }
-      let header = try JSONSerialization.jsonObject(with: frame.subdata(in: 4..<(4 + length))) as! [String: Any]
-      let sequence = (header["sequence"] as! NSNumber).intValue
-      let ack = try Frame.encode(JSONSerialization.data(withJSONObject: ["type": "display.ack", "sequence": sequence]))
-      let written = ack.withUnsafeBytes { Darwin.write(client, $0.baseAddress, $0.count) }
-      try require(written == ack.count, "Native media ended before its acknowledgment")
+      let media = try await nextMediaFrame().unwrap("native media")
+      let header = media.header
       if header["key"] as? Bool == true {
         lastMediaHeader = header
-        try frame.write(to: out.appendingPathComponent(stream + "-frame.bin"))
-        return ((header["generation"] as! NSNumber).intValue, frame.subdata(in: (4 + length)..<frame.count))
+        try media.frame.write(to: out.appendingPathComponent(stream + "-frame.bin"))
+        return ((header["generation"] as! NSNumber).intValue, media.annex)
       }
     }
     throw JourneyFailure.failed("Native stream produced no keyframe")
@@ -137,7 +143,8 @@ import Darwin
     }
     throw JourneyFailure.failed("No AX editing context was published after the input's receipt")
   }
-  func request(_ method: String, _ params: [String: Any], timeoutMs: Int = 30_000) async throws
+  func request(_ method: String, _ params: [String: Any], timeoutMs: Int = 30_000,
+               until deadline: UInt64? = nil) async throws
     -> [String: Any]
   {
     sequence += 1
@@ -150,7 +157,7 @@ import Darwin
     let expected = sequence
     var reply: Data
     while true {
-      let value = try await nextFrame()
+      let value = try await nextFrame(until: deadline).unwrap("Native \(method) reply before its deadline")
       let object = try JSONSerialization.jsonObject(with: value) as? [String: Any]
       if (object?["id"] as? NSNumber)?.intValue == expected { reply = value; break }
       try record(event: value, object: object, request: expected)
