@@ -376,7 +376,7 @@ import { createRoot } from "react-dom/client";
 import { emptyExecutionPreferences } from "@opensteer/core";
 import { ExecutionControls } from "./execution-controls.js";
 
-it("opens usage recovery directly at accounts, applies access and routes the chosen account", async () => {
+it("keeps exhausted accounts visible, applies access and routes the chosen account", async () => {
   const exhausted = {
     ...codexPersonal,
     observedConnections: [{ ...personal, usage: { ...personal.usage, limitReached: true } }],
@@ -408,13 +408,14 @@ it("opens usage recovery directly at accounts, applies access and routes the cho
         </MemoryRouter>,
       ),
     );
-    expect(node.textContent).toContain("alex@personal.test is out of Codex usage until");
-    const switchAccount = [...node.querySelectorAll("button")].find(
-      (item) => item.textContent === "Switch account",
-    )!;
-    await act(async () => switchAccount.click());
+    await act(async () =>
+      node.querySelector<HTMLButtonElement>('[aria-label^="Engine and model:"]')!.click(),
+    );
     const dialog = document.querySelector('[role="dialog"]')!;
-    // "Switch account" lands on the conversation's view, ready to go back from.
+    const conversation = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find((item) =>
+      item.textContent?.includes("Full access ·"),
+    )!;
+    await act(async () => conversation.click());
     expect(dialog.querySelector("[data-view-back]")?.textContent).toBe("This conversation");
     const access = [...dialog.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
       (item) => item.textContent?.includes("Supervised"),

@@ -357,6 +357,7 @@ export function HomeIntro(props: {
       onRemoveQuote={removeQuote}
       onSend={(selection) => void send(null, false, selection)}
       placeholder="Ask anything…"
+      usageScope={{ deploymentId, userId }}
       quote={quote}
       savedAttachmentKeys={draft?.attachments?.map(attachmentKey) ?? []}
       selectionLabel={

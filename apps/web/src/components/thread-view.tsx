@@ -1,13 +1,8 @@
 import { threadMark } from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import { useId, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
-import { Link, Navigate, useLocation, useParams, useSearchParams } from "react-router";
-import {
-  harnessUsageLimitFailureCode,
-  placeContentLabel,
-  type ModelSelection,
-  type Request,
-} from "@opensteer/core";
+import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
+import { placeContentLabel, type ModelSelection, type Request } from "@opensteer/core";
 import {
   type AskAbout,
   type ConversationActivitySelection,
@@ -16,11 +11,8 @@ import {
   conversationActivityTurn,
   conversationTurnRevealing,
   describeHostConnection,
-  usageLimitReached,
-  describeConnectionReset,
   groupTranscriptEntries,
   incomingTranscriptMessages,
-  observedAccountConnection,
   observedSequence,
   placementAccountTitle,
   selectionForModel,
@@ -29,6 +21,7 @@ import {
   threadStartHold,
   threadStopTarget,
   taskWaitingReason,
+  usageLimitReached,
   visibleTranscript,
   withoutOwnAssignment,
   workerAssignment,
@@ -60,6 +53,7 @@ import {
   type ReviewedChoice,
 } from "./execution-review.js";
 import { TaskLines } from "./task-line.js";
+import { UsageNotice } from "./usage-notice.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
@@ -786,9 +780,17 @@ function ThreadView({
         Loading messages…
       </span>
     ) : null;
-  const usageRecovery = useMemo(
-    () => usageLimitRecovery(entries, executionPlacements, thread),
-    [entries, executionPlacements, thread],
+  const threadSelection = useMemo(
+    () => ({
+      environmentId: thread.environmentId,
+      harnessInstanceId: thread.harnessInstanceId,
+      modelSelection: thread.modelSelection,
+    }),
+    [thread.environmentId, thread.harnessInstanceId, thread.modelSelection],
+  );
+  const usageAlternative = useMemo(
+    () => usageLimitAlternative(executionPlacements, thread),
+    [executionPlacements, thread],
   );
   const computers = useMemo(
     () => ({ hostClient, machines: snapshot.machines }),
@@ -1034,42 +1036,6 @@ function ThreadView({
             {selectionNote}
           </p>
         ) : null}
-        {usageRecovery ? (
-          <div className="notice notice--warn" role="status">
-            <Icon name="alert-circle" />
-            <div>
-              {usageRecovery.alternative && usageRecovery.alternativeAccountLabel ? (
-                <>
-                  Usage limit reached on {usageRecovery.accountLabel}. Switch to{" "}
-                  {usageRecovery.alternativeAccountLabel}?
-                </>
-              ) : (
-                <>
-                  Usage limit reached on {usageRecovery.accountLabel}.
-                  {usageRecovery.resetsAt === null ? " " : ` It resets ${usageRecovery.resetsAt}. `}
-                  <Link to="/settings/ai-engines">Add another account</Link> to keep going.
-                </>
-              )}
-            </div>
-            {usageRecovery.alternative ? (
-              <button
-                className="btn btn--small"
-                disabled={switchingAccount}
-                onClick={() => {
-                  const target = usageRecovery.alternative;
-                  if (!target) return;
-                  setSwitchingAccount(true);
-                  void applyExecution(recoverySelection(target, thread.modelSelection)).finally(
-                    () => setSwitchingAccount(false),
-                  );
-                }}
-                type="button"
-              >
-                {switchingAccount ? "Switching…" : "Switch account"}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
         {inputQueue && thread.role === "work" ? (
           <QueuedMessages
             client={hostClient}
@@ -1126,7 +1092,6 @@ function ThreadView({
               {/* The picker opens while a response runs. What it cannot do is
                   apply — and it says why, instead of being a dead control. */}
               <ExecutionControls
-                suppressUsageNotice={usageRecovery !== null}
                 access={{
                   engine: threadPlacement,
                   mode: thread.accessMode,
@@ -1147,15 +1112,37 @@ function ThreadView({
                 returnFocusRef={composerInputRef}
                 review={reviewSelection}
                 reviewFresh={reviewFresh}
-                selection={{
-                  environmentId: thread.environmentId,
-                  harnessInstanceId: thread.harnessInstanceId,
-                  modelSelection: thread.modelSelection,
-                }}
+                selection={threadSelection}
               />
             </>
           }
         />
+        {dock.composerHidden ? null : (
+          <UsageNotice
+            action={
+              usageAlternative ? (
+                <button
+                  className="usage-notice__action"
+                  disabled={switchingAccount || !canRespond}
+                  onClick={() => {
+                    setSwitchingAccount(true);
+                    void applyExecution(
+                      recoverySelection(usageAlternative, thread.modelSelection),
+                    ).finally(() => setSwitchingAccount(false));
+                  }}
+                  title={`Switch to ${placementAccountTitle(usageAlternative)}`}
+                  type="button"
+                >
+                  {switchingAccount ? "Switching…" : "Switch account"}
+                </button>
+              ) : null
+            }
+            entries={entries}
+            placements={executionPlacements}
+            returnFocusTo={composerInputRef}
+            selection={threadSelection}
+          />
+        )}
       </div>
     </div>
   );
@@ -1214,48 +1201,28 @@ function recoverySelection(
   };
 }
 
-export interface ThreadUsageLimitRecovery {
-  /** The account the failed Run was spending, named as the reader knows it. */
-  readonly accountLabel: string;
-  readonly alternative: ThreadPlacementOption | null;
-  readonly alternativeAccountLabel: string | null;
-  readonly resetsAt: string | null;
-}
-
 /**
- * What to offer once a Run has failed for want of plan capacity. A compatible
- * alternative is a profile on this Thread's own work location whose provider
- * session the Thread can continue in place — switching to anything else would
- * silently start a different conversation. Nothing here resends the message:
- * the reader chooses the account, then sends again.
+ * The account to offer beside a usage-limit notice: a profile on this
+ * Thread's own work location whose provider session the Thread can continue
+ * in place — switching to anything else would silently start a different
+ * conversation — and that is not itself out of capacity. Nothing here resends
+ * the message: the reader chooses the account, then sends again.
  */
-export function usageLimitRecovery(
-  entries: readonly TranscriptEntry[],
+export function usageLimitAlternative(
   placements: readonly ThreadPlacementOption[],
   thread: ThreadSummary,
   now: number = Date.now(),
-): ThreadUsageLimitRecovery | null {
-  let latestRun: Extract<TranscriptEntry, { kind: "run" }> | null = null;
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry?.kind === "run") {
-      latestRun = entry;
-      break;
-    }
-  }
-  if (latestRun?.status !== "failed") return null;
-  if (latestRun.error?.code !== harnessUsageLimitFailureCode) return null;
+): ThreadPlacementOption | null {
   const here = placements.filter((placement) => placement.environmentId === thread.environmentId);
   const current = here.find(
     (placement) => placement.harnessInstanceId === thread.harnessInstanceId,
   );
-  const connection = current ? observedAccountConnection(current.observedConnections) : null;
-  const alternative =
+  if (!current) return null;
+  return (
     here.find(
       (placement) =>
         placement.harnessInstanceId !== thread.harnessInstanceId &&
         placement.available &&
-        current !== undefined &&
         placement.sourceId === current.sourceId &&
         placement.models.some(
           (model) =>
@@ -1264,13 +1231,8 @@ export function usageLimitRecovery(
         ) &&
         canContinueThreadOnPlacement(thread, placement) &&
         !usageLimitReached(placement, thread.modelSelection, now),
-    ) ?? null;
-  return {
-    accountLabel: current ? placementAccountTitle(current) : "this account",
-    alternative,
-    alternativeAccountLabel: alternative ? placementAccountTitle(alternative) : null,
-    resetsAt: connection ? describeConnectionReset(connection, now, thread.modelSelection) : null,
-  };
+    ) ?? null
+  );
 }
 
 /* ---- The conversation under a page, on a phone ---- */

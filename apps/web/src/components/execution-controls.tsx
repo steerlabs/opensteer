@@ -1,5 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useRef, useState } from "react";
 import {
   DEFAULT_THREAD_ACCESS_MODE,
   type ExecutionPreferences,
@@ -9,7 +8,6 @@ import {
 import {
   accessModeOptions,
   findRoute,
-  executionUsageNotice,
   routeOnAccount,
   selectionForModel,
   selectionForRoute,
@@ -32,7 +30,6 @@ import {
 
 interface ExecutionControlsProps {
   access?: ExecutionAccess | undefined;
-  suppressUsageNotice?: boolean;
   /**
    * The current choice — picked this visit or remembered by the Host — when it
    * no longer resolves to an available placement. Nothing is applied over it,
@@ -90,7 +87,6 @@ interface ExecutionControlsProps {
  */
 export function ExecutionControls({
   access,
-  suppressUsageNotice = false,
   blocked = null,
   disabled = false,
   onApply,
@@ -104,20 +100,12 @@ export function ExecutionControls({
   returnFocusRef,
   selection,
 }: ExecutionControlsProps) {
-  const [conversationRequest, setConversationRequest] = useState(0);
-  const usage = suppressUsageNotice ? null : executionUsageNotice(placements, selection);
   const [pending, setPending] = useState(false);
   const [candidate, setCandidate] = useState<{
     readonly outcome: ExecutionSwitchReview;
     readonly selection: ExecutionSelection;
   } | null>(null);
   const rowRef = useRef<HTMLDivElement | null>(null);
-  const [noticeTarget, setNoticeTarget] = useState<Element | null>(null);
-  useLayoutEffect(() => {
-    setNoticeTarget(
-      rowRef.current?.closest(".composer")?.querySelector("[data-composer-notice]") ?? null,
-    );
-  }, []);
   const current = findRoute(placements, selection);
   // A choice that cannot run right now — remembered for a draft, or a Thread's
   // own — stays the pill's subject, named and marked, rather than "Choose AI".
@@ -200,26 +188,9 @@ export function ExecutionControls({
   // Full access needs no reminder in the footer.
   const accessWorthSeeing = access !== undefined && access.mode !== DEFAULT_THREAD_ACCESS_MODE;
   const options = current && selection ? current.model.options : [];
-  const notice = usage ? (
-    <div className="composer-usage" role="status">
-      {usage.accountTitle} is out of {usage.engineName} usage
-      {usage.resetsAt ? ` until ${usage.resetsAt}` : ""}.{" "}
-      {usage.canSwitch ? (
-        <button
-          type="button"
-          disabled={controlsDisabled}
-          onClick={() => setConversationRequest((value) => value + 1)}
-        >
-          Switch account
-        </button>
-      ) : null}
-    </div>
-  ) : null;
   return (
     <div className="exec-controls" ref={rowRef}>
-      {noticeTarget ? createPortal(notice, noticeTarget) : notice}
       <ModelPicker
-        conversationRequest={conversationRequest}
         onAccount={chooseAccount}
         blocked={stuck}
         disabled={controlsDisabled}

@@ -392,6 +392,7 @@ function NewTask(props: {
       onRemoveQuote={noop}
       onSend={(selection) => void send(null, selection)}
       placeholder="Describe the task…"
+      usageScope={{ deploymentId, userId }}
       quote={null}
       savedAttachmentKeys={draft?.attachments?.map(attachmentKey) ?? []}
       selectionLabel={

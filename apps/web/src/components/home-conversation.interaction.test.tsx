@@ -626,6 +626,78 @@ describe("Home conversation", () => {
       "Codex 2 is getting ready.",
     );
   });
+
+  it("says Chat's spent plan quietly under the composer until that limit is dismissed", async () => {
+    stubLayoutApis();
+    const client = new MockHostClient({ latencyMs: 0 });
+    clients.push(client);
+    const snapshot = client.getSnapshot();
+    const chat = snapshot.threads.find(({ id }) => id === snapshot.homeThreadId);
+    const environment = snapshot.environments.find(({ id }) => id === chat?.environmentId);
+    const catalog = environment?.harnessCatalogs.find(
+      ({ harnessInstanceId }) => harnessInstanceId === chat?.harnessInstanceId,
+    );
+    if (!chat || !environment || !catalog) throw new Error("The seeded Chat account is missing.");
+    const spend = (resetsAt: Date) =>
+      act(() =>
+        client.setHarnessCatalog(environment.id, {
+          ...catalog,
+          connections: catalog.connections.map((connection) => ({
+            ...connection,
+            usage: {
+              limitReached: true,
+              observedAt: new Date().toISOString(),
+              windows: [{ label: "weekly", resetsAt: resetsAt.toISOString(), usedPercent: 100 }],
+            },
+          })),
+        }),
+      );
+    const day = 24 * 60 * 60 * 1_000;
+    spend(new Date(Date.now() + 2 * day));
+    const app = (
+      <ToastProvider>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route element={<AppShell hostClient={client} loadError={null} />}>
+              <Route index element={<HomeRoute />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
+    );
+    let { node, root } = setup();
+    await act(async () => root.render(app));
+    const notice = () => node.querySelector<HTMLElement>(".usage-notice");
+    // Below the composer, outside its surface, and without the account's address.
+    expect(notice()?.textContent).toMatch(/^Codex usage limit · Resets /u);
+    expect(notice()?.textContent).not.toContain("@");
+    expect(node.querySelector(".composer .usage-notice")).toBeNull();
+    const composer = node.querySelector(".composer-dock .composer");
+    expect(composer?.compareDocumentPosition(notice()!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    const field = node.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        field,
+        "Keep this draft",
+      );
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await press(node, "Dismiss usage notice");
+    // Only the notice goes: the draft stays, and the keyboard goes back to it.
+    expect(notice()).toBeNull();
+    expect(field.value).toBe("Keep this draft");
+    expect(document.activeElement).toBe(field);
+
+    // Dismissed for this limit, also once Chat is opened again.
+    act(() => root.unmount());
+    ({ node, root } = setup());
+    await act(async () => root.render(app));
+    expect(notice()).toBeNull();
+    // The account's next window is another limit, and is said again.
+    spend(new Date(Date.now() + 9 * day));
+    expect(notice()?.textContent).toMatch(/^Codex usage limit · Resets /u);
+  });
 });
 
 /** jsdom has neither, and the routed shell measures its layout with both. */

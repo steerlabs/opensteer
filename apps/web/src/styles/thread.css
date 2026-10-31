@@ -531,11 +531,69 @@ label.action-row input {
   background: linear-gradient(to bottom, transparent, var(--bg) 38%);
 }
 
-/* The usage-limit recovery notice belongs to the composer, so it tracks the
-   composer's measure rather than the dock's full width. */
-.composer-dock > .notice {
+/* The usage-limit line, under the composer it belongs to and at its measure:
+   muted words, at most one quiet action, a way to dismiss it, and no surface
+   of its own to sit behind the composer's corners. */
+.usage-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  width: 100%;
   max-width: var(--composer-max-width);
-  margin: 0 auto var(--space-8);
+  min-height: 32px;
+  margin: var(--space-4) auto 0;
+  padding-left: var(--space-14);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.usage-notice__text {
+  min-width: 0;
+}
+
+.usage-notice__action {
+  flex: none;
+  color: var(--text-soft);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+.usage-notice__action:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.usage-notice__action:disabled {
+  opacity: 0.5;
+}
+
+.usage-notice__dismiss {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  border-radius: var(--radius-full);
+  color: var(--muted-dim);
+}
+
+.usage-notice__dismiss:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.usage-notice__dismiss svg {
+  width: 13px;
+  height: 13px;
+}
+
+@media (hover: none) {
+  .usage-notice__dismiss {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
 }
 
 /* ---- Queued messages: the tray on the composer ----
@@ -936,14 +994,25 @@ label.action-row input {
   pointer-events: none;
 }
 
+/* Every action on a composer's toolbar — Attach, the microphone, Stop, Send —
+   is one square target with a smaller round face inside it: the target is what
+   a pointer or finger needs, the face is what the eye reads. The face is the
+   content box, so one element is both, and the sizes follow the input, never
+   the window: a narrow pane in a wide window keeps desktop targets. */
+.composer__attach,
 .composer__send,
 .composer__stop {
+  --composer-target: 36px;
+  --composer-face: 32px;
   display: grid;
   flex: none;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  box-sizing: border-box;
+  width: var(--composer-target);
+  height: var(--composer-target);
+  padding: calc((var(--composer-target) - var(--composer-face)) / 2);
   border-radius: var(--radius-full);
+  background-clip: content-box;
   transition:
     background-color var(--duration-fast) var(--ease-out),
     transform var(--duration-fast) var(--ease-spring),
@@ -997,13 +1066,13 @@ label.action-row input {
   stroke: none;
 }
 
-/* Touch keeps Send and Stop a finger's size. Declared after the sizes it
-   overrides, which the base stylesheet's touch rules come before. */
+/* Touch keeps every toolbar target a finger's size; the faces grow a little. */
 @media (hover: none) {
+  .composer__attach,
   .composer__send,
   .composer__stop {
-    width: var(--touch-target);
-    height: var(--touch-target);
+    --composer-target: var(--touch-target);
+    --composer-face: 34px;
   }
 }
 
@@ -2127,21 +2196,6 @@ fieldset.action-panel {
 .composer {
   position: relative;
 }
-.composer-usage {
-  padding: var(--space-8) var(--space-12);
-  border-radius: inherit;
-  background: var(--amber-wash);
-  color: var(--amber-text);
-  font-size: var(--text-sm);
-  white-space: normal;
-}
-.composer-usage button {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-weight: var(--weight-strong);
-  text-decoration: underline;
-}
 /* A phone, or a narrow window: the same menu as a sheet from the bottom, the
    AIs as a row of chips the next of which peeks past the edge. */
 @media (max-width: 599px) {
@@ -2228,12 +2282,6 @@ fieldset.action-panel {
   margin-left: auto;
 }
 
-@media (max-width: 599px) {
-  .composer__footer button {
-    min-width: 44px;
-    min-height: 44px;
-  }
-}
 .execution-menu [aria-label="Models"] .picker__detail {
   overflow: hidden;
   text-overflow: ellipsis;

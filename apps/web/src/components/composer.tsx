@@ -372,6 +372,11 @@ export function Composer({
   const resize = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
+    // An empty field is one line tall: a placeholder is never something to grow for.
+    if (textarea.value === "") {
+      textarea.style.removeProperty("height");
+      return;
+    }
     textarea.style.height = "auto";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
   }, []);
@@ -382,6 +387,19 @@ export function Composer({
     pendingSelection.current = null;
     resize();
   }, [displayedText, selectionVersion, resize]);
+
+  // The words re-wrap whenever the field's width changes — a pane resized, the
+  // field moving above the controls — not only when they are edited.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || typeof ResizeObserver === "undefined") return;
+    let width = textarea.clientWidth;
+    return observeResize([textarea], () => {
+      if (textarea.clientWidth === width) return;
+      width = textarea.clientWidth;
+      resize();
+    });
+  }, [resize]);
 
   const reportDraft = useEffectEvent((value: string) => onDraftChange?.(value));
   useEffect(() => {
@@ -854,12 +872,13 @@ export function Composer({
       aria-label="Message"
       className="composer__input"
       data-fold={variant === "conversation" ? composerFold.field : undefined}
-      // Beside its controls, the field keeps room for its plain placeholder:
-      // the controls give up words and pills first. The "about this page"
-      // form shows only where it fits; the attached page says the same.
+      // Beside its controls, the field needs room for what it shows on one
+      // line: its plain placeholder, or the words being written. Without that
+      // room it moves above the controls rather than be squeezed. The "about
+      // this page" form shows only where it fits; the attached page says the same.
       data-fold-text={
-        variant === "conversation" && !dictation
-          ? placeholderFloor(recipient, placeholder)
+        variant === "conversation"
+          ? displayedText || placeholderFloor(recipient, placeholder)
           : undefined
       }
       data-composer-input=""
@@ -881,6 +900,8 @@ export function Composer({
       value={displayedText}
     />
   );
+  // One toolbar on every composer: Attach, the AI's settings (or dictation's
+  // live bar in their place), then the microphone, Stop and Send at the end.
   const footer = (
     <>
       {view.phase !== "idle" && dictation ? (
@@ -934,7 +955,6 @@ export function Composer({
     <div
       className={[
         "composer",
-        dictation ? "composer--dictation" : "",
         variant === "conversation" ? "composer--conversation" : "",
         dropping ? "composer--dropping" : "",
       ]
@@ -954,7 +974,6 @@ export function Composer({
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-      <div data-composer-notice="" />
       {dictation ? (
         <DictationStatus
           controller={dictation}
@@ -1043,8 +1062,9 @@ export function Composer({
         </p>
       ) : null}
       {variant === "conversation" ? (
-        // Beside its controls the field is one more thing the line fits: its
-        // room for the whole placeholder is the last thing given up.
+        // Chat's field sits between Attach and the controls while what it
+        // shows fits there whole; otherwise it is the first thing the line
+        // gives up, and takes the whole width above the controls.
         <FoldToFit className="composer__entry">
           {mentionList}
           {field}

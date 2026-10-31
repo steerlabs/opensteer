@@ -17,6 +17,7 @@ import { VoiceButton, VoiceDock } from "./voice.js";
 import { BrandMark } from "./brand.js";
 import { Composer, type ComposerQuote, type ComposerSubmission } from "./composer.js";
 import { ExecutionControls } from "./execution-controls.js";
+import { UsageNotice } from "./usage-notice.js";
 import {
   claimFirstMessage,
   discardStagedHomeMessage,
@@ -179,6 +180,7 @@ export function HomeIntro({
   // the Host answered with a Home another device had already started on a
   // different AI, and an unsent message is not one to forget.
   const keepStaged = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // The composer's own keeping, before Home has an id to keep it under. The
   // message is on disk before `createHome` is called, so a Home that arrives
   // mid-send — from this creation or from another device — finds it waiting.
@@ -260,6 +262,7 @@ export function HomeIntro({
           <Composer
             voice={<VoiceButton />}
             dictationScope={`${deploymentId}/${userId}/home/${workspace.id}`}
+            inputRef={inputRef}
             placeContext={placeContext}
             variant="conversation"
             settingsRequired={choosable}
@@ -298,6 +301,7 @@ export function HomeIntro({
               </>
             }
           />
+          <UsageNotice placements={placements} returnFocusTo={inputRef} selection={selection} />
           {/* A suggestion fills the draft. Sending stays a separate action, so
               nothing is started by reading an example. */}
           <div className="hero__suggestions">

@@ -1,18 +1,17 @@
-import { UsageNotice } from "./usage-notice.js";
+import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
 import { VoiceDock, VoiceMic, useVoice } from "../voice/controls.js";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationBar, DictationMic, DictationStatus } from "../dictation/controls.js";
 import { dictationLabels, dictationView } from "@opensteer/client/dictation";
-import { threadPlacementOptions } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import {
   deriveSurface,
   isHostRefusal,
   mutationIdempotencyKey,
   type HostClient,
+  type UsageLimitNotice,
 } from "@opensteer/client/host";
 import {
   attachmentMessageMaxCount,
@@ -79,6 +78,7 @@ import {
 import { RequestCard } from "./request-card.js";
 import { beginPendingDelivery, sendPendingMessage } from "./send-pending-message.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
+import { UsageNotice } from "./usage-notice.js";
 
 /**
  * The one surface at the bottom of a Thread: the composer, and whatever
@@ -157,6 +157,8 @@ export function Composer(props: {
   /** Each subagent this Thread's Runs started, by node id, so a Request one asked can say so. */
   readonly subagentTitles: ReadonlyMap<string, string>;
   readonly threadId: string;
+  /** The line under the bar while this Thread's account is out of plan capacity. */
+  readonly usageNotice?: UsageLimitNotice | null;
   readonly user: AuthenticatedUser;
   /** Chat's composer, which offers the voice button beside the microphone. */
   readonly voice?: boolean;
@@ -173,28 +175,6 @@ export function Composer(props: {
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, threadId);
   const text = draft?.text ?? "";
-  const usageEnvironments = useHostSelector(hostClient, (snapshot) => snapshot.environments);
-  const usageHarnesses = useHostSelector(hostClient, (snapshot) => snapshot.harnesses);
-  const usageThread = useHostSelector(hostClient, (snapshot) =>
-    snapshot.threads.find((thread) => thread.id === threadId),
-  );
-  // Typing re-renders the composer on every keystroke; the notice's inputs
-  // change only with the Host's snapshot.
-  const usagePlacements = useMemo(
-    () => threadPlacementOptions(usageEnvironments, usageHarnesses),
-    [usageEnvironments, usageHarnesses],
-  );
-  const usageSelection = useMemo(
-    () =>
-      usageThread
-        ? {
-            environmentId: usageThread.environmentId,
-            harnessInstanceId: usageThread.harnessInstanceId,
-            modelSelection: usageThread.modelSelection,
-          }
-        : null,
-    [usageThread],
-  );
   const dictation = useDictation();
   const dictationState = useSyncExternalStore(dictation.subscribe, dictation.getSnapshot);
   const instance = useId();
@@ -845,11 +825,6 @@ export function Composer(props: {
           onRetry={staged.retry}
         />
       )}
-      <UsageNotice
-        placements={usagePlacements}
-        selection={usageSelection}
-        onSwitch={() => props.onChangeModel(true)}
-      />
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <VoiceDock />
       <ComposerBar
@@ -1007,6 +982,9 @@ export function Composer(props: {
               }
             : {})}
       />
+      {view.readOnly ? null : (
+        <UsageNotice notice={props.usageNotice ?? null} onOpen={props.onChangeModel} />
+      )}
     </View>
   );
 }

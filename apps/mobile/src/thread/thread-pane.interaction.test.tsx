@@ -3217,6 +3217,7 @@ it("offers voice on Chat's first message but not on a new task composer", async 
           staged={staged}
           text=""
           underHeader={false}
+          usageScope={{ deploymentId: "test-deployment", userId: "test-user" }}
         >
           {null}
         </FirstMessageComposer>

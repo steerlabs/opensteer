@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 
-import { type HostClient } from "@opensteer/client/host";
+import { createUsageNoticeDismissals, type HostClient } from "@opensteer/client/host";
 
 import { vi } from "vitest";
 import { Window } from "happy-dom";
@@ -274,12 +274,14 @@ vi.mock("../ui/primitives.js", () => ({
     </button>
   ),
 }));
+const usageNotices = createUsageNoticeDismissals({ read: () => [], write: () => undefined });
 const mobile = vi.hoisted(() => ({ hostClient: null as HostClient | null }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileState: () => ({
     selection: { deploymentId: "test-deployment", hostClient: mobile.hostClient },
   }),
   useMobileClient: () => ({
+    usageNotices,
     getSnapshot: () => ({
       selection: { deploymentId: "test-deployment", hostClient: mobile.hostClient },
     }),

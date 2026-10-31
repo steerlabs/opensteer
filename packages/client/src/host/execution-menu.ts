@@ -1,9 +1,4 @@
-import type { ModelSelection } from "@opensteer/core";
-import {
-  currentConnectionUsage,
-  describeConnectionReset,
-  observedAccountConnection,
-} from "./connection-usage.js";
+import { usageLimitReached } from "./usage-notice.js";
 import type { ExecutionSelection } from "./execution-preferences.js";
 import {
   accountStatus,
@@ -192,56 +187,6 @@ export function executionAccounts(
       title,
     };
   });
-}
-
-/** The choice in force cannot run until its plan resets, said before anything is sent. */
-export interface ExecutionUsageNotice {
-  readonly accountTitle: string;
-  readonly engineName: string;
-  /** When it comes back, "Wed 1:35 AM"; null when the provider did not say. */
-  readonly resetsAt: string | null;
-  /** Another account of the same AI could run it now. */
-  readonly canSwitch: boolean;
-}
-
-export function executionUsageNotice(
-  placements: readonly ThreadPlacementOption[],
-  selection: ExecutionSelection | null,
-  now: number = Date.now(),
-): ExecutionUsageNotice | null {
-  const current = findRoute(placements, selection);
-  if (!current || !selection) return null;
-  const model = selection.modelSelection;
-  if (!usageLimitReached(current.placement, model, now)) return null;
-  const connection = observedAccountConnection(current.placement.observedConnections);
-  return {
-    accountTitle: placementAccountTitle(current.placement),
-    canSwitch: placements.some(
-      (placement) =>
-        placement.driverKind === current.placement.driverKind &&
-        !samePlacement(placement, current.placement) &&
-        placement.available &&
-        !usageLimitReached(placement, model, now),
-    ),
-    engineName: current.placement.engineName,
-    resetsAt: connection ? describeConnectionReset(connection, now, model) : null,
-  };
-}
-
-/**
- * Whether the provider has refused this account more work on this model until
- * a window resets. Asks the time-aware reading, so a limit whose window has
- * since passed no longer counts.
- */
-export function usageLimitReached(
-  placement: ThreadPlacementOption,
-  model: Pick<ModelSelection, "modelId" | "providerId">,
-  now: number = Date.now(),
-): boolean {
-  const connection = observedAccountConnection(placement.observedConnections);
-  return (
-    connection !== null && currentConnectionUsage(connection, now, model)?.limitReached === true
-  );
 }
 
 const availabilityNotes: Readonly<Record<ThreadPlacementOption["availability"], string | null>> = {
