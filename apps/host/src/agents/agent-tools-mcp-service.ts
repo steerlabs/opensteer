@@ -364,7 +364,7 @@ export class AgentToolsMcpService {
       (definition) =>
         (definition.name !== "thread_write" || !lacks("task-done-v1")) &&
         (definition.name !== "person_notify" ||
-          (input.scope === "run" && capabilities?.includes("person-notify-v1") === true)),
+          (input.scope === "run" && !lacks("person-notify-v1"))),
     );
     const advertisedTools: Tool[] = [];
     for (const definition of definitions) {

@@ -415,6 +415,25 @@ integration("control-plane notification boundary", () => {
     ).toEqual([{ status: "dropped", preview: null, providerOutcome: "expired" }]);
   });
 
+  it("claims a fresh delivery while an expired backlog drains in bounded batches", async () => {
+    await registerPhone({ accountId: ownerId, installationId: "backlog-installation" });
+    const authority = await store.authenticateHostCredential(`Bearer ${hostCredential}`);
+    await notifications.ingest(authority, publication());
+    await notifications.ingest(authority, publication());
+    now = new Date(now.getTime() + 180_000);
+    const fresh = publication();
+    await notifications.ingest(authority, fresh);
+    const claimed = await notifications.claimDueDeliveries({ limit: 1, now });
+    expect(claimed.map(({ notificationId }) => notificationId)).toEqual([fresh.notificationId]);
+    const statuses = async () =>
+      (await database.selectFrom("notificationDeliveries").select("status").execute())
+        .map(({ status }) => status)
+        .sort();
+    expect(await statuses()).toEqual(["dropped", "pending", "pending"]);
+    await notifications.claimDueDeliveries({ limit: 1, now });
+    expect(await statuses()).toEqual(["dropped", "dropped", "pending"]);
+  });
+
   it("retains preview only during unexpired retries and clears it when disabling a device", async () => {
     await registerPhone({ accountId: ownerId, installationId: "retry-installation" });
     const authority = await store.authenticateHostCredential(`Bearer ${hostCredential}`);

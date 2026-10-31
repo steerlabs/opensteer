@@ -51,7 +51,7 @@ export class NotificationPreviewKeyStore {
         .selectAll()
         .where("userId", "=", input.userId)
         .orderBy("installationId", "asc")
-        // Expired registrations are removed before enforcing the installation bound.
+        // FOR UPDATE: expired registrations are deleted before enforcing the installation bound.
         .forUpdate()
         .execute();
       const validSessions = await transaction

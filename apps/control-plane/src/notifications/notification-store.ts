@@ -376,30 +376,36 @@ export class ControlPlaneNotificationStore {
             .selectNoFrom(sql<Date>`clock_timestamp()`.as("now"))
             .executeTakeFirstOrThrow()
         ).now;
-      const expired = await transaction
-        .selectFrom("notificationDeliveries")
-        .select(["notificationId", "deviceId"])
-        .where("status", "=", "pending")
-        .where("expiresAt", "<=", now)
-        .orderBy("notificationId", "asc")
-        .orderBy("deviceId", "asc")
-        .forNoKeyUpdate()
-        .skipLocked()
+      // One bounded statement per claim: a backlog of expired rows drains over
+      // successive claims instead of delaying the fresh deliveries behind it.
+      await transaction
+        .updateTable("notificationDeliveries")
+        .set({
+          status: "dropped",
+          preview: null,
+          completedAt: now,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          providerOutcome: "expired",
+        })
+        .where((eb) =>
+          eb(
+            eb.refTuple("notificationId", "deviceId"),
+            "in",
+            eb
+              .selectFrom("notificationDeliveries as expired")
+              .select(["expired.notificationId", "expired.deviceId"])
+              .where("expired.status", "=", "pending")
+              .where("expired.expiresAt", "<=", now)
+              .orderBy("expired.notificationId", "asc")
+              .orderBy("expired.deviceId", "asc")
+              .limit(limit)
+              .forNoKeyUpdate()
+              .skipLocked()
+              .$asTuple("notificationId", "deviceId"),
+          ),
+        )
         .execute();
-      for (const row of expired)
-        await transaction
-          .updateTable("notificationDeliveries")
-          .set({
-            status: "dropped",
-            preview: null,
-            completedAt: now,
-            leaseToken: null,
-            leaseExpiresAt: null,
-            providerOutcome: "expired",
-          })
-          .where("notificationId", "=", row.notificationId)
-          .where("deviceId", "=", row.deviceId)
-          .execute();
       const rows = await transaction
         .selectFrom("notificationDeliveries")
         .innerJoin(

@@ -334,11 +334,11 @@ export class MobileClient {
       },
     });
     this.oauth = new NativeOAuthManager({
-      beforeAccountChange: () => this.clearAccountSavedViews(),
-      beforeHostChange: async (connection) => {
-        await this.#notificationPreviews?.clear(connection.authority.document.deploymentId);
-        await this.#invalidateSavedView(connection.authority.document.deploymentId);
-      },
+      // Previews end with the login itself (sign-out, removal, a replaced session),
+      // not when a sign-in flow starts: a cancelled flow keeps the live login.
+      beforeAccountChange: () => this.#invalidateAccountSavedViews(),
+      beforeHostChange: (connection) =>
+        this.#invalidateSavedView(connection.authority.document.deploymentId),
       accountOrigin: options.accountOrigin,
       accountSessions,
       catalog: this.catalog,
@@ -768,8 +768,7 @@ export class MobileClient {
   /** Account UI unregisters push while its credential is held; saved pixels/keys leave first. */
   clearAccountSavedViews(): Promise<void> {
     this.#authorizationEpoch += 1;
-    const previews = this.#notificationPreviews?.clear(null);
-    return Promise.all([previews, this.#invalidateAccountSavedViews()]).then(() => {});
+    return this.#invalidateAccountSavedViews();
   }
 
   signOutAccount(): Promise<void> {

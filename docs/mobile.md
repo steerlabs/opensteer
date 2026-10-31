@@ -287,7 +287,8 @@ iOS shares preview keys with the notification service extension through the App
 Group Keychain access group; ordinary credentials retain their private access group.
 Android wraps key records with AndroidKeyStore in noBackupFilesDir. Backup-excluded
 installation markers fence surviving keys after reinstall; launch purges stale keys.
-Sign-out fences registration and erases the local key before revoking credentials.
+Sign-out fences registration and erases the local key before revoking credentials;
+starting a sign-in does not, so a cancelled flow keeps the live login and its key.
 Host keys die with the Host login session through cascading deletion; Account
 sign-out withdraws the push device. Erasure failure does not stop session revocation.
 

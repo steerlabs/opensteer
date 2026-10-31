@@ -2759,6 +2759,26 @@ const settle = async (): Promise<void> => {
   for (let pass = 0; pass < 8; pass += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+it("keeps previews when an Account sign-in starts and is left unfinished", async () => {
+  const port = testPort({ held: true });
+  const previews = new NotificationPreviews(null, {} as never, async () => null);
+  const clear = vi.spyOn(previews, "clear");
+  const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
+    accountOrigin,
+    fetch: accountFetch(),
+    notificationPreviews: previews,
+  });
+  try {
+    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.initialize();
+    await client.select(serverId);
+    await client.oauth.beginAccountSignIn();
+    expect(clear).not.toHaveBeenCalled();
+  } finally {
+    client.dispose();
+  }
+});
+
 it("refreshes previews when Account sign-in returns on a retained manual Host", async () => {
   const port = testPort({ held: true });
   const previews = new NotificationPreviews(null, {} as never, async () => null);

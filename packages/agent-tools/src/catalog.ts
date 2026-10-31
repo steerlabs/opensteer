@@ -1007,7 +1007,11 @@ export function platformGuideForRun(input: {
     platformGuideForCapabilityProfile(input.capabilityProfileId),
     `Role: ${input.role}`,
     input.role === "conversation" ? conversationRoleGuide : workRoleGuide,
-    "person_notify alerts the person mid-Run; reserve it for what they would want to know now.",
+    ...(capabilityProfileAllowsTool(input.capabilityProfileId, "person.notify")
+      ? [
+          "person_notify alerts the person mid-Run; reserve it for what they would want to know now.",
+        ]
+      : []),
     replyFormatGuide,
   ].join("\n\n");
 }
