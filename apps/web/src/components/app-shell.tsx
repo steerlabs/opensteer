@@ -330,6 +330,9 @@ export function AppShell({
       };
     },
   );
+  useEffect(() => {
+    voice?.refreshContext();
+  }, [voice, location.key]);
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;
   const webLinkView = useRef({ key: location.key, revision: 0, changedAt: 0 });

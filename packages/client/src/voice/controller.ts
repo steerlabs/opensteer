@@ -121,7 +121,6 @@ interface VoiceSession {
   readonly links: VoiceContextLinks;
   readonly answers: Map<string, Promise<{ ok: boolean; text: string }>>;
   utterances: { turnId: string; text: string }[];
-  contextText: string | null;
   contextDesired: string | null;
   contextTimer: VoiceTimer | null;
   contextSends: Promise<void>;
@@ -201,7 +200,6 @@ export class VoiceController {
       links: new VoiceContextLinks(),
       answers: new Map(),
       utterances: [],
-      contextText: null,
       contextDesired: null,
       contextTimer: null,
       contextSends: Promise.resolve(),
@@ -451,31 +449,39 @@ export class VoiceController {
   refreshContext(immediate = false): void {
     const session = this.#session;
     if (!session?.call?.agent) return;
+    // Host snapshots change many times a second while Chat streams; build at most once per window.
+    if (!immediate) {
+      session.contextTimer ??= this.#timers.set(() => {
+        session.contextTimer = null;
+        this.refreshContext(true);
+      }, 250);
+      return;
+    }
+    this.#timers.clear(session.contextTimer);
+    session.contextTimer = null;
     const text = session.links.build(
       this.#input.hostClient.getSnapshot(),
       this.#input.currentView?.(),
     );
-    if (!immediate && text === session.contextDesired) return;
+    if (text === session.contextDesired) return;
     session.contextDesired = text;
-    this.#timers.clear(session.contextTimer);
-    const send = () => {
-      if (this.#session !== session) return;
-      session.contextSends = session.contextSends
-        .then(async () => {
-          if (this.#session !== session || text === session.contextText) return;
-          const account = voiceAccount(session.baseline);
-          if (!account) return;
-          const result = await this.#input.hostClient.rpc["voice.context"](
-            { ...account, sessionId: session.id, text },
-            { signal: session.abort.signal },
-          );
-          if (result.ok) session.contextText = text;
-          else if (result.error.reason === "voice-ended") void this.#end(session);
-        })
-        .catch(() => {});
-    };
-    if (immediate) send();
-    else session.contextTimer = this.#timers.set(send, 250);
+    session.contextSends = session.contextSends
+      .then(async () => {
+        // A newer description supersedes one still waiting to go out.
+        if (this.#session !== session || session.contextDesired !== text) return;
+        const account = voiceAccount(session.baseline);
+        if (!account) return;
+        const result = await this.#input.hostClient.rpc["voice.context"](
+          { ...account, sessionId: session.id, text },
+          { signal: session.abort.signal },
+        );
+        if (result.ok) return;
+        if (result.error.reason === "voice-ended") void this.#end(session);
+        else if (session.contextDesired === text) session.contextDesired = null;
+      })
+      .catch(() => {
+        if (session.contextDesired === text) session.contextDesired = null;
+      });
   }
 
   async #pause(session: VoiceSession, ms: number): Promise<void> {

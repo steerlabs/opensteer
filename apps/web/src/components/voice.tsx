@@ -71,9 +71,6 @@ export function useVoiceRuntime(
       setController(null);
     };
   }, [hostClient]);
-  useEffect(() => {
-    controller?.refreshContext();
-  }, [controller, currentView]);
   return controller;
 }
 
