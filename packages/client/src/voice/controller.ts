@@ -23,6 +23,7 @@ import {
 import { routeUtterance, voiceTargets } from "./router.js";
 import { VoiceSpeaker } from "./speaker.js";
 import { voiceTimers, type VoiceTimer, type VoiceTimers } from "./timers.js";
+import type { ScreenPresentationPort } from "../screen/contract.js";
 
 export interface VoiceAccount {
   readonly environmentId: string;
@@ -103,6 +104,7 @@ export interface VoiceControllerInput extends VoiceTimers {
   readonly hostClient: HostClient;
   readonly media: VoiceMediaPort | null;
   readonly navigate: (target: VoiceTarget) => void;
+  readonly presentation?: ScreenPresentationPort;
   readonly createId: () => string;
   readonly places?: () => Promise<readonly PlaceContentPart[]>;
   readonly onStart?: () => void | Promise<void>;
