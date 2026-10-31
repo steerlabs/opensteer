@@ -1,3 +1,5 @@
+import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
+import { profileFailureDiagnostic } from "../src/browser/profile-failure-diagnostic.js";
 import {
   nativeProfileSmokePhases,
   nativeSmokeWorker,
@@ -33,7 +35,15 @@ import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:https";
@@ -41,7 +51,10 @@ import { app, webContents } from "electron";
 import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import type { BrowserOriginState, BrowserProfileSnapshot } from "@opensteer/browser-profile";
 import type { BrowserPage, LaunchedBrowser } from "@opensteer/browser-runtime-core";
-import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
+import {
+  ElectronBrowserLauncher,
+  type ElectronLocalProfileOpenTiming,
+} from "../src/browser/electron-browser-launcher.js";
 import { key, cert } from "./fixtures/profile-restore-tls.js";
 
 const smokeDownloads = smokeDesktopDownloads();
@@ -49,20 +62,28 @@ const smokeDownloads = smokeDesktopDownloads();
 // The same bundle is a Node phase driver in the committed VM command and an
 // Electron entry in the working-tree VM harness. Both use real process restarts.
 const phase = process.env.PROFILE_VM_PHASE ?? "main";
-const state = process.env.PROFILE_VM_STATE ?? mkdtempSync(path.join(tmpdir(), "profile-restore-"));
+const state = realpathSync(
+  process.env.PROFILE_VM_STATE ?? mkdtempSync(path.join(tmpdir(), "profile-restore-")),
+);
 const out =
   process.env.PROFILE_VM_OUT ??
   process.env.OPENSTEER_PROFILE_RESTORE_ARTIFACT_DIR ??
   path.join(process.env.OPENSTEER_QUIT_E2E_ARTIFACT_DIR ?? tmpdir(), "profile-restore");
 mkdirSync(out, { recursive: true });
 
-type Result = { status: "pass" | "fail"; observed: Record<string, unknown>; error?: string };
+type Result = {
+  status: "pass" | "fail";
+  observed: Record<string, unknown>;
+  error?: string;
+  diagnostic?: unknown;
+};
 const results: Record<string, Result> = {};
 const helpers: { origin: string; id: number; at: number }[] = [];
 const destroyedAt = new Map<number, number>();
 const creations: number[] = [];
 const observations = new Map<string, Record<string, unknown>>();
 const swRuns: string[] = [];
+const nativeOpenTimings: ElectronLocalProfileOpenTiming[] = [];
 const nativeFirstRequests = new Map<string, string>();
 const open = new Set<LaunchedBrowser>();
 const port = 18766;
@@ -211,6 +232,7 @@ async function scenario(id: string, run: (observed: Record<string, unknown>) => 
       status: "fail",
       observed,
       error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+      diagnostic: profileFailureDiagnostic(error),
     };
   }
   persist();
@@ -318,7 +340,10 @@ async function main() {
     ? path.join(state, "native-user-data")
     : mkdtempSync(path.join(tmpdir(), "profile-restore-electron-"));
   mkdirSync(userData, { recursive: true });
-  app.setPath("userData", userData);
+  if (phase.startsWith("native-")) {
+    mkdirSync(path.join(userData, "session"), { recursive: true });
+    configureDesktopApplicationPaths(app, userData);
+  } else app.setPath("userData", userData);
   app.commandLine.appendSwitch("headless");
   app.commandLine.appendSwitch("host-resolver-rules", "MAP *.example.test 127.0.0.1");
   app.commandLine.appendSwitch("no-proxy-server");
@@ -343,12 +368,14 @@ async function main() {
     );
     launcher = new ElectronBrowserLauncher({
       downloads: smokeDownloads,
-      localProfileRoot: path.join(state, "native-profiles"),
+      onLocalProfileOpenTiming: (timing) => nativeOpenTimings.push(timing),
+      localProfileRoot: path.join(state, "native-user-data", "session", "browser-profiles"),
       pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
     });
     if (phase.startsWith("native-")) {
       let crash = false;
       await scenario(phase, async (observed) => {
+        observed.openTimings = nativeOpenTimings;
         const result = await runNativeProfileSmokePhase({
           phase,
           state,
@@ -356,7 +383,7 @@ async function main() {
           origin,
           firstRequest: (name) => nativeFirstRequests.get(name),
         });
-        Object.assign(observed, result);
+        Object.assign(observed, result, { openTimings: nativeOpenTimings });
         crash = result.crash;
       });
       if (crash && Object.values(results).every((result) => result.status === "pass"))

@@ -85,7 +85,14 @@ const storageWorldId = 10_991;
 const storageViewConcurrency = 3;
 const blankDocument = Buffer.from("<!doctype html><meta charset=utf-8>", "utf8").toString("base64");
 
+export interface ElectronLocalProfileOpenTiming {
+  readonly stage: "session-created" | "mirror-restored" | "admitted" | "first-page-created";
+  /** Cumulative time from local launch, before any navigation is submitted. */
+  readonly elapsedMs: number;
+}
+
 interface ElectronBrowserLauncherOptions {
+  readonly onLocalProfileOpenTiming?: (timing: ElectronLocalProfileOpenTiming) => void;
   readonly authenticator?: PasskeyAuthenticator;
   readonly clipboard?: EngineClipboard;
   readonly downloads: Pick<DesktopDownloads, "accept">;
@@ -114,6 +121,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #pagePolicyPreloadPath: string;
   readonly #views: ElectronBrowserViewPool;
   readonly #localProfileRoot: string | undefined;
+  readonly #onLocalProfileOpenTiming: ElectronBrowserLauncherOptions["onLocalProfileOpenTiming"];
   readonly localProfiles: LocalProfileEngine = {
     engine: "electron",
     release: releaseElectronLocalProfile,
@@ -150,7 +158,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
                 ) {
                   owner.session.flushStorageData();
                   // An unloaded origin replies only after the earlier Flush commits on
-                  // the same LocalStorageControl pipe (Electron 44.9.2 / Chromium 151).
+                  // the same LocalStorageControl pipe (Electron 44.9.2 / Chromium 152.0.7977.167).
                   await owner.session.clearStorageData({
                     origin: `https://${randomUUID()}.invalid`,
                     storages: ["localstorage"],
@@ -174,6 +182,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       throw new TypeError("The browser page policy preload path must be absolute.");
     }
     this.#localProfileRoot = options.localProfileRoot;
+    this.#onLocalProfileOpenTiming = options.onLocalProfileOpenTiming;
     this.#authenticator = options.authenticator;
     this.#pagePolicyPreloadPath = options.pagePolicyPreloadPath;
     this.#clipboard = options.clipboard;
@@ -213,6 +222,9 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
 
   async launch(request: BrowserLaunchRequest): Promise<LaunchedBrowser> {
     if (request.storage.kind === "local") {
+      const started = performance.now();
+      const timing = (stage: ElectronLocalProfileOpenTiming["stage"]) =>
+        this.#onLocalProfileOpenTiming?.({ stage, elapsedMs: performance.now() - started });
       const profile = acquireElectronLocalProfile({
         ...request.storage,
         root: this.#localProfileRoot,
@@ -223,7 +235,11 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
             gate,
           ),
       });
+      timing("session-created");
+      await profile.ready();
+      timing("mirror-restored");
       await profile.admit();
+      timing("admitted");
       this.#configureSession(
         profile.session,
         request.authenticator !== undefined || this.#authenticator !== undefined,
@@ -237,6 +253,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       );
       try {
         await context.createPage();
+        timing("first-page-created");
         return new ElectronLaunchedBrowser(context, profile.session, this.#clipboard, profile);
       } catch (error) {
         await context.close().catch(() => undefined);
@@ -660,6 +677,8 @@ class ElectronBrowserContext implements BrowserContext {
     deadline: AbortSignal,
   ): Promise<void> {
     deadline.throwIfAborted();
+    // Invalid sign-in input cannot compromise the persistent store or its mirror lane.
+    siteCookieReplacementBatch(site, [], cookies);
     const replace = async () =>
       this.#withStorageView(async (_view, command) => {
         // The same page-scoped Network domain exportSnapshot reads: it addresses

@@ -1,3 +1,4 @@
+import { profileFailureDiagnostic } from "../src/browser/profile-failure-diagnostic.js";
 import { assertCookies, nativeSmokeCookies } from "./test-support/native-profile-smoke.js";
 import { LocalProfileBindingSchema } from "@opensteer/protocol/browser";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
@@ -6,7 +7,7 @@ import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
  * disposable, isolated userData directory.
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -20,12 +21,14 @@ import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launche
 const smokeDownloads = smokeDesktopDownloads();
 
 const childPhase = process.env.OPENSTEER_COOKIE_SMOKE_CHILD;
-const root =
+const root = realpathSync(
   process.env.OPENSTEER_COOKIE_SMOKE_ROOT ??
-  mkdtempSync(path.join(tmpdir(), "opensteer-cookie-smoke-"));
+    mkdtempSync(path.join(tmpdir(), "opensteer-cookie-smoke-")),
+);
 const userData = path.join(root, childPhase ? "child" : "driver");
 mkdirSync(userData, { recursive: true, mode: 0o700 });
 app.setPath("userData", userData);
+app.setPath("sessionData", userData);
 app.commandLine.appendSwitch("headless");
 // The state.import scenario's HTTP fixture answers as *.example.test.
 app.commandLine.appendSwitch(
@@ -228,8 +231,12 @@ async function run(): Promise<void> {
     storage: { kind: "local", binding, directory },
   });
   await assertCookies(nativeReopened, nativeCookies);
-  await nativeReopened.replaceSiteCookies("example.test", [], new AbortController().signal);
-  await assertCookies(nativeReopened, []);
+  await nativeReopened.replaceSiteCookies("https://example.test", [], new AbortController().signal);
+  // Replacing a first-party sign-in preserves CHIPS owned by other top-level sites.
+  await assertCookies(
+    nativeReopened,
+    nativeCookies.filter((cookie) => cookie.partitionKey !== undefined),
+  );
   await nativeReopened.close();
 
   const report = await runStateImportScenario({ engine: "electron", launcher });
@@ -282,7 +289,7 @@ function finish(error: unknown): void {
   // The driver removes the profile only after this process exits.
   if (error) {
     process.stderr.write(
-      `${JSON.stringify({ event: "electron-browser-cookie-smoke.failed", error: error instanceof Error ? error.stack : String(error) })}\n`,
+      `${JSON.stringify({ event: "electron-browser-cookie-smoke.failed", error: profileFailureDiagnostic(error) })}\n`,
     );
     app.exit(1);
   } else {

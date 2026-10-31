@@ -4,6 +4,7 @@ import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/
 import { BrowserRuntimeError } from "@opensteer/browser-runtime-core";
 import { VerifiedDesktopSecretCryptography } from "../secrets/verified-secret-cryptography.js";
 import { BrowserSessionRequestGate } from "./browser-session-policy.js";
+import { ProtectedStorageUnavailableError } from "../secrets/protected-json-file.js";
 import { SessionCookieMirror } from "./session-cookie-mirror.js";
 
 // Electron retains Sessions by path until exit, across logical runtime/host eviction.
@@ -54,7 +55,7 @@ export function acquireElectronLocalProfile(input: {
 
 /**
  * Electron 44.9.2 EmitChildProcessGone emits ChildProcessData.metrics_name.
- * Chromium 151 service_process_host_impl.cc sets it to receiver.interface_name(),
+ * Chromium 152.0.7977.167 service_process_host_impl.cc sets it to receiver.interface_name(),
  * so this matches the Mojo interface, not the localized display name.
  */
 export function isNetworkService(details: { type: string; serviceName?: string }): boolean {
@@ -77,7 +78,7 @@ export class ElectronLocalProfile {
   readonly mirror: SessionCookieMirror;
   readonly #contexts = new Set<() => Promise<void>>();
   #ready: Promise<unknown> = Promise.resolve();
-  #failed = false;
+  #failure: BrowserRuntimeError | undefined;
   #retired = false;
   #admitted = false;
   #cookieTarget: WebContentsView | undefined;
@@ -144,7 +145,7 @@ export class ElectronLocalProfile {
           this.session.cookies.off("changed", invalidate);
         };
       },
-      onFailure: () => this.#fail(),
+      onFailure: (error) => this.#fail(error),
       onIdle: () => this.#releaseIdleCookieTarget(),
     });
   }
@@ -154,9 +155,9 @@ export class ElectronLocalProfile {
       .then(() => {
         this.#suspended = false;
       })
-      .catch(() => {
-        this.#fail();
-        throw persistenceFailure();
+      .catch((error: unknown) => {
+        this.#fail(error);
+        throw this.#failure;
       });
     void this.#ready.catch(() => undefined);
   }
@@ -178,7 +179,8 @@ export class ElectronLocalProfile {
   }
 
   assertUsable(): void {
-    if (this.#failed || this.#retired) throw persistenceFailure();
+    if (this.#failure) throw this.#failure;
+    if (this.#retired) throw persistenceFailure();
   }
   assertReady(): void {
     this.assertUsable();
@@ -198,7 +200,7 @@ export class ElectronLocalProfile {
     this.gate.close();
   }
   recoverAfterNetworkLoss(): void {
-    if (this.#failed || this.#retired) return;
+    if (this.#failure || this.#retired) return;
     this.#ready = this.#ready
       .then(async () => {
         const restored = await this.mirror.recover();
@@ -207,9 +209,9 @@ export class ElectronLocalProfile {
           if (this.#admitted) this.gate.open();
         }
       })
-      .catch(() => {
-        this.#fail();
-        throw persistenceFailure();
+      .catch((error: unknown) => {
+        this.#fail(error);
+        throw this.#failure;
       });
     void this.#ready.catch(() => undefined);
   }
@@ -232,18 +234,21 @@ export class ElectronLocalProfile {
     if (target && !target.webContents.isDestroyed())
       target.webContents.close({ waitForBeforeUnload: false });
   }
-  #fail(): void {
-    this.#failed = true;
+  #fail(error: unknown): void {
+    this.#failure ??= persistenceFailure(error);
     this.mirror.suspend();
     this.gate.fail();
     for (const close of this.#contexts) void close().catch(() => undefined);
   }
 }
 
-function persistenceFailure(): BrowserRuntimeError {
+function persistenceFailure(cause?: unknown): BrowserRuntimeError {
+  if (cause instanceof BrowserRuntimeError) return cause;
   return new BrowserRuntimeError(
     "conflict",
-    "Browser profile storage is unavailable. The profile was preserved.",
-    { reason: "browser-profile-persistence-failed" },
+    cause instanceof ProtectedStorageUnavailableError
+      ? "Browser profile encryption is unavailable. Unlock the login keychain in Keychain Access, then restart Opensteer and reopen this profile. The profile was preserved."
+      : "Browser profile storage is unavailable. The profile was preserved.",
+    { cause, reason: "browser-profile-persistence-failed" },
   );
 }

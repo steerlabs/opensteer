@@ -42,9 +42,17 @@ pnpm test:integration -- tests/browser-sessions-identities.integration.test.ts
 Real Electron qualification runs only in the disposable VM, on request or after merge.
 Use the integrated committed revision for both smokes:
 
+The credential-free golden's login keychain is locked after boot over SSH.
+Unlock it inside the disposable guest using its documented fixture credential;
+never use a mock keychain or weaken the production encryption provider:
+
 ```sh
-pnpm test:vm -- --revision <sha> pnpm --filter @opensteer/desktop test:electron-profile-restore
-pnpm test:vm -- --revision <sha> pnpm --filter @opensteer/desktop test:electron-cookies
+pnpm test:vm -- --revision <sha> bash -c '
+  security unlock-keychain -p admin "$HOME/Library/Keychains/login.keychain-db" || exit
+  pnpm test:electron-profile-restore; profiles=$?
+  pnpm test:electron-cookies; cookies=$?
+  [ "$profiles" -eq 0 ] && [ "$cookies" -eq 0 ]
+'
 ```
 
 Qualify last committed state across process crash, not power loss:

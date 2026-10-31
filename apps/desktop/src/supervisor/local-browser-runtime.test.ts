@@ -1,3 +1,6 @@
+import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 const fakes = vi.hoisted(() => ({
@@ -44,34 +47,41 @@ describe("local browser composition", () => {
       order.push("advertise");
       return { host: "127.0.0.1", port: 1 };
     });
+    const directory = await mkdtemp(path.join(tmpdir(), "local-browser-composition-"));
+    const profileRoot = path.join(directory, "alias");
+    await symlink(directory, profileRoot);
+    const canonical = await realpath(directory);
     const handle = await startLocalBrowserRuntime({
       downloads: { accept: vi.fn() },
       pagePolicyPreloadPath: "/page.cjs",
-      profileRoot: "/data/deployments/one/browser-profiles",
+      profileRoot,
       runtimeId: "test",
     });
     expect(order).toEqual(["prepare", "advertise"]);
     expect(fakes.launcher).toHaveBeenCalledWith(
-      expect.objectContaining({ localProfileRoot: "/data/deployments/one/browser-profiles" }),
+      expect.objectContaining({ localProfileRoot: canonical }),
     );
     expect(fakes.runtime).toHaveBeenCalledWith(
       expect.objectContaining({
-        localProfiles: { root: "/data/deployments/one/browser-profiles" },
+        localProfiles: { root: canonical },
       }),
     );
     await handle.stop();
     expect(fakes.close).toHaveBeenCalled();
+    await rm(directory, { recursive: true, force: true });
   });
   it("closes preparation resources if preparing fails", async () => {
     fakes.prepare.mockRejectedValueOnce(new Error("cannot prepare"));
+    const directory = await mkdtemp(path.join(tmpdir(), "local-browser-composition-"));
     await expect(
       startLocalBrowserRuntime({
         downloads: { accept: vi.fn() },
         pagePolicyPreloadPath: "/page.cjs",
-        profileRoot: "/data/browser-profiles",
+        profileRoot: directory,
         runtimeId: "test",
       }),
     ).rejects.toThrow("cannot prepare");
+    await rm(directory, { recursive: true, force: true });
     expect(fakes.close).toHaveBeenCalled();
   });
 });

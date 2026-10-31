@@ -359,7 +359,7 @@ describe("LocalRunnerService", () => {
     expect(inputs.map(({ profileRoot }) => profileRoot).sort()).toEqual(
       [first, second]
         .map(({ deploymentId }) =>
-          path.join(directory, "deployments", deploymentId, "browser-profiles"),
+          path.join(directory, "session", "browser-profiles", deploymentId),
         )
         .sort(),
     );

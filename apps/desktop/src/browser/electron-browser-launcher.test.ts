@@ -1763,6 +1763,7 @@ describe("native Electron profiles", () => {
       engine: "electron",
     };
     const directory = path.join(root, "profiles", binding.profileId, "native");
+    const onLocalProfileOpenTiming = vi.fn();
     const launcher = new ElectronBrowserLauncher({
       downloads: {
         accept: vi.fn(() => {
@@ -1771,6 +1772,7 @@ describe("native Electron profiles", () => {
       },
       pagePolicyPreloadPath: "/policy.cjs",
       localProfileRoot: root,
+      onLocalProfileOpenTiming,
     });
     const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
     return {
@@ -1778,6 +1780,7 @@ describe("native Electron profiles", () => {
       binding,
       directory,
       launcher,
+      onLocalProfileOpenTiming,
       launch: () =>
         launcher.launch({
           sessionId,
@@ -1867,6 +1870,99 @@ describe("native Electron profiles", () => {
       expect(profile.clearCache).not.toHaveBeenCalled();
       expect(profile.clearStorageData).not.toHaveBeenCalled();
       await expect(f.launch()).rejects.toThrow();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("retains the underlying initialization cause without exposing it on the wire", async () => {
+    const f = await fixture();
+    const failure = new Error("private cookie=secret https://private.test", {
+      cause: new TypeError("private key"),
+    });
+    electron.storage = () => Promise.reject(failure);
+    try {
+      const error = await f.launcher.localProfiles
+        .importAndFlush({
+          directory: f.directory,
+          binding: f.binding,
+          snapshot: {
+            cookies: [],
+            origins: [{ origin: "https://a.test", localStorage: [{ name: "k", value: "v" }] }],
+          },
+          signal: new AbortController().signal,
+        })
+        .catch((error: unknown) => error);
+      expect(error).toHaveProperty("cause.cause", failure);
+      expect(JSON.stringify(error)).not.toContain("secret");
+    } finally {
+      electron.storage = undefined;
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("keeps an actionable encryption failure on subsequent opens and preserves all native data", async () => {
+    const f = await fixture();
+    const { safeStorage, session } = await import("electron");
+    const encrypt = vi
+      .spyOn(safeStorage, "encryptStringAsync")
+      .mockRejectedValue(new Error("unavailable"));
+    try {
+      await expect(
+        f.launcher.localProfiles.importAndFlush({
+          directory: f.directory,
+          binding: f.binding,
+          snapshot: { cookies: [], origins: [] },
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toThrow(/Unlock the login keychain.*restart Opensteer/u);
+      await expect(f.launch()).rejects.toThrow(/Unlock the login keychain.*restart Opensteer/u);
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      expect(profile.clearCache).not.toHaveBeenCalled();
+      expect(profile.clearStorageData).not.toHaveBeenCalled();
+      await expect(readdir(path.dirname(f.directory))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      encrypt.mockRestore();
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("rejects an out-of-scope sign-in without poisoning a ready profile", async () => {
+    const f = await fixture();
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const browser = await f.launch();
+      await expect(
+        browser.replaceSiteCookies(
+          "https://example.test",
+          [
+            {
+              name: "partitioned",
+              value: "value",
+              domain: "example.test",
+              path: "/",
+              expires: -1,
+              httpOnly: true,
+              secure: true,
+              sameSite: "None",
+              partitionKey: "https://other.test",
+              partitionKeyHasCrossSiteAncestor: true,
+            },
+          ],
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("outside the requested site");
+      const reopened = await f.launch();
+      await reopened.close();
+      await browser.close();
     } finally {
       await f.launcher.localProfiles.release(f.directory);
       f.launcher.close();
@@ -1978,6 +2074,14 @@ describe("native Electron profiles", () => {
       const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
       const browser = await f.launch();
       await browser.close();
+      expect(f.onLocalProfileOpenTiming.mock.calls.map(([timing]) => timing.stage)).toEqual([
+        "session-created",
+        "mirror-restored",
+        "admitted",
+        "first-page-created",
+      ]);
+      const durations = f.onLocalProfileOpenTiming.mock.calls.map(([timing]) => timing.elapsedMs);
+      expect(durations).toEqual([...durations].sort((a, b) => a - b));
       const reopened = await f.launch();
       await reopened.close();
       expect(session.fromPath).toHaveBeenCalledWith(f.directory);
