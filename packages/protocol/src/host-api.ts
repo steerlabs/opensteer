@@ -1708,7 +1708,10 @@ export const hostApi = defineRpc({
   ),
   "triggers.list": declaration(
     "GET",
-    z.strictObject({ workspaceId: WorkspaceIdSchema.optional() }),
+    z.strictObject({
+      workspaceId: WorkspaceIdSchema.optional(),
+      anchorThreadId: ThreadIdSchema.optional(),
+    }),
     z.object({ triggers: z.array(TriggerSummaryViewSchema).max(100) }),
   ),
   "workspace.catalog.list": declaration("GET", durablePageInputSchema, WorkspaceCatalogPageSchema),

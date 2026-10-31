@@ -3083,6 +3083,7 @@ export function advertisedCapabilities(
     "voice-v1",
     "thread-titles-v1",
     "task-marks-v1",
+    "thread-automations-v1",
     "snapshot-messages-omit-v1",
     "shared-task-done-v1",
     "iphone-apps-v1",
