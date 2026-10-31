@@ -18,7 +18,7 @@ data class AuxiliaryChallenge(
  * agents, offers only its screen through `integrations`, and
  * is a local computer shaped like a phone.
  */
-data class RunnerDescriptor(val bootId: String, val name: String, val runnerId: String, val runtimeVersion: String, val loginText: Boolean = false, val editing: Boolean = false, val displayCut: Boolean = false, val sharedInput: Boolean = false, val phoneOwnerControl: Boolean = false) {
+data class RunnerDescriptor(val bootId: String, val name: String, val runnerId: String, val runtimeVersion: String, val loginText: Boolean = false, val editing: Boolean = false, val displayCut: Boolean = false, val sharedInput: Boolean = false, val phoneOwnerControl: Boolean = false, val displayProfile: Boolean = false) {
     fun toJson(): JsonObject = jsonObject(
         "bootId" to jsonOf(bootId),
         "capabilities" to jsonArray(),
@@ -27,6 +27,7 @@ data class RunnerDescriptor(val bootId: String, val name: String, val runnerId: 
             "integrations" to jsonObject(
                 *(if (loginText) arrayOf("loginText" to jsonOf(1)) else emptyArray()),
                 *(if (editing) arrayOf("editing" to jsonOf(1)) else emptyArray()),
+                *(if (displayProfile) arrayOf("displayProfile" to jsonOf(1)) else emptyArray()),
                 *(if (phoneOwnerControl) arrayOf("phoneOwnerControl" to jsonOf(1)) else emptyArray()),
                 *(if (sharedInput) arrayOf("sharedInput" to jsonOf(1)) else emptyArray()),
                 *(if (editing && displayCut) arrayOf("displayCut" to jsonOf(1)) else emptyArray()),

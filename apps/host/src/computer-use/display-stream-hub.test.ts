@@ -121,6 +121,7 @@ async function fixture(
   kind: {
     sharedInput?: boolean;
     phoneOwnerControl?: boolean;
+    displayProfile?: boolean;
     ownerViews?: boolean;
     editing?: boolean;
     displayCut?: boolean;
@@ -178,6 +179,7 @@ async function fixture(
           platform: mac ? "darwin" : "android",
           protocolVersion: mac ? 5 : 4,
           ...(!mac && kind.sharedInput !== false ? { sharedInput: 1 } : {}),
+          ...(kind.displayProfile ? { displayProfile: 1 } : {}),
           ...(kind.phoneOwnerControl ? { phoneOwnerControl: 1 } : {}),
           ...(editing ? { editing: 1 } : {}),
           ...(displayCut ? { displayCut: 1 } : {}),
@@ -1577,23 +1579,80 @@ describe("phone display Host sockets", () => {
     f.apps.detach(f.peer, "revoked");
     expect(await viewer.closed).toBe(4003);
   });
-  it.each(["retryable", "access", "unknown", "blocked"] as const)(
+  it.each(["retryable", "access", "unknown"] as const)(
     "classifies %s periodic authorization failures",
     async (kind) => {
       vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
       const f = await fixture();
       const viewer = await f.viewer();
-      const resume = kind === "blocked" ? f.pauseAuthorization() : () => undefined;
       if (kind === "retryable")
         f.failAuthorization(new ComputerUseError("failed", "Authority unavailable", true));
       if (kind === "access")
         f.failAuthorization(new ComputerUseError("unsupported", "Owner changed"));
       if (kind === "unknown") f.failAuthorization(new Error("Authority unavailable"));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await viewer.closed).toBe(kind === "access" ? 4003 : 1013);
+    },
+  );
+  it.each(["authorized", "revoked"] as const)(
+    "keeps slow authorization pending without losing or reviving viewing (%s)",
+    async (outcome) => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const f = await fixture();
+      const viewer = await f.viewer();
+      const phone = await f.phone();
+      await f.state();
+      await viewer.roundTrip();
+      let resume!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      let settled = false;
+      const authorization = vi.spyOn(f.hub, "authorize").mockImplementationOnce(async () => {
+        try {
+          await blocked;
+          return f.runnerId;
+        } finally {
+          settled = true;
+        }
+      });
       try {
-        await vi.advanceTimersByTimeAsync(kind === "blocked" ? 10_000 : 5_000);
-        expect(await viewer.closed).toBe(kind === "access" ? 4003 : 1013);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(authorization).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(f.serverViewers[0]!.readyState).toBe(WebSocket.OPEN);
+        expect(authorization).toHaveBeenCalledTimes(1);
+        if (outcome === "revoked") {
+          f.end();
+          await vi.waitFor(
+            () =>
+              expect(viewer.socket.readyState, "revoked viewer did not close").toBe(
+                WebSocket.CLOSED,
+              ),
+            { timeout: 2_000 },
+          );
+        }
+        resume();
+        await vi.waitFor(() => expect(settled, "delayed authorization did not settle").toBe(true), {
+          timeout: 2_000,
+        });
+        if (outcome === "authorized") {
+          await viewer.roundTrip();
+          phone.socket.send(f.frame(1, true));
+          await viewer.received(() => viewer.media().length === 1);
+          expect(viewer.socket.readyState).toBe(WebSocket.OPEN);
+        } else {
+          f.hub.sweep();
+          expect(viewer.socket.readyState).toBe(WebSocket.CLOSED);
+          expect(f.sent.filter((m) => m.type === "host.integrations.display.start")).toHaveLength(
+            1,
+          );
+        }
       } finally {
         resume();
+        await vi.waitFor(() => expect(settled, "delayed authorization did not drain").toBe(true), {
+          timeout: 2_000,
+        });
       }
     },
   );
@@ -2883,4 +2942,55 @@ it("does not create a phone producer when owner input authorization finishes aft
   resume();
   await vi.waitFor(() => expect(owner.socket.readyState).toBe(WebSocket.CLOSED));
   expect(h.start()).toBeUndefined();
+});
+
+describe("viewer-driven phone bitrate", () => {
+  it("negotiates only with capable phones and clears the slowest attached viewer cap", async () => {
+    const old = await fixture();
+    await old.viewer(false, false, true);
+    expect(old.start()).not.toHaveProperty("maxBitrate");
+    expect(old.start()).not.toHaveProperty("displayProfile");
+    const f = await fixture(true, { displayProfile: true });
+    const slow = await f.viewer(false, false, true);
+    const fast = await f.viewer(false, false, true);
+    const legacy = await f.viewer();
+    expect(f.start()).toMatchObject({ displayProfile: 1, maxBitrate: null });
+    const phone = await f.phone();
+    await f.state();
+    const updates: { at: number; cap: number | null }[] = [];
+    let observedDemands = 0;
+    for (let sequence = 1; sequence <= 70; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(8_000)));
+      await phone.received(() => phone.json().length === sequence);
+      f.advance(100);
+      fast.send({ type: "display.ack", sequence });
+      legacy.send({ type: "display.ack", sequence });
+      if (sequence <= 5 || sequence % 5 === 0) slow.send({ type: "display.ack", sequence });
+      await fast.roundTrip();
+      await slow.roundTrip();
+      const demands = f.sent.filter(
+        (message) => message.type === "host.integrations.display.demand",
+      );
+      for (const demand of demands.slice(observedDemands)) {
+        if (demand.maxBitrate !== undefined)
+          updates.push({ at: sequence * 100, cap: demand.maxBitrate });
+      }
+      observedDemands = demands.length;
+    }
+    const demands = () => f.sent.filter((m) => m.type === "host.integrations.display.demand");
+    expect(demands().some((m) => m.maxBitrate !== undefined && m.maxBitrate !== null)).toBe(true);
+    for (let index = 1; index < updates.length; index++) {
+      const previous = updates[index - 1]!;
+      const next = updates[index]!;
+      expect(next.at - previous.at).toBeGreaterThanOrEqual(2_000);
+      if (previous.cap !== null && next.cap !== null)
+        expect(Math.abs(next.cap - previous.cap) / previous.cap).toBeGreaterThanOrEqual(0.15);
+    }
+    const removed = once(f.serverViewers[0]!, "close", { signal: AbortSignal.timeout(3_000) });
+    slow.socket.close();
+    await removed;
+    f.advance(2_001);
+    f.hub.sweep();
+    expect(demands().at(-1)).toMatchObject({ maxBitrate: null });
+  });
 });

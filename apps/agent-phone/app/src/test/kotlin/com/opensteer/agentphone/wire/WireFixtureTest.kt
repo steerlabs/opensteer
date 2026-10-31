@@ -71,7 +71,7 @@ object WireFixture {
             RunnerChallenge(it.string("challengeId"), it.string("expiresAt"), it.string("hostSessionId"), it.string("nonce"))
         }
         val descriptor = runner.obj("descriptor").let {
-            RunnerDescriptor(it.string("bootId"), it.string("name"), it.string("runnerId"), it.string("runtimeVersion"))
+            RunnerDescriptor(it.string("bootId"), it.string("name"), it.string("runnerId"), it.string("runtimeVersion"), displayProfile = true)
         }
         val auxiliaryChallenge = auxiliary.obj("challenge").let {
             AuxiliaryChallenge(it.string("challengeId"), it.string("expiresAt"), it.string("hostSessionId"), it.string("module"), it.string("nonce"))

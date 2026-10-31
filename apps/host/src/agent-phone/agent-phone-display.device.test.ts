@@ -8,7 +8,7 @@ import { createDatabase } from "@opensteer/database";
  */
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunnerId } from "@opensteer/core";
 import {
@@ -114,6 +114,7 @@ it.each([
     endedMs: number;
     status: string;
     error?: string;
+    failureLoadAverage?: readonly number[];
   }[] = [];
   const evidence: Record<string, unknown> = {};
   const hostLog: string[] = [];
@@ -265,6 +266,10 @@ it.each([
     } catch (error) {
       record.status = "failed";
       record.error = redaction.error(error);
+      record.failureLoadAverage = loadavg();
+      process.stdout.write(
+        `Agent Phone phase failed: ${name}; load=${record.failureLoadAverage.join(",")}\n`,
+      );
       throw error;
     } finally {
       record.endedMs = performance.now();
@@ -745,6 +750,7 @@ it.each([
         expect(lease.getSnapshot().connection).toBe("open");
         await client.closeComputerView(source.viewId, source.generation);
         lease.release();
+        const readOnlyPowerStart = frontDoor.displayPowerCommands.length;
         const readonly = await client.openComputerView(runnerId, {
           kind: "phone",
           display: "main",
@@ -767,7 +773,18 @@ it.each([
         );
         expect(readLease.getSnapshot().power).toBe("unavailable");
         expect(readLease.power("wake")).toBe(false);
-        expect((await phone.shell("dumpsys power")).includes("mWakefulness=Asleep")).toBe(true);
+        const powerDump = await phone.shell("dumpsys power");
+        const wakefulness = /\bmWakefulness=(\S+)/u.exec(powerDump)?.[1] ?? "missing";
+        const powerCommands = frontDoor.displayPowerCommands.slice(readOnlyPowerStart);
+        evidence.readOnlyPower = { wakefulness, commands: powerCommands };
+        await writeFile(join(directory, "read-only-power.txt"), redaction.apply(powerDump));
+        process.stdout.write(
+          `Read-only phone: mWakefulness=${wakefulness}, display.power=${JSON.stringify(powerCommands.map(({ action }) => action))}\n`,
+        );
+        expect(powerCommands).toEqual([]);
+        // API 33 may still be Dozing after sleep; viewing must not wake it.
+        expect(wakefulness).not.toBe("missing");
+        expect(wakefulness).not.toBe("Awake");
         await client.closeComputerView(readonly.viewId, readonly.generation);
         readLease.release();
         await setAccess("read-write");
@@ -3030,6 +3047,7 @@ it.each([
     completed = true;
   } catch (error) {
     failure = redaction.error(error);
+    evidence.failureLoadAverage = loadavg();
     throw error;
   } finally {
     for (const close of cleanup.reverse()) {

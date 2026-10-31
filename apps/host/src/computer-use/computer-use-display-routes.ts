@@ -65,11 +65,8 @@ export function registerComputerUseDisplayRoutes(
       },
     );
     const recheck = setInterval(() => {
-      if (checking) {
-        attachment?.close("authorization-unavailable", displayViewerCloseCodes.tryAgain);
-        socket.close(displayViewerCloseCodes.tryAgain, "Display authorization unavailable");
-        return;
-      }
+      // A pending read is not a refusal; source revocation and login expiry still fence delivery.
+      if (checking) return;
       checking = true;
       void (async () => {
         const current = await options.authenticator.authenticateSession(request.headers, {

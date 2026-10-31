@@ -645,6 +645,8 @@ export const HostIntegrationsDisplayStartSchema = z
      */
     sharedInput: z.literal(1).optional(),
     phoneOwnerControl: z.literal(1).optional(),
+    displayProfile: z.literal(1).optional(),
+    maxBitrate: z.number().int().min(400_000).max(4_000_000).nullable().optional(),
     inputSources: DisplayDemandSchema.optional(),
     /** Remaining resolution-through-first-keyframe budget; Mac only. */
     timeoutMs: z.number().int().positive().max(30_000).optional(),
@@ -661,6 +663,10 @@ export const HostIntegrationsDisplayStartSchema = z
       (start.phoneOwnerControl === 1) === (start.inputSources !== undefined) &&
       inputSourcesSubset(start),
     "Phone input sources require negotiation and must belong to demand",
+  )
+  .refine(
+    (start) => (start.displayProfile === 1) === (start.maxBitrate !== undefined),
+    "Bitrate cap requires profile negotiation",
   );
 export type HostIntegrationsDisplayStart = z.infer<typeof HostIntegrationsDisplayStartSchema>;
 export const HostIntegrationsDisplayStopSchema = z.strictObject({
@@ -782,6 +788,7 @@ export const HostIntegrationsDisplayDemandSchema = z
     revision: DisplaySequenceSchema,
     sources: DisplayDemandSchema,
     inputSources: DisplayDemandSchema.optional(),
+    maxBitrate: z.number().int().min(400_000).max(4_000_000).nullable().optional(),
     warm: MacDisplayWarmSchema.optional(),
     maxLongSide: DisplayMaxLongSideSchema.optional(),
   })

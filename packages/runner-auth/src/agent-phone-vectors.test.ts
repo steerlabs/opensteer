@@ -370,6 +370,8 @@ function hostFrames() {
       editingVersion: 1,
       displayCut: 1,
       phoneOwnerControl: 1,
+      displayProfile: 1,
+      maxBitrate: null,
     }),
     stream({
       ...streamFence,
@@ -379,6 +381,7 @@ function hostFrames() {
       revision: 2,
       sources: [phoneOwnerSource],
       inputSources: [],
+      maxBitrate: 400_000,
     }),
     ...[phoneOwnerSource, { kind: "task-session", sessionId }].flatMap((source) => [
       stream({

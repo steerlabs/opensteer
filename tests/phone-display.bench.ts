@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { build as bundle } from "esbuild";
 import { chromium, type Page } from "playwright-core";
 import WebSocket from "ws";
-import { it } from "vitest";
+import { it, vi } from "vitest";
+import { ComputerAppHub } from "../apps/host/src/computer-apps/computer-app-hub.js";
 import type { WebSocketClient } from "../packages/client/src/host/host-session-client.js";
 import { decodeDisplayMediaFrame } from "../packages/protocol/src/display-stream.js";
 import {
@@ -62,6 +64,17 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
     process.stdout.write("Benchmark APK built\n");
     const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
     cleanup.push(() => database.drop());
+    let capEnabled = false;
+    const displayStream = ComputerAppHub.prototype.displayStream;
+    const capability = vi
+      .spyOn(ComputerAppHub.prototype, "displayStream")
+      .mockImplementation(function (this: ComputerAppHub, runnerId) {
+        const live = displayStream.call(this, runnerId);
+        if (capEnabled || !live || live === "unsupported") return live;
+        const { displayProfile: _displayProfile, ...baseline } = live;
+        return baseline;
+      });
+    cleanup.push(async () => capability.mockRestore());
     const stalls: { at: number; ageMs: number }[] = [];
     const host = await startAgentPhoneHost(database.url, {
       publicPort: await freePort(),
@@ -114,6 +127,17 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
     if (!("point" in list)) throw new Error(list.missing);
     const center = list.point;
     const stroke = 180;
+    const decoderBundle = await bundle({
+      entryPoints: [
+        join(import.meta.dirname, "mobile-network/phone-display-decoder.test-support.ts"),
+      ],
+      bundle: true,
+      write: false,
+      format: "iife",
+      globalName: "PhoneDisplayBenchmark",
+      platform: "browser",
+    });
+    const decoderScript = decoderBundle.outputFiles[0]!.text;
     const browser = await chromium.launch({ headless: true });
     cleanup.push(() => browser.close());
     const revision = (await runCommand("git", ["rev-parse", "HEAD"])).trim();
@@ -125,10 +149,13 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
       process.env.OPENSTEER_PHONE_BENCH_WINDOW ??
       "0"
     ).split(",");
-    for (const { profile, window } of profiles.flatMap((profile) =>
-      windows.map((window) => ({ profile, window })),
+    const caps = (process.env.OPENSTEER_PHONE_BENCH_CAPS ?? "0").split(",");
+    for (const { profile, window, cap } of profiles.flatMap((profile) =>
+      windows.flatMap((window) => caps.map((cap) => ({ profile, window, cap }))),
     )) {
       if (!["0", "1"].includes(window)) throw new Error("Window must be 0 or 1");
+      if (!["0", "1"].includes(cap)) throw new Error("Cap must be 0 or 1");
+      capEnabled = cap === "1";
       ingress.clear();
       if (!Object.hasOwn(linkProfiles, profile))
         throw new Error(`Unknown link profile: ${profile}`);
@@ -175,59 +202,28 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
             firstResolve();
           });
           await page.exposeFunction("decodeFailed", (message: string) => recordError(message));
+          const pendingCredit = new Map<number, DisplayFrame>();
+          let packetId = 0;
+          await page.exposeFunction("dequeued", (id: number) => {
+            pendingCredit.get(id)?.done();
+            pendingCredit.delete(id);
+          });
+          await page.addScriptTag({ content: decoderScript });
           await page.evaluate(() => {
-            const sink = globalThis as typeof globalThis & {
-              accept: (packet: {
-                header: {
-                  codec?: string;
-                  key: boolean;
-                  width: number;
-                  height: number;
-                  ptsUs: number;
-                  sequence: number;
-                };
-                data: string;
-                replayed: boolean;
-              }) => void;
+            const sink = globalThis as unknown as {
+              PhoneDisplayBenchmark: {
+                benchmarkPhoneDecoder: (sink: unknown) => { accept: (packet: unknown) => void };
+              };
               painted: (sequence: number) => void;
+              dequeued: (id: number) => void;
               decodeFailed: (message: string) => void;
+              accept: (packet: unknown) => void;
             };
-            const canvas = document.createElement("canvas");
-            document.body.append(canvas);
-            const context = canvas.getContext("2d")!;
-            const pending = new Map<number, { sequence: number; replayed: boolean }>();
-            const decoder = new VideoDecoder({
-              output: (frame) => {
-                const item = pending.get(frame.timestamp);
-                pending.delete(frame.timestamp);
-                if (item && !item.replayed) {
-                  context.drawImage(frame, 0, 0);
-                  sink.painted(item.sequence);
-                }
-                frame.close();
-              },
-              error: (error) => sink.decodeFailed(String(error)),
-            });
-            sink.accept = (packet) => {
-              const { header } = packet;
-              if (decoder.state === "unconfigured") {
-                canvas.width = header.width;
-                canvas.height = header.height;
-                decoder.configure({
-                  codec: header.codec!,
-                  optimizeForLatency: true,
-                  hardwareAcceleration: "prefer-software",
-                });
-              }
-              pending.set(header.ptsUs, { sequence: header.sequence, replayed: packet.replayed });
-              decoder.decode(
-                new EncodedVideoChunk({
-                  type: header.key ? "key" : "delta",
-                  timestamp: header.ptsUs,
-                  data: Uint8Array.from(atob(packet.data), (byte) => byte.charCodeAt(0)),
-                }),
-              );
-            };
+            sink.accept = sink.PhoneDisplayBenchmark.benchmarkPhoneDecoder({
+              painted: sink.painted,
+              dequeued: sink.dequeued,
+              failed: sink.decodeFailed,
+            }).accept;
           });
           const pool = new DisplayStreams({
             connect: (ref) => {
@@ -247,18 +243,19 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
           });
           pools.push(pool);
           const started = performance.now();
-          const bytesBefore = proxy.connections.reduce(
-            (sum, c) => sum + c.bytesDown + c.bytesUp,
-            0,
-          );
+          const connectionStart = proxy.connections.length;
           const lease = pool.retain({ scope: profile, source });
           lease.onFrame((frame) => {
             received.push({ at: performance.now(), frame });
+            const id = packetId++;
+            pendingCredit.set(id, frame);
             const job = page
               .evaluate(
                 (packet) =>
                   (globalThis as unknown as { accept: (packet: unknown) => void }).accept(packet),
                 {
+                  id,
+                  connection: frame.connection,
                   header: frame.header,
                   data: Buffer.from(frame.payload).toString("base64"),
                   replayed: frame.replayed,
@@ -266,9 +263,10 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
               )
               .catch((error) => {
                 recordError(String(error));
+                pendingCredit.get(id)?.done();
+                pendingCredit.delete(id);
               })
               .finally(() => {
-                frame.done();
                 submissions.delete(job);
               });
             submissions.add(job);
@@ -278,15 +276,26 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
               new Error(`Headless viewer never painted a frame: ${errors.join("; ")}`),
           });
           const firstPaintMs = paints[0]!.at - started;
-          const joinBytes =
-            proxy.connections.reduce((sum, c) => sum + c.bytesDown + c.bytesUp, 0) - bytesBefore;
-          return { received, paints, firstPaintMs, joinBytes, errors, lease, submissions };
+          const joinBytes = proxy.connections
+            .slice(connectionStart)
+            .reduce((sum, c) => sum + c.bytesDown + c.bytesUp, 0);
+          return {
+            received,
+            paints,
+            firstPaintMs,
+            joinBytes,
+            errors,
+            lease,
+            submissions,
+            close: () => pool.dispose(),
+            page,
+          };
         };
         const cold = await viewer();
         const motionStart = performance.now();
         const inputTimes: number[] = [];
         // Each swipe is a real fixture gesture. Duration is workload, not a readiness wait.
-        for (let turn = 0; turn < 18; turn++) {
+        for (let turn = 0; turn < Number(process.env.OPENSTEER_PHONE_BENCH_SWIPES ?? 18); turn++) {
           inputTimes.push(performance.now());
           const direction = turn % 2 === 0 ? 1 : -1;
           await phone.shell(
@@ -297,6 +306,12 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
         const active = cold.paints.filter((p) => p.at >= motionStart && p.at < motionEnd);
         const gaps = active.slice(1).map((p, i) => p.at - active[i]!.at);
         const activeFrames = cold.received.filter((p) => p.at >= motionStart && p.at < motionEnd);
+        const motionJoin = await viewer();
+        await motionJoin.page.screenshot({
+          fullPage: true,
+          path: join(directory, `${profile}-${results.length}-motion.png`),
+        });
+        motionJoin.close();
         // Observe the fixed refinement tail separately from the static measurement.
         await delay(5_000);
         const idleStart = performance.now();
@@ -306,16 +321,28 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
           (proxy.connections.reduce((sum, c) => sum + c.bytesDown + c.bytesUp, 0) - bytesAtIdle) /
           ((performance.now() - idleStart) / 1000);
         const joined = await viewer();
+        await joined.page.screenshot({
+          fullPage: true,
+          path: join(directory, `${profile}-${results.length}-static.png`),
+        });
         const activeStalls = stalls.filter(
           (stall) => stall.at >= motionStart && stall.at < motionEnd,
         );
         const record = {
           profile,
+          variant:
+            process.env.OPENSTEER_PHONE_BENCH_CAPS === undefined
+              ? (process.env.OPENSTEER_PHONE_BENCH_VARIANT ?? "default")
+              : `cap${cap}`,
+          cap: capEnabled,
+          motionLateJoinPaintMs: motionJoin.firstPaintMs,
+          motionLateJoinBytes: motionJoin.joinBytes,
           creditStalls: activeStalls.length,
           maxCreditAgeMs: Math.max(0, ...activeStalls.map((stall) => stall.ageMs)),
           revision,
           window: window === "1",
           coldPaintMs: cold.firstPaintMs,
+          motionDurationMs: motionEnd - motionStart,
           lateJoinPaintMs: joined.firstPaintMs,
           lateJoinBytes: joined.joinBytes,
           fps: active.length / ((motionEnd - motionStart) / 1000),

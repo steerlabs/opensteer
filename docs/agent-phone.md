@@ -147,8 +147,11 @@ clear publication and input; protection lift requires a fresh generation. Agent 
 main activity also uses FLAG_SECURE. Control and media sockets are unordered: late state
 must not blank already-arrived media of the same generation or revive an ended generation.
 H.264 must have no B-frames or reordering so clients can display decoded frames immediately.
-Backpressure must recover at a keyframe, including on static screens; silent screens do
-not justify increasing bitrate. Data-socket failure must not kill the Runner attempt.
+Backpressure must recover at a keyframe, including on static screens. Negotiated visible
+viewers share the slowest viewer's bitrate cap; the phone uses the lower of that cap
+and its own estimate. Only a Host cap allows bitrate below the local 1 Mbps floor.
+Closing a viewer releases its cap; silent screens do not justify increasing bitrate.
+Data-socket failure must not kill the Runner attempt.
 
 Person input shares one lane across viewers and arbitrates with agent gestures. Held keys
 or touches block conflicting agent input. Reset is an ordered barrier that releases contacts
