@@ -51,11 +51,11 @@ html.sidebar-drawer-open body {
 
 .pane-resize-handle:hover::after,
 .pane-resize-handle[data-resizing="true"]::after {
-  background: color-mix(in srgb, var(--ember) 36%, transparent);
+  background-color: color-mix(in srgb, var(--ember) 36%, transparent);
 }
 
 .pane-resize-handle:focus-visible::after {
-  background: color-mix(in srgb, var(--ember) 58%, transparent);
+  background-color: color-mix(in srgb, var(--ember) 58%, transparent);
 }
 
 .is-resizing-pane,
@@ -81,7 +81,6 @@ html.sidebar-drawer-open body {
   width: 18px;
   height: 18px;
   flex: none;
-  filter: drop-shadow(0 3px 9px rgb(0 0 0 / 38%));
 }
 
 .brand__mark img {
@@ -158,8 +157,8 @@ html.sidebar-drawer-open body {
 }
 
 .brand-link:hover {
-  background: var(--surface-hover);
   text-decoration: none;
+  background-color: var(--fill-quiet);
 }
 
 .sidebar__search {
@@ -247,8 +246,8 @@ html.sidebar-drawer-open body {
 }
 
 .sidebar__more:hover:not(:disabled) {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 /* The thread finder's paging control. */
@@ -262,7 +261,7 @@ html.sidebar-drawer-open body {
 
 .sidebar__load-more:hover:not(:disabled) {
   color: var(--text-soft);
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 
 /* A reader with no task yet: what tasks are, and requests to try in Chat. */
@@ -277,19 +276,22 @@ html.sidebar-drawer-open body {
   display: flex;
   align-items: center;
   gap: var(--space-10);
-  padding: var(--space-6) var(--space-8);
+  padding: calc(var(--space-6) - 1px) calc(var(--space-8) - 1px);
   border-radius: var(--radius-sm);
   color: var(--text);
   transition: background-color var(--duration-fast) var(--ease-out);
+  border: 1px solid transparent;
 }
 
 .sidebar__place:hover {
-  background: var(--surface-hover);
   text-decoration: none;
+  background-color: var(--fill-quiet);
 }
 
 .sidebar__place[aria-current="page"] {
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate-hover);
+  border-color: var(--rim-selected);
+  box-shadow: var(--edge-plate);
 }
 
 .sidebar__place-mark {
@@ -299,8 +301,11 @@ html.sidebar-drawer-open body {
   height: 30px;
   flex: none;
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
+  border: 1px solid transparent;
+  border-color: var(--rim-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .sidebar__place-mark svg {
@@ -381,24 +386,27 @@ html.sidebar-drawer-open body {
   display: flex;
   align-items: center;
   gap: var(--space-10);
-  padding: var(--space-6) var(--space-10);
+  padding: calc(var(--space-6) - 1px) calc(var(--space-10) - 1px);
   border-radius: var(--radius-sm);
   color: var(--text-soft);
   font-size: var(--text-xl);
   /* One-off: a 32px row around one line, from padding alone (see the nav). */
   line-height: 20px;
   transition: background-color var(--duration-fast) var(--ease-out);
+  border: 1px solid transparent;
 }
 
 .task-row__link:hover,
 .task-row:hover .task-row__link {
-  background: var(--surface-hover);
   text-decoration: none;
+  background-color: var(--fill-quiet);
 }
 
 .task-row__link[aria-current="page"] {
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate-hover);
   color: var(--text);
+  border-color: var(--rim-selected);
+  box-shadow: var(--edge-plate);
 }
 
 .task-row__title {
@@ -450,8 +458,8 @@ html.sidebar-drawer-open body {
   right: var(--space-6);
   display: none;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
   min-height: 0;
   border-radius: var(--radius-xs);
   color: var(--muted);
@@ -459,8 +467,8 @@ html.sidebar-drawer-open body {
 }
 
 .row-action:hover {
-  background: var(--surface-raised);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .row-action svg {
@@ -544,8 +552,7 @@ html.sidebar-drawer-open body {
     calc(var(--space-12) + env(safe-area-inset-right, 0px)) var(--space-8)
     calc(var(--space-12) + env(safe-area-inset-left, 0px));
   border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
-  backdrop-filter: blur(14px);
+  background: var(--ground);
   position: sticky;
   top: 0;
   z-index: var(--layer-sticky);
@@ -562,6 +569,14 @@ html.sidebar-drawer-open body {
   text-align: center;
 }
 
+.topbar__navigation {
+  display: inline-flex;
+  justify-content: center;
+  gap: var(--space-6);
+  width: auto;
+  flex: none;
+}
+
 .sidebar-scrim {
   display: none;
 }
@@ -569,6 +584,7 @@ html.sidebar-drawer-open body {
 @media (max-width: 900px) {
   .topbar {
     display: flex;
+    background: var(--ground);
   }
 }
 
@@ -599,9 +615,10 @@ html.sidebar-drawer-open body {
     padding-bottom: calc(var(--space-12) + env(safe-area-inset-bottom, 0px));
   }
 
-  .sidebar--open {
+  .sidebar.sidebar--open {
     transform: translateX(0);
-    box-shadow: var(--shadow-overlay);
+    background: var(--sheen) var(--surface-elevated);
+    box-shadow: var(--edge-plate), var(--lift-float);
   }
 
   .sidebar-scrim {
@@ -609,7 +626,7 @@ html.sidebar-drawer-open body {
     position: fixed;
     inset: 0;
     z-index: var(--layer-drawer-scrim);
-    background: rgb(0 0 0 / 55%);
+    background: var(--scrim);
     border: 0;
     animation: fade-in var(--duration-med) var(--ease-out);
   }
@@ -736,16 +753,14 @@ html.sidebar-drawer-open body {
 
 .workspace-orb {
   position: relative;
-  background: linear-gradient(140deg, var(--surface-hover), var(--surface));
+  background: var(--sheen) var(--fill-plate);
   display: inline-grid;
   flex: 0 0 auto;
   place-items: center;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
-  color: rgb(255 255 255 / 88%);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 12%),
-    0 4px 14px rgb(0 0 0 / 25%);
+  border: 1px solid var(--rim-plate);
+  color: var(--text-soft);
+  box-shadow: var(--edge-plate);
 }
 
 /* Deliberately below the text scale: the initial is a graphic inside the orb,
@@ -833,12 +848,13 @@ html.sidebar-drawer-open body {
   width: 20px;
   height: 20px;
   place-items: center;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
   opacity: 0;
   transition: opacity var(--duration-fast) ease;
+  box-shadow: var(--edge-plate);
 }
 
 .workspace-icon-chooser__badge .icon {
@@ -889,14 +905,15 @@ html.sidebar-drawer-open body {
 }
 
 .workspace-icon-picker__option:hover {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .workspace-icon-picker__option[aria-pressed="true"] {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
+  border-color: var(--rim-selected);
   color: var(--text);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 
 .workspace-icon-picker__option:focus-visible {
@@ -910,17 +927,19 @@ html.sidebar-drawer-open body {
   height: 22px;
   place-items: center;
   border-radius: var(--radius-xs);
-  color: rgb(255 255 255 / 88%);
+  color: var(--text-soft);
   font-size: var(--text-3xs);
   font-weight: var(--weight-heavy);
 }
 
 /* A finger needs the app's 44px target, so touch screens get fewer columns. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .workspace-icon-picker__grid {
     grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
   }
+}
 
+@media (hover: none) {
   .workspace-icon-chooser__badge {
     opacity: 1;
   }
@@ -970,15 +989,16 @@ html.sidebar-drawer-open body {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 32px;
+  min-height: var(--control-height);
   padding: 6px 8px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-xs);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
   font: inherit;
   text-align: left;
   cursor: pointer;
+  box-shadow: var(--edge-plate);
 }
 .workspace-icon-picker__default svg {
   width: 18px;
@@ -986,7 +1006,7 @@ html.sidebar-drawer-open body {
   color: var(--muted);
 }
 .workspace-icon-picker__default:hover {
-  background: var(--surface-hover);
+  background-color: var(--fill-plate-hover);
 }
 .workspace-icon-picker__error {
   max-width: 316px;

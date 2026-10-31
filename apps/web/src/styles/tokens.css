@@ -26,6 +26,15 @@
   --line: rgb(255 255 255 / 7%);
   --line-strong: rgb(255 255 255 / 12%);
   --line-hover: rgb(255 255 255 / 18%);
+  --scrollbar-thumb: rgb(var(--light) / 14%);
+  --scrim: rgb(0 0 0 / 58%);
+  --scrim-strong: rgb(0 0 0 / 72%);
+  --scrim-light: rgb(0 0 0 / 32%);
+  --mask-ink: #000;
+  /* These are drawings of macOS permission UI, not Opensteer controls. */
+  --macos-control: #4a4a4c;
+  --macos-surface: #2c2c2e;
+  --macos-blue: #0a84ff;
   --ember: #e6beb0;
   --ember-bright: #f1cabe;
   --green: #71c6a5;
@@ -97,6 +106,9 @@
   --sheen: linear-gradient(rgb(var(--light) / 3.5%), rgb(var(--light) / 0%));
   --sheen-accent: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0%));
 
+  --orb-light: color-mix(in srgb, var(--ember) 20%, var(--text-on-color));
+  --orb-core: color-mix(in srgb, var(--ember) 45%, var(--ink-on-ember));
+
   --fill-quiet: rgb(var(--light) / 5%);
   --fill-plate: rgb(var(--light) / 5%);
   --fill-plate-hover: rgb(var(--light) / 8%);
@@ -162,6 +174,7 @@
   /* The document's inherited size. Prose that declares nothing lands here;
      everything else picks a step from the scale below. */
   --text-root: 15px;
+  --text-input: 16px;
 
   /* ---- Text ----
      The chrome runs in a tight band, so the steps are close together and
@@ -204,9 +217,6 @@
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-full: 999px;
-
-  --shadow-raised: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 28px rgb(0 0 0 / 34%);
-  --shadow-overlay: 0 2px 6px rgb(0 0 0 / 45%), 0 24px 68px rgb(0 0 0 / 55%);
 
   /* ---- Layers ----
      One ladder for the whole app. Nothing sets a bare z-index; a new surface

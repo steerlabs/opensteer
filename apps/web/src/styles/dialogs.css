@@ -62,7 +62,7 @@
 .dialog-scrim {
   position: absolute;
   inset: 0;
-  background: rgb(0 0 0 / 58%);
+  background: var(--scrim);
   border: 0;
   animation: fade-in var(--duration-med) var(--ease-out);
 }
@@ -182,9 +182,10 @@
   padding: var(--space-16);
   border: 1px solid var(--ember-line);
   border-radius: var(--radius-sm);
-  background: var(--ember-wash);
+  background: var(--sheen) var(--fill-plate);
   color: var(--muted);
   font-size: var(--text-sm);
+  box-shadow: var(--edge-attention);
 }
 
 .harness-authentication__code code {
@@ -302,8 +303,8 @@
 
 .toast__dismiss {
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
 }
 
 .toast__dismiss svg {
@@ -313,8 +314,10 @@
 
 .toast--error {
   border-color: var(--red-line);
-  background: color-mix(in srgb, var(--red) 10%, var(--surface-elevated));
+  background: var(--sheen) var(--surface-elevated);
   color: var(--red-text);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .toast--error > svg {
@@ -337,6 +340,7 @@
   height: var(--toast-row-height);
   padding: 0 8px;
   overflow: hidden;
+  --toast-row-height: 44px;
 }
 .toast-layer--toolbar > .toast {
   max-height: 32px;

@@ -128,14 +128,14 @@
   color: var(--muted);
   cursor: pointer;
   transition:
-    background var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
     color var(--duration-fast) var(--ease-out);
 }
 
 .reply__action:hover,
 .reply__action[aria-expanded="true"] {
-  background: var(--surface-hover);
   color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 .reply__action .icon {
@@ -161,23 +161,24 @@
   align-items: center;
   height: 38px;
   padding: 0 var(--space-16);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: 18px 18px 18px 6px;
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
   font: inherit;
+  box-shadow: var(--edge-plate);
 }
 
 .typing__body--opens {
   cursor: pointer;
   transition:
-    background var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
 }
 
 .typing__body--opens:hover,
 .typing__body--opens[aria-expanded="true"] {
   border-color: var(--line-strong);
-  background: var(--surface-hover);
+  background-color: var(--fill-plate-hover);
 }
 
 .typing__dots {
@@ -213,7 +214,9 @@
   padding: 0;
   overflow: hidden;
   border-radius: 18px;
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--surface-elevated);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .activity__head {
@@ -277,7 +280,7 @@
   align-items: center;
   align-self: flex-start;
   gap: var(--space-6);
-  min-height: 36px;
+  min-height: var(--control-height);
   padding: var(--space-4) 0;
   border: 0;
   background: none;
@@ -343,7 +346,7 @@ a.update-line__source:hover {
   flex: none;
   align-items: center;
   gap: var(--space-6);
-  min-height: 32px;
+  min-height: var(--control-height);
   padding: 0;
   border: 0;
   background: none;
@@ -388,7 +391,7 @@ a.update-line__source:hover {
   margin-left: calc(var(--space-8) * -1);
 }
 
-@media (hover: none) and (pointer: coarse) {
+@media (any-pointer: coarse) {
   .update-line__toggle {
     min-height: var(--touch-target);
   }
@@ -420,7 +423,7 @@ a.update-line__source:hover {
 .composer--conversation .composer__input {
   flex: 1 0 33%;
   min-width: 0;
-  min-height: 36px;
+  min-height: calc(var(--control-height) + var(--space-6));
   padding: var(--space-8) var(--space-6);
   font-size: var(--text-2xl);
 }
@@ -491,7 +494,7 @@ a.update-line__source:hover {
 @media (any-pointer: coarse) {
   .composer--conversation .composer__input {
     min-height: var(--touch-target);
-    font-size: 16px;
+    font-size: var(--text-input);
   }
 
   /* A phone is held further from the eye than its pixel density suggests. */
@@ -510,8 +513,8 @@ a.update-line__source:hover {
   }
 
   .reply__action {
-    width: 36px;
-    height: 36px;
+    width: var(--touch-target);
+    height: var(--touch-target);
   }
 }
 
@@ -526,7 +529,7 @@ a.update-line__source:hover {
 
   .composer--conversation .composer__input {
     /* Keep typing from zooming the page on mobile Safari. */
-    font-size: 16px;
+    font-size: var(--text-input);
   }
 }
 

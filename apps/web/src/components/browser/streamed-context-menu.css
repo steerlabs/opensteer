@@ -1,14 +1,14 @@
 .streamed-context-menu {
   position: absolute;
-  z-index: 8;
+  z-index: var(--layer-popover);
   min-width: 180px;
   max-width: calc(100% - 12px);
   padding: 4px;
-  border: 1px solid var(--border, #ccc);
-  border-radius: 8px;
-  color: var(--text, #222);
-  background: var(--surface, #fff);
-  box-shadow: 0 5px 20px #0002;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate), var(--lift-float);
 }
 .streamed-context-menu button {
   display: block;
@@ -22,9 +22,19 @@
 }
 .streamed-context-menu button:focus-visible,
 .streamed-context-menu button:hover:enabled {
-  background: var(--surface-hover, #eee);
-  outline: none;
+  background-color: var(--fill-quiet);
 }
 .streamed-context-menu button:disabled {
   opacity: 0.45;
+}
+
+.streamed-context-menu button:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: -2px;
+}
+
+@media (any-pointer: coarse) {
+  .streamed-context-menu button {
+    min-height: var(--touch-target);
+  }
 }

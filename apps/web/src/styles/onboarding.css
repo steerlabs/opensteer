@@ -31,11 +31,10 @@
   gap: var(--space-18);
   padding: clamp(var(--space-22), 6vw, var(--space-32)) clamp(var(--space-16), 5vw, var(--space-28))
     clamp(var(--space-20), 5vw, var(--space-24));
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
-  background:
-    radial-gradient(125% 88% at 50% -18%, var(--ember-wash), transparent 58%), var(--surface);
-  box-shadow: var(--shadow-raised);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   animation: rise-in var(--duration-slow) var(--ease-out);
 }
 
@@ -122,7 +121,7 @@
 
 .onboarding__form .btn,
 .onboarding__actions .btn {
-  min-height: 40px;
+  min-height: var(--control-height);
 }
 
 /* The primary action leans toward where it is taking you. */
@@ -139,7 +138,7 @@
 /* A primary action standing on its own, outside a form's rhythm. */
 .onboarding__primary {
   width: 100%;
-  min-height: 42px;
+  min-height: var(--control-height);
 }
 
 /* A stack of actions that is not a form: retry above, retreat below. */
@@ -150,7 +149,7 @@
 }
 
 .onboarding__back {
-  min-height: 36px;
+  min-height: var(--control-height);
   align-self: center;
 }
 
@@ -191,7 +190,7 @@
 }
 
 .onboarding__switch button {
-  min-height: 32px;
+  min-height: var(--control-height);
   color: var(--ember);
   font-weight: var(--weight-strong);
 }
