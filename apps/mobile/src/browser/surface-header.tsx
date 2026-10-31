@@ -141,22 +141,22 @@ export function useSurfaceHeader(props: {
             </NativeMenu>
           )}
           {items.length === 0 ? null : (
-          <NativeMenu
-            accessibilityLabel="More"
-            accessibilityHint="Shows actions for this page"
-            onPresent={noop}
-            onSettle={noop}
-            options={items.map(({ destructive, disabled, id, label }) => ({
-              ...(destructive === true ? { destructive } : {}),
-              ...(disabled === true ? { disabled } : {}),
-              id,
-              label,
-              onPress: () => choose(id),
-            }))}
-            style={styles.more}
-          >
-            <Symbol name="ellipsis" tint={color.ember} />
-          </NativeMenu>
+            <NativeMenu
+              accessibilityLabel="More"
+              accessibilityHint="Shows actions for this page"
+              onPresent={noop}
+              onSettle={noop}
+              options={items.map(({ destructive, disabled, id, label }) => ({
+                ...(destructive === true ? { destructive } : {}),
+                ...(disabled === true ? { disabled } : {}),
+                id,
+                label,
+                onPress: () => choose(id),
+              }))}
+              style={styles.more}
+            >
+              <Symbol name="ellipsis" tint={color.ember} />
+            </NativeMenu>
           )}
         </View>
       ),
@@ -205,7 +205,14 @@ export function useSurfaceHeader(props: {
                 menu: {
                   items: [
                     ...choices.map(
-                      ({ acting, current, glyph, key, site, title }): NativeStackHeaderItemMenuAction => ({
+                      ({
+                        acting,
+                        current,
+                        glyph,
+                        key,
+                        site,
+                        title,
+                      }): NativeStackHeaderItemMenuAction => ({
                         ...(acting
                           ? { description: agentWorkingLabel }
                           : site === null

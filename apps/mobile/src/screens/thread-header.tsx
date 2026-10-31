@@ -111,9 +111,7 @@ export function useThreadHeader(props: {
   useLayoutEffect(() => {
     const attached = hostClient !== null && threadId !== null;
     navigation.setOptions({
-      ...(attached && header !== null && !savedSubtitle
-        ? {}
-        : browserHeaderActions(null)),
+      ...(attached && header !== null && !savedSubtitle ? {} : browserHeaderActions(null)),
       // The route table paints every header with the product's ground. A
       // transparent header has to be told to keep none, or nothing scrolls
       // under it and the blur has nothing to blur.

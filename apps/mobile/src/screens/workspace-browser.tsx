@@ -73,11 +73,7 @@ import {
   type Rect,
   type Size,
 } from "../layout.js";
-import {
-  ThreadPane,
-  type PageCompanion,
-  type ThreadHeaderState,
-} from "../thread/thread-pane.js";
+import { ThreadPane, type PageCompanion, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
 import { InsetView, Pane } from "../ui/pane.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
