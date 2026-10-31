@@ -57,19 +57,17 @@ describe.skipIf(!qualify).each([
       const events: { at: number; text: string }[] = [];
       let spoken = new Deferred<void>();
       let answeredAt = Number.POSITIVE_INFINITY;
-      const assistantStarts = new Map<string, number>();
+      let lastSpeechAt = 0;
       await page.exposeFunction("voiceEvent", (raw: string) => {
         const event = JSON.parse(raw) as {
           type?: string;
           turn?: { id?: string; role?: string; transcript?: string };
         };
-        if (event.type === "turn.created" && event.turn?.role === "assistant" && event.turn.id)
-          assistantStarts.set(event.turn.id, Date.now());
+        if (event.type === "output_transcript.added") lastSpeechAt = Date.now();
         if (event.type === "turn.done" && event.turn?.role === "assistant") {
           const text = event.turn.transcript ?? "";
           events.push({ at: Date.now(), text });
-          if (event.turn.id && (assistantStarts.get(event.turn.id) ?? 0) >= answeredAt)
-            spoken.resolve();
+          if (lastSpeechAt >= answeredAt) spoken.resolve();
         }
       });
       const offer = (await page.evaluate(`(async () => {
@@ -168,7 +166,10 @@ describe.skipIf(!qualify).each([
         answeredAt = answered;
         await call.answerCall(tool.id, true, scenario.reply);
         await withTimeout(spoken.promise, 25_000, {
-          timeoutError: () => new Error(`No spoken final reply for ${scenario.text}`),
+          timeoutError: () =>
+            new Error(
+              `No spoken final reply for ${scenario.text}; observed ${JSON.stringify(events.filter((event) => event.at >= before))}`,
+            ),
         });
         expect(events.at(-1)!.at).toBeGreaterThanOrEqual(answered);
         const finalAt = Date.now();
