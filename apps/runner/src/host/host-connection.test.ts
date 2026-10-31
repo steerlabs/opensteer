@@ -1,10 +1,12 @@
 import { dirname } from "node:path";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import type { RunnerConfig } from "@opensteer/config";
 import { createId, type EnvironmentId, type RunId, type ThreadId } from "@opensteer/core";
 import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { getIntegrationDefinition } from "@opensteer/integration-catalog";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
@@ -66,6 +68,30 @@ const projectContinuationIdentity = providerContinuationIdentityProjector(
   generateKeyPairSync("ed25519").privateKey,
 );
 
+async function connectedSocketPair() {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  let socket: WebSocket | undefined;
+  try {
+    await withTimeout(once(server, "listening"), 1_000, {
+      timeoutError: () => new Error("Runner sink fixture never began listening"),
+    });
+    const connected = once(server, "connection");
+    const address = server.address() as AddressInfo;
+    socket = new WebSocket(`ws://127.0.0.1:${address.port}`);
+    const [[peer]] = await withTimeout(Promise.all([connected, once(socket, "open")]), 2_000, {
+      timeoutError: () => new Error("Runner sink fixture never completed its WebSocket handshake"),
+    });
+    return { server, socket, peer: peer as WebSocket };
+  } catch (error) {
+    socket?.terminate();
+    for (const client of server.clients) client.terminate();
+    await withTimeout(new Promise<void>((resolve) => server.close(() => resolve())), 1_000, {
+      timeoutError: () => new Error("Runner sink fixture did not close after failed setup"),
+    });
+    throw error;
+  }
+}
+
 describe("CausallyOrderedRunnerSink", () => {
   it("reports an uncertain steer without converting it to a refusal", async () => {
     const messages: RunnerOperationalReport[] = [];
@@ -123,15 +149,7 @@ describe("CausallyOrderedRunnerSink", () => {
 
 describe("WebSocketMessageSink", () => {
   it("sends storage replies with only their nested fence and keeps ordinary reports fenced", async () => {
-    const server = new WebSocketServer({ port: 0 });
-    await new Promise<void>((resolve) => server.once("listening", resolve));
-    const address = server.address() as AddressInfo;
-    const peerConnected = new Promise<WebSocket>((resolve) => server.once("connection", resolve));
-    const socket = new WebSocket(`ws://127.0.0.1:${address.port}`);
-    const peer = await peerConnected;
-    if (socket.readyState !== WebSocket.OPEN) {
-      await new Promise<void>((resolve) => socket.once("open", resolve));
-    }
+    const { server, socket, peer } = await connectedSocketPair();
     const fence: RunnerConnectionFence = {
       bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
       connectionGeneration: 1,
@@ -154,8 +172,12 @@ describe("WebSocketMessageSink", () => {
       type: "runner.workspace.local.error",
     } satisfies RunnerOperationalReport;
     const receive = () =>
-      new Promise<unknown>((resolve) =>
-        peer.once("message", (frame) => resolve(JSON.parse(frame.toString()))),
+      withTimeout(
+        new Promise<unknown>((resolve) =>
+          peer.once("message", (frame) => resolve(JSON.parse(frame.toString()))),
+        ),
+        1_000,
+        { timeoutError: () => new Error("Runner sink never delivered its fenced report") },
       );
     try {
       const storageReceived = receive();
@@ -179,22 +201,18 @@ describe("WebSocketMessageSink", () => {
       sink.close();
       socket.terminate();
       peer.terminate();
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
+      await withTimeout(
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        ),
+        1_000,
+        { timeoutError: () => new Error("Runner sink fixture did not close") },
       );
     }
   });
 
   it("turns oversized model catalogs into per-profile errors without closing the socket", async () => {
-    const server = new WebSocketServer({ port: 0 });
-    await new Promise<void>((resolve) => server.once("listening", resolve));
-    const address = server.address() as AddressInfo;
-    const peerConnected = new Promise<WebSocket>((resolve) => server.once("connection", resolve));
-    const socket = new WebSocket(`ws://127.0.0.1:${address.port}`);
-    const peer = await peerConnected;
-    if (socket.readyState !== WebSocket.OPEN) {
-      await new Promise<void>((resolve) => socket.once("open", resolve));
-    }
+    const { server, socket, peer } = await connectedSocketPair();
     const fence: RunnerConnectionFence = {
       bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
       connectionGeneration: 1,
@@ -242,7 +260,9 @@ describe("WebSocketMessageSink", () => {
     );
     try {
       await sink.send(response);
-      const frame = await received;
+      const frame = await withTimeout(received, 1_000, {
+        timeoutError: () => new Error("Runner sink never delivered the bounded profile catalog"),
+      });
       expect(frame.byteLength).toBeLessThanOrEqual(1_024 * 1_024);
       const parsed = RunnerToHostMessageSchema.parse(JSON.parse(frame.toString("utf8")));
       if (parsed.type !== "runner.harness-catalog") throw new Error("Expected catalog response");
@@ -275,7 +295,9 @@ describe("WebSocketMessageSink", () => {
         peer.once("message", (aggregateFrame) => resolve(Buffer.from(aggregateFrame.toString()))),
       );
       await sink.send(aggregate);
-      const aggregateFrame = await aggregateReceived;
+      const aggregateFrame = await withTimeout(aggregateReceived, 1_000, {
+        timeoutError: () => new Error("Runner sink never delivered the bounded aggregate catalog"),
+      });
       expect(aggregateFrame.byteLength).toBeLessThanOrEqual(1_024 * 1_024);
       const aggregateParsed = RunnerToHostMessageSchema.parse(
         JSON.parse(aggregateFrame.toString("utf8")),
@@ -294,8 +316,12 @@ describe("WebSocketMessageSink", () => {
       sink.close();
       socket.terminate();
       peer.terminate();
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
+      await withTimeout(
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        ),
+        1_000,
+        { timeoutError: () => new Error("Runner sink fixture did not close") },
       );
     }
   });
