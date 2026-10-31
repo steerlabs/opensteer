@@ -12,7 +12,7 @@
  * over an empty thread.
  */
 
-export type ComposerAction = "send" | "stop";
+export type ComposerAction = "send" | "stop" | "voice";
 
 export type ComposerShape = "capsule" | "rounded";
 
@@ -41,6 +41,8 @@ export interface ComposerState {
   readonly text: string;
   /** The open Request is answered by choosing, so there is nothing to type. */
   readonly textHidden: boolean;
+  /** Voice can be started from this bar. */
+  readonly voice: boolean;
 }
 
 export interface ComposerView {
@@ -66,8 +68,10 @@ export function composerView(state: ComposerState): ComposerView {
   return {
     // One circle, never two. A run with something typed keeps Send, because the
     // typed thing is what the person came back for; Stop stays reachable in the
-    // bar's own menu for exactly that case. An archived thread has no circle at
-    // all: a control that can never be used is worse than no control.
+    // bar's own menu for exactly that case. With nothing to send and nothing
+    // running, the circle is voice where it exists, rather than a Send that
+    // cannot be pressed. An archived thread has no circle at all: a control that
+    // can never be used is worse than no control.
     action: state.readOnly
       ? null
       : state.textHidden
@@ -86,5 +90,7 @@ export function composerView(state: ComposerState): ComposerView {
 }
 
 function stateAction(state: ComposerState, hasContent: boolean): ComposerAction {
-  return state.running && !hasContent ? "stop" : "send";
+  if (hasContent) return "send";
+  if (state.running) return "stop";
+  return state.voice ? "voice" : "send";
 }

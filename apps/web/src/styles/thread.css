@@ -107,24 +107,12 @@
     box-shadow var(--duration-fast) var(--ease-out);
 }
 
-.input-surface--action:focus-within {
-  box-shadow: var(--edge-attention), var(--lift-float), var(--ring-ember);
-}
-
 .input-surface--medium {
   border-color: var(--amber-line);
 }
 
-.input-surface--medium:focus-within {
-  box-shadow: var(--edge-attention), var(--lift-float), var(--ring-amber);
-}
-
 .input-surface--high {
   border-color: var(--red-line);
-}
-
-.input-surface--high:focus-within {
-  box-shadow: var(--edge-attention), var(--lift-float), var(--ring-red);
 }
 
 /* The docked composer sheds its own frame; a hairline divider separates it. */
@@ -137,10 +125,6 @@
   background: transparent;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  box-shadow: none;
-}
-
-.input-surface--action .composer:focus-within {
   box-shadow: none;
 }
 
@@ -931,11 +915,6 @@ label.action-row input {
     box-shadow var(--duration-fast) var(--ease-out);
 }
 
-.composer:focus-within {
-  border-color: var(--ember-line);
-  box-shadow: var(--edge-plate), var(--lift-float), var(--ring-ember);
-}
-
 .composer__input {
   width: 100%;
   border: 0;
@@ -948,6 +927,8 @@ label.action-row input {
   max-height: 240px;
 }
 
+/* Typing needs no frame: the caret says where the words go, and a ring
+   around the whole composer would only say it louder. */
 .composer__input:focus {
   outline: none;
 }
