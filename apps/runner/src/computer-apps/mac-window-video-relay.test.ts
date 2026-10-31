@@ -15,6 +15,7 @@ import {
   DisplaySourceSchema,
   DisplayStreamIdSchema,
   encodeDisplayMediaFrame,
+  decodeDisplayMediaFrame,
   macWindowVideoParams,
   HostIntegrationsMacOwnerInputSchema,
   HostIntegrationsMacOwnerInputResetSchema,
@@ -52,6 +53,12 @@ it.each([
   "timeout",
   "readiness",
   "warm-readiness",
+  "unchanged-readiness",
+  "warm-unchanged-readiness",
+  "readiness-failed",
+  "readiness-revoked",
+  "previous-desktop-unchanged-readiness",
+  "previous-helper-unchanged-readiness",
 ] as const)(
   "negotiates %s before extended resolution and streams passive Mac media",
   async (peer) => {
@@ -64,6 +71,11 @@ it.each([
     const received: Buffer[] = [];
     const credits: unknown[] = [];
     let supported = true;
+    let readinessFailed = false;
+    let permissionRevoked = false;
+    const unchangedReadiness = peer.endsWith("unchanged-readiness");
+    const legacy = peer.startsWith("previous-");
+    let sendMedia = (_sequence: number) => {};
     let changeReadiness = () => {};
     let ownerEvent = (_source: typeof source) => {};
     const media = encodeDisplayMediaFrame(
@@ -95,6 +107,17 @@ it.each([
         if (request.url?.startsWith("/computer-use/display/")) {
           expect(request.url).toBe(`/computer-use/display/${attachmentToken}`);
           socket.on("message", (raw) => credits.push(JSON.parse(String(raw))));
+          sendMedia = (sequence) =>
+            socket.send(
+              encodeDisplayMediaFrame(
+                {
+                  ...decodeDisplayMediaFrame(media).header,
+                  sequence,
+                },
+                decodeDisplayMediaFrame(media).payload,
+              ),
+              { binary: true },
+            );
           socket.send(media, { binary: true });
           return;
         }
@@ -119,7 +142,9 @@ it.each([
             }),
           );
         changeReadiness = () => {
-          supported = false;
+          if (peer === "readiness-failed") readinessFailed = true;
+          else if (peer === "readiness-revoked") permissionRevoked = true;
+          else if (!unchangedReadiness) supported = false;
           socket.send(JSON.stringify({ kind: "event", event: "grants.changed" }));
         };
         socket.on("message", (raw) => {
@@ -134,19 +159,32 @@ it.each([
               }),
             );
           if (frame.method === "permissions.get") {
+            if (readinessFailed) {
+              socket.send(
+                JSON.stringify({
+                  kind: "response",
+                  id: frame.id,
+                  error: { code: "failed", message: "Readiness could not be verified" },
+                }),
+              );
+              return;
+            }
             answer({
               computerUseVersion: 2,
               ownerViewVersion: 3,
-              ...(supported &&
-              !["previous-desktop", "previous-helper"].includes(peer) &&
-              request.headers["x-opensteer-mac-owner-input"] === "2"
+              ...(supported && !legacy && request.headers["x-opensteer-mac-owner-input"] === "2"
                 ? { ownerInputVersion: 2 }
                 : {}),
-              permissions: { accessibility: "granted", screenRecording: "granted" },
+              permissions: {
+                accessibility: "granted",
+                screenRecording: permissionRevoked ? "denied" : "granted",
+              },
             });
           } else if (frame.method === "display.resolve") {
             const parsed = (
-              peer === "previous-desktop" ? oldResolve : macWindowVideoParams["display.resolve"]
+              peer.startsWith("previous-desktop")
+                ? oldResolve
+                : macWindowVideoParams["display.resolve"]
             ).safeParse(frame.params);
             if (!parsed.success) {
               socket.send(
@@ -162,9 +200,7 @@ it.each([
               target: {
                 kind: "mac-window",
                 bindingId,
-                ...(supported && !["previous-desktop", "previous-helper"].includes(peer)
-                  ? { editingVersion: 1 }
-                  : {}),
+                ...(supported && !legacy ? { editingVersion: 1 } : {}),
               },
             });
           } else if (frame.method === "display.start") answer({ attachmentToken });
@@ -188,7 +224,12 @@ it.each([
         socket.on("message", (raw, binary) => {
           expect(binary).toBe(true);
           received.push(Buffer.from(raw as Buffer));
-          socket.send(JSON.stringify({ type: "display.ack", sequence: 0 }));
+          socket.send(
+            JSON.stringify({
+              type: "display.ack",
+              sequence: decodeDisplayMediaFrame(Buffer.from(raw as Buffer)).header.sequence,
+            }),
+          );
         });
       });
       handler = new ComputerUseHandler({
@@ -223,9 +264,7 @@ it.each([
       expect(resolved?.target).toEqual({
         kind: "mac-window",
         bindingId,
-        ...(supported && !["previous-desktop", "previous-helper"].includes(peer)
-          ? { editingVersion: 1 }
-          : {}),
+        ...(supported && !legacy ? { editingVersion: 1 } : {}),
       });
       expect(requests.slice(0, 2).map((r) => r.method)).toEqual([
         "permissions.get",
@@ -233,9 +272,7 @@ it.each([
       ]);
       expect(requests.find((r) => r.method === "display.resolve")?.params).toEqual({
         source,
-        ...(supported && !["previous-desktop", "previous-helper"].includes(peer)
-          ? { ownerInputVersion: 2 }
-          : {}),
+        ...(supported && !legacy ? { ownerInputVersion: 2 } : {}),
       });
       relay.handle(
         HostIntegrationsDisplayStartSchema.parse({
@@ -325,6 +362,70 @@ it.each([
               reason: peer === "unsupported" ? "unsupported" : "unavailable",
             },
           });
+      }
+      if (unchangedReadiness || peer === "readiness-failed") {
+        if (peer === "warm-unchanged-readiness")
+          relay.handle(
+            HostIntegrationsDisplayDemandSchema.parse({
+              ...fence,
+              type: "host.integrations.display.demand",
+              display: "main",
+              streamId,
+              revision: 1,
+              sources: [],
+              warm: { sources: [source], durationMs: 1000 },
+            }),
+          );
+        const reads = () => requests.filter(({ method }) => method === "permissions.get").length;
+        const repeats = peer === "unchanged-readiness" ? 10 : 1;
+        for (let index = 0; index < repeats; index++) {
+          const before = reads();
+          changeReadiness();
+          await vi.waitFor(() =>
+            expect(reads(), "A grants hint must revalidate active or warm media").toBeGreaterThan(
+              before,
+            ),
+          );
+          if (peer === "readiness-failed") {
+            await vi.waitFor(() =>
+              expect(
+                events.some((event) => event.type === "runner.integrations.display.source-changed"),
+              ).toBe(true),
+            );
+            await vi.waitFor(() =>
+              expect(requests.some(({ method }) => method === "display.stop")).toBe(true),
+            );
+          } else {
+            await handler.permissions();
+            sendMedia(index + 1);
+            await vi.waitFor(() =>
+              expect(received, "The same media attachment must carry the next frame").toHaveLength(
+                index + 2,
+              ),
+            );
+            expect(
+              events.filter((event) => event.type === "runner.integrations.display.source-changed"),
+            ).toEqual([]);
+            expect(requests.filter(({ method }) => method === "display.stop")).toEqual([]);
+            expect(requests.filter(({ method }) => method === "display.start")).toHaveLength(1);
+          }
+        }
+      }
+      if (peer === "lost") {
+        expect(
+          events.some((event) => event.type === "runner.integrations.display.source-changed"),
+        ).toBe(true);
+      }
+      if (peer === "readiness-revoked") {
+        changeReadiness();
+        await vi.waitFor(() =>
+          expect(
+            events.some((event) => event.type === "runner.integrations.display.source-changed"),
+          ).toBe(true),
+        );
+        await vi.waitFor(() =>
+          expect(requests.some(({ method }) => method === "display.stop")).toBe(true),
+        );
       }
       if (peer === "readiness" || peer === "warm-readiness") {
         if (peer === "warm-readiness")

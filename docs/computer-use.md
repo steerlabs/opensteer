@@ -389,9 +389,12 @@ Owner opens pin process start stamp and exact verified window, independently of 
 current window. Owner inventory neither launches an app nor creates a session/lease;
 ownership and approved connection are checked before and after it. Admission requires
 matching signed and authenticated producer capabilities. The helper's negotiated version
-may survive idle disconnect, but bridge loss, producer replacement and grant-change
-notices invalidate readiness together. Versions and picker gates live in the protocol
-sources; do not send window-aware opens to older Macs.
+may survive idle disconnect. Grant-change notices require a fresh readiness check;
+unchanged grants and negotiated versions preserve live and warm owner media. Bridge
+loss discards readiness; actual changes and failed grant revalidation fence owner media. A reply
+superseded by a grant notice or connection loss cannot restore cached readiness.
+Versions and picker gates live in the protocol sources; do not send window-aware
+opens to older Macs.
 
 One native capture/encoder serves an exact binding. Starting/stopping resources still
 count toward capacity until OS completion; a late completion cannot publish or free an
