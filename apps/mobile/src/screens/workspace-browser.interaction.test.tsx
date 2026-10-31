@@ -42,6 +42,8 @@ const state = vi.hoisted(() => ({
   routes: [] as { name: string; params?: object }[],
   /** The pair's own measured surface, as its reserved-regions provider reports it. */
   pair: { height: 760, width: 390 },
+  /** What every laid-out view measures, once a test lays the screen out. */
+  layout: null as { height: number; width: number } | null,
   regions: [] as import("react-native-reserved-regions").ReservedRegion[],
   regionsReady: true,
   keyboard: false,
@@ -190,15 +192,20 @@ vi.mock("react-native", () => ({
   View: ({
     children,
     accessibilityLabel,
+    onLayout,
     style,
     testID,
   }: {
     children?: ReactNode;
     accessibilityLabel?: string;
+    onLayout?: (event: { nativeEvent: { layout: { height: number; width: number } } }) => void;
     style?: unknown;
     testID?: string;
   }) => (
     <div
+      ref={(node) => {
+        if (node && onLayout && state.layout) onLayout({ nativeEvent: { layout: state.layout } });
+      }}
       aria-label={accessibilityLabel}
       data-style={testID === undefined ? undefined : JSON.stringify(flatten(style))}
       data-testid={testID}
@@ -366,6 +373,7 @@ afterEach(() => {
   state.setParams.mockReset();
   state.routes = [];
   state.pair = { height: 760, width: 390 };
+  state.layout = null;
   state.regions = [];
   state.regionsReady = true;
   state.keyboard = false;
@@ -753,8 +761,29 @@ describe("mobile conversation pages", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
-  it("opens a new tab once and replaces the route with its returned id and address ready", async () => {
-    const openBrowserTab = vi.fn(async () => ({ sessionId: "chosen", tabId: "new-page" }));
+  it("opens a new tab without a size its page area cannot have, rather than failing it", async () => {
+    const openBrowserTab = vi.fn(async (..._args: unknown[]) => ({
+      sessionId: "chosen",
+      tabId: "new-page",
+    }));
+    state.layout = { height: 600, width: 8_000 };
+    state.hostClient = { openBrowserTab };
+    const { render } = setup({ sessionId: "chosen" });
+    state.snapshot = snapshot([session("chosen", child.id)]);
+    render();
+    await pressAsync(menu(), "New tab");
+    expect(openBrowserTab).toHaveBeenCalledExactlyOnceWith(
+      { sessionId: "chosen" },
+      { idempotencyKey: expect.any(String) },
+    );
+  });
+
+  it("opens a new tab once, at the page's size, and replaces the route with its returned id and address ready", async () => {
+    const openBrowserTab = vi
+      .fn(async (..._args: unknown[]) => ({ sessionId: "chosen", tabId: "new-page" }))
+      .mockRejectedValueOnce(new Error("The answer was lost."));
+    // A phone never resizes a page on its own, so the new one starts at the size it shows at.
+    state.layout = { height: 612.4, width: 389.6 };
     state.hostClient = {
       openBrowserTab,
       browserViewerState: () => liveFeed,
@@ -764,9 +793,15 @@ describe("mobile conversation pages", () => {
     state.snapshot = snapshot([session("chosen", child.id)]);
     render();
     await pressAsync(menu(), "New tab");
-    expect(openBrowserTab).toHaveBeenCalledExactlyOnceWith(
+    // A retry after a lost answer is the same request even if the phone turned.
+    state.layout = { height: 389.6, width: 612.4 };
+    render();
+    await pressAsync(menu(), "New tab");
+    expect(openBrowserTab).toHaveBeenCalledTimes(2);
+    expect(openBrowserTab.mock.calls[1]).toEqual(openBrowserTab.mock.calls[0]);
+    expect(openBrowserTab).toHaveBeenCalledWith(
       { sessionId: "chosen" },
-      { idempotencyKey: expect.any(String) },
+      { idempotencyKey: expect.any(String), viewport: { height: 612, width: 390 } },
     );
     expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
       type: "REPLACE",

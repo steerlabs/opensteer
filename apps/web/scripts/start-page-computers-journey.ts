@@ -21,6 +21,7 @@
  *  7. A narrow window wraps a folded line or cuts its words.
  *  8. A computer that is back does not unfold in its own place, or its apps
  *     do not open.
+ *  9. A search opens its page at a size other than the pane it is shown in.
  *
  * `result.json` and screenshots go to
  * OPENSTEER_START_PAGE_COMPUTERS_E2E_ARTIFACT_DIR, or
@@ -393,6 +394,58 @@ try {
       observed,
       observed.viewsAsked === 1 && observed.view?.includes("Keynote") === true,
       "its app did not open",
+    );
+    return observed;
+  });
+
+  await check("a search opens its page at the size of the pane it is shown in", async () => {
+    // A window that is not focused never resizes its page, so the size the
+    // New tab opens a page at is the size that page is shown at until then.
+    // Wide enough that the pane is above the page's floor width, so the two
+    // sizes are equal rather than scaled.
+    await page.setViewportSize({ height: 900, width: 1680 });
+    await openStartPage();
+    await page.evaluate(() => {
+      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+      const open = client.openBrowserTab.bind(client);
+      Reflect.set(
+        client,
+        "openBrowserTab",
+        (...args: Parameters<MockHostClient["openBrowserTab"]>) => {
+          Reflect.set(window, "openedAt", args[1]?.viewport ?? null);
+          return open(...args);
+        },
+      );
+    });
+    const field = page.getByRole("combobox", { name: "Search websites and apps" });
+    await field.fill("al di là Trattoria");
+    const content = await page
+      .locator(".start-page__column")
+      .evaluate((node) => node.getBoundingClientRect().height);
+    await field.press("Enter");
+    // The mock has two computers, so the New tab asks which one to browse on.
+    await page.locator(".start-page__refusal-actions button", { hasText: "Mac mini" }).click();
+    const stage = page.locator(".browser-stage");
+    await stage.waitFor();
+    const observed = {
+      content,
+      openedAt: await page.evaluate(() => Reflect.get(window, "openedAt") as unknown),
+      stage: await stage.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return { height: Math.round(rect.height), width: Math.round(rect.width) };
+      }),
+    };
+    await shot("8-search-opened.png");
+    await page.setViewportSize({ height: 900, width: 1280 });
+    expectThat(
+      observed,
+      observed.content < observed.stage.height && observed.stage.width >= 768,
+      "the New tab's results fill its pane, so the size it measures is not tested",
+    );
+    expectThat(
+      observed,
+      JSON.stringify(observed.openedAt) === JSON.stringify(observed.stage),
+      "the page opened at a size other than the pane it is shown in",
     );
     return observed;
   });

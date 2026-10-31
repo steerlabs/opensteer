@@ -769,6 +769,23 @@ run("Browser Sessions through a whole deployment", () => {
     const reload = site.seen.filter((entry) => entry.at === "load").at(-1);
     expect(reload).toMatchObject(followed);
 
+    // A tab opened into the running browser starts at its own view's size, not
+    // the size the browser last followed: an unfocused view never corrects it.
+    const tabView = { height: 640, width: 1_180 };
+    const loads = () => site.seen.filter((entry) => entry.at === "load");
+    const loadsBeforeTab = loads().length;
+    const opened = await stack.api["commands.dispatch"]({
+      type: "browser.tab.open",
+      sessionId,
+      url: `${site.origin}/sized`,
+      viewport: tabView,
+      idempotencyKey: randomUUID(),
+    });
+    expect(opened).toMatchObject({ ok: true, data: { browserStarted: false } });
+    await waitFor(async () => loads().length > loadsBeforeTab, 10_000);
+    const tabLoad = loads().at(-1);
+    expect(tabLoad).toMatchObject(tabView);
+
     await writeViewReport("relayed-chromium", {
       startView,
       firstLoad,
@@ -778,6 +795,7 @@ run("Browser Sessions through a whole deployment", () => {
       watchRefusal,
       watchResizes,
       afterWatch: { frame: afterWatchHeader, reload },
+      openedTab: { requested: tabView, load: tabLoad },
       pageSizeLog: site.seen,
     });
   }, 120_000);
