@@ -207,7 +207,7 @@ vi.mock("react-native", () => ({
         if (node && onLayout && state.layout) onLayout({ nativeEvent: { layout: state.layout } });
       }}
       aria-label={accessibilityLabel}
-      data-style={testID === undefined ? undefined : JSON.stringify(flatten(style))}
+      data-style={JSON.stringify(flatten(style))}
       data-testid={testID}
     >
       {children}
@@ -239,7 +239,9 @@ vi.mock("react-native-reserved-regions", async () => {
   };
 });
 vi.mock("react-native-safe-area-context", () => ({
-  SafeAreaProvider: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  SafeAreaProvider: ({ children, style }: { children?: ReactNode; style?: unknown }) => (
+    <div data-pane-style={JSON.stringify(flatten(style))}>{children}</div>
+  ),
   useSafeAreaFrame: () => ({ height: 844, width: 390, x: 0, y: 0 }),
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
@@ -282,6 +284,7 @@ vi.mock("../thread/composer-menu.js", () => ({
   NativeMenu: (props: {
     readonly options: readonly {
       readonly disabled?: boolean;
+      readonly selected?: boolean;
       readonly id: string;
       readonly label: string;
       readonly onPress: () => void;
@@ -289,7 +292,12 @@ vi.mock("../thread/composer-menu.js", () => ({
   }) => (
     <div aria-label="More">
       {props.options.map((option) => (
-        <button disabled={option.disabled} key={option.id} onClick={option.onPress}>
+        <button
+          aria-pressed={option.selected}
+          disabled={option.disabled}
+          key={option.id}
+          onClick={option.onPress}
+        >
           {option.label}
         </button>
       ))}
@@ -328,15 +336,17 @@ vi.mock("../thread/thread-pane.js", async () => {
   const { useContentInsets } =
     await vi.importActual<typeof import("../ui/pane.js")>("../ui/pane.js");
   return {
-    ThreadPane: (props: { sheet?: { expanded: boolean; onExpand: (open: boolean) => void } }) => {
+    ThreadPane: (props: { withPage?: { kind: string; onShowConversation?: () => void } }) => {
       const insets = useContentInsets();
       React.useEffect(() => {
         state.conversationMounts += 1;
       }, []);
       return (
         <section data-insets={JSON.stringify(insets)}>
-          {props.sheet?.expanded ? "Conversation open" : "Conversation folded"}
-          <button onClick={() => props.sheet?.onExpand(true)}>Open the conversation</button>
+          {props.withPage?.kind === "beside" ? "Conversation beside" : "Conversation docked"}
+          <button onClick={() => props.withPage?.onShowConversation?.()}>
+            Open the conversation
+          </button>
         </section>
       );
     },
@@ -1156,7 +1166,7 @@ describe("mobile conversation pages", () => {
     state.snapshot = snapshot([session("other", child.id), session("chosen", child.id)]);
     render();
     expect(container.textContent).toContain("Viewing chosen");
-    expect(container.textContent).toContain("Conversation folded");
+    expect(container.textContent).toContain("Conversation docked");
     state.snapshot = snapshot([session("other", child.id), session("chosen", child.id, "closed")]);
     render();
     expect(container.textContent).toContain("This tab was closed");
@@ -1181,6 +1191,99 @@ describe("mobile conversation pages", () => {
     ];
     press(container, "Back to tabs");
     expect(state.goBack).toHaveBeenCalledOnce();
+  });
+
+  it("offers the switcher only with siblings, marks current and acting choices, and replaces the route", () => {
+    const { render } = setup({ sessionId: "chosen", tabId: "page-1" });
+    state.snapshot = snapshot([session("chosen", child.id)]);
+    render();
+    const nativeItems = () => {
+      const options = state.setOptions.mock.calls
+        .map(
+          ([value]) =>
+            value as {
+              unstable_headerRightItems?: () => {
+                label: string;
+                menu?: {
+                  items: {
+                    label: string;
+                    description?: string;
+                    state?: string;
+                    icon?: object;
+                    onPress: () => void;
+                  }[];
+                };
+              }[];
+            },
+        )
+        .findLast((value) => value.unstable_headerRightItems !== undefined);
+      return options?.unstable_headerRightItems?.() ?? [];
+    };
+    expect(nativeItems().some((item) => item.label === "Tabs")).toBe(false);
+    const other = {
+      ...session("other", child.id),
+      tabs: [
+        { active: true, id: "page-2", title: "Second page", url: "https://second.example.com" },
+      ],
+    } as BrowserSessionSummary;
+    other.tabCatalog = {
+      generation: 1,
+      revision: 1,
+      tabs: [
+        {
+          ...other.tabs[0]!,
+          order: 0,
+          openerId: null,
+          iconRef: null,
+          availability: "ready",
+          documentId: null,
+          site: "second.example.com",
+          occupants: [
+            {
+              threadId: "thread-parent",
+              home: false,
+              holding: true,
+              acting: true,
+              lastActiveAt: "2026-10-13T00:00:00.000Z",
+            },
+          ],
+        },
+      ],
+    } as unknown as NonNullable<BrowserSessionSummary["tabCatalog"]>;
+
+    state.snapshot = snapshot([session("chosen", child.id), other]);
+    render();
+    const choices = nativeItems().find((item) => item.label === "Tabs")?.menu?.items;
+    expect(choices).toEqual([
+      expect.objectContaining({
+        label: "Page",
+        state: "on",
+        icon: { type: "sfSymbol", name: "globe" },
+        description: "example.com",
+      }),
+      expect.objectContaining({ label: "Second page", state: "off", description: "Agent working" }),
+      expect.objectContaining({ label: "All Tabs" }),
+    ]);
+    const android = menu();
+    expect(android.querySelector('button[aria-pressed="true"]')?.textContent).toBe("Page");
+    expect(android.textContent).toContain("Second page · Agent working");
+    act(() => choices![1]!.onPress());
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      type: "REPLACE",
+      name: "WorkspaceBrowser",
+      params: {
+        deploymentId: "deployment-a",
+        threadId: "thread-parent",
+        sessionId: "other",
+        tabId: "page-2",
+      },
+    });
+    act(() => choices![2]!.onPress());
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      type: "REPLACE",
+      name: "WorkspaceBrowser",
+      params: { deploymentId: "deployment-a", threadId: "thread-parent" },
+    });
   });
 
   it("refreshes on focus and keeps the exact view while other browsers arrive", () => {
@@ -1215,8 +1318,7 @@ describe("mobile conversation pages", () => {
 /*
  * A page beside its conversation as the window changes shape. What can go
  * wrong: the page's live channel or the conversation remounts, so a draft or
- * stream is lost; the reader's own choice to keep the conversation folded is
- * overwritten by a wider window; a geometry change navigates; the keyboard
+ * stream is lost; a geometry change navigates; the keyboard
  * lifts the pane nobody is typing in; tabletop's fixed halves leave the
  * conversation's composer no room once the keyboard is up; a fold that has
  * not been measured yet is straddled.
@@ -1244,16 +1346,16 @@ describe("a page beside its conversation", () => {
     return pair?.dataset["testid"]?.slice("pair-".length) ?? "";
   }
 
-  it("keeps the page and the conversation mounted, and the reader's fold, as the pair changes shape", () => {
+  it("keeps the page and the conversation mounted, as the pair changes shape", () => {
     const { container, render } = openPage();
     expect(arrangement(container)).toBe("stacked");
-    expect(container.textContent).toContain("Conversation folded");
+    expect(container.textContent).toContain("Conversation docked");
 
     state.pair = { height: 1000, width: 744 };
     render();
     expect(arrangement(container)).toBe("side");
     // Beside the page there is room for all of it: the conversation is open.
-    expect(container.textContent).toContain("Conversation open");
+    expect(container.textContent).toContain("Conversation beside");
 
     state.pair = { height: 900, width: 900 };
     state.regions = [
@@ -1267,8 +1369,7 @@ describe("a page beside its conversation", () => {
     state.regions = [];
     render();
     expect(arrangement(container)).toBe("stacked");
-    // Back to the reader's own choice, which was to keep it folded.
-    expect(container.textContent).toContain("Conversation folded");
+    expect(container.textContent).toContain("Conversation docked");
 
     expect(state.conversationMounts).toBe(1);
     expect(state.pageMounts).toBe(1);
@@ -1276,15 +1377,40 @@ describe("a page beside its conversation", () => {
     expect(state.goBack).not.toHaveBeenCalled();
   });
 
-  it("returns to the reader's opened conversation after a side-by-side spell", () => {
-    const { container, render } = openPage();
-    press(container, "Open the conversation");
-    state.pair = { height: 1000, width: 744 };
+  it("hides the dock while typing into the stacked page and keeps it mounted", () => {
+    const { container, render } = openPage(true);
+    state.keyboard = true;
     render();
-    state.pair = { height: 760, width: 390 };
-    render();
-    expect(container.textContent).toContain("Conversation open");
+    expect(slot(container, "conversation").style).toMatchObject({ display: "none" });
     expect(state.conversationMounts).toBe(1);
+    expect(state.pageMounts).toBe(1);
+  });
+
+  it("gives the stacked page definite space and sizes the dock and its Pane by content", () => {
+    const { container } = openPage();
+    expect(slot(container, "page").style).toMatchObject({ flex: 1 });
+    expect(slot(container, "conversation").style).toMatchObject({ flexShrink: 0 });
+    for (const name of ["page", "conversation"] as const) {
+      expect(slot(container, name).style["position"]).not.toBe("absolute");
+    }
+    const pane = container.querySelector<HTMLElement>(
+      '[data-testid="conversation-slot"] > [data-pane-style]',
+    );
+    expect(JSON.parse(pane?.dataset["paneStyle"] ?? "null")).toMatchObject({ flex: 0 });
+  });
+
+  it("opens the conversation past its intervening page and grid", () => {
+    const { container } = openPage();
+    state.routes = [
+      { name: "Thread", params: { threadId: "thread-parent" } },
+      { name: "WorkspaceBrowser", params: { threadId: "thread-parent" } },
+      {
+        name: "WorkspaceBrowser",
+        params: { threadId: "thread-parent", sessionId: "browser-child", tabId: "page-1" },
+      },
+    ];
+    press(container, "Open the conversation");
+    expect(state.dispatch).toHaveBeenCalledWith({ type: "POP", count: 2 });
   });
 
   it("stays stacked until the pair's own surface is measured", () => {
@@ -1538,7 +1664,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     state.snapshot = snapshot([session("chosen", child.id)]);
     render();
     expect(container.textContent).toContain("Viewing chosen");
-    expect(container.textContent).not.toContain("Conversation folded");
+    expect(container.textContent).not.toContain("Conversation docked");
     expect(container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
     expect(state.conversationMounts).toBe(0);
   });

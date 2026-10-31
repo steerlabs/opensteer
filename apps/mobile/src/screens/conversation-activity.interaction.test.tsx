@@ -517,7 +517,7 @@ describe("the conversation's title", () => {
   const chatHeader: ThreadHeaderState = {
     canRetry: false,
     connectionLabel: null,
-    surfaceCount: 0,
+    surface: null,
     surfacesActing: false,
     task: null,
     title: "Chat",

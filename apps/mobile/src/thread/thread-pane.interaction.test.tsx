@@ -18,6 +18,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import {
   AssignmentSummarySchema,
+  BrowserPageContentPartSchema,
   createId,
   RunIdSchema,
   ThreadIdSchema,
@@ -170,8 +171,10 @@ vi.mock("react-native", async () => {
       readonly children?: ReactNode | ((state: { pressed: boolean }) => ReactNode);
       readonly disabled?: boolean;
       readonly onPress?: () => void;
+      readonly testID?: string;
     }) => (
       <button
+        data-testid={props.testID}
         aria-description={props.accessibilityHint}
         aria-expanded={props.accessibilityState?.expanded}
         aria-label={props.accessibilityLabel}
@@ -1013,6 +1016,7 @@ async function mount(
     readonly requestId?: string;
     /** Draws the screen's native bar over the pane, as the Thread screen does. */
     readonly header?: boolean;
+    readonly withPage?: import("./thread-pane.js").PageCompanion;
   } = {},
 ) {
   const drafts = createThreadDraftStore({
@@ -1035,6 +1039,7 @@ async function mount(
       onAnchorReleased={() => undefined}
       onHeader={onHeader}
       onOpenThread={() => undefined}
+      withPage={options.withPage}
       requestId={options.requestId ?? null}
       threadId={threadId}
     />
@@ -1115,7 +1120,7 @@ function sent(dispatch: ReturnType<typeof fakeHost>["dispatch"]): readonly strin
 
 const queueControls = ["Queued", "Paused", "Resume", "Steer", "Up next", "Edit", "Remove"] as const;
 
-it("counts each tab in the Tabs control, which always opens the collection, and the preview opens the tab", async () => {
+it("opens the newest surface from the glyph as tabs change", async () => {
   const source = snapshotFor({ entries: [], run: null, threadId: workId, machines: [] });
   const template = base.browserSessions.find(
     (session) => session.state === "ready" && session.tabs.length > 0,
@@ -1133,38 +1138,96 @@ it("counts each tab in the Tabs control, which always opens the collection, and 
   const { tabCatalog: _catalog, ...withoutCatalog } = session;
   const host = fakeHost({ ...source, browserSessions: [withoutCatalog] });
   const { container, headers } = await mount(host, workId, { header: true });
-  expect(headers.at(-1)).toMatchObject({ surfaceCount: 2, surfacesActing: false });
-  await press(container, "Tabs");
-  expect(harness.dispatch).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      name: "WorkspaceBrowser",
-      params: { deploymentId, threadId: workId },
-    }),
-  );
-  host.move({ ...source, browserSessions: [{ ...withoutCatalog, tabs: [second] }] });
-  await settle();
-  expect(headers.at(-1)?.surfaceCount).toBe(1);
-  // Even one tab opens the collection from the bar: the bar never jumps past it.
-  await press(container, "Tabs");
-  expect(harness.dispatch).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      name: "WorkspaceBrowser",
-      params: { deploymentId, threadId: workId },
-    }),
-  );
-  // The preview above the composer is the way straight to the tab.
-  const preview = container.querySelector<HTMLButtonElement>(
-    'button[aria-description="Opens this tab"]',
-  );
-  expect(preview).not.toBeNull();
-  await act(async () => preview!.click());
-  await settle();
+  expect(headers.at(-1)).toMatchObject({ surface: "globe", surfacesActing: false });
+  await press(container, "Page");
   expect(harness.dispatch).toHaveBeenLastCalledWith(
     expect.objectContaining({
       name: "WorkspaceBrowser",
       params: { deploymentId, threadId: workId, sessionId: session.id, tabId: second.id },
     }),
   );
+  const latestPlace = vi.spyOn(host.client, "latestPlaceOfThread").mockReturnValue({
+    destination: { kind: "browser", sessionId: session.id, tabId: first.id },
+    placeKey: "first",
+    runId: null,
+    title: first.title,
+    site: null,
+  });
+  await press(container, "Page");
+  expect(harness.dispatch).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      name: "WorkspaceBrowser",
+      params: { deploymentId, threadId: workId, sessionId: session.id, tabId: first.id },
+    }),
+  );
+  latestPlace.mockReturnValue(null);
+  host.move({ ...source, browserSessions: [{ ...withoutCatalog, tabs: [second] }] });
+  await settle();
+  expect(headers.at(-1)?.surface).toBe("globe");
+  // A remaining tab is still opened directly.
+  await press(container, "Page");
+  expect(harness.dispatch).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      name: "WorkspaceBrowser",
+      params: { deploymentId, threadId: workId, sessionId: session.id, tabId: second.id },
+    }),
+  );
+});
+
+describe("the conversation docked under a page", () => {
+  it("shows the latest reply, full approval and included page without transcript rows", async () => {
+    const runId = createId("run");
+    const onShowConversation = vi.fn();
+    const page = BrowserPageContentPartSchema.parse({
+      type: "browser-page",
+      sessionId: base.browserSessions[0]!.id,
+      tabId: base.browserSessions[0]!.tabs[0]!.id,
+      title: "Research page",
+      url: "https://example.com",
+    });
+    const request = { ...approval(runId, "Review this approval"), originatingThreadId: workId };
+    const source = snapshotFor({
+      entries: [said("An earlier message", null), wrote("Latest answer", runId, workId)],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost(source);
+    const { container } = await mount(host, workId, {
+      withPage: { kind: "docked", page, onShowConversation },
+    });
+    expect(rows(container)).toEqual([]);
+    expect(text(container)).not.toContain("An earlier message");
+    expect(container.querySelector('[data-testid="latest-reply"]')?.textContent).toContain(
+      "Latest answer",
+    );
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="latest-reply"]')!.click(),
+    );
+    expect(onShowConversation).toHaveBeenCalledOnce();
+    host.move(
+      snapshotFor({
+        entries: source.transcripts[workId]!,
+        requests: [request],
+        run: { id: runId, status: "waiting" },
+        threadId: workId,
+      }),
+    );
+    await settle();
+    expect(text(container)).toContain("Review this approval");
+    // The standard RequestCard is mounted, rather than the removed folded summary.
+    expect(container.querySelector('[aria-label="Docked request"]')?.textContent).toBe(
+      "Review this approval",
+    );
+    expect(text(container)).toContain("Research page");
+    await type(container, "Message", "Explain this");
+    await press(container, "Send message");
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: expect.arrayContaining([page]),
+      }),
+    );
+  });
 });
 
 it("does not render the pane for another thread's durable event or streaming append", async () => {
