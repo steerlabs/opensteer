@@ -15,6 +15,8 @@ import {
 // size. A joining viewer's cache replay is bounded by bytes alone, so catching
 // up costs round trips per megabyte rather than per frame.
 export const displayViewerCreditFrames = 4;
+// Opted-in viewers use ACK age for live latency; this cap only bounds metadata/decoder queues.
+export const displayViewerWindowFrames = 60;
 // A byte credit also bounds viewers receiving unusually large frames.
 export const displayViewerCreditBytes = 1 * 1_024 * 1_024;
 // The phone must drop rather than accumulate media behind its data socket.
@@ -298,6 +300,8 @@ export const DisplayViewerStateSchema = z.strictObject({
    * plays stale pictures.
    */
   replayThrough: DisplaySequenceSchema.optional(),
+  /** The viewer opted into byte/ACK-age credit with `displayWindow=1`. */
+  displayWindow: z.literal(1).optional(),
   /** The producer applies editing input; projected only to viewers that connected with `editing=1`. */
   editingVersion: z.literal(1).optional(),
   /** Requires the producer capability and viewer editing=1&displayCut=1. */

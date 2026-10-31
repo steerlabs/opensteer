@@ -133,6 +133,9 @@ export function registerComputerUseDisplayRoutes(
     });
     void (async () => {
       attachment = await options.hub.attachViewer(source, login.user.id, socket, {
+        displayWindow:
+          new URL(request.url ?? "", "http://host.invalid").searchParams.get("displayWindow") ===
+          "1",
         displayCut:
           new URL(request.url ?? "", "http://host.invalid").searchParams.get("displayCut") === "1",
         sharedInput:
