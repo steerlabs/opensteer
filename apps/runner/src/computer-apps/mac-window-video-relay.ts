@@ -66,6 +66,7 @@ export class MacWindowVideoRelay {
   readonly #streams = new Map<DisplayStreamId, Entry>();
   readonly #detach: () => void;
   readonly #detachReadiness: () => void;
+  readonly #detachGrants: () => void;
   #demandAccepted: Promise<void> = Promise.resolve();
   #closed = false;
   readonly #log: (event: string, fields: Readonly<Record<string, string>>) => void;
@@ -79,18 +80,16 @@ export class MacWindowVideoRelay {
     this.#log = log;
     this.#transport = transport;
     this.#emit = emit;
-    this.#detachReadiness = computerUse.onGrantsChanged(() => {
-      for (const entry of this.#streams.values()) {
-        const owners = entry.sources.filter((source) => source.kind === "owner-view");
-        if (!owners.length) continue;
-        for (const source of owners)
-          void this.#emit({
-            type: "runner.integrations.display.source-changed",
-            streamId: entry.id,
-            source,
-          }).catch(() => undefined);
-        this.#close(entry, "readiness-changed");
-      }
+    this.#detachReadiness = computerUse.onReadinessChanged((reason) =>
+      this.#invalidateOwners(reason),
+    );
+    this.#detachGrants = computerUse.onGrantsChanged(() => {
+      if (
+        [...this.#streams.values()].some((entry) =>
+          entry.sources.some((source) => source.kind === "owner-view"),
+        )
+      )
+        void computerUse.revalidateReadiness();
     });
     this.#detach = computerUse.onVideoEvent((event) => {
       const entry = this.#streams.get(event.params.streamId);
@@ -413,6 +412,20 @@ export class MacWindowVideoRelay {
     });
   }
 
+  #invalidateOwners(reason: string): void {
+    for (const entry of this.#streams.values()) {
+      const owners = entry.sources.filter((source) => source.kind === "owner-view");
+      if (!owners.length) continue;
+      for (const source of owners)
+        void this.#emit({
+          type: "runner.integrations.display.source-changed",
+          streamId: entry.id,
+          source,
+        }).catch(() => undefined);
+      this.#close(entry, reason);
+    }
+  }
+
   #fail(entry: Entry, reason: "capacity" | "capture-failed" | "capture-timeout"): void {
     if (entry.closed || entry.terminal) return;
     this.#ended(entry, reason);
@@ -462,6 +475,7 @@ export class MacWindowVideoRelay {
     this.#closed = true;
     this.#detach();
     this.#detachReadiness();
+    this.#detachGrants();
     for (const entry of this.#streams.values()) this.#close(entry);
   }
 }
