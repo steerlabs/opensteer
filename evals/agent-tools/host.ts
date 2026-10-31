@@ -10,7 +10,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { createId, type Thread, type Workspace } from "@opensteer/core";
+import { createId, RunnerCapabilitySchema, type Thread, type Workspace } from "@opensteer/core";
 import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import { AgentToolsMcpService } from "../../apps/host/src/agents/agent-tools-mcp-service.js";
 import { AgentControlTokenService } from "../../apps/host/src/agents/agent-control-service.js";
@@ -88,7 +88,7 @@ export async function startFakeHost(testCase: EvalCase) {
     allowMainChatRunScreenShow: true,
     publicUrl: url,
     agentControl: { handle: async () => unavailable() },
-    runnerCapabilities: async () => ["screen-show-v1"],
+    runnerCapabilities: async () => RunnerCapabilitySchema.options,
     store: {
       getThreadForOwner: async () =>
         ({

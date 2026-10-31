@@ -1982,16 +1982,19 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
-  it("starts a new Runner against a previous Host without the optional computer tool", async () => {
-    const fixture = await setup("previous-host");
-    try {
-      const session = await fixture.adapter.startSession(fixture.context);
-      expect(session.providerSessionReference).toBe("codex-thread-1");
-      await session.stop();
-    } finally {
-      await fixture.adapter.close();
-    }
-  });
+  it.each(["previous-host", "screen-unavailable"])(
+    "starts against %s without negotiated tools",
+    async (scenario) => {
+      const fixture = await setup(scenario);
+      try {
+        const session = await fixture.adapter.startSession(fixture.context);
+        expect(session.providerSessionReference).toBe("codex-thread-1");
+        await session.stop();
+      } finally {
+        await fixture.adapter.close();
+      }
+    },
+  );
 
   it.each(["mcp-extra-tool", "mcp-missing-required-tool"])(
     "rejects %s despite optional computer negotiation",

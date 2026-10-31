@@ -3512,10 +3512,12 @@ async function assertCodexMcpBoundary(
         throw protocolError(`Opensteer MCP server ${name} exposed unsupported resources`);
       }
       const actualTools = Object.keys(tools);
-      // Older Hosts do not advertise the negotiated computer REPL. Other
-      // gateway operations and the agent-control server remain required.
+      // Negotiated tools can be absent on an older Host or ineligible Run.
+      // All other operations and both managed servers remain required.
       const requiredTools = [...expectedTools].filter(
-        (tool) => name !== "opensteer_integrations" || tool !== "computer",
+        (tool) =>
+          (name !== "opensteer_integrations" || tool !== "computer") &&
+          (name !== "opensteer" || tool !== "screen_show"),
       );
       const missingTools = requiredTools.filter((tool) => !actualTools.includes(tool));
       const extraTools = actualTools.filter((tool) => !expectedTools.has(tool));
