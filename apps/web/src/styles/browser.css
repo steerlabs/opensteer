@@ -35,13 +35,14 @@
   container: browser-view / inline-size;
 }
 
-.browser-view > .browser-stage {
+/* The New tab stands where its page will, so the size it opens a page at is
+   the size that page is shown at, focused or not. */
+.browser-view > .browser-stage,
+.browser-view > .start-page {
   flex: 1;
 }
 
 /* Start, ended and scope notices: the message alone. */
-
-/* Start below the future browser chrome, before a page exists to measure. */
 
 /* A page's or app's own actions, behind one ⋯. */
 .surface-menu.icon-btn {
