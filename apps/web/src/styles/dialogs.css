@@ -16,10 +16,12 @@
   );
   overflow-y: auto;
   padding: var(--space-6);
-  background: var(--surface-raised);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-overlay);
+  background: var(--sheen) var(--fill-float);
+  -webkit-backdrop-filter: var(--blur-float);
+  backdrop-filter: var(--blur-float);
+  box-shadow: var(--edge-plate), var(--lift-float);
   animation: rise-in var(--duration-fast) var(--ease-out);
 }
 
@@ -72,10 +74,12 @@
   max-height: min(84dvh, 44rem);
   display: flex;
   flex-direction: column;
-  background: var(--surface-elevated);
-  border: 1px solid var(--line-strong);
+  /* A dialog stands on a scrim that already dims the page, so it floats but
+     stays opaque: glass behind a scrim would only blur shade. */
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-overlay);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate), var(--lift-float);
   animation: dialog-in var(--duration-med) var(--ease-out);
   overflow: hidden;
 }
@@ -157,7 +161,7 @@
   padding: var(--space-10) var(--space-12);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--surface-inset);
+  background: var(--surface-code);
   color: var(--muted);
   font-size: var(--text-sm);
   line-height: 1.45;
@@ -269,10 +273,12 @@
   gap: var(--space-10);
   max-width: min(30rem, 100%);
   padding: var(--space-8) var(--space-8) var(--space-8) var(--space-14);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
-  box-shadow: var(--shadow-overlay);
+  background: var(--sheen) var(--fill-float);
+  -webkit-backdrop-filter: var(--blur-float);
+  backdrop-filter: var(--blur-float);
+  box-shadow: var(--edge-plate), var(--lift-float);
   color: var(--text-soft);
   font-size: var(--text-lg);
   line-height: 1.45;

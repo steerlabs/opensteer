@@ -28,13 +28,14 @@
 .transcript--conversation .msg--user {
   max-width: min(82%, 560px);
   margin: var(--space-4) 0;
-  padding: var(--space-12) var(--space-16);
-  background: var(--ember);
-  border-color: transparent;
-  border-radius: 22px 22px 6px 22px;
+  padding: var(--space-8) var(--space-14);
+  border-color: var(--rim-accent);
+  border-radius: 18px 18px 5px 18px;
+  background: var(--sheen-accent) var(--fill-accent);
+  box-shadow: var(--edge-accent);
   color: var(--ink-on-ember);
-  font-size: var(--text-root);
-  line-height: 1.6;
+  font-size: var(--text-2xl);
+  line-height: 1.55;
 }
 
 .transcript--conversation .msg--user::selection {
@@ -61,16 +62,17 @@
 }
 
 .reply__bubble {
-  padding: var(--space-12) var(--space-16);
-  border: 1px solid transparent;
-  border-radius: 22px 22px 22px 6px;
-  background: var(--surface-elevated);
+  padding: var(--space-8) var(--space-14);
+  border: 1px solid var(--rim-plate);
+  border-radius: 18px 18px 18px 5px;
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   overflow-wrap: anywhere;
 }
 
 .reply__bubble .md-prose {
-  font-size: var(--text-root);
-  line-height: 1.65;
+  font-size: var(--text-2xl);
+  line-height: 1.6;
 }
 
 .reply__bubble .msg--assistant__body {
@@ -91,10 +93,12 @@
   display: flex;
   gap: var(--space-2);
   padding: 3px;
-  border: 1px solid var(--line-strong);
+  /* One per message, so it floats without glass: a blur per reply would cost
+     a compositing layer for every bubble on screen. */
+  border: 1px solid var(--rim-plate);
   border-radius: 10px;
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-raised);
+  background: var(--sheen) var(--surface-raised);
+  box-shadow: var(--edge-plate), var(--lift-float);
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--duration-fast) var(--ease-out);
@@ -396,9 +400,7 @@ a.update-line__source:hover {
 
 .composer--conversation {
   container: conversation-composer / inline-size;
-  border-radius: 28px;
-  background: var(--surface);
-  box-shadow: 0 4px 24px rgb(0 0 0 / 12%);
+  border-radius: 24px;
 }
 
 /* One line — Attach, the words, the controls — while what the field shows
@@ -409,15 +411,18 @@ a.update-line__source:hover {
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  padding: var(--space-6);
+  padding: var(--space-4) var(--space-6);
 }
 
+/* A line the height of the toolbar's targets, so words and controls share
+   one centre. Touch raises both through --control-height and the composer's
+   own target size. */
 .composer--conversation .composer__input {
   flex: 1 0 33%;
   min-width: 0;
-  padding: var(--space-10) var(--space-4);
-  font-size: var(--text-root);
-  min-height: 44px;
+  min-height: 36px;
+  padding: var(--space-8) var(--space-6);
+  font-size: var(--text-2xl);
 }
 
 .composer--conversation .composer__footer {
@@ -483,9 +488,16 @@ a.update-line__source:hover {
   }
 }
 
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .composer--conversation .composer__input {
+    min-height: var(--touch-target);
     font-size: 16px;
+  }
+
+  /* A phone is held further from the eye than its pixel density suggests. */
+  .transcript--conversation .msg--user,
+  .reply__bubble .md-prose {
+    font-size: var(--text-root);
   }
 
   .message-disclosure {

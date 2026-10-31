@@ -12,9 +12,10 @@
    output stays bare. */
 .msg--user,
 .input-card {
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: 15px 15px 5px 15px;
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   color: var(--text);
   font-size: var(--text-2xl);
   line-height: 1.55;

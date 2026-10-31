@@ -24,7 +24,7 @@
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: 6px 6px 6px 0;
+  padding: var(--sheet-gutter) var(--sheet-gutter) var(--sheet-gutter) 0;
 }
 
 .workspace__middle[hidden] {
@@ -32,7 +32,7 @@
 }
 
 .app-shell--sidebar-collapsed .workspace__middle {
-  padding-left: 6px;
+  padding-left: var(--sheet-gutter);
 }
 
 .workspace__conversation {
@@ -42,7 +42,29 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--bg);
+  background: var(--ground);
+}
+
+/* What a person is working in is the one sheet raised beside the sidebar:
+   the place in the middle when there is one (below), the conversation when it
+   stands alone. A conversation docked beside the place stays on the ground. */
+@media (min-width: 701px) {
+  .workspace--talk {
+    padding: var(--sheet-gutter) var(--sheet-gutter)
+      calc(var(--sheet-gutter) + var(--keyboard-inset, 0px)) 0;
+  }
+
+  .app-shell--sidebar-collapsed .workspace--talk {
+    padding-left: var(--sheet-gutter);
+  }
+
+  .workspace--talk .workspace__conversation {
+    --ground: var(--fill-sheet);
+    overflow: clip;
+    border: 1px solid var(--rim-sheet);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--edge-sheet);
+  }
 }
 
 /* The page takes its final size in one layout; only conversation contents glide. */
@@ -80,6 +102,7 @@
 /* ---- The place: the one raised object ---- */
 
 .place {
+  --ground: var(--fill-sheet);
   position: relative;
   display: flex;
   flex: 1;
@@ -87,10 +110,10 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-sheet);
   border-radius: var(--radius-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-raised);
+  background: var(--ground);
+  box-shadow: var(--edge-sheet);
 }
 
 .place > .browser-view,
@@ -370,7 +393,7 @@
 /* ---- Sidebar ---- */
 
 .sidebar {
-  background: var(--bg);
+  background: var(--ground);
   border-right: 0;
 }
 
@@ -559,7 +582,7 @@
   flex: 1;
   min-width: 0;
   color: var(--muted);
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
   font-weight: var(--weight-strong);
   letter-spacing: 0.005em;
 }
@@ -728,19 +751,25 @@ button.side-needs:hover {
   scrollbar-color: rgb(255 255 255 / 18%) transparent;
 }
 
-/* Rows: the place in the middle is the active tab, in the place card's own
-   material; one outline for the conversation beside it; hover links a task to
-   its tabs and back. */
+/* Rows: the open sheet's row is a plate — the active tab when the place is
+   in the middle, Chat or the task when the conversation is; one outline for
+   the conversation docked beside the place; hover links a task to its tabs
+   and back. Every row keeps a 1px rim, transparent at rest, so a state never
+   moves a row by a pixel. */
 .side-home,
 .side-task,
 .side-tab,
 .side-new {
-  --ring-bg: var(--bg);
+  --ring-bg: var(--ground);
   position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
 }
 
 .side-home {
@@ -752,43 +781,34 @@ button.side-needs:hover {
 .side-tab:hover,
 .side-result.is-selected {
   --ring-bg: #131313;
-  background: rgb(255 255 255 / 4%);
+  background-color: var(--fill-quiet);
 }
 
 .side-task.is-match,
 .side-tab.is-match {
   --ring-bg: #0f0f0f;
-  background: rgb(255 255 255 / 2.6%);
+  background-color: rgb(var(--light) / 2.6%);
 }
 
 .side-home.is-filled,
-.side-task.is-filled {
-  --ring-bg: var(--surface-raised);
-  background: var(--surface-raised);
+.side-task.is-filled,
+.side-tab.is-active,
+.side-tab.is-active:hover {
+  --ring-bg: #161616;
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
 }
 
 /* Tabs as a browser's vertical tabs: inactive ones are flat and hover only
-   washes one, so it never outshines the active tab. The active tab is a piece
-   of the place card — its border and soft lift — filled one step up, because
-   the card's own --surface sits a bare 3% above the sidebar and a row that
-   small would read as an outline, the open conversation's mark. */
+   washes one, so it never outshines the active tab. */
 .side-tab {
   -webkit-touch-callout: none;
 }
 
-.side-tab.is-active,
-.side-tab.is-active:hover {
-  --ring-bg: var(--surface-raised);
-  background: var(--surface-raised);
-  box-shadow:
-    inset 0 0 0 1px var(--line),
-    0 1px 2px rgb(0 0 0 / 45%),
-    0 4px 14px rgb(0 0 0 / 30%);
-}
-
 .side-home.is-open,
 .side-task.is-open {
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  border-color: var(--rim-selected);
 }
 
 .side-home__main,
@@ -800,8 +820,8 @@ button.side-needs:hover {
   align-items: center;
   gap: var(--space-10);
   min-width: 0;
-  min-height: 36px;
-  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-10);
+  min-height: var(--control-height);
+  padding: var(--space-6) var(--space-6) var(--space-6) var(--space-8);
   border-radius: var(--radius-sm);
   color: var(--text-soft);
   text-align: left;
@@ -884,16 +904,16 @@ button.side-needs:hover {
   color: var(--text-soft);
 }
 
-/* The one second line: what the task asks of you, in amber. */
+/* The one second line: what the task asks of you, in amber. One line, so
+   every task is two lines at most and the list keeps its rhythm; the whole
+   ask is in the task. */
 .side-task__ask {
-  display: -webkit-box;
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
   color: var(--amber-text);
   font-size: var(--text-sm);
   line-height: 1.36;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .side-row-action {
@@ -1265,7 +1285,7 @@ button.side-needs:hover {
   height: 50px;
   padding: var(--space-8) var(--space-8) var(--space-8) var(--space-16);
   border-bottom: 1px solid transparent;
-  background: var(--bg);
+  background: var(--ground);
 }
 
 .workspace--work .conv-header {
@@ -2310,10 +2330,10 @@ button.start-apps__row--away:focus-visible {
     flex: none;
     width: 100%;
     max-height: 78dvh;
-    border-top: 1px solid var(--line-strong);
+    --ground: var(--surface);
+    border-top: 1px solid var(--rim-plate);
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-    background: var(--surface);
-    box-shadow: 0 -12px 32px rgb(0 0 0 / 45%);
+    box-shadow: var(--edge-plate);
   }
 
   /* Open, the conversation takes all but the place's own bar. */

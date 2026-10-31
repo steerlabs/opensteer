@@ -137,27 +137,28 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-8);
-  min-height: 34px;
-  padding: var(--space-6) var(--space-14);
+  gap: var(--space-6);
+  min-height: var(--control-height);
+  padding: var(--space-4) var(--space-12);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--line-strong);
-  background: var(--surface-elevated);
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   color: var(--text);
-  font-size: var(--text-xl);
+  font-size: var(--control-font);
   font-weight: var(--weight-medium);
   line-height: 1.2;
   transition:
     background-color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out),
     color var(--duration-fast) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out);
+    transform var(--duration-fast) var(--ease-spring);
   user-select: none;
 }
 
 .btn:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: var(--line-hover);
+  background-color: var(--fill-plate-hover);
 }
 
 /* A link wearing the button shape is still a button to the eye. */
@@ -166,7 +167,9 @@ a.btn:hover {
 }
 
 .btn:active:not(:disabled) {
-  transform: scale(0.98);
+  /* Pressed in: the top light goes out instead of a shadow appearing. */
+  box-shadow: none;
+  transform: scale(0.97);
 }
 
 .btn:disabled,
@@ -178,26 +181,26 @@ a.btn:hover {
 }
 
 .btn--primary {
-  background: var(--ember);
-  border-color: var(--ember);
+  border-color: var(--rim-accent);
+  background: var(--sheen-accent) var(--fill-accent);
+  box-shadow: var(--edge-accent);
   color: var(--ink-on-ember);
   font-weight: var(--weight-bold);
 }
 
 .btn--primary:hover:not(:disabled) {
-  background: var(--ember-bright);
-  border-color: var(--ember-bright);
+  background-color: var(--fill-accent-hover);
 }
 
 .btn--ghost {
-  background: transparent;
   border-color: transparent;
+  background: transparent;
+  box-shadow: none;
   color: var(--text-soft);
 }
 
 .btn--ghost:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: transparent;
+  background-color: var(--fill-quiet);
   color: var(--text);
 }
 
@@ -207,12 +210,12 @@ a.btn:hover {
 
 .btn--danger:hover:not(:disabled) {
   border-color: var(--red-line);
-  background: var(--red-wash);
+  background-color: var(--red-wash);
 }
 
 .btn--small {
-  min-height: 28px;
-  padding: var(--space-4) var(--space-10);
+  min-height: var(--control-height-sm);
+  padding: var(--space-2) var(--space-10);
   font-size: var(--text-md);
   border-radius: var(--radius-xs);
 }
@@ -246,7 +249,7 @@ a.btn:hover {
 }
 
 .icon-btn:hover:not(:disabled) {
-  background: var(--surface-hover);
+  background: var(--fill-quiet);
   color: var(--text);
 }
 
@@ -290,13 +293,13 @@ a.btn:hover {
 .select-input,
 textarea.text-input {
   width: 100%;
-  min-height: 36px;
-  padding: var(--space-8) var(--space-12);
+  min-height: calc(var(--control-height) + var(--space-4));
+  padding: var(--space-6) var(--space-10);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
+  border: 1px solid var(--rim-control);
+  background-color: var(--fill-plate);
   color: var(--text);
-  font-size: var(--text-xl);
+  font-size: var(--control-font);
   transition:
     border-color var(--duration-fast) var(--ease-out),
     box-shadow var(--duration-fast) var(--ease-out);
@@ -402,9 +405,9 @@ textarea.text-input {
   width: 34px;
   height: 20px;
   padding: 0;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-control);
   border-radius: var(--radius-full);
-  background: var(--surface-raised);
+  background: var(--fill-plate);
   cursor: pointer;
   transition:
     background-color 140ms ease,
@@ -418,15 +421,15 @@ textarea.text-input {
   height: 16px;
   margin: 1px;
   border-radius: var(--radius-full);
-  background: var(--muted);
+  background: var(--text-soft);
   transition:
     transform 140ms ease,
     background-color 140ms ease;
 }
 
 .switch:checked {
-  border-color: var(--ember);
-  background: var(--ember);
+  border-color: var(--rim-accent);
+  background: var(--fill-accent);
 }
 
 .switch:checked::after {
@@ -441,7 +444,7 @@ textarea.text-input {
 }
 
 .switch:hover:not(:disabled, :checked) {
-  border-color: var(--line-hover);
+  background: var(--fill-plate-hover);
 }
 
 .switch:disabled,
@@ -468,17 +471,17 @@ textarea.text-input {
   gap: var(--space-2);
   max-width: 100%;
   padding: var(--space-2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface-elevated);
+  background: var(--fill-quiet);
 }
 
 .segmented__option {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 34px;
-  padding: var(--space-6) var(--space-14);
-  border: 0;
+  min-height: calc(var(--control-height) - var(--space-6));
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid transparent;
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--muted);
@@ -499,11 +502,10 @@ textarea.text-input {
 }
 
 .segmented__option[aria-checked="true"] {
-  background: var(--surface-hover);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
   color: var(--text);
-  box-shadow:
-    inset 0 0 0 1px var(--line-strong),
-    0 1px 2px rgb(0 0 0 / 40%);
 }
 
 .segmented__option:focus-visible {
@@ -570,28 +572,29 @@ textarea.text-input {
 }
 
 .option-row--framed {
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .option-row:hover:not(:disabled, .is-unavailable),
 .option-row:focus-visible,
 .option-row:focus-within:not(.is-unavailable) {
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 
 .option-row--framed:hover:not(:disabled, .is-unavailable),
 .option-row--framed:focus-visible,
 .option-row--framed:focus-within:not(.is-unavailable) {
   border-color: var(--ember-line);
-  background: var(--ember-wash);
+  background-color: var(--ember-wash);
 }
 
 .option-row.is-selected,
 .option-row--framed.is-selected {
   border-color: var(--ember-line);
-  background: var(--ember-wash);
+  background-color: var(--ember-wash);
 }
 
 .option-row:disabled,
@@ -844,8 +847,9 @@ kbd.kbd {
   align-items: flex-start;
   padding: var(--space-12) var(--space-14);
   border-radius: var(--radius-md);
-  border: 1px solid var(--line-strong);
-  background: var(--surface-elevated);
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   font-size: var(--text-lg);
   color: var(--text-soft);
 }
@@ -907,12 +911,15 @@ svg.icon {
   }
 }
 
-/* Touch chrome keeps a full finger-sized hit area. Inline prose links retain
-   their reading rhythm; every control-shaped link is included explicitly. */
-@media (hover: none) {
+/* Wherever a finger can reach the screen — phones, tablets, touch laptops,
+   an iPad with a trackpad — chrome keeps a finger-sized hit area. Buttons get
+   theirs from --control-height. Inline prose links retain their reading
+   rhythm; every control-shaped link is included explicitly. Checkboxes and
+   radios are excluded: the row around one is its target, and a 44px-tall box
+   would slide below its own label. */
+@media (any-pointer: coarse) {
   button,
   summary,
-  .btn,
   .brand-link,
   .sidebar__nav-item,
   .sidebar__place,
@@ -930,10 +937,11 @@ svg.icon {
     height: var(--touch-target);
   }
 
-  input:not(.switch),
+  input:not(.switch, [type="checkbox"], [type="radio"]),
   textarea,
   select {
     min-height: var(--touch-target);
+    /* Below 16px, mobile Safari zooms the page to the field. */
     font-size: 16px;
   }
 
@@ -952,9 +960,9 @@ svg.icon {
     left: 5px;
     width: 34px;
     height: 20px;
-    border: 1px solid var(--line-strong);
+    border: 1px solid var(--rim-control);
     border-radius: var(--radius-full);
-    background: var(--surface-raised);
+    background: var(--fill-plate);
   }
 
   .switch::after {
@@ -966,16 +974,41 @@ svg.icon {
     margin: 0;
   }
 
-  .switch:checked {
+  .switch:checked,
+  .switch:hover:not(:disabled, :checked) {
     background: transparent;
   }
 
   .switch:checked::before {
-    border-color: var(--ember);
-    background: var(--ember);
+    border-color: var(--rim-accent);
+    background: var(--fill-accent);
   }
 
   .switch:checked::after {
     transform: translateX(14px);
+  }
+}
+
+/* Forced colours (Windows High Contrast and the like) drop backgrounds,
+   gradients and shadows. Rims are real borders, so surfaces keep their
+   edges; what has to be restated is focus, which several controls draw as a
+   shadow-only ring, and the chosen item, which is otherwise only a fill. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
+  }
+
+  .segmented__option[aria-checked="true"],
+  .option-row.is-selected {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .switch:checked,
+  .switch:checked::before {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
   }
 }

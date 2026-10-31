@@ -108,6 +108,25 @@ html.electron-shell .conv-header {
   padding-block: var(--space-6);
 }
 
+/* A conversation that is the sheet starts one gutter below the window's top,
+   so its head is that much shorter and still ends on the titlebar's line; the
+   gutter above and beside it drags the window like the place's does. */
+@media (min-width: 701px) {
+  html.electron-shell .workspace--talk {
+    app-region: drag;
+  }
+
+  html.electron-shell .workspace--talk .workspace__conversation {
+    app-region: no-drag;
+  }
+
+  html.electron-shell .workspace--talk .conv-header {
+    app-region: drag;
+    height: calc(var(--desktop-titlebar-height) - var(--sheet-gutter));
+    min-height: calc(var(--desktop-titlebar-height) - var(--sheet-gutter));
+  }
+}
+
 html.electron-shell .workspace--talk .conv-header,
 html.electron-shell .workspace--dock-closed .place .surface-row {
   padding-right: calc(var(--space-14) + var(--desktop-titlebar-trailing-inset));

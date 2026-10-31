@@ -69,6 +69,71 @@
   --ring-red: 0 0 0 3px color-mix(in srgb, var(--red) 9%, transparent);
   --ring-green: 0 0 0 3px color-mix(in srgb, var(--green) 10%, transparent);
 
+  /* ---- Material ----
+     Light comes from the edge, never from shadows. A surface is a fill, a
+     real 1px rim border, and one inset highlight along its top edge. There
+     are four materials and nothing in between:
+       quiet  — a whisper of fill, no edge: hover, resting rows
+       plate  — lit fill, rim and top light: buttons, cards, bubbles, fields,
+                selection. Most things.
+       float  — a plate that sits over content: composer, menus, popovers,
+                toasts, dialogs. The only material with a shadow, and the
+                only one that may turn to glass.
+       accent — the ember, lit: the one action that matters, the person's
+                own words, send.
+     A surface paints `background: var(--sheen) var(--fill-*)`, a border in a
+     --rim-*, and box-shadow from an --edge-* (plus --lift-float on floats).
+     Fills are plain colours so hover and press can glide; the sheen is the
+     one fixed highlight that makes them read as lit. Each edge is drawn for
+     its own fill: light rims on dark fills, a deeper rim of the same hue on
+     the accent. A theme changes the palette above and --light; every state
+     here follows. */
+  --light: 255 255 255;
+  /* What a surface stands on here: the page, until a sheet says otherwise.
+     Anything that must blend into its ground — a header, the fade behind the
+     composer, a badge's cut-out ring — paints with this. */
+  --ground: var(--bg);
+
+  --sheen: linear-gradient(rgb(var(--light) / 3.5%), rgb(var(--light) / 0%));
+  --sheen-accent: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0%));
+
+  --fill-quiet: rgb(var(--light) / 5%);
+  --fill-plate: rgb(var(--light) / 5%);
+  --fill-plate-hover: rgb(var(--light) / 8%);
+  --fill-accent: var(--ember);
+  --fill-accent-hover: var(--ember-bright);
+  /* The work beside the sidebar: one step up from the ground. */
+  --fill-sheet: color-mix(in srgb, var(--bg), white 2.5%);
+  /* Opaque until the person's settings allow transparency (below). */
+  --fill-float: var(--surface-elevated);
+  --fill-float-hover: color-mix(in srgb, var(--fill-float), rgb(var(--light)) 5%);
+  --blur-float: none;
+
+  /* Rims. --rim-plate is decoration: a labelled button or a card is found by
+     its words. --rim-control is a boundary a person has to find — a text
+     field, a checkbox, a switch — and holds 3:1 against the ground. */
+  --rim-plate: rgb(var(--light) / 7%);
+  --rim-control: rgb(var(--light) / 34%);
+  --rim-selected: rgb(var(--light) / 12%);
+  --rim-accent: color-mix(in srgb, var(--ember), var(--ink-on-ember) 24%);
+  --rim-attention: color-mix(in srgb, var(--ember) 26%, transparent);
+  --rim-sheet: rgb(var(--light) / 5%);
+
+  --edge-plate: inset 0 1px 0 rgb(var(--light) / 7%);
+  --edge-accent: inset 0 1px 0 rgb(255 255 255 / 50%);
+  --edge-attention: inset 0 1px 0 color-mix(in srgb, var(--ember) 30%, transparent);
+  --edge-sheet: inset 0 1px 0 rgb(var(--light) / 5%);
+  --lift-float: 0 12px 32px -16px rgb(0 0 0 / 60%);
+  /* The gap between the sidebar's ground and a sheet beside it. */
+  --sheet-gutter: var(--space-6);
+
+  /* ---- Controls ----
+     30px under a mouse or trackpad; 44px wherever a finger can reach the
+     screen, touch laptops and iPads included (below). */
+  --control-height: 30px;
+  --control-height-sm: 26px;
+  --control-font: var(--text-lg);
+
   /* ---- Space ----
      Padding, margin and gap come from here. The rhythm is a 2px grid through
      24px — the dense range this UI actually lives in — and 4px steps above
@@ -135,7 +200,7 @@
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Menlo, monospace;
 
   --radius-xs: 6px;
-  --radius-sm: 9px;
+  --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-full: 999px;
@@ -171,4 +236,31 @@
   --duration-fast: 130ms;
   --duration-med: 220ms;
   --duration-slow: 380ms;
+}
+
+/* Glass only when the person has not asked for less transparency. Browsers
+   that cannot answer keep the opaque float above. */
+@media (prefers-reduced-transparency: no-preference) {
+  :root {
+    --fill-float: color-mix(in srgb, var(--surface-elevated) 72%, transparent);
+    --blur-float: blur(20px) saturate(1.5);
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --rim-plate: rgb(var(--light) / 22%);
+    --rim-selected: rgb(var(--light) / 40%);
+    --rim-control: rgb(var(--light) / 55%);
+    --rim-sheet: rgb(var(--light) / 16%);
+    --edge-plate: inset 0 1px 0 rgb(var(--light) / 14%);
+  }
+}
+
+@media (any-pointer: coarse) {
+  :root {
+    --control-height: var(--touch-target);
+    --control-height-sm: var(--touch-target);
+    --control-font: var(--text-2xl);
+  }
 }

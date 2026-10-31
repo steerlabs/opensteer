@@ -94,10 +94,12 @@
 }
 
 .input-surface--action {
-  background: var(--surface-elevated);
-  border: 1px solid var(--ember-line);
+  /* What the agent is asking is read, so the card is opaque; it floats at
+     the foot of the transcript with the ember catching its top edge. */
+  border: 1px solid var(--rim-attention);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-raised);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-attention), var(--lift-float);
   overflow: clip;
   animation: rise-in var(--duration-med) var(--ease-out);
   transition:
@@ -106,7 +108,7 @@
 }
 
 .input-surface--action:focus-within {
-  box-shadow: var(--shadow-raised), var(--ring-ember);
+  box-shadow: var(--edge-attention), var(--lift-float), var(--ring-ember);
 }
 
 .input-surface--medium {
@@ -114,7 +116,7 @@
 }
 
 .input-surface--medium:focus-within {
-  box-shadow: var(--shadow-raised), var(--ring-amber);
+  box-shadow: var(--edge-attention), var(--lift-float), var(--ring-amber);
 }
 
 .input-surface--high {
@@ -122,17 +124,19 @@
 }
 
 .input-surface--high:focus-within {
-  box-shadow: var(--shadow-raised), var(--ring-red);
+  box-shadow: var(--edge-attention), var(--lift-float), var(--ring-red);
 }
 
 /* The docked composer sheds its own frame; a hairline divider separates it. */
 .input-surface--action .composer {
   max-width: none;
   margin: 0;
-  background: transparent;
   border: 0;
   border-top: 1px solid var(--line);
   border-radius: 0;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   box-shadow: none;
 }
 
@@ -216,22 +220,25 @@
   display: flex;
   align-items: center;
   gap: var(--space-10);
-  min-height: 40px;
+  min-height: calc(var(--control-height) + var(--space-8));
   padding: 0 var(--space-14) 0 var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-float);
+  -webkit-backdrop-filter: var(--blur-float);
+  backdrop-filter: var(--blur-float);
+  box-shadow: var(--edge-plate);
   color: var(--text-soft);
   font-size: var(--text-md);
   text-align: left;
   transition:
-    background var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
 }
 
 .request-row:hover {
-  border-color: var(--ember-line);
-  background: var(--surface-hover);
+  border-color: var(--rim-attention);
+  background-color: var(--fill-float-hover);
   color: var(--text);
 }
 
@@ -528,7 +535,7 @@ label.action-row input {
   padding: var(--space-8) calc(var(--space-20) + env(safe-area-inset-right, 0px))
     calc(var(--space-18) + env(safe-area-inset-bottom, 0px))
     calc(var(--space-20) + env(safe-area-inset-left, 0px));
-  background: linear-gradient(to bottom, transparent, var(--bg) 38%);
+  background: linear-gradient(to bottom, transparent, var(--ground) 38%);
 }
 
 /* The usage-limit line, under the composer it belongs to and at its measure:
@@ -907,10 +914,12 @@ label.action-row input {
 .composer {
   max-width: var(--composer-max-width);
   margin: 0 auto;
-  background: var(--surface-elevated);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-raised);
+  background: var(--sheen) var(--fill-float);
+  -webkit-backdrop-filter: var(--blur-float);
+  backdrop-filter: var(--blur-float);
+  box-shadow: var(--edge-plate), var(--lift-float);
   transition:
     border-color var(--duration-fast) var(--ease-out),
     box-shadow var(--duration-fast) var(--ease-out);
@@ -918,7 +927,7 @@ label.action-row input {
 
 .composer:focus-within {
   border-color: var(--ember-line);
-  box-shadow: var(--shadow-raised), var(--ring-ember);
+  box-shadow: var(--edge-plate), var(--lift-float), var(--ring-ember);
 }
 
 .composer__input {
@@ -996,41 +1005,66 @@ label.action-row input {
 
 /* Every action on a composer's toolbar — Attach, the microphone, Stop, Send —
    is one square target with a smaller round face inside it: the target is what
-   a pointer or finger needs, the face is what the eye reads. The face is the
-   content box, so one element is both, and the sizes follow the input, never
-   the window: a narrow pane in a wide window keeps desktop targets. */
+   a pointer or finger needs, the face is what the eye reads. The face is its
+   own layer so its rim and top light sit on the disc, not on the target; each
+   button names its material through --face-*. The sizes follow the input,
+   never the window: a narrow pane in a wide window keeps desktop targets. */
 .composer__attach,
 .composer__send,
 .composer__stop {
   --composer-target: 36px;
   --composer-face: 32px;
+  --face-sheen: none;
+  --face-fill: transparent;
+  --face-rim: transparent;
+  --face-edge: none;
+  position: relative;
+  isolation: isolate;
   display: grid;
   flex: none;
   place-items: center;
   box-sizing: border-box;
   width: var(--composer-target);
   height: var(--composer-target);
-  padding: calc((var(--composer-target) - var(--composer-face)) / 2);
   border-radius: var(--radius-full);
-  background-clip: content-box;
   transition:
-    background-color var(--duration-fast) var(--ease-out),
     transform var(--duration-fast) var(--ease-spring),
     opacity var(--duration-fast) var(--ease-out);
 }
 
+.composer__attach::before,
+.composer__send::before,
+.composer__stop::before {
+  content: "";
+  position: absolute;
+  inset: calc((var(--composer-target) - var(--composer-face)) / 2);
+  z-index: -1;
+  border: 1px solid var(--face-rim);
+  border-radius: inherit;
+  background: var(--face-sheen) var(--face-fill);
+  box-shadow: var(--face-edge);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
 .composer__send {
-  background: var(--ember);
+  --face-sheen: var(--sheen-accent);
+  --face-fill: var(--fill-accent);
+  --face-rim: var(--rim-accent);
+  --face-edge: var(--edge-accent);
   color: var(--ink-on-ember);
 }
 
 .composer__send:hover:not(:disabled) {
-  background: var(--ember-bright);
+  --face-fill: var(--fill-accent-hover);
   transform: scale(1.05);
 }
 
 .composer__send:active:not(:disabled),
 .composer__stop:active:not(:disabled) {
+  --face-edge: none;
   transform: scale(0.95);
 }
 
@@ -1046,12 +1080,15 @@ label.action-row input {
 /* Stop is the one control that must read at a glance mid-run: the page's own
    ink on a light disc, the inverse of everything around it. */
 .composer__stop {
-  background: var(--text);
+  --face-sheen: var(--sheen-accent);
+  --face-fill: var(--text);
+  --face-rim: color-mix(in srgb, var(--text), var(--bg) 22%);
+  --face-edge: var(--edge-accent);
   color: var(--bg);
 }
 
 .composer__stop:hover:not(:disabled) {
-  background: #ffffff;
+  --face-fill: var(--text-on-color);
   transform: scale(1.05);
 }
 
@@ -1067,7 +1104,7 @@ label.action-row input {
 }
 
 /* Touch keeps every toolbar target a finger's size; the faces grow a little. */
-@media (hover: none) {
+@media (any-pointer: coarse) {
   .composer__attach,
   .composer__send,
   .composer__stop {

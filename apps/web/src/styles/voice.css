@@ -7,7 +7,10 @@
 .composer__attach.composer__voice--on:hover:not(:disabled),
 .composer--conversation .composer__attach.composer__voice--on,
 .composer--conversation .composer__attach.composer__voice--on:hover:not(:disabled) {
-  background: var(--ember);
+  --face-sheen: var(--sheen-accent);
+  --face-fill: var(--fill-accent);
+  --face-rim: var(--rim-accent);
+  --face-edge: var(--edge-accent);
   color: var(--ink-on-ember);
 }
 

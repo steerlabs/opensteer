@@ -10,7 +10,7 @@
 }
 
 .composer__attach:hover:not(:disabled) {
-  background: var(--surface-hover);
+  --face-fill: var(--fill-quiet);
   color: var(--text);
 }
 
@@ -26,8 +26,8 @@
 .composer--dropping,
 .composer--dropping:focus-within {
   border-color: var(--ember-line);
-  background: color-mix(in srgb, var(--ember-wash) 50%, var(--surface-elevated));
-  box-shadow: var(--shadow-raised), var(--ring-ember);
+  background-color: color-mix(in srgb, var(--ember-wash) 50%, var(--fill-float));
+  box-shadow: var(--edge-plate), var(--lift-float), var(--ring-ember);
 }
 
 .attachment-tray {
