@@ -38,7 +38,9 @@ async function main(): Promise<void> {
     headless: config.headless,
     ...(config.proxyUrl ? { proxyUrl: config.proxyUrl } : {}),
   });
-  const runtime = new BrowserRuntime({
+  await launcher.prepare();
+  const runtimeOptions = {
+    localProfiles: { root: config.profileRoot },
     checkpointIntervalMs: config.checkpointIntervalMs,
     checkpointRetryMs: config.checkpointRetryMs,
     idleProfileHostTimeoutMs: config.idleProfileHostTimeoutMs,
@@ -53,7 +55,8 @@ async function main(): Promise<void> {
     runtimeId: config.runtimeId,
     sessionFilesRoot: sessionFilesRoot(config.profileRoot),
     ticketVerifier,
-  });
+  };
+  const runtime = new BrowserRuntime(runtimeOptions);
   const server = new BrowserRuntimeServer({
     ...(config.bridgeToken
       ? {

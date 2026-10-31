@@ -1,11 +1,13 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { validClaims } from "@opensteer/browser-runtime-core/test-support";
+import { nativeProfileRequest } from "./native-profile.test-support.js";
 import { delay } from "@opensteer/shared/delay";
 import {
+  cleanup,
   TestChromiumLauncher,
   findChromium,
   browserTestSignal,
@@ -14,6 +16,7 @@ import {
 
 const executablePath = findChromium();
 let pid: number | undefined;
+let nativePid: number | undefined;
 let checks = 0;
 let stoppedChecks = 0;
 
@@ -34,6 +37,21 @@ describe("Chromium journey timeout cancellation", () => {
         processInfo: Array<{ id: number; type: string }>;
       };
       pid = inventory.processInfo.find((entry) => entry.type === "browser")!.id;
+      const directory = await mkdtemp(join(tmpdir(), "os-native-cancel-"));
+      const launcher = new TestChromiumLauncher({
+        chromiumSandbox: false,
+        executablePath,
+        headless: true,
+      });
+      cleanup.push(async () => {
+        await launcher.localProfiles.release(directory);
+        await rm(directory, { recursive: true, force: true });
+      });
+      const native = await launcher.launch(nativeProfileRequest(directory));
+      const nativeInventory = (await native.cdp.send(
+        "SystemInfo.getProcessInfo",
+      )) as typeof inventory;
+      nativePid = nativeInventory.processInfo.find((entry) => entry.type === "browser")!.id;
     });
 
     it.fails("cancels a real journey through its own test signal", { timeout: 5_000 }, async () => {
@@ -51,6 +69,8 @@ describe("Chromium journey timeout cancellation", () => {
     await delay(150, browserTestSignal());
     expect(checks).toBe(stoppedChecks);
     expect(() => process.kill(pid!, 0)).toThrow();
+    expect(nativePid).toBeDefined();
+    expect(() => process.kill(nativePid!, 0)).toThrow();
   });
 });
 
@@ -61,6 +81,6 @@ afterAll(async () => {
   await mkdir(directory, { recursive: true });
   await writeFile(
     join(directory, `cancellation-${process.pid}.json`),
-    `${JSON.stringify({ pid, checks, stoppedChecks, cancelledByTestSignal: true }, null, 2)}\n`,
+    `${JSON.stringify({ pid, nativePid, checks, stoppedChecks, cancelledByTestSignal: true }, null, 2)}\n`,
   );
 });
