@@ -4,6 +4,9 @@ import { act, useEffect, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReservedRegion } from "react-native-reserved-regions";
+import { createId } from "@opensteer/core";
+import { ScreenPresentationController } from "@opensteer/client/screen";
+import type { ScreenShowMessage } from "@opensteer/protocol";
 
 /*
  * The shell around the one native stack, as the window changes shape. What
@@ -39,13 +42,18 @@ const harness = vi.hoisted(() => ({
     selectedThreadId: string | null;
     visible: boolean;
     actions: {
+      onChat: () => void;
       onOpenPlace: (destination: object) => void;
       onOpenTask: (deploymentId: string, threadId: string) => void;
       onTabs: () => void;
     };
     scroll: { offset: number };
   }[],
-  drawer: { lock: "", panel: null as ReactNode },
+  drawer: {
+    lock: "",
+    panel: null as ReactNode,
+    changed: null as ((state: string, willShow: boolean) => void) | null,
+  },
   openDrawer: vi.fn(),
   closeDrawer: vi.fn(),
 }));
@@ -122,6 +130,7 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
       props: {
         children?: ReactNode;
         drawerLockMode: string;
+        onDrawerStateChanged: (state: string, willShow: boolean) => void;
         renderNavigationView: () => ReactNode;
       },
       ref,
@@ -131,6 +140,7 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
         openDrawer: harness.openDrawer,
       }));
       harness.drawer.lock = props.drawerLockMode;
+      harness.drawer.changed = props.onDrawerStateChanged;
       return (
         <div>
           <aside>{props.renderNavigationView()}</aside>
@@ -155,6 +165,7 @@ vi.mock("./sidebar-panel.js", () => ({
     harness.panels.push(props);
     return (
       <nav data-docked={props.docked} data-visible={props.visible}>
+        <button onClick={props.actions.onChat}>Chat</button>
         <button onClick={() => props.actions.onOpenTask("deployment-a", "thread-b")}>Task B</button>
         <button onClick={() => props.actions.onOpenPlace(tabB)}>Tab B</button>
         <button onClick={props.actions.onTabs}>Tabs</button>
@@ -163,6 +174,7 @@ vi.mock("./sidebar-panel.js", () => ({
   },
 }));
 
+import { drawerOpen, observeInteraction } from "../voice/interaction.js";
 import { SidebarShell } from "./sidebar-shell.js";
 import { useSidebarControl, useSidebarDocked, useSidebarVisible } from "./sidebar-context.js";
 
@@ -372,6 +384,98 @@ describe("the sidebar as the window changes shape", () => {
     expect(harness.openDrawer).toHaveBeenCalledTimes(1);
     expect(harness.dismiss).toHaveBeenCalledTimes(1);
   });
+
+  it("tells a pending presentation the drawer began to cover the screen, by drag or Menu, until it left", async () => {
+    await mount();
+    const interacted = vi.fn();
+    const stop = observeInteraction(interacted);
+    try {
+      // A drag from the edge reports movement before it decides to open.
+      act(() => harness.drawer.changed!("dragging", false));
+      expect(drawerOpen()).toBe(true);
+      act(() => harness.drawer.changed!("idle", true));
+      expect(interacted).toHaveBeenCalledOnce();
+      act(() => harness.drawer.changed!("idle", false));
+      expect(drawerOpen()).toBe(false);
+      expect(interacted).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+    }
+  });
+
+  it.each(["Chat", "Tabs", "Task B", "Tab B"])(
+    "supersedes a pending presentation when docked %s is chosen again",
+    async (label) => {
+      harness.bounds = { height: 1133, width: 744 };
+      const destination =
+        label === "Chat"
+          ? []
+          : [
+              {
+                key: "selected",
+                name:
+                  label === "Tabs" ? "Tabs" : label === "Task B" ? "Thread" : "WorkspaceBrowser",
+                params:
+                  label === "Tab B"
+                    ? tabBRoute
+                    : { deploymentId: "deployment-a", threadId: "thread-b" },
+              },
+            ];
+      const { container } = await mount([home, ...destination]);
+      let revision = 0;
+      const stop = observeInteraction(() => {
+        revision += 1;
+      });
+      let receive: ((message: ScreenShowMessage | null) => void) | undefined;
+      const acknowledge = vi.fn();
+      const prepare = vi.fn(async () => {
+        throw new Error("A superseded input must not prepare a route");
+      });
+      const voiceSessionId = "12345678-1234-4123-8123-123456789abc";
+      const endpointRef = "a".repeat(64);
+      const controller = new ScreenPresentationController({
+        now: () => 0,
+        port: {
+          capture: () => ({ interactionRevision: revision, places: async () => [] }),
+          blocked: () => null,
+          prepare,
+        },
+        transport: {
+          getEndpoint: () => ({ endpointRef, serverTimeUpperBound: () => 0 }),
+          subscribe: (listener) => {
+            receive = listener;
+            return () => {
+              receive = undefined;
+            };
+          },
+          acknowledge,
+        },
+      });
+      try {
+        controller.start(voiceSessionId);
+        const captured = controller.captureUtterance();
+        press(container, label);
+        expect(harness.dispatch).not.toHaveBeenCalled();
+        receive!({
+          ...captured.context!,
+          type: "host.screen.show",
+          endpointRef,
+          voiceSessionId,
+          messageId: createId("message"),
+          operationId: voiceSessionId,
+          deadlineAt: 5_000,
+          target: { conversationId: createId("thread") },
+        });
+        expect(prepare).not.toHaveBeenCalled();
+        expect(acknowledge).toHaveBeenCalledExactlyOnceWith(voiceSessionId, {
+          outcome: "superseded",
+        });
+      } finally {
+        controller.dispose();
+        stop();
+      }
+    },
+  );
 
   it("keeps the sidebar docked beside a page, and marks that exact page as the one open", async () => {
     harness.bounds = { height: 1133, width: 744 };

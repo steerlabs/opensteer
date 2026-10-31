@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { ModelSelectionSchema, harnessRuntimeExpectedVersion } from "@opensteer/core";
+import { inspectClaudeExecutable } from "@opensteer/harness-claude";
 import { parseCases } from "./cases.js";
 import { grade } from "./grader.js";
 import {
@@ -127,11 +128,22 @@ async function main() {
       ...(model.nativeModelId ? { nativeModelId: model.nativeModelId } : {}),
       options: parsed.values.effort && effortOption ? { [effortOption.id]: effort } : {},
     });
+    let engineVersion: string;
+    if (engine === "claude") {
+      const installed = await inspectClaudeExecutable(
+        process.env.OPENSTEER_CLAUDE_EXECUTABLE ?? "claude",
+        inspected.environment,
+      );
+      if (installed.status !== "available") throw new Error(installed.detail);
+      engineVersion = `Claude Code ${installed.version}`;
+    } else {
+      engineVersion = harnessRuntimeExpectedVersion(engine);
+    }
     identity = {
       engine,
       accessMode: "full-access",
       runtimeBoundary: "isolated-service",
-      engineVersion: harnessRuntimeExpectedVersion(engine),
+      engineVersion,
       model: selection.modelId,
       providerId: selection.providerId,
       ...(selection.nativeModelId ? { nativeModelId: selection.nativeModelId } : {}),

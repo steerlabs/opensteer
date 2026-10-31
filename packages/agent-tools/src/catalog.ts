@@ -3,6 +3,7 @@ import {
   BrowserTabReadInputSchema,
   BrowserTabWriteInputSchema,
   ThreadWriteInputSchema,
+  ScreenShowInputSchema,
 } from "@opensteer/core";
 import {
   MessageIdSchema,
@@ -29,6 +30,7 @@ import {
 } from "@opensteer/triggers";
 
 export const AgentToolIdSchema = z.enum([
+  "screen.show",
   "environment.list",
   "workspace.list",
   "workspace.create",
@@ -58,6 +60,7 @@ export const AgentToolIdSchema = z.enum([
 export type AgentToolId = z.infer<typeof AgentToolIdSchema>;
 
 export const AgentToolNameSchema = z.enum([
+  "screen_show",
   "environment_list",
   "workspace_list",
   "workspace_create",
@@ -170,6 +173,20 @@ const browserAccessRequestAnnotations = {
 } as const satisfies AgentToolAnnotations;
 
 const definitions = [
+  {
+    annotations: {
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+      readOnlyHint: false,
+      title: "Show a view",
+    },
+    description:
+      "Show an existing conversation or exact browser, app or phone surface on the device that sent this voice input, only when the person explicitly asks to see it. Ask a short question in Chat if the target is ambiguous; never present proactively while doing work. Use this input's messageId; each input permits one presentation. Only Main Chat's Run may call this; independent tasks and triggers cannot. Do work with existing tools first; this tool only changes the view. Use exact task-session references from thread_read or an explicitly supplied owner-view reference. A conversation and surface must belong together. Applied confirms navigation, not pixels or work success. Superseded, unavailable, unsupported or unconfirmed means do not promise the view changed; never retry with another target for the same message.",
+    id: "screen.show",
+    inputSchema: ScreenShowInputSchema,
+    name: "screen_show",
+  },
   {
     annotations: {
       destructiveHint: false,
@@ -769,6 +786,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
     AgentCapabilityProfileIdSchema.parse("main"),
     "Owner-level coordination from the personal Main Workspace",
     [
+      "screen.show",
       "workspace.list",
       "workspace.create",
       "workspace.mount",

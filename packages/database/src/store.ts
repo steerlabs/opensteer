@@ -1,3 +1,4 @@
+import { screenPresentationInput } from "./screen-presentation.js";
 import * as taskDone from "./task-done.js";
 import { drainPendingThreadStates } from "./thread-status.js";
 import * as runnerStore from "./runner-store.js";
@@ -762,6 +763,14 @@ export class OpensteerStore {
 
   async countBrowserSessionAttachments(sessionId: BrowserSessionId): Promise<number> {
     return browserSessionStore.countBrowserSessionAttachments(this.#database, sessionId);
+  }
+
+  async browserSurfaceBelongsToThread(input: {
+    readonly sessionId: import("@opensteer/core").BrowserSessionId;
+    readonly tabId: import("@opensteer/core").BrowserSurfaceId;
+    readonly threadId: ThreadId;
+  }): Promise<boolean> {
+    return browserSessionStore.browserSurfaceBelongsToThread(this.#database, input);
   }
 
   async getThreadBrowserUsage(input: {
@@ -1645,6 +1654,7 @@ export class OpensteerStore {
   }
 
   async loadSteerDispatchInput(commandId: CommandRow["id"]): Promise<{
+    readonly bindingGeneration: number;
     readonly message: Message;
     readonly run: Run;
     readonly runId: RunId;
@@ -1782,6 +1792,10 @@ export class OpensteerStore {
   }
 
   /** Tool authority: the live binding and its grant. */
+  screenPresentationInput(input: Parameters<typeof screenPresentationInput>[1]) {
+    return screenPresentationInput(this.#database, input, this.#executionNow);
+  }
+
   async assertActiveGrant(
     input: Parameters<OpensteerStore["assertActiveExecutionBinding"]>[0] & {
       readonly grantId?: GrantId | undefined;

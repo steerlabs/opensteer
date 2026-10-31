@@ -4858,7 +4858,32 @@ integration("Host vertical slice", () => {
       },
     };
 
-    runtime = await createHostRuntime(config);
+    const unownedAccountFetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockRejectedValue(new Error("The managed bootstrap fixture must own its Account requests"));
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      return url.origin === config.account!.controlApiOrigin.origin
+        ? unownedAccountFetch(input, init)
+        : realFetch(input, init);
+    });
+    const initialAccountFetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      expect(new URL(input.toString()).pathname).toBe("/v1/host/authority");
+      // Keep the initial membership unpublished until the restarted Account accepts authority.
+      return new Response(null, { status: 503 });
+    });
+    runtime = await createHostRuntime(config, { accountDirectoryFetch: initialAccountFetch });
+    await vi.waitFor(
+      () =>
+        expect(
+          initialAccountFetch.mock.calls.length + unownedAccountFetch.mock.calls.length,
+          "The initial Host never attempted Account authority publication",
+        ).toBe(1),
+      { timeout: 1000 },
+    );
+    expect(unownedAccountFetch).not.toHaveBeenCalled();
+    expect(initialAccountFetch).toHaveBeenCalledOnce();
     await expect(
       runtime.store.database
         .selectFrom("users")
@@ -5006,6 +5031,7 @@ integration("Host vertical slice", () => {
         },
       }),
     ).rejects.toThrow(/durable Host authority/u);
+    expect(unownedAccountFetch).not.toHaveBeenCalled();
   });
 });
 
