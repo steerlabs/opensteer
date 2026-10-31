@@ -2152,8 +2152,8 @@ export async function createHostRuntime(
       computerViews,
       places: placeContext,
     });
-    // Native children share the Main Run credential; that authority still needs approval.
-    const allowMainChatRunScreenShow = false;
+    // Native helpers share Main Chat's Run authority; presentation eligibility stays per input.
+    const allowMainChatRunScreenShow = true;
     const agentControl = new AgentControlService({
       allowMainChatRunScreenShow,
       screenPresentation,

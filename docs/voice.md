@@ -60,7 +60,7 @@ undocumented Codex API; every engine pin bump must re-qualify a live call.
 - Navigation takes only whole utterances that start with a navigation verb
   and name exactly one Chat, task or place; "open" is not one ("open a PR" is
   work). Everything else is sent to Chat verbatim, as the person's message.
-- When enabled, a voice input may offer Main Chat one `screen_show` of existing resources. The
+- A voice input may offer Main Chat one `screen_show` of existing resources. The
   input's message ID correlates the request; the live execution grant, exact
   attempt/input admission, socket binding and current resource access supply
   authority. Several devices can contribute to one Run, so neither the Run's seed
@@ -76,11 +76,11 @@ undocumented Codex API; every engine pin bump must re-qualify a live call.
   announces new "needs you" Requests by Thread title only, never their
   contents. Approvals still need a tap or Face ID.
 
-The common MCP route authenticates a Run, and native children share that
-credential. It cannot prove that a call came from the root agent. Enabling
-`screen_show` therefore includes Main Chat's native children; independent tasks
-and Triggers remain excluded. The default gate stays closed pending approval of
-that authority boundary.
+The common MCP route authenticates a Run, and native helpers share that
+credential. Presentation uses Main Chat's existing Run authority, including its
+native helpers; independent tasks and Triggers remain excluded. The transport
+does not establish which native node invoked a tool, so root-only restrictions
+cannot be inferred from tool discovery or a model-supplied node identity.
 
 ## Privacy
 
