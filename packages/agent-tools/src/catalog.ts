@@ -182,7 +182,7 @@ const definitions = [
       title: "Show a view",
     },
     description:
-      "Show an existing conversation or exact browser, app or phone surface on the device that sent this voice input. Use its messageId; each input permits one presentation. Only Main Chat's Run may call this; independent tasks and triggers cannot. Do work with existing tools first; this tool only changes the view. Use exact task-session references from thread_read or an explicitly supplied owner-view reference. A conversation and surface must belong together. Applied confirms navigation, not pixels or work success. Superseded, unavailable, unsupported or unconfirmed means do not promise the view changed; never retry with another target for the same message.",
+      "Show an existing conversation or exact browser, app or phone surface on the device that sent this voice input, only when the person explicitly asks to see it. Ask a short question in Chat if the target is ambiguous; never present proactively while doing work. Use this input's messageId; each input permits one presentation. Only Main Chat's Run may call this; independent tasks and triggers cannot. Do work with existing tools first; this tool only changes the view. Use exact task-session references from thread_read or an explicitly supplied owner-view reference. A conversation and surface must belong together. Applied confirms navigation, not pixels or work success. Superseded, unavailable, unsupported or unconfirmed means do not promise the view changed; never retry with another target for the same message.",
     id: "screen.show",
     inputSchema: ScreenShowInputSchema,
     name: "screen_show",

@@ -264,7 +264,10 @@ const realtimeResyncSchema = z.object({
   reason: z.string().min(1),
 });
 type RealtimeMessage =
-  | Exclude<HostToClientMessage, { type: "host.events" | "host.resync-required" }>
+  | Exclude<
+      HostToClientMessage,
+      { type: "host.events" | "host.resync-required" | "host.screen.ready" | "host.screen.show" }
+    >
   | { type: "host.events"; events: RealtimeEvent[] }
   | z.infer<typeof realtimeResyncSchema>;
 
@@ -3892,7 +3895,7 @@ export class HttpHostClient {
     for (const channel of this.#channels.values()) {
       if (
         channel.workspaceId === this.#snapshot.homeWorkspaceId &&
-        this.#capabilities?.some((capability: string) => capability === "screen-show-v1")
+        this.#capabilities?.includes("screen-show-v1")
       ) {
         this.#replaceChannel(channel, "Presentation resumed");
         continue;
@@ -4149,8 +4152,7 @@ export class HttpHostClient {
       channel.progressAt = Date.now();
       try {
         const screenShow =
-          this.#capabilities?.some((capability: string) => capability === "screen-show-v1") ===
-            true &&
+          this.#capabilities?.includes("screen-show-v1") === true &&
           channel.workspaceId === this.#snapshot.homeWorkspaceId &&
           this.#visibility === "foreground";
         if (screenShow) this.screenPresentation.begin(socket);
@@ -4219,10 +4221,6 @@ export class HttpHostClient {
     }
     const value: unknown = JSON.parse(frame);
     const { type } = realtimeHeaderSchema.parse(value);
-    if (type === "host.screen.ready" || type === "host.screen.show") {
-      if (channel.socket) this.screenPresentation.receive(channel.socket, value);
-      return null;
-    }
     if (!realtimeEnvelopeTypes.has(type)) {
       const parsed = HostToClientMessageSchema.safeParse(value);
       if (!parsed.success) realtimeFrameDiagnostic(frame, parsed.error, "ignored");
@@ -4314,6 +4312,10 @@ export class HttpHostClient {
       return { ...live, type: "host.live", progress: { ...live.progress, items } };
     }
     const message = HostToClientMessageSchema.parse(value);
+    if (message.type === "host.screen.ready" || message.type === "host.screen.show") {
+      if (channel.socket) this.screenPresentation.receive(channel.socket, message);
+      return null;
+    }
     if (
       (message.type === "host.read-states" ||
         message.type === "host.read-markers" ||
