@@ -1137,22 +1137,22 @@ integration("notification decision boundary", () => {
       const active = await addThread(fixture, { suffix: "addressed-grace" });
       const intermediate = await appendReply(active, text("Still working."));
       const addressed = await appendReply(active, text("Milestone ready."));
-      const addressedEvent = await database.transaction().execute(async (transaction) => {
-        const row = await transaction
-          .updateTable("messages")
-          .set({ addressedToUserId: active.ownerId })
-          .where("id", "=", addressed.id)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        return appendHostWorkspaceEvent(transaction, {
+      const row = await database
+        .updateTable("messages")
+        .set({ addressedToUserId: active.ownerId })
+        .where("id", "=", addressed.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const addressedEvent = await database.transaction().execute((transaction) =>
+        appendHostWorkspaceEvent(transaction, {
           type: "message.created",
           data: { input: null, message: messageFromRow(row), addressedToUserId: active.ownerId },
           environmentId: active.environmentId,
           workspaceId: active.workspaceId,
           threadId: active.threadId,
           runId: active.runId,
-        });
-      });
+        }),
+      );
       await decideCommitted(fixture);
       await decideCommitted(active);
       expect(BigInt(addressed.sequence)).toBe(BigInt(intermediate.sequence) + 1n);
