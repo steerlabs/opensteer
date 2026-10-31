@@ -1,6 +1,7 @@
 import {
   canRespondToRequests,
   describeHostConnection,
+  placeHasAgents,
   type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
@@ -11,14 +12,24 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { StyleSheet, View } from "react-native";
 import { SurfaceGrid } from "../browser/surface-grid.js";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { placeTile, type TabTile } from "../browser/tab-tiles.js";
 import { useSidebarMenu } from "../navigation-header.js";
-import { space } from "../theme.js";
+import { color, space, touchTarget } from "../theme.js";
+import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { Notice } from "../ui/primitives.js";
+import { Symbol } from "../ui/symbol.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { useAppForeground } from "../ui/foreground.js";
@@ -112,12 +123,16 @@ function TabsForReader(props: {
   const placements = useHostSelector(hostClient, selectPlacements);
   const loaded = useHostSelector(hostClient, selectLoaded);
   const offline = useHostSelector(hostClient, selectConnection);
+  const [agents, setAgents] = useState(false);
+  const withAgents = useMemo(() => places.filter(placeHasAgents), [places]);
+  useAgentsFilter(agents, agents || withAgents.length > 0, setAgents);
+  const shown = agents ? withAgents : places;
   const tiles = useMemo(
     () =>
-      places.map((place) =>
+      shown.map((place) =>
         placeTile(place, { browserPlacements: placements, browserSessions: sessions }),
       ),
-    [placements, places, sessions],
+    [placements, shown, sessions],
   );
   const open = useCallback(
     (tile: TabTile) =>
@@ -130,7 +145,15 @@ function TabsForReader(props: {
     <Screen edgeToEdge>
       <SurfaceGrid
         active={props.active && offline === null}
-        emptyDetail="Tabs you and your agents open appear here."
+        empty={
+          agents
+            ? {
+                title: "No tasks are using tabs",
+                detail: "Tabs appear here while a task works in them.",
+                action: { label: "Show all tabs", onPress: () => setAgents(false) },
+              }
+            : { title: "No tabs yet", detail: "Tabs you and your agents open appear here." }
+        }
         header={
           offline === null && props.failure === null ? undefined : (
             <View style={styles.notices}>
@@ -160,6 +183,81 @@ function TabsForReader(props: {
   );
 }
 
+/**
+ * The bar's filter: every tab, or only those agents are in, which the title
+ * then names. iOS draws a native bar menu; Android the same choices in its own
+ * menu. Offered while an agent is in a tab, and while it filters, so the way
+ * back is always there.
+ */
+function useAgentsFilter(
+  agents: boolean,
+  offered: boolean,
+  onChange: (agents: boolean) => void,
+): void {
+  const navigation = useNavigation();
+  const change = useRef(onChange);
+  change.current = onChange;
+  useLayoutEffect(() => {
+    const label = agents ? "Filter, showing tabs with agents" : "Filter";
+    const choices: NativeMenuOption[] = [
+      { id: "all", label: "All tabs", onPress: () => change.current(false), selected: !agents },
+      {
+        id: "agents",
+        label: "Tabs with agents",
+        onPress: () => change.current(true),
+        selected: agents,
+      },
+    ];
+    navigation.setOptions({
+      title: agents ? "Tabs with agents" : "Tabs",
+      headerRight: () =>
+        offered ? (
+          <NativeMenu
+            accessibilityLabel={label}
+            onPresent={noop}
+            onSettle={noop}
+            options={choices}
+            style={styles.filter}
+          >
+            <Symbol name="line.3.horizontal.decrease" tint={color.ember} />
+          </NativeMenu>
+        ) : null,
+      unstable_headerRightItems: () =>
+        offered
+          ? [
+              {
+                accessibilityLabel: label,
+                icon: {
+                  name: agents
+                    ? "line.3.horizontal.decrease.circle.fill"
+                    : "line.3.horizontal.decrease.circle",
+                  type: "sfSymbol",
+                },
+                label: "Filter",
+                menu: {
+                  items: choices.map((choice) => ({
+                    label: choice.label,
+                    onPress: choice.onPress,
+                    state: choice.selected === true ? "on" : "off",
+                    type: "action",
+                  })),
+                },
+                type: "menu",
+              },
+            ]
+          : [],
+    });
+  }, [agents, navigation, offered]);
+}
+
+function noop(): void {}
+
 const styles = StyleSheet.create({
+  filter: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: touchTarget,
+    minWidth: touchTarget,
+  },
   notices: { gap: space[8] },
 });

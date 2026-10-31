@@ -3,7 +3,7 @@ import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeList, type HostSnapshot } from "@opensteer/client/host";
+import { placeHasAgents, placeList, type HostSnapshot } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
@@ -20,6 +20,7 @@ import {
   settle,
   element,
   click,
+  isMockPage,
   pageTab,
   tabSearch,
   write,
@@ -298,6 +299,64 @@ describe("tabs that read like a browser's", () => {
     await hideComputer();
     expect(document.querySelector(".place")).toBeNull();
     expect(document.querySelector(".side-tab.is-active")).toBeNull();
+  });
+
+  it("Tabs with agents lists the places tasks are in, keeps the tab in front, narrows with a profile and clears back", async () => {
+    const quietOf = (source: MockHostClient) =>
+      placeList(source.getSnapshot()).find(
+        (place) => place.kind === "browser" && isMockPage(place, source) && !placeHasAgents(place),
+      )!;
+    await mount((source) => `/${tabSearch(quietOf(source))}`);
+    const places = placeList(client.getSnapshot());
+    const quiet = quietOf(client);
+    const busy = places.filter(placeHasAgents).map((place) => place.key);
+    expect(busy.length).toBeGreaterThan(0);
+    expect(busy.length).toBeLessThan(places.length);
+    const filter = () => element<HTMLButtonElement>(".side-tab-filter");
+    const option = (label: string) => {
+      const found = [
+        ...document.querySelectorAll<HTMLElement>(".popover [role=menuitemradio]"),
+      ].find((node) => node.getAttribute("aria-label") === label);
+      if (!found) throw new Error(`Missing filter option ${label}`);
+      return found;
+    };
+    expect(filter().getAttribute("aria-label")).toBe("Filter tabs");
+    await click(filter());
+    expect(option("All tabs").getAttribute("aria-checked")).toBe("true");
+    expect(option("Tabs with agents").getAttribute("aria-description")).toBe(`${busy.length} tabs`);
+    await click(option("Tabs with agents"));
+    expect(filter().getAttribute("aria-label")).toBe("Filter tabs: Tabs with agents");
+    expect(filter().textContent).toBe("With agents");
+    // The tab in front stays where it is in the list; the others without an agent go.
+    expect(rowKeys()).toEqual(
+      places.flatMap(({ key }) => (busy.includes(key) || key === quiet.key ? [key] : [])),
+    );
+    expect(row(quiet.key).classList.contains("is-active")).toBe(true);
+    await click(main(busy[0]!));
+    expect(rowKeys()).toEqual(busy);
+    // A profile no task works in leaves nothing, and says why.
+    const idle = places.find(
+      (place) =>
+        place.identity &&
+        !places.some(
+          (other) =>
+            placeHasAgents(other) &&
+            other.identity?.kind === place.identity!.kind &&
+            other.identity.name === place.identity!.name,
+        ),
+    )!.identity!;
+    await click(filter());
+    expect(option(idle.name).getAttribute("aria-description")).toBe("0 tabs");
+    await click(option(idle.name));
+    expect(filter().getAttribute("aria-label")).toBe(`Filter tabs: ${idle.name} tabs with agents`);
+    expect(element(".side-section--tabs .sidebar__empty").textContent).toBe(
+      "No tasks are using tabs in this profile.",
+    );
+    expect(rowKeys()).toEqual([busy[0]]);
+    await click(element(".side-tab-filter__clear"));
+    expect(rowKeys()).toEqual(places.map(({ key }) => key));
+    expect(document.querySelector(".side-section--tabs .sidebar__empty")).toBeNull();
+    expect(filter().getAttribute("aria-label")).toBe("Filter tabs");
   });
 
   it("shows only the profile in the toolbar until its menu names the computer", async () => {
