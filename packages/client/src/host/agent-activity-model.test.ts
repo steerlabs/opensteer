@@ -33,8 +33,11 @@ import {
   turnFolds,
   turnState,
   turnComputer,
+  turnOpen,
   turnWords,
   workRows,
+  traceWindow,
+  traceWindowRows,
   workSummary,
   type TranscriptGroup,
   type Turn,
@@ -743,10 +746,11 @@ describe("workSummary", () => {
 });
 
 describe("a task's turn", () => {
-  // The ways it could fail: a live turn showing every step as it streams; a
-  // turn split by a message keeping its steps open; folding hiding what the
-  // agent wrote along the way; a reply alone growing a "Worked" line.
-  it("folds every step behind its status line and keeps everything the agent wrote", () => {
+  // The ways it could fail: a live turn hiding the steps between what the agent
+  // says; a settled turn running what it said on the way into its answer, or
+  // hiding the answer; a reader's choice not holding; a reply alone growing a
+  // "Worked" line.
+  it("tells its story in order while live, then folds to its last word", () => {
     const note = message({ body: "Checking tonight first.", id: "note" });
     const reply = message({ body: "Dhamaka has 9:45.", id: "reply" });
     const working = turns([
@@ -755,12 +759,20 @@ describe("a task's turn", () => {
       command("ls", { completedAt: null, state: "running" }),
     ])[0]!;
     expect(turnFolds(working)).toBe(true);
+    expect(turnOpen(working, null)).toBe(true);
+    expect(turnOpen(working, false)).toBe(false);
     expect(turnWords(working)).toEqual([note]);
     expect(workSummary(working)?.label).toBe("Running a command");
 
     const answered = turns([run({ replyMessageId: "reply" }), note, command("ls"), reply])[0]!;
-    expect(turnWords(answered)).toEqual([note, reply]);
+    expect(turnOpen(answered, null)).toBe(false);
+    expect(turnOpen(answered, true)).toBe(true);
+    expect(turnWords(answered)).toEqual([reply]);
     expect(workSummary(answered)?.label).toBe("Worked for 4s");
+
+    // A Run that ended without naming a reply still leaves its last word in view.
+    const failed = turns([run({ status: "failed" }), note, command("ls")])[0]!;
+    expect(turnWords(failed)).toEqual([note]);
 
     const joined = groupTranscriptEntries([
       run({ status: "running" }),
@@ -2121,4 +2133,43 @@ it("automatic background work has no Chat indicator, while a new human input sti
       groups: groupTranscriptEntries([automatic, input({ runId: null })]),
     }),
   ).toEqual({ kind: "typing" });
+});
+
+describe("traceWindow", () => {
+  it.each(["note-35", "note-5", "unknown"])("keeps %s mounted", (keep) => {
+    const rows = workRows(Array.from({ length: 40 }, (_, i) => message({ id: `note-${i}` })));
+    const hidden = keep === "note-5" ? 5 : 10;
+    expect(traceWindow(rows, { showAll: false, keep })).toEqual({
+      rows: rows.slice(hidden),
+      hidden,
+    });
+  });
+
+  it("keeps a target inside a digest, including entries after its first", () => {
+    const first = tool();
+    const target = tool();
+    const rows = workRows([
+      message({ id: "before" }),
+      first,
+      target,
+      ...Array.from({ length: 40 }, (_, i) => message({ id: `note-${i}` })),
+    ]);
+    expect(rows[1]?.kind).toBe("steps");
+    expect(traceWindow(rows, { showAll: false, keep: target.id })).toEqual({
+      rows: rows.slice(1),
+      hidden: 1,
+    });
+  });
+
+  it.each([0, traceWindowRows - 1, traceWindowRows, traceWindowRows + 1, 1001])(
+    "bounds %i rows while keeping the last word",
+    (count) => {
+      const rows = workRows(Array.from({ length: count }, (_, i) => message({ id: `note-${i}` })));
+      const window = traceWindow(rows, { showAll: false, keep: null });
+      expect(window.hidden).toBe(Math.max(0, count - traceWindowRows));
+      expect(window.rows).toEqual(rows.slice(-traceWindowRows));
+      expect(window.rows.at(-1)).toBe(rows.at(-1));
+      expect(traceWindow(rows, { showAll: true, keep: null })).toEqual({ rows, hidden: 0 });
+    },
+  );
 });

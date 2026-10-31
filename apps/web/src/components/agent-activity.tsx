@@ -40,11 +40,13 @@ import {
   turnComputer,
   turnState,
   workRows,
+  traceWindow,
   workSummary,
   workspaceMonogram,
   messageAuthorName,
   messageFoldLines,
   turnFolds,
+  turnOpen,
   turnWords,
   type ActivityStepHead,
   type ActivityTone,
@@ -345,7 +347,11 @@ export function AgentTranscript({
                                     <Fragment key={key}>
                                       {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
                                       {group.kind === "turn" ? (
-                                        <TurnView turn={group.turn} turnKey={group.key} />
+                                        <TurnView
+                                          turn={group.turn}
+                                          turnKey={group.key}
+                                          reveal={revealMessage}
+                                        />
                                       ) : group.kind === "delegation" ? (
                                         <DelegationNotice delegation={group.entry} />
                                       ) : group.kind === "assignment" ? (
@@ -395,12 +401,30 @@ export function AgentTranscript({
 
 /* ---- A turn ---- */
 
-function TurnView({ turn, turnKey }: { turn: Turn; turnKey: string }) {
+function TurnView({
+  turn,
+  turnKey,
+  reveal,
+}: {
+  turn: Turn;
+  turnKey: string;
+  reveal: { readonly id: string } | null;
+}) {
   const live = useContext(TranscriptLive);
   const conversation = useContext(ConversationMode);
   const renderTask = useContext(TaskViews);
-  // Open for as long as the reader is on the task: steps they opened stay open.
-  const [opened, setOpened] = useState(false);
+  const [chosen, setChosen] = useState<boolean | null>(null);
+  const open = turnOpen(turn, chosen);
+  const handledReveal = useRef<typeof reveal>(null);
+  const targetInWork =
+    reveal !== null &&
+    turn.work.some((entry) => entry.kind === "message" && entry.id === reveal.id);
+  const hiddenTarget = targetInWork && !turnWords(turn).some((entry) => entry.id === reveal.id);
+  useLayoutEffect(() => {
+    if (conversation || !targetInWork || handledReveal.current === reveal) return;
+    handledReveal.current = reveal;
+    if (hiddenTarget) setChosen(true);
+  }, [conversation, reveal, hiddenTarget, targetInWork]);
   if (conversation) return <ConversationTurn turn={turn} turnKey={turnKey} />;
   const spoken = turn.reply ?? turn.work.find((entry) => entry.kind === "message");
   const outcome = turn.run !== null && showsRunOutcome(turn.run);
@@ -409,8 +433,9 @@ function TurnView({ turn, turnKey }: { turn: Turn; turnKey: string }) {
     <div className="turn" data-run-id={turn.runId ?? undefined}>
       <AgentByline author={spoken?.kind === "message" ? spoken.author : null} />
       <TurnContent
-        fold={turnFolds(turn) ? { open: opened, onToggle: () => setOpened(!opened) } : undefined}
+        fold={turnFolds(turn) ? { open, onToggle: () => setChosen(!open) } : undefined}
         turn={turn}
+        reveal={reveal?.id ?? null}
         live={live}
       />
       {turn.continued || placesUnderOutcome ? null : (
@@ -1191,6 +1216,7 @@ export function ConversationActivity({
           <div className="activity__body" ref={bodyRef}>
             {activity !== null && activity.steps.length > 0 ? (
               <TurnContent
+                reveal={reveal}
                 entries={activity.steps}
                 live={live}
                 status={false}
@@ -1247,17 +1273,19 @@ export function ConversationActivity({
 }
 
 function TurnContent({
+  reveal = null,
   entries,
   fold,
   live,
   status = true,
   turn,
 }: {
+  reveal?: string | null;
   /** What of the turn to draw; all of its work unless a conversation keeps its reply apart. */
   entries?: readonly WorkEntry[];
   /**
    * Given, the turn's steps fold behind its status line, which opens them in
-   * place. Folded, only what the agent wrote is drawn: the steps are not
+   * place. Folded, only the last word is drawn; the earlier trace is not
    * mounted at all.
    */
   fold?: { readonly open: boolean; readonly onToggle: () => void } | undefined;
@@ -1269,6 +1297,7 @@ function TurnContent({
   status?: boolean;
   turn: Turn;
 }) {
+  const [showAll, setShowAll] = useState(false);
   const active = turnState(turn) !== "settled";
   const folded = fold !== undefined && !fold.open;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
@@ -1277,6 +1306,7 @@ function TurnContent({
     () => workRows(folded ? turnWords(turn) : (entries ?? turn.work)),
     [entries, folded, turn],
   );
+  const trace = traceWindow(rows, { showAll: folded || showAll, keep: reveal });
   return (
     <div className="turn__content">
       {summary === null ? null : (
@@ -1286,7 +1316,12 @@ function TurnContent({
           {...(fold ? { onToggle: fold.onToggle, open: fold.open } : {})}
         />
       )}
-      {rows.map((row) => (
+      {trace.hidden > 0 ? (
+        <button className="trace__earlier" type="button" onClick={() => setShowAll(true)}>
+          Show {trace.hidden} earlier {trace.hidden === 1 ? "step" : "steps"}
+        </button>
+      ) : null}
+      {trace.rows.map((row) => (
         <WorkRowView active={active} key={row.key} live={live} row={row} turn={turn} />
       ))}
     </div>

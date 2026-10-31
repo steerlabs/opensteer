@@ -902,7 +902,8 @@ div.trace-step__head .trace-step__detail {
   overflow: hidden;
 }
 
-.subagent__more {
+.subagent__more,
+.trace__earlier {
   align-self: flex-start;
   color: var(--muted);
   font-size: var(--text-xs);
@@ -910,7 +911,9 @@ div.trace-step__head .trace-step__detail {
 }
 
 .subagent__more:hover,
-.subagent__more:focus-visible {
+.subagent__more:focus-visible,
+.trace__earlier:hover,
+.trace__earlier:focus-visible {
   color: var(--text-soft);
 }
 

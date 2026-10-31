@@ -1503,6 +1503,7 @@ describe("a link into Chat", () => {
     expect(host.loadTranscriptAround).toHaveBeenCalledWith(chatId, chat.noteA.id);
     expect(harness.navigate).toHaveBeenCalledTimes(1);
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: chat.noteA.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${chat.runA}`,
@@ -1644,6 +1645,7 @@ describe("a message that joins the reply under way", () => {
 
     // Named by the turn it was said in, which the reply going on never renames.
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: reply.note.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${reply.runId}`,
@@ -1703,6 +1705,7 @@ describe("a link to an approval", () => {
     ]);
     expect(harness.navigate).toHaveBeenCalledTimes(1);
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: second.receipt.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${second.runId}`,
@@ -1718,6 +1721,7 @@ describe("a link to an approval", () => {
 
     // Named by the stretch that holds the answer, which the reply going on never renames.
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: joined.receipt.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${joined.runId}`,
@@ -1748,6 +1752,7 @@ describe("a link to an approval", () => {
     );
     expect(harness.navigate).toHaveBeenCalledTimes(1);
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: receipt.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${runId}`,
@@ -1774,6 +1779,7 @@ describe("a link to an approval", () => {
 
     expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(1);
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: first.receipt.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${first.runId}`,
@@ -2414,6 +2420,70 @@ describe("a task", () => {
     expect(read.mock.calls).toEqual([[attachment.artifactId], [sent.attachments[0]!.artifactId]]);
   });
 
+  it("opens a settled task's intermediate message from a link", async () => {
+    const task = taskAtWork();
+    const answer = wrote("The statements reconcile.", task.runId, workId);
+    const entries = task.entries.map((entry) =>
+      entry.kind === "run"
+        ? { ...entry, replyMessageId: answer.id, status: "completed" as const }
+        : entry.kind === "tool"
+          ? { ...entry, state: "done" as const }
+          : entry,
+    );
+    const host = fakeHost(
+      snapshotFor({
+        entries: [
+          ...entries,
+          ...Array.from({ length: 35 }, (_, i) => wrote(`Later ${i}`, task.runId, workId)),
+          answer,
+        ],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId, { messageId: task.note.id });
+    expect(text(container)).toContain(task.note.body);
+    expect(text(container)).toContain(answer.body);
+    expect(container.querySelector('[aria-expanded="true"]')).not.toBeNull();
+    expect(harness.scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(harness.navigate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the tail pinned when a live task settles and folds", async () => {
+    const task = taskAtWork();
+    const answer = wrote("The statements reconcile.", task.runId, workId);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, answer],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain(task.note.body);
+    expect(container.querySelector('[aria-expanded="true"]')).not.toBeNull();
+    act(() => {
+      harness.list!.onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      harness.list!.onContentSizeChange?.(390, 1600);
+    });
+    const settled = task.entries.map((entry) =>
+      entry.kind === "run"
+        ? { ...entry, replyMessageId: answer.id, status: "completed" as const }
+        : entry.kind === "tool"
+          ? { ...entry, state: "done" as const }
+          : entry,
+    );
+    await act(async () =>
+      host.move(snapshotFor({ entries: [...settled, answer], run: null, threadId: workId })),
+    );
+    expect(text(container)).not.toContain(task.note.body);
+    expect(text(container)).toContain(answer.body);
+    expect(container.querySelector('[aria-expanded="false"]')).not.toBeNull();
+    harness.scrollToOffset.mockClear();
+    act(() => harness.list!.onContentSizeChange?.(390, 800));
+    expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 200 });
+  });
+
   it("shows queued bubbles after the transcript with actions, its steps and its own Stop", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
@@ -2435,7 +2505,9 @@ describe("a task", () => {
     }
     expect(text(container)).toContain(task.note.body);
     expect(
-      container.querySelector('button[aria-description="Shows this reply\'s steps"]'),
+      container.querySelector(
+        'button[aria-description="Hides this reply\'s steps"][aria-expanded="true"]',
+      ),
     ).not.toBeNull();
     expect(button(container, "Stop this run").dataset["kind"]).toBe("stop");
     expect(hasButton(container, "Stop the reply")).toBe(false);
