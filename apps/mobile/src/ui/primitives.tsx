@@ -10,12 +10,12 @@ import {
   StyleSheet,
   Switch,
   Text,
-  TextInput,
   View,
   type StyleProp,
   type TextInputProps,
   type TextStyle,
 } from "react-native";
+import { TextInput } from "./text-input.js";
 import Animated, {
   cancelAnimation,
   Easing,

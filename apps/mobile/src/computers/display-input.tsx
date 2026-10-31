@@ -252,7 +252,10 @@ export function DisplayControls({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Keyboard"
-            onPress={() => setTyping(true)}
+            onPress={() => {
+              interact();
+              setTyping(true);
+            }}
           >
             <AppText>Keyboard</AppText>
           </Pressable>

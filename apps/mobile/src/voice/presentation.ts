@@ -49,7 +49,7 @@ export interface PresentationDevice {
   /** The drawer lies over the screen; navigating under it would close it. */
   covered(): boolean;
   readonly macVideo: boolean;
-  /** The keyboard rising or the app leaving the foreground. */
+  /** The keyboard rising, the person's own step, or the app leaving the foreground. */
   observe(listener: () => void): () => void;
 }
 
@@ -100,9 +100,10 @@ function shows(route: Route | undefined, destination: Destination): boolean {
  * person's own Chat choice does, and leaves nothing above it for Back. A
  * second Chat over the stack would let a draft drift between two copies, and
  * the sidebar and the Deployment both read the root. Every navigation the
- * presentation did not make, the keyboard rising, a press into a live page or
- * display, the drawer opening and the app leaving the foreground count as the
- * person's own, so nothing captured before them can land after.
+ * presentation did not make, the keyboard rising, focusing or editing a field,
+ * a press into a live page or display, the drawer opening and the app leaving
+ * the foreground count as the person's own, so nothing captured before them can
+ * land after.
  */
 export function mobileScreenPresentation(input: {
   readonly navigator: PresentationNavigator;
