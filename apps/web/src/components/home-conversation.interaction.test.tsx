@@ -527,7 +527,7 @@ describe("Home conversation", () => {
         </ToastProvider>,
       ),
     );
-    expect(node.querySelector('[aria-label="Talk to Opensteer"]')).not.toBeNull();
+    expect(node.querySelector('[aria-label="Talk to Chat"]')).not.toBeNull();
     expect(node.querySelector(".voice-dock")).not.toBeNull();
   });
 

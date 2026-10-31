@@ -1,5 +1,6 @@
 import type { DisplayClientDiagnostic } from "@opensteer/protocol";
 import { NativeBrowserOverlay } from "./native-browser-overlays.js";
+import { interact } from "./workspace/interaction.js";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { HostClient } from "@opensteer/client/host";
@@ -379,6 +380,7 @@ function WatchTheaterContent({
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
   useEffect(() => {
+    interact();
     const opener = openerRef.current;
     closeRef.current?.focus();
     return () => opener?.focus();

@@ -5,7 +5,6 @@ import {
   nativeViewerSource,
   type BrowserSessionSummary,
   type BrowserTabSummary,
-  type TaskSurfaceDestination,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
 import type { BrowserPageContentPart } from "@opensteer/core";
@@ -57,11 +56,14 @@ type SurfacesTarget =
  */
 export type SurfacesRoute = { readonly deploymentId: string } & SurfacesScope & SurfacesTarget;
 
-/** One of a conversation's own tabs or apps, over that conversation's sheet. */
+/**
+ * A tab, app or phone over a conversation's sheet: one of its own, or one an
+ * agent showed together with that conversation.
+ */
 export function surfaceRoute(
   deploymentId: string,
   threadId: string,
-  destination: TaskSurfaceDestination,
+  destination: WorkspaceSurfaceDestination,
 ): SurfacesRoute {
   return { deploymentId, threadId, ...targetParams(destination) };
 }

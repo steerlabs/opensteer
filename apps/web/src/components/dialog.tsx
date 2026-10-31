@@ -2,6 +2,7 @@ import { NativeBrowserOverlay } from "./native-browser-overlays.js";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Icon } from "./icon.js";
 import { fromLivePage } from "../ui-utils.js";
+import { interact } from "./workspace/interaction.js";
 
 const focusableSelector =
   'a[href], button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -52,6 +53,8 @@ function DialogContent({
   );
 
   useEffect(() => {
+    // Opening a modal is the person's own step: a presentation pending since must not land after it closes.
+    interact();
     const opener = openerRef.current;
     // A field that asked for focus (`autoFocus`) is where the person starts;
     // only a dialog with none lands on its close button.

@@ -3140,7 +3140,7 @@ it("docks voice above a task composer, floats without one and ignores unfocused 
         </VoiceContext>,
       ),
     );
-  const bar = '[aria-label="Voice: Listening"]';
+  const bar = '[aria-label="Voice: Talking to Chat"]';
   await draw(true);
   expect(container.querySelector('[aria-label="Task"]')?.querySelector(bar)).not.toBeNull();
   expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).toBeNull();
@@ -3187,8 +3187,8 @@ it("offers voice on Chat's first message but not on a new task composer", async 
       </VoiceContext>,
     ),
   );
-  expect(hasButton(container, "Talk to Opensteer")).toBe(true);
-  await press(container, "Talk to Opensteer");
+  expect(hasButton(container, "Talk to Chat")).toBe(true);
+  await press(container, "Talk to Chat");
   expect(voice.controller.start).toHaveBeenCalledOnce();
   const staged = {
     items: [],
@@ -3224,7 +3224,7 @@ it("offers voice on Chat's first message but not on a new task composer", async 
       </VoiceContext>,
     ),
   );
-  expect(hasButton(container, "Talk to Opensteer")).toBe(false);
+  expect(hasButton(container, "Talk to Chat")).toBe(false);
   await act(async () => voice.move("listening"));
-  expect(container.querySelector('[aria-label="Voice: Listening"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Voice: Talking to Chat"]')).not.toBeNull();
 });
