@@ -1,3 +1,8 @@
+import {
+  ScreenDoneMessageSchema,
+  ScreenReadyMessageSchema,
+  ScreenShowMessageSchema,
+} from "./screen-presentation.js";
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
 import {
   AgentEventViewSchema,
@@ -155,6 +160,7 @@ export function workspaceViewFromWorkspace(workspace: Workspace): WorkspaceView 
 export const unsupportedVersionCloseCode = 4011;
 
 export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
+  ScreenDoneMessageSchema,
   z.strictObject({
     ...clientMessageBase,
     type: z.literal("client.subscribe"),
@@ -165,6 +171,7 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     apiVersion: z.number().int().positive().optional(),
     /** Requires `snapshot-messages-omit-v1`; absence retains message history. */
     snapshotMessages: z.literal("omit").optional(),
+    screenShow: z.literal(true).optional(),
     threadId: ThreadIdSchema.nullable(),
     workspaceId: WorkspaceIdSchema,
   }),
@@ -267,6 +274,8 @@ export type ThreadEventPage = z.infer<typeof ThreadEventPageSchema>;
 const ProtocolErrorViewSchema = z.object(ProtocolErrorSchema.shape);
 
 export const HostToClientMessageSchema = z.discriminatedUnion("type", [
+  ScreenReadyMessageSchema,
+  ScreenShowMessageSchema,
   ComputerViewChangedSchema,
   ComputerViewRemovedSchema,
   z.object({

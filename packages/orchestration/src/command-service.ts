@@ -162,9 +162,19 @@ export class CommandService {
     });
   }
 
-  enqueueThreadInput(input: EnqueueThreadInputRequest): Promise<EnqueuedThreadInput> {
+  enqueueThreadInput(
+    input: EnqueueThreadInputRequest,
+    options: { readonly onCommitted?: (result: EnqueuedThreadInput) => void } = {},
+  ): Promise<EnqueuedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.enqueueThreadInput(input);
+      if (!result.wasDuplicate && options.onCommitted) {
+        try {
+          options.onCommitted(result);
+        } catch {
+          // Ephemeral UI context cannot undo committed work or prevent its publication.
+        }
+      }
       for (const event of result.events) this.#onWorkspaceEvent(event);
       const workspaceId = result.events[0]?.workspaceId;
       if (workspaceId && input.policy !== "report") this.#onWorkspaceActivity?.(workspaceId);

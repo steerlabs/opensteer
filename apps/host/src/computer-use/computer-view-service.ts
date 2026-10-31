@@ -1,3 +1,4 @@
+import type { ScreenSurface } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
@@ -417,6 +418,26 @@ export class ComputerViewService {
     if (held.record.state !== "ready")
       throw this.#refusal("computer-view-ended", "That phone view has ended.");
     return held.record.machineId;
+  }
+  async authorizePresentation(
+    owner: UserId,
+    surface: Exclude<ScreenSurface, { kind: "browser" }>,
+  ): Promise<void> {
+    if (surface.source.kind !== "owner-view") throw new Error("An owner view is required");
+    const held = this.#get(owner, surface.source);
+    await this.#authorize(held, owner);
+    const record = held.record;
+    if (
+      record.machineId !== surface.machineId ||
+      record.state !== "ready" ||
+      (surface.kind === "app"
+        ? record.target.kind !== "app" ||
+          computerAppIdentityKey(record.target.app) !== surface.appKey ||
+          record.target.window !== surface.source.windowId ||
+          record.window?.id !== surface.source.windowId
+        : record.target.kind !== "phone" || record.target.display !== surface.display)
+    )
+      throw this.#refusal("computer-view-ended", "The exact view is unavailable.");
   }
   async authorizeInput(
     source: Extract<DisplaySource, { kind: "owner-view" }>,

@@ -28,6 +28,13 @@ own first-owner credential. Native OAuth is server-only.
 When enabled, `runtimeOrigin` must equal `canonicalOrigin`: external Runners
 must reach every capability URL the Host mints. See [Computers](computers.md).
 
+Requested screen presentations use transient Host memory, never persisted routing
+credentials or a person-wide broadcast. A committed human input binds to the exact
+Main subscription socket that issued its endpoint, user and login; replay cannot
+rebind it. Readiness and dispatch deadlines share a Host monotonic clock. Clients
+conservatively bound that clock using their subscribe round trip, not wall-clock
+synchronization. See [Voice](voice.md).
+
 ## Credentials and machine-local ownership
 
 [HostAuthenticator](../apps/host/src/identity/auth.ts) selects one Host-issued
