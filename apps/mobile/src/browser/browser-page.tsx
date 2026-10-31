@@ -16,6 +16,7 @@ import { browserPromptTextMaxLength } from "@opensteer/protocol";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -38,7 +39,7 @@ import { color, radius, space, touchTarget, type as textType } from "../theme.js
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TextInput } from "../ui/text-input.js";
-import { interact } from "../voice/interaction.js";
+import { holdRemoteEditing, interact } from "../voice/interaction.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { useSurfaceHeader, type SurfaceMenuItem } from "./surface-header.js";
@@ -529,6 +530,7 @@ export function PageTyping(props: {
   readonly legacy?: boolean;
   readonly ref?: Ref<NativeEditingProxyHandle>;
 }): ReactNode {
+  useLayoutEffect(holdRemoteEditing, []);
   return (
     <View style={[styles.typing, styles.bottom]}>
       {props.legacy ? (

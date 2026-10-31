@@ -1,4 +1,5 @@
 const listeners = new Set<() => void>();
+const remoteEditors = new Set<symbol>();
 let drawer = false;
 
 /**
@@ -13,6 +14,21 @@ export function interact(): void {
 export function observeInteraction(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/** Native remote keyboards are not registered with React Native's TextInput.State. */
+export function remoteEditing(): boolean {
+  return remoteEditors.size > 0;
+}
+
+/** Closing a keyboard also invalidates utterances heard while it was open. */
+export function holdRemoteEditing(): () => void {
+  const owner = Symbol();
+  remoteEditors.add(owner);
+  interact();
+  return () => {
+    if (remoteEditors.delete(owner)) interact();
+  };
 }
 
 /** The drawer lies over the screen from the moment it starts to cover it until it has left. */

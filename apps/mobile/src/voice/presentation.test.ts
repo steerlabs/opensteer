@@ -15,6 +15,7 @@ import {
   type PresentationDevice,
   type PresentationNavigator,
 } from "./presentation.js";
+import { holdRemoteEditing, observeInteraction, remoteEditing } from "./interaction.js";
 
 // The real stack router behind a stand-in container: actions change the state
 // at once, as React Navigation's store does, and its `state` event follows
@@ -81,15 +82,17 @@ const device = {
 };
 const phone: PresentationDevice = {
   active: () => device.active,
-  editing: () => device.editing,
+  editing: () => device.editing || remoteEditing(),
   covered: () => device.covered,
   get macVideo() {
     return device.macVideo;
   },
   observe(listener) {
     device.rise = listener;
+    const stop = observeInteraction(listener);
     return () => {
       device.rise = null;
+      stop();
     };
   },
 };
@@ -249,6 +252,19 @@ describe("a presentation on the phone", () => {
     device.editing = true;
     expect(port.blocked()).toEqual({ outcome: "superseded", reason: "busy" });
     device.editing = false;
+    const beforeRemote = guardSince(port);
+    const closeRemote = holdRemoteEditing();
+    try {
+      expect(port.blocked()).toEqual({ outcome: "superseded", reason: "busy" });
+      const duringRemote = guardSince(port);
+      expect(duringRemote.check()).toEqual({ outcome: "superseded", reason: "busy" });
+      closeRemote();
+      expect(port.blocked()).toBeNull();
+      expect(beforeRemote.check()).toEqual({ outcome: "superseded", reason: "interaction-ended" });
+      expect(duringRemote.check()).toEqual({ outcome: "superseded", reason: "interaction-ended" });
+    } finally {
+      closeRemote();
+    }
     device.covered = true;
     expect(port.blocked()).toEqual({ outcome: "superseded", reason: "busy" });
     device.covered = false;

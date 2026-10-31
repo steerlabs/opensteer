@@ -24,7 +24,7 @@ import {
 import { createMobileClipboardPort } from "../../modules/remote-text-input/src/clipboard.js";
 import { AppText } from "../ui/primitives.js";
 import { usePaneGeometry } from "../ui/pane.js";
-import { interact } from "../voice/interaction.js";
+import { holdRemoteEditing, interact } from "../voice/interaction.js";
 import { color } from "../theme.js";
 
 const emptyEditing: DisplayEditingSnapshot = { context: null, receipt: null };
@@ -70,6 +70,7 @@ export function DisplayControls({
   );
   const context = snapshot.display?.generation === picture?.generation ? editing.context : null;
   const [typing, setTyping] = useState(false);
+  useLayoutEffect(() => (held && typing ? holdRemoteEditing() : undefined), [held, typing]);
   const [receipt, setReceipt] = useState<string | null>(null);
   useEffect(() => setReceipt(null), [snapshot.input, snapshot.display?.generation]);
   const proxy = useRef<NativeEditingProxyHandle>(null);

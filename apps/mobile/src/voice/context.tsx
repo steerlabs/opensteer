@@ -9,11 +9,11 @@ import { voiceMediaPort } from "../platform/voice.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { VoiceContext } from "./controls.js";
 import { mobileScreenPresentation, type PresentationDevice } from "./presentation.js";
-import { drawerOpen, observeInteraction } from "./interaction.js";
+import { drawerOpen, observeInteraction, remoteEditing } from "./interaction.js";
 
 const device: PresentationDevice = {
   active: () => AppState.currentState === "active",
-  editing: () => TextInput.State.currentlyFocusedInput() != null,
+  editing: () => TextInput.State.currentlyFocusedInput() != null || remoteEditing(),
   covered: drawerOpen,
   macVideo: Platform.OS !== "ios",
   observe(listener) {

@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import type { HostClient, WebSocketClient } from "@opensteer/client/host";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
+import { remoteEditing } from "../voice/interaction.js";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
   os: "android",
@@ -548,7 +549,9 @@ it("offers Mac input only where its video is available", async () => {
 
 it("resets input when its keyboard blurs", async () => {
   await setup();
+  expect(remoteEditing()).toBe(false);
   await holdAndType();
+  expect(remoteEditing()).toBe(true);
   await act(async () =>
     state.proxy?.onEvent({
       type: "compositionstart",
@@ -563,6 +566,7 @@ it("resets input when its keyboard blurs", async () => {
     }),
   );
   await act(async () => state.proxy?.onEvent({ type: "blur" }));
+  expect(remoteEditing()).toBe(false);
   expect(input()).toEqual([]);
   expect(socket.sent).toContainEqual({ type: "display.input-reset" });
 });
