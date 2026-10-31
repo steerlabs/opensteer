@@ -8,62 +8,28 @@ import VideoToolbox
 /// Records the production task-video producer's authenticated-media payload,
 /// decodes its IDR with VideoToolbox and retains both bitstream and pixels.
 @WorkActor enum VideoEvidence {
-  static func capture(bound: SessionWindow, observation: Observation, out: URL) async throws {
-    let target = CaptureTarget(
-      observationId: bound.ref,
-      app: observation.app, process: bound.process, windowID: bound.windowID,
-      windowToken: AXWindowToken(element: bound.element))
-    let owner = try OwnerViewWindow.bind(target, element: bound.element)
-    let binding = MacVideoBinding(owner)
-    var descriptors: [Int32] = [0, 0]
-    try require(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0, "Video socketpair")
-    let client = descriptors[1]
-    var timeout = timeval(tv_sec: 1, tv_usec: 0)
-    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-    let connection = IPCConnection(
-      id: 901, fileDescriptor: descriptors[0], onFrame: { _, _ in }, onClose: { _ in })
-    connection.enableMedia()
-    connection.resume()
+  static func capture(bound: SessionWindow, observation: Observation, out: URL, recover: Bool = false) async throws {
     let states = Locked<[MacVideoState]>([])
     defer { try? JSONCoding.encoder.encode(states.current).write(to: out.appendingPathComponent("video-states.json")) }
-    let producer = MacWindowVideoProducer(
-      id: "native-N1", binding: binding, operations: SerialTaskChain(), authority: { true },
-      onState: { value in states.withLock { $0.append(value) } })
-    defer {
-      producer.stop()
-      connection.close()
-      Darwin.close(client)
-    }
-    try producer.attach(connection)
-    let read = Task.detached { () throws -> Data in
-      var decoder = FrameDecoder()
-      var bytes = [UInt8](repeating: 0, count: 65_536)
-      let end = Date().addingTimeInterval(12)
-      while Date() < end {
-        let count = Darwin.read(client, &bytes, bytes.count)
-        if count > 0 {
-          decoder.append(Data(bytes.prefix(count)))
-          if let frame = try decoder.next() { return frame }
-        } else if count == 0 {
-          break
-        }
-      }
-      throw JourneyFailure.failed("No H.264 key frame from production producer")
-    }
-    await producer.start(maxLongSide: 1280, maxFps: 15)
-    let frame: Data
-    do { frame = try await read.value } catch {
-      producer.stop()
-      connection.close()
+    let peer = try await VideoPeer(out: out, states: states)
+    do {
+      try await capture(bound: bound, observation: observation, out: out, recover: recover, peer: peer)
+    } catch {
+      await peer.close()
       throw error
     }
-    try require(frame.count > 4, "Media envelope truncated")
-    let length = frame.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
-    try require(length > 0 && length < frame.count - 4, "Invalid media header")
-    let headerData = frame.subdata(in: 4..<(4 + length))
-    let header = try JSONSerialization.jsonObject(with: headerData) as! [String: Any]
+    await peer.close()
+  }
+
+  private static func capture(bound: SessionWindow, observation: Observation, out: URL,
+                              recover: Bool, peer: VideoPeer) async throws {
+    let producer = try await peer.start(app: observation.app, window: bound.windowID)
+    defer { producer.stop() }
+    let binding = producer.binding
+    let owner = binding.window
+    let frame = try await peer.nextGeneration()
+    let (headerData, header, annex) = try media(frame)
     try require(header["key"] as? Bool == true, "First task-video sample is not an IDR")
-    let annex = frame.subdata(in: (4 + length)..<frame.count)
     try annex.write(to: out.appendingPathComponent("N1-task.h264"))
     try headerData.write(to: out.appendingPathComponent("N1-video-header.json"))
     let image = try decode(annex)
@@ -84,10 +50,38 @@ import VideoToolbox
         "meanAbsoluteRGBError": error, "width": image.width, "height": image.height, "passed": true,
       ], options: [.prettyPrinted]
     ).write(to: out.appendingPathComponent("N1-video-comparison.json"))
+    if recover {
+      var generation = try (header["generation"] as? Int).unwrap("Initial video generation")
+      for (name, message) in [
+        ("association", "This window's ownership changed; observe again."),
+        ("membership", "This app changed while it was being observed."),
+      ] {
+        producer.startFailed(HelperError(.staleObservation, message), operation: "plan")
+        try require(!producer.ended && producer.needsResume && producer.inputMap == nil,
+          "A stale \(name) plan ended the view or kept old input available")
+        let (data, header, annex) = try media(try await peer.nextGeneration(after: generation))
+        generation = try (header["generation"] as? Int).unwrap("Recovered video generation")
+        try require(producer.binding === binding && !producer.ended,
+          "Recovery replaced the selected window or ended its view")
+        try require(try pixelDifference(screenshot, decode(annex)) < 0.047,
+          "Recovered \(name) video differs from the selected window")
+        try data.write(to: out.appendingPathComponent("N1-recovered-\(name)-header.json"))
+        try annex.write(to: out.appendingPathComponent("N1-recovered-\(name).h264"))
+      }
+    }
     producer.stop()
     let end = Date().addingTimeInterval(10)
     while !producer.resourcesSettled, Date() < end { try await Task.sleep(nanoseconds: 20_000_000) }
     try require(producer.resourcesSettled, "Video resources did not settle after stop")
+  }
+
+  nonisolated private static func media(_ frame: Data) throws -> (Data, [String: Any], Data) {
+    try require(frame.count > 4, "Media envelope truncated")
+    let length = frame.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+    try require(length > 0 && length < frame.count - 4, "Invalid media header")
+    let data = frame.subdata(in: 4..<(4 + length))
+    let header = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    return (data, header, frame.subdata(in: (4 + length)..<frame.count))
   }
 
   static func decode(_ annex: Data) throws -> CGImage {
@@ -187,4 +181,64 @@ import VideoToolbox
     }
     return Double(sum) / Double(320 * 240 * 3 * 255)
   }
+}
+
+/// Uses the real owner lease, media attachment and helper lifecycle scheduler.
+@MainActor private final class VideoPeer {
+  private let control: WireJourney
+  private let media: WireJourney
+  private let producer = Locked<MacWindowVideoProducer?>(nil)
+
+  init(out: URL, states: Locked<[MacVideoState]>) throws {
+    let control = try WireJourney(out: out.appendingPathComponent("wire"))
+    self.control = control
+    do {
+      media = try WireJourney(out: out.appendingPathComponent("media"), helper: control.helper)
+    } catch {
+      control.close()
+      throw error
+    }
+    let selected = producer
+    control.helper.videoProducerFactory = { id, binding, authority, onState in
+      let value = MacWindowVideoProducer(id: id, binding: binding,
+        operations: SerialTaskChain(), authority: authority, onState: { state in
+          states.withLock { $0.append(state) }
+          onState(state)
+        })
+      selected.withLock { $0 = value }
+      return value
+    }
+    do { try control.helper.start(socketURL: control.out.appendingPathComponent("helper.sock")) }
+    catch { media.close(); control.close(); throw error }
+  }
+
+  func start(app: AppIdentity, window: CGWindowID) async throws -> MacWindowVideoProducer {
+    let identity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(app))
+    let view = "cvw_" + UUID().uuidString.lowercased()
+    let source: [String: Any] = ["kind": "owner-view", "viewId": view, "generation": 1]
+    try await control.hello()
+    _ = try await control.request("view.open", ["viewId": view, "generation": 1,
+      "leaseDurationMs": 300_000, "target": ["kind": "app", "app": identity, "window": window]])
+    let resolved = try await control.request("display.resolve", ["source": source])
+    let target = try (resolved["target"] as? [String: Any]).unwrap("video target")
+    let started = try await control.request("display.start", ["streamId": "dsp_" + UUID().uuidString.lowercased(),
+      "target": target, "sources": [source], "maxLongSide": 1280, "maxFps": 15])
+    try await media.hello()
+    _ = try await media.request("display.attach", ["token": started["attachmentToken"]!])
+    return try producer.current.unwrap("production video producer")
+  }
+
+  func nextGeneration(after generation: Int = 0) async throws -> Data {
+    let deadline = DispatchTime.now().uptimeNanoseconds + 12_000_000_000
+    while let frame = try await media.nextMediaFrame(until: deadline) {
+      if (frame.header["generation"] as? Int ?? 0) > generation {
+        try require(frame.header["key"] as? Bool == true,
+          "First task-video sample after generation \(generation) is not an IDR")
+        return frame.frame
+      }
+    }
+    throw JourneyFailure.failed("No H.264 key frame after generation \(generation) from production producer")
+  }
+
+  func close() { media.close(); control.close() }
 }

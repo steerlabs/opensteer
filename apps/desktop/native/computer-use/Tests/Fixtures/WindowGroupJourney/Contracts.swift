@@ -262,7 +262,7 @@ import ApplicationServices
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try save(moved, "observation", out: directory)
         if videoAvailable {
-          do { try await VideoEvidence.capture(bound: try state.currentWindow.unwrap("A video"), observation: moved, out: directory) }
+          do { try await VideoEvidence.capture(bound: try state.currentWindow.unwrap("A video"), observation: moved, out: directory, recover: op == "baseline") }
           catch { videoAvailable = false; failures.append("N1 video: " + String(describing: error)) }
         }
       }

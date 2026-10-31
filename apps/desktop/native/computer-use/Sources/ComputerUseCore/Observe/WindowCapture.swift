@@ -18,10 +18,6 @@ import UniformTypeIdentifiers
 /// Capture happens in two steps. `plan` decides the crop, which the tree walk
 /// needs to know what is in the picture; `take` renders it afterwards.
 public enum WindowCapture {
-  /// Enumeration and AX discovery are different snapshots. A live stream can
-  /// plan again when their membership disagrees; a closed root stays terminal.
-  static let membershipChanged = HelperError(
-    .staleObservation, "This app changed while it was being observed.")
   /// `computerUseScreenshotMaxLongSide` and `computerUseScreenshotMaxPixels`:
   /// the largest picture every current vision model reads without resizing it
   /// first. A picture a model resizes moves every point it reads off it, so a
@@ -94,12 +90,20 @@ public enum WindowCapture {
   }
 
   @WorkActor
+  static func shareableContent() async throws -> (windows: [SCWindow], displays: [SCDisplay]) {
+    let content = try await SCShareableContent.excludingDesktopWindows(
+      true, onScreenWindowsOnly: false)
+    return (content.windows, content.displays)
+  }
+
+  @WorkActor
   static func plan(
     processIdentifier: pid_t,
     keyWindow: WindowIdentity,
     screenRecordingGranted: Bool = CGPreflightScreenCaptureAccess(),
     outputMaxLongSide: Int? = nil,
-    group suppliedGroup: WindowGroup?
+    group suppliedGroup: WindowGroup?,
+    content: @WorkActor () async throws -> (windows: [SCWindow], displays: [SCDisplay]) = shareableContent
   ) async throws -> Plan {
     guard screenRecordingGranted else { throw screenRecordingRequired }
 
@@ -116,12 +120,9 @@ public enum WindowCapture {
       else { throw SessionWindows.closed }
       group = try WindowGroup.resolve(window: window, process: process, lifecycleRevision: 0)
     }
-    let content: SCShareableContent
+    let snapshot: (windows: [SCWindow], displays: [SCDisplay])
     do {
-      content = try await SCShareableContent.excludingDesktopWindows(
-        true,
-        onScreenWindowsOnly: false
-      )
+      snapshot = try await content()
     } catch {
       let nativeError = error as NSError
       Log.observe.error(
@@ -135,20 +136,24 @@ public enum WindowCapture {
     }
 
     guard
-      let root = content.windows.first(where: {
+      let root = snapshot.windows.first(where: {
         $0.windowID == keyWindow.windowID && $0.owningApplication?.processID == processIdentifier
       })
-    else { throw SessionWindows.closed }
+    else {
+      // Capture enumeration can lag behind the retained window's liveness read.
+      // Only that identity check may declare the selected window closed.
+      throw HelperError(.staleObservation, "This app changed while it was being observed.")
+    }
     if group.alone {
       return planAlone(root, keyWindow: group.root, outputMaxLongSide: outputMaxLongSide)
     }
-    guard let display = content.displays.first(where: { $0.displayID == group.displayID }) else {
+    guard let display = snapshot.displays.first(where: { $0.displayID == group.displayID }) else {
       throw HelperError(
         .unsupported,
         "The window is not on a display this Mac can capture; ask the person to move it.")
     }
     let memberIDs = Set(group.members.map(\.window.windowID))
-    let capturedWindows = content.windows.filter {
+    let capturedWindows = snapshot.windows.filter {
       memberIDs.contains($0.windowID) && $0.owningApplication?.processID == processIdentifier
         && $0.isOnScreen && $0.frame.width > 0 && $0.frame.height > 0
     }
@@ -156,7 +161,7 @@ public enum WindowCapture {
       MacVideoDiagnostic.write(["event": "capture-plan-members-stale", "root": keyWindow.windowID,
         "members": group.members.count, "captured": capturedWindows.count,
         "rootOnScreen": root.isOnScreen, "alone": group.alone])
-      throw membershipChanged
+      throw HelperError(.staleObservation, "This app changed while it was being observed.")
     }
     let cropPoints = group.crop
     let filter = SCContentFilter(display: display, including: capturedWindows)
