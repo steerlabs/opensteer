@@ -1,3 +1,4 @@
+import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
   WorkspaceTabsInputSchema,
   WorkspaceTabLineageSchema,
@@ -56,6 +57,9 @@ import {
   LocalPasswordRecoveryTokenSchema,
   MessageContentSchema,
   MessageIdSchema,
+  NotificationInstallationIdSchema,
+  NotificationPreviewKeyIdSchema,
+  NotificationPreviewKeySchema,
   MessageViewSchema,
   ModelSelectionSchema,
   OpensteerErrorCodeSchema,
@@ -524,6 +528,13 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     workspaceId: WorkspaceIdSchema,
     muted: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal("notification.preview.register"),
+    installationId: NotificationInstallationIdSchema,
+    accountId: ControlPlaneAccountIdSchema,
+    keyId: NotificationPreviewKeyIdSchema,
+    key: NotificationPreviewKeySchema,
   }),
   // The reader's IANA time zone, which a client reports from its own clock so
   // an agent asked for "5pm" means the person's 5pm.
@@ -1121,6 +1132,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   WorkspaceNotificationPreferenceSchema.extend({
     type: z.literal("workspace.notifications.update"),
+  }),
+  z.object({
+    type: z.literal("notification.preview.register"),
+    installationId: NotificationInstallationIdSchema,
+    keyId: NotificationPreviewKeyIdSchema,
+    registered: z.literal(true),
   }),
   z.object({ timeZone: TimeZoneSchema, type: z.literal("viewer.timeZone.update") }),
   z.object({

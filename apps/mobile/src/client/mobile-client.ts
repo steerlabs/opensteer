@@ -1,3 +1,4 @@
+import type { NotificationPreviews } from "../notifications/notification-preview.js";
 import { SavedViewCache } from "./saved-view-cache.js";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import { hostApiVersion, hostKeyFingerprint, isSameHost } from "@opensteer/deployment-authority";
@@ -104,6 +105,7 @@ export interface MobileDirectoryState {
 }
 
 export interface MobileClientOptions {
+  readonly notificationPreviews?: NotificationPreviews | null;
   readonly lifecycle?: ClientLifecycle;
   readonly savedViewStore?: SavedViewStore;
   readonly accountOrigin: string | null;
@@ -156,6 +158,7 @@ export interface MobileClientOptions {
  * afterwards means the route did not move while the operation was in flight.
  */
 export class MobileClient {
+  readonly #notificationPreviews: NotificationPreviews | null;
   readonly savedViews: SavedViewPresentation;
   readonly #lifecycle: ClientLifecycle | undefined;
   readonly accountDirectory: AccountDeploymentDirectoryService;
@@ -239,6 +242,7 @@ export class MobileClient {
   };
 
   constructor(options: MobileClientOptions) {
+    this.#notificationPreviews = options.notificationPreviews ?? null;
     this.#savedViewCache = new SavedViewCache({
       store: options.savedViewStore ?? createMemorySavedViews(),
       files: options.privateFiles,
@@ -287,7 +291,10 @@ export class MobileClient {
     });
     this.#authStore = createSecureAuthStore(options.records);
     this.sessions = createPersonalSessionStore(options.records, {
-      beforeChange: (id) => this.#invalidateSavedView(id),
+      beforeChange: async (id) => {
+        await this.#notificationPreviews?.clear(id);
+        await this.#invalidateSavedView(id);
+      },
       changed: (session) => {
         if (
           this.#hostClient !== null &&
@@ -327,6 +334,8 @@ export class MobileClient {
       },
     });
     this.oauth = new NativeOAuthManager({
+      // Previews end with the login itself (sign-out, removal, a replaced session),
+      // not when a sign-in flow starts: a cancelled flow keeps the live login.
       beforeAccountChange: () => this.#invalidateAccountSavedViews(),
       beforeHostChange: (connection) =>
         this.#invalidateSavedView(connection.authority.document.deploymentId),
@@ -573,10 +582,12 @@ export class MobileClient {
   signOut(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.#authorizationEpoch += 1;
+    const previewCleanup = this.#notificationPreviews?.clear(id);
     const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
     return this.#operations.run(async () => {
       try {
+        await previewCleanup;
         await invalidation;
         if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
         await this.#signOutNow(id);
@@ -602,6 +613,7 @@ export class MobileClient {
    * app switch.
    */
   async foregrounded(): Promise<void> {
+    void this.#notificationPreviews?.reconcile().catch(noop);
     await this.#savedViewCache.retryInvalidation();
     await this.directoryRefresh.request("app-focus");
     const id = this.#state.selection.deploymentId;
@@ -761,6 +773,7 @@ export class MobileClient {
 
   signOutAccount(): Promise<void> {
     this.#authorizationEpoch += 1;
+    const previewCleanup = this.#notificationPreviews?.clear(null);
     const invalidation = this.#invalidateAccountSavedViews();
     // Decided before anything awaits: only a Deployment the Account lists
     // leaves with it, and this iPhone stops sharing with it at once.
@@ -773,6 +786,7 @@ export class MobileClient {
       )?.authority.document.deploymentId ?? null;
     const iphone = leaving === null ? null : this.#stopIphoneApps(leaving);
     return this.#operations.run(async () => {
+      await previewCleanup;
       await invalidation;
       if (leaving !== null && iphone !== null) await this.#tellHostIphoneStopped(leaving, iphone);
       const selected = this.#attachedDeploymentId;
@@ -797,10 +811,12 @@ export class MobileClient {
   remove(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.#authorizationEpoch += 1;
+    const previewCleanup = this.#notificationPreviews?.clear(id);
     const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
     return this.#operations.run(async () => {
       try {
+        await previewCleanup;
         await invalidation;
         if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
         await this.#removeNow(id);
@@ -1062,9 +1078,44 @@ export class MobileClient {
       this.#hostClient = hostClient;
       this.#hostOrigin = attachment.resolved.origin;
       this.#readAttachment(hostClient);
-      this.#hostClientDetach = hostClient.subscribe(() => {
+      let previewAuthenticated = false;
+      const detachHost = hostClient.subscribe(() => {
+        const previous = this.#attachmentState;
         if (this.#readAttachment(hostClient)) void this.#republish();
+        const authenticated = hostClient.getSnapshot().session === "authenticated";
+        if (
+          authenticated &&
+          (!previewAuthenticated ||
+            (previous !== "connected" && this.#attachmentState === "connected"))
+        )
+          void this.#notificationPreviews?.reconcile().catch(noop);
+        previewAuthenticated = authenticated;
       });
+      const attachPreviews = () =>
+        this.#notificationPreviews?.attach({
+          deploymentId: id,
+          get capabilities() {
+            return evidence?.capabilities ?? [];
+          },
+          current: () =>
+            this.#hostClient === hostClient &&
+            hostClient.getSnapshot().session === "authenticated" &&
+            generation === this.#fence.generation &&
+            !this.#changingLogins.has(id),
+          dispatch: (command) => hostClient.rpc["commands.dispatch"](command),
+        });
+      attachPreviews();
+      let previewAccountLoginId = this.oauth.accountViewLoginId();
+      const detachAccount = this.oauth.subscribe(() => {
+        const loginId = this.oauth.accountViewLoginId();
+        if (loginId === previewAccountLoginId) return;
+        previewAccountLoginId = loginId;
+        if (loginId !== undefined) attachPreviews();
+      });
+      this.#hostClientDetach = () => {
+        detachHost();
+        detachAccount();
+      };
       this.savedViews.attach(hostClient);
       await this.#republish();
       if (this.#isCurrentSelection(id, attempt) && this.#hostClient === hostClient) {

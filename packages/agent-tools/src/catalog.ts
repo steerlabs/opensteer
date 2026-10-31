@@ -6,6 +6,7 @@ import {
 } from "@opensteer/core";
 import {
   MessageIdSchema,
+  PersonNotifyMessageSchema,
   PlaceContentPartSchema,
   AgentCapabilityProfileIdSchema,
   DelegationModelChoiceSchema,
@@ -37,6 +38,7 @@ export const AgentToolIdSchema = z.enum([
   "thread.list",
   "thread.delegate",
   "thread.message",
+  "person.notify",
   "thread.write",
   "assignment.cancel",
   "request.list",
@@ -66,6 +68,7 @@ export const AgentToolNameSchema = z.enum([
   "thread_list",
   "thread_delegate",
   "thread_message",
+  "person_notify",
   "thread_write",
   "assignment_cancel",
   "request_list",
@@ -383,6 +386,20 @@ const definitions = [
     name: "assignment_cancel",
   },
   {
+    id: "person.notify",
+    name: "person_notify",
+    description:
+      "Send the person who started this Run a short message in this Thread and alert them on their devices, without ending this Run. Use it only when they have likely walked away and something is worth coming back for, or they asked to be told; never for routine progress or when your final reply is imminent.",
+    inputSchema: z.strictObject({ message: PersonNotifyMessageSchema }),
+    annotations: {
+      title: "Notify Person",
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+      readOnlyHint: false,
+    },
+  },
+  {
     annotations: {
       destructiveHint: false,
       idempotentHint: false,
@@ -391,7 +408,7 @@ const definitions = [
       title: "Message Thread",
     },
     description:
-      'To send an asynchronous update, set delivery: "report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person. "queue" starts an idle Thread or waits for its next turn; "steer" directs a compatible active Run and fails if none can be steered. queue/steer joins an active task; returned assignmentId identifies it (null if none). To continue a finished task and receive its result, use thread_delegate. Only replies reach the person: queue to their conversational Thread so its reply notifies them. threadId "home" is Chat; any Thread may report there, but queue requires reach. disposition is steering, run-queued or pending; accepted does not mean read. The Host supplies authorship.',
+      'To send an asynchronous update, set delivery: "report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person. "queue" starts an idle Thread or waits for its next turn; "steer" directs a compatible active Run and fails if none can be steered. queue/steer joins an active task; returned assignmentId identifies it (null if none). To continue a finished task and receive its result, use thread_delegate. Use person_notify for a worthwhile message to the person while continuing this Run. threadId "home" is Chat; any Thread may report there, but queue requires reach. disposition is steering, run-queued or pending; accepted does not mean read. The Host supplies authorship.',
     id: "thread.message",
     inputSchema: z.strictObject({
       delivery: z.enum(["report", "queue", "steer"]),
@@ -777,6 +794,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "environment.list",
       "thread.delegate",
       "thread.message",
+      "person.notify",
       "thread.write",
       "assignment.cancel",
       "request.list",
@@ -805,6 +823,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "environment.list",
       "thread.delegate",
       "thread.message",
+      "person.notify",
       "thread.write",
       "assignment.cancel",
       "request.list",
@@ -832,6 +851,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "environment.list",
       "thread.delegate",
       "thread.message",
+      "person.notify",
       "thread.write",
       "assignment.cancel",
       "request.list",
@@ -987,6 +1007,11 @@ export function platformGuideForRun(input: {
     platformGuideForCapabilityProfile(input.capabilityProfileId),
     `Role: ${input.role}`,
     input.role === "conversation" ? conversationRoleGuide : workRoleGuide,
+    ...(capabilityProfileAllowsTool(input.capabilityProfileId, "person.notify")
+      ? [
+          "person_notify alerts the person mid-Run; reserve it for what they would want to know now.",
+        ]
+      : []),
     replyFormatGuide,
   ].join("\n\n");
 }

@@ -1655,7 +1655,9 @@ function makeService(options: {
     >
   >;
   capabilityProfileId?: Thread["capabilityProfileId"];
+  runnerCapabilities?: readonly string[];
   commands: {
+    publishPersonNotification?: ReturnType<typeof vi.fn>;
     delegateThread: ReturnType<typeof vi.fn>;
     enqueueThreadInput: ReturnType<typeof vi.fn>;
   };
@@ -1821,7 +1823,7 @@ function makeService(options: {
     admitAgentControlRequest,
     agentThreadLineage: vi.fn(async (threadId: Thread["id"]) => lineageIds(threadId)),
     agentThreadPageForOwner,
-    runnerCapabilities: async () => [],
+    runnerCapabilities: async () => options.runnerCapabilities ?? [],
     environmentIsAvailableToUser: vi.fn(
       async (id: EnvironmentId) => environments.includes(id) && id !== options.foreignEnvironmentId,
     ),
@@ -2004,6 +2006,7 @@ function makeService(options: {
   };
   const wakeWorkspace = vi.fn(async () => undefined);
   const commands = {
+    publishPersonNotification: options.commands.publishPersonNotification,
     withInputAdmission: async <T>(_owner: string, _key: string, operation: () => Promise<T>) =>
       operation(),
     delegateAdmittedThread: async (
@@ -2296,3 +2299,52 @@ function inboxInput(
     updatedAt: now,
   };
 }
+
+it("uses authenticated admission for a person notification without waking work", async () => {
+  const messageId = createId("message");
+  const publishPersonNotification = vi.fn(async () => ({
+    message: { id: messageId },
+    events: [],
+    wasDuplicate: false,
+  }));
+  const fixture = makeService({
+    runnerCapabilities: ["person-notify-v1"],
+    commands: { publishPersonNotification, delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+    messages: [],
+    threads: [thread(currentThreadId, nativeHarnessId, "Main")],
+  });
+  const requestId = crypto.randomUUID();
+  await expect(
+    fixture.service.handle("run-token", { type: "person.notify", requestId, message: "Ready." }),
+  ).resolves.toEqual({ type: "person.notify.result", requestId, messageId });
+  expect(publishPersonNotification).toHaveBeenCalledWith({
+    message: "Ready.",
+    admission: expect.objectContaining({
+      action: "person.notify",
+      requestedBy: fixture.claims.requestedBy,
+      sourceThreadId: fixture.claims.threadId,
+      runId: fixture.claims.runId,
+      requestId,
+    }),
+  });
+  expect(fixture.wakeWorkspace).not.toHaveBeenCalled();
+});
+
+it("omits client-only addressing from agent thread history", async () => {
+  const current = thread(currentThreadId, nativeHarnessId, "Main");
+  const original = message(current.id, null, "Published milestone");
+  const addressed = { ...original, addressedToUserId: ownerId };
+  const fixture = makeService({
+    commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+    messages: [addressed],
+    threads: [current],
+  });
+  const response = await fixture.service.handle("run-token", {
+    type: "thread.read",
+    requestId: crypto.randomUUID(),
+    threadId: current.id,
+  });
+  expect(response).toMatchObject({ type: "thread.read.result", messages: [original] });
+  if (response.type !== "thread.read.result") throw new Error("Wrong response");
+  expect(response.messages[0]).not.toHaveProperty("addressedToUserId");
+});

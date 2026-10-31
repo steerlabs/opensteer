@@ -458,6 +458,7 @@ const migrationProvider = {
       "0011_reply_notifications": replyNotificationMigration,
       "0012_notification_device_environment": notificationDeviceEnvironmentMigration,
       "0013_better_auth_17": betterAuth17Migration,
+      "0014_notification_previews": notificationPreviewsMigration,
     };
   },
 };
@@ -480,3 +481,9 @@ function assertMigrationSucceeded(result: MigrationResultSet): void {
     );
   }
 }
+
+export const notificationPreviewsMigration: Migration = {
+  async up(database) {
+    await sql`alter table notification_deliveries add column preview jsonb`.execute(database);
+  },
+};

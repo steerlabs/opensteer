@@ -1,6 +1,6 @@
 import { createId, parseMobileThreadDeepLink } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { notificationMessage } from "./notification-message.js";
+import { notificationCollapseId, notificationMessage } from "./notification-message.js";
 
 const deploymentId = createId("deployment");
 const threadId = createId("thread");
@@ -43,7 +43,7 @@ describe("notificationMessage", () => {
 
   it.each([
     ["reply-published", "Opensteer replied", { messageId }],
-    ["request-opened", "Opensteer needs your approval", { requestId }],
+    ["request-opened", "Opensteer needs you", { requestId }],
     ["run-failed", "Opensteer couldn't finish", {}],
     ["report-published", "An agent shared an update", { messageId }],
     ["run-completed", "A run finished", {}],
@@ -70,4 +70,35 @@ describe("notificationMessage", () => {
       });
     }
   });
+});
+
+it("uses bounded deployment-qualified replacement identities and separates Requests", () => {
+  const input = {
+    deploymentId,
+    threadId,
+    kind: "request-opened" as const,
+    requestId,
+    notificationId: createId("notification"),
+  };
+  const first = notificationCollapseId(input);
+  expect(first).toMatch(/^osn1_[A-Za-z0-9_-]{43}$/u);
+  expect(first.length).toBe(48);
+  expect(notificationCollapseId({ ...input, notificationId: createId("notification") })).toBe(
+    first,
+  );
+  expect(notificationCollapseId({ ...input, requestId: createId("request") })).not.toBe(first);
+  expect(notificationCollapseId({ ...input, deploymentId: createId("deployment") })).not.toBe(
+    first,
+  );
+  expect(notificationCollapseId({ ...input, requestId: null })).not.toBe(
+    notificationCollapseId({ ...input, requestId: null, notificationId: createId("notification") }),
+  );
+  expect(notificationCollapseId({ ...input, kind: "reply-published" })).toBe(
+    notificationCollapseId({
+      ...input,
+      kind: "reply-published",
+      notificationId: createId("notification"),
+      requestId: null,
+    }),
+  );
 });

@@ -268,35 +268,46 @@ Expo Go cannot provide the native modules or OAuth scheme; use a custom client.
 
 ## 6. Notifications
 
-Alerts are best-effort; the conversation is durable. The Host does not persist
-or replay alerts, so a crash can lose one without losing unread work. Direct
-replies, waiting Requests and unexpected failures notify; delegated results and
-reports are agent context. Muting suppresses replies/failures, never Requests.
-Sources: `packages/database/src/notification-store.ts` and
-`apps/host/src/notifications/notification-dispatcher.ts`.
+Alerts are best effort; conversations are durable. Direct replies, waiting Requests,
+failures and explicitly addressed agent messages use the existing notification path.
+Muting suppresses replies/failures, never Requests. Provider acceptance proves
+neither display nor reading; queued and delivered alerts cannot be recalled.
 
-Phone push requires an Account channel. Recheck Host publication, membership,
-mute/read state and Request status before delivery. Publications carry identifiers
-and expiry only, never prompts, titles, output or credentials. The Account owns
-fixed lock-screen text and intersects recipients with current Deployment access.
-Provider acceptance proves neither display nor reading. Collapse IDs/tags can let
-an older retry replace a newer alert. Keep the Account's older Host notification
-kinds and expiry window compatible; see `apps/control-plane/src/notifications/notification-store.ts`.
+Phone push requires an Account channel and raw APNs/FCM tokens. The Account gets
+routing identifiers and expiry, plus optional encrypted preview envelopes. The Host
+seals its already-decided title/body independently for each registered installation;
+the Account never receives plaintext or preview keys. Account readers must deploy
+before rebuilt phones register keys (see
+[Active compatibility gates](host-boundaries.md#active-compatibility-gates)). Older phones/Hosts retain generic alerts.
 
-Use raw APNs/FCM device tokens, never Expo push tokens. Installation identity lives
-outside the directory-synced catalog. Keep the last confirmed registration after
-a refusal so sign-out can withdraw it. Withdrawal precedes Account credential
-revocation, even without a configured provider. Re-register on foreground so a
-provider-disabled registration can recover; never log device tokens.
+A rebuilt phone registers only after authenticated attachment, Host capability
+`notification-preview-v1`, native version 1 and successful Account push registration.
+It reuses PushRegistration's installation identity without delaying attachment.
+Keys are native secure random, one per Deployment, persisted before registration.
+iOS shares preview keys with the notification service extension through the App
+Group Keychain access group; ordinary credentials retain their private access group.
+Android wraps key records with AndroidKeyStore in noBackupFilesDir. Backup-excluded
+installation markers fence surviving keys after reinstall; launch purges stale keys.
+Sign-out fences registration and erases the local key before revoking credentials;
+starting a sign-in does not, so a cancelled flow keeps the live login and its key.
+Host keys die with the Host login session through cascading deletion; Account
+sign-out withdraws the push device. Erasure failure does not stop session revocation.
 
-APNs environment comes from signing entitlement/provisioning; absence means
-production only for App Store distribution, otherwise fail rather than guess.
-The Account must accept the registration shape before shipping a phone that sends
-it. APNs and FCM configure independently. See
-`apps/mobile/src/notifications/push-registration.ts` and
-[push verification](../.agents/skills/test-mobile-push/SKILL.md).
+The iOS extension and Android service authenticate routing and expiry before local
+decryption. They need no network or background JavaScript. Failure leaves generic
+text. Expo owns Android foreground presentation, responses and dismissal; notification
+identifiers use deploymentId:notificationId, with notifications stacked in their
+Thread group. Payload logging is
+disabled in the pinned Expo dependency in every build.
 
-Notification deepLink is the sole destination source, parsed by
+Keep the last confirmed Account registration after refusal so sign-out can withdraw
+it. Account withdrawal precedes credential revocation. Re-register on foreground
+for provider recovery. APNs environment comes from signing, never a guessed default.
+Both iOS targets need the App Group in their provisioning profiles; see
+[push verification](../.agents/skills/test-mobile-push/SKILL.md). Signed delivery,
+first-unlock behavior and reinstall acceptance require Tim's device workflow.
+
+Notification deepLink is the sole navigation source, parsed by
 `packages/core/src/deep-links.ts`. It grants no authority: authenticate and read
 current state first. Suppress presentation only for a recognized destination
-already being read; unknown payloads must remain visible.
+already being read; unknown payloads remain visible.

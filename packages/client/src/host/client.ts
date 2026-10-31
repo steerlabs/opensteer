@@ -300,6 +300,7 @@ export interface RunQueueEntry {
 }
 
 export interface MessageEntry {
+  addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
   published?: boolean;
   quote?: MessageQuote;

@@ -20,6 +20,7 @@ import {
   type ThreadInput,
   type ThreadRunQueueEntry,
   type WorkspaceId,
+  type UserId,
   type RunUsage,
 } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
@@ -106,7 +107,11 @@ type HostWorkspaceEventInput =
       readonly workspaceId: WorkspaceId;
     }
   | {
-      readonly data: { readonly input: ThreadInput | null; readonly message: Message };
+      readonly data: {
+        readonly input: ThreadInput | null;
+        readonly message: Message;
+        readonly addressedToUserId?: UserId;
+      };
       readonly environmentId: EnvironmentId;
       readonly runId: RunId | null;
       readonly threadId: ThreadId;

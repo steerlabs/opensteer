@@ -6,6 +6,8 @@ import {
   maximumNotificationRecipients,
   MessageIdSchema,
   NotificationIdSchema,
+  NotificationInstallationIdSchema,
+  NotificationPreviewEnvelopeSchema,
   NotificationKindSchema,
   RequestIdSchema,
   RunIdSchema,
@@ -38,36 +40,64 @@ export type PublishedNotificationKind = z.infer<typeof PublishedNotificationKind
 
 /**
  * What a Host tells the Account when a person should hear from Opensteer.
- * Identifiers and bounded delivery metadata only: no prompt, reply, output,
- * approval content, Thread title, Workspace name, person's name, or credential
- * ever crosses this boundary, because the Account has no business holding any
- * of it and a lock screen is not a private surface.
+ * Identifiers, bounded delivery metadata and optional per-installation sealed
+ * previews only. The Account cannot decrypt titles or excerpts; it retains
+ * ciphertext only until delivery settles or expires. Generic phrases serve
+ * phones without a registered preview key.
  *
  * `recipientAccountIds` is the Host's authorization answer — it alone knows who
  * may see the Thread — and the Account intersects it with the Accounts that
  * currently reach this Deployment, so a compromised Host cannot address
  * somebody else's phone.
  */
-export const HostNotificationPublicationSchema = z.strictObject({
-  deploymentId: DeploymentIdSchema,
-  eventId: EventIdSchema,
-  expiresAt: IsoDateTimeSchema,
-  hostInstanceId: HostInstanceIdSchema,
-  kind: PublishedNotificationKindSchema,
-  messageId: MessageIdSchema.nullable().optional(),
-  notificationId: NotificationIdSchema,
-  occurredAt: IsoDateTimeSchema,
-  recipientAccountIds: z
-    .array(ControlPlaneAccountIdSchema)
-    .min(1)
-    .max(maximumNotificationRecipients),
-  requestId: RequestIdSchema.nullable(),
-  runId: RunIdSchema.nullable(),
-  schemaVersion: z.literal(1),
-  sequence: SequenceSchema,
-  threadId: ThreadIdSchema,
-  workspaceId: WorkspaceIdSchema,
-});
+export const HostNotificationPublicationSchema = z
+  .strictObject({
+    deploymentId: DeploymentIdSchema,
+    eventId: EventIdSchema,
+    expiresAt: IsoDateTimeSchema,
+    hostInstanceId: HostInstanceIdSchema,
+    kind: PublishedNotificationKindSchema,
+    messageId: MessageIdSchema.nullable().optional(),
+    notificationId: NotificationIdSchema,
+    occurredAt: IsoDateTimeSchema,
+    previews: z
+      .array(
+        z.strictObject({
+          accountId: ControlPlaneAccountIdSchema,
+          installationId: NotificationInstallationIdSchema,
+          preview: NotificationPreviewEnvelopeSchema,
+        }),
+      )
+      .max(16)
+      .optional(),
+    recipientAccountIds: z
+      .array(ControlPlaneAccountIdSchema)
+      .min(1)
+      .max(maximumNotificationRecipients),
+    requestId: RequestIdSchema.nullable(),
+    runId: RunIdSchema.nullable(),
+    schemaVersion: z.literal(1),
+    sequence: SequenceSchema,
+    threadId: ThreadIdSchema,
+    workspaceId: WorkspaceIdSchema,
+  })
+  .superRefine((publication, context) => {
+    const seen = new Set<string>();
+    for (const preview of publication.previews ?? []) {
+      const target = JSON.stringify([preview.accountId, preview.installationId]);
+      if (seen.has(target) || !publication.recipientAccountIds.includes(preview.accountId)) {
+        context.addIssue({ code: "custom", message: "Invalid notification preview audience" });
+      }
+      seen.add(target);
+    }
+    if (
+      publication.previews?.length &&
+      (!Number.isFinite(Date.parse(publication.expiresAt)) ||
+        new Date(publication.expiresAt).toISOString() !== publication.expiresAt)
+    ) {
+      context.addIssue({ code: "custom", message: "Preview expiry must be canonical UTC" });
+    }
+  });
 export type HostNotificationPublication = z.infer<typeof HostNotificationPublicationSchema>;
 
 /**
@@ -98,7 +128,7 @@ export type NotificationDevicePlatform = z.infer<typeof NotificationDevicePlatfo
  * registration's key, so rotating the provider token updates the row this
  * install already owns instead of leaving an undeliverable one behind.
  */
-export const NotificationInstallationIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/u);
+export { NotificationInstallationIdSchema } from "@opensteer/core";
 
 /**
  * The provider's own device token. The character class is the intersection of

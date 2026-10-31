@@ -22,3 +22,8 @@ export * from "./workspace-tab-store.js";
 export * from "./browser-tab-group-store.js";
 
 export { BrowserHistoryStore } from "./browser-history-store.js";
+export type {
+  PersonNotificationInput,
+  PersonNotificationResult,
+} from "./person-notification-store.js";
+export * from "./notification-preview-key-store.js";

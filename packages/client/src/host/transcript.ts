@@ -335,7 +335,12 @@ export function foldTranscriptEvent(
       return upsertEntry(entries, requestReceipt(event.data.request));
     case "message.created": {
       const entry = toTranscriptEntry(
-        event.data.message,
+        {
+          ...event.data.message,
+          ...(event.data.addressedToUserId
+            ? { addressedToUserId: event.data.addressedToUserId }
+            : {}),
+        },
         event.data.input?.policy,
         event.data.input,
       );
@@ -524,6 +529,7 @@ function counterpart(
     (candidate) =>
       candidate.kind === "message" &&
       candidate.messageKind === "assistant" &&
+      !candidate.addressedToUserId &&
       candidate.runId === entry.runId &&
       candidate.streaming !== true &&
       !earlierIds.has(candidate.id) &&
@@ -933,6 +939,7 @@ export function toMessageEntry(
   );
   return {
     author: message.author,
+    ...(message.addressedToUserId ? { addressedToUserId: message.addressedToUserId } : {}),
     sequence: message.sequence,
     published: input ? threadInputIsPublished(input) : (message.published ?? true),
     ...(message.quote ? { quote: message.quote } : {}),

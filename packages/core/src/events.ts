@@ -5,6 +5,7 @@ import {
   EventIdSchema,
   ExecutionNodeIdSchema,
   MessageIdSchema,
+  UserIdSchema,
   RunIdSchema,
   SequenceSchema,
   RequestIdSchema,
@@ -182,6 +183,7 @@ const eventDataSchemas = {
   "message.created": z.object({
     input: ThreadInputSchema.nullable(),
     message: MessageSchema,
+    addressedToUserId: UserIdSchema.optional(),
   }),
   "message.injected": z.object({
     messageId: MessageIdSchema,
@@ -422,6 +424,7 @@ const eventDataViewSchemas = {
   "message.created": z.object({
     input: ThreadInputViewSchema.nullable(),
     message: MessageViewSchema,
+    addressedToUserId: UserIdSchema.optional(),
   }),
   "message.injected": eventDataSchemas["message.injected"],
   "message.placed": z.object({ message: MessageViewSchema }),

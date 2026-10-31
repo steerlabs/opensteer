@@ -167,6 +167,18 @@ export interface AuthAccountTable {
   updatedAt: Timestamp;
 }
 
+export interface NotificationPreviewKeyTable {
+  userId: UserId;
+  installationId: string;
+  authSessionId: AuthSessionId;
+  accountId: string;
+  keyId: string;
+  encryptedKey: Buffer;
+  encryptionKeyVersion: number;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
 export interface AuthSessionTable {
   id: AuthSessionId;
   userId: UserId;
@@ -789,6 +801,7 @@ export interface ThreadTable {
 }
 
 export interface MessageTable {
+  addressedToUserId: Generated<UserId | null>;
   quote: Generated<import("@opensteer/core").MessageQuote | null>;
   author: JsonColumn<MessageAuthor>;
   id: MessageId;
@@ -1251,6 +1264,7 @@ export interface CommandTable {
 }
 
 export interface AgentControlRequestTable {
+  resultMessageId: Generated<MessageId | null>;
   runId: RunId;
   requestId: string;
   sourceThreadId: ThreadId;
@@ -1272,6 +1286,7 @@ export interface AgentControlRequestTable {
     | "thread.delegate"
     | "thread.list"
     | "thread.message"
+    | "person.notify"
     | "thread.read"
     | "thread.write"
     | "trigger.read"
@@ -2006,6 +2021,7 @@ export interface DatabaseSchema {
   users: UserTable;
   authAccounts: AuthAccountTable;
   authSessions: AuthSessionTable;
+  notificationPreviewKeys: NotificationPreviewKeyTable;
   personalRemoteAccess: PersonalRemoteAccessTable;
   personalRemoteAccountLink: PersonalRemoteAccountLinkTable;
   personalRemotePairingCodes: PersonalRemotePairingCodeTable;

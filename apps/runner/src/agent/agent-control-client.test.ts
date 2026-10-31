@@ -319,3 +319,19 @@ describe("HttpAgentControlClient", () => {
 function emptyWindow() {
   return { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
 }
+
+it("maps a person notification to its exact durable message receipt", async () => {
+  const requestId = randomUUID();
+  const messageId = createId("message");
+  const client = new HttpAgentControlClient({
+    plan,
+    transport: productionCloudTransport,
+    fetch: async () => Response.json({ type: "person.notify.result", requestId, messageId }),
+  });
+  await expect(
+    client.request(
+      { type: "person.notify", requestId, message: "Ready." },
+      new AbortController().signal,
+    ),
+  ).resolves.toEqual({ type: "person.notify.result", requestId, messageId });
+});
