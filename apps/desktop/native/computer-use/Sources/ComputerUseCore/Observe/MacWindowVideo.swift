@@ -1447,8 +1447,10 @@ final class MacWindowVideoRegistry {
       throw HelperError(.noSession, "That owner source is not visible on this stream.")
     }
     let resolved = try resolve(source, connection)
-    guard resolved.allowed(), resolved.binding.id == entry.producer.binding.id,
-      entry.producer.inputMap != nil else { throw HelperError(.noSession, "That picture is not current.") }
+    guard resolved.allowed(), resolved.binding.id == entry.producer.binding.id
+    else { throw HelperError(.noSession, "That picture is not current.") }
+    // Mid-retirement there is no current mapping; input for the old picture is stale.
+    guard entry.producer.inputMap != nil else { throw MacOwnerInput.Refusal("stale") }
     return (resolved.binding, entry.producer)
   }
 

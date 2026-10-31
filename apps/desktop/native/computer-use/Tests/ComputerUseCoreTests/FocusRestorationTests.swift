@@ -3,6 +3,27 @@ import XCTest
 @testable import ComputerUseCore
 
 final class FocusRestorationTests: XCTestCase {
+  func testSiblingEnforcerStopDeactivatesTheRemainingBeliefDespiteARound() {
+    let (kind, deactivated, activated) = (FocusEvents.appKitDefined, FocusEvents.deactivated, FocusEvents.activated)
+    let roundDropsAll: (UInt32, Int64) -> Bool = { _, _ in true }
+    func notice(helper: Bool, _ subtype: Int64, window: CGWindowID = 0,
+                suppress: ((UInt32, Int64) -> Bool)? = roundDropsAll) -> FocusEnforcer.Notice {
+      FocusEnforcer.notice(fromHelper: helper, kind, subtype, window: window, suppress: suppress)
+    }
+    // B's `undoActivation` reaches the app, so A must prepare it again and
+    // stop a delivery the app no longer takes.
+    XCTAssertEqual(notice(helper: true, deactivated), .pass(believesActive: false, endsDelivery: true))
+    // A round's own key switch, seen late by its tap, ends neither belief nor delivery.
+    XCTAssertEqual(notice(helper: true, deactivated, window: 38), .pass(believesActive: nil, endsDelivery: false))
+    XCTAssertEqual(notice(helper: true, activated, window: 37), .pass(believesActive: true, endsDelivery: false))
+    XCTAssertEqual(notice(helper: false, deactivated), .drop)
+    XCTAssertEqual(notice(helper: false, deactivated, window: 38, suppress: nil),
+      .pass(believesActive: false, endsDelivery: true))
+    XCTAssertEqual(notice(helper: true, FocusEvents.resignedKey, suppress: nil),
+      .pass(believesActive: nil, endsDelivery: false))
+  }
+
+
   private struct Choice {
     var relinquished = false
     var front: pid_t? = 101

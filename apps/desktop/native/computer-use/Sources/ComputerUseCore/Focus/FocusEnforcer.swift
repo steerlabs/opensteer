@@ -463,16 +463,15 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
   // MARK: - Belief (the tap thread and the work lane)
 
   private func noteActivation(_ type: CGEventType, _ event: CGEvent) -> CGEvent? {
-    // What the helper sends, `enforce` records itself and no round drops.
-    guard pid_t(exactly: event.getIntegerValueField(FocusEvents.sourcePIDField)) != getpid()
-    else { return event }
     let kind = type.rawValue
     let subtype = event.getIntegerValueField(FocusEvents.appKitSubtypeField)
-    if let suppress = suppression.current, suppress(kind, subtype) { return nil }
+    let fromHelper = pid_t(exactly: event.getIntegerValueField(FocusEvents.sourcePIDField)) == getpid()
     let window = CGWindowID(
       truncatingIfNeeded: event.getIntegerValueField(FocusEvents.windowNumberField))
+    guard case .pass(let believesActive, let endsDelivery) = Self.notice(fromHelper: fromHelper,
+      kind, subtype, window: window, suppress: suppression.current) else { return nil }
     personDeliveryWindow.withLock { delivery in
-      guard let expected = delivery else { return }
+      guard endsDelivery, let expected = delivery else { return }
       if FocusEvents.isDeactivation(kind, subtype)
         || (kind == FocusEvents.appKitDefined && subtype == FocusEvents.resignedKey
           && (window == expected.id || window == 0))
@@ -481,18 +480,31 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
         delivery?.lost = true
       }
     }
-    if FocusEvents.isActivation(kind, subtype) {
+    if let active = believesActive {
       update {
-        $0.active = true
-        $0.focus = true
-      }
-    } else if FocusEvents.isDeactivation(kind, subtype) {
-      update {
-        $0.active = false
-        $0.focus = false
+        $0.active = active
+        $0.focus = active
       }
     }
     return event
+  }
+
+  enum Notice: Equatable { case drop, pass(believesActive: Bool?, endsDelivery: Bool) }
+  /// No round drops what the helper sends — `enforce` and `undoActivation`
+  /// must reach the app — but every enforcer for the app records it. Another
+  /// view's enforcer ending (`undoActivation`, app-level) really deactivates
+  /// the app this one serves, so it also ends a live delivery. A helper key
+  /// switch never does: taps may see it late, during a later round's delivery
+  /// (its own or a sibling's), yet it was posted to the app before that
+  /// round's own preparation. Person and app focus changes are never the
+  /// helper's and keep full loss detection.
+  static func notice(fromHelper: Bool, _ kind: UInt32, _ subtype: Int64, window: CGWindowID,
+                     suppress: ((UInt32, Int64) -> Bool)?) -> Notice {
+    if !fromHelper, let suppress, suppress(kind, subtype) { return .drop }
+    let appLevelUndo = FocusEvents.isDeactivation(kind, subtype) && window == 0
+    let believesActive: Bool? = FocusEvents.isActivation(kind, subtype) ? true
+      : FocusEvents.isDeactivation(kind, subtype) && (!fromHelper || appLevelUndo) ? false : nil
+    return .pass(believesActive: believesActive, endsDelivery: !fromHelper || appLevelUndo)
   }
 
   /// A belief change, and the click tap it calls for: present exactly while

@@ -12,6 +12,11 @@ import Darwin
   var sequence = 0
   var lastMediaHeader: [String: Any]?
   private var ownerEditing: [String: [String: Any]] = [:]
+  /// Editing contexts in arrival order; a mark taken after a receipt admits
+  /// only contexts the helper published after it.
+  private var editingContexts: [(stream: String, context: [String: Any])] = []
+  var editingMark: Int { editingContexts.count }
+  private(set) var displayStates: [String: [String: Any]] = [:]
   init(out: URL, helper: HelperRuntime? = nil) throws {
     self.helper = helper ?? HelperRuntime(helperVersion: "native-journey", peerRequirement: .sameUser)
     ownsHelper = helper == nil
@@ -55,11 +60,26 @@ import Darwin
     greeted = true
   }
   func nextFrame() async throws -> Data {
+    try await nextFrame(until: nil).unwrap("native frame")
+  }
+  /// Nil once the monotonic `deadline` passes with no complete frame.
+  func nextFrame(until deadline: UInt64?) async throws -> Data? {
     let client = client, decoder = decoder
-    return try await Task.detached { () throws -> Data in
+    return try await Task.detached { () throws -> Data? in
       var bytes = [UInt8](repeating: 0, count: 65_536)
       while true {
         if let value = try decoder.withLock({ try $0.next() }) { return value }
+        if let deadline {
+          let now = DispatchTime.now().uptimeNanoseconds
+          guard now < deadline else { return nil }
+          var ready = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
+          let waited = poll(&ready, 1, Int32((deadline - now + 999_999) / 1_000_000))
+          guard waited > 0 else {
+            if waited < 0, errno == EINTR { continue }
+            if waited == 0 { return nil }
+            throw JourneyFailure.failed("Native wire poll failed")
+          }
+        }
         let count = Darwin.read(client, &bytes, bytes.count)
         guard count > 0 else { throw JourneyFailure.failed("Native wire ended before its next frame") }
         decoder.withLock { $0.append(Data(bytes.prefix(count))) }
@@ -85,6 +105,38 @@ import Darwin
     }
     throw JourneyFailure.failed("Native stream produced no keyframe")
   }
+  private func record(event value: Data, object: [String: Any]?, request: Int) throws {
+    if object?["event"] as? String == "display.owner-input",
+      let params = object?["params"] as? [String: Any], let stream = params["streamId"] as? String,
+      let message = params["message"] as? [String: Any], message["type"] as? String == "display.editing",
+      let context = message["context"] as? [String: Any] {
+      ownerEditing[stream] = context
+      editingContexts.append((stream, context))
+    }
+    if object?["event"] as? String == "display.state", let params = object?["params"] as? [String: Any],
+      let stream = params["streamId"] as? String {
+      displayStates[stream] = params
+    }
+    try value.write(to: out.appendingPathComponent("wire-event-\(request)-\(UUID().uuidString).json"))
+  }
+  /// The first editing context for `stream` published after `mark` that
+  /// `accept` takes, read as events arrive; no request prompts it.
+  func editingContext(_ stream: String, after mark: Int, seconds: Double = 1.5,
+                      _ accept: ([String: Any]) -> Bool) async throws -> [String: Any] {
+    let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)
+    var next = mark
+    while true {
+      while next < editingContexts.count {
+        let row = editingContexts[next]; next += 1
+        if row.stream == stream, accept(row.context) { return row.context }
+      }
+      guard let value = try await nextFrame(until: deadline) else { break }
+      let object = try JSONSerialization.jsonObject(with: value) as? [String: Any]
+      try require(object?["id"] == nil, "An unrequested reply reached the editing wait")
+      try record(event: value, object: object, request: sequence)
+    }
+    throw JourneyFailure.failed("No AX editing context was published after the input's receipt")
+  }
   func request(_ method: String, _ params: [String: Any], timeoutMs: Int = 30_000) async throws
     -> [String: Any]
   {
@@ -101,13 +153,7 @@ import Darwin
       let value = try await nextFrame()
       let object = try JSONSerialization.jsonObject(with: value) as? [String: Any]
       if (object?["id"] as? NSNumber)?.intValue == expected { reply = value; break }
-      if object?["event"] as? String == "display.owner-input",
-        let params = object?["params"] as? [String: Any], let stream = params["streamId"] as? String,
-        let message = params["message"] as? [String: Any], message["type"] as? String == "display.editing",
-        let context = message["context"] as? [String: Any] {
-        ownerEditing[stream] = context
-      }
-      try value.write(to: out.appendingPathComponent("wire-event-\(expected)-\(UUID().uuidString).json"))
+      try record(event: value, object: object, request: expected)
     }
     try reply.write(to: out.appendingPathComponent("wire-\(sequence)-\(method).json"))
     let envelope = try JSONSerialization.jsonObject(with: reply) as! [String: Any]
@@ -194,7 +240,7 @@ extension WireJourney {
     var cases: [String: String] = [:]
     var active: String?
     let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-button", "another-app-agent-unaffected",
-      "native-text-key", "IME-commit", "verified-replacement", "stale-replacement", "rich-paste-refusal",
+      "native-text-key", "IME-commit", "external-caret-stale", "verified-replacement", "stale-replacement", "rich-paste-refusal",
       "multiline-paste", "AX-copy", "save-chord", "undo-chord", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
       "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "reset-preserves-agent-observation", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "disconnect-cleanup"]
     for name in planned { cases[name] = "not-run" }
@@ -305,11 +351,13 @@ extension WireJourney {
       _ = try await wire.request("display.input-reset", ["streamId": stream, "source": source(view)])
     }
     var inputSequence = 0
+    var inputMark = 0
     var receipts: [[String: Any]] = []
     func input(_ events: [[String: Any]], generation: Int? = nil) async throws -> [String: Any] {
       defer { inputSequence += 1 }
       let answer = try await request("display.input", ["streamId": streamA, "source": source(viewA),
         "geometry": generation ?? geometry, "sequence": inputSequence, "events": events])
+      inputMark = editingMark
       receipts.append(answer)
       return answer
     }
@@ -440,17 +488,15 @@ extension WireJourney {
     }
     while try mouseUps() == beforeResetUps, Date() < releaseBy { try await Task.sleep(nanoseconds: 10_000_000) }
     try require(try mouseUps() == beforeResetUps + 1, "Reset did not release exactly one held person button")
+    // A snapshot the helper published after the latest input's receipt: later
+    // than the input, not proof the app has finished applying it.
     func context(sensitive: Bool? = nil, excluding: String? = nil) async throws -> String {
-      for _ in 0..<30 {
-        _ = try await request("permissions.get", [:])
-        if let context = ownerEditing[streamA], let id = context["contextId"] as? String,
-          let field = context["field"] as? [String: Any], id != excluding,
-          sensitive == nil || field["sensitive"] as? Bool == sensitive {
-          return id
-        }
-        try await Task.sleep(nanoseconds: 50_000_000)
+      let context = try await editingContext(streamA, after: inputMark) { context in
+        guard let id = context["contextId"] as? String, let field = context["field"] as? [String: Any]
+        else { return false }
+        return id != excluding && (sensitive == nil || field["sensitive"] as? Bool == sensitive)
       }
-      throw JourneyFailure.failed("No AX editing context reached the controller")
+      return try (context["contextId"] as? String).unwrap("editing context id")
     }
     func note() async throws -> String {
       try await Contracts.command(out, "owner-state")
@@ -474,9 +520,17 @@ extension WireJourney {
     try require(ime["outcome"] as? String == "dispatched", "IME commit was refused")
     try require(try await note() == "q漢字!", "IME commit did not insert once")
     passed()
-    start("verified-replacement")
+    start("external-caret-stale")
+    // Sent without waiting for the move's publication: the edit itself must
+    // notice that the caret it names moved in the same field.
     let beforeMiddle = try await context()
     try await Contracts.command(out, "owner-middle")
+    let moved = try await input([["kind": "edit", "edit": ["contextId": beforeMiddle, "text": "BAD", "before": "", "after": ""]]])
+    let afterMoved = try await note()
+    try require(moved["outcome"] as? String == "stale" && afterMoved == "q漢字!",
+      "An external caret move admitted an old context's insertion")
+    passed()
+    start("verified-replacement")
     let replace = try await input([["kind": "edit", "edit": ["contextId": try await context(excluding: beforeMiddle), "text": "é", "before": "漢", "after": "字"]]])
     try require(replace["outcome"] as? String == "dispatched", "Verified replacement was refused")
     try require(try await note() == "qé!", "Verified middle replacement changed the prefix or suffix")
@@ -682,13 +736,18 @@ extension WireJourney {
     _ = try await agent.request("session.close", ["sessionId": session])
     try require(helper.registry.sessions.isEmpty, "Owner Stop fixture still had an agent session")
     let beforeStop = try modifierReleases()
+    // Window B moved and resized since its first picture; aim at its current one.
+    _ = try? await other.request("display.refresh", ["streamId": streamB])
+    let stateB = try other.displayStates[streamB].unwrap("window B display state")
+    try require(stateB["state"] as? String == "live", "Window B's picture is not live: \(stateB)")
+    let currentB = try (stateB["generation"] as? Int).unwrap("window B generation")
     let held = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
-      "geometry": firstGeometry, "sequence": 1, "events": shiftDown])
+      "geometry": currentB, "sequence": 1, "events": shiftDown])
     try require(held["outcome"] as? String == "dispatched", "Held-key fixture failed")
     helper.stopFromOverlay()
     try await waitForModifierRelease(after: beforeStop, seconds: 2)
     let stopped = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
-      "geometry": firstGeometry, "sequence": 2, "events": [["kind": "copy"]]])
+      "geometry": currentB, "sequence": 2, "events": [["kind": "copy"]]])
     try require(stopped["outcome"] as? String == "refused" && stopped["reason"] as? String == "unavailable",
       "Stop without a session left input admitted")
     passed()
