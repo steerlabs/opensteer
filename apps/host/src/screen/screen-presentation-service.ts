@@ -59,9 +59,9 @@ export class ScreenPresentationService {
     session: AuthenticatedSession,
     threadId: ThreadId,
     context: ScreenPresentationInput,
-  ): Promise<(result: EnqueuedThreadInput) => void> {
-    if (!this.registry.hasEndpoint(context.endpointRef, session.user.id, session.id))
-      throw forbidden();
+  ): Promise<((result: EnqueuedThreadInput) => void) | undefined> {
+    // The socket can end while an otherwise authorized work request is in flight.
+    if (!this.registry.hasEndpoint(context.endpointRef, session.user.id, session.id)) return;
     const main = await this.#store.findMainWorkspaceForOwner(session.user.id);
     if (!main || main.homeThreadId !== threadId) throw forbidden();
     // Descriptive context reveals nothing about a conversation the sender cannot read.

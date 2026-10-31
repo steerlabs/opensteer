@@ -577,6 +577,53 @@ describeStore("screen presentation authority", (it) => {
     expect(
       await f.store.screenPresentationInput({ ...activeClaims!, messageId: queued.message.id }),
     ).toBeNull();
+    const disconnectedCommand = {
+      ...command,
+      idempotencyKey: "screen-disconnected-before-http",
+      content: [{ type: "text" as const, text: "Keep working after the voice socket closes" }],
+    };
+    const socketClosed = new Promise<void>((resolve) =>
+      first.socket.once("close", () => resolve()),
+    );
+    first.socket.close();
+    await withTimeout(socketClosed, 1000, {
+      timeoutError: () => new Error("The originating socket never closed"),
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          screen.registry.hasEndpoint(first.ready.endpointRef, fixture.userId, session.id),
+          "The closed socket retained its presentation endpoint",
+        ).toBe(false),
+      { timeout: 1000 },
+    );
+    const disconnectedResponse = await testRpcRequest(
+      origin,
+      "commands.dispatch",
+      disconnectedCommand,
+    );
+    expect(disconnectedResponse.status).toBe(200);
+    const disconnected = (await disconnectedResponse.json()).data;
+    expect(disconnected.message.content).toEqual(disconnectedCommand.content);
+    expect(disconnected.input.state).toBe("pending");
+    expect(screen.contextFor(disconnected.message.id)).toBeUndefined();
+    expect(
+      await f.store.hasAcceptedThreadInput(fixture.userId, disconnectedCommand.idempotencyKey),
+    ).toBe(true);
+    const disconnectedRetry = await testRpcRequest(origin, "commands.dispatch", {
+      ...disconnectedCommand,
+      screenPresentation: {
+        ...disconnectedCommand.screenPresentation,
+        endpointRef: second.ready.endpointRef,
+      },
+    });
+    expect(disconnectedRetry.status).toBe(200);
+    expect((await disconnectedRetry.json()).data).toMatchObject({
+      message: { id: disconnected.message.id },
+      wasDuplicate: true,
+    });
+    expect(screen.contextFor(disconnected.message.id)).toBeUndefined();
+    expect(second.messages.some((message) => message.type === "host.screen.show")).toBe(false);
     screen.close();
     await expect(
       control.handle("test-token", {

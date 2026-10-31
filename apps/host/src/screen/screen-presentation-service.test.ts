@@ -177,7 +177,11 @@ it("omits unreadable descriptive context and lets committed work survive an ende
     currentThreadId: f.otherThreadId,
   };
   try {
+    await expect(
+      f.service.prepareInput({ ...session, id: createId("authSession") }, f.threadId, context),
+    ).resolves.toBeUndefined();
     const onCommitted = await f.service.prepareInput(session, f.threadId, context);
+    if (!onCommitted) throw new Error("The live originating endpoint was not eligible");
     const messageId = createId("message");
     const committed = {
       wasDuplicate: false,
@@ -187,12 +191,14 @@ it("omits unreadable descriptive context and lets committed work survive an ende
     onCommitted(committed);
     expect(f.service.contextFor(messageId)).toEqual({});
     const later = await f.service.prepareInput(session, f.threadId, context);
+    if (!later) throw new Error("The live originating endpoint was not eligible");
     endpoint.close();
     const laterId = createId("message");
     expect(() =>
       later({ ...committed, message: { ...committed.message, id: laterId } }),
     ).not.toThrow();
     expect(f.service.contextFor(laterId)).toBeUndefined();
+    await expect(f.service.prepareInput(session, f.threadId, context)).resolves.toBeUndefined();
   } finally {
     f.service.close();
   }
