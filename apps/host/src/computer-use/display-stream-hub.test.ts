@@ -3020,6 +3020,96 @@ it("does not create a phone producer when owner input authorization finishes aft
 });
 
 describe("viewer-driven phone bitrate", () => {
+  it("recovers a brief live credit stall without reducing the phone bitrate", async () => {
+    const f = await fixture(true, { displayProfile: true });
+    const viewer = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 6; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(1_000)));
+      await viewer.received(() => viewer.media().length === sequence);
+      if (sequence === 6) break;
+      f.advance(100);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    f.advance(385);
+    phone.socket.send(f.frame(7));
+    await phone.received(() => phone.json().length === 7);
+    viewer.send({ type: "display.ack", sequence: 6 });
+    await viewer.roundTrip();
+    phone.socket.send(f.frame(8, true));
+    await viewer.received(() => viewer.media().at(-1)?.header.sequence === 8);
+    f.advance(100);
+    viewer.send({ type: "display.ack", sequence: 8 });
+    await viewer.roundTrip();
+    expect(
+      f.sent
+        .filter((m) => m.type === "host.integrations.display.demand")
+        .every((m) => m.maxBitrate === null),
+    ).toBe(true);
+  });
+
+  it("ignores healthy jitter, reduces sustained queueing and recovers during healthy flow", async () => {
+    const f = await fixture(true, { displayProfile: true });
+    const viewer = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    const pending: { sequence: number; due: number }[] = [];
+    const caps = () =>
+      f.sent.flatMap((m) =>
+        m.type === "host.integrations.display.demand" && m.maxBitrate !== undefined
+          ? [m.maxBitrate]
+          : [],
+      );
+    let reduced: number | null = null;
+    let previousDue = 0;
+    for (let elapsed = 50; elapsed <= 16_000; elapsed += 50) {
+      f.advance(50);
+      const sequence = elapsed / 50;
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(1_000)));
+      await phone.received(() => phone.json().length === sequence);
+      const delay =
+        (elapsed >= 600 && elapsed <= 800) || (elapsed >= 2_500 && elapsed <= 5_000)
+          ? 300
+          : 100 + (sequence % 3) * 20;
+      previousDue = Math.max(previousDue, elapsed + delay);
+      pending.push({ sequence, due: previousDue });
+      while (pending[0] && pending[0].due <= elapsed)
+        viewer.send({ type: "display.ack", sequence: pending.shift()!.sequence });
+      await viewer.roundTrip();
+      if (elapsed === 2_000) expect(caps().every((cap) => cap === null)).toBe(true);
+      if (elapsed === 5_500) {
+        reduced = caps().at(-1) ?? null;
+        expect(reduced).not.toBeNull();
+      }
+    }
+    expect(caps().at(-1)).toBeGreaterThan(reduced!);
+  });
+
+  it("does not turn a cache rollover into viewer congestion", async () => {
+    const f = await fixture(true, { displayProfile: true });
+    const fast = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 4; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(900_000)));
+      await fast.received(() => fast.media().length === sequence);
+      f.advance(100);
+      fast.send({ type: "display.ack", sequence });
+      await fast.roundTrip();
+    }
+    const joining = await f.viewer(false, false, true);
+    await joining.received(() => joining.media().length === 1);
+    phone.socket.send(f.frame(5, false, 1, new Uint8Array(900_000)));
+    await fast.received(() => fast.media().length === 5);
+    expect(
+      f.sent
+        .filter((m) => m.type === "host.integrations.display.demand")
+        .every((m) => m.maxBitrate === null),
+    ).toBe(true);
+  });
+
   it("negotiates only with capable phones and clears the slowest attached viewer cap", async () => {
     const old = await fixture();
     await old.viewer(false, false, true);
@@ -3043,6 +3133,7 @@ describe("viewer-driven phone bitrate", () => {
       if (sequence <= 5 || sequence % 5 === 0) slow.send({ type: "display.ack", sequence });
       await fast.roundTrip();
       await slow.roundTrip();
+      f.hub.sweep();
       const demands = f.sent.filter(
         (message) => message.type === "host.integrations.display.demand",
       );

@@ -671,6 +671,10 @@ export class DisplayStreamHub {
             }
             if (viewer.waiting && !header.key) continue;
             if (!this.#hasCredit(viewer, envelope.byteLength)) {
+              if (viewer.displayWindow) {
+                viewer.bitrate.stall(this.#now());
+                this.#bitrate(stream);
+              }
               if (!viewer.waiting) {
                 const oldest = viewer.outstanding.values().next().value;
                 this.#options.log?.("computer.display.viewer-credit-stall", {
@@ -1330,10 +1334,6 @@ export class DisplayStreamHub {
     this.#binary(viewer.socket, frame.bytes);
   }
   #skip(stream: Stream, viewer: Viewer): void {
-    if (viewer.displayWindow) {
-      viewer.bitrate.stall(this.#now());
-      this.#bitrate(stream);
-    }
     // Measure an actual credit stall, not idle time between capture updates.
     // The sample includes network and decoder delay, both of which affect how
     // long this viewer would spend catching up on a cached dependency chain.
@@ -1520,7 +1520,11 @@ export class DisplayStreamHub {
         this.#end(stream, displayViewerCloseCodes.ended, "Display demand ended");
         continue;
       }
-      for (const viewer of stream.viewers)
+      for (const viewer of stream.viewers) {
+        if (viewer.displayWindow && viewer.waiting && !this.#withinCreditAge(viewer)) {
+          viewer.bitrate.stall(this.#now());
+          this.#bitrate(stream);
+        }
         if (
           viewer.slowSince !== null &&
           this.#now() - viewer.slowSince >= displaySlowViewerCloseMs
@@ -1528,6 +1532,7 @@ export class DisplayStreamHub {
           viewer.removalTrigger = "slow-viewer";
           viewer.socket.close(displayViewerCloseCodes.tryAgain, "Display viewer stalled");
         }
+      }
       if (
         stream.state.state === "live" &&
         stream.refreshPendingAt !== null &&

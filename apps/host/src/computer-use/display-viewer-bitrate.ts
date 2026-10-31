@@ -13,6 +13,9 @@ export class DisplayViewerBitrate {
 
   stall(now: number): void {
     this.#healthySince = null;
+    // A join burst or one delayed decode is not sustained congestion.
+    this.#queuedSince ??= now;
+    if (now - this.#queuedSince < 500) return;
     if (now - this.#reducedAt < 2_000) return;
     const elapsed = now - (this.#sampleAt ?? now);
     const delivered = elapsed >= 500 ? (this.#bytes * 8_000) / elapsed : maximumBitrate;

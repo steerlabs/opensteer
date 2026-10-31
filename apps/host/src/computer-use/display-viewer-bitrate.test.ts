@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 
 describe("viewer-driven phone bitrate", () => {
+  it("does not cap a brief credit stall followed by healthy ACKs", () => {
+    const rate = new DisplayViewerBitrate();
+    for (let now = 0; now <= 2_000; now += 100) rate.ack(now, 12_500, 110, 100);
+    rate.stall(2_385);
+    rate.ack(2_387, 12_500, 385, 100);
+    rate.ack(2_407, 12_500, 331, 100);
+    rate.ack(2_565, 12_500, 149, 100);
+    for (let now = 2_700; now <= 12_000; now += 100) rate.ack(now, 12_500, 110, 100);
+    expect(rate.cap).toBeNull();
+  });
   it("keeps a high RTT alone uncapped, reduces queued flow and never raises through silence", () => {
     const rate = new DisplayViewerBitrate();
     for (let now = 0; now <= 4_000; now += 100) rate.ack(now, 12_500, 400, 400);
@@ -24,11 +34,10 @@ describe("viewer-driven phone bitrate", () => {
     for (let now = 8_100; now <= 20_000; now += 100) rate.ack(now, 12_500, 400, 400);
     expect(rate.cap).toBeGreaterThan(reduced!);
   });
-  it("counts credit stalls without queue-delay samples and bounds the floor", () => {
+  it("counts sustained credit stalls without queue-delay samples and bounds the floor", () => {
     const rate = new DisplayViewerBitrate();
     for (let now = 0; now <= 20_000; now += 111) {
       rate.stall(now);
-      rate.ack(now, 18_123, 400, 400);
       expect(rate.cap === null || Number.isInteger(rate.cap)).toBe(true);
     }
     expect(rate.cap).toBe(400_000);
