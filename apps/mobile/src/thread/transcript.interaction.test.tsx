@@ -20,13 +20,20 @@ import { TranscriptGroupRow, replyActivityKeys } from "./transcript.js";
 // Exercise the actual native renderer's state and hierarchy with DOM hosts.
 // The platform controls and animation drivers are outside this regression.
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   View: ({
     children,
     accessibilityLabel,
+    style,
   }: {
     children?: ReactNode;
     accessibilityLabel?: string;
-  }) => <div aria-label={accessibilityLabel}>{children}</div>,
+    style?: object;
+  }) => (
+    <div aria-label={accessibilityLabel} data-style={JSON.stringify(style)}>
+      {children}
+    </div>
+  ),
   Pressable: ({
     children,
     onPress,
@@ -262,6 +269,12 @@ describe("native transcript prose", () => {
     const answer = { ...note, id: "final", body: "Here is the useful answer." };
     render([{ ...run, replyMessageId: answer.id, status: "completed" }, note, command, answer]);
     expect(container.textContent).toContain(answer.body);
+    const prose = [...container.querySelectorAll("p")].find(
+      (node) => node.textContent === answer.body,
+    );
+    const readingSurface = JSON.parse(prose!.parentElement!.dataset.style!);
+    expect(readingSurface.backgroundColor).toBeUndefined();
+    expect(readingSurface.borderWidth).toBeUndefined();
     expect(container.textContent).not.toContain(note.body);
     // The reply's menu is the only way in; nothing in the conversation opens in place.
     expect([...container.querySelectorAll("button")].map((item) => item.textContent)).toEqual([

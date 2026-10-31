@@ -22,7 +22,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, radius, space, touchTarget, type } from "../theme.js";
+import { color, material, radius, space, touchTarget, type } from "../theme.js";
 import { duration, enter, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -633,16 +633,10 @@ const styles = StyleSheet.create({
     paddingVertical: space[10],
   },
   faceLifted: {
-    backgroundColor: color.surfaceRaised,
-    borderColor: color.lineHover,
+    ...material.float,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
     // Room for the menu the card at rest carries, so its words wrap the same.
     paddingRight: touchTarget,
-    shadowColor: "#000",
-    shadowOffset: { height: 8, width: 0 },
-    shadowOpacity: 0.4,
-    shadowRadius: 18,
   },
   failure: { paddingHorizontal: space[14], paddingTop: space[8] },
   // The held card's own slot, kept open and empty while it is carried.
@@ -701,23 +695,19 @@ const styles = StyleSheet.create({
     top: 0,
   },
   row: {
+    ...material.plate,
     alignItems: "flex-start",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.line,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
   },
   spacer: { flex: 1 },
   stack: {
+    ...material.plate,
     alignItems: "center",
     alignSelf: "center",
-    backgroundColor: color.surfaceElevated,
     borderBottomLeftRadius: radius.md,
     borderBottomRightRadius: radius.md,
-    borderColor: color.line,
     borderTopWidth: 0,
-    borderWidth: StyleSheet.hairlineWidth,
     height: 22,
     justifyContent: "center",
     marginTop: -space[6],
@@ -727,12 +717,10 @@ const styles = StyleSheet.create({
   // The surface is a step below the composer's glass and its bottom edge is
   // hidden under it, so the corners that show are the only ones drawn.
   tray: {
-    backgroundColor: color.surface,
+    ...material.plate,
     borderBottomWidth: 0,
-    borderColor: color.line,
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
-    borderWidth: StyleSheet.hairlineWidth,
     marginBottom: -overlap,
     overflow: "hidden",
     paddingBottom: overlap + space[6],

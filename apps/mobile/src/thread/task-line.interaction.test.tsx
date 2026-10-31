@@ -17,6 +17,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 vi.mock("react-native", () => {
   type Children = { readonly children?: ReactNode };
   return {
+    Platform: { OS: "ios", Version: "26" },
     AccessibilityInfo: { announceForAccessibility: vi.fn() },
     Alert: { alert: vi.fn() },
     Pressable: (

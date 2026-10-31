@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { shareChatAttachment } from "../platform/attachment-draft-files.js";
-import { color, radius, space, touchTarget } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { attachmentKey, type ComposerAttachment } from "./draft-attachments.js";
@@ -236,14 +236,12 @@ function attachmentDetail(name: string, mediaType: string, sizeBytes?: number): 
 
 const styles = StyleSheet.create({
   chip: {
+    ...material.plate,
     alignItems: "center",
-    backgroundColor: color.surfaceRaised,
-    borderColor: color.line,
     borderRadius: radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: space[8],
-    padding: space[4],
+    padding: space[4] - (1 - StyleSheet.hairlineWidth),
     width: 220,
   },
   chipAction: {
@@ -274,20 +272,18 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0, 0, 0, 0.45)",
     justifyContent: "center",
   },
-  pressed: { backgroundColor: color.surfacePressed },
+  pressed: { ...material.platePressed },
   sent: { alignItems: "flex-end", gap: space[6] },
   sentChip: {
+    ...material.plate,
     alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.line,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: space[10],
     maxWidth: "100%",
     minHeight: touchTarget,
-    paddingHorizontal: space[10],
-    paddingVertical: space[6],
+    paddingHorizontal: space[10] - (1 - StyleSheet.hairlineWidth),
+    paddingVertical: space[6] - (1 - StyleSheet.hairlineWidth),
     width: 260,
   },
   strip: { gap: space[6] },

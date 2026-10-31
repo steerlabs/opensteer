@@ -18,6 +18,7 @@ import { WorkingIndicator } from "./transcript.js";
 // The indicator is drawn by the real component with DOM hosts; the platform
 // primitives and animation drivers are outside this check.
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Pressable: ({ children }: { children?: ReactNode }) => <button>{children}</button>,
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },

@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import { StyleSheet, View, type ViewStyle } from "react-native";
 import Animated, { useReducedMotion } from "react-native-reanimated";
-import { barHeight, color, radius, space, touchTarget } from "../theme.js";
-import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
+import { barHeight, color, material, radius, space, touchTarget } from "../theme.js";
+import { GlassSurface } from "../ui/glass.js";
 import { appear, exit } from "../ui/motion.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import type { ComposerShape } from "./composer-model.js";
@@ -48,14 +48,13 @@ export function ComposerBar(props: {
   readonly leading?: ReactNode;
   readonly shape: ComposerShape;
 }): ReactNode {
-  const glass = useLiquidGlass();
   const reduceMotion = useReducedMotion();
   return (
     <GlassSurface
       radius={props.shape === "capsule" ? radius.full : composerBarRadius}
       shape={props.shape}
-      style={[styles.bar, glass ? styles.glassEdge : null]}
-      tint={glassTint}
+      style={[styles.bar, styles.controlEdge]}
+      tint={color.floatTint}
     >
       <View>
         {props.caption === undefined ? null : <View style={styles.caption}>{props.caption}</View>}
@@ -98,9 +97,6 @@ export function ComposerCircleFace(props: {
  */
 const composerBarRadius = 22;
 
-/** The elevated surface at 60%: a floor under glass that would sample #080808. */
-const glassTint = "rgba(23, 23, 23, 0.6)";
-
 const styles = StyleSheet.create({
   accessory: { paddingHorizontal: space[6] },
   bar: { minHeight: barHeight, overflow: "hidden" },
@@ -108,8 +104,8 @@ const styles = StyleSheet.create({
   // with each other rather than each with a different thing.
   caption: { paddingHorizontal: space[6], paddingTop: space[8] },
   circle: {
+    ...material.control,
     alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderRadius: radius.full,
     height: 34,
     justifyContent: "center",
@@ -122,7 +118,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: touchTarget,
   },
-  glassEdge: { borderColor: color.lineStrong, borderWidth: 1 },
+  controlEdge: { borderColor: color.lineControl, borderWidth: 1 },
   // Bottom-aligned, the way every composer that grows upward is: the controls
   // stay on the last line of what is being typed rather than drifting up with
   // the field's middle.

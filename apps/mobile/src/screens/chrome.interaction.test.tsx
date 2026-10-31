@@ -16,6 +16,7 @@ vi.mock("@opensteer/client/react", () => ({
     select(client.getSnapshot()),
 }));
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
   Alert: {
     alert: (_title: string, message: string, buttons: { onPress?: () => void; text: string }[]) => {
@@ -37,7 +38,6 @@ vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (error: unknown, fallback: string) =>
     error instanceof Error ? error.message : fallback,
 }));
-vi.mock("../theme.js", () => ({ color: {}, radius: {}, space: {}, touchTarget: 44 }));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
   useListContentInsets: () => ({}),

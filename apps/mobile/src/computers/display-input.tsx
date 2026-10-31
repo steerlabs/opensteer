@@ -25,7 +25,7 @@ import { createMobileClipboardPort } from "../../modules/remote-text-input/src/c
 import { AppText } from "../ui/primitives.js";
 import { usePaneGeometry } from "../ui/pane.js";
 import { holdRemoteEditing, interact } from "../voice/interaction.js";
-import { color } from "../theme.js";
+import { material } from "../theme.js";
 
 const emptyEditing: DisplayEditingSnapshot = { context: null, receipt: null };
 const getEmptyEditing = () => emptyEditing;
@@ -296,13 +296,13 @@ export function DisplayControls({
 }
 const styles = StyleSheet.create({
   controls: {
+    ...material.float,
     position: "absolute",
     bottom: 12,
     left: 12,
     right: 12,
     padding: 12,
     gap: 8,
-    backgroundColor: color.surfaceElevated,
     borderRadius: 12,
   },
   keyboard: { minHeight: 44, flexDirection: "row", alignItems: "center" },

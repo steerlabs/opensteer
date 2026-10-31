@@ -55,7 +55,15 @@ import type {
 } from "../client/thread-drafts.js";
 import { Symbol } from "../ui/symbol.js";
 import { TextInput } from "../ui/text-input.js";
-import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
+import {
+  color,
+  material,
+  controlFontScaleLimit,
+  radius,
+  space,
+  touchTarget,
+  type,
+} from "../theme.js";
 import { appear, enter, exit } from "../ui/motion.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
@@ -1129,13 +1137,11 @@ const styles = StyleSheet.create({
   dock: { gap: space[8] },
   failure: { paddingHorizontal: space[12] },
   pending: {
-    backgroundColor: color.surface,
-    borderColor: color.line,
+    ...material.plate,
     borderRadius: radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
     gap: space[4],
-    paddingHorizontal: space[10],
-    paddingVertical: space[8],
+    paddingHorizontal: space[10] - (1 - StyleSheet.hairlineWidth),
+    paddingVertical: space[8] - (1 - StyleSheet.hairlineWidth),
   },
   pendingFoot: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[12] },
   pendingRetry: { justifyContent: "center", minHeight: touchTarget },
@@ -1157,15 +1163,15 @@ const styles = StyleSheet.create({
   },
   lane: { flex: 1, justifyContent: "center", minHeight: composerLaneHeight },
   page: {
+    ...material.control,
     alignItems: "center",
     alignSelf: "flex-start",
-    backgroundColor: color.surfaceRaised,
     borderRadius: radius.full,
     flexDirection: "row",
     gap: space[6],
     maxWidth: 240,
     minHeight: 26,
-    paddingLeft: space[8],
+    paddingLeft: space[8] - 1,
   },
   pageRemove: { alignItems: "center", height: 26, justifyContent: "center", width: 26 },
   pageTitle: { flexShrink: 1 },

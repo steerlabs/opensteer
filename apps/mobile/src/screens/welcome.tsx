@@ -1,8 +1,7 @@
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import type { ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
-import { color, controlFontScaleLimit, radius, space } from "../theme.js";
-import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
+import { color, material, controlFontScaleLimit, radius, space } from "../theme.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { accountDoorPresentation } from "./account-door.js";
 
@@ -15,7 +14,6 @@ export function Welcome(props: {
   readonly signingIn: boolean;
 }): ReactNode {
   const account = accountDoorPresentation(props.account, props.signingIn);
-  const glass = useLiquidGlass();
   const unavailable = !props.account.available;
   const accountFailure =
     props.failure ??
@@ -44,29 +42,23 @@ export function Welcome(props: {
         <Notice detail={accountFailure} title="Opensteer sign-in did not finish" />
       )}
       {unavailable ? null : (
-        <GlassSurface
-          interactive
-          shape="capsule"
-          style={[styles.primarySurface, !glass && styles.primaryFallback]}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ busy: props.signingIn, disabled: account.disabled }}
+          disabled={account.disabled}
+          onPress={props.onAccount}
+          style={({ pressed }) => [styles.primary, pressed && styles.primaryPressed]}
         >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ busy: props.signingIn, disabled: account.disabled }}
-            disabled={account.disabled}
-            onPress={props.onAccount}
-            style={({ pressed }) => [styles.primary, pressed && styles.primaryPressed]}
+          {props.signingIn ? <ActivityIndicator color={color.inkOnEmber} /> : null}
+          <AppText
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            numberOfLines={2}
+            role="action"
+            style={{ color: color.inkOnEmber }}
           >
-            {props.signingIn ? <ActivityIndicator color={color.ember} /> : null}
-            <AppText
-              maxFontSizeMultiplier={controlFontScaleLimit}
-              numberOfLines={2}
-              role="action"
-              tone="ember"
-            >
-              {account.title}
-            </AppText>
-          </Pressable>
-        </GlassSurface>
+            {account.title}
+          </AppText>
+        </Pressable>
       )}
       <View style={styles.doors}>
         <WelcomeDoor label="Add a server by address" onPress={props.onServer} />
@@ -104,22 +96,22 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingHorizontal: space[12],
   },
-  doorPressed: { backgroundColor: color.emberWash },
+  doorPressed: { ...material.quiet },
   doors: { alignItems: "stretch", gap: space[4] },
   intro: { alignItems: "center", gap: space[8] },
   mark: {
+    ...material.plate,
     alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.lineStrong,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
     height: 72,
     justifyContent: "center",
     width: 72,
   },
   primary: {
+    ...material.accent,
+    borderRadius: radius.full,
+    width: "100%",
     alignItems: "center",
-    flex: 1,
     flexDirection: "row",
     gap: space[8],
     justifyContent: "center",
@@ -127,9 +119,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[16],
     paddingVertical: space[4],
   },
-  primaryFallback: { backgroundColor: color.emberWash, borderColor: color.emberLine },
-  primaryPressed: { opacity: 0.72 },
-  primarySurface: { minHeight: 50, width: "100%" },
+  primaryPressed: { ...material.accentPressed },
   sentence: { maxWidth: 300, textAlign: "center" },
   welcome: {
     alignItems: "center",

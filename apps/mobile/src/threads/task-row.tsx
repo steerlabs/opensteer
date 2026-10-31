@@ -21,7 +21,7 @@ import {
   type AccessibilityActionEvent,
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import { color, material, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { useReducedMotion } from "react-native-reanimated";
@@ -87,10 +87,16 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
       onPress={() => props.onOpen(row.threadId)}
       style={({ pressed }) => [
         styles.row,
-        needsYou && styles.needsYou,
         inMenu && { width },
         props.selected && styles.selected,
-        pressed && (needsYou ? styles.needsYouPressed : styles.pressed),
+        needsYou && styles.needsYou,
+        needsYou && props.selected && styles.needsYouSelected,
+        pressed &&
+          (needsYou
+            ? styles.needsYouPressed
+            : props.selected
+              ? styles.selectedPressed
+              : styles.pressed),
       ]}
     >
       <TaskMark mark={taskMark(row)} quiet={props.shelf === "done"} />
@@ -251,24 +257,26 @@ const styles = StyleSheet.create({
   grow: { flex: 1, minWidth: 0 },
   state: { alignItems: "center", flexDirection: "row", gap: space[8], flexShrink: 0 },
   needsYou: {
-    backgroundColor: color.amberWash,
-    borderColor: color.amberLine,
-    borderWidth: 1,
+    ...material.attention,
     marginVertical: space[2],
   },
-  needsYouPressed: { backgroundColor: color.amberLine },
-  pressed: { backgroundColor: color.surfacePressed },
+  needsYouPressed: { ...material.attentionPressed },
+  needsYouSelected: { backgroundColor: material.selected.backgroundColor },
+  selectedPressed: { ...material.platePressed },
+  pressed: { ...material.quiet },
   quiet: { color: color.muted },
   row: {
+    borderColor: "transparent",
+    borderWidth: 1,
     cursor: "pointer",
     alignItems: "center",
     borderRadius: radius.md,
     flexDirection: "row",
     gap: space[12],
     minHeight: Platform.OS === "android" ? 48 : touchTarget,
-    paddingHorizontal: space[12],
+    paddingHorizontal: space[12] - 1,
   },
-  selected: { backgroundColor: color.surfaceRaised },
+  selected: { ...material.selected },
   // The platform spinner is a little larger than the state slot.
   spinner: { transform: [{ scale: 0.8 }] },
   strong: { color: color.text, fontWeight: "600" },

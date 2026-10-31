@@ -22,6 +22,7 @@ vi.mock("./sheet.js", () => ({
     props.open ? <section aria-label={props.title}>{props.children}</section> : null,
 }));
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   StyleSheet: { create: <T,>(styles: T) => styles },
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));

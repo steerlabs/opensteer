@@ -10,7 +10,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
-import { color, radius, space } from "../theme.js";
+import { color, material, radius, space } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { agentWorkingLabel } from "../browser/acting-dot.js";
@@ -263,21 +263,19 @@ const styles = StyleSheet.create({
   acting: { borderColor: color.green },
   favicon: { borderRadius: 3, height: 14, width: 14 },
   chip: {
+    ...material.control,
     alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderColor: color.lineStrong,
     borderRadius: radius.full,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: space[6],
     maxWidth: 280,
     minHeight: 32,
-    paddingHorizontal: space[10],
+    paddingHorizontal: space[10] - (1 - StyleSheet.hairlineWidth),
   },
   ended: { opacity: 0.55 },
   // The message's column places these, so a person's own page stands at the end with their bubble.
   pages: { flexDirection: "row", flexWrap: "wrap", gap: space[6], justifyContent: "flex-end" },
-  pressed: { backgroundColor: color.surfacePressed },
+  pressed: { ...material.platePressed },
   reply: { flexDirection: "row", flexWrap: "wrap", gap: space[6] },
   // The title is what a person recognizes; the site gives way first.
   site: { flexShrink: 3, maxWidth: "45%" },

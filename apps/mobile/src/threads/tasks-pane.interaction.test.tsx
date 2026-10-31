@@ -13,6 +13,7 @@ vi.mock("@opensteer/client/react", () => ({
   }),
 }));
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26" },
   ActivityIndicator: () => <span>Loading</span>,
   FlatList: (props: {
     data: readonly unknown[];

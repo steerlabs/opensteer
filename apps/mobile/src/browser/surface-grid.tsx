@@ -270,10 +270,6 @@ const styles = StyleSheet.create({
   glow: {
     backgroundColor: color.surfaceCode,
     borderRadius: radius.md,
-    shadowColor: color.green,
-    shadowOffset: { height: 0, width: 0 },
-    shadowOpacity: 0.45,
-    shadowRadius: 10,
   },
   grid: { gap: space[20], padding: gridPadding },
   idle: { borderColor: color.line, borderWidth: StyleSheet.hairlineWidth },

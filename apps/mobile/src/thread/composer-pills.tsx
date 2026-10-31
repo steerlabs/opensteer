@@ -10,6 +10,7 @@ import { useState, type ReactNode } from "react";
 import { Alert, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
 import {
   color,
+  material,
   controlFontScaleLimit,
   pillHeight,
   radius,
@@ -184,16 +185,14 @@ function useFittedForm(forms: readonly string[]): {
 
 const styles = StyleSheet.create({
   pill: {
+    ...material.control,
     alignItems: "center",
-    backgroundColor: color.surfaceRaised,
-    borderColor: color.lineStrong,
     borderRadius: radius.full,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: space[6],
     maxWidth: "100%",
     minHeight: pillHeight,
-    paddingHorizontal: space[10],
+    paddingHorizontal: space[10] - (1 - StyleSheet.hairlineWidth),
   },
   blocked: { color: color.red },
   level: { alignItems: "flex-end", flexDirection: "row", gap: 1.5, height: 12 },
