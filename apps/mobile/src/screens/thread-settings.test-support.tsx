@@ -74,7 +74,9 @@ vi.mock("react-native", () => ({
       {children}
     </button>
   ),
-  ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  ScrollView: ({ children, horizontal }: { children?: ReactNode; horizontal?: boolean }) => (
+    <div data-scroll={horizontal === true ? "x" : "y"}>{children}</div>
+  ),
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
   TextInput: ({
     accessibilityLabel,

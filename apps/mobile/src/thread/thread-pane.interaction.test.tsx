@@ -67,6 +67,7 @@ const harness = vi.hoisted(() => ({
   headerWrites: 0,
   focused: true,
   drafts: null as ThreadDraftStore | null,
+  activeHost: null as HostClient | null,
   focusCleanups: new Set<() => void>(),
   select: null as
     null | ((event: { nativeEvent: { selection: { start: number; end: number } } }) => void),
@@ -373,7 +374,10 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useHostUserId: (client: HostClient | null) => client?.getSnapshot().user?.id ?? null,
   useHostValue: <T,>(client: HostClient | null, select: (snapshot: never) => T, fallback: T) =>
     client === null ? fallback : select(client.getSnapshot() as never),
-  useMobileClient: () => ({ drafts: harness.drafts }),
+  useMobileClient: () => ({
+    drafts: harness.drafts,
+    getSnapshot: () => ({ selection: { deploymentId, hostClient: harness.activeHost } }),
+  }),
 }));
 vi.mock("../ui/notifications-context.js", () => ({
   useMobileNotifications: () => ({
@@ -382,6 +386,10 @@ vi.mock("../ui/notifications-context.js", () => ({
   }),
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => false }));
+vi.mock("../screens/deployment-gate.js", () => ({
+  DeploymentGate: () => null,
+  useAttachedHost: () => harness.activeHost,
+}));
 vi.mock("../ui/pane.js", () => ({
   useContentInsets: () => harness.insets,
   usePaneGeometry: () => "",
@@ -585,6 +593,7 @@ afterEach(() => {
   dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
   document.body.replaceChildren();
   harness.drafts = null;
+  harness.activeHost = null;
   harness.focused = true;
   harness.dismissModal = null;
   harness.handles.clear();
@@ -3554,4 +3563,74 @@ it("offers voice on Chat's first message but not on a new task composer", async 
   expect(hasButton(container, "Talk to Opensteer")).toBe(false);
   await act(async () => voice.move("listening"));
   expect(container.querySelector('[aria-label="Voice: Listening"]')).not.toBeNull();
+});
+
+it("hands a new task to its transcript without showing the empty starter again", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const { newTaskDraftKey } = await import("./first-message.js");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
+  const createThread = vi.fn(async () => thread);
+  Object.assign(host.client, { createThread });
+  const drafts = createThreadDraftStore({
+    filePath: "/private/new-task.json",
+    now: () => new Date(at),
+    privateFiles: new MemoryPrivateFilesystem(),
+  });
+  await drafts.load();
+  const draftKey = newTaskDraftKey(workspaceId);
+  await drafts.writeDraft(deploymentId, userId, draftKey, "Research this question");
+  harness.drafts = drafts;
+  harness.activeHost = host.client;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  const onStarted = vi.fn(() => {
+    root.render(
+      <ThreadPane
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onOpenThread={vi.fn()}
+        requestId={null}
+        threadId={workId}
+      />,
+    );
+    return true;
+  });
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={onStarted}
+        underHeader={false}
+        workspaceId={workspaceId}
+      />,
+    ),
+  );
+  const flashes: string[] = [];
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      for (const added of record.addedNodes) {
+        if (added.textContent?.includes("Research something and write it up")) {
+          flashes.push(added.textContent);
+        }
+      }
+    }
+  });
+  observer.observe(container, { childList: true, subtree: true });
+  try {
+    await act(async () => {
+      const send = container.querySelector<HTMLButtonElement>('[aria-label="Send message"]');
+      expect(send?.disabled).toBe(false);
+      send!.click();
+    });
+    expect(createThread).toHaveBeenCalledOnce();
+    expect(onStarted).toHaveBeenCalledExactlyOnceWith(workId);
+    expect(flashes).toEqual([]);
+  } finally {
+    observer.disconnect();
+  }
 });
