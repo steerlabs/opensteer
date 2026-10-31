@@ -7,6 +7,7 @@ import type {
 } from "@opensteer/browser-profile/snapshot";
 import type {
   BrowserCaptureDescriptor,
+  BrowserEngine,
   BrowserSessionId,
   LocalProfileBinding,
 } from "@opensteer/protocol/browser";
@@ -187,8 +188,10 @@ export interface LaunchedBrowser {
   /**
    * Makes the live context hold exactly `cookies` for `site`, in one cookie
    * write built by `siteCookieReplacementBatch`. Cookies outside the site's
-   * scope are untouched; a profile host persists the result at its checkpoint.
-   * Nothing is written once `deadline` has aborted.
+   * scope are untouched. A local profile resolves only once the write, and any
+   * session cookies Opensteer keeps for it, are persisted; a legacy profile
+   * host persists the result at its checkpoint. Nothing is written once
+   * `deadline` has aborted.
    */
   replaceSiteCookies(
     site: string,
@@ -197,10 +200,23 @@ export interface LaunchedBrowser {
   ): Promise<void>;
 }
 
+/** Engine support for profiles stored natively on this computer. */
+export interface LocalProfileEngine extends NativeProfileConversionEngine {
+  readonly engine: BrowserEngine;
+  /**
+   * Gives up the engine's hold on a local profile directory so it can be erased.
+   * Electron cannot unload a persistent Session it has created; it reports
+   * `retained-until-exit`, and the directory is erased at the next start.
+   */
+  release(directory: string): Promise<"released" | "retained-until-exit">;
+}
+
 export interface BrowserLauncher {
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
   launch(request: BrowserLaunchRequest): Promise<LaunchedBrowser>;
+  /** Present only on engines that implement native local profiles. */
+  readonly localProfiles?: LocalProfileEngine;
 }
 
 export interface Viewport {
