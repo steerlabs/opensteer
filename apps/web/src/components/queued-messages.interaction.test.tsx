@@ -3,7 +3,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HostClient } from "@opensteer/client/host";
+import { HttpHostClient, queuedMessages, type HostClient } from "@opensteer/client/host";
+import { AttachmentReader } from "./attachments/message-attachments.js";
+import { TranscriptMessage } from "./agent-activity.js";
 import type { ThreadInputQueue } from "@opensteer/core";
 import { QueuedMessages } from "./queued-messages.js";
 
@@ -62,6 +64,96 @@ function buttons(container: HTMLElement): string[] {
 }
 
 describe("QueuedMessages", () => {
+  it("keeps one image read when a queued message is taken before download finishes", async () => {
+    const client = new HttpHostClient({ baseUrl: "http://127.0.0.1", refreshIntervalMs: 0 });
+    const bytes = {
+      ok: true as const,
+      data: {
+        bytes: new Uint8Array([1]),
+        metadata: {
+          contentType: "image/png",
+          etag: "image",
+          modifiedAt: null,
+          sizeBytes: 1,
+          truncated: false as const,
+        },
+      },
+    };
+    let complete!: (value: typeof bytes) => void;
+    const rpc = vi.fn<(typeof client.rpc)["attachment.content"]>(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    Object.defineProperty(client.rpc, "attachment.content", { value: rpc });
+    vi.stubGlobal("IntersectionObserver", undefined);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    try {
+      const pending = item("image-message", "Photo", { canCancel: false, canSteer: false });
+      const queue = queueOf({
+        items: [
+          {
+            ...pending,
+            message: {
+              ...pending.message,
+              content: [
+                {
+                  artifactId: "image",
+                  type: "artifact",
+                  mediaType: "image/png",
+                  name: "photo.png",
+                  sizeBytes: 1,
+                },
+              ],
+            },
+          },
+        ],
+        paused: false,
+        steerRunId: null,
+        threadId: "thread",
+      });
+      const container = mount(
+        <AttachmentReader value={client}>
+          <QueuedMessages
+            client={client}
+            disabled={false}
+            onEdit={vi.fn()}
+            onError={vi.fn()}
+            queue={queue}
+            viewerUserId="me"
+            workspaces={[]}
+          />
+        </AttachmentReader>,
+      );
+      expect(rpc).toHaveBeenCalledTimes(1);
+      act(() =>
+        root?.render(
+          <AttachmentReader value={client}>
+            <TranscriptMessage
+              message={queuedMessages(queue)[0]!.entry}
+              reveal={null}
+              viewerUserId="me"
+              workspaces={[]}
+            />
+          </AttachmentReader>,
+        ),
+      );
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(rpc.mock.calls[0]![1]!.signal!.aborted).toBe(false);
+      await act(async () => complete(bytes));
+      expect(container.querySelector('img[src="blob:preview"]')).not.toBeNull();
+      expect(rpc).toHaveBeenCalledTimes(1);
+    } finally {
+      act(() => root?.unmount());
+      root = null;
+      client.dispose();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("offers Steer, Edit and Remove only where the Host said it would honour them", async () => {
     const steerThreadInput = vi.fn(async () => undefined);
     const cancelThreadInput = vi.fn(async () => undefined);

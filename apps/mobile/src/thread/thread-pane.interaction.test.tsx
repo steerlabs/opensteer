@@ -378,6 +378,7 @@ vi.mock("../client/mobile-client.js", () => ({
     error instanceof Error && error.message ? error.message : fallback,
 }));
 vi.mock("../platform/attachment-draft-files.js", () => ({
+  shareChatAttachment: vi.fn(async (client: HostClient, id: string) => client.readAttachment(id)),
   openChatDraftFile: vi.fn(),
   pickChatFile: vi.fn(async () => null),
   pickChatPhoto: vi.fn(async () => null),
@@ -477,14 +478,6 @@ vi.mock("./message-menu.js", async () => {
         ))}
       </div>
     ),
-  };
-});
-vi.mock("./attachment-views.js", async () => {
-  const React = await vi.importActual<typeof import("react")>("react");
-  return {
-    AttachmentReader: React.createContext<HostClient | null>(null),
-    AttachmentStrip: () => null,
-    MessageAttachments: () => null,
   };
 });
 vi.mock("./task-line.js", async () => {
@@ -985,6 +978,7 @@ function fakeHost(initial: HostSnapshot) {
     loadEarlierTranscript,
     loadLatestTranscript: vi.fn(async () => undefined),
     loadTranscriptAround,
+    readAttachment: vi.fn(async () => new Blob()),
     markThreadRead: vi.fn(async () => undefined),
     moveThreadInput: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
@@ -2387,6 +2381,39 @@ describe("a task", () => {
     ];
     return { entries, note, runId };
   }
+
+  it("opens queued and sent artifacts with the pane's attachment reader", async () => {
+    const attachment = {
+      artifactId: createId("attachment"),
+      mediaType: "text/plain",
+      name: "notes.txt",
+      sizeBytes: 5,
+      type: "artifact" as const,
+    };
+    const waiting = { ...said("Read these notes", null), attachments: [attachment] };
+    const sent = {
+      ...said("Earlier notes", null),
+      attachments: [{ ...attachment, artifactId: createId("attachment"), name: "earlier.txt" }],
+    };
+    const host = fakeHost(
+      snapshotFor({
+        entries: [sent],
+        queue: [
+          {
+            ...waitingInput(waiting, workId),
+            message: { ...waitingInput(waiting, workId).message, content: [attachment] },
+          },
+        ],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const read = vi.spyOn(host.client, "readAttachment").mockResolvedValue(new Blob(["notes"]));
+    const { container } = await mount(host, workId);
+    await press(container, "notes.txt, TXT · 5 B");
+    await press(container, "earlier.txt, TXT · 5 B");
+    expect(read.mock.calls).toEqual([[attachment.artifactId], [sent.attachments[0]!.artifactId]]);
+  });
 
   it("shows queued bubbles after the transcript with actions, its steps and its own Stop", async () => {
     const task = taskAtWork();

@@ -1055,13 +1055,15 @@ function ThreadPaneForUser(
   const queueFooter = useMemo(
     () =>
       thread?.role === "work" && inputQueue !== null ? (
-        <QueuedMessages
-          canRespond={queueCanRespond}
-          hostClient={hostClient}
-          onEdit={restoreQueuedDraft}
-          queue={inputQueue}
-          viewerUserId={viewerUserId}
-        />
+        <AttachmentReader value={hostClient}>
+          <QueuedMessages
+            canRespond={queueCanRespond}
+            hostClient={hostClient}
+            onEdit={restoreQueuedDraft}
+            queue={inputQueue}
+            viewerUserId={viewerUserId}
+          />
+        </AttachmentReader>
       ) : null,
     [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
   );
