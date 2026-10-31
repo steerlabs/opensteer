@@ -621,9 +621,13 @@ it("reports a hand-off whose delivery is unknown without inviting a resend", asy
   await settle();
   expect(f.answer).toHaveBeenCalledTimes(1);
   expect(f.dispatch).toHaveBeenCalledTimes(2);
-  expect(new Set(f.dispatch.mock.calls.map(([command]) => command.idempotencyKey))).toEqual(
-    new Set([`voice:${voiceTestId}:send`]),
-  );
+  expect(
+    new Set(
+      f.dispatch.mock.calls.map(([command]) =>
+        "idempotencyKey" in command ? command.idempotencyKey : undefined,
+      ),
+    ),
+  ).toEqual(new Set([`voice:${voiceTestId}:send`]));
   expect(f.answer.mock.calls[0]![0]).toMatchObject({
     ok: false,
     text: expect.stringContaining("outcome is unknown"),

@@ -7,6 +7,9 @@ import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import type { NotificationPublication } from "@opensteer/database";
 import type { DeploymentId, HostInstanceId } from "@opensteer/core";
 import { z } from "zod";
+import { buildMobileThreadDeepLink } from "@opensteer/core";
+import type { NotificationPreviewService } from "./notification-preview-service.js";
+import { sealNotificationPreview } from "./notification-preview.js";
 
 const maximumResponseBytes = 4 * 1_024;
 
@@ -22,6 +25,7 @@ export interface NotificationPublicationTarget {
 }
 
 export interface NotificationPublicationClientOptions {
+  readonly previews?: Pick<NotificationPreviewService, "keys">;
   readonly deploymentId: DeploymentId;
   readonly fetch?: typeof globalThis.fetch;
   readonly hostInstanceId: HostInstanceId;
@@ -36,12 +40,14 @@ export type NotificationPublicationResult =
   | { readonly status: "failed"; readonly reason: string };
 
 export class NotificationPublicationClient {
+  readonly #previews: NotificationPublicationClientOptions["previews"];
   readonly #deploymentId: DeploymentId;
   readonly #fetch: typeof globalThis.fetch;
   readonly #hostInstanceId: HostInstanceId;
   readonly #target: NotificationPublicationClientOptions["target"];
 
   constructor(options: NotificationPublicationClientOptions) {
+    this.#previews = options.previews;
     this.#deploymentId = options.deploymentId;
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#hostInstanceId = options.hostInstanceId;
@@ -57,6 +63,31 @@ export class NotificationPublicationClient {
     const target = await this.#target();
     if (!target) return { status: "no-target" };
     input.signal.throwIfAborted();
+    const deepLink = buildMobileThreadDeepLink({
+      deploymentId: this.#deploymentId,
+      threadId: entry.threadId,
+      messageId: entry.kind === "reply-published" ? entry.messageId : null,
+      requestId: entry.kind === "request-opened" ? entry.requestId : null,
+    });
+    const keys = (await this.#previews?.keys(entry.userId, input.recipientAccountIds)) ?? [];
+    const previews = keys.map((key) => ({
+      accountId: key.accountId,
+      installationId: key.installationId,
+      preview: sealNotificationPreview({
+        key: key.key,
+        plaintext: { version: 1, title: entry.title, body: entry.body },
+        context: {
+          deploymentId: this.#deploymentId,
+          notificationId: entry.id,
+          installationId: key.installationId,
+          keyId: key.keyId,
+          kind: entry.kind,
+          deepLink,
+          expiresAt: entry.expiresAt.toISOString(),
+        },
+      }),
+    }));
+    input.signal.throwIfAborted();
     const request: HostNotificationPublication = HostNotificationPublicationSchema.parse({
       deploymentId: this.#deploymentId,
       eventId: entry.eventId,
@@ -67,6 +98,7 @@ export class NotificationPublicationClient {
       notificationId: entry.id,
       occurredAt: entry.occurredAt.toISOString(),
       recipientAccountIds: input.recipientAccountIds,
+      ...(previews.length ? { previews } : {}),
       requestId: entry.requestId,
       runId: entry.runId,
       schemaVersion: 1,

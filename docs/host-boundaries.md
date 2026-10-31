@@ -191,8 +191,15 @@ Upgrade Hosts before Runners needing new execution/storage semantics; Personal
 ships both together. Enrollment is not execution admission. Native continuation,
 execution leases and requester-time-zone support are mandatory execution gates;
 unsupported Runners stay visible but cannot execute. Refused durable events end
-only their still-bound Run, not unrelated Runs or the connection. Upgrade the
-Account before Hosts introducing notification contracts it must accept.
+only their still-bound Run, not unrelated Runs or the connection.
+
+Deploy the Account's notification preview migration and reader on every replica
+of the issuer before shipping preview Hosts. Keep that reader during Account
+rollback while those Hosts exist. `notification-preview-v1` gates phone key
+registration and is advertised only with a preview service and Account channel;
+it changes no epoch. Old phones keep generic alerts, and new phones never
+register against an older Host. The Account receives per-installation ciphertext,
+never the Host's title or excerpt in plaintext.
 
 Thread titles use the existing state-change event with optional title; a new kind
 would break previous closed unions. Even tolerant readers acknowledging skipped

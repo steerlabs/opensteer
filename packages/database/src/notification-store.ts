@@ -33,8 +33,10 @@ import { type Kysely, type Transaction } from "kysely";
 import { runWasStopped } from "./run-grants.js";
 import type { DatabaseSchema } from "./schema.js";
 
-/** Identifiers handed to the Account while a decided notification is still fresh. */
+/** Process-local decided alert; only sealed text crosses the Account boundary. */
 export interface NotificationPublication {
+  readonly title: string;
+  readonly body: string;
   readonly eventId: EventId;
   readonly expiresAt: Date;
   readonly id: NotificationId;
@@ -545,9 +547,10 @@ async function activeMembers(
  * Host has no such provider at all: its owner links an Account once, and the
  * link row is the only place that subject exists.
  */
-async function accountSubjectsForUsers(
+export async function accountSubjectsForUsers(
   transaction: Transaction<DatabaseSchema>,
   userIds: readonly UserId[],
+  issuer?: string,
 ): Promise<readonly string[]> {
   if (userIds.length === 0) return [];
   const rows = await transaction
@@ -560,10 +563,13 @@ async function accountSubjectsForUsers(
     .select("authAccounts.accountId as accountId")
     .where("accountDirectoryProvider.singletonKey", "=", "opensteer-account")
     .where("authAccounts.userId", "in", [...userIds])
+    .$if(issuer !== undefined, (query) =>
+      query.where("accountDirectoryProvider.issuer", "=", issuer!),
+    )
     .where("authAccounts.password", "is", null)
     .execute();
   const subjects = new Set(rows.map((row) => row.accountId));
-  const linked = await personalLinkSubjectForOwner(transaction, userIds);
+  const linked = await personalLinkSubjectForOwner(transaction, userIds, issuer);
   if (linked) subjects.add(linked);
   return [...subjects];
 }
@@ -580,6 +586,7 @@ async function accountSubjectsForUsers(
 async function personalLinkSubjectForOwner(
   transaction: Transaction<DatabaseSchema>,
   userIds: readonly UserId[],
+  issuer?: string,
 ): Promise<string | null> {
   const deployment = await transaction
     .selectFrom("deployments")
@@ -600,6 +607,7 @@ async function personalLinkSubjectForOwner(
     .select("subject")
     .where("singletonKey", "=", "opensteer-account")
     .where("state", "=", "active")
+    .$if(issuer !== undefined, (query) => query.where("issuer", "=", issuer!))
     .executeTakeFirst();
   return link?.subject ?? null;
 }
