@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, matchesGlob, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { configDefaults } from "vitest/config";
 import { darwinOnlyTests } from "../.github/scripts/ci-test-files.mjs";
@@ -70,10 +71,21 @@ describe("test tiers", () => {
       if (!/\.integration\.test\.tsx?$/u.test(file)) return false;
       const text = source(file);
       if (databaseUrl.test(text)) return false;
-      const supportImports = [...text.matchAll(/from ["'](\.[^"']*test-support)\.js["']/gu)];
+      const supportImports = [
+        ...text.matchAll(
+          /from ["']((?:\.[^"']*test-support\.js)|(?:@[^"']+\/test-support\/[^"']+))["']/gu,
+        ),
+      ];
       return !supportImports.some((match) => {
-        const support = resolve(root, dirname(file), `${match[1]}.ts`);
-        return existsSync(support) && databaseUrl.test(readFileSync(support, "utf8"));
+        try {
+          const specifier = match[1]!;
+          const support = specifier.startsWith(".")
+            ? resolve(root, dirname(file), specifier.replace(/\.js$/u, ".ts"))
+            : createRequire(resolve(root, file)).resolve(specifier);
+          return existsSync(support) && databaseUrl.test(readFileSync(support, "utf8"));
+        } catch {
+          return false;
+        }
       });
     });
     expect(ungated).toEqual([]);

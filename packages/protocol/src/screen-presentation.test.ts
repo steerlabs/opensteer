@@ -1,12 +1,77 @@
 import { randomUUID } from "node:crypto";
-import { createId, zeroSequence } from "@opensteer/core";
+import {
+  createId,
+  zeroSequence,
+  BrowserSurfaceIdSchema,
+  type ScreenSurface,
+} from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { describe, expect, it } from "vitest";
 import { AgentControlRequestSchema, AgentControlResponseSchema } from "./agent-control.js";
 import { ClientToHostMessageSchema, HostToClientMessageSchema } from "./client.js";
 import { hostApi } from "./host-api.js";
+import { createBrowserSessionId } from "./browser.js";
 
 describe("negotiated screen presentation wire", () => {
+  it("tolerates additive Host target facts without loosening model input or accepting an empty target", () => {
+    const machineId = createId("runner");
+    const task = { kind: "task-session" as const, sessionId: "cus_exact-task" };
+    const owner = { kind: "owner-view" as const, viewId: `cvw_${randomUUID()}`, generation: 2 };
+    const surfaces: ScreenSurface[] = [
+      {
+        kind: "browser",
+        sessionId: createBrowserSessionId(),
+        tabId: BrowserSurfaceIdSchema.parse("exact-tab"),
+      },
+      { kind: "app", machineId, appKey: "com.example.app", source: task },
+      { kind: "app", machineId, appKey: "com.example.app", source: { ...owner, windowId: 7 } },
+      { kind: "phone", machineId, display: "main", source: task },
+      { kind: "phone", machineId, display: "main", source: owner },
+    ];
+    for (const surface of surfaces) {
+      const target = { surface, conversationId: createId("thread") };
+      const frame = {
+        type: "host.screen.show",
+        endpointRef: "a".repeat(64),
+        operationId: randomUUID(),
+        messageId: createId("message"),
+        voiceSessionId: randomUUID(),
+        utteranceSequence: 1,
+        interactionRevision: 0,
+        deadlineAt: 5000,
+        target,
+      };
+      const future = {
+        ...frame,
+        futureEnvelope: "ignored",
+        target: {
+          ...target,
+          futureTarget: "ignored",
+          surface: {
+            ...surface,
+            futureSurface: "ignored",
+            ...("source" in surface
+              ? { source: { ...surface.source, futureSource: "ignored" } }
+              : {}),
+          },
+        },
+      };
+      expect(HostToClientMessageSchema.parse(future)).toEqual(frame);
+      expect(
+        AgentControlRequestSchema.safeParse({
+          type: "screen.show",
+          requestId: randomUUID(),
+          messageId: frame.messageId,
+          target: future.target,
+        }).success,
+      ).toBe(false);
+      expect(
+        HostToClientMessageSchema.safeParse({ ...frame, target: { futureTarget: "ignored" } })
+          .success,
+      ).toBe(false);
+    }
+  });
+
   it("keeps ordinary subscribe/send frames functional and admits the opt-in transport context", () => {
     const subscribe = {
       type: "client.subscribe",
