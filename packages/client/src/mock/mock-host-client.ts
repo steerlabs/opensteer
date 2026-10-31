@@ -1,3 +1,4 @@
+import { PendingBrowserTabs } from "../host/pending-browser-tabs.js";
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
@@ -17,11 +18,7 @@ import {
 } from "@opensteer/protocol";
 import { placeList } from "../host/places.js";
 import type { NativeViewerSource } from "../host/surfaces.js";
-import {
-  BrowserTabOpenCommandSchema,
-  computerAppIdentityKey,
-  previousReleaseEligibility,
-} from "@opensteer/protocol";
+import { computerAppIdentityKey, previousReleaseEligibility } from "@opensteer/protocol";
 import { MockComputerViews } from "./mock-computer-views.js";
 import { RecentSitesStore, type RecentSitesStorage } from "../host/recent-sites.js";
 import type { ClientLifecycle } from "../host/lifecycle.js";
@@ -3460,6 +3457,11 @@ export class MockHostClient implements HostClient {
       const snapshot = this.#state.getSnapshot();
       const scope = viewerScopeOf(snapshot);
       if (this.#viewer.change(scope)) {
+        this.#pendingBrowserTabs.clear();
+        this.#state.updatePlaces({
+          ...snapshot,
+          pendingBrowserTabs: this.#pendingBrowserTabs.rows,
+        });
         this.#workspaceTabActivations.clear();
         this.#computerViews.clear();
       }
@@ -3755,27 +3757,43 @@ export class MockHostClient implements HostClient {
   };
   readonly readBrowserContextCandidate = (sessionId: string, tabId: string) =>
     this.#places.candidate(sessionId, tabId);
+  readonly #pendingBrowserTabs = new PendingBrowserTabs({
+    admitted: () => viewerScopeOf(this.#state.getSnapshot()) !== null,
+    open: async (target, options) => {
+      const started = this.#viewer.generation;
+      const opened = unwrapRpcResult(
+        await this.rpc["commands.dispatch"]({
+          type: "browser.tab.open",
+          ...target,
+          ...options,
+          idempotencyKey: options.idempotencyKey!,
+        }),
+      );
+      if (started !== this.#viewer.generation)
+        throw new HostClientRequestError({
+          code: "unauthorized",
+          status: 401,
+          message: "The signed-in account changed while the browser was opening.",
+        });
+      if (opened.type !== "browser.tab.open") throw new Error("Unexpected browser command result.");
+      return opened;
+    },
+    close: (result) =>
+      this.closeBrowserTab(
+        result.sessionId,
+        result.tabId,
+        this.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)
+          ?.tabCatalog ?? result.catalog,
+      ),
+    changed: (pendingBrowserTabs) =>
+      this.#state.updatePlaces({ ...this.#state.getSnapshot(), pendingBrowserTabs }),
+  });
+  readonly beginBrowserTabOpen = this.#pendingBrowserTabs.begin;
+  readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   readonly openBrowserTab = async (
     target: string | BrowserTabOpenInput,
     options: BrowserTabOpenOptions = {},
-  ) => {
-    const started = this.#viewer.generation;
-    const opened = await this.#places.openTarget(
-      BrowserTabOpenCommandSchema.parse({
-        type: "browser.tab.open",
-        ...(typeof target === "string" ? { sessionId: target } : target),
-        ...options,
-        idempotencyKey: options.idempotencyKey ?? `open-tab:${crypto.randomUUID()}`,
-      }),
-    );
-    if (started !== this.#viewer.generation)
-      throw new HostClientRequestError({
-        code: "unauthorized",
-        status: 401,
-        message: "The signed-in account changed while the browser was opening.",
-      });
-    return opened;
-  };
+  ) => this.beginBrowserTabOpen(target, options).result;
   readonly reopenWorkspaceTab = async () => {
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
@@ -4263,6 +4281,7 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.#pendingBrowserTabs.dispose();
     this.#workspaceTabActivations.dispose();
     this.recentSites.dispose();
     this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingWorkspaceTabs: [] });

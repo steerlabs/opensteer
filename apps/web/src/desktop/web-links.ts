@@ -10,6 +10,7 @@ import type {
   HostClient,
   HostSnapshot,
   WorkspaceSurfaceDestination,
+  PendingBrowserTabDestination,
 } from "@opensteer/client/host";
 
 /** Uses the same person-owned command as the start page, with a replay-safe key. */
@@ -17,14 +18,16 @@ export async function openDesktopWebLink(
   value: unknown,
   client: HostClient,
   identity: BrowserIdentityChoice,
-  show: (destination: WorkspaceSurfaceDestination) => void,
+  show: (destination: WorkspaceSurfaceDestination | PendingBrowserTabDestination) => void,
   acknowledge: (id: string) => Promise<void>,
 ): Promise<void> {
   const link = DesktopWebLinkSchema.parse(value);
-  const opened = await client.openBrowserTab(
+  const opening = client.beginBrowserTabOpen(
     { identity },
     { url: link.url, idempotencyKey: `desktop-web-link:${link.id}` },
   );
+  show({ kind: "pending-browser", idempotencyKey: opening.idempotencyKey });
+  const opened = await opening.result;
   show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
   await acknowledge(link.id);
 }
@@ -146,6 +149,7 @@ export interface WebLinkView {
   readonly revision: number;
   /** Wall-clock time of the change that produced this revision. */
   readonly changedAt: number;
+  readonly pendingBrowserTab?: string | null;
 }
 
 /**
@@ -155,16 +159,26 @@ export interface WebLinkView {
  */
 export function webLinkSelection(
   view: () => WebLinkView,
-): (
-  show: (destination: WorkspaceSurfaceDestination) => void,
-) => (receivedAt: number | undefined) => (destination: WorkspaceSurfaceDestination) => void {
+): <Destination extends WorkspaceSurfaceDestination | PendingBrowserTabDestination>(
+  show: (destination: Destination) => void,
+) => (receivedAt: number | undefined) => (destination: Destination) => void {
   let leftAt = Number.NEGATIVE_INFINITY;
   return (show) => {
     const arrival = view().revision;
+    let pending: string | null = null;
     return (receivedAt) => (destination) => {
       const current = view();
-      if (current.revision !== arrival) leftAt = Math.max(leftAt, current.changedAt);
-      else if (receivedAt === undefined || receivedAt >= leftAt) show(destination);
+      if (current.revision !== arrival && (!pending || current.pendingBrowserTab !== pending))
+        leftAt = Math.max(leftAt, current.changedAt);
+      else if (receivedAt === undefined || receivedAt >= leftAt) {
+        if (
+          "kind" in destination &&
+          destination.kind === "pending-browser" &&
+          "idempotencyKey" in destination
+        )
+          pending = destination.idempotencyKey;
+        show(destination);
+      }
     };
   };
 }

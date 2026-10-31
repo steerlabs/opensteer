@@ -23,6 +23,7 @@ export interface WorkspaceState {
   /** How many tasks (Chat included) need the reader: the drawer button carries it. */
   readonly attention: number;
   readonly nav: WorkspaceNavigation;
+  readonly openWebLink: (address: string) => void;
   readonly selection: PlaceSelection;
   /** A place or the launcher is in the middle. */
   readonly work: boolean;
@@ -128,11 +129,13 @@ export function WorkspaceProvider({
   localMachine = null,
   nav,
   openDrawer,
+  openWebLink: suppliedOpenWebLink,
 }: {
   readonly attention: number;
   readonly children: ReactNode;
   readonly localMachine?: LocalMachine | null;
   readonly nav: WorkspaceNavigation;
+  readonly openWebLink?: (address: string) => void;
   readonly openDrawer: () => void;
 }) {
   const { pathname, search } = useLocation();
@@ -157,6 +160,13 @@ export function WorkspaceProvider({
   const highlight = useMemo(() => new HighlightStore(), []);
   const layout = useMemo(() => new LayoutPhaseStore(), []);
   const startPage = useMemo(() => new StartPageHandle(), []);
+  const openWebLink = useCallback(
+    (address: string) => {
+      if (suppliedOpenWebLink) suppliedOpenWebLink(address);
+      else nav.showLauncher({ address });
+    },
+    [nav, suppliedOpenWebLink],
+  );
   const value = useMemo<WorkspaceState>(
     () => ({
       attention,
@@ -167,6 +177,7 @@ export function WorkspaceProvider({
       localMachine,
       nav,
       openDrawer,
+      openWebLink,
       phone,
       selection: stableSelection,
       startPage,
@@ -181,6 +192,7 @@ export function WorkspaceProvider({
       localMachine,
       nav,
       openDrawer,
+      openWebLink,
       phone,
       stableSelection,
       startPage,

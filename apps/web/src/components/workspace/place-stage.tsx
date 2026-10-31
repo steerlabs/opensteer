@@ -1,3 +1,4 @@
+import { PendingBrowserTabView } from "./pending-browser-tab.js";
 import { browserPlaceUnavailableReason, threadMark } from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation } from "react-router";
@@ -189,6 +190,15 @@ export const PlaceStage = memo(function PlaceStage({
       </section>
     );
   }
+  if (selection.kind === "pending")
+    return (
+      <PendingBrowserTabView
+        hostClient={hostClient}
+        idempotencyKey={selection.idempotencyKey}
+        leading={leading}
+        trailing={trailing}
+      />
+    );
   const { destination } = selection;
   // The address is the person's to type; a tab id it names is checked before use.
   const tabId =

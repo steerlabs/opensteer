@@ -1,3 +1,4 @@
+import { PendingBrowserTabView, showPendingBrowserTab } from "../browser/pending-browser-tab.js";
 import {
   browserPlaceUnavailableReason,
   canRespondToRequests,
@@ -6,6 +7,7 @@ import {
   placeDestinationEnded,
   surfaceDestination,
   threadInDirectory,
+  type BrowserTabOpenHandle,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -55,7 +57,6 @@ import {
   routeDestination,
   sameDestination,
   surfaceRoute,
-  workspaceRoute,
   type SurfacesRoute,
 } from "../browser/surface-route.js";
 import { surfaceTile, tabSiteLabel, type TabTile } from "../browser/tab-tiles.js";
@@ -185,6 +186,8 @@ function SurfacesForUser(props: ForUserProps): ReactNode {
       )}
     </>
   );
+  if (props.route.pendingBrowserTab)
+    return <PendingBrowserTabView hostClient={props.hostClient} route={props.route} />;
   return props.route.scope === "workspace" ? (
     <WorkspaceTab {...props} connected={connected} notices={notices} />
   ) : (
@@ -428,17 +431,12 @@ function Focused(props: {
     navigation.dispatch(StackActions.pop(depth));
   }, [navigation, props, showGrid, threadId, workspace]);
   const onOpenTab = useCallback(
-    (sessionId: string, tabId: string) => {
-      if (!navigation.isFocused()) return;
-      const next = { kind: "browser" as const, sessionId, tabId };
-      navigation.dispatch(
-        StackActions.replace("WorkspaceBrowser", {
-          ...(route.scope === "workspace"
-            ? workspaceRoute(route.deploymentId, next)
-            : surfaceRoute(route.deploymentId, route.threadId, next)),
-          editAddress: true,
-        }),
-      );
+    (opening: BrowserTabOpenHandle) => {
+      if (!navigation.isFocused()) {
+        void opening.result.catch(() => undefined);
+        return;
+      }
+      showPendingBrowserTab(navigation, route, opening);
     },
     [navigation, route],
   );
@@ -544,7 +542,7 @@ function BrowserTab(props: {
   /** Offered when the grid holds other tabs. */
   readonly onBackToTabs: (() => void) | undefined;
   readonly onClosed: () => void;
-  readonly onOpenTab: (sessionId: string, tabId: string) => void;
+  readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
   readonly onTyping: (typing: boolean) => void;
   readonly onViewing: (page: BrowserPageContentPart | null) => void;
   readonly sessionId: string;
