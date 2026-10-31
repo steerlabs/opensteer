@@ -68,7 +68,7 @@ export interface DisplayFrame {
    */
   readonly replayed: boolean;
   /**
-   * The decoder output this frame, or the view dropped it unshown. The Host
+   * The decoder took this frame off its submission queue, or the view dropped it. The Host
    * gets the frame's credit back once every view is done; repeats are ignored.
    */
   done(): void;
