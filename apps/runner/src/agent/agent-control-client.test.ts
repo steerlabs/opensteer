@@ -36,6 +36,36 @@ const productionPersonalTransport = {
 } as const;
 
 describe("HttpAgentControlClient", () => {
+  it.each(["applied", "superseded", "unavailable", "unsupported", "unconfirmed"] as const)(
+    "preserves a correlated screen receipt without retrying: %s",
+    async (outcome) => {
+      const requestId = randomUUID();
+      const messageId = createId("message");
+      const target = { conversationId: createId("thread") };
+      const fetch = vi.fn<typeof globalThis.fetch>(async (_url, options) => {
+        expect(JSON.parse(String(options?.body))).toEqual({
+          requestId,
+          type: "screen.show",
+          messageId,
+          target,
+        });
+        return Response.json({ requestId, type: "screen.show.result", receipt: { outcome } });
+      });
+      const client = new HttpAgentControlClient({
+        fetch,
+        plan,
+        transport: productionCloudTransport,
+      });
+      await expect(
+        client.request(
+          { requestId, type: "screen.show", messageId, target },
+          new AbortController().signal,
+        ),
+      ).resolves.toEqual({ requestId, type: "screen.show.result", receipt: { outcome } });
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
   it("uses the run capability only on a bounded, non-redirecting Host request", async () => {
     const requestId = randomUUID();
     const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
