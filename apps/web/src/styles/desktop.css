@@ -775,6 +775,14 @@ html.native-browser-live .place--browser {
 html.native-browser-live .place--browser .place-state {
   background: var(--surface-elevated);
 }
+/* A transparent document must not sample its backdrop: Chromium then blends
+   its translucent pixels repeatedly, turning the card's faint border white and
+   its shadow black. The page beneath is a native view, never that backdrop. */
+html.native-browser-live *,
+html.native-browser-live *::before,
+html.native-browser-live *::after {
+  backdrop-filter: none !important;
+}
 
 /* ---- Setup panel for an app the helper serves ----
    A small transparent window the main process floats in the bottom-right
