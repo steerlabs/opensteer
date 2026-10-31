@@ -252,6 +252,33 @@ integration.sequential("Trigger authority through real Host services and Postgre
     console.log(`Trigger authority evidence: ${join(evidenceRoot, "evidence.json")}`);
   });
 
+  it("filters anchored automations without widening owner or workspace reach", async () => {
+    const f = await fixture();
+    const chat = await personCreate(f, f.chat);
+    await personCreate(f, f.specialist);
+    const rpc = createTriggerRpcHandlers(triggers);
+    const context: HostApiServerContext = {
+      session: { user: { id: f.ownerId } },
+    } as unknown as HostApiServerContext;
+    const result = await rpc["triggers.list"]({ anchorThreadId: f.chat.id }, context);
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.data.triggers.map((t) => t.id)).toEqual([chat.trigger.id]);
+    expect(
+      await triggerStore.listForOwner({
+        ownerId: await store.createUser("Other automation reader"),
+        anchorThreadId: f.chat.id,
+        scope: { kind: "user" },
+      }),
+    ).toEqual([]);
+    expect(
+      await triggerStore.listForOwner({
+        ownerId: f.ownerId,
+        anchorThreadId: f.chat.id,
+        scope: { kind: "workspace", workspaceId: f.specialist.workspaceId },
+      }),
+    ).toEqual([]);
+  });
+
   it("A1: lets a same-mode child read and control Chat's clock, but not its definition", async () => {
     const f = await fixture();
     const created = await personCreate(f, f.chat);

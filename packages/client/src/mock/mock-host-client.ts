@@ -2264,7 +2264,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "triggers.list": async (input) =>
       rpcSuccess(
         hostApi["triggers.list"].success.parse({
-          triggers: client.listTriggers(input.workspaceId),
+          triggers: client.listTriggers(input.workspaceId, input.anchorThreadId),
         }),
       ),
     "workspace.catalog.list": async () => {
@@ -3360,6 +3360,7 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  readonly capabilities = ["thread-automations-v1"] as const;
   readonly browserPasskeys = new BrowserPasskeys();
   readonly recentSites: RecentSitesStore;
   readonly browserPreferences: BrowserPreferences;
@@ -6237,12 +6238,13 @@ class MockHostState {
   }
 
   /** What `triggers.list` answers: every Trigger still in use, most recently changed first. */
-  listTriggers(workspaceId?: string): TriggerSummary[] {
+  listTriggers(workspaceId?: string, anchorThreadId?: string): TriggerSummary[] {
     return [...this.triggers.values()]
       .filter(
         ({ trigger }) =>
           trigger.status !== "archived" &&
-          (workspaceId === undefined || trigger.workspaceId === workspaceId),
+          (workspaceId === undefined || trigger.workspaceId === workspaceId) &&
+          (anchorThreadId === undefined || trigger.anchorThreadId === anchorThreadId),
       )
       .sort((left, right) => right.trigger.updatedAt.localeCompare(left.trigger.updatedAt))
       .map((record) => mockTriggerSummary(record, this.anchorThreadTitle(record)));
@@ -9703,6 +9705,27 @@ class MockHostState {
         ],
       },
     });
+    const completed = this.createTask(
+      home,
+      homeRun,
+      { ...script, title: "Check restaurant hours" },
+      at(-100),
+    );
+    this.publishAssignment({
+      ...completed.assignment,
+      status: "completed",
+      finishedAt: at(-95),
+      updatedAt: at(-95),
+      returnStatus: "delivered",
+    });
+    this.activeRuns.delete(completed.assignment.workerThreadId);
+    this.update({
+      ...this.snapshot,
+      runQueue: this.snapshot.runQueue.filter((run) => run.id !== completed.run.id),
+      threads: this.snapshot.threads.map((thread) =>
+        thread.id === completed.assignment.workerThreadId ? { ...thread, status: "idle" } : thread,
+      ),
+    });
     const { assignment, run } = this.createTask(home, homeRun, script, at(2));
     this.upsertEntry(
       home.id,
@@ -10464,6 +10487,24 @@ class MockHostState {
         ),
       };
     }
+    this.snapshot = {
+      ...this.snapshot,
+      threadAutomations: Object.fromEntries(
+        this.snapshot.threads.map((thread) => [
+          thread.id,
+          this.listTriggers(undefined, thread.id).map((trigger) => ({
+            id: trigger.id,
+            name: trigger.name,
+            kind: trigger.kind,
+            paused: trigger.status === "paused",
+            nextFireAt:
+              trigger.status === "active" && trigger.kind === "schedule"
+                ? trigger.nextFireAt
+                : null,
+          })),
+        ]),
+      ),
+    };
     const tasks = this.taskList(this.snapshot.tasks);
     this.snapshot = {
       ...this.snapshot,

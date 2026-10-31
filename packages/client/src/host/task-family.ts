@@ -49,7 +49,8 @@ export interface TaskFamily {
 }
 
 /** What a family is drawn from, and nothing else. */
-export type FamilyReader = AssignmentReader & Pick<HostSnapshot, "assignments" | "threadAutomations">;
+export type FamilyReader = AssignmentReader &
+  Pick<HostSnapshot, "assignments" | "threadAutomations">;
 
 const noAutomations: readonly ThreadAutomation[] = [];
 
@@ -84,7 +85,10 @@ export function taskFamilyGlance(reader: FamilyReader, threadId: string): TaskFa
   if (open.length === 0 && settled.length === 0 && automations === 0) return null;
   const asking = open.map(
     (assignment) =>
-      [assignment, requestWaitingOnAssignment(reader.waitingRequests, assignment.id) !== null] as const,
+      [
+        assignment,
+        requestWaitingOnAssignment(reader.waitingRequests, assignment.id) !== null,
+      ] as const,
   );
   // `sort` is stable and mutates this fresh array; Hermes lacks `toSorted`.
   asking.sort(([, left], [, right]) => Number(right) - Number(left));
@@ -143,7 +147,8 @@ function children(
   for (const assignment of byWorker.values())
     (assignment.status === "open" ? open : settled).push(assignment);
   open.sort(
-    (left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
   );
   settled.sort(
     (left, right) =>

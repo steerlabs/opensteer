@@ -263,6 +263,7 @@ export const HostCapabilitySchema = z.enum([
    * (`thread.icon.set`) and a specialist's colour (`workspace.color.set`).
    */
   "task-marks-v1",
+  "thread-automations-v1",
   /** A subscription may omit snapshot message history and its windows. */
   "snapshot-messages-omit-v1",
   "shared-task-done-v1",

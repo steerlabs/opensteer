@@ -1428,6 +1428,119 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
+  it("follows assignment pages so an older open child is held beyond the newest 100", async () => {
+    const workspace = makeWorkspace();
+    const thread = makeThread(workspace.id);
+    const mock = new MockHostClient({ latencyMs: 0 });
+    const seed = Object.values(mock.getSnapshot().assignments).find((a) => a.status === "open")!;
+    const older = { ...seed, parentThreadId: thread.id };
+    const recent = Array.from({ length: 100 }, () => ({
+      ...older,
+      id: createId("delegation"),
+      status: "completed" as const,
+      finishedAt: now,
+    }));
+    const pages: unknown[] = [];
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+      fetch: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname === "/v1/rpc/thread.assignments.list") {
+          const payload = rpcPayload(url, init);
+          pages.push(payload.before);
+          const assignments = payload.before ? [older] : recent;
+          return json({
+            assignments,
+            threadId: thread.id,
+            window: {
+              byteCount: 1,
+              hasMore: !payload.before,
+              itemCount: assignments.length,
+              nextBefore: payload.before ? null : "older",
+              totalItems: 101,
+            },
+          });
+        }
+        return json({ ...bootstrap([workspace]), threads: [thread] });
+      },
+    });
+    await client.load();
+    client.observeThread(thread.id);
+    await vi.waitFor(() => expect(client.getSnapshot().assignments[older.id]).toBeDefined(), {
+      timeout: 1000,
+    });
+    expect(pages).toEqual([undefined, "older"]);
+    client.dispose();
+    mock.dispose();
+  });
+
+  it.each([true, false])(
+    "loads task automations only with capability (%s), coalescing notices and preserving unchanged arrays",
+    async (enabled) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const socket = new FakeSocket();
+      const mock = new MockHostClient({ latencyMs: 0 });
+      const listed = await mock.rpc["triggers.list"]({});
+      if (!listed.ok) throw new Error(listed.error.message);
+      const triggers = listed.data.triggers
+        .filter((t) => t.kind === "schedule" && t.status === "active")
+        .slice(0, 1);
+      let reads = 0;
+      let hold: ReturnType<typeof Promise.withResolvers<Response>> | undefined;
+      const client = createHttpHostClient({
+        capabilities: enabled ? ["thread-automations-v1"] : [],
+        refreshIntervalMs: 0,
+        webSocketFactory: () => socket,
+        fetch: async (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          if (url.pathname === "/v1/rpc/triggers.list") {
+            reads++;
+            expect(rpcPayload(url, init)).toEqual({ anchorThreadId: thread.id });
+            return hold ? hold.promise : json({ triggers });
+          }
+          return json(bootstrap([workspace]));
+        },
+      });
+      await client.load();
+      socket.open();
+      socket.receive({
+        type: "host.snapshot",
+        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      });
+      client.observeThread(thread.id);
+      if (!enabled) {
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        await client.refresh();
+        expect(reads).toBe(0);
+      } else {
+        await vi.waitFor(
+          () => expect(client.getSnapshot().threadAutomations[thread.id]).toHaveLength(1),
+          { timeout: 1000 },
+        );
+        const held = client.getSnapshot().threadAutomations[thread.id];
+        hold = Promise.withResolvers<Response>();
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        expect(reads).toBe(2);
+        const answer = hold;
+        hold = undefined;
+        answer.resolve(json({ triggers }));
+        await vi.waitFor(() => expect(reads).toBe(3), { timeout: 1000 });
+        expect(client.getSnapshot().threadAutomations[thread.id]).toBe(held);
+        socket.receive({
+          type: "host.snapshot",
+          snapshot: { ...workspaceSnapshot(workspace, "1"), threads: [thread] },
+        });
+        await vi.waitFor(() => expect(reads).toBe(4), { timeout: 1000 });
+      }
+      client.dispose();
+      mock.dispose();
+    },
+  );
+
   it("loads conversation browser facts separately and preserves other scopes across bootstrap", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();

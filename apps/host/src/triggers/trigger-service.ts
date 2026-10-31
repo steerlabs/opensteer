@@ -113,10 +113,12 @@ export class TriggerService {
     input: {
       readonly limit?: number;
       readonly workspaceId?: Parameters<TriggerStore["listForOwner"]>[0]["workspaceId"];
+      readonly anchorThreadId?: Parameters<TriggerStore["listForOwner"]>[0]["anchorThreadId"];
     },
     scope: ThreadReachScope,
   ) {
     return this.#store.listForOwner({
+      ...(input.anchorThreadId === undefined ? {} : { anchorThreadId: input.anchorThreadId }),
       ...(input.limit === undefined ? {} : { limit: input.limit }),
       ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
       ownerId,
