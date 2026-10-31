@@ -166,11 +166,18 @@ class RunnerConnectionTest {
             log = {},
         ),
     )
+    @Volatile private var updateResult: PhoneUpdateResult = PhoneUpdateResult.Current
+    @Volatile private var requiredUpdateResult: PhoneUpdateResult = PhoneUpdateResult.Current
+    private val updater = object : PhoneUpdater {
+        override fun check(identity: PhoneIdentity, required: Boolean) = if (required) requiredUpdateResult else updateResult
+        override fun cancel() = Unit
+    }
     private val connection = RunnerConnection(
         sockets = sockets,
         discovery = HostDiscovery(OkHttpClient()),
         record = record,
         runtimeVersion = "0.1.117",
+        updater = updater,
         owner = owner,
         elapsed = { System.nanoTime() / 1_000_000 },
         log = {},
@@ -191,6 +198,34 @@ class RunnerConnectionTest {
         connection.stop()
         // The loop gives its identity back only on its way out through Stop.
         assertNull(owner.identities.last())
+    }
+
+    @Test
+    fun requiredAndroidConsentKeepsItsMessageAndRetriesInsteadOfHaltingForUsb() {
+        requiredUpdateResult = PhoneUpdateResult.Pending("Tap Update to finish updating Agent Phone.")
+        connection.start()
+        val primary = nextSocket(PRIMARY)
+        primary.hostSays(challenge())
+        primary.next("runner.authenticate")
+        primary.hostSays("""{"type":"host.error","error":{"code":"forbidden","message":"Update","reason":"agent-phone-outdated","retryable":false}}""")
+        val (_, issue) = owner.awaitLink { _, issue -> issue?.detail?.startsWith("Tap Update") == true }
+        assertEquals(IssueCode.NEEDS_UPDATE, issue?.code)
+        assertTrue(owner.awake)
+        requiredUpdateResult = PhoneUpdateResult.Current
+        nextSocket(PRIMARY)
+        stoppedCleanly()
+    }
+
+    @Test
+    fun existingAndroidConsentDoesNotOpenAnotherPrimaryConnectionAndCanResumeWhenItEnds() {
+        updateResult = PhoneUpdateResult.Pending("Tap Update to finish updating Agent Phone.")
+        connection.start()
+        owner.awaitLink { _, issue -> issue?.detail?.startsWith("Tap Update") == true }
+        assertTrue(opened.isEmpty())
+        updateResult = PhoneUpdateResult.Current
+        connection.identityChanged()
+        nextSocket(PRIMARY)
+        stoppedCleanly()
     }
 
     @Test

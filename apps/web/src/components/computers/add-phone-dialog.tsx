@@ -1,6 +1,5 @@
 import {
   AgentPhoneEnrollments,
-  agentPhoneAdb,
   agentPhoneSetupHost,
   setupAgentPhone,
   type AgentPhoneArtifact,
@@ -9,10 +8,8 @@ import {
   type AgentPhoneSetupStep,
 } from "@opensteer/agent-phone-setup";
 import {
-  agentPhoneCredentialStore,
   agentPhoneUsb,
   chooseAgentPhone,
-  connectAgentPhone,
   grantedAgentPhones,
   type AgentPhoneUsbDevice,
 } from "@opensteer/agent-phone-setup/webusb";
@@ -20,6 +17,7 @@ import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host"
 import type { DesktopUsbDeviceChoice, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
+import { connectPhoneForSetup } from "../../computers/agent-phone-connection.js";
 import { loadAgentPhoneArtifact } from "../../computers/agent-phone-setup.js";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
@@ -260,8 +258,8 @@ export function AddPhoneDialog({
     device.current = chosen;
     setPhase({ kind: "running", question: null, step: "connect" });
     try {
-      const connection = await connectAgentPhone(chosen, {
-        credentialStore: agentPhoneCredentialStore(),
+      const connection = await connectPhoneForSetup(chosen, {
+        native: desktopBridge?.agentPhoneAdb,
         onAuthorizePrompt: () => {
           if (isCurrent(session)) {
             setPhase({ kind: "running", question: null, step: "authorize" });
@@ -270,7 +268,7 @@ export function AddPhoneDialog({
         signal: abort.signal,
       });
       if (!isCurrent(session)) {
-        if (connection.kind === "connected") await connection.adb.close().catch(() => undefined);
+        if (connection.kind === "connected") await connection.close().catch(() => undefined);
         return;
       }
       if (connection.kind !== "connected") {
@@ -279,10 +277,10 @@ export function AddPhoneDialog({
       }
       session.close = () => {
         session.close = () => undefined;
-        void connection.adb.close().catch(() => undefined);
+        void connection.close().catch(() => undefined);
       };
       const result = await setupAgentPhone({
-        adb: agentPhoneAdb(connection.adb),
+        adb: connection.adb,
         artifact: loaded,
         confirmUninstall: () => ask({ kind: "uninstall" }, session),
         confirmUnpair: ({ hostUrl }) => ask({ hostUrl, kind: "unpair" }, session),
@@ -495,7 +493,7 @@ function Requirements({
 }
 
 const connectNoteText: Readonly<Record<ConnectNote, string>> = {
-  busy: "Another program is using this phone’s USB debugging, usually Android Studio or adb. Quit it, or run adb kill-server, then choose the phone again.",
+  busy: "Another program is using this phone’s USB debugging, and cannot share its connection. Close the other phone-control session and choose the phone again. In a web browser, try setup in Opensteer Desktop.",
   "not-chosen":
     "No phone was chosen. If yours wasn’t in the list, USB debugging is off or the cable only charges: turn USB debugging on, then choose the phone again.",
   unauthorized:

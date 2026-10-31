@@ -8,6 +8,7 @@ import java.util.Random
 /** How one connection attempt ended. */
 sealed interface AttemptEnd {
     data class UpdateFailed(val detail: String) : AttemptEnd
+    data class UpdatePending(val detail: String) : AttemptEnd
     /** The Host said no with a `host.error`, before or after its welcome. */
     data class Refused(val error: ProtocolError) : AttemptEnd
 
@@ -74,6 +75,7 @@ class ConnectionPolicy(private val random: Random) {
         violations = if (end is AttemptEnd.Violation) violations + 1 else 0
         val backoff = minOf(MAX_BACKOFF_MS, 500L shl minOf(failures, 6))
         return when (end) {
+            is AttemptEnd.UpdatePending -> Decision.Retry(Issue(IssueCode.NEEDS_UPDATE, end.detail), backoff)
             is AttemptEnd.UpdateFailed -> Decision.Stop(Issue(IssueCode.NEEDS_UPDATE, end.detail), wipe = false)
             is AttemptEnd.Refused -> refused(end.error, enrolled, backoff, deploymentName)
             is AttemptEnd.Closed -> when {

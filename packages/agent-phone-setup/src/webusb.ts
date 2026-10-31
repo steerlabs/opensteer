@@ -76,6 +76,7 @@ export async function connectAgentPhone(
   // Tango waits for the phone's answer indefinitely, and a denied prompt is
   // never answered at all. Closing the device is what ends that wait.
   let timedOut = false;
+  let connected = false;
   const release = () => void device.raw.close().catch(() => undefined);
   let timer: ReturnType<typeof setTimeout> | undefined;
   options.signal.addEventListener("abort", release, { once: true });
@@ -104,12 +105,15 @@ export async function connectAgentPhone(
       serial: device.serial,
     });
     options.signal.throwIfAborted();
-    return { adb: new Adb(transport), kind: "connected" };
+    const adb = new Adb(transport);
+    connected = true;
+    return { adb, kind: "connected" };
   } catch (error) {
     options.signal.throwIfAborted();
     if (timedOut) return { kind: "unauthorized" };
     throw error;
   } finally {
+    if (!connected) await device.raw.close().catch(() => undefined);
     clearTimeout(timer);
     options.signal.removeEventListener("abort", release);
   }

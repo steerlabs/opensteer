@@ -11,8 +11,10 @@ USB debugging and Chromium WebUSB or Opensteer Desktop. Unlock and accept the US
 prompt if needed. Safari/Firefox cannot perform setup. A charging-only cable exposes no ADB.
 
 Open Settings → Computers → Add a phone. Enable Personal remote access first and keep its
-Mac awake. Select the intended phone; cancellation selects nothing. If busy, quit the ADB
-program holding it. Run `adb kill-server` only for a server you own. Retry/replug in the same
+Mac awake. Select the intended phone; cancellation selects nothing. Desktop automatically shares an
+existing local ADB server for the selected USB phone. If browser setup is busy, use Desktop;
+another direct USB controller must release its session. Run `adb kill-server` only for a
+server you own. Retry/replug in the same
 dialog to retain enrollment idempotency. Confirm foreign-signer data erasure or another
 Deployment's unpair only with the owner's consent. Existing same-Deployment setup should
 retarget and preserve keys/access. Check online state and access in Computers.

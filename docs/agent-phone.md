@@ -18,7 +18,9 @@ through its attached computer's shell.
 
 Setup has the selected ADB device's full shell authority. Desktop permits USB only
 from its trusted main frame and selected devices; browser setup needs Chromium WebUSB,
-a data cable and USB debugging. ADB programs can exclusively hold the interface.
+a data cable and USB debugging. Desktop shares an existing local ADB server when it owns
+the selected phone; otherwise setup opens USB directly. Browser pages cannot share that
+native server.
 Trusted ADB keys persist in the browser profile and may authenticate silently.
 See [webusb.ts](../packages/agent-phone-setup/src/webusb.ts) and
 [desktop USB access](../apps/desktop/src/app/usb-device-access.ts).
@@ -191,7 +193,11 @@ acknowledges already-absent Runs/computers and drains in-flight work with matchi
 
 ## 8. Security boundaries
 
-USB setup is full shell authority, independent of subsequent connection grants. Artifact
+USB setup is full shell authority, independent of subsequent connection grants.
+The Desktop ADB path trusts a server owned by the same computer account, not a loopback
+address alone. Setup sessions bind the selected USB transport and server lifetime; they
+cannot operate other devices or survive a replug, server replacement or withdrawn USB
+permission. Opensteer never starts, restarts or kills the person's ADB server. Artifact
 bridges must read bounded regular files; browser artifacts come from the same origin and
 all setup paths verify the manifest, size and digest. Signed Runner proofs protect Host
 admission; authenticated owner commands authorize phone access.
@@ -233,7 +239,10 @@ The paired Host serves only its immutable startup-verified distribution, with no
 origin or redirect. The phone independently verifies receipt/manifest/APK agreement,
 package, SDK, newer version, nondebuggability and actual permanent signer; Android verifies
 replacement signatures. Journal attempts before install and bound retries across restarts.
-Equal versions remain installed; downgrades refuse. See
+Equal versions remain installed; downgrades refuse. A committed Android install session
+outlives a network attempt; waiting for the person's confirmation is not an install failure.
+Pending consent keeps the phone retrying its update status without admitting the old app.
+An Android result wakes that loop; declining consent does not consume a failed-install attempt. See
 [update](../apps/agent-phone/app/src/main/kotlin/com/opensteer/agentphone/update).
 
 USB setup grants install permission and records self as installer, including retained

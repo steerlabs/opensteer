@@ -1,7 +1,12 @@
 package com.opensteer.agentphone.runner
 
+sealed interface PhoneUpdateResult {
+    data object Current : PhoneUpdateResult
+    data class Pending(val detail: String) : PhoneUpdateResult
+    data class Failed(val detail: String) : PhoneUpdateResult
+}
+
 interface PhoneUpdater {
-    /** Returns a terminal issue, or null when there is no newer release. Installation replaces this process. */
-    fun check(identity: PhoneIdentity, required: Boolean): String?
+    fun check(identity: PhoneIdentity, required: Boolean): PhoneUpdateResult
     fun cancel()
 }

@@ -92,7 +92,11 @@
     "ws": "catalog:",
     "zod": "catalog:",
     "zod-to-json-schema": "3.25.2",
-    "electron-updater": "6.8.11"
+    "electron-updater": "6.8.11",
+    "@opensteer/agent-phone-setup": "workspace:*",
+    "@yume-chan/adb": "2.6.4",
+    "@yume-chan/adb-server-node-tcp": "2.5.2",
+    "@yume-chan/stream-extra": "2.6.1"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",

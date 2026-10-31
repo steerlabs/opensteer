@@ -26,9 +26,19 @@ class UpdateInstaller(private val context: Context) {
     fun state(): String = journal.getString("state", "idle") ?: "idle"
     fun digest(): String? = journal.getString("sha256", null)
 
+    fun pendingState(identity: PhoneIdentity): String? = state().takeIf {
+        journal.getString("scope", null)?.startsWith("${identity.runnerId} ${identity.hostUrl} ") == true &&
+            it in setOf("installing", "awaiting-user") && installer.getSessionInfo(journal.getInt("sessionId", -1)) != null
+    }
+
     fun pending(identity: PhoneIdentity, offer: UpdateOffer): Boolean =
-        journal.getString("scope", null) == "${identity.runnerId} ${identity.hostUrl} ${offer.sha256}" &&
-            state() in setOf("installing", "awaiting-user") && installer.getSessionInfo(journal.getInt("sessionId", -1)) != null
+        journal.getString("scope", null) == "${identity.runnerId} ${identity.hostUrl} ${offer.sha256}" && pendingState(identity) != null
+
+    fun takeCancelled(identity: PhoneIdentity): Boolean {
+        if (state() != "cancelled" || journal.getString("scope", null)?.startsWith("${identity.runnerId} ${identity.hostUrl} ") != true) return false
+        check(journal.edit().putString("state", "idle").remove("sessionId").commit()) { "Could not record the cancelled update" }
+        return true
+    }
 
     fun begin(identity: PhoneIdentity, offer: UpdateOffer) {
         val scope = "${identity.runnerId} ${identity.hostUrl} ${offer.sha256}"
@@ -120,7 +130,15 @@ class UpdateInstaller(private val context: Context) {
                 // The accessibility service may start activities in the background. The notification remains if Android refuses.
                 try { context.startActivity(pending) } catch (error: Exception) { Log.w("AgentPhone", "Open the update notification to continue", error) }
             }
+            PackageInstaller.STATUS_FAILURE_ABORTED -> {
+                if (state() == "cancelled") return
+                journal.edit().putString("state", "cancelled").putInt("attempts", (journal.getInt("attempts", 1) - 1).coerceAtLeast(0)).commit()
+                context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION)
+            }
             else -> failed()
+        }
+        if (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE) != PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            context.phone.runtime?.connection?.identityChanged()
         }
     }
 

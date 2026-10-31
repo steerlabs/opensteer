@@ -53,10 +53,10 @@ export function localPlan(files, graph, present, baseGraph = graph) {
   if (gui.length) commands.push(["test:vm", "--", "pnpm", "test:gui", "--", ...gui]);
   if (files.some((p) => p.startsWith("apps/agent-phone/")))
     commands.push([
-      "--dir",
-      "apps/agent-phone",
       "exec",
-      "./gradlew",
+      "./apps/agent-phone/gradlew",
+      "-p",
+      "apps/agent-phone",
       ":app:lint",
       ":app:testDebugUnitTest",
       ":app:assembleDebug",

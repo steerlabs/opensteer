@@ -82,3 +82,21 @@ it("closes USB to interrupt authentication when setup is cancelled", async () =>
   authenticating.reject(new Error("USB closed"));
   await expect(connected).rejects.toBe(reason);
 });
+
+it("releases USB when an existing ADB server owns the interface", async () => {
+  const phone = pendingDevice();
+  const connected = connectAgentPhone(phone.device, options(new AbortController().signal));
+  phone.opening.reject(new AdbDaemonWebUsbDevice.DeviceBusyError());
+  await expect(connected).resolves.toEqual({ kind: "busy" });
+  expect(phone.close).toHaveBeenCalledTimes(1);
+});
+
+it("releases USB after authentication fails", async () => {
+  const phone = pendingDevice();
+  const failure = new Error("Authentication failed");
+  vi.spyOn(AdbDaemonTransport, "authenticate").mockRejectedValue(failure);
+  const connected = connectAgentPhone(phone.device, options(new AbortController().signal));
+  phone.opening.resolve({} as Awaited<ReturnType<AdbDaemonWebUsbDevice["connect"]>>);
+  await expect(connected).rejects.toBe(failure);
+  expect(phone.close).toHaveBeenCalledTimes(1);
+});

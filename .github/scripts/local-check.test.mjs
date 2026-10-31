@@ -59,3 +59,14 @@ test("a root test edit alone still runs the test typecheck", () => {
   assert.equal(p.full, false);
   assert.ok(p.commands.some((c) => c.length === 1 && c[0] === "typecheck:tests"));
 });
+test("runs the Android wrapper from the workspace root without requiring an Android package manifest", () => {
+  const p = localPlan(["apps/agent-phone/app/src/main/AndroidManifest.xml"], [], []);
+  const android = p.commands.find((command) => command.some((arg) => arg.endsWith("gradlew")));
+  assert.deepEqual(android?.slice(0, 5), [
+    "exec",
+    "./apps/agent-phone/gradlew",
+    "-p",
+    "apps/agent-phone",
+    ":app:lint",
+  ]);
+});
