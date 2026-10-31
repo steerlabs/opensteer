@@ -131,6 +131,17 @@ describe("AddPhoneDialog setup lifecycle", () => {
     return found;
   }
 
+  /** What the dialog says is happening now, as its live region reads it. */
+  function status(container: HTMLElement): string {
+    return container.querySelector("[role=status]")?.textContent ?? "";
+  }
+
+  function buttonNames(container: HTMLElement): string[] {
+    return [...container.querySelectorAll("[role=dialog] button")].map(
+      (candidate) => candidate.getAttribute("aria-label") ?? candidate.textContent ?? "",
+    );
+  }
+
   async function click(container: HTMLElement, name: string) {
     await act(async () => button(container, name).click());
   }
@@ -299,7 +310,9 @@ describe("AddPhoneDialog setup lifecycle", () => {
     const firstSignal = vi.mocked(setupAgentPhone).mock.calls[0]![0].signal;
     await usbEvent("disconnect");
     expect(firstSignal.aborted).toBe(true);
-    expect(page.container.textContent).toContain("The phone was unplugged");
+    expect(status(page.container)).toBe(
+      "Your turnPlug the phone back inSetup continues where it stopped.",
+    );
     vi.mocked(setupAgentPhone).mockResolvedValue(done);
     await usbEvent("connect");
     expect(connectAgentPhone).toHaveBeenCalledTimes(2);
@@ -318,11 +331,97 @@ describe("AddPhoneDialog setup lifecycle", () => {
     });
     const page = await mount();
     await click(page.container, "Choose the phone");
+    expect(status(page.container)).toContain("Setup stopped");
+    expect(status(page.container)).toContain("The phone can’t reach My Opensteer.");
     vi.mocked(setupAgentPhone).mockResolvedValueOnce(done);
     await click(page.container, "Try again");
     const [first, retried] = vi.mocked(setupAgentPhone).mock.calls.map(([options]) => options);
     expect(first!.enrollments).toBeInstanceOf(AgentPhoneEnrollments);
     expect(retried!.enrollments).toBe(first!.enrollments);
     expect(page.container.textContent).toContain("The phone is ready");
+  });
+  it("says whose turn it is, and offers nothing to press while Opensteer works", async () => {
+    const opening = Promise.withResolvers<AgentPhoneUsbConnection>();
+    vi.mocked(connectAgentPhone).mockImplementation(async (_device, options) => {
+      options.onAuthorizePrompt?.();
+      return opening.promise;
+    });
+    const setup = Promise.withResolvers<AgentPhoneSetupResult>();
+    vi.mocked(setupAgentPhone).mockReturnValue(setup.promise);
+    const page = await mount();
+    await click(page.container, "Choose the phone");
+    expect(status(page.container)).toBe(
+      "On the phoneTap Allow on the phoneUnlock it if the screen is off, then allow USB debugging.",
+    );
+    expect(buttonNames(page.container)).toEqual(["Close", "Stop setup"]);
+
+    await act(async () => opening.resolve(connection()));
+    const { onStep } = vi.mocked(setupAgentPhone).mock.calls[0]![0];
+    const phone = { manufacturer: "Google", model: "Pixel 8", release: "15", sdk: 35 };
+    await act(async () => onStep({ phone: { ...phone, secureLock: true }, step: "inspect" }));
+    expect(status(page.container)).toBe("Checking Pixel 8");
+    await act(async () => onStep({ step: "install" }));
+    expect(status(page.container)).toBe("Installing Agent Phone");
+    expect(buttonNames(page.container)).toEqual(["Close", "Stop setup"]);
+    // The lock advice belongs to the finished phone, not to every step on the way.
+    expect(page.container.textContent).not.toContain("PIN");
+
+    await act(async () => setup.resolve(done));
+    expect(status(page.container)).toContain("Pixel 8 is ready");
+    expect(status(page.container)).toContain("after a restart, unlock it once yourself");
+  });
+
+  it("asks before erasing or unpairing, keeps by default, and Stop answers no", async () => {
+    const page = await mount();
+    await click(page.container, "Choose the phone");
+    const options = vi.mocked(setupAgentPhone).mock.calls[0]![0];
+    await act(async () => options.onStep({ step: "install" }));
+
+    let removal!: Promise<boolean>;
+    await act(async () => {
+      removal = options.confirmUninstall();
+    });
+    expect(status(page.container)).toContain("Your turnRemove the other Agent Phone app?");
+    expect(document.activeElement?.textContent).toBe("Keep it");
+    await click(page.container, "Keep it");
+    await expect(removal).resolves.toBe(false);
+    expect(status(page.container)).toBe("Installing Agent Phone");
+
+    await act(async () => options.onStep({ step: "pair" }));
+    let unpair!: Promise<boolean>;
+    await act(async () => {
+      unpair = options.confirmUnpair({ hostUrl: "https://other.example" });
+    });
+    expect(status(page.container)).toContain("Move this phone to My Opensteer?");
+    expect(status(page.container)).toContain("https://other.example");
+    await click(page.container, "Stop setup");
+    await expect(unpair).resolves.toBe(false);
+    expect(options.signal.aborted).toBe(true);
+  });
+
+  it("waits on the person only while a chooser is actually open", async () => {
+    vi.mocked(chooseAgentPhone).mockReturnValue(
+      Promise.withResolvers<AgentPhoneUsbDevice | null>().promise,
+    );
+    const browser = await mount();
+    await click(browser.container, "Choose the phone");
+    expect(status(browser.container)).toBe("Your turnChoose the phone in the list that opened");
+
+    // The desktop picks a lone phone itself; it asks the page only when there are several.
+    const desktop = await mount({
+      chooseUsbDevice: vi.fn(),
+      onUsbDeviceChoice: () => () => undefined,
+    } as unknown as OpensteerDesktopBridge);
+    await click(desktop.container, "Choose the phone");
+    expect(status(desktop.container)).toBe("Looking for the phone");
+  });
+
+  it("a phone that refused USB debugging asks to be chosen again", async () => {
+    vi.mocked(connectAgentPhone).mockResolvedValue({ kind: "unauthorized" });
+    const page = await mount();
+    await click(page.container, "Choose the phone");
+    expect(setupAgentPhone).not.toHaveBeenCalled();
+    expect(status(page.container)).toContain("The phone didn’t allow USB debugging");
+    expect(buttonNames(page.container)).toContain("Choose the phone");
   });
 });
