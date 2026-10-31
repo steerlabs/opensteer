@@ -218,9 +218,11 @@ Most code changes need no documentation change: agents can read the code.
 
 Clients call the Host over typed RPC (`packages/protocol`) and follow a
 Workspace channel of durable events, resuming from their last position after a
-reconnect. The Host owns all state in PostgreSQL (`packages/database`):
+reconnect. The Host owns application records in PostgreSQL (`packages/database`):
 authentication, Workspaces, Threads, Requests and the Thread Inbox, which
 queues, steers or records messages between Threads. It assigns Runs to Runners.
+Native browser data stays on its owning computer
+([profile authority](docs/browser-sessions.md#profile-state)).
 A Runner connects to its Host, advertises the modules its grant allows, and runs
 engines through harnesses, plus browser sessions (`apps/browser-runtime`) and
 messaging channels (`apps/channel-runtime`). The desktop app bundles a Personal
@@ -258,8 +260,8 @@ decisions and constraints the code can't show.
 | Messaging providers and channel authority                              | [Messaging](docs/messaging.md)                                                                                |
 | Mobile lifecycle, UI or push notifications                             | [Mobile](docs/mobile.md)                                                                                      |
 | Managed infrastructure                                                 | [Cloud operations](apps/control-plane/src/cloud/README.md)                                                    |
-| Browser sessions, page uploads or profile saving                       | [Browser sessions](docs/browser-sessions.md)                                                                  |
-| Browser profile formats                                                | [Snapshot contract](packages/browser-profile/src/snapshot.ts)                                                 |
+| Browser sessions, page uploads or profile storage                      | [Browser sessions](docs/browser-sessions.md)                                                                  |
+| Browser profile conversion formats                                     | [Legacy seed contract](packages/browser-profile/src/snapshot.ts)                                              |
 | Chrome sign-ins and the Chrome extension                               | [Chrome sign-ins](docs/browser-sources.md)                                                                    |
 | Voice dictation into the composer                                      | [Dictation](docs/dictation.md)                                                                                |
 | Voice mode: talking to Chat hands-free                                 | [Voice](docs/voice.md)                                                                                        |

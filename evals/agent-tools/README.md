@@ -34,7 +34,9 @@ remove those cases merely because they lower a baseline.
 Mocks are keyed by bare tool name and return JSON. If a test needs different
 responses to successive calls, use `{"$responses": [first, second]}`; exhaustion
 returns an explicit unavailable result. Calls still use the production Zod
-validator, even when a mock is present. The transcript contains all native
+validator, even when a mock is present. `{"$error": "message"}` returns an MCP
+tool error, including inside a response sequence, so refusal cases exercise the
+same result shape as the production service. The transcript contains all native
 engine events, while `calls` contains ordered Opensteer MCP attempts and their
 validation outcomes. Native event arguments are also retained in `nativeCalls`.
 

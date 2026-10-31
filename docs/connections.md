@@ -140,8 +140,9 @@ in-memory HMAC key: they cannot correlate across lifetimes or expose URLs and
 credentials. See [supervisor sources](../apps/desktop/src/supervisor).
 
 Quit is irreversible: stop new work immediately, continue cleanup after errors,
-and never reopen the app or a modal. Browser profiles save while Runner relay
-and Host remain alive; Runner, Host and database then stop in order. Lost parent
+and never reopen the app or a modal. Native browsers close without clearing their
+stores; legacy profile saves finish while Runner relay and Host remain alive.
+Runner, Host and database then stop in order. Lost parent
 control pipes must contain process trees, including tunnel and detached engine
 helpers. Connector shutdown preserves enabled intent without requiring live
 Host/Account or configuring routes. Tunnel WebSockets cannot drain while their

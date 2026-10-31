@@ -8,6 +8,35 @@ import { expect, it } from "vitest";
 import { parseCases } from "./cases.js";
 import { startFakeHost } from "./host.js";
 
+it("returns a converted-profile update refusal as an MCP tool error after validation", async () => {
+  const testCase = parseCases(
+    await readFile(new URL("./cases/browser.ndjson", import.meta.url), "utf8"),
+  ).find((testCase) => testCase.id === "converted-profile-update-refusal")!;
+  const host = await startFakeHost(testCase);
+  const client = new Client({ name: "eval-profile-refusal", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const call = testCase.expect.calls[0]!;
+    const result = await client.callTool({ name: call.tool, arguments: call.args });
+    expect(result).toEqual({
+      isError: true,
+      content: [{ type: "text", text: "Update this computer to open this profile." }],
+    });
+    expect(host.calls).toEqual([{ ...call, valid: true }]);
+    const invalid = await client.callTool({ name: call.tool, arguments: { unexpected: true } });
+    expect(invalid.isError).toBe(true);
+    expect(invalid.content).not.toEqual(result.content);
+    expect(host.calls.at(-1)?.valid).toBe(false);
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
 it("validates screen presentation mocks with the production tool contract", async () => {
   const testCase = parseCases(
     await readFile(new URL("./cases/screen-presentation.ndjson", import.meta.url), "utf8"),

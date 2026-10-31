@@ -168,6 +168,35 @@ capabilities and never use them to gate mandatory behavior.
   Older Hosts, runtimes and viewers keep the absent policy. See
   [Passkeys](browser-sessions.md#passkeys).
 
+Native browser profiles and runtime-submitted first navigation are independent,
+additive negotiations; neither bumps the Host API epoch. The Host advertises
+`browser-local-profiles-v1` and `browser-initial-navigation-v1`. The runtime offers
+`modules.browser.localProfiles: 1` with its durable storage identity and engine,
+and independently `initialNavigationVersion: 1`; the auxiliary welcome must
+acknowledge each version before extended maintenance/readiness frames are sent.
+See the [Runner contract](../packages/protocol/src/runner.ts) and
+[welcome](../packages/protocol/src/runner-auxiliary.ts).
+
+Native execution requires complete authenticated inventory on the current browser
+auxiliary stream before admission, including deletion tombstones. Partial,
+interrupted or unreadable inventory is never an empty inventory or permission to
+execute. Claims reconcile existing ownership forward; they cannot replace a
+binding, downgrade local authority or reconstruct missing grants. Personal also
+requires Main's reconciliation before issuing named-profile tickets elsewhere.
+
+| Pair                   | Constraint                                                                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Old client → new Host  | Accept existing strict requests and return ordinary tab/session results and error envelopes. Storage selection stays internal.                                                                         |
+| New client → old Host  | Keep requests unchanged; pending tabs work locally without a new deletion-status read. Completion retains the old Host's latency.                                                                      |
+| Old runtime → new Host | Unconverted profiles use exact legacy tickets and snapshots. Initializing/local profiles refuse before ticket issuance: “Update this computer to open this profile.” Never supply their recovery seed. |
+| New runtime → old Host | Without welcome negotiation, use legacy behavior only for unconverted profiles. A local marker refuses a legacy ticket; never make a disposable copy from the old seed.                                |
+| New runtime → new Host | Convert once on the bound storage instance and engine, then issue native tickets without a snapshot endpoint or lease. Wrong storage/engine refuses opening; it never authorizes reassignment.         |
+
+Frozen readers must retain the released ticket/welcome/relay shapes; importing
+current identity schemas into the baseline can hide a compatibility break. See
+the [released browser fixture](../apps/host/src/browser/released-browser-protocol.test-support.ts)
+and [DB restore constraints](releases.md#personal-database-snapshots).
+
 [Saved-login compatibility](passwords.md#runtime-and-compatibility) separately
 negotiates integrations `passwordSignIn: 1` for the Personal vault authority and
 `loginText: 1` with a live receiver key for app typing. Auxiliary welcome opt-in
