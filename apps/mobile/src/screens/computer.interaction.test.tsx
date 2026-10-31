@@ -41,7 +41,11 @@ vi.mock("react-native", () => ({
   ActivityIndicator: () => null,
 }));
 vi.mock("@react-navigation/native", () => ({
-  useNavigation: () => ({ dispatch: state.dispatch, setOptions: vi.fn(), isFocused: () => state.focused }),
+  useNavigation: () => ({
+    dispatch: state.dispatch,
+    setOptions: vi.fn(),
+    isFocused: () => state.focused,
+  }),
   StackActions: { push: (name: string, params: unknown) => ({ name, params }) },
 }));
 vi.mock("@opensteer/client/react", () => ({
