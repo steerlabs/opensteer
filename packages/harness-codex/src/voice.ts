@@ -291,12 +291,15 @@ export async function startCodexVoiceCall(options: {
       if (ended || !client) throw voiceError("voice-ended");
       try {
         await client.request("thread/realtime/appendSpeech", { threadId, text }, 8_000);
-        if (input.agent)
-          await inject(`The voice just told the person this on Chat's behalf:\n${text}`);
       } catch {
         await stop();
         throw voiceError("voice-ended");
       }
+      // The person already heard it; a missed note only leaves the agent less informed.
+      if (input.agent)
+        await inject(`The voice just told the person this on Chat's behalf:\n${text}`).catch(
+          () => undefined,
+        );
     };
     return {
       answer: sdp,
