@@ -103,3 +103,46 @@ it("keeps site policy readable for provider frames and denies foreign ancestors"
     expect(result["Permissions-Policy"]![0]).toBe("publickey-credentials-get=()");
   }
 });
+
+it("holds every request at a closed restoration gate, including service workers", async () => {
+  const { BrowserSessionRequestGate, applyBrowserSessionPolicy } =
+    await import("./browser-session-policy.js");
+  const { vi } = await import("vitest");
+  const gate = new BrowserSessionRequestGate();
+  const session = {
+    setPermissionCheckHandler: vi.fn(),
+    setPermissionRequestHandler: vi.fn(),
+    getPreloadScripts: () => [],
+    registerPreloadScript: vi.fn(),
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    setUserAgent: vi.fn(),
+    getUserAgent: () => "Chrome/151",
+  };
+  applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+    requestGate: gate,
+  });
+  const before = session.webRequest.onBeforeRequest.mock.calls[0]![0];
+  const worker = vi.fn();
+  const page = vi.fn();
+  const helper = vi.fn();
+  before({ url: "https://site.test/" }, worker);
+  before({ url: "https://site.test/", webContentsId: 1 }, page);
+  const remove = gate.allowStorageHelper(2);
+  before({ url: "https://site.test/", webContentsId: 2 }, helper);
+  expect(helper).toHaveBeenCalledWith({ cancel: false });
+  expect(worker).not.toHaveBeenCalled();
+  expect(page).not.toHaveBeenCalled();
+  remove();
+  gate.open();
+  expect(worker).toHaveBeenCalledWith({ cancel: false });
+  expect(page).toHaveBeenCalledWith({ cancel: false });
+  gate.close();
+  const blocked = vi.fn();
+  before({ url: "https://site.test/", webContentsId: 2 }, blocked);
+  expect(blocked).not.toHaveBeenCalled();
+  gate.fail();
+  expect(blocked).toHaveBeenCalledWith({ cancel: true });
+  expect(session.webRequest.onBeforeRequest).toHaveBeenCalledOnce();
+});

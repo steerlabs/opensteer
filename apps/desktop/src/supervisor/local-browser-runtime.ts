@@ -59,10 +59,13 @@ export async function startLocalBrowserRuntime(
   });
   const launcher = new ElectronBrowserLauncher({
     downloads: options.downloads,
+    localProfileRoot: options.profileRoot,
     pagePolicyPreloadPath: options.pagePolicyPreloadPath,
   });
+  const preparation = launcher.prepare();
   const log = options.logPath ? new RotatingPersonalLog(options.logPath) : null;
   const diagnostics = new BoundedPersonalLog(16 * 1_024, [], (line) => log?.append("stderr", line));
+  const profileStorage = { localProfiles: { root: options.profileRoot } };
   const runtime = new BrowserRuntime({
     onCheckpointFailure: ({ error, ...diagnostic }) =>
       logShutdownError(
@@ -80,6 +83,8 @@ export async function startLocalBrowserRuntime(
         `${JSON.stringify({ event: "browser.session.start.failed", correlationId, stage, error: error instanceof Error ? error.stack : String(error) })}\n`,
       ),
     launcher,
+    // Native data and its exclusive root ownership outlive enrollment slots.
+    ...profileStorage,
     ...(options.checkpointIntervalMs !== undefined
       ? { checkpointIntervalMs: options.checkpointIntervalMs }
       : {}),
@@ -99,6 +104,7 @@ export async function startLocalBrowserRuntime(
     runtime,
   });
   try {
+    await preparation;
     const address = await server.start();
     const unregisterPresentation = options.registerPresentationSource?.(runtime);
     return {
@@ -122,6 +128,7 @@ export async function startLocalBrowserRuntime(
     };
   } catch (error) {
     await server.close().catch(() => undefined);
+    launcher.close();
     log?.close();
     throw error;
   }

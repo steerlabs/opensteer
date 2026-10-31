@@ -2,7 +2,7 @@ import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import { z } from "zod";
 import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import {
@@ -42,7 +42,6 @@ import {
 } from "@opensteer/browser-runtime-core/page-policy";
 import {
   siteCookieReplacementBatch,
-  BrowserRuntimeError,
   type BrowserContext,
   type BrowserLaunchRequest,
   type BrowserLauncher,
@@ -51,12 +50,23 @@ import {
   type CdpSession,
   type EngineClipboard,
   type LaunchedBrowser,
+  type LocalProfileEngine,
   type PageGeometry,
   type PageCapture,
+  type Viewport,
   pageViewport,
   type HumanInputObservation,
 } from "@opensteer/browser-runtime-core";
-import { applyBrowserSessionPolicy, updateBrowserPasskeyPolicy } from "./browser-session-policy.js";
+import {
+  applyBrowserSessionPolicy,
+  updateBrowserPasskeyPolicy,
+  type BrowserSessionRequestGate,
+} from "./browser-session-policy.js";
+import {
+  acquireElectronLocalProfile,
+  releaseElectronLocalProfile,
+  type ElectronLocalProfile,
+} from "./electron-local-profile.js";
 import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 
 import {
@@ -80,6 +90,7 @@ interface ElectronBrowserLauncherOptions {
   readonly clipboard?: EngineClipboard;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   readonly maxWebContents?: number;
+  readonly localProfileRoot?: string;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
   readonly pagePolicyPreloadPath: string;
 }
@@ -102,12 +113,67 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #configuredSessions = new WeakSet<Session>();
   readonly #pagePolicyPreloadPath: string;
   readonly #views: ElectronBrowserViewPool;
+  readonly #localProfileRoot: string | undefined;
+  readonly localProfiles: LocalProfileEngine = {
+    engine: "electron",
+    release: releaseElectronLocalProfile,
+    importAndFlush: async (input) => {
+      input.signal.throwIfAborted();
+      const profile = acquireElectronLocalProfile({
+        ...input,
+        root: this.#localProfileRoot,
+        configure: (session, gate) => this.#configureSession(session, false, gate),
+        initialize: async (owner) => {
+          const context = this.#context(
+            owner.session,
+            { devicePixelRatio: 1, ...defaultBrowserViewport },
+            undefined,
+            undefined,
+            owner.gate,
+          );
+          try {
+            await owner.mirror.initialize(
+              async () => {
+                input.signal.throwIfAborted();
+                await context.importSnapshot(input.snapshot);
+                input.signal.throwIfAborted();
+                await context.verifyImportedCookies(input.snapshot);
+                await owner.session.cookies.flushStore();
+              },
+              async () => {
+                if (
+                  [
+                    ...new Map(
+                      input.snapshot.origins.map((origin) => [origin.origin, origin]),
+                    ).values(),
+                  ].some((origin) => origin.localStorage.length > 0)
+                ) {
+                  owner.session.flushStorageData();
+                  // An unloaded origin replies only after the earlier Flush commits on
+                  // the same LocalStorageControl pipe (Electron 44.9.2 / Chromium 151).
+                  await owner.session.clearStorageData({
+                    origin: `https://${randomUUID()}.invalid`,
+                    storages: ["localstorage"],
+                  });
+                }
+              },
+            );
+            input.signal.throwIfAborted();
+          } finally {
+            await context.close();
+          }
+        },
+      });
+      await profile.ready();
+    },
+  };
   #preparation: Promise<void> | undefined;
 
   constructor(options: ElectronBrowserLauncherOptions) {
     if (!path.isAbsolute(options.pagePolicyPreloadPath)) {
       throw new TypeError("The browser page policy preload path must be absolute.");
     }
+    this.#localProfileRoot = options.localProfileRoot;
     this.#authenticator = options.authenticator;
     this.#pagePolicyPreloadPath = options.pagePolicyPreloadPath;
     this.#clipboard = options.clipboard;
@@ -147,11 +213,35 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
 
   async launch(request: BrowserLaunchRequest): Promise<LaunchedBrowser> {
     if (request.storage.kind === "local") {
-      throw new BrowserRuntimeError(
-        "conflict",
-        "This launcher does not support native profiles yet.",
-        { reason: "browser-local-profiles-unsupported" },
+      const profile = acquireElectronLocalProfile({
+        ...request.storage,
+        root: this.#localProfileRoot,
+        configure: (session, gate) =>
+          this.#configureSession(
+            session,
+            request.authenticator !== undefined || this.#authenticator !== undefined,
+            gate,
+          ),
+      });
+      await profile.admit();
+      this.#configureSession(
+        profile.session,
+        request.authenticator !== undefined || this.#authenticator !== undefined,
+        profile.gate,
       );
+      const context = this.#context(
+        profile.session,
+        request.initialViewport,
+        request.authenticator ?? this.#authenticator,
+        profile,
+      );
+      try {
+        await context.createPage();
+        return new ElectronLaunchedBrowser(context, profile.session, this.#clipboard, profile);
+      } catch (error) {
+        await context.close().catch(() => undefined);
+        throw error;
+      }
     }
     const snapshot =
       request.storage.kind === "legacy" ? request.storage.snapshot : EmptyBrowserProfileSnapshot;
@@ -180,7 +270,28 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     }
   }
 
-  #configureSession(profileSession: Session, provider: boolean): void {
+  #context(
+    profileSession: Session,
+    viewport: Viewport,
+    authenticator?: PasskeyAuthenticator,
+    localProfile?: ElectronLocalProfile,
+    importGate?: BrowserSessionRequestGate,
+  ): ElectronBrowserContext {
+    return new ElectronBrowserContext({
+      createView: (options, opener) => this.#views.create(options, opener, viewport),
+      createHelper: (options) => this.#views.createHelper(options),
+      profileSession,
+      ...(authenticator ? { authenticator } : {}),
+      ...(localProfile ? { localProfile } : {}),
+      ...(importGate ? { importGate } : {}),
+    });
+  }
+
+  #configureSession(
+    profileSession: Session,
+    provider: boolean,
+    requestGate?: BrowserSessionRequestGate,
+  ): void {
     if (this.#configuredSessions.has(profileSession)) {
       updateBrowserPasskeyPolicy(profileSession, provider);
       return;
@@ -190,6 +301,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       provider,
       downloads: this.#downloads,
       pagePolicyPreloadPath: this.#pagePolicyPreloadPath,
+      ...(requestGate ? { requestGate } : {}),
     });
   }
 }
@@ -383,13 +495,16 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
   readonly #events = new EventEmitter();
   readonly #profileSession: Session;
   #closePromise: Promise<void> | null = null;
+  readonly #localProfile: ElectronLocalProfile | undefined;
 
   constructor(
     context: ElectronBrowserContext,
     profileSession: Session,
     clipboard?: EngineClipboard,
+    localProfile?: ElectronLocalProfile,
   ) {
     if (clipboard) this.clipboard = clipboard;
+    this.#localProfile = localProfile;
     this.context = context;
     this.#profileSession = profileSession;
     this.cdp = new ElectronBrowserCdpBackend(context);
@@ -425,7 +540,15 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
   async #close(): Promise<void> {
     await (this.cdp as ElectronBrowserCdpBackend).close().catch(() => undefined);
     await this.context.close();
-    await Promise.all([this.#profileSession.clearCache(), this.#profileSession.clearStorageData()]);
+    if (this.#localProfile) {
+      await this.#profileSession.cookies.flushStore();
+      await this.#localProfile.mirror.flush();
+    } else {
+      await Promise.all([
+        this.#profileSession.clearCache(),
+        this.#profileSession.clearStorageData(),
+      ]);
+    }
     this.#events.emit("close");
     this.#events.removeAllListeners();
   }
@@ -439,6 +562,8 @@ interface ElectronBrowserContextOptions {
   ) => ElectronBrowserView;
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
   readonly profileSession: Session;
+  readonly localProfile?: ElectronLocalProfile;
+  readonly importGate?: BrowserSessionRequestGate;
 }
 
 class ElectronBrowserContext implements BrowserContext {
@@ -455,6 +580,9 @@ class ElectronBrowserContext implements BrowserContext {
   readonly #pages = new Set<ElectronBrowserPage>();
   readonly #profileSession: Session;
   readonly #visitedOrigins = new Set<string>();
+  readonly #localProfile: ElectronLocalProfile | undefined;
+  readonly #importGate: BrowserSessionRequestGate | undefined;
+  readonly #untrack: (() => void) | undefined;
   #closed = false;
   readonly #displayChanged = () => {
     for (const page of this.#pages) page.displayChanged();
@@ -466,6 +594,9 @@ class ElectronBrowserContext implements BrowserContext {
     this.#createView = options.createView;
     this.#createHelper = options.createHelper;
     this.#profileSession = options.profileSession;
+    this.#localProfile = options.localProfile;
+    this.#importGate = options.importGate;
+    this.#untrack = options.localProfile?.trackContext(() => this.close());
     screen.on("display-metrics-changed", this.#displayChanged);
     screen.on("display-added", this.#displayChanged);
     screen.on("display-removed", this.#displayChanged);
@@ -476,6 +607,7 @@ class ElectronBrowserContext implements BrowserContext {
   }
 
   async createPage(): Promise<BrowserPage> {
+    await this.#localProfile?.ready();
     this.#assertOpen();
     const page = this.#newPage(null, {
       webPreferences: this.#securePreferences(),
@@ -527,14 +659,47 @@ class ElectronBrowserContext implements BrowserContext {
     cookies: readonly BrowserCookie[],
     deadline: AbortSignal,
   ): Promise<void> {
+    deadline.throwIfAborted();
+    const replace = async () =>
+      this.#withStorageView(async (_view, command) => {
+        // The same page-scoped Network domain exportSnapshot reads: it addresses
+        // this Session's partition, which every page of the profile shares.
+        const live = asRecord(await command("Network.getAllCookies")).cookies;
+        const batch = siteCookieReplacementBatch(site, Array.isArray(live) ? live : [], cookies);
+        if (batch.length === 0) return;
+        deadline.throwIfAborted();
+        await command("Network.setCookies", { cookies: batch });
+      });
+    if (this.#localProfile) {
+      await this.#localProfile.mirror.mutate(async () => {
+        await replace();
+        await this.#profileSession.cookies.flushStore();
+      }, deadline);
+    } else await replace();
+  }
+
+  async verifyImportedCookies(snapshot: BrowserProfileSnapshot): Promise<void> {
     await this.#withStorageView(async (_view, command) => {
-      // The same page-scoped Network domain exportSnapshot reads: it addresses
-      // this Session's partition, which every page of the profile shares.
       const live = asRecord(await command("Network.getAllCookies")).cookies;
-      const batch = siteCookieReplacementBatch(site, Array.isArray(live) ? live : [], cookies);
-      if (batch.length === 0) return;
-      deadline.throwIfAborted();
-      await command("Network.setCookies", { cookies: batch });
+      if (!Array.isArray(live))
+        throw new Error("Browser profile cookie import could not be verified.");
+      const actual = live.map(browserCookieFromCdp);
+      const normalize = (cookie: BrowserCookie) => ({
+        ...browserCookieToCdp(cookie),
+        expires: cookie.expires,
+      });
+      const now = Date.now() / 1_000;
+      const canonical = (cookies: BrowserCookie[]) =>
+        [
+          ...new Set(
+            cookies
+              .filter((cookie) => cookie.expires < 0 || cookie.expires > now)
+              .map((cookie) => JSON.stringify(normalize(cookie))),
+          ),
+        ].sort();
+      if (JSON.stringify(canonical(actual)) !== JSON.stringify(canonical(snapshot.cookies))) {
+        throw new Error("Browser profile cookie import could not be verified.");
+      }
     });
   }
 
@@ -595,6 +760,7 @@ class ElectronBrowserContext implements BrowserContext {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#untrack?.();
     screen.off("display-metrics-changed", this.#displayChanged);
     screen.off("display-added", this.#displayChanged);
     screen.off("display-removed", this.#displayChanged);
@@ -708,6 +874,7 @@ class ElectronBrowserContext implements BrowserContext {
   async #withStorageView<T>(
     operation: (view: WebContentsView, command: StorageCommand) => Promise<T>,
   ): Promise<T> {
+    await this.#localProfile?.ready();
     this.#assertOpen();
     const view = this.#createHelper({ webPreferences: this.#securePreferences() });
     const contents = view.webContents;
@@ -731,6 +898,7 @@ class ElectronBrowserContext implements BrowserContext {
       pending.add(response);
       void response.finally(() => pending.delete(response)).catch(() => undefined);
     };
+    let removeHelper: (() => void) | undefined;
     try {
       inspector.attach("1.3");
       inspector.on("message", onMessage);
@@ -743,8 +911,10 @@ class ElectronBrowserContext implements BrowserContext {
       await send("Fetch.enable", {
         patterns: [{ requestStage: "Request", urlPattern: "*" }],
       });
+      removeHelper = this.#importGate?.allowStorageHelper(contents.id);
       return await operation(view, send);
     } finally {
+      removeHelper?.();
       await Promise.allSettled(pending);
       inspector.off("message", onMessage);
       // Closing also ends the debugger session. Returning only once the helper
@@ -784,6 +954,7 @@ class ElectronBrowserContext implements BrowserContext {
   }
 
   #assertOpen(): void {
+    this.#localProfile?.assertReady();
     if (this.#closed) throw new Error("Electron browser profile is closed.");
   }
 }

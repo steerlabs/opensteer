@@ -475,6 +475,14 @@ Sources: `packages/browser-profile/src/snapshot.ts`,
 `apps/desktop/src/browser/electron-browser-launcher.ts`,
 `apps/browser-runtime/src/browser/playwright-launcher.ts`.
 
+Electron native profiles restore their encrypted session-cookie mirror behind a
+Session-wide request gate. After a Network Service failure, Chromium can briefly
+expose a jar without session cookies to a surviving page or worker before
+Opensteer restores them; persistent cookies are unaffected. Restoration can also
+deliver Cookie Store change events to a registered service worker. Stock Electron
+would lose those session cookies permanently. The mirror preserves the last
+committed state across process crashes, not mutations that have yet to be captured.
+
 ## Tab groups
 
 Groups organize a person's tabs and grant no access. Latest-session authority

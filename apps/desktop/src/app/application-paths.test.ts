@@ -114,3 +114,16 @@ describe("desktop application paths", () => {
     },
   );
 });
+
+it("keeps native browser data outside disposable enrollment slots", () => {
+  const deploymentId = createId("deployment");
+  const root = path.join(tmpdir(), "opensteer-test-paths");
+  const paths = desktopDeploymentPaths(root, deploymentId);
+  const slot = path.join(root, "runner", "deployments", deploymentId);
+  expect(path.relative(slot, paths.browserProfilesDirectory).startsWith(".." + path.sep)).toBe(
+    true,
+  );
+  expect(paths.browserProfilesDirectory).toBe(
+    path.join(root, "deployments", deploymentId, "browser-profiles"),
+  );
+});
