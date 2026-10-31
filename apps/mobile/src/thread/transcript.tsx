@@ -133,6 +133,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
       ) : (
         <Message
           conversation={props.conversation === true}
+          joinedRun={props.conversation !== true && group.joinedRun === true}
           homeThreadId={props.homeThreadId}
           onReply={props.onReply}
           onToggle={() => props.onToggleOpen(group.key)}
@@ -903,7 +904,9 @@ export function firstUnreadGroupKey(
   return null;
 }
 
-function Message(props: {
+export function Message(props: {
+  readonly queued?: boolean;
+  readonly joinedRun?: boolean;
   readonly conversation: boolean;
   readonly homeThreadId: string | null;
   readonly onReply: ((message: MessageEntry) => void) | undefined;
@@ -954,6 +957,18 @@ function Message(props: {
 
   return (
     <View style={update ? styles.updateColumn : styles.inputColumn}>
+      {props.joinedRun ? (
+        <View
+          accessible
+          accessibilityLabel="Steered into the running turn"
+          style={styles.steerMarker}
+        >
+          <Symbol name="arrow.turn.down.right" size={12} tint={color.muted} />
+          <AppText role="caption" tone="muted">
+            Steer
+          </AppText>
+        </View>
+      ) : null}
       {mine ? null : (
         <Attribution
           mark={
@@ -978,12 +993,22 @@ function Message(props: {
           style={
             update
               ? styles.updateBody
-              : [styles.bubble, mine ? styles.bubbleMine : styles.bubbleInput]
+              : [
+                  styles.bubble,
+                  props.queued
+                    ? [
+                        styles.bubbleQueued,
+                        mine ? styles.bubbleQueuedMine : styles.bubbleQueuedOther,
+                      ]
+                    : mine
+                      ? styles.bubbleMine
+                      : styles.bubbleInput,
+                ]
           }
         >
           <MessageFold
             lines={messageFoldLines(message, props.viewerUserId)}
-            mine={mine}
+            mine={mine && !props.queued}
             more={preview.truncated}
             onToggle={props.onToggle}
             open={open}
@@ -991,7 +1016,7 @@ function Message(props: {
             {/* Only an agent or a trigger writes Markdown into a Thread; a person
                 typed exactly what is shown, so it is shown exactly. */}
             {author.kind === "human" ? (
-              <PlainProse text={message.body} tone={mine ? "bubble" : "default"} />
+              <PlainProse text={message.body} tone={mine && !props.queued ? "bubble" : "default"} />
             ) : (
               <Markdown text={body} />
             )}
@@ -1412,6 +1437,10 @@ const styles = StyleSheet.create({
    * nothing that finds itself.
    */
   bubbleMine: { ...material.accent },
+  bubbleQueued: { backgroundColor: "transparent", borderWidth: 1.5, borderStyle: "dashed" },
+  bubbleQueuedMine: { borderColor: color.emberLine },
+  bubbleQueuedOther: { borderColor: color.lineStrong },
+  steerMarker: { flexDirection: "row", alignItems: "center", gap: space[4] },
   bubbleInk: { color: color.bubbleInk },
   bubbleInput: { ...material.plate },
   /** Another Thread's result is the one framed thing among the agent's rows: it came from elsewhere. */

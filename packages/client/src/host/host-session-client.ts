@@ -548,6 +548,15 @@ export interface HttpHostClientOptions {
   readonly webSocketFactory?: (url: string) => WebSocketClient;
 }
 
+// Keep thumbnails across remounts without retaining unbounded file bytes on phones.
+const attachmentCacheByteBudget = 32 * 1024 * 1024;
+
+type AttachmentRead = {
+  readonly controller: AbortController;
+  readonly promise: Promise<Blob>;
+  callers: number;
+};
+
 export class HttpHostClient {
   readonly screenPresentation = new SocketScreenPresentationTransport(undefined, (socket) => {
     const channel = [...this.#channels.values()].find((candidate) => candidate.socket === socket);
@@ -558,6 +567,9 @@ export class HttpHostClient {
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: OwnerViewHostClient["retainComputerView"];
   readonly #viewer = new ViewerScope();
+  readonly #attachmentReads = new Map<string, AttachmentRead>();
+  readonly #attachmentCache = new Map<string, Blob>();
+  #attachmentCacheBytes = 0;
   readonly #ownerViews = new OwnerViewRecords();
   #computerViews: { clear(): void; setConnected(connected: boolean): void } = {
     clear: () => undefined,
@@ -1600,10 +1612,84 @@ export class HttpHostClient {
   }
 
   async readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob> {
-    const content = unwrapRpcResult(
-      await this.rpc["attachment.content"]({ attachmentId }, signal ? { signal } : undefined),
-    );
-    return new Blob([content.bytes], { type: content.metadata.contentType });
+    if (this.#disposed || signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const cached = this.#attachmentCache.get(attachmentId);
+    if (cached) {
+      this.#attachmentCache.delete(attachmentId);
+      this.#attachmentCache.set(attachmentId, cached);
+      return cached;
+    }
+    let read = this.#attachmentReads.get(attachmentId);
+    if (!read) {
+      const controller = new AbortController();
+      const promise = this.rpc["attachment.content"](
+        { attachmentId },
+        { signal: controller.signal },
+      )
+        .then(unwrapRpcResult)
+        .then((content) => new Blob([content.bytes], { type: content.metadata.contentType }));
+      read = { controller, promise, callers: 0 };
+      this.#attachmentReads.set(attachmentId, read);
+      const current = read;
+      void promise.then(
+        (blob) => {
+          if (this.#attachmentReads.get(attachmentId) !== current) return;
+          this.#attachmentReads.delete(attachmentId);
+          if (blob.size > attachmentCacheByteBudget) return;
+          this.#attachmentCache.set(attachmentId, blob);
+          this.#attachmentCacheBytes += blob.size;
+          while (this.#attachmentCacheBytes > attachmentCacheByteBudget) {
+            const oldest = this.#attachmentCache.keys().next().value!;
+            this.#attachmentCacheBytes -= this.#attachmentCache.get(oldest)!.size;
+            this.#attachmentCache.delete(oldest);
+          }
+        },
+        () => {
+          if (this.#attachmentReads.get(attachmentId) === current)
+            this.#attachmentReads.delete(attachmentId);
+        },
+      );
+    }
+    const current = read;
+    current.callers += 1;
+    return new Promise<Blob>((resolve, reject) => {
+      let attached = true;
+      const detach = () => {
+        if (!attached) return false;
+        attached = false;
+        signal?.removeEventListener("abort", abort);
+        current.controller.signal.removeEventListener("abort", abort);
+        current.callers -= 1;
+        // React cleans up and mounts passive effects in the same commit.
+        queueMicrotask(() => {
+          if (current.callers !== 0 || this.#attachmentReads.get(attachmentId) !== current) return;
+          this.#attachmentReads.delete(attachmentId);
+          current.controller.abort();
+        });
+        return true;
+      };
+      const abort = () => {
+        if (detach()) reject(new DOMException("Aborted", "AbortError"));
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      current.controller.signal.addEventListener("abort", abort, { once: true });
+      void current.promise.then(
+        (blob) => {
+          if (detach()) resolve(blob);
+        },
+        (error: unknown) => {
+          if (detach()) reject(error);
+        },
+      );
+    });
+  }
+
+  #clearAttachmentReads(): void {
+    const reads = [...this.#attachmentReads.values()];
+    this.#attachmentReads.clear();
+    this.#attachmentCache.clear();
+    this.#attachmentCacheBytes = 0;
+    for (const read of reads) read.controller.abort();
   }
 
   async discardAttachment(attachmentId: string): Promise<void> {
@@ -3069,23 +3155,6 @@ export class HttpHostClient {
     );
   }
 
-  async moveThreadInput(
-    threadId: string,
-    messageId: string,
-    beforeMessageId: string | null,
-  ): Promise<void> {
-    const patch = { beforeMessageId, messageId, threadId, type: "thread.input.move" } as const;
-    this.#update(applyOptimisticCommandPatch(this.#snapshot, patch));
-    try {
-      // Each drop is its own arrangement, so a lost answer is settled by the
-      // reread below rather than replayed over whatever came after it.
-      await this.dispatch({ ...patch, idempotencyKey: mutationIdempotencyKey("input-move") });
-    } catch (error) {
-      this.#reloadInputQueue(threadId);
-      throw error;
-    }
-  }
-
   async resumeThreadInputQueue(threadId: string): Promise<void> {
     // Resume is idempotent on the Host, so a lost answer is simply asked again.
     await this.dispatch({
@@ -3236,6 +3305,7 @@ export class HttpHostClient {
 
   dispose(): void {
     if (this.#disposed) return;
+    this.#clearAttachmentReads();
     this.recentSites.dispose();
     this.#workspaceTabActivations.dispose();
     this.#snapshot = { ...this.#snapshot, activatingWorkspaceTabs: [] };
@@ -5419,6 +5489,7 @@ export class HttpHostClient {
   }
 
   #expireSession(): void {
+    this.#clearAttachmentReads();
     this.#savedViewReadiness = emptySavedViewReadiness();
     this.#viewerGeneration += 1;
     this.#retainedWorkspaceTabLineages.clear();
@@ -5639,6 +5710,7 @@ export class HttpHostClient {
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      this.#clearAttachmentReads();
       this.#workspaceTabActivations.clear(false);
       this.#computerViews.clear();
       this.#ownerViews.clear();

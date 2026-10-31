@@ -4023,15 +4023,6 @@ export class MockHostClient implements HostClient {
     });
   }
 
-  /** Like the session client, the queue takes the new order before the Host answers. */
-  async moveThreadInput(
-    threadId: string,
-    messageId: string,
-    beforeMessageId: string | null,
-  ): Promise<void> {
-    this.#state.moveThreadInput(threadId, messageId, beforeMessageId);
-  }
-
   async resumeThreadInputQueue(threadId: string): Promise<void> {
     await this.dispatch({
       idempotencyKey: `mock-input-queue-resume:${crypto.randomUUID()}`,
