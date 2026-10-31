@@ -42,15 +42,11 @@ const saved = z.strictObject({
 });
 type HistoryData = z.infer<typeof saved>;
 const emptyHistory = (): HistoryData => ({ entries: {}, icons: {} });
-interface IconTarget {
+/** A tab a person opened for a site, until its first web document is replaced. */
+interface OpenedTab {
   readonly profileId: string;
-  readonly url: string;
-  readonly epoch: number;
-  readonly sessionId: string;
-  readonly tabId: string;
-  documentId: string | null;
-  site: string | null;
-  reference: string | null;
+  readonly origin: string;
+  landed?: { readonly site: string; readonly documentId: string | null };
 }
 const legacy = z
   .record(
@@ -65,11 +61,18 @@ const legacy = z
       .max(12),
   )
   .refine((value) => Object.keys(value).length <= 128);
+const visited = (data: HistoryData, profileId: string, origin: string) =>
+  Object.hasOwn(data.entries, profileId) &&
+  data.entries[profileId]!.some((entry) => new URL(entry.url).origin === origin);
 const retentionMs = 90 * 86400000;
 const maximumBytes = 1024 * 1024;
 const bytes = (value: string) => new TextEncoder().encode(value).byteLength;
 
-/** Only person navigation adds visits. Its exact document may supply a late site icon. */
+/**
+ * Only person navigation adds visits. A site's icon comes from any open tab of
+ * the same profile showing it, and from the first document of the tab a person
+ * opened for it, so a redirect still marks the address they asked for.
+ */
 export class RecentSitesStore {
   readonly #storage: RecentSitesStorage | undefined;
   readonly #now: () => number;
@@ -78,7 +81,9 @@ export class RecentSitesStore {
   #storageFailed = false;
   readonly #readIcon: ((sessionId: string, iconRef: string) => Promise<string | null>) | undefined;
   readonly #listeners = new Set<() => void>();
-  readonly #iconTargets = new Map<string, IconTarget>();
+  readonly #opened = new Map<string, OpenedTab>();
+  /** The icon reference read, or being read, for each profile and origin. */
+  readonly #iconReads = new Map<string, string>();
   #sessions: readonly BrowserSessionSummary[] = [];
   #connected = false;
   #revision = 0;
@@ -113,7 +118,7 @@ export class RecentSitesStore {
     this.#scope = scope;
     this.#epoch++;
     this.#memory = emptyHistory();
-    this.#iconTargets.clear();
+    this.#forgetIcons();
     this.#sessions = [];
     this.#publish();
   }
@@ -324,6 +329,10 @@ export class RecentSitesStore {
       lastVisit: this.#now(),
     };
     const data = this.#read();
+    const origin = new URL(url).origin;
+    // A tab already showing a newly visited site may hold its icon.
+    if (!visited(data, identity.profileId, origin))
+      this.#iconReads.delete(JSON.stringify([identity.profileId, origin]));
     this.#write({
       ...data,
       entries: {
@@ -334,104 +343,96 @@ export class RecentSitesStore {
         ],
       },
     });
-    if (visit.tab && this.#readIcon) {
-      const key = JSON.stringify([identity.profileId, new URL(url).origin]);
-      this.#iconTargets.set(key, {
-        sessionId: visit.tab.sessionId,
-        tabId: visit.tab.tabId,
+    if (visit.tab)
+      this.#opened.set(JSON.stringify([visit.tab.sessionId, visit.tab.tabId]), {
         profileId: identity.profileId,
-        url,
-        epoch,
-        documentId: null,
-        site: null,
-        reference: null,
+        origin,
       });
-      this.#refreshIcons();
-    }
+    this.#readIcons();
   }
 
   observeTabs(sessions: readonly BrowserSessionSummary[], connected: boolean): void {
-    const reconnected = connected && !this.#connected;
-    const changed = sessions !== this.#sessions || connected !== this.#connected;
+    if (sessions === this.#sessions && connected === this.#connected) return;
     this.#sessions = sessions;
     this.#connected = connected;
-    if (reconnected) for (const target of this.#iconTargets.values()) target.reference = null;
-    if (changed) this.#refreshIcons();
+    this.#readIcons();
   }
-  #refreshIcons(): void {
-    if (!this.#readIcon) return;
-    for (const [key, target] of this.#iconTargets) {
-      const session = this.#sessions.find((session) => session.id === target.sessionId);
-      const tab = session?.tabCatalog?.tabs.find((tab) => tab.id === target.tabId);
-      if (
-        !tab ||
-        session?.profileId !== target.profileId ||
-        target.epoch !== this.#epoch ||
-        (target.documentId !== null && target.documentId !== tab.documentId)
-      ) {
-        this.#iconTargets.delete(key);
-        continue;
-      }
-      if (!tab.documentId || !webUrl.safeParse(tab.site).success) continue;
-      if (target.site !== null && tab.site !== target.site) {
-        this.#iconTargets.delete(key);
-        continue;
-      }
-      target.documentId = tab.documentId;
-      target.site = tab.site;
-      const ref = tab.iconRef;
-      if (!ref) {
-        target.reference = null;
-        continue;
-      }
-      if (!this.#connected) {
-        target.reference = null;
-        continue;
-      }
-      if (target.reference === ref) continue;
-      target.reference = ref;
-      const retry = () => {
-        if (this.#iconTargets.get(key) === target && target.reference === ref)
-          target.reference = null;
-      };
-      void this.#readIcon(target.sessionId, ref)
-        .then((favicon) => {
+  #forgetIcons(): void {
+    this.#opened.clear();
+    this.#iconReads.clear();
+  }
+  #readIcons(): void {
+    const open = new Set<string>();
+    const wanted = new Map<string, { readonly sessionId: string; readonly ref: string }>();
+    for (const session of this.#sessions)
+      for (const tab of session.tabCatalog?.tabs ?? []) {
+        const key = JSON.stringify([session.id, tab.id]);
+        open.add(key);
+        if (!webUrl.safeParse(tab.site).success) continue;
+        const opened = this.#opened.get(key);
+        if (opened) {
+          opened.landed ??= { site: tab.site, documentId: tab.documentId ?? null };
           if (
-            this.#iconTargets.get(key) !== target ||
-            target.epoch !== this.#epoch ||
-            target.reference !== ref
+            opened.landed.site !== tab.site ||
+            opened.landed.documentId !== (tab.documentId ?? null)
           )
+            this.#opened.delete(key);
+        }
+        if (!session.profileId || !tab.iconRef) continue;
+        const bound = this.#opened.get(key);
+        const origins =
+          bound?.profileId === session.profileId ? [tab.site, bound.origin] : [tab.site];
+        for (const origin of origins) {
+          const site = JSON.stringify([session.profileId, origin]);
+          if (!wanted.has(site)) wanted.set(site, { sessionId: session.id, ref: tab.iconRef });
+        }
+      }
+    for (const key of this.#opened.keys()) if (!open.has(key)) this.#opened.delete(key);
+    // The Host serves only open tabs' icons, so a closed tab's read is moot.
+    for (const site of this.#iconReads.keys()) if (!wanted.has(site)) this.#iconReads.delete(site);
+    if (!this.#readIcon || !this.#connected) return;
+    let data: HistoryData | undefined;
+    const epoch = this.#epoch;
+    for (const [site, { sessionId, ref }] of wanted) {
+      if (this.#iconReads.get(site) === ref) continue;
+      this.#iconReads.set(site, ref);
+      const [profileId, origin] = JSON.parse(site) as [string, string];
+      data ??= this.#read();
+      if (!visited(data, profileId, origin)) continue;
+      const current = () => this.#epoch === epoch && this.#iconReads.get(site) === ref;
+      void this.#readIcon(sessionId, ref)
+        .then((read) => {
+          if (read === null) throw new Error("The icon is not available yet.");
+          const parsed = BrowserFaviconSchema.safeParse(read);
+          if (!current() || !parsed.success) return;
+          const favicon = parsed.data;
+          const latest = this.#read();
+          if (!visited(latest, profileId, origin) || latest.icons[profileId]?.[origin] === favicon)
             return;
-          const parsed = BrowserFaviconSchema.safeParse(favicon);
-          if (!parsed.success) {
-            retry();
-            return;
-          }
-          const data = this.#read();
-          if (!data.entries[target.profileId]?.some((entry) => entry.url === target.url)) return;
-          const origin = new URL(target.url).origin;
-          if (data.icons[target.profileId]?.[origin] === parsed.data) return;
           this.#write({
-            ...data,
+            ...latest,
             icons: {
-              ...data.icons,
-              [target.profileId]: { ...data.icons[target.profileId], [origin]: parsed.data },
+              ...latest.icons,
+              [profileId]: { ...latest.icons[profileId], [origin]: favicon },
             },
           });
         })
-        .catch(retry);
+        // A failed or empty read is tried again on the next tab observation; an invalid image is final.
+        .catch(() => {
+          if (current()) this.#iconReads.delete(site);
+        });
     }
   }
   dispose(): void {
     this.#epoch++;
-    this.#iconTargets.clear();
+    this.#forgetIcons();
     this.#sessions = [];
     this.#listeners.clear();
   }
   remove(identity: BrowserIdentityChoice, url: string): void {
     if (!this.#scope || identity.kind === "guest") return;
     this.#epoch++;
-    this.#iconTargets.clear();
+    this.#iconReads.clear();
     const data = this.#read();
     this.#write({
       ...data,
@@ -445,7 +446,7 @@ export class RecentSitesStore {
   }
   clear(identity?: BrowserIdentityChoice): void {
     this.#epoch++;
-    this.#iconTargets.clear();
+    this.#iconReads.clear();
     if (identity?.kind === "guest") return;
     if (identity?.kind === "profile") {
       const entries = this.#read();

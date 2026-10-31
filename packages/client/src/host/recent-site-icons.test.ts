@@ -64,6 +64,31 @@ it("retains a late icon once per origin across tab closure and reload without ad
   expect(reloaded.list({ kind: "profile", profileId: "other" })).toEqual([]);
 });
 
+it("learns a visited site's icon from any open tab of its profile, whenever it shows", async () => {
+  const saved = storage();
+  const readIcon = vi.fn(async () => blue);
+  const first = new RecentSitesStore({ storage: saved.port });
+  first.setScope(scope);
+  // Visited before icons were kept, or its tab closed before the icon arrived.
+  first.record(profile, address, first.epoch);
+  const store = new RecentSitesStore({ storage: saved.port, readIcon });
+  store.setScope(scope);
+  store.observeTabs(
+    sessions("icon").map((session) => ({ ...session, profileId: "other" })),
+    true,
+  );
+  store.observeTabs(sessions("icon", "document", "https://unvisited.example"), true);
+  expect(readIcon).not.toHaveBeenCalled();
+  store.observeTabs(sessions("icon", "a-later-document"), true);
+  await vi.waitFor(() => expect(store.list(profile)[0]?.favicon).toBe(blue), {
+    timeout: 1000,
+    interval: 1,
+  });
+  expect(store.history(profile)[0]?.visitCount).toBe(1);
+  store.observeTabs([...sessions("icon", "a-later-document")], true);
+  expect(readIcon).toHaveBeenCalledOnce();
+});
+
 it("takes the opened document's icon after an HTTP redirect to another origin", async () => {
   const store = new RecentSitesStore({ readIcon: async () => blue });
   store.setScope(scope);
@@ -78,11 +103,11 @@ it("takes the opened document's icon after an HTTP redirect to another origin", 
 it.each(["document", "site", "reference", "clear", "remove", "scope", "dispose"])(
   "rejects an icon completing after its %s changed",
   async (change) => {
-    let finish!: (icon: string) => void;
+    const finishes: ((icon: string) => void)[] = [];
     const store = new RecentSitesStore({
       readIcon: () =>
         new Promise((resolve) => {
-          finish = resolve;
+          finishes.push(resolve);
         }),
     });
     store.setScope(scope);
@@ -97,7 +122,7 @@ it.each(["document", "site", "reference", "clear", "remove", "scope", "dispose"]
     if (change === "scope") store.setScope({ ...scope, userId: "another-person" });
     if (change === "dispose") store.dispose();
     if (["clear", "remove", "scope"].includes(change)) store.record(profile, address, store.epoch);
-    finish(blue);
+    finishes[0]!(blue);
     await settle();
     expect(store.list(profile).some((entry) => entry.favicon)).toBe(false);
   },
@@ -107,7 +132,7 @@ it("retries on later metadata and reconnect, accepts newer references, and never
   const readIcon = vi
     .fn()
     .mockRejectedValueOnce(Error("Disconnected"))
-    .mockResolvedValueOnce(blue)
+    .mockResolvedValueOnce(null)
     .mockResolvedValueOnce(blue)
     .mockResolvedValue(green);
   const store = new RecentSitesStore({ readIcon });
@@ -120,7 +145,12 @@ it("retries on later metadata and reconnect, accepts newer references, and never
   await settle();
   store.observeTabs(sessions("icon"), true);
   await settle();
-  expect(store.list(profile)[0]?.favicon).toBe(blue);
+  expect(store.list(profile)[0]?.favicon).toBeUndefined();
+  store.observeTabs(sessions("icon"), true);
+  await vi.waitFor(() => expect(store.list(profile)[0]?.favicon).toBe(blue), {
+    timeout: 1000,
+    interval: 1,
+  });
   store.observeTabs(sessions("icon"), false);
   store.observeTabs(sessions("icon"), true);
   await settle();
@@ -128,6 +158,7 @@ it("retries on later metadata and reconnect, accepts newer references, and never
   store.observeTabs(sessions("new-icon"), true);
   await settle();
   expect(store.list(profile)[0]?.favicon).toBe(green);
+  expect(readIcon).toHaveBeenCalledTimes(4);
   expect(store.history(profile)).toHaveLength(1);
   store.clear(profile);
   expect(store.list(profile)).toEqual([]);
