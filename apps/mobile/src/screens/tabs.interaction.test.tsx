@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   conversationSurfaces,
+  conversationThreadIds,
   placeHasAgents,
+  surfaceDestination,
   placeList,
   type HostClient,
   type HostSnapshot,
@@ -23,6 +25,9 @@ import {
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { agentSurface, surfaceGlyph } from "../browser/agent-surface.js";
+import { useScopedThreadHeader, useThreadHeader } from "./thread-header.js";
+import { surfaceRoute } from "../browser/surface-route.js";
 import type { MobileClient } from "../client/mobile-client.js";
 import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-drafts.js";
 
@@ -62,15 +67,9 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  *   - a closed tab is replaced by a sibling;
  *   - restoring remounts the conversation, or leaves the page on the old
  *     session.
- * J4 A task's Tabs
- *   - Tabs shows for a task with none, opens one tab instead of the collection,
- *     or the collection holds other tasks' or the person's own tabs.
- * J5 The composer's tab preview
- *   - it shows when there is no tab, under a page, or while typing;
- *   - it ignores a delegated worker acting, rings an idle tab, or jumps the
- *     moment the agent moves;
- *   - a press opens whatever the preview shows by the time the finger lifts;
- *   - an agent moving changes a page the person opened.
+ * J4 The conversation's surface glyph
+ *   - it misses delegated acting work, starts pictures in Chat, or an agent
+ *     moving changes a page the person opened.
  * J6 Native authority
  *   - a global tile for the person's own Mac view opens a task's session, or a
  *     task tile opens the person's view; a closed view falls back to a task;
@@ -574,7 +573,7 @@ vi.mock("../thread/thread-pane.js", async () => {
     ThreadPane: (props: Parameters<typeof actual.ThreadPane>[0]) => {
       React.useEffect(() => {
         harness.paneMounts.push(
-          `${props.threadId}:${props.sheet === undefined ? "full" : "sheet"}`,
+          `${props.threadId}:${props.withPage === undefined ? "full" : "companion"}`,
         );
       }, []);
       return <actual.ThreadPane {...props} />;
@@ -756,12 +755,21 @@ function HomeStandIn(props: { readonly route: StackRoute }): ReactNode {
     hostClient.subscribe,
     () => hostClient.getSnapshot().homeThreadId,
   );
+  const { header, onHeader } = useScopedThreadHeader(hostClient, homeThreadId);
+  useThreadHeader({
+    deploymentId,
+    fallbackTitle: "Chat",
+    header,
+    hostClient,
+    threadId: homeThreadId,
+  });
   return homeThreadId === null ? (
     <p>First message</p>
   ) : (
     <ThreadPane
       deploymentId={props.route.params!["deploymentId"] as string}
       hostClient={hostClient}
+      onHeader={onHeader}
       onOpenThread={() => undefined}
       requestId={null}
       threadId={homeThreadId}
@@ -982,23 +990,6 @@ async function settle(rounds = 12): Promise<void> {
       if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
       else await new Promise((resolve) => setTimeout(resolve, 0));
     });
-}
-
-/**
- * Lets `ms` pass on the preview's clock. Timers are fake from the moment the
- * journey calls `holdClock`, so the two-second hold is proven without the
- * journey waiting it out; everything else keeps real time.
- */
-async function wait(ms: number): Promise<void> {
-  await act(async () => {
-    vi.advanceTimersByTime(ms);
-  });
-  await settle();
-}
-function holdClock(): void {
-  // React/Host work may take arbitrarily many turns. Only wait(ms) advances
-  // the picture hold; settling a render must never spend that time budget.
-  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
 }
 
 /** The screen in front, as the stack draws it. */
@@ -1305,7 +1296,7 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
     expect(scope.querySelector('textarea[aria-label="Message"]')).toBeNull();
     expect(scope.querySelector('[data-testid="conversation-slot"]')).toBeNull();
     expect(sheetRecipient(scope)).toBeNull();
-    expect(harness.paneMounts.filter((mount) => mount.endsWith(":sheet"))).toEqual([]);
+    expect(harness.paneMounts.filter((mount) => mount.endsWith(":companion"))).toEqual([]);
   }
 
   it("on a narrow cover screen, from Chat, shows the page alone and leaves Chat's draft where it was", async () => {
@@ -1526,101 +1517,26 @@ describe("J3: a saved tab restores once, through the shared activation", () => {
   });
 });
 
-describe("J4: a task's Tabs opens its own collection", () => {
-  it("shows Tabs only with tabs, and always opens the task's collection, titled with the task", async () => {
-    const snapshot = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
-    const taskA = threadTitled(snapshot, "Switch Slack to Opensteer");
-    const w = await world({
-      routes: [
-        { name: "Home", params: { deploymentId } },
-        { name: "Thread", params: { deploymentId, threadId: taskA } },
-      ],
-    });
-    await press(control(front(w).querySelector("header")!, "Tabs"));
-    expect(w.stack.trace.at(-1)).toMatchObject({
-      action: "PUSH",
-      detail: { name: "WorkspaceBrowser", params: { deploymentId, threadId: taskA } },
-    });
-    expect((w.stack.top.params ?? {})["sessionId"]).toBeUndefined();
-    const grid = front(w);
-    expect(grid.querySelector("[data-header-title]")?.textContent).toBe(
-      "TabsSwitch Slack to Opensteer",
-    );
-    const own = conversationSurfaces(w.host.getSnapshot(), taskA).map((item) =>
-      item.kind === "browser" ? item.title : item.kind === "app" ? item.app.displayName : "phone",
-    );
-    expect(tiles(grid).map((button) => button.getAttribute("aria-label")!.split(", ")[0])).toEqual(
-      own,
-    );
-    expect(find(grid, "Q4 roadmap – Linear, linear.app")).toBeUndefined();
-    expect(
-      buttons(grid).some((b) => b.getAttribute("aria-label")?.startsWith("Friday dinner")),
-    ).toBe(false);
-    w.record("J4 task tabs");
-
-    const idle = threadTitled(snapshot, "List the Vapi assistants");
-    const v = await world({
-      routes: [
-        { name: "Home", params: { deploymentId } },
-        { name: "Thread", params: { deploymentId, threadId: idle } },
-      ],
-    });
-    expect(find(front(v).querySelector("header")!, "Tabs")).toBeUndefined();
-  });
-});
-
-describe("J5: the composer's tab preview", () => {
-  async function onTask(title: string, prepare?: (host: MockHostClient) => void) {
-    const snapshot = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
-    const threadId = threadTitled(snapshot, title);
+describe("J4: a conversation's surface glyph", () => {
+  it("opens the acting surface and keeps the opened page fixed when the agent moves", async () => {
+    const source = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
+    const threadId = threadTitled(source, "Switch Slack to Opensteer");
     const w = await world({
       routes: [
         { name: "Home", params: { deploymentId } },
         { name: "Thread", params: { deploymentId, threadId } },
       ],
-      ...(prepare ? { prepare } : {}),
     });
-    return { threadId, w };
-  }
-  const preview = (w: World) =>
-    front(w).querySelector<HTMLButtonElement>('button[data-testid^="tab-preview:"]');
-
-  it("shows the acting tab with its ring, holds through a move, and opens what was pressed", async () => {
-    const { threadId, w } = await onTask("Switch Slack to Opensteer");
-    holdClock();
-    expect(preview(w)?.getAttribute("aria-label")).toBe("Le Petit Jardin, resy.com, agent working");
-    expect(preview(w)?.dataset["testid"]).toBe("tab-preview:acting");
-    // +N opens this task's whole collection.
-    const others = conversationSurfaces(w.host.getSnapshot(), threadId).length - 1;
-    expect(control(front(w), `${others} more tabs`)).toBeDefined();
-    // The finger lands on the tab shown now.
-    await act(async () => {
-      preview(w)!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    });
-    const moveTo = placeList(w.host.getSnapshot()).find(
-      ({ title }) => title === "Confirm your reservation",
-    )!.key;
-    await act(async () => w.host.actInPlace(threadId, moveTo));
-    // Force a slow render's extra event-loop turns without stressing the CPU.
-    // Settling work must not consume the preview's two-second test clock.
-    await settle(30);
-    // The agent moved; the preview holds for a moment rather than jumping, and
-    // no longer claims the agent is there.
-    expect(preview(w)?.getAttribute("aria-label")).toBe("Le Petit Jardin, resy.com");
-    expect(preview(w)?.dataset["testid"]).toBe("tab-preview:idle");
-    await wait(1_500);
-    expect(preview(w)?.getAttribute("aria-label")).toBe("Le Petit Jardin, resy.com");
-    await wait(800);
-    expect(preview(w)?.getAttribute("aria-label")).toBe(
-      "Confirm your reservation, resy.com, agent working",
+    const chosen = agentSurface(
+      conversationSurfaces(w.host.getSnapshot(), threadId),
+      conversationThreadIds(w.host.getSnapshot(), threadId),
+      w.host.latestPlaceOfThread(threadId),
+    )!;
+    const label = surfaceGlyph(chosen) === "laptopcomputer" ? "Mac app" : "Page";
+    await press(control(front(w).querySelector("header")!, `${label}, agent working`));
+    expect(w.stack.top.params).toMatchObject(
+      surfaceRoute(deploymentId, threadId, surfaceDestination(chosen)),
     );
-    // The press opens the tab the finger landed on.
-    await act(async () => preview(w)!.click());
-    await settle();
-    expect(w.stack.top.params).toMatchObject({ tabId: "mock-tab-0-1", threadId });
-    expect(w.stack.top.params?.["scope"]).toBeUndefined();
-    // Under the page the preview is gone, and the agent moving never changes the page.
-    expect(preview(w)).toBeNull();
     const opened = JSON.stringify(w.stack.top.params);
     await act(async () =>
       w.host.actInPlace(
@@ -1628,70 +1544,52 @@ describe("J5: the composer's tab preview", () => {
         placeList(w.host.getSnapshot()).find(({ title }) => title === "Your reading list")!.key,
       ),
     );
-    await wait(2_300);
+    await settle();
     expect(JSON.stringify(w.stack.top.params)).toBe(opened);
-    w.record("J5 acting, hold, press-in");
   });
 
-  it("keeps following live work when the agent switches faster than the picture hold", async () => {
-    const { threadId, w } = await onTask("Switch Slack to Opensteer");
-    holdClock();
-    const key = (title: string) =>
-      placeList(w.host.getSnapshot()).find((place) => place.title === title)!.key;
-    const reading = key("Your reading list");
-    // Credit both tabs before the sequence, then settle back on the first picture.
-    await act(async () => w.host.actInPlace(threadId, reading));
-    await wait(2_100);
-    await act(async () => w.host.actInPlace(threadId, key("Le Petit Jardin")));
-    await wait(2_100);
-    expect(preview(w)?.getAttribute("aria-label")).toContain("Le Petit Jardin");
-    await act(async () => w.host.actInPlace(threadId, key("Confirm your reservation")));
-    await wait(1_100);
-    await act(async () => w.host.actInPlace(threadId, reading));
-    await wait(1_100);
-    expect(preview(w)?.getAttribute("aria-label")).toContain("Your reading list");
-    expect(preview(w)?.dataset["testid"]).toBe("tab-preview:acting");
-    w.record("J5 follows rapid activity");
-  });
-
-  it("opens the task's collection from +N", async () => {
-    const { threadId, w } = await onTask("Switch Slack to Opensteer");
-    const others = conversationSurfaces(w.host.getSnapshot(), threadId).length - 1;
-    await press(control(front(w), `${others} more tabs`));
-    expect(w.stack.top.params).toEqual({ deploymentId, threadId });
-    w.record("J5 more");
-  });
-
-  it("shows a delegated worker's acting tab in Chat when it acted last", async () => {
+  it("opens a delegated worker's acting page from Chat without streaming in Chat", async () => {
     const w = await world({
-      prepare: async (host) => {
-        const snapshot = host.getSnapshot();
-        const key = (title: string) =>
-          placeList(host.getSnapshot()).find((place) => place.title === title)!.key;
-        // Chat acts in one of its pages, then the task it handed out acts in another.
-        host.actInPlace(snapshot.homeThreadId!, key("Q4 roadmap – Linear"));
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        const worker = Object.values(snapshot.assignments)[0]!.workerThread.id;
-        host.actInPlace(worker, key("Weekend ideas"));
+      prepare: (host) => {
+        const source = host.getSnapshot();
+        const worker = Object.values(source.assignments)[0]!.workerThread.id;
+        host.actInPlace(
+          worker,
+          placeList(source).find(({ title }) => title === "Weekend ideas")!.key,
+        );
+        const current = host.getSnapshot();
+        const idleApps = {
+          ...current,
+          machines: current.machines.map((machine) => ({
+            ...machine,
+            computerUse: machine.computerUse
+              ? {
+                  ...machine.computerUse,
+                  sessions: machine.computerUse.sessions.map((session) => ({
+                    ...session,
+                    actingAppKeys: [],
+                    actingDisplay: false,
+                  })),
+                }
+              : machine.computerUse,
+          })),
+        };
+        vi.spyOn(host, "getSnapshot").mockReturnValue(idleApps);
       },
     });
-    expect(preview(w)?.getAttribute("aria-label")).toBe(
-      "Weekend ideas, www.nps.gov, agent working",
+    expect(w.calls.viewers).toEqual([]);
+    expect(w.calls.watches).toEqual([]);
+    const home = w.host.getSnapshot().homeThreadId!;
+    const chosen = agentSurface(
+      conversationSurfaces(w.host.getSnapshot(), home),
+      conversationThreadIds(w.host.getSnapshot(), home),
+      w.host.latestPlaceOfThread(home),
+    )!;
+    expect(chosen).toMatchObject({ kind: "browser", title: "Weekend ideas", acting: true });
+    await press(control(front(w).querySelector("header")!, "Page, agent working"));
+    expect(w.stack.top.params).toMatchObject(
+      surfaceRoute(deploymentId, w.host.getSnapshot().homeThreadId!, surfaceDestination(chosen)),
     );
-    w.record("J5 delegated");
-  });
-
-  it("is not ringed while idle, and is absent with no tabs or while typing", async () => {
-    const { w } = await onTask("Review PortableFS integration");
-    expect(preview(w)?.dataset["testid"]).toBe("tab-preview:idle");
-    expect(preview(w)?.getAttribute("aria-label")).toBe("Friday dinner, resy.com");
-    harness.keyboard = true;
-    await w.render();
-    expect(preview(w)).toBeNull();
-    harness.keyboard = false;
-    const { w: none } = await onTask("List the Vapi assistants");
-    expect(preview(none)).toBeNull();
-    w.record("J5 idle and hidden");
   });
 });
 
@@ -1832,8 +1730,8 @@ describe("J7: a task's page keeps its page and conversation through layouts", ()
     harness.pair = { height: 760, width: 390 };
     await w.render();
     expect(screen.querySelector('[data-testid="pair-stacked"]')).not.toBeNull();
-    expect(harness.paneMounts.filter((mount) => mount.endsWith(":sheet"))).toEqual([
-      `${owner.id}:sheet`,
+    expect(harness.paneMounts.filter((mount) => mount.endsWith(":companion"))).toEqual([
+      `${owner.id}:companion`,
     ]);
     expect(harness.pageMounts).toHaveLength(1);
     w.record("J7 layouts");

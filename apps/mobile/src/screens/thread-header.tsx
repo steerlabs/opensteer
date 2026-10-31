@@ -1,6 +1,9 @@
 import { useHostSelector } from "@opensteer/client/react";
 import {
+  conversationSurfaces,
+  conversationThreadIds,
   sameTaskFamilyGlance,
+  surfaceDestination,
   taskFamilyGlance,
   type HostClient,
   type HostSnapshot,
@@ -8,6 +11,8 @@ import {
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useState, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, View } from "react-native";
+import { agentSurface } from "../browser/agent-surface.js";
+import { surfaceRoute } from "../browser/surface-route.js";
 import { browserHeaderActions } from "../navigation-header.js";
 import { color, headerFontScaleLimit, space } from "../theme.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
@@ -79,10 +84,9 @@ export function useScopedThreadHeader(
  * draws Liquid Glass — on iOS 26 the scroll edge effect is the system's own
  * answer, and below it a blur is.
  *
- * Tabs stays contextual: it appears only while the conversation, including
- * work it handed out, has a tab or a Mac app open, and it always opens the
- * conversation's collection of them, even of one — the composer's preview is
- * the way straight to a tab. The title is the conversation's name and,
+ * What the agent is using stays contextual: its symbol appears only while the
+ * conversation, including work it handed out, has a tab, Mac app or phone
+ * open, and it opens the one the agent is in. The title is the conversation's name and,
  * for a task someone handed out, where it stands and its menu: Run details
  * opens from the reply under way and from each reply's menu, where the reader
  * is already looking.
@@ -108,9 +112,7 @@ export function useThreadHeader(props: {
   useLayoutEffect(() => {
     const attached = hostClient !== null && threadId !== null;
     navigation.setOptions({
-      ...(attached && header !== null && !savedSubtitle
-        ? {}
-        : browserHeaderActions(false, false, () => {})),
+      ...(attached && header !== null && !savedSubtitle ? {} : browserHeaderActions(null)),
       // The route table paints every header with the product's ground. A
       // transparent header has to be told to keep none, or nothing scrolls
       // under it and the blur has nothing to blur.
@@ -211,15 +213,31 @@ function ThreadTitle(
     [props.threadId],
   );
   const glance = useHostSelector(props.hostClient, selectGlance, sameTaskFamilyGlance);
-  const { deploymentId, threadId, surfacesActing, surfaceCount } = props;
+  const { deploymentId, threadId, surfacesActing, surface } = props;
   useLayoutEffect(() => {
     const open = () => setFamilyOwner({ host: props.hostClient, thread: threadId, user: userId });
+    // Read as it is pressed: the agent may have moved since the bar was drawn.
+    const watch = () => {
+      if (threadId === null) return;
+      const host = props.hostClient;
+      const snapshot = host.getSnapshot();
+      const item = agentSurface(
+        conversationSurfaces(snapshot, threadId),
+        conversationThreadIds(snapshot, threadId),
+        host.latestPlaceOfThread(threadId),
+      );
+      navigation.dispatch(
+        StackActions.push(
+          "WorkspaceBrowser",
+          item === null
+            ? { deploymentId, threadId }
+            : surfaceRoute(deploymentId, threadId, surfaceDestination(item)),
+        ),
+      );
+    };
     navigation.setOptions(
       browserHeaderActions(
-        surfacesActing,
-        surfaceCount > 0,
-        () =>
-          navigation.dispatch(StackActions.push("WorkspaceBrowser", { deploymentId, threadId })),
+        surface === null ? null : { acting: surfacesActing, glyph: surface, onPress: watch },
         glance === null
           ? undefined
           : {
@@ -245,7 +263,7 @@ function ThreadTitle(
     deploymentId,
     glance,
     navigation,
-    surfaceCount,
+    surface,
     surfacesActing,
     threadId,
     props.hostClient,

@@ -433,7 +433,7 @@ describe("mobile task mark review journeys", () => {
         const header: ThreadHeaderState = {
           canRetry: connectionLabel !== null,
           connectionLabel,
-          surfaceCount: 0,
+          surface: null,
           surfacesActing: false,
           task: assigned
             ? {
@@ -512,7 +512,7 @@ describe("mobile task mark review journeys", () => {
       const header: ThreadHeaderState = {
         canRetry: offline,
         connectionLabel: offline ? "Offline" : null,
-        surfaceCount: 0,
+        surface: null,
         surfacesActing: false,
         task: {
           announcement: word,

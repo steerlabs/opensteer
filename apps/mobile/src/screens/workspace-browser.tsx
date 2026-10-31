@@ -2,6 +2,7 @@ import {
   browserPlaceUnavailableReason,
   canRespondToRequests,
   conversationSurfaces,
+  conversationThreadIds,
   describeHostConnection,
   placeDestinationEnded,
   surfaceDestination,
@@ -9,6 +10,7 @@ import {
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
+  type SurfaceItem,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
 import { useConversationSurfaces, useHostSnapshot, usePlaceList } from "@opensteer/client/react";
@@ -34,7 +36,6 @@ import {
   ActivityIndicator,
   I18nManager,
   KeyboardAvoidingView,
-  PanResponder,
   Platform,
   StyleSheet,
   useWindowDimensions,
@@ -50,7 +51,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BrowserPage } from "../browser/browser-page.js";
 import { SurfaceGrid } from "../browser/surface-grid.js";
-import { useSurfaceHeader } from "../browser/surface-header.js";
+import { actingFor, surfaceGlyph } from "../browser/agent-surface.js";
+import { SurfaceSwitcherContext, useSurfaceHeader } from "../browser/surface-header.js";
 import {
   routeDestination,
   sameDestination,
@@ -60,7 +62,7 @@ import {
 } from "../browser/surface-route.js";
 import { surfaceTile, tabSiteLabel, type TabTile } from "../browser/tab-tiles.js";
 import { MacAppView } from "../computers/mac-app-view.js";
-import { color, headerFontScaleLimit, radius, space } from "../theme.js";
+import { color, headerFontScaleLimit, space } from "../theme.js";
 import {
   derivePagePair,
   edgesAround,
@@ -72,7 +74,7 @@ import {
   type Rect,
   type Size,
 } from "../layout.js";
-import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
+import { ThreadPane, type PageCompanion, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
 import { InsetView, Pane } from "../ui/pane.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -82,15 +84,15 @@ import { useAppForeground } from "../ui/foreground.js";
 
 /**
  * Tabs, as the route says: a conversation's own grid of tabs and apps, or
- * exactly one tab, app or phone over a conversation's sheet. The route is the
- * selection — a tile pushes the tab it names, Back returns to the grid — so
- * nothing here chooses or swaps what is shown.
+ * exactly one tab, app or phone with its conversation. The route is the
+ * selection — a tile, the bar's switcher or the conversation's own control
+ * names the tab — so nothing here chooses or swaps what is shown.
  *
- * A focused tab fills the screen above the conversation, folded to its latest
- * reply and its composer, which can be opened over the page to read the rest.
- * Talking to the agent never means leaving the page. A tab opened from Tabs
- * or the sidebar belongs to no conversation and stands alone, so it is
- * exactly the page that was chosen, with nothing folded over it.
+ * A focused tab takes the screen above its conversation's latest reply and
+ * composer: talking to the agent never means leaving the page, and the reply
+ * opens the conversation itself, which is the screen under this one. A tab
+ * opened from Tabs or the sidebar belongs to no conversation and stands alone,
+ * so it is exactly the page that was chosen, with nothing under it.
  */
 export function WorkspaceBrowserScreen({ route }: StaticScreenProps<SurfacesRoute>): ReactNode {
   const { selection } = useMobileState();
@@ -198,7 +200,7 @@ function SurfacesForUser(props: ForUserProps): ReactNode {
   );
 }
 
-/** A conversation's own tabs: its grid, or one of them over its sheet. */
+/** A conversation's own tabs: its grid, or one of them with the conversation. */
 function ConversationTabs(
   props: ForUserProps & {
     readonly connected: boolean;
@@ -245,6 +247,7 @@ function ConversationTabs(
       hostClient={hostClient}
       notices={props.notices}
       others={surfaces.some((item) => !sameDestination(surfaceDestination(item), destination))}
+      surfaces={surfaces}
       remaining={() =>
         conversationSurfaces(hostClient.getSnapshot(), threadId).some(
           (item) => !sameDestination(surfaceDestination(item), destination),
@@ -281,6 +284,7 @@ function WorkspaceTab(
       hostClient={hostClient}
       notices={props.notices}
       others={places.some((place) => !sameDestination(place.destination, destination))}
+      surfaces={[]}
       remaining={() => true}
       route={route}
       snapshot={snapshot}
@@ -363,10 +367,8 @@ function GridTitle(props: { readonly subtitle: string | null }): ReactNode {
 }
 
 /**
- * One tab, app or phone over the folded conversation. A page takes its own
- * height at the top and the folded conversation the rest, so a wide page
- * leaves room to read more of it. Typing into the page puts the conversation
- * away until the keyboard is done, so the page has the room.
+ * One tab, app or phone with its conversation. Typing into the page puts the
+ * conversation away until the keyboard is done, so the page has the room.
  */
 function Focused(props: {
   readonly active: boolean;
@@ -380,18 +382,19 @@ function Focused(props: {
   readonly remaining: () => boolean;
   readonly route: SurfacesRoute;
   readonly snapshot: HostSnapshot;
-  /** The conversation the sheet talks to; none for a tab shown alone. */
+  /** The conversation's own tabs and apps, for the bar to switch between. */
+  readonly surfaces: readonly SurfaceItem[];
+  /** The conversation the composer talks to; none for a tab shown alone. */
   readonly threadId: string | null;
 }): ReactNode {
-  const { destination, hostClient, route, snapshot, threadId } = props;
+  const { destination, hostClient, route, snapshot, surfaces, threadId } = props;
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
   const workspace = route.scope === "workspace";
-  const [expanded, setExpanded] = useState(false);
   const [page, setPage] = useState<BrowserPageContentPart | null>(null);
   const [typing, setTyping] = useState(false);
   const [title, setTitle] = useState<string | null>(null);
-  // The sheet says whom it talks to in the words its own bar would use.
+  // Beside the page, the conversation says whom it talks to in its bar's words.
   const onHeader = useCallback((header: ThreadHeaderState) => setTitle(header.title), []);
   const showGrid = useCallback(() => {
     const state = navigation.getState();
@@ -416,20 +419,47 @@ function Focused(props: {
       StackActions.replace("WorkspaceBrowser", { deploymentId: route.deploymentId, threadId }),
     );
   }, [navigation, route.deploymentId, threadId, workspace]);
-  const onClosed = useCallback(() => {
-    if (workspace || props.remaining()) {
-      showGrid();
-      return;
-    }
-    // Nothing of this conversation is left to show: back to the conversation
-    // itself, past every page and grid of it on the way.
+  // Back to the conversation itself, past every page and grid of it on the
+  // way: they were all opened from it, so it is the screen under them.
+  const showConversation = useCallback(() => {
     const state = navigation.getState();
     const index = state?.index ?? 0;
     let depth = 1;
     while (depth <= index && isConversationSurfaces(state?.routes[index - depth], threadId))
       depth += 1;
     navigation.dispatch(StackActions.pop(depth));
-  }, [navigation, props, showGrid, threadId, workspace]);
+  }, [navigation, threadId]);
+  const onClosed = useCallback(() => {
+    if (workspace || props.remaining()) showGrid();
+    else showConversation();
+  }, [props, showConversation, showGrid, workspace]);
+  const switcher = useMemo(() => {
+    if (threadId === null || surfaces.length < 2) return null;
+    const threads = conversationThreadIds(snapshot, threadId);
+    return {
+      choices: surfaces.map((item) => {
+        const tile = surfaceTile(item);
+        const target = surfaceDestination(item);
+        return {
+          acting: actingFor(item, threads),
+          current: sameDestination(target, destination),
+          glyph: surfaceGlyph(item),
+          key: item.key,
+          // In place of this one: Back still returns to the conversation.
+          onPress: () =>
+            navigation.dispatch(
+              StackActions.replace(
+                "WorkspaceBrowser",
+                surfaceRoute(route.deploymentId, threadId, target),
+              ),
+            ),
+          site: tile.site,
+          title: tile.title,
+        };
+      }),
+      onShowAll: showGrid,
+    };
+  }, [destination, navigation, route.deploymentId, showGrid, snapshot, surfaces, threadId]);
   const onOpenTab = useCallback(
     (sessionId: string, tabId: string) => {
       if (!navigation.isFocused()) return;
@@ -477,11 +507,12 @@ function Focused(props: {
           ),
           pageShaped: browserShowsPage(snapshot, destination.sessionId, destination.tabId),
         };
-  // Built where the arrangement is known: beside the page it is always open.
+  // Built where the arrangement is known: docked under the page, or beside it.
+  const shownPage = destination.kind === "browser" ? page : null;
   const conversation =
     threadId === null
       ? null
-      : (open: boolean) => (
+      : (kind: PageCompanion["kind"]) => (
           <ThreadPane
             deploymentId={route.deploymentId}
             hostClient={hostClient}
@@ -492,26 +523,26 @@ function Focused(props: {
               )
             }
             requestId={null}
-            sheet={{
-              expanded: open,
-              onExpand: setExpanded,
-              page: destination.kind === "browser" ? page : null,
-            }}
+            withPage={
+              kind === "docked"
+                ? { kind, onShowConversation: showConversation, page: shownPage }
+                : { kind, page: shownPage }
+            }
             threadId={threadId}
           />
         );
   return (
-    <PagePairSurface
-      body={body}
-      conversation={conversation}
-      conversationTitle={title}
-      expanded={expanded}
-      keyboardVerticalOffset={headerHeight}
-      notices={props.notices}
-      onExpand={setExpanded}
-      pageShaped={pageShaped}
-      typing={typing}
-    />
+    <SurfaceSwitcherContext.Provider value={switcher}>
+      <PagePairSurface
+        body={body}
+        conversation={conversation}
+        conversationTitle={title}
+        keyboardVerticalOffset={headerHeight}
+        notices={props.notices}
+        pageShaped={pageShaped}
+        typing={typing}
+      />
+    </SurfaceSwitcherContext.Provider>
   );
 }
 
@@ -846,17 +877,18 @@ function TabStatus(props: {
 
 /**
  * The page and its conversation, in the pair's own surface: stacked, the
- * conversation a sheet under the page; side by side, the page leading; or
+ * conversation docked under the page; side by side, the page leading; or
  * tabletop, the page above a fold and the conversation below. This view
  * measures its own surface and the regions reserved in it — its origin is
  * under the navigation bar, not the window's — and is the only thing that
  * decides which.
  *
  * Every arrangement is the same three children in the same order, so the
- * page's live channel and the conversation's transcript, draft and stream
- * stay mounted through a fold. The reader's choice to open or fold the sheet
- * is kept for when the pair is stacked again; beside the page there is room
- * for all of the conversation, so it is open there.
+ * page's live channel and the conversation's draft and stream stay mounted
+ * through a fold. Each pane is given its size by the arrangement — stacked,
+ * the dock is as tall as what it holds and the page has the rest — never by
+ * measuring the other: a pane sized by its content collapses to nothing when
+ * its content asks to fill it.
  *
  * The keyboard belongs to whichever pane is typing: the page while its address
  * or the remote page's keyboard is up, the conversation otherwise. Only that
@@ -867,16 +899,14 @@ function TabStatus(props: {
 function PagePairSurface(props: {
   readonly body: ReactNode;
   /**
-   * The conversation, open or folded as this arrangement draws it; null for a
-   * tab opened directly from Tabs or the sidebar.
+   * The conversation, docked or beside the page as this arrangement draws it;
+   * null for a tab opened directly from Tabs or the sidebar.
    */
-  readonly conversation: ((open: boolean) => ReactNode) | null;
-  /** The conversation's name, so the sheet says whom it talks to. */
+  readonly conversation: ((kind: PageCompanion["kind"]) => ReactNode) | null;
+  /** The conversation's name, so the column beside the page says whom it talks to. */
   readonly conversationTitle: string | null;
-  readonly expanded: boolean;
   readonly keyboardVerticalOffset: number;
   readonly notices: ReactNode;
-  readonly onExpand: (expanded: boolean) => void;
   readonly pageShaped: boolean;
   readonly typing: boolean;
 }): ReactNode {
@@ -912,10 +942,10 @@ function PagePairSurface(props: {
 function PagePair(
   props: Parameters<typeof PagePairSurface>[0] & {
     readonly bounds: Size;
-    readonly conversation: (open: boolean) => ReactNode;
+    readonly conversation: (kind: PageCompanion["kind"]) => ReactNode;
   },
 ): ReactNode {
-  const { bounds, expanded, pageShaped, typing } = props;
+  const { bounds, pageShaped, typing } = props;
   const regions = useReservedRegions();
   const ready = useReservedRegionsReady();
   const { fontScale } = useWindowDimensions();
@@ -937,9 +967,6 @@ function PagePair(
   useLayoutEffect(() => {
     previous.current = pair;
   });
-  // The folded conversation's height, held while it is open so the page under
-  // it keeps its size rather than reflowing behind the sheet.
-  const [foldedHeight, setFoldedHeight] = useState(0);
 
   const stacked = pair.mode === "stacked";
   // Tabletop, with the composer typing under the fold.
@@ -972,9 +999,7 @@ function PagePair(
         ? yielding
           ? { flexShrink: 1, maxHeight: pair.pageHeight, minHeight: 0 }
           : { height: pair.pageHeight }
-        : pageShaped
-          ? styles.page
-          : styles.fill;
+        : styles.pageAboveDock;
   const gapStyle =
     pair.mode === "side"
       ? { width: pair.gap }
@@ -988,11 +1013,7 @@ function PagePair(
         ? yielding
           ? styles.underKeyboard
           : styles.belowFold
-        : [
-            expanded ? styles.sheetOpen : styles.sheet,
-            !expanded && pageShaped && styles.sheetFills,
-            typing && styles.hidden,
-          ];
+        : [styles.docked, typing && styles.hidden];
   const behavior = Platform.OS === "ios" ? "padding" : "height";
   return (
     <View
@@ -1011,39 +1032,25 @@ function PagePair(
               address, its dialogs and the remote picture a tap is mapped into. */}
           <InsetView style={styles.fill} testID="page-content">
             {props.notices}
-            <View style={pageShaped ? styles.page : styles.fill}>{props.body}</View>
+            <View style={pageShaped ? styles.pageCentred : styles.fill}>{props.body}</View>
           </InsetView>
         </Pane>
       </KeyboardAvoidingView>
       <View style={gapStyle} />
-      {stacked && expanded ? <View style={{ height: foldedHeight }} /> : null}
       <KeyboardAvoidingView
         behavior={behavior}
         enabled={!typing}
         keyboardVerticalOffset={props.keyboardVerticalOffset}
-        onLayout={
-          stacked && !expanded
-            ? (event: LayoutChangeEvent) => setFoldedHeight(event.nativeEvent.layout.height)
-            : undefined
-        }
         style={conversationStyle}
         testID="conversation-slot"
       >
         <Pane
           clearance={conversationClearance}
           geometry={`${geometry}:conversation`}
-          style={styles.fill}
+          style={stacked ? styles.ownHeight : styles.fill}
         >
-          {stacked ? (
-            <Grabber
-              expanded={expanded}
-              onExpand={props.onExpand}
-              title={props.conversationTitle}
-            />
-          ) : (
-            <ConversationName title={props.conversationTitle} />
-          )}
-          {props.conversation(!stacked || expanded)}
+          {stacked ? null : <ConversationName title={props.conversationTitle} />}
+          {props.conversation(stacked ? "docked" : "beside")}
         </Pane>
       </KeyboardAvoidingView>
     </View>
@@ -1096,49 +1103,8 @@ function pairClearances(
 }
 
 /**
- * The sheet's handle: a tap opens or folds the conversation, and so does a
- * drag up or down. One responder owns both, so a drag is never also a tap.
- */
-function Grabber(props: {
-  readonly expanded: boolean;
-  readonly onExpand: (expanded: boolean) => void;
-  readonly title: string | null;
-}): ReactNode {
-  const { expanded, onExpand } = props;
-  const current = useRef({ expanded, onExpand });
-  current.current = { expanded, onExpand };
-  const responder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onPanResponderRelease: (_event, gesture) => {
-          const { expanded: open, onExpand: expand } = current.current;
-          if (Math.abs(gesture.dy) < 8) expand(!open);
-          else expand(gesture.dy < 0);
-        },
-      }),
-    [],
-  );
-  const conversation = props.title === null ? "the conversation" : props.title;
-  return (
-    <View
-      accessibilityActions={[{ name: "activate" }]}
-      accessibilityLabel={`${expanded ? "Hide" : "Show"} ${conversation}`}
-      accessibilityRole="button"
-      accessible
-      onAccessibilityAction={() => onExpand(!expanded)}
-      style={styles.grabberZone}
-      {...responder.panHandlers}
-    >
-      <View style={styles.grabber} />
-      <ConversationName title={props.title} />
-    </View>
-  );
-}
-
-/**
- * Whom the sheet talks to, in the conversation's own name: a tab can be
- * opened over any conversation, and the composer under it says nothing else.
+ * Whom the column beside a page talks to, in the conversation's own name: the
+ * bar above it names the page, and the composer under it says nothing else.
  */
 function ConversationName(props: { readonly title: string | null }): ReactNode {
   if (props.title === null) return null;
@@ -1207,6 +1173,11 @@ const styles = StyleSheet.create({
   belowFold: { backgroundColor: color.background, flex: 1 },
   centred: { textAlign: "center" },
   conversationName: { alignItems: "center", paddingHorizontal: space[16] },
+  // Under the page, the conversation is as tall as its latest reply, what
+  // needs the reader and the composer, and the page has everything else. When
+  // that is more than the page leaves — large text, a short screen, the
+  // keyboard — it shrinks and its own content scrolls.
+  docked: { backgroundColor: color.background, flexShrink: 1 },
   ended: {
     alignItems: "center",
     flex: 1,
@@ -1215,43 +1186,22 @@ const styles = StyleSheet.create({
     padding: space[24],
   },
   fill: { flex: 1 },
-  grabber: {
-    backgroundColor: color.lineHover,
-    borderRadius: radius.full,
-    height: 5,
-    width: 36,
-  },
-  grabberZone: { alignItems: "center", gap: space[4], justifyContent: "center", minHeight: 44 },
   gridTitle: { alignItems: "center", maxWidth: 240 },
   hidden: { display: "none" },
   notices: { gap: space[8] },
+  // As tall as what it holds, and no taller than its slot. A pane fills by
+  // default, and filling a pane that its content sizes is zero.
+  ownHeight: { flex: 0, flexShrink: 1 },
   page: { flexShrink: 1, minHeight: 0 },
+  // Stacked, the page has the room the dock leaves, and never less than enough
+  // to see what the agent is doing.
+  pageAboveDock: { flex: 1, minHeight: 160 },
+  // The page at its own shape, centred in the room it is given, as a picture
+  // is: the bands above and below are even, and the page never jumps when the
+  // dock under it grows by a line.
+  pageCentred: { flex: 1, justifyContent: "center", minHeight: 0 },
   row: { flexDirection: "row" },
-  sheet: {
-    backgroundColor: color.background,
-    borderColor: color.lineStrong,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  // Under a page, the folded conversation takes everything the page leaves,
-  // and never less than its own latest line and composer.
-  sheetFills: { flexGrow: 1, flexShrink: 0 },
   // Tabletop with the composer typing: the conversation keeps at least its
   // composer and dock, and the page above gives up height to make room.
   underKeyboard: { backgroundColor: color.background, flexGrow: 1, flexShrink: 0 },
-  // Open over the page, leaving its top in view: the page is still there.
-  sheetOpen: {
-    backgroundColor: color.background,
-    borderColor: color.lineStrong,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    bottom: 0,
-    zIndex: 12,
-    left: 0,
-    position: "absolute",
-    right: 0,
-    top: "14%",
-  },
 });
