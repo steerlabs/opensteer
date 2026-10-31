@@ -1,4 +1,5 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
+import type { LocalProfileBinding, FrozenProfileSeed } from "@opensteer/protocol";
 import type { BrowserProfileId } from "@opensteer/core";
 import {
   EmptyBrowserProfileSnapshot,
@@ -98,6 +99,46 @@ export class BrowserProfileVault {
       ciphertextSha256: createHash("sha256").update(ciphertext).digest("hex"),
       revision,
     };
+  }
+
+  frozenSeed(loaded: LoadedBrowserProfile): FrozenProfileSeed {
+    const bytes = encodeBrowserProfileSnapshot(loaded.snapshot);
+    try {
+      return {
+        revision: loaded.revision,
+        digest: createHash("sha256").update(bytes).digest("hex"),
+      };
+    } finally {
+      bytes.fill(0);
+    }
+  }
+
+  initializationToken(binding: LocalProfileBinding, seed: FrozenProfileSeed): string {
+    // Stable per conversion so simultaneous tickets cannot revoke one another.
+    return createHmac("sha256", this.#key)
+      .update(
+        [
+          "opensteer-profile-initialization-v1",
+          binding.deploymentId,
+          binding.profileId,
+          binding.runnerId,
+          binding.storageInstanceId,
+          binding.bindingId,
+          binding.engine,
+          seed.revision,
+          seed.digest,
+        ].join("\0"),
+      )
+      .digest("base64url");
+  }
+
+  openFrozenRevision(
+    profileId: BrowserProfileId,
+    stored: EncryptedBrowserProfileRevision | null,
+  ): BrowserProfileSnapshot {
+    return stored
+      ? this.#open(profileId, stored.revision, stored.ciphertext)
+      : EmptyBrowserProfileSnapshot;
   }
 
   destroy(): void {

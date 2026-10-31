@@ -1,3 +1,5 @@
+import { BrowserLocalProfiles } from "./browser-local-profiles.js";
+import type { BrowserProfileStorage } from "@opensteer/protocol";
 import { createId, OpensteerError, type BrowserProfileId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
@@ -114,4 +116,117 @@ describe("BrowserProfileVault", () => {
     });
     vault.destroy();
   });
+});
+
+it("authorizes one frozen conversion, replays completion, and never loads a local recovery seed", async () => {
+  const repository = new MemoryRepository();
+  const vault = new BrowserProfileVault({ key: Buffer.alloc(32, 5), repository });
+  const profileId = createId("browserProfile"),
+    runnerId = createId("runner"),
+    deploymentId = createId("deployment");
+  let storage: BrowserProfileStorage = { kind: "vault" };
+  let tokenHash: string | undefined;
+  const localProfiles = new BrowserLocalProfiles({
+    deploymentId,
+    vault,
+    baseUrl: new URL("https://host.test"),
+    repository: {
+      getBrowserProfileStorage: async () => storage,
+      reserveBrowserProfileInitialization: async (input) => {
+        if (storage.kind === "vault")
+          storage = { kind: "initializing", binding: input.binding, seed: input.seed };
+        tokenHash = input.tokenHash;
+        return storage;
+      },
+      readBrowserProfileInitialization: async (input) => {
+        if (storage.kind !== "initializing" || input.tokenHash !== tokenHash)
+          throw new Error("initialization refused");
+        return { ...storage, revision: null };
+      },
+      completeBrowserProfileInitialization: async (input) => {
+        if (storage.kind === "vault" || input.tokenHash !== tokenHash)
+          throw new Error("completion refused");
+        storage = { ...storage, kind: "local" };
+        return storage;
+      },
+      listBrowserProfileErasureJobs: async () => [],
+      listPendingBrowserProfileDeletions: async () => [],
+      acknowledgeBrowserProfileDeletion: async () => undefined,
+      reconcileBrowserProfileInventory: async () => undefined,
+    },
+  });
+  const target = {
+    runtimeId: "native",
+    placementKey: "native",
+    localProfileStorage: { storageInstanceId: crypto.randomUUID(), engine: "electron" as const },
+    connect: () => {
+      throw new Error("unexpected connection");
+    },
+  };
+  try {
+    expect(
+      await localProfiles.identity(profileId, runnerId, {
+        runtimeId: target.runtimeId,
+        placementKey: target.placementKey,
+        connect: target.connect,
+      }),
+    ).toBeNull();
+    const first = await localProfiles.identity(profileId, runnerId, target);
+    expect(first?.kind).toBe("profile-local");
+    if (!first?.initialization) throw new Error("Conversion was not authorized");
+    const initialization = first.initialization;
+    expect((await localProfiles.identity(profileId, runnerId, target))?.initialization).toEqual(
+      initialization,
+    );
+    expect(await localProfiles.seed(profileId, initialization.initializationToken)).toEqual({
+      binding: first.binding,
+      seed: initialization.seed,
+      snapshot: { cookies: [], origins: [] },
+    });
+    await expect(localProfiles.seed(profileId, "wrong-token")).rejects.toThrow("refused");
+    const completion = { binding: first.binding, seed: initialization.seed };
+    await expect(localProfiles.complete(profileId, "wrong-token", completion)).rejects.toThrow(
+      "invalid",
+    );
+    expect(
+      await localProfiles.complete(profileId, initialization.initializationToken, completion),
+    ).toEqual({ state: "local", binding: first.binding });
+    expect(
+      await localProfiles.complete(profileId, initialization.initializationToken, completion),
+    ).toEqual({ state: "local", binding: first.binding });
+    expect(await localProfiles.identity(profileId, runnerId, target)).toEqual({
+      kind: "profile-local",
+      binding: first.binding,
+    });
+    await expect(localProfiles.seed(profileId, initialization.initializationToken)).rejects.toThrow(
+      "refused",
+    );
+    await expect(
+      localProfiles.identity(profileId, runnerId, {
+        runtimeId: target.runtimeId,
+        placementKey: target.placementKey,
+        connect: target.connect,
+      }),
+    ).rejects.toThrow("Update this computer");
+    await expect(
+      localProfiles.identity(profileId, runnerId, {
+        ...target,
+        localProfileStorage: {
+          ...target.localProfileStorage,
+          storageInstanceId: crypto.randomUUID(),
+        },
+      }),
+    ).rejects.toThrow("storage changed");
+    await expect(
+      localProfiles.identity(profileId, runnerId, {
+        ...target,
+        localProfileStorage: { ...target.localProfileStorage, engine: "chromium" },
+      }),
+    ).rejects.toThrow("different browser engine");
+    await expect(localProfiles.identity(profileId, createId("runner"), target)).rejects.toThrow(
+      "owning computer",
+    );
+  } finally {
+    vault.destroy();
+  }
 });
