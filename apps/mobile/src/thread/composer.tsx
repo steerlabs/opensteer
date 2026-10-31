@@ -136,11 +136,6 @@ export function Composer(props: {
   readonly placeholder: string;
   readonly requests: readonly Request[];
   /**
-   * Folded under a page, the pending Request is one line above the bar, and
-   * its card waits for the conversation to be opened.
-   */
-  readonly requestFolded?: boolean;
-  /**
    * Words handed back to the composer, such as a queued message taken back to
    * be reworded. Each new value joins the draft once, ahead of what is there.
    */
@@ -734,7 +729,7 @@ export function Composer(props: {
     );
   return (
     <View style={styles.dock}>
-      {surface === null || props.requestFolded === true ? null : (
+      {surface === null ? null : (
         <Animated.View entering={appear}>
           <RequestCard
             canRespond={props.canRespond && !requestBlocked}
