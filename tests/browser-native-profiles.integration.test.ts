@@ -211,6 +211,35 @@ async function stateSite() {
 it("converts, retains, restarts, reconciles and erases native profiles through the real Host and Runner", async () => {
   await access(chromium.executablePath());
   const browser = await browserProcess();
+  let journeyAssertionsComplete = false;
+  let warmTimings: BrowserOpenTiming[] = [];
+  let coldTimings: BrowserOpenTiming[] = [];
+  let coldNativeTimings: NativeProfileOpenTiming[] = [];
+  let warmWallMs: number | undefined;
+  let coldWallMs: number | undefined;
+  addCleanup(
+    "native profile timing receipts",
+    async () => {
+      await writeFile(
+        path.join(tmpdir(), "native-profile-integration-timings.json"),
+        JSON.stringify(
+          {
+            journeyAssertionsComplete,
+            warm: warmTimings,
+            cold: coldTimings,
+            timings: browser.timings,
+            nativeTimings: browser.nativeTimings,
+            coldNativeTimings,
+            warmWallMs,
+            coldWallMs,
+          },
+          null,
+          2,
+        ),
+      );
+    },
+    2,
+  );
   // The Runner uses precisely the desktop Personal/enrolled loopback composition.
   const stack = await deployment(browser);
   const site = await stateSite();
@@ -355,14 +384,14 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   const warmStart = browser.timings.length;
   const warmWallStart = performance.now();
   const warm = await open(profile.id, "/read?id=warm");
-  const warmWallMs = performance.now() - warmWallStart;
+  warmWallMs = performance.now() - warmWallStart;
   expect(await site.observed("warm")).toEqual(expected);
   expect(seeds).toHaveBeenCalledTimes(requests.seeds);
   expect(complete).toHaveBeenCalledTimes(requests.complete);
   expect(legacyLoad).not.toHaveBeenCalled();
   expect(legacyCommit).not.toHaveBeenCalled();
   expect(browser.timings.some((timing) => timing.acquisition === "warm")).toBe(true);
-  const warmTimings = browser.timings.slice(warmStart);
+  warmTimings = browser.timings.slice(warmStart);
   await close(warm);
   const visitsBeforeRestart = site.visits();
   await browser.close();
@@ -372,7 +401,7 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   const coldNativeStart = browser.nativeTimings.length;
   const coldWallStart = performance.now();
   const cold = await open(profile.id, "/read?id=cold");
-  const coldWallMs = performance.now() - coldWallStart;
+  coldWallMs = performance.now() - coldWallStart;
   expect(await site.observed("cold")).toEqual(expected);
   expect(site.visits(), "Chromium restored a tab independently of Opensteer").toEqual({
     ...visitsBeforeRestart,
@@ -386,8 +415,8 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   expect(seeds).toHaveBeenCalledTimes(requests.seeds);
   expect(complete).toHaveBeenCalledTimes(requests.complete);
   expect(browser.timings.some((timing) => timing.acquisition === "cold")).toBe(true);
-  const coldTimings = browser.timings.slice(coldStart);
-  const coldNativeTimings = browser.nativeTimings.slice(coldNativeStart);
+  coldTimings = browser.timings.slice(coldStart);
+  coldNativeTimings = browser.nativeTimings.slice(coldNativeStart);
   await close(cold);
 
   // Simulate a DB-only rollback while the owning engine is stopped. The new
@@ -502,22 +531,7 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
     await readFile(path.join(browser.profileRoot, "tombstones", `${profile.id}.json`), "utf8"),
   );
   expect(tombstone).toMatchObject({ phase: "deleted", erasure: "deleted" });
-  await writeFile(
-    path.join(tmpdir(), "native-profile-integration-timings.json"),
-    JSON.stringify(
-      {
-        warm: warmTimings,
-        cold: coldTimings,
-        timings: browser.timings,
-        nativeTimings: browser.nativeTimings,
-        coldNativeTimings,
-        warmWallMs,
-        coldWallMs,
-      },
-      null,
-      2,
-    ),
-  );
+  journeyAssertionsComplete = true;
   vi.restoreAllMocks();
 }, 90_000);
 
