@@ -30,7 +30,6 @@
     "@opensteer/browser-profile": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
-    "fs-native-extensions": "1.5.2",
     "ws": "catalog:",
     "zod": "catalog:"
   },

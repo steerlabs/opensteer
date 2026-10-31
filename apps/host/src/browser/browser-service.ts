@@ -1515,18 +1515,24 @@ export class BrowserService {
         }
         return binding;
       };
-      let binding =
+      const selectAndStart = async () => {
+        let binding = await select();
+        // Another open of this identity must see the admitted session ready
+        // before selecting reuse. Different identities have independent lanes.
+        if (pendingFinish) {
+          await pendingFinish();
+          binding =
+            (await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey)) ?? binding;
+        }
+        return binding;
+      };
+      const binding =
         command.identity === undefined
-          ? await select()
+          ? await selectAndStart()
           : await this.#serializeKey(
               `identity:${ownerId}:${command.identity.kind === "profile" ? command.identity.profileId : "guest"}`,
-              select,
+              selectAndStart,
             );
-      if (pendingFinish) {
-        await pendingFinish();
-        binding =
-          (await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey)) ?? binding;
-      }
       return this.#resumeTabOpen(ownerId, command, binding);
     });
   }

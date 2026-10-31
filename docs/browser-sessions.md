@@ -446,9 +446,22 @@ fails them anyway.
 
 ## Profile state
 
-The Profile Vault is the only durable state; Runtime disk profiles are disposable.
-A profile lease and final-save grace fence ownership and revision commits. Stop
-saves before disconnecting. Periodic checkpoints preserve the existing final-save
+Named profiles convert once to Chromium-native storage on their owning computer.
+That native store remains authoritative across tab closure, runtime restart and
+Host database recovery. The encrypted vault seed stays frozen for explicit
+recovery; normal opens never reimport it. Runtime inventory reconciles an older
+Host database forward before named-profile execution is admitted.
+
+The caller holds exclusive ownership of the profile root for its process lifetime:
+the desktop application lock covers its Deployment roots, and the standalone
+runtime holds an OS file lock. Logical runtime restarts may re-acquire a root in
+the same process, but cannot erase directories still retained by Electron
+Sessions. Their deletion tombstones are completed after process exit, before
+any persistent Session opens that directory again.
+
+Unconverted profiles and released runtimes retain the legacy snapshot adapter.
+For that path, a profile lease and final-save grace fence ownership and revision
+commits. Stop saves before disconnecting. Periodic checkpoints preserve the existing final-save
 grace deadline without extending it; only a final commit retires grace. The optional
 profile-checkpoint header distinguishes periodic saves while the JSON body stays
 compatible with previous releases; an absent header retains final-save semantics.

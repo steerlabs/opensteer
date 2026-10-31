@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { LocalProfileStore, sameLocalBinding } from "./local-profile-store.js";
 import {
   HttpProfileInitializationClient,
@@ -38,7 +39,7 @@ import type {
 } from "./browser/presentation.js";
 import { HostSignIns } from "./browser/host-sign-ins.js";
 import type { BrowserLoginAuthority } from "./browser/sign-in.js";
-import { SessionFiles } from "./browser/session-files.js";
+import { SessionFiles, sessionFilesRoot } from "./browser/session-files.js";
 import { SurfaceLedger } from "./browser/surface-ledger.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import type { AttachTicketVerifier } from "./security/attach-ticket.js";
@@ -62,6 +63,10 @@ export interface BrowserRuntimeOptions {
   maxProfileHosts?: number;
   maxSessionsPerProfile?: number;
   profileStateClient: BrowserProfileStateClient;
+  /**
+   * The caller must own this root exclusively for the process lifetime (desktop
+   * application lock or standalone OS lock). Only one live runtime may use it.
+   */
   localProfiles?: { readonly root: string };
   initializationClient?: ProfileInitializationClient;
   runtimeId: string;
@@ -74,6 +79,7 @@ export interface BrowserRuntimeOptions {
   loginAuthority?: BrowserLoginAuthority;
   ticketVerifier: AttachTicketVerifier;
   onCheckpointFailure?: (diagnostic: BrowserCheckpointFailure) => void;
+  onOpenTiming?: (diagnostic: BrowserOpenTiming) => void;
   onStartFailure?: (diagnostic: {
     readonly correlationId: string;
     readonly stage: string;
@@ -81,7 +87,18 @@ export interface BrowserRuntimeOptions {
   }) => void;
 }
 
+export interface BrowserOpenTiming {
+  readonly correlationId: string;
+  readonly stage: "lane-wait" | "profile-acquire" | "root-page-ready" | "navigation-submitted";
+  readonly elapsedMs: number;
+  readonly elapsedSinceStartMs: number;
+  readonly acquisition?: "warm" | "cold" | "conversion" | "legacy" | "guest";
+}
+
 export interface BrowserRuntimeHealth {
+  initialNavigationVersion: 1;
+  localProfiles?: 1;
+  localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   checkpointFailures: number;
   profileHostCount: number;
   runtimeId: string;
@@ -202,6 +219,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private reservations = 0;
   private readonly pendingSessions = new Set<string>();
   private usage = 0;
+  private readonly onOpenTiming: NonNullable<BrowserRuntimeOptions["onOpenTiming"]>;
   private readonly localProfilesOptions: BrowserRuntimeOptions["localProfiles"];
   private localStore: LocalProfileStore | undefined;
   private readonly initializationClient: ProfileInitializationClient;
@@ -250,6 +268,7 @@ export class BrowserRuntime implements NativePresentationSource {
     }
     this.idleProfileHostTimeoutMs = options.idleProfileHostTimeoutMs ?? 0;
     this.launcher = options.launcher;
+    this.onOpenTiming = options.onOpenTiming ?? (() => {});
     this.localProfilesOptions = options.localProfiles;
     this.initializationClient =
       options.initializationClient ?? new HttpProfileInitializationClient();
@@ -271,7 +290,8 @@ export class BrowserRuntime implements NativePresentationSource {
       if (
         localRoot === this.sessionFilesRoot ||
         localRoot.startsWith(this.sessionFilesRoot + path.sep) ||
-        this.sessionFilesRoot.startsWith(localRoot + path.sep)
+        (this.sessionFilesRoot.startsWith(localRoot + path.sep) &&
+          this.sessionFilesRoot !== sessionFilesRoot(localRoot))
       )
         throw new TypeError("Local profiles and disposable session files must use separate roots.");
     }
@@ -313,6 +333,10 @@ export class BrowserRuntime implements NativePresentationSource {
 
   health(): BrowserRuntimeHealth {
     return {
+      initialNavigationVersion: 1,
+      ...(this.localProfileStorage
+        ? { localProfiles: 1, localProfileStorage: this.localProfileStorage }
+        : {}),
       checkpointFailures: this.checkpointFailures,
       profileHostCount: this.hosts.size,
       runtimeId: this.runtimeId,
@@ -325,6 +349,12 @@ export class BrowserRuntime implements NativePresentationSource {
     if (this.shuttingDown || this.state === "closed")
       return Promise.reject(new Error("The Browser Runtime is shutting down."));
     this.preparation ??= (async () => {
+      if (this.localProfilesOptions && this.launcher.localProfiles) {
+        this.localStore = await LocalProfileStore.acquire(
+          this.localProfilesOptions.root,
+          this.launcher.localProfiles.engine,
+        );
+      }
       for (let attempt = 0; ; attempt += 1) {
         try {
           // This root contains only sessions from an earlier runtime. No
@@ -337,12 +367,6 @@ export class BrowserRuntime implements NativePresentationSource {
             throw error;
           await delay(100 * 2 ** attempt);
         }
-      }
-      if (this.localProfilesOptions && this.launcher.localProfiles) {
-        this.localStore = await LocalProfileStore.acquire(
-          this.localProfilesOptions.root,
-          this.launcher.localProfiles.engine,
-        );
       }
       await this.launcher.prepare?.();
     })();
@@ -486,7 +510,10 @@ export class BrowserRuntime implements NativePresentationSource {
       }
       if (claim.erasure === "deleted") return "deleted" as const;
       const released = await engine.release(store.directory(binding));
-      if (released === "retained-until-exit") return "pending-restart" as const;
+      if (released === "retained-until-exit") {
+        store.retainDirectory(binding);
+        return "pending-restart" as const;
+      }
       await store.erase(binding, deletionId);
       return "deleted" as const;
     });
@@ -504,10 +531,32 @@ export class BrowserRuntime implements NativePresentationSource {
     sink: BrowserControllerSink,
     options: { passkeys?: boolean; localProfiles?: boolean; initialNavigation?: boolean } = {},
   ): Promise<BrowserAttachment> {
+    const started = performance.now();
+    const correlationId = randomUUID();
+    const timing = (
+      stage: BrowserOpenTiming["stage"],
+      since: number,
+      acquisition?: BrowserOpenTiming["acquisition"],
+    ) => {
+      const now = performance.now();
+      try {
+        this.onOpenTiming({
+          correlationId,
+          stage,
+          elapsedMs: now - since,
+          elapsedSinceStartMs: now - started,
+          ...(acquisition ? { acquisition } : {}),
+        });
+      } catch {
+        // Diagnostics cannot change browser ownership or readiness.
+      }
+    };
     const verified = await this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId });
     const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
     const hostKey = browserHostKey(claims);
+    const queued = performance.now();
     return this.lanes.run(hostKey, async () => {
+      timing("lane-wait", queued);
       if (this.shuttingDown || this.state === "closed") {
         throw new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down.");
       }
@@ -584,6 +633,14 @@ export class BrowserRuntime implements NativePresentationSource {
         const files = new SessionFiles(path.join(this.sessionFilesRoot, claims.sessionId));
         this.state = "starting";
 
+        const acquiring = performance.now();
+        let acquisition: BrowserOpenTiming["acquisition"] =
+          claims.identity.kind === "profile-local"
+            ? "cold"
+            : claims.identity.kind === "profile"
+              ? "legacy"
+              : "guest";
+        let pageStarting = acquiring;
         let host = this.hosts.get(hostKey);
         let createdHost = false;
         let reserved = false;
@@ -626,13 +683,14 @@ export class BrowserRuntime implements NativePresentationSource {
                 if (marker?.phase === "ready")
                   localDirectory = await store.requireReady(identity.binding);
                 if (marker?.phase !== "ready") {
+                  acquisition = "conversion";
                   stage = "profile-initialization";
                   localDirectory = await store.initialize(
                     identity.binding,
                     identity.initialization.seed,
                   );
                   const snapshot = await this.initializationClient.load(identity);
-                  store.engineOwnsDirectory();
+                  store.engineOwnsDirectory(identity.binding);
                   await this.launcher.localProfiles!.importAndFlush({
                     directory: localDirectory,
                     binding: identity.binding,
@@ -667,7 +725,8 @@ export class BrowserRuntime implements NativePresentationSource {
                     return undefined;
                   })
                 : undefined;
-            if (localDirectory) this.localStore!.engineOwnsDirectory();
+            if (localDirectory && claims.identity.kind === "profile-local")
+              this.localStore!.engineOwnsDirectory(claims.identity.binding);
             const browser = await this.launcher.launch({
               ...(passkeys ? { authenticator: passkeys } : {}),
               initialViewport: this.initialViewport,
@@ -750,6 +809,8 @@ export class BrowserRuntime implements NativePresentationSource {
             this.reservations--;
             reserved = false;
             createdHost = true;
+            timing("profile-acquire", acquiring, acquisition);
+            pageStarting = performance.now();
             rootPage = browser.context.pages()[0] ?? (await browser.context.createPage());
             if (host.identity.kind === "profile") host.identity.snapshot.scheduleCheckpoint(host);
           } else {
@@ -781,6 +842,8 @@ export class BrowserRuntime implements NativePresentationSource {
               throw new BrowserRuntimeError("conflict", "Browser Host session capacity is full.");
             }
             if (host.identity.kind === "profile") host.identity.snapshot.cancelClose();
+            timing("profile-acquire", acquiring, "warm");
+            pageStarting = performance.now();
             stage = "page-create";
             rootPage = await host.browser.context.createPage();
             if (host.identity.kind === "profile" && isProfileAttachTicketClaims(claims)) {
@@ -868,9 +931,12 @@ export class BrowserRuntime implements NativePresentationSource {
           this.sessions.set(claims.sessionId, active);
           stage = "session-snapshot";
           await controller.start();
+          timing("root-page-ready", pageStarting);
           let initialPage: InitialPageReady | undefined;
           if (claims.initialNavigationVersion === 1 && claims.initialNavigation) {
+            const navigating = performance.now();
             initialPage = controller.startInitialNavigation(rootPage, claims.initialNavigation);
+            timing("navigation-submitted", navigating);
             this.initialOperations.set(operationKey!, {
               fingerprint,
               sessionId: claims.sessionId,

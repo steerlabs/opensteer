@@ -319,6 +319,13 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         capability: activePlacementLease.capability,
         channelId,
         expectedType: "browser.attached",
+        // Negotiated readiness includes conversion and engine startup, rather
+        // than just the old loopback WebSocket upgrade. Use the broker's startup budget.
+        timeoutMs:
+          stream.identity.modules.browser?.localProfiles === 1 ||
+          stream.identity.modules.browser?.initialNavigationVersion === 1
+            ? 30_000
+            : undefined,
         message: {
           ...stream.fence,
           attachTicket: ticket,
@@ -357,9 +364,9 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         this.#scheduleRenewal(activePlacementLease, activePlacementLease.expiresAt);
       }
     } catch (error) {
+      connection.acceptError(normalizeError(error));
       if (channel) this.#dropChannel(channel, 1011, "Browser Runtime attach failed");
       if (placementLease) await this.#releasePlacementLease(placementLease).catch(() => undefined);
-      connection.acceptError(normalizeError(error));
       connection.acceptClose(1011, "Browser Runtime attach failed");
     } finally {
       if (placementLease) {
@@ -554,7 +561,14 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     if (message.type === "browser.command-error") {
       const pending = this.#takePending(message.requestId);
       if (pending) {
-        this.#assertPendingResponse(pending, stream, message.channelId ?? undefined);
+        // Command errors have no capability field. Their authenticated stream,
+        // request and channel identify the pending operation being refused.
+        this.#assertPendingResponse(
+          pending,
+          stream,
+          message.channelId ?? undefined,
+          pending.capability,
+        );
         pending.reject(protocolFailure(message.error));
         return;
       }
@@ -794,6 +808,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       readonly channelId?: BrowserChannelId;
       readonly expectedType: PendingRequest["expectedType"];
       readonly message: Record<string, unknown>;
+      readonly timeoutMs?: number | undefined;
     },
   ): Promise<BrowserRelayEvent> {
     if (this.#pending.size >= maxPendingRequests) {
@@ -806,7 +821,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         if (!pending) return;
         this.#pending.delete(id);
         reject(relayError("The browser relay request timed out.", true));
-      }, this.#requestTimeoutMs);
+      }, options.timeoutMs ?? this.#requestTimeoutMs);
       timer.unref();
       this.#pending.set(id, {
         capability: options.capability,

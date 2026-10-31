@@ -78,6 +78,10 @@ export async function startLocalBrowserRuntime(
         error,
         diagnostic.elapsedMs,
       ),
+    onOpenTiming: (timing) =>
+      diagnostics.append(
+        `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
+      ),
     onStartFailure: ({ correlationId, stage, error }) =>
       diagnostics.append(
         `${JSON.stringify({ event: "browser.session.start.failed", correlationId, stage, error: error instanceof Error ? error.stack : String(error) })}\n`,

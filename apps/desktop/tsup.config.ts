@@ -12,11 +12,7 @@ export default defineConfig([
     entry: ["src/main.ts", "src/runner-worker.ts"],
     esbuildPlugins: [signingBuildPlugin()],
     metafile: true,
-    external: [
-      ...runnerExternals,
-      // Loads platform-specific native file-lock prebuilds relative to its package.
-      "fs-native-extensions",
-    ],
+    external: [...runnerExternals],
     optional: [
       // Electron supplies this module itself; it is never installed with the app.
       "electron",

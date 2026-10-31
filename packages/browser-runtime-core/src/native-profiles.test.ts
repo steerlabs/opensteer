@@ -4,7 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { BrowserSessionIdSchema, LocalProfileBindingSchema } from "@opensteer/protocol";
-import { BrowserRuntime } from "./runtime.js";
+import { sessionFilesRoot } from "./browser/session-files.js";
+import { BrowserRuntime, type BrowserOpenTiming } from "./runtime.js";
 import {
   FakeIsolatingLauncher,
   FakeProfileStateClient,
@@ -36,9 +37,10 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
     complete: vi.fn(async () => {}),
   };
   const verifier = new FakeTicketVerifier();
-  const filesRoot = path.join(root, "..", `${path.basename(root)}-files-${roots.length}`);
-  roots.push(filesRoot);
+  const filesRoot = sessionFilesRoot(root);
+  const timings: BrowserOpenTiming[] = [];
   const runtime = new BrowserRuntime({
+    onOpenTiming: (timing) => timings.push(timing),
     launcher,
     profileStateClient: state,
     ticketVerifier: verifier,
@@ -89,7 +91,18 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
       initialNavigation: true,
     });
   };
-  return { root, runtime, launcher, state, initializationClient, verifier, claims, open, binding };
+  return {
+    timings,
+    root,
+    runtime,
+    launcher,
+    state,
+    initializationClient,
+    verifier,
+    claims,
+    open,
+    binding,
+  };
 }
 describe("native profile runtime", () => {
   it("allows only one runtime to own a storage root", async () => {
@@ -127,7 +140,7 @@ describe("native profile runtime", () => {
     expect(f.initializationClient.complete).not.toHaveBeenCalled();
     expect(f.launcher.launchCount).toBe(0);
   });
-  it("retains a live engine's deleted data until the next exclusive owner starts", async () => {
+  it("retains a live engine's deleted data across logical runtime restarts", async () => {
     const f = await fixture();
     const tab = await f.open(1, 1);
     f.launcher.localProfiles.release.mockResolvedValue("retained-until-exit");
@@ -141,7 +154,7 @@ describe("native profile runtime", () => {
     await f.runtime.shutdown();
     const next = await fixture(8, f.root);
     expect(await next.runtime.localProfileInventory()).toEqual([
-      expect.objectContaining({ phase: "deleted", erasure: "deleted" }),
+      expect.objectContaining({ phase: "deleted", erasure: "pending-restart" }),
     ]);
     await expect(next.open(1, 2)).rejects.toThrow(/deleted/);
     expect(next.launcher.launchCount).toBe(0);
@@ -162,6 +175,7 @@ describe("native profile runtime", () => {
       f.launcher.browsersByPartition.get("profile:" + f.binding(2).profileId)?.closeCount,
     ).toBe(1);
     await third.close();
+    expect(f.launcher.localProfiles.release).not.toHaveBeenCalled();
   });
   it("never imports or completes a ready profile whose native directory disappeared", async () => {
     const f = await fixture();
@@ -274,6 +288,35 @@ describe("native profile runtime", () => {
     expect(f.launcher.launchCount).toBe(1);
   });
 
+  it("records opaque stage durations for conversion and warm opens without browser data", async () => {
+    const f = await fixture();
+    const first = await f.open(1, 1, true);
+    await first.close();
+    const warm = await f.open(1, 2, true);
+    expect(f.timings.map((timing) => timing.stage)).toEqual([
+      "lane-wait",
+      "profile-acquire",
+      "root-page-ready",
+      "navigation-submitted",
+      "lane-wait",
+      "profile-acquire",
+      "root-page-ready",
+      "navigation-submitted",
+    ]);
+    expect(
+      f.timings
+        .filter((timing) => timing.stage === "profile-acquire")
+        .map((timing) => timing.acquisition),
+    ).toEqual(["conversion", "warm"]);
+    expect(new Set(f.timings.map((timing) => timing.correlationId)).size).toBe(2);
+    for (const timing of f.timings) {
+      expect(timing.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(timing.elapsedSinceStartMs).toBeGreaterThanOrEqual(timing.elapsedMs);
+      expect(timing.correlationId).toMatch(/^[a-f0-9-]{36}$/);
+    }
+    expect(JSON.stringify(f.timings)).not.toContain("example.test");
+    await warm.close();
+  });
   it("returns initial readiness before commit and replays the same page", async () => {
     const f = await fixture();
     const first = await f.open(1, 1, true);
@@ -291,6 +334,22 @@ describe("native profile runtime", () => {
     expect(f.runtime.health().sessionCount).toBe(1);
     await replay.close();
     expect(f.runtime.health().sessionCount).toBe(0);
+  });
+  it("does not launch a normal page until the Host acknowledges completion", async () => {
+    const f = await fixture();
+    const held = gate({ label: "Host profile completion", deadlineMs: 2000 });
+    f.initializationClient.complete.mockImplementationOnce(() => held.enter());
+    const opening = f.open(1, 1, true);
+    try {
+      await held.entered;
+      expect(f.launcher.launchCount).toBe(0);
+      held.release();
+      await (await opening).close();
+      expect(f.launcher.launchCount).toBe(1);
+    } finally {
+      held.release();
+      await opening.catch(() => undefined);
+    }
   });
   it("fences failed conversion in-process and replays completion after ready", async () => {
     const f = await fixture();

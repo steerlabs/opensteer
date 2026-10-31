@@ -677,3 +677,158 @@ it("requires Personal's Main inventory before named profiles can open on another
     router.close();
   }
 });
+
+it("reports a rejected attachment's reason before closing its channel", async () => {
+  const runnerId = createId("runner");
+  const stream = {
+    fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
+    identity: {
+      runnerId,
+      modules: { browser: { profileSnapshotVersion: 2, runtimeId: "browser" } },
+    },
+    streamLeaseExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+  } as RunnerAuxiliaryStream;
+  let hooks: RunnerBrowserHooks = {};
+  const router = new RunnerBrowserRuntimeRouter({
+    registry: {
+      browserStreams: () => [stream],
+      stream: () => stream,
+      subscribe: (value) => {
+        hooks = value;
+        return () => {};
+      },
+      send: async (_runnerId, message) => {
+        if (message.type === "capability.grant")
+          await hooks.onMessage?.(stream, {
+            ...stream.fence,
+            type: "capability.accepted",
+            requestId: message.requestId,
+            capability: {
+              capabilityGeneration: message.lease.capabilityGeneration,
+              capabilityLeaseId: message.lease.capabilityLeaseId,
+              runtimeId: message.lease.runtimeId,
+            },
+          });
+        if (message.type === "browser.attach")
+          await hooks.onMessage?.(stream, {
+            ...stream.fence,
+            type: "browser.command-error",
+            channelId: message.channelId,
+            requestId: message.requestId,
+            error: {
+              code: "conflict",
+              message: "Profile initialization was refused",
+              retryable: false,
+            },
+          });
+        if (message.type === "capability.revoke")
+          await hooks.onMessage?.(stream, {
+            ...stream.fence,
+            type: "capability.revoked",
+            requestId: message.requestId,
+            capability: message.capability,
+          });
+      },
+    },
+    requestTimeoutMs: 1000,
+  });
+  try {
+    const connection = router.resolve({ kind: "runner", runnerId })!.connect("ticket");
+    const errors: string[] = [];
+    connection.on("error", (error: Error) => errors.push(error.message));
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Rejected browser attachment never closed")),
+        1000,
+      );
+      connection.once("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    expect(errors).toEqual(["Profile initialization was refused"]);
+  } finally {
+    router.close();
+  }
+});
+
+it("gives negotiated page readiness the browser startup budget while control requests stay short", async () => {
+  vi.useFakeTimers();
+  const runnerId = createId("runner");
+  const stream = {
+    fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
+    identity: {
+      runnerId,
+      modules: {
+        browser: {
+          profileSnapshotVersion: 2,
+          runtimeId: "browser",
+          localProfiles: 1,
+          localProfileStorage: {
+            storageInstanceId: "00000000-0000-4000-8000-000000000001",
+            engine: "chromium",
+          },
+        },
+      },
+    },
+    streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  } as unknown as RunnerAuxiliaryStream;
+  let hooks: RunnerBrowserHooks = {};
+  const router = new RunnerBrowserRuntimeRouter({
+    localProfiles: {
+      reconcileInventory: async () => {},
+      jobs: async () => [],
+      acknowledgeDeletion: async () => {},
+    },
+    registry: {
+      browserStreams: () => [stream],
+      stream: () => stream,
+      subscribe: (value) => {
+        hooks = value;
+        return () => {};
+      },
+      send: async (_runnerId, message) => {
+        if (message.type === "capability.grant")
+          await hooks.onMessage?.(stream, {
+            ...stream.fence,
+            type: "capability.accepted",
+            requestId: message.requestId,
+            capability: {
+              capabilityGeneration: message.lease.capabilityGeneration,
+              capabilityLeaseId: message.lease.capabilityLeaseId,
+              runtimeId: message.lease.runtimeId,
+            },
+          });
+        if (message.type === "browser.attach")
+          setTimeout(() => {
+            void hooks.onMessage?.(stream, {
+              ...stream.fence,
+              type: "browser.attached",
+              requestId: message.requestId,
+              channelId: message.channelId,
+              capability: message.capability,
+            });
+          }, 6000);
+      },
+    },
+  });
+  try {
+    await hooks.onMessage?.(stream, {
+      ...stream.fence,
+      module: "browser",
+      type: "browser.profile.inventory",
+      storageInstanceId: "00000000-0000-4000-8000-000000000001",
+      engine: "chromium",
+      profiles: [],
+      complete: true,
+    });
+    const connection = router.resolve({ kind: "runner", runnerId })!.connect("ticket");
+    const error = vi.fn();
+    connection.on("error", error);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(error).not.toHaveBeenCalled();
+    expect(connection.readyState).toBe(WebSocket.OPEN);
+  } finally {
+    router.close();
+  }
+});
