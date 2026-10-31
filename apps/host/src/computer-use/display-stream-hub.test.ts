@@ -1494,7 +1494,10 @@ describe("phone display Host sockets", () => {
         Array.from({ length: 91 }, (_, i) => i + 1),
       );
       expect(joined.socket.readyState).toBe(WebSocket.OPEN);
-      expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(0);
+      // The large GOP already requested its byte-bound refresh, independently of joining.
+      expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(
+        size === 6 ? 0 : 1,
+      );
     },
   );
   it.each(["detach", "expired", "command-failed", "data-lost", "start-timeout"] as const)(
@@ -1875,6 +1878,78 @@ describe("phone display Host sockets", () => {
     await until(() => joined.media().length === 1);
     expect(joined.media()[0]?.header.sequence).toBe(3);
   });
+  it("refreshes a byte-heavy phone GOP while retaining replay for joins", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    for (let sequence = 1; sequence <= 5; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(70_000)));
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+      expect(refreshes()).toHaveLength(sequence < 4 ? 0 : 1);
+    }
+    const joined = await f.viewer();
+    await joined.received(() => joined.media().length === 4);
+    expect(joined.json()[0]).toMatchObject({ replayThrough: 5 });
+    expect(refreshes()).toHaveLength(1);
+    phone.socket.send(f.frame(6, true));
+    await phone.received(() => phone.json().length === 6);
+    f.advance(2_000);
+    f.hub.sweep();
+    expect(refreshes()).toHaveLength(1);
+  });
+
+  it("keeps a small static GOP without periodic refreshes", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    phone.socket.send(f.frame(1, true, 1, new Uint8Array(40_000)));
+    await viewer.received(() => viewer.media().length === 1);
+    viewer.send({ type: "display.ack", sequence: 1 });
+    await viewer.roundTrip();
+    f.advance(20_000);
+    f.hub.sweep();
+    const joined = await f.viewer();
+    await joined.received(() => joined.media().length === 1);
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual([]);
+  });
+
+  it("delivers a coalesced byte refresh even when no viewer is waiting", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    for (let sequence = 1; sequence <= 8; sequence++) {
+      phone.socket.send(
+        f.frame(sequence, sequence === 1 || sequence === 5, 1, new Uint8Array(70_000)),
+      );
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    expect(refreshes()).toHaveLength(1);
+    f.advance(500);
+    f.hub.sweep();
+    expect(refreshes()).toHaveLength(2);
+    for (let sequence = 9; sequence <= 12; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 9, 1, new Uint8Array(70_000)));
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    // A fresh IDR also satisfies a deferred byte refresh, even if it is itself large.
+    phone.socket.send(f.frame(13, true, 1, new Uint8Array(300_000)));
+    await viewer.received(() => viewer.media().length === 13);
+    f.advance(500);
+    f.hub.sweep();
+    expect(refreshes()).toHaveLength(2);
+  });
+
   it("invalidates an overflowing GOP until a key and coalesces joins needing refresh", async () => {
     const f = await fixture();
     const viewer = await f.viewer();
@@ -2216,7 +2291,7 @@ describe("phone display Host sockets", () => {
     const phone = await f.phone();
     await f.state();
     for (let sequence = 1; sequence <= 5; sequence++)
-      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(100_000)));
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(40_000)));
     await phone.received(() => phone.json().length === 5);
     await viewer.roundTrip();
     f.advance(800);

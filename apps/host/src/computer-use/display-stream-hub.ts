@@ -50,6 +50,8 @@ import type { ComputerUseService } from "./computer-use-service.js";
 
 // Host-only retention bound: viewers and phones need no cache-size negotiation.
 const displayGopCacheBytes = 4 * 1_024 * 1_024;
+// Refresh motion by bytes; a static screen must not pay for frequent IDRs.
+const displayGopRefreshBytes = 256 * 1_024;
 // Two ten-second GOPs at 30 fps bound metadata and replay work for tiny frames.
 const displayGopCacheFrames = 600;
 // Eight tabs cover ordinary watching while bounding per-session fan-out work.
@@ -636,7 +638,11 @@ export class DisplayStreamHub {
             });
           const { streamId: _streamId, ...viewerHeader } = header;
           const envelope = encodeDisplayViewerFrame(viewerHeader, payload);
-          if (header.key) this.#clearCache(stream);
+          if (header.key) {
+            this.#clearCache(stream);
+            stream.refreshPendingAt = null;
+          }
+          const cachedBytes = stream.cacheBytes;
           if (header.key || stream.cache.length > 0) {
             if (
               stream.cacheBytes + envelope.byteLength > displayGopCacheBytes ||
@@ -650,6 +656,13 @@ export class DisplayStreamHub {
               stream.cacheBytes += envelope.byteLength;
             }
           }
+          if (
+            !stream.target &&
+            !header.key &&
+            cachedBytes <= displayGopRefreshBytes &&
+            stream.cacheBytes > displayGopRefreshBytes
+          )
+            this.#refresh(stream);
           for (const viewer of stream.viewers) {
             if (!this.#viewerLive(stream, viewer)) continue;
             if (viewer.replayIndex !== null) {
@@ -1518,11 +1531,15 @@ export class DisplayStreamHub {
       if (
         stream.state.state === "live" &&
         stream.refreshPendingAt !== null &&
-        [...stream.viewers].some((viewer) => viewer.waiting) &&
+        ([...stream.viewers].some((viewer) => viewer.waiting) ||
+          (!stream.target && stream.cacheBytes > displayGopRefreshBytes)) &&
         this.#now() >= stream.refreshPendingAt
       )
         this.#refresh(stream);
-      else if (![...stream.viewers].some((viewer) => viewer.waiting))
+      else if (
+        ![...stream.viewers].some((viewer) => viewer.waiting) &&
+        (stream.target || stream.cacheBytes <= displayGopRefreshBytes)
+      )
         stream.refreshPendingAt = null;
     }
   }
