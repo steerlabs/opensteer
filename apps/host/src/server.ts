@@ -1559,6 +1559,9 @@ export async function createHostServer(
     | "harness.modelServers.discover"
     | "voice.start"
     | "voice.renew"
+    | "voice.next"
+    | "voice.answer"
+    | "voice.context"
     | "voice.say"
     | "voice.stop"
     | "machine.access.history"
@@ -3082,6 +3085,7 @@ export function advertisedCapabilities(
   return [
     "chat-attachments",
     "voice-v1",
+    "voice-agent-v1",
     "thread-titles-v1",
     "task-marks-v1",
     "task-family-v1",

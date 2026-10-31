@@ -50,6 +50,47 @@ const start = (sessionId = randomUUID()) => ({
   offer: "offer",
 });
 describe("Runner voice owner", () => {
+  it("routes agent calls while keeping legacy answers strict", async () => {
+    const call = {
+      ...fakeCall(),
+      next: vi.fn(async () => ({
+        id: "opaque",
+        tool: "show",
+        input: { link: "opensteer://chat" },
+      })),
+      answerCall: vi.fn(async () => undefined),
+      context: vi.fn(async () => undefined),
+    };
+    const f = await fixture(async () => call);
+    const command = start();
+    expect(await f.owner.handle(user, { ...command, agent: true })).toEqual({
+      ok: true,
+      answer: "answer",
+      agent: true,
+    });
+    expect(f.open).toHaveBeenCalledWith(expect.objectContaining({ agent: true }));
+    const address = { sessionId: command.sessionId, harnessInstanceId };
+    expect(await f.owner.handle(user, { ...address, action: "next" })).toMatchObject({
+      ok: true,
+      call: { id: "opaque" },
+    });
+    await f.owner.handle(user, {
+      ...address,
+      action: "answer",
+      callId: "opaque",
+      ok: true,
+      text: "Shown",
+    });
+    expect(call.answerCall).toHaveBeenCalledWith("opaque", true, "Shown");
+    await f.owner.handle(user, { ...address, action: "context", text: "screen" });
+    expect(call.context).toHaveBeenCalledWith("screen");
+    const legacy = start();
+    expect(await f.owner.handle(user, legacy)).toEqual({ ok: true, answer: "answer" });
+    expect(await f.owner.handle(user, { ...legacy, action: "next" })).toMatchObject({
+      ok: false,
+      reason: "voice-ended",
+    });
+  });
   it("deduplicates pending and started admission, checks owners and sweeps leftovers", async () => {
     const ready = new Deferred<RunnerVoiceCall>();
     const opened = new Deferred<void>();

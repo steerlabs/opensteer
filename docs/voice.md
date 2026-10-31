@@ -8,8 +8,8 @@ call is durable, and no voice state carries authority.
 ## Ownership
 
 - **Client** ([`packages/client/src/voice`](../packages/client/src/voice)) owns
-  the call: microphone, WebRTC, routing what was heard, and choosing what to
-  say. Audio flows between the device and the vendor only; it never reaches a
+  the call: microphone, WebRTC and executing the voice agent’s screen and
+  Chat requests. Legacy calls route utterances locally. Audio flows between the device and the vendor only; it never reaches a
   Host or Runner.
 - **Host** relays `voice.*` without keeping state. Every call, not just start,
   re-resolves the authorized profile for (user, environment, account), so
@@ -35,31 +35,33 @@ undocumented Codex API; every engine pin bump must re-qualify a live call.
 - The browser's `oai-events` data channel delivers the voice events (the
   person's finished utterance is a user `turn.done`). Never write to that
   channel: an event the backend does not accept closes the call.
-- Every voice handoff starts or steers a Codex turn on the attached thread,
-  and nothing turns that off. The call therefore runs on its own app-server
-  and ephemeral thread with the title-generation lockdown (no tools, MCP,
-  skills or project instructions; read-only; interactions refused), and any
-  turn that starts is interrupted at once.
+- Calls run on a separate app-server and ephemeral read-only thread, without
+  MCP, skills, project instructions or approval interactions. Legacy calls
+  interrupt every handoff turn. With negotiated `voice-agent-v1`, Codex forwards
+  handoffs to the thread's agent using its built-in realtime prompt. Its only
+  tools ask the device to show a context link or forward the person's own last
+  utterances to Chat; they confer no additional authority.
 - Codex keeps a TRACE SQLite log, including realtime events, in the account's
   state home with its own 10-day retention, exactly as Codex's own voice does;
   no setting disables it. The call cannot move that home: a fresh one blocks
   app-server startup until it has backfilled every session in the Codex home.
   Only the call's text `log_dir` lives in its private temporary directory.
-- The voice model is generative. Instructions do not stop it answering simple
-  questions itself or claiming it will act, and it does not follow structured
-  formats. So it is never the router: every finished utterance goes to Chat
-  unless the client's own navigation grammar takes it, and Chat stays the
-  source of truth. Text sent with `appendSpeech` is spoken as a faithful
-  paraphrase, shortened when long.
+- Agent replies wait for device tool results. An unanswered tool fails with an
+  unknown outcome; the voice must not claim success. The device retains approval
+  and sign-in authority. Screen context replaces earlier context and page titles
+  are data, never instructions. Calls forget their conversation when they end;
+  work that should continue or remain findable belongs in Chat.
 
 ## Routing and speaking
 
-- Navigation takes only whole utterances that start with a navigation verb
-  and name exactly one Chat, task or place; "open" is not one ("open a PR" is
-  work). Everything else is sent to Chat verbatim, as the person's message.
-- While a call is on, the client speaks Chat's new durable replies and
-  announces new "needs you" Requests by Thread title only, never their
-  contents. Approvals still need a tap or Face ID.
+The client requests agent mode only from a Host advertising `voice-agent-v1`.
+The Host independently negotiates it with the Runner; an older Runner creates
+a legacy call. Legacy clients keep their existing utterance routing.
+
+While a call is on, the client speaks Chat's new durable replies and announces
+new "needs you" Requests by Thread title only, never their contents. Agent calls
+also inject a note identifying those spoken replies as reports from Chat.
+Approvals still need a tap or Face ID.
 
 ## Privacy
 

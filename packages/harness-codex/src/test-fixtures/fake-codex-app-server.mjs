@@ -610,9 +610,6 @@ function handleClientMethod(message) {
         },
       });
       break;
-    case "thread/inject_items":
-      send({ id: message.id, result: {} });
-      break;
     case "turn/start":
       if (ephemeralThreads.has(message.params.threadId)) {
         handleTitleTurn(message);
@@ -661,9 +658,31 @@ function handleClientMethod(message) {
         send({ method: "turn/started", params: { threadId, turn: { id: "voice-handoff" } } });
       }
       break;
+    case "thread/inject_items":
+      send({ id: message.id, result: {} });
+      break;
     case "thread/realtime/appendText":
     case "thread/realtime/appendSpeech":
       send({ id: message.id, result: {} });
+      if (scenario === "voice-agent") {
+        const specs =
+          message.params.text === "invalid"
+            ? [
+                ["unknown", {}],
+                ["show", { link: 4 }],
+                ["send_to_chat", { messages: 6 }],
+                ["show", { link: "x", extra: true }],
+              ]
+            : message.params.text === "queue"
+              ? Array.from({ length: 9 }, () => ["send_to_chat", {}])
+              : [["show", { link: "opensteer://chat" }]];
+        for (const [tool, args] of specs)
+          send({
+            id: randomUUID(),
+            method: "item/tool/call",
+            params: { threadId, tool, arguments: args },
+          });
+      }
       if (scenario === "voice-exit") process.exit(1);
       if (scenario === "voice-interaction")
         send({ id: "voice-tool", method: "item/tool/call", params: { threadId } });

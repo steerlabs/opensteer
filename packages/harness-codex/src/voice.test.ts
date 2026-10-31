@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createId } from "@opensteer/core";
 import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
@@ -13,6 +13,7 @@ import { isCodexVoiceAdapter, VOICE_PROMPT, type CodexVoiceCall } from "./voice.
 const directories: string[] = [];
 const calls: CodexVoiceCall[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(calls.splice(0).map((call) => call.stop()));
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
@@ -34,8 +35,9 @@ async function fixture(scenario = "happy") {
   }).create({ instanceId: createId("harnessInstance"), config: {}, sourceId: "openai" });
   if (!isCodexVoiceAdapter(adapter)) throw new Error("Codex adapter must support voice");
   const root = join(directory, "voice");
-  const open = () =>
+  const open = (agent = false) =>
     adapter.startVoiceCall({
+      agent,
       offer: "private-offer",
       signal: new AbortController().signal,
       environment: {
@@ -65,6 +67,90 @@ async function fixture(scenario = "happy") {
   };
 }
 describe("Codex voice calls", () => {
+  it("confines the agent, validates tools, redelivers, expires and drains calls", async () => {
+    const f = await fixture("voice-agent");
+    const call = await f.open(true);
+    calls.push(call);
+    await call.context("visible chat");
+    await Promise.all([call.context("visible chat"), call.context("visible chat")]);
+    await call.say("invalid");
+    await vi.waitFor(async () =>
+      expect(
+        (await f.capture()).filter(
+          (r) => r.result && (r.result as { success?: boolean }).success === false,
+        ),
+      ).toHaveLength(4),
+    );
+    await call.say("queue");
+    await vi.waitFor(async () =>
+      expect(
+        (await f.capture()).filter(
+          (r) => r.result && (r.result as { success?: boolean }).success === false,
+        ),
+      ).toHaveLength(5),
+    );
+    const first = await call.next(new AbortController().signal);
+    expect(first).toMatchObject({ tool: "send_to_chat", input: { messages: 1 } });
+    expect(await call.next(new AbortController().signal)).toEqual(first);
+    await call.answerCall(first!.id, true, "Sent.");
+    await call.answerCall(first!.id, false, "Ignored.");
+    expect((await call.next(new AbortController().signal))?.id).not.toBe(first!.id);
+    await call.stop();
+    const records = await f.capture();
+    expect(records.some((r) => r.method === "turn/interrupt")).toBe(false);
+    const start = records.find((r) => r.method === "thread/start")!;
+    expect(start.params).toMatchObject({
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      ephemeral: true,
+      developerInstructions: "",
+      selectedCapabilityRoots: [],
+      environments: [],
+      runtimeWorkspaceRoots: [],
+      config: {
+        model_reasoning_effort: "low",
+        project_doc_max_bytes: 0,
+        features: { code_mode_host: true, shell_tool: false },
+      },
+    });
+    expect(
+      (start.params as { dynamicTools: { name: string }[] }).dynamicTools.map((t) => t.name),
+    ).toEqual(["show", "send_to_chat"]);
+    const realtime = records.find((r) => r.method === "thread/realtime/start")!;
+    expect(realtime.params).not.toHaveProperty("prompt");
+    expect(realtime.params).not.toHaveProperty("clientManagedHandoffs");
+    expect(records.filter((r) => r.method === "thread/inject_items")).toHaveLength(3);
+    const responses = records.filter((r) => r.result && "success" in (r.result as object));
+    expect(responses.filter((r) => (r.result as { success: boolean }).success)).toHaveLength(1);
+    expect(responses.filter((r) => JSON.stringify(r).includes("The call ended."))).toHaveLength(7);
+    await f.adapter.close();
+  });
+  it("bounds empty next and tool deadlines and cancels waiting readers", async () => {
+    const f = await fixture("voice-agent");
+    const call = await f.open(true);
+    calls.push(call);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const empty = call.next(new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(await empty).toBeNull();
+    const cancelled = new AbortController();
+    const waiting = call.next(cancelled.signal);
+    const rejected = expect(waiting).rejects.toThrow("cancelled");
+    cancelled.abort(new Error("cancelled"));
+    await rejected;
+    await call.say("one");
+    const tool = await call.next(new AbortController().signal);
+    expect(tool?.tool).toBe("show");
+    await vi.advanceTimersByTimeAsync(15_000);
+    vi.useRealTimers();
+    await call.answerCall(tool!.id, true, "Late.");
+    await call.stop();
+    expect(
+      (await f.capture()).some((r) => JSON.stringify(r).includes("device didn't answer")),
+    ).toBe(true);
+    await f.adapter.close();
+  });
+
   it("isolates a v3 call, interrupts handoffs, relays text and removes its state on stop", async () => {
     const f = await fixture("ambient-extensions");
     const call = await f.open();

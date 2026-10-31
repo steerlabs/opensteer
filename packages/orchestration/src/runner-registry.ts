@@ -1307,17 +1307,29 @@ export class RunnerRegistry {
         message: "This computer is not connected",
         retryable: true,
       });
+    const agentSupported = connection.identity.capabilities.includes("voice-agent-v1");
+    const requestedAgent = command.action === "start" && command.agent === true;
+    if (!agentSupported && ["next", "answer", "context"].includes(command.action))
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "voice-ended",
+        message: "This computer does not support voice agents.",
+      });
     if (!connection.identity.capabilities.includes("voice-v1"))
       throw new OpensteerError({
         code: "conflict",
         reason: "voice-runner-unsupported",
         message: "Update Opensteer on this computer to use voice.",
       });
+    if (command.action === "start" && !agentSupported) {
+      const { agent: _agent, ...legacy } = command;
+      command = legacy;
+    }
     const requestId = CorrelationIdSchema.parse(`voice:${randomUUID()}`);
     const pending = deferred<RunnerVoiceResult>();
     connection.pendingVoice.set(requestId, pending);
     try {
-      return await withDeadline(
+      const result = await withDeadline(
         Promise.all([
           connection.peer.send({
             ...connection.identity.fence,
@@ -1332,6 +1344,9 @@ export class RunnerRegistry {
         signal,
         "This computer didn't answer the voice request in time.",
       );
+      return requestedAgent && result.ok
+        ? { ...result, agent: agentSupported && result.agent === true }
+        : result;
     } finally {
       connection.pendingVoice.delete(requestId);
     }
