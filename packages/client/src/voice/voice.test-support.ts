@@ -88,3 +88,12 @@ export function semanticVoice() {
     signal: () => signal,
   };
 }
+
+/**
+ * Runs, in fake time, every timer and continuation the step under test
+ * scheduled. Polling with `vi.waitFor` advances fake time only per real-time
+ * check, so a loaded machine starved it of steps.
+ */
+export async function settle(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(10);
+}

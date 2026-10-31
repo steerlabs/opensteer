@@ -655,7 +655,7 @@ export class ReconnectingHostConnection {
       capabilities: [
         ...runnerCapabilities(),
         ...(agents?.runtime.harnessDrivers().some((driver) => driver.driverKind === "codex")
-          ? ["voice-v1" as const]
+          ? ["voice-v1" as const, "voice-agent-v1" as const]
           : []),
         ...(agents?.earlierBootsContained ? ["earlier-boots-contained-v1" as const] : []),
       ],
@@ -1924,7 +1924,6 @@ function runnerCapabilities(): RunnerCapability[] {
     "network-egress",
     "native-session-continuation-v1",
     "requester-time-zone-v1",
-    "screen-show-v1",
     "steer-answer-v1",
     "thread-state-v1",
     "thread-title-v1",

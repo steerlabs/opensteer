@@ -17,7 +17,6 @@ import {
   MessageQuoteSchema,
   MessageContentSchema,
   MessageIdSchema,
-  ScreenPresentationContextSchema,
   MessageKindSchema,
   ModelIdSchema,
   ModelProviderIdSchema,
@@ -65,6 +64,10 @@ import {
   VoiceSdpSchema,
   VoiceSayTextSchema,
   VoiceRefusalReasonSchema,
+  VoiceToolCallSchema,
+  voiceAnswerMaxLength,
+  voiceContextMaxLength,
+  voiceToolCallIdSchema,
 } from "./voice.js";
 import { CorrelationIdSchema, ProtocolErrorSchema } from "./common.js";
 import {
@@ -292,8 +295,6 @@ export const HarnessInputSchema = z
     createdAt: IsoDateTimeSchema,
     kind: MessageKindSchema.exclude(["assistant"]),
     messageId: MessageIdSchema,
-    /** Emitted only to Runners advertising screen-show-v1; never contains a client endpoint. */
-    presentationContext: ScreenPresentationContextSchema.optional(),
     quote: MessageQuoteSchema.optional(),
   })
   .superRefine((input, context) => {
@@ -1656,6 +1657,8 @@ export const RunnerVoiceCommandSchema = z.discriminatedUnion("action", [
     sessionId: VoiceSessionIdSchema,
     harnessInstanceId: HarnessInstanceIdSchema,
     offer: VoiceSdpSchema,
+    /** Sent only to a Runner advertising `voice-agent-v1`. */
+    agent: z.literal(true).optional(),
   }),
   z.strictObject({
     action: z.literal("renew"),
@@ -1673,10 +1676,36 @@ export const RunnerVoiceCommandSchema = z.discriminatedUnion("action", [
     sessionId: VoiceSessionIdSchema,
     harnessInstanceId: HarnessInstanceIdSchema,
   }),
+  // The agent actions below reach only a Runner advertising `voice-agent-v1`.
+  z.strictObject({
+    action: z.literal("next"),
+    sessionId: VoiceSessionIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+  }),
+  z.strictObject({
+    action: z.literal("answer"),
+    sessionId: VoiceSessionIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+    callId: voiceToolCallIdSchema,
+    ok: z.boolean(),
+    text: z.string().trim().min(1).max(voiceAnswerMaxLength),
+  }),
+  z.strictObject({
+    action: z.literal("context"),
+    sessionId: VoiceSessionIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+    text: z.string().trim().min(1).max(voiceContextMaxLength),
+  }),
 ]);
 export type RunnerVoiceCommand = z.infer<typeof RunnerVoiceCommandSchema>;
+/** `agent` and `call` appear only in answers to the agent requests above, so an older Host never sees them. */
 export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
-  z.strictObject({ ok: z.literal(true), answer: VoiceSdpSchema.optional() }),
+  z.strictObject({
+    ok: z.literal(true),
+    answer: VoiceSdpSchema.optional(),
+    agent: z.boolean().optional(),
+    call: VoiceToolCallSchema.nullable().optional(),
+  }),
   z.strictObject({
     ok: z.literal(false),
     reason: VoiceRefusalReasonSchema,

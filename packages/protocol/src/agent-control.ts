@@ -1,7 +1,4 @@
 import {
-  ScreenShowInputSchema,
-  ScreenPresentationReceiptSchema,
-  ScreenSurfaceSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
   AgentCapabilityProfileIdSchema,
@@ -123,7 +120,6 @@ export const EnvironmentListInputSchema = z
 export type EnvironmentListInput = z.infer<typeof EnvironmentListInputSchema>;
 
 const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
-  ScreenShowInputSchema.extend({ ...requestBase, type: z.literal("screen.show") }),
   EnvironmentListInputSchema.safeExtend({
     ...requestBase,
     type: z.literal("environment.list"),
@@ -512,11 +508,6 @@ export const RequestCreationResultSchema = z.strictObject({
 export type RequestCreationResult = z.infer<typeof RequestCreationResultSchema>;
 
 const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
-  z.strictObject({
-    ...responseBase,
-    type: z.literal("screen.show.result"),
-    receipt: ScreenPresentationReceiptSchema,
-  }),
   EnvironmentDiscoverySchema.extend({
     ...responseBase,
     type: z.literal("environment.list.result"),
@@ -573,7 +564,6 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
     messages: z.array(MessageSchema).max(100),
     thread: ThreadSchema,
     type: z.literal("thread.read.result"),
-    presentableSurfaces: z.array(ScreenSurfaceSchema).max(64).optional(),
     window: AgentThreadMessageWindowSchema,
   }),
   z.strictObject({

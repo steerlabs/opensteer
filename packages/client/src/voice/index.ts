@@ -18,6 +18,6 @@ export { VoiceController, voiceAccount } from "./controller.js";
 export type { VoiceControllerInput, VoiceAccount } from "./controller.js";
 export { createCodexVoiceProvider } from "./codex-provider.js";
 export type { CodexVoiceProviderInput } from "./codex-provider.js";
-export { routeUtterance, voiceTargets } from "./router.js";
-export type { VoiceNamedTarget } from "./router.js";
 export type { VoiceTimers } from "./timers.js";
+
+export type { VoiceView } from "./context.js";

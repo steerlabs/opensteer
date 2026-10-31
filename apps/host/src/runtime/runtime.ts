@@ -1,5 +1,3 @@
-import { ScreenPresentationRegistry } from "../screen/screen-presentation-registry.js";
-import { ScreenPresentationService } from "../screen/screen-presentation-service.js";
 import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
 import { ComputerViewService } from "../computer-use/computer-view-service.js";
 import { DisplayStreamHub } from "../computer-use/display-stream-hub.js";
@@ -1994,9 +1992,7 @@ export async function createHostRuntime(
       watchBrowserTokens,
       workspaceAccess,
     });
-    const screenPresentationRegistry = new ScreenPresentationRegistry();
     const dispatcher = new HostCommandDispatcher({
-      screenPresentation: screenPresentationRegistry,
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       requestResponseVault: integrationVault,
       agentControlTokens,
@@ -2144,19 +2140,7 @@ export async function createHostRuntime(
       publish: (workspaceId, ownerIds) =>
         realtime.publishBrowserSessionsChanged(workspaceId, ownerIds),
     });
-    const screenPresentation = new ScreenPresentationService({
-      registry: screenPresentationRegistry,
-      store,
-      browser,
-      computerUse,
-      computerViews,
-      places: placeContext,
-    });
-    // Native helpers share Main Chat's Run authority; presentation eligibility stays per input.
-    const allowMainChatRunScreenShow = true;
     const agentControl = new AgentControlService({
-      allowMainChatRunScreenShow,
-      screenPresentation,
       browserTabs,
       supportsLoginFill: (scope) => {
         const runner = runners.identityForEnvironment(scope.environmentId);
@@ -2210,7 +2194,6 @@ export async function createHostRuntime(
       tokens: watchControlTokens,
     });
     const agentTools = new AgentToolsMcpService({
-      allowMainChatRunScreenShow,
       // The Runner's stored advertisement, not its live connection: a Run's
       // engine keeps using its tools while that connection drops and returns.
       runnerCapabilities: async (scope) => {
@@ -2329,7 +2312,6 @@ export async function createHostRuntime(
               },
             }
           : {}),
-        screenPresentation,
         agentControl,
         attachments,
         liveRuns,
@@ -2714,7 +2696,6 @@ export async function createHostRuntime(
           closingStep = label;
           await stop();
         };
-        screenPresentation.close();
         const notificationsClosed = notificationDispatcher?.close();
         await step("workspace reconcile loop", () => workspaceReconcileLoop.close());
         await step("execution lease loop", () => executionLeaseLoop.close());

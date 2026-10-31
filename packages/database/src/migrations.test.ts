@@ -124,6 +124,7 @@ const releasedMigrationNames = [
   "0114_run_started_by",
   "0115_better_auth_17",
   "0116_screen_show",
+  "0117_remove_screen_show",
 ];
 
 describe("migration names", () => {

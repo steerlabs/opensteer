@@ -11,7 +11,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentControlService, type AgentControlTokenService } from "./agent-control-service.js";
-import type { AgentControlRunScope } from "./agent-control-service.js";
 import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 import type {
   TriggerControlService,
@@ -1012,8 +1011,6 @@ async function startService(input: {
   readonly legacyEnvironment?: boolean;
   readonly previousRelease?: boolean;
   readonly runnerCapabilities?: () => Promise<readonly string[]>;
-  readonly mainHome?: boolean;
-  readonly allowMainChatRunScreenShow?: boolean;
   readonly triggerControl?: TriggerControlService;
   readonly triggerToken?: string;
 }): Promise<{ readonly service: AgentToolsMcpService; readonly url: URL }> {
@@ -1042,7 +1039,6 @@ async function startService(input: {
     toolContractVersion: 1,
   } as Awaited<ReturnType<TriggerControlTokenService["authenticate"]>>;
   service = new AgentToolsMcpService({
-    allowMainChatRunScreenShow: input.allowMainChatRunScreenShow ?? false,
     agentControl: input.agentControl,
     runnerCapabilities:
       input.runnerCapabilities ??
@@ -1053,20 +1049,8 @@ async function startService(input: {
         })),
     publicUrl: url,
     store: {
-      getThreadForOwner: async (threadId) =>
-        ({
-          id: threadId,
-          role: "conversation",
-          capabilityProfileId: "main",
-        }) as import("@opensteer/core").Thread,
-      findMainWorkspaceForOwner: async (ownerId) => {
-        const run = [...claimsByToken.values()].find(
-          (value) => (value as AgentControlRunScope).requestedBy === ownerId,
-        ) as AgentControlRunScope | undefined;
-        return input.mainHome && run
-          ? ({ homeThreadId: run.threadId } as import("@opensteer/core").Workspace)
-          : undefined;
-      },
+      getThreadForOwner: async () =>
+        ({ capabilityProfileId: "main" }) as import("@opensteer/core").Thread,
     },
     tokens: {
       authenticate: async (token: string) => {
@@ -1288,9 +1272,7 @@ it.each([
     expect(served.filter((name) => previousTools.some((tool) => tool === name)).sort()).toEqual(
       [...previousTools].sort(),
     );
-    const current = toolsForCapabilityProfile(profile)
-      .filter(({ name }) => name !== "screen_show")
-      .map(({ name }) => name);
+    const current = toolsForCapabilityProfile(profile).map(({ name }) => name);
     expect(served.filter((name) => current.some((tool) => tool === name)).sort()).toEqual(
       [...current].sort(),
     );
@@ -1470,7 +1452,7 @@ it.each([false, true])(
                   ]
           : toolsForCapabilityProfile(profile)
               .map(({ name }) => name)
-              .filter((name) => name !== "environment_list" && name !== "screen_show");
+              .filter((name) => name !== "environment_list");
         expect(
           legacy
             .filter(({ name }) => expectedLegacyNames.includes(name))
@@ -1512,9 +1494,7 @@ it.each([false, true])(
         expect(current.some(({ name }) => name === "browser_sign_in")).toBe(
           legacyBrowser && profile !== "trigger",
         );
-        const currentNames = toolsForCapabilityProfile(profile)
-          .filter(({ name }) => name !== "screen_show")
-          .map(({ name }) => name);
+        const currentNames = toolsForCapabilityProfile(profile).map(({ name }) => name);
         // These are the enabled names the release-local Codex inventory check compares.
         expect(
           current
@@ -1561,64 +1541,3 @@ it.each([false, true])(
     );
   },
 );
-
-it("negotiates screen presentation once per MCP session and only for Main's home Run", async () => {
-  for (const [mainHome, supported, allowMainChatRunScreenShow] of [
-    [false, true, true],
-    [true, false, true],
-    [true, true, true],
-    [true, true, false],
-  ] as const) {
-    const capabilities = vi.fn(async () => [
-      ...runnerRelease({}),
-      ...(supported ? ["screen-show-v1"] : []),
-    ]);
-    const handle = vi.fn(async (_token, request) => ({
-      type: "screen.show.result",
-      requestId: request.requestId,
-      receipt: { outcome: "superseded" },
-    }));
-    const fixture = await startService({
-      agentControl: { handle } as unknown as AgentControlService,
-      profiles: { token: "main" },
-      mainHome,
-      allowMainChatRunScreenShow,
-      runnerCapabilities: capabilities,
-    });
-    const client = await connectClient(fixture.url, "token");
-    try {
-      const listed = await client.listTools();
-      expect(listed.tools.some(({ name }) => name === "screen_show")).toBe(
-        mainHome && supported && allowMainChatRunScreenShow,
-      );
-      await client.listTools();
-      expect(capabilities).toHaveBeenCalledOnce();
-      if (mainHome && supported && allowMainChatRunScreenShow) {
-        const messageId = createId("message");
-        const target = { conversationId: createId("thread") };
-        const result = await client.callTool({
-          name: "screen_show",
-          arguments: { messageId, target },
-        });
-        expect(result.structuredContent).toEqual({ outcome: "superseded" });
-        expect(handle).toHaveBeenCalledWith(
-          "token",
-          expect.objectContaining({ type: "screen.show", messageId, target }),
-        );
-      } else {
-        const refused = await client.callTool({
-          name: "screen_show",
-          arguments: {
-            messageId: createId("message"),
-            target: { conversationId: createId("thread") },
-          },
-        });
-        expect(refused.isError).toBe(true);
-        expect(handle).not.toHaveBeenCalled();
-      }
-    } finally {
-      await client.close();
-      await fixture.service.close();
-    }
-  }
-});

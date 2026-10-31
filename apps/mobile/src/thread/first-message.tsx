@@ -24,6 +24,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   type TextInputInstance,
   useWindowDimensions,
   View,
@@ -46,7 +47,6 @@ import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
-import { TextInput } from "../ui/text-input.js";
 import { ComposerPills } from "./composer-pills.js";
 import { UsageNotice } from "./usage-notice.js";
 import { AttachmentStrip } from "./attachment-views.js";

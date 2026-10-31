@@ -16,7 +16,6 @@ import { browserPromptTextMaxLength, browserViewportFits } from "@opensteer/prot
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -24,7 +23,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import type { EditingOperation } from "@opensteer/client/editing";
 import type { EditingContext } from "@opensteer/protocol/editing";
 import { createMobileBrowserEditing } from "./browser-editing.js";
@@ -38,8 +37,6 @@ import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget, type as textType } from "../theme.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { TextInput } from "../ui/text-input.js";
-import { holdRemoteEditing, interact } from "../voice/interaction.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { useSurfaceHeader, type SurfaceMenuItem } from "./surface-header.js";
@@ -519,10 +516,7 @@ export function BrowserPage(props: {
             accessibilityHint="Types into the page"
             accessibilityLabel="Keyboard"
             accessibilityRole="button"
-            onPress={() => {
-              interact();
-              setTyping(true);
-            }}
+            onPress={() => setTyping(true)}
             style={({ pressed }) => [styles.keyboard, pressed && styles.pressed]}
           >
             <Symbol name="keyboard" size={18} tint={color.text} />
@@ -542,7 +536,6 @@ export function PageTyping(props: {
   readonly legacy?: boolean;
   readonly ref?: Ref<NativeEditingProxyHandle>;
 }): ReactNode {
-  useLayoutEffect(holdRemoteEditing, []);
   return (
     <View style={[styles.typing, styles.bottom]}>
       {props.legacy ? (

@@ -54,6 +54,7 @@ import {
   Keyboard,
   Pressable,
   StyleSheet,
+  TextInput,
   View,
 } from "react-native";
 import {
@@ -84,7 +85,6 @@ import { Sheet } from "../ui/sheet.js";
 import { IntegrationConnectSheet } from "./integration-connect-sheet.js";
 import { InstallReview } from "./integration-install-review.js";
 import { Symbol } from "../ui/symbol.js";
-import { TextInput } from "../ui/text-input.js";
 import { requestTitle, requestTitleLine } from "./docked-requests.js";
 import {
   nextRequestSubmission,

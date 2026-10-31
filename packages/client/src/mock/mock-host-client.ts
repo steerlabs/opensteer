@@ -2020,6 +2020,9 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     // The preview has no Runner to create a call, so voice never starts here.
     "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.next": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.answer": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.stop": async () => rpcSuccess({}),
     "integration.authorization.get": async (input) =>
@@ -5272,9 +5275,6 @@ class MockHostState {
   >();
   executeCommandOnce(input: HostApiCommand): ReturnType<typeof executeMockCommand> {
     const command = hostApi["commands.dispatch"].payload.parse(input);
-    // Presentation eligibility is transient, not part of the accepted message's content.
-    if (command.type === "thread.sendMessage")
-      Reflect.deleteProperty(command, "screenPresentation");
     if (
       command.type !== "thread.sendMessage" &&
       command.type !== "thread.icon.set" &&

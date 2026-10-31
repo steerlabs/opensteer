@@ -133,8 +133,7 @@ export function useNativeBrowserPresentation({
     let blockedGeneration: number | null = null;
     let pendingEvents: DesktopBrowserPresentationEvent[] = [];
     const event = (event: DesktopBrowserPresentationEvent, buffer = true) => {
-      if (event.type === "key" || event.type === "window-focus" || event.type === "page-input")
-        return;
+      if (event.type === "key" || event.type === "window-focus") return;
       if (busy && buffer && event.type !== "ended") {
         pendingEvents.push(event);
         return;

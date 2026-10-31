@@ -1982,19 +1982,16 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
-  it.each(["previous-host", "screen-unavailable"])(
-    "starts against %s without negotiated tools",
-    async (scenario) => {
-      const fixture = await setup(scenario);
-      try {
-        const session = await fixture.adapter.startSession(fixture.context);
-        expect(session.providerSessionReference).toBe("codex-thread-1");
-        await session.stop();
-      } finally {
-        await fixture.adapter.close();
-      }
-    },
-  );
+  it("starts a new Runner against a previous Host without the optional computer tool", async () => {
+    const fixture = await setup("previous-host");
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      expect(session.providerSessionReference).toBe("codex-thread-1");
+      await session.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
 
   it.each(["mcp-extra-tool", "mcp-missing-required-tool"])(
     "rejects %s despite optional computer negotiation",
@@ -2202,39 +2199,6 @@ describe("Codex app-server harness", () => {
         threadId: "codex-thread-1",
       },
     });
-    await fixture.adapter.close();
-  });
-
-  it("projects each human input's own message and viewed context on start and steer", async () => {
-    const fixture = await setup("steer");
-    const session = await fixture.adapter.startSession(fixture.context);
-    const observer = observe(session.events);
-    const turn = fixture.turn("Keep running");
-    const initial = turn.inputs[0]!;
-    initial.presentationContext = { currentThreadId: createId("thread") };
-    const execution = session.execute(turn);
-    await observer.waitFor("run.started");
-    const input = {
-      ...humanInput("Show me that conversation"),
-      presentationContext: { currentThreadId: createId("thread") },
-    };
-    await steerOf(session)({ input });
-    await execution;
-    await session.stop();
-    await observer.done;
-    const captured = await fixture.capture();
-    for (const [method, expected] of [
-      ["turn/start", initial],
-      ["turn/steer", input],
-    ] as const) {
-      const request = captured.find((entry) => entry.method === method);
-      const text = JSON.stringify(request?.params);
-      expect(text).toContain(`Message ID: ${expected.messageId}\\n`);
-      expect(text).toContain(
-        `Viewed conversation at input: ${expected.presentationContext!.currentThreadId}`,
-      );
-      expect(text.match(/\[Opensteer input\]/gu)).toHaveLength(1);
-    }
     await fixture.adapter.close();
   });
 

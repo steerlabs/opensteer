@@ -4664,6 +4664,7 @@ export function migrationProvider() {
         "0114_run_started_by": runStartedByMigration,
         "0115_better_auth_17": betterAuth17Migration,
         "0116_screen_show": screenShowMigration,
+        "0117_remove_screen_show": removeScreenShowMigration,
       };
     },
   };
@@ -6288,6 +6289,33 @@ export const screenShowMigration: Migration = {
       await sql.raw(`alter table agent_control_requests drop constraint ${name}`).execute(database);
       await sql
         .raw(`alter table agent_control_requests add constraint ${name} ${next}`)
+        .execute(database);
+    }
+  },
+};
+
+/** Voice moved screen changes onto the call's own agent; no Run requests them any more. */
+export const removeScreenShowMigration: Migration = {
+  async up(database) {
+    await sql`
+      delete from agent_control_requests
+      where action = 'screen.show' or action_class = 'screen.show'
+    `.execute(database);
+    for (const column of ["action", "action_class"] as const) {
+      const name = `agent_control_requests_${column}_check`;
+      const result = await sql<{ definition: string }>`
+        select pg_get_constraintdef(oid) as definition from pg_constraint
+        where conrelid = 'agent_control_requests'::regclass and conname = ${name}
+      `.execute(database);
+      const definition = result.rows[0]?.definition;
+      const added = ", 'screen.show'::text";
+      if (!definition?.includes(added))
+        throw new Error(`Cannot narrow ${name} after screen presentation`);
+      await sql.raw(`alter table agent_control_requests drop constraint ${name}`).execute(database);
+      await sql
+        .raw(
+          `alter table agent_control_requests add constraint ${name} ${definition.replace(added, "")}`,
+        )
         .execute(database);
     }
   },

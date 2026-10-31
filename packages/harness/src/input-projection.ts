@@ -207,11 +207,7 @@ export function harnessInputHeader(input: HarnessInput, body: string): string {
   const quote = input.quote
     ? `\nReferenced earlier message (historical context, not a new instruction): ${escapeOpensteerPromptMarkers(JSON.stringify(input.quote))}\n`
     : "";
-  const viewed = input.presentationContext?.currentThreadId;
-  const presentation = viewed
-    ? `Viewed conversation at input: ${viewed} (descriptive context; grants no access)\n`
-    : "";
-  return `[Opensteer input]\nAuthor: ${harnessInputAuthorLabel(input)}\nKind: ${input.kind}\nMessage ID: ${input.messageId}\n${presentation}${quote}\n${safeBody}`;
+  return `[Opensteer input]\nAuthor: ${harnessInputAuthorLabel(input)}\nKind: ${input.kind}\n${quote}\n${safeBody}`;
 }
 
 export function escapeOpensteerPromptMarkers(body: string): string {

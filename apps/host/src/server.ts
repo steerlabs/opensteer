@@ -1,4 +1,3 @@
-import type { ScreenPresentationService } from "./screen/screen-presentation-service.js";
 import { createVoiceHandlers } from "./voice/voice-handlers.js";
 import { browserProfileCheckpointHeader } from "@opensteer/protocol";
 import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
@@ -349,7 +348,6 @@ const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeyS
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
-  readonly screenPresentation?: ScreenPresentationService;
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
@@ -468,7 +466,6 @@ export async function createHostServer(
     runners: dependencies.runners,
   });
   app.addHook("onClose", async () => harnessCatalogReconciliations.close());
-  app.addHook("onClose", async () => dependencies.screenPresentation?.close());
   const harnessAuthenticationCoordinator = dependencies.harnessAuthenticationCoordinator;
   await app.register(websocket, {
     options: {
@@ -1562,6 +1559,9 @@ export async function createHostServer(
     | "harness.modelServers.discover"
     | "voice.start"
     | "voice.renew"
+    | "voice.next"
+    | "voice.answer"
+    | "voice.context"
     | "voice.say"
     | "voice.stop"
     | "machine.access.history"
@@ -1933,21 +1933,7 @@ export async function createHostServer(
                 workspaceId: thread.workspaceId,
               });
             }
-            const onCommitted =
-              command.screenPresentation &&
-              !(await dependencies.store.hasAcceptedThreadInput(userId, command.idempotencyKey))
-                ? await dependencies.screenPresentation?.prepareInput(
-                    session,
-                    command.threadId,
-                    command.screenPresentation,
-                  )
-                : undefined;
-            if (command.screenPresentation && !dependencies.screenPresentation)
-              throw new OpensteerError({
-                code: "bad_request",
-                message: "Screen presentation is unsupported.",
-              });
-            const enqueueInput = {
+            const result = await dependencies.commands.enqueueThreadInput({
               ...(command.quotedMessageId ? { quotedMessageId: command.quotedMessageId } : {}),
               content: command.content,
               idempotencyKey: command.idempotencyKey,
@@ -1962,10 +1948,7 @@ export async function createHostServer(
                 });
                 if (failure) throw new OpensteerError({ code: "conflict", message: failure });
               },
-            } satisfies Parameters<CommandService["enqueueThreadInput"]>[0];
-            const result = onCommitted
-              ? await dependencies.commands.enqueueThreadInput(enqueueInput, { onCommitted })
-              : await dependencies.commands.enqueueThreadInput(enqueueInput);
+            });
             // The message's transaction credited its pages to the conversation.
             if (result.browserUsage) dependencies.browser.announceUsage(result.browserUsage);
             return {
@@ -3000,7 +2983,6 @@ export async function createHostServer(
         dependencies.workspaces,
         session,
         request.log,
-        dependencies.screenPresentation,
       );
     },
   );
@@ -3097,13 +3079,13 @@ export async function advertisedBootstrapMethods(
 export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
-    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys" | "screenPresentation"
+    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys"
   >,
 ): readonly HostCapability[] {
   return [
     "chat-attachments",
     "voice-v1",
-    ...(dependencies.screenPresentation ? ["screen-show-v1" as const] : []),
+    "voice-agent-v1",
     "thread-titles-v1",
     "task-marks-v1",
     "task-family-v1",
@@ -3939,19 +3921,12 @@ function attachRealtimeSocket(
   workspaces: WorkspaceService,
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
-  screenPresentation?: ScreenPresentationService,
 ): void {
-  let screenEndpoint: { readonly close: () => void } | undefined;
-  let closed = false;
   const openedAt = Date.now();
   installWebSocketLiveness(socket);
   const peer = jsonPeer<HostToClientMessage>(socket, `client-peer:${randomUUID()}`);
   const sink: RealtimeSink = {
     ...peer,
-    close: (code, reason) => {
-      screenEndpoint?.close();
-      peer.close(code, reason);
-    },
     send: async (message: HostToClientMessage) => {
       const projected = HostToClientMessageSchema.safeParse(
         message.type === "host.snapshot"
@@ -4049,13 +4024,10 @@ function attachRealtimeSocket(
       inbox.push({ bytes: buffer.byteLength, value: { frame: buffer, isBinary } });
     } catch (error) {
       inbox.close(error);
-      close();
       if (socket.readyState === socket.OPEN) socket.close(1009, "client input queue exceeded");
     }
   });
   const close = () => {
-    closed = true;
-    screenEndpoint?.close();
     cancelExpiration();
     inbox.close();
     unregister();
@@ -4094,10 +4066,6 @@ function attachRealtimeSocket(
         continue;
       }
       if (message.type === "client.ack") continue;
-      if (message.type === "client.screen.done") {
-        screenPresentation?.registry.acknowledge(sink, message);
-        continue;
-      }
       if (unsubscribe) throw badMessage("Client is already subscribed");
       // Nothing is streamed to a client on another epoch: the events it would
       // receive are exactly what the epoch governs, so the refusal comes
@@ -4124,25 +4092,7 @@ function attachRealtimeSocket(
           userId: session.user.id,
           workspaceId: message.workspaceId,
         });
-        if (closed || socket.readyState !== socket.OPEN) {
-          unsubscribe();
-          return;
-        }
         workspaceId = message.workspaceId;
-        if (
-          message.screenShow &&
-          screenPresentation &&
-          (await screenPresentation.subscriptionAllowed(session.user.id, message.workspaceId))
-        ) {
-          if (closed || socket.readyState !== socket.OPEN) return;
-          const endpoint = screenPresentation.registry.open({
-            ownerId: session.user.id,
-            sessionId: session.id,
-            sink,
-          });
-          screenEndpoint = endpoint;
-          await sink.send(endpoint.ready);
-        }
       } catch (error) {
         if (error instanceof OpensteerError && error.code === "forbidden") {
           await sink.send({
@@ -4162,7 +4112,6 @@ function attachRealtimeSocket(
     }
   })().catch((error) => {
     inbox.close(error);
-    close();
     closeProtocolSocket(socket, error);
   });
 }

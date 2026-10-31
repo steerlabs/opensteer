@@ -1,4 +1,3 @@
-import { ScreenPresentationInputSchema } from "./screen-presentation.js";
 import {
   WorkspaceTabsInputSchema,
   WorkspaceTabLineageSchema,
@@ -227,7 +226,11 @@ import {
 } from "./runner.js";
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
 import {
+  VoiceAnswerInputSchema,
+  VoiceContextInputSchema,
   VoiceEmptyResultSchema,
+  VoiceNextInputSchema,
+  VoiceNextResultSchema,
   VoiceRenewInputSchema,
   VoiceSayInputSchema,
   VoiceStartInputSchema,
@@ -456,7 +459,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.sendMessage"),
-    screenPresentation: ScreenPresentationInputSchema.optional(),
     quotedMessageId: MessageIdSchema.optional(),
   }),
   z.strictObject({
@@ -1477,6 +1479,16 @@ export const hostApi = defineRpc({
   "voice.say": declaration("POST", VoiceSayInputSchema, VoiceEmptyResultSchema),
   /** Ends a call. Ending one that is already over succeeds. */
   "voice.stop": declaration("POST", VoiceStopInputSchema, VoiceEmptyResultSchema),
+  /**
+   * The call agent's next tool call for this device, held open briefly while
+   * there is none. Unanswered calls are delivered again. Requires
+   * `voice-agent-v1` and a call started with `agent`.
+   */
+  "voice.next": declaration("POST", VoiceNextInputSchema, VoiceNextResultSchema),
+  /** This device's result for one tool call; answering twice keeps the first. */
+  "voice.answer": declaration("POST", VoiceAnswerInputSchema, VoiceEmptyResultSchema),
+  /** Replaces what the call's agent knows the person sees and can open. */
+  "voice.context": declaration("POST", VoiceContextInputSchema, VoiceEmptyResultSchema),
   "integration.authorization.get": declaration(
     "GET",
     z.strictObject({ attemptId: IntegrationAuthorizationAttemptIdSchema }),
