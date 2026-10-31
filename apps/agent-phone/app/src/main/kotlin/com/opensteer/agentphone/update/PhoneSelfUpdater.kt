@@ -6,6 +6,7 @@ import android.util.Log
 import com.opensteer.agentphone.BuildConfig
 import com.opensteer.agentphone.runner.PhoneIdentity
 import com.opensteer.agentphone.runner.PhoneUpdater
+import com.opensteer.agentphone.runner.PhoneUpdateResult
 import com.opensteer.agentphone.wire.Fields
 import com.opensteer.agentphone.wire.HostMessage
 import com.opensteer.agentphone.wire.JsonText
@@ -44,15 +45,20 @@ class PhoneSelfUpdater(
 
     override fun cancel() { cancelled = true; active?.cancel() }
 
-    override fun check(identity: PhoneIdentity, required: Boolean): String? {
-        if (!identity.enrolled) return null
+    private fun pendingResult(state: String) = PhoneUpdateResult.Pending(
+        if (state == "awaiting-user") "Tap Update to finish updating Agent Phone." else "Updating Agent Phone…",
+    )
+
+    override fun check(identity: PhoneIdentity, required: Boolean): PhoneUpdateResult {
+        if (!identity.enrolled) return PhoneUpdateResult.Current
         val key = "${identity.runnerId} ${identity.hostUrl}"
         val now = SystemClock.elapsedRealtime()
-        if (!required && key == checkedFor && now - checkedAt < TimeUnit.HOURS.toMillis(6)) return null
+        journal.finishIfInstalled()
+        if (journal.takeCancelled(identity)) return PhoneUpdateResult.Pending("Update cancelled. Opensteer will try again.")
+        if (journal.pendingState(identity) == null && !required && key == checkedFor && now - checkedAt < TimeUnit.HOURS.toMillis(6)) return PhoneUpdateResult.Current
         checkedFor = key
         checkedAt = now
         cancelled = false
-        journal.finishIfInstalled()
         var offered = false
         var release: UpdateOffer? = null
         var socket: WebSocket? = null
@@ -105,8 +111,8 @@ class PhoneSelfUpdater(
                 offered = true
                 throw it
             }
-            val offer = release ?: return null
-            if (offer.versionCode == version.longVersionCode) return null
+            val offer = release ?: return PhoneUpdateResult.Current
+            if (offer.versionCode == version.longVersionCode) return PhoneUpdateResult.Current
             offered = true
             check(offer.versionCode > version.longVersionCode) { "Downgrades are refused" }
             check(offer.signer == BuildConfig.AGENT_PHONE_UPDATE_SIGNER) { "The update signer is not the pinned release signer" }
@@ -133,29 +139,44 @@ class PhoneSelfUpdater(
             sendState("installing")
             journal.install(file, offer, ::samePairing)
             } else sendState(journal.state())
-            var previous = "installing"
+            var previous = if (pending) journal.state() else "installing"
             while (!cancelled && samePairing() && SystemClock.elapsedRealtime() < deadline) {
                 val state = journal.state()
                 if (state != previous) {
                     sendState(state)
-                    if (state == "awaiting-user") status("Tap Update to finish updating Agent Phone.")
                     previous = state
                 }
+                if (state == "awaiting-user") {
+                    status("Tap Update to finish updating Agent Phone.")
+                    return pendingResult(state)
+                }
                 check(state != "failed") { "Android refused or cancelled the update" }
-                if (state == "idle") return "The update finished. Waiting for Android to reconnect the app."
+                if (state == "idle") return PhoneUpdateResult.Pending("The update finished. Waiting for Android to reconnect the app.")
                 Thread.sleep(200)
             }
+            // A committed Android session outlives this bounded network attempt.
+            if (samePairing()) journal.pendingState(identity)?.let { return pendingResult(it) }
             journal.abandon()
             error("The update was not completed in ten minutes")
         } catch (error: Exception) {
+            if (samePairing()) {
+                journal.pendingState(identity)?.let { state ->
+                    sendState(state)
+                    if (state == "awaiting-user") status("Tap Update to finish updating Agent Phone.")
+                    return pendingResult(state)
+                }
+            } else {
+                journal.abandon()
+                return PhoneUpdateResult.Current
+            }
             if (offered || required) {
                 journal.failed()
                 sendState("failed")
                 Log.w("AgentPhone", "Agent Phone self-update failed: ${error.message}")
-                return "Agent Phone couldn’t update. Run setup over USB to try again."
+                return PhoneUpdateResult.Failed("Agent Phone couldn’t update. Run setup over USB to try again.")
             }
             // A Host without update support does not prevent the existing Runner connection.
-            return null
+            return PhoneUpdateResult.Current
         } finally {
             file.delete()
             socket?.close(1000, "Phone update check finished")

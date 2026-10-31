@@ -37,7 +37,7 @@ export type AgentPhoneInstallResult =
 
 /**
  * Everything setup does to a phone, over whichever ADB transport reached it:
- * WebUSB in the product, the local `adb` server in tests.
+ * WebUSB in browsers, direct USB or an existing local ADB server on Desktop.
  */
 export interface AgentPhoneAdb {
   /** A system property, read the way every Android version answers it. */

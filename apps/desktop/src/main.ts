@@ -72,6 +72,7 @@ import {
 } from "./app/electron-window.js";
 import { createDesktopApplicationMenu } from "./app/application-menu.js";
 import { DesktopTrayService } from "./app/desktop-tray.js";
+import { AgentPhoneAdbServer } from "./app/agent-phone-adb-server.js";
 import { DesktopUsbDeviceAccess } from "./app/usb-device-access.js";
 import {
   bundledAgentPhoneDirectory,
@@ -262,6 +263,8 @@ async function runDesktop(
     stop: () => downloads.close(),
   });
   const usbDevices = new DesktopUsbDeviceAccess();
+  const phoneAdb = new AgentPhoneAdbServer({ isGranted: (device) => usbDevices.isGranted(device) });
+  const detachPhoneAdb = usbDevices.onRevoked((device) => phoneAdb.revoke(device));
   configureDesktopSession(
     session.defaultSession,
     new DesktopAppOriginPolicy(),
@@ -932,6 +935,7 @@ async function runDesktop(
     localVisibility,
     access,
     agentPhone: {
+      adb: phoneAdb,
       chooseUsbDevice: (input, frame) => usbDevices.choose(input, frame),
       readArtifact: () =>
         readBundledAgentPhoneArtifact(
@@ -1167,6 +1171,8 @@ async function runDesktop(
       tray.dispose();
       unregisterBridge();
       localVisibility.dispose();
+      phoneAdb.dispose();
+      detachPhoneAdb();
       detachUsbDevices();
       if (activeMainProcess === mainProcess) activeMainProcess = null;
       detachOAuthDeepLinks();

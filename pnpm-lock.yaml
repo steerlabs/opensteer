@@ -451,6 +451,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
         version: 1.32.0(zod@4.6.7)
+      '@opensteer/agent-phone-setup':
+        specifier: workspace:*
+        version: link:../../packages/agent-phone-setup
       '@opensteer/browser-core':
         specifier: workspace:*
         version: link:../../packages/browser-core
@@ -490,6 +493,15 @@ importers:
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@yume-chan/adb':
+        specifier: 2.6.4
+        version: 2.6.4
+      '@yume-chan/adb-server-node-tcp':
+        specifier: 2.5.2
+        version: 2.5.2
+      '@yume-chan/stream-extra':
+        specifier: 2.6.1
+        version: 2.6.1
       ajv:
         specifier: 8.20.0
         version: 8.20.0

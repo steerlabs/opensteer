@@ -496,6 +496,20 @@ describe("Machines projection", () => {
       expect(machine?.runtimeVersion).toBe("0.1.117");
     });
 
+    it("keeps Android update consent visible while the old phone app is connected", () => {
+      const [machine] = projectMachines({
+        access: new Map(),
+        apps: new Map(),
+        deploymentKind: "self-hosted",
+        localWorkspaces: [],
+        pendingRunners: [],
+        runners: [{ ...phone, phoneUpdate: "awaiting-user" }],
+        threadsByEnvironment: new Map(),
+      });
+      expect(machine?.status).toBe("update-pending");
+      expect(machine?.detail).toBe(`Tap Update on ${phone.name}.`);
+    });
+
     it("is ready without approval policy or key and carries its whole-display session", () => {
       const { computerUse, session } = projectPhone([phoneStatus("ready")]);
       expect(computerUse).toEqual({

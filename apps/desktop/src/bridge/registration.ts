@@ -19,7 +19,13 @@ import {
 } from "@opensteer/protocol/desktop";
 import { desktopBridgeChannels } from "./desktop-bridge-channels.js";
 import type { DesktopBridgeContext, DesktopBridgeOptions } from "./context.js";
-import { handleChooseUsbDevice, handleReadAgentPhoneArtifact } from "./methods/agent-phone.js";
+import {
+  handleAgentPhoneAdbOpen,
+  handleAgentPhoneAdbCall,
+  handleAgentPhoneAdbClose,
+  handleChooseUsbDevice,
+  handleReadAgentPhoneArtifact,
+} from "./methods/agent-phone.js";
 import {
   handleCloseComputerAppSetup,
   handleComputerAppSetupBegin,
@@ -278,6 +284,9 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.addDirect, handleAddDirect(context));
   register(desktopBridgeChannels.cancel, handleCancel(context));
   register(desktopBridgeChannels.checkFullDiskAccess, handleCheckFullDiskAccess(context));
+  register(desktopBridgeChannels.agentPhoneAdbOpen, handleAgentPhoneAdbOpen(context));
+  register(desktopBridgeChannels.agentPhoneAdbCall, handleAgentPhoneAdbCall(context));
+  register(desktopBridgeChannels.agentPhoneAdbClose, handleAgentPhoneAdbClose(context));
   register(desktopBridgeChannels.chooseUsbDevice, handleChooseUsbDevice(context));
   register(desktopBridgeChannels.closeFullDiskAccessPanel, handleCloseFullDiskAccessPanel(context));
   register(desktopBridgeChannels.createCloudDeployment, handleCreateCloudDeployment(context));

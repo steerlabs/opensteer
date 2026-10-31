@@ -10,6 +10,7 @@ import type {
 import { z } from "zod";
 import {
   DesktopUsbDeviceChoiceSchema,
+  type DesktopAgentPhoneUsbIdentity,
   type DesktopChooseUsbDeviceInput,
 } from "@opensteer/protocol/desktop";
 import { desktopBridgeChannels } from "../bridge/desktop-bridge-channels.js";
@@ -41,6 +42,7 @@ export class DesktopUsbDeviceAccess {
   readonly #policy = new DesktopAppOriginPolicy();
   /** Devices the person picked, keyed so a replugged phone is still the one they picked. */
   readonly #granted = new Set<string>();
+  readonly #revoked = new Set<(device: DesktopAgentPhoneUsbIdentity) => void>();
   #pending: {
     readonly callback: (deviceId?: string) => void;
     readonly choiceId: string;
@@ -59,6 +61,8 @@ export class DesktopUsbDeviceAccess {
     };
     const revoked = (_event: Event, details: { readonly device: USBDevice }) => {
       this.#granted.delete(deviceKey(details.device));
+      for (const listener of this.#revoked)
+        listener({ ...details.device, serialNumber: details.device.serialNumber ?? "" });
     };
     session.on("select-usb-device", select);
     session.on("usb-device-revoked", revoked);
@@ -68,6 +72,19 @@ export class DesktopUsbDeviceAccess {
       session.off("usb-device-revoked", revoked);
       session.setDevicePermissionHandler(null);
       this.#cancelPending();
+    };
+  }
+
+  isGranted(device: DesktopAgentPhoneUsbIdentity): boolean {
+    return (
+      Boolean(device.serialNumber) && this.#granted.has(deviceKey({ ...device, deviceId: "" }))
+    );
+  }
+
+  onRevoked(listener: (device: DesktopAgentPhoneUsbIdentity) => void): () => void {
+    this.#revoked.add(listener);
+    return () => {
+      this.#revoked.delete(listener);
     };
   }
 

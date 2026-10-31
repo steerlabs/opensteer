@@ -148,6 +148,7 @@ describe("desktop bridge", () => {
       desktopBridgeChannels.personalRemoteAccessStatusChanged,
       desktopBridgeChannels.notificationActivated,
       desktopBridgeChannels.usbDeviceChoice,
+      desktopBridgeChannels.agentPhoneAdbAuthorize,
       desktopBridgeChannels.localVisibilityChanged,
       desktopBridgeChannels.browserPresentationEvent,
       desktopBridgeChannels.glassScene,

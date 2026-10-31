@@ -68,6 +68,10 @@ export interface DesktopBridgeOptions {
   >;
   /** Setting an Android phone up over USB from this window. */
   readonly agentPhone: {
+    readonly adb?: Pick<
+      import("../app/agent-phone-adb-server.js").AgentPhoneAdbServer,
+      "open" | "call" | "close"
+    >;
     /** The Agent Phone app this build carries, verified; null when it carries none. */
     readonly readArtifact: () => Promise<DesktopAgentPhoneArtifact | null>;
     /** The page's pick between several phones, from the frame that was asked. */

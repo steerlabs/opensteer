@@ -404,15 +404,16 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
       pinnedThreads: stakes.pinnedThreads,
       revocable: !personalMain,
       runtimeVersion: runner.runtimeVersion,
-      status: runner.connected
-        ? "online"
-        : runner.phoneUpdate === "awaiting-user"
+      status:
+        runner.phoneUpdate === "awaiting-user"
           ? "update-pending"
-          : runner.phoneUpdate === "downloading" || runner.phoneUpdate === "installing"
-            ? "updating"
-            : runner.phoneUpdate === "failed" || runner.updateRequired
-              ? "needs-update"
-              : "offline",
+          : runner.connected
+            ? "online"
+            : runner.phoneUpdate === "downloading" || runner.phoneUpdate === "installing"
+              ? "updating"
+              : runner.phoneUpdate === "failed" || runner.updateRequired
+                ? "needs-update"
+                : "offline",
       unlinkedLocalFolders: unlinkedLocalBindingCount({
         inventory: runner.modules.agents?.localStorage ?? null,
         workspaces: input.localWorkspaces,

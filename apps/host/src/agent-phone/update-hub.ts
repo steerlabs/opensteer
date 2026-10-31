@@ -42,8 +42,14 @@ export class AgentPhoneUpdateHub {
       let changed = false;
       for (const [id, entry] of this.#progress) {
         const age = Date.now() - entry.startedAt;
-        if (age > 24 * 60 * 60_000) this.#progress.delete(id);
-        else if (age > 10 * 60_000 && entry.state !== "failed") {
+        if (age > 24 * 60 * 60_000) {
+          this.#progress.delete(id);
+          changed = true;
+        } else if (
+          age > 10 * 60_000 &&
+          entry.state !== "failed" &&
+          entry.state !== "awaiting-user"
+        ) {
           entry.state = "failed";
           changed = true;
         }
@@ -119,9 +125,9 @@ export class AgentPhoneUpdateHub {
       const text = raw.toString();
       lane = lane
         .then(async () => {
-          if (socket.readyState !== socket.OPEN) return;
           const frame: unknown = JSON.parse(text);
           if (!authenticated) {
+            if (socket.readyState !== socket.OPEN) return;
             proof = RunnerUpdateProofSchema.parse(frame);
             const identity = await this.#options.authenticator.authenticateUpdateRefusal(
               challenge,
@@ -162,6 +168,7 @@ export class AgentPhoneUpdateHub {
           await authorize();
           const download = Download.safeParse(frame);
           if (download.success) {
+            if (socket.readyState !== socket.OPEN) return;
             if (downloaded || download.data.apkSha256 !== release.manifest.apkSha256)
               throw new Error("Invalid phone release request");
             downloaded = true;
@@ -197,10 +204,13 @@ export class AgentPhoneUpdateHub {
       clearTimeout(timeout);
       clearTimeout(lifetime);
       this.#sockets.delete(socket);
-      if (downloaded && progress?.state === "downloading") {
-        progress.state = "failed";
-        this.#options.changed();
-      }
+      // A status and close can share one read; drain accepted frames before classifying the disconnect.
+      void lane.then(() => {
+        if (downloaded && progress?.state === "downloading") {
+          progress.state = "failed";
+          this.#options.changed();
+        }
+      });
     });
     socket.on("error", () => socket.close());
     void send(JSON.stringify(challenge)).catch(() => socket.close());
