@@ -1930,6 +1930,45 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
+  it("rejects an out-of-scope sign-in without poisoning a ready profile", async () => {
+    const f = await fixture();
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const browser = await f.launch();
+      await expect(
+        browser.replaceSiteCookies(
+          "https://example.test",
+          [
+            {
+              name: "partitioned",
+              value: "value",
+              domain: "example.test",
+              path: "/",
+              expires: -1,
+              httpOnly: true,
+              secure: true,
+              sameSite: "None",
+              partitionKey: "https://other.test",
+              partitionKeyHasCrossSiteAncestor: true,
+            },
+          ],
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("outside the requested site");
+      const reopened = await f.launch();
+      await reopened.close();
+      await browser.close();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it("prepares with Guest only and never allocates a persistent Session", async () => {
     const f = await fixture();
     const { session } = await import("electron");

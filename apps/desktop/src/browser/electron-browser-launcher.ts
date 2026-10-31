@@ -677,6 +677,8 @@ class ElectronBrowserContext implements BrowserContext {
     deadline: AbortSignal,
   ): Promise<void> {
     deadline.throwIfAborted();
+    // Invalid sign-in input cannot compromise the persistent store or its mirror lane.
+    siteCookieReplacementBatch(site, [], cookies);
     const replace = async () =>
       this.#withStorageView(async (_view, command) => {
         // The same page-scoped Network domain exportSnapshot reads: it addresses

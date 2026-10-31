@@ -96,9 +96,10 @@ export async function runNativeProfileSmokePhase(input: {
       }
     : LocalProfileBindingSchema.parse(JSON.parse(await readFile(record, "utf8")));
   const directory = path.join(root, "profiles", binding.profileId, "native");
+  const cleared = phase === "native-clear-reopen";
   const loggedOut = phase === "native-logout-reopen" || phase === "native-clear";
-  const expected = nativeSmokeCookies(origin(0)).filter(
-    (cookie) => !loggedOut || cookie.name !== "sid",
+  const expected = nativeSmokeCookies(origin(0)).filter((cookie) =>
+    cleared ? cookie.partitionKey !== undefined : !loggedOut || cookie.name !== "sid",
   );
   if (initialize) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -148,12 +149,12 @@ export async function runNativeProfileSmokePhase(input: {
     storage: { kind: "local", directory, binding },
   });
   let crash = false;
+  let cookieCount = expected.length;
   try {
     const page = browser.context.pages()[0]!;
     await load(page, `${origin(0)}/native-page?phase=${encodeURIComponent(phase)}`);
     const first = input.firstRequest(phase);
     assert.ok(first !== undefined, "first outgoing navigation was not observed");
-    const cleared = phase === "native-clear-reopen";
     if (cleared || loggedOut)
       assert.ok(!first.includes("sid="), "logout resurrected an HttpOnly session cookie");
     if (!cleared) {
@@ -167,7 +168,7 @@ export async function runNativeProfileSmokePhase(input: {
         "first navigation missed the persistent cookie",
       );
     }
-    await assertCookies(browser, cleared ? [] : expected);
+    await assertCookies(browser, expected);
     if (phase === "native-create") {
       await evaluate(
         page,
@@ -223,9 +224,12 @@ export async function runNativeProfileSmokePhase(input: {
     }
     if (phase === "native-network") {
       const mirror = path.join(path.dirname(directory), "session-cookies.v1.json");
+      // The duplicate CHIPS identities belong to other top-level sites. A
+      // first-party sign-in must leave those partitions untouched.
+      const siteCookies = expected.filter((cookie) => cookie.partitionKey === undefined);
       await browser.replaceSiteCookies(
         "https://example.test",
-        expected,
+        siteCookies,
         new AbortController().signal,
       );
       const before = await readFile(mirror, "utf8");
@@ -267,7 +271,7 @@ export async function runNativeProfileSmokePhase(input: {
       cookieChange = survivingWorker.cookieChange;
       await browser.replaceSiteCookies(
         "https://example.test",
-        expected,
+        siteCookies,
         new AbortController().signal,
       );
       assert.equal(
@@ -284,15 +288,17 @@ export async function runNativeProfileSmokePhase(input: {
           `fetch('${phase === "native-logout" ? "/native-logout" : "/native-clear-site-data"}', {credentials:'include'}).then(r => r.text())`,
         );
       });
-      await assertCookies(
-        browser,
-        phase === "native-clear" ? [] : expected.filter((cookie) => cookie.name !== "sid"),
-      );
+      const remaining =
+        phase === "native-clear"
+          ? expected.filter((cookie) => cookie.partitionKey !== undefined)
+          : expected.filter((cookie) => cookie.name !== "sid");
+      await assertCookies(browser, remaining);
+      cookieCount = remaining.length;
     }
     crash = phase === "native-crash";
     return {
       crash,
-      cookieCount: cleared ? 0 : expected.length,
+      cookieCount,
       ...(cookieChange !== undefined ? { cookieChange } : {}),
     };
   } finally {

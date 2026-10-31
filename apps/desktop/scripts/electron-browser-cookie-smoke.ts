@@ -232,7 +232,11 @@ async function run(): Promise<void> {
   });
   await assertCookies(nativeReopened, nativeCookies);
   await nativeReopened.replaceSiteCookies("https://example.test", [], new AbortController().signal);
-  await assertCookies(nativeReopened, []);
+  // Replacing a first-party sign-in preserves CHIPS owned by other top-level sites.
+  await assertCookies(
+    nativeReopened,
+    nativeCookies.filter((cookie) => cookie.partitionKey !== undefined),
+  );
   await nativeReopened.close();
 
   const report = await runStateImportScenario({ engine: "electron", launcher });
