@@ -699,7 +699,7 @@ export class OpensteerStore {
   async deleteBrowserProfile(input: {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
-  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[]; readonly changed: boolean }> {
+  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }> {
     return browserSessionStore.deleteBrowserProfile(this.#database, input);
   }
 

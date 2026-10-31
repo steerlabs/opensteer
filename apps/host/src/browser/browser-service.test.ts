@@ -67,6 +67,7 @@ const cleanups: Array<() => Promise<void>> = [];
  */
 function runnerTarget(options: {
   readonly navigationVersion?: boolean;
+  readonly navigationAttributionVersion?: boolean;
   readonly passkeysEnabled?: boolean;
   readonly passkeys?: boolean;
   readonly sharedControl?: boolean;
@@ -108,6 +109,7 @@ function runnerTarget(options: {
               return socket;
             },
             navigationVersion: options.navigationVersion ?? false,
+            navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
             cdpBoundary: true,
             workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
@@ -369,9 +371,13 @@ describe("BrowserService", () => {
     },
   );
 
-  it.each([false, true])(
-    "records a new initial visit that commits after a clear during startup (%s)",
-    async (cleared) => {
+  it.each(
+    [false, true].flatMap((cleared) =>
+      (["tab-open", "person-start", "agent-start"] as const).map((path) => ({ cleared, path })),
+    ),
+  )(
+    "attributes initial person navigation for $path (cleared during startup=$cleared)",
+    async ({ cleared, path }) => {
       const keys = generateKeyPairSync("ed25519");
       const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
         targetedStreaming: true,
@@ -389,13 +395,27 @@ describe("BrowserService", () => {
         list: async () => ({ entries: [], icons: [] }),
       } as unknown as BrowserHistoryStore;
       const service = freshService({ keys, runtime, repository, history });
-      const opening = service.openTab(ownerId, {
-        type: "browser.tab.open",
-        identity: { kind: "profile", profileId: profile.id },
-        url: "https://amazon.com/",
-        typed: true,
-        idempotencyKey: "initial-open",
-      });
+      const opening =
+        path === "tab-open"
+          ? service.openTab(ownerId, {
+              type: "browser.tab.open",
+              identity: { kind: "profile", profileId: profile.id },
+              url: "https://amazon.com/",
+              typed: true,
+              idempotencyKey: "initial-open",
+            })
+          : service.start(
+              {
+                ownerId,
+                workspaceId,
+                profileId: profile.id,
+                initialUrl: "https://amazon.com/",
+                ...(path === "agent-start"
+                  ? { origin: "agent", agentBindingId: "initial-agent" }
+                  : {}),
+              },
+              path === "person-start" ? { typed: false } : undefined,
+            );
       void opening.catch(() => undefined);
       await vi.waitFor(() => expect(runtime.connectionCount()).toBe(1), { timeout: 1_000 });
       if (cleared)
@@ -427,6 +447,8 @@ describe("BrowserService", () => {
       await answer("Target.attachToTarget", { sessionId: "initial-cdp" });
       const navigate = await runtime.nextCommand();
       expect(navigate).toMatchObject({ type: "cdp.command", command: { method: "Page.navigate" } });
+      if (path === "agent-start") expect(navigate).not.toHaveProperty("navigationId");
+      else expect(navigate.navigationId).toEqual(expect.any(String));
       runtime.sendServer({
         type: "browser.surfaces.changed",
         surfaces: [
@@ -439,24 +461,27 @@ describe("BrowserService", () => {
           },
         ],
       });
-      runtime.sendServer({
-        type: "navigation.committed",
-        navigationId: navigate.navigationId,
-        surfaceId: "page-1",
-        documentId: "after-clear",
-        url: "https://www.amazon.com/",
-      });
+      if (navigate.navigationId)
+        runtime.sendServer({
+          type: "navigation.committed",
+          navigationId: navigate.navigationId,
+          surfaceId: "page-1",
+          documentId: "after-clear",
+          url: "https://www.amazon.com/",
+        });
       runtime.sendServer({ type: "cdp.result", requestId: navigate.requestId, result: {} });
       await answer("Target.detachFromTarget", {});
       await opening;
       await service.readHistory(ownerId, profile.id);
-      expect(recordVisit).toHaveBeenCalledExactlyOnceWith({
-        profileId: profile.id,
-        ownerId,
-        url: "https://www.amazon.com/",
-        title: "Amazon",
-        typed: true,
-      });
+      if (path === "agent-start") expect(recordVisit).not.toHaveBeenCalled();
+      else
+        expect(recordVisit).toHaveBeenCalledExactlyOnceWith({
+          profileId: profile.id,
+          ownerId,
+          url: "https://www.amazon.com/",
+          title: "Amazon",
+          typed: path === "tab-open",
+        });
     },
   );
 
@@ -773,6 +798,7 @@ describe("BrowserService", () => {
         keys,
         runtime,
         repository,
+        navigationAttribution: kind !== "older-runtime",
         history: {
           recordVisit,
           list: async () => ({ entries: [], icons: [] }),
@@ -1813,6 +1839,58 @@ describe("BrowserService", () => {
         .navigationVersion,
     ).toBe(version === 1 ? 1 : undefined);
   });
+  it.each([undefined, 1, 2])(
+    "negotiates attribution only for supported advertisements (%s)",
+    async (version) => {
+      const advertised = RunnerBrowserModuleSchema.parse({
+        runtimeId: "test",
+        navigationAttributionVersion: version,
+      });
+      expect(advertised.navigationAttributionVersion).toBe(version === 1 ? 1 : undefined);
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+      const ownerId = createId("user"),
+        workspaceId = createId("workspace");
+      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
+      const service = freshService({
+        keys,
+        runtime,
+        repository,
+        navigationAttribution: advertised.navigationAttributionVersion === 1,
+        history: {
+          list: async () => ({ entries: [], icons: [] }),
+        } as unknown as BrowserHistoryStore,
+      });
+      const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+      const claims = JSON.parse(JSON.stringify(runtime.lastClaims()));
+      if (version === 1) expect(claims.navigationAttributionVersion).toBe(1);
+      else {
+        expect(claims).not.toHaveProperty("navigationAttributionVersion");
+        previousBrowser.BrowserAttachTicketClaimsSchema!.parse(claims);
+      }
+      const attachment = await service.attach(
+        ownerId,
+        opened.session.id,
+        new RecordingPeer("attribution"),
+        consumerOptions(),
+      );
+      try {
+        await attachment.handle(
+          Buffer.from(JSON.stringify({ type: "navigation.go", url: "https://person.example/" })),
+          false,
+        );
+        const command = await runtime.nextCommand();
+        if (version === 1) expect(command.navigationId).toEqual(expect.any(String));
+        else {
+          expect(command).not.toHaveProperty("navigationId");
+          previousBrowser.BrowserClientMessageSchema!.parse(command);
+        }
+      } finally {
+        attachment.close();
+      }
+    },
+  );
   it.each([false, true])(
     "negotiates navigation and keeps strict viewers compatible (%s)",
     async (capable) => {
@@ -4464,6 +4542,7 @@ const exportedSnapshot = {
 
 function freshService(options: {
   readonly history?: BrowserHistoryStore;
+  readonly navigationAttribution?: boolean;
   readonly onHistoryChanged?: (ownerId: UserId, profileId: BrowserProfileId) => void;
   readonly onError?: (error: unknown) => void;
   readonly passkeysEnabled?: boolean;
@@ -4499,6 +4578,7 @@ function freshService(options: {
     }),
     targetResolver: runnerTarget({
       url: options.runtime.url,
+      navigationAttributionVersion: options.navigationAttribution ?? options.history !== undefined,
       sharedControl: options.sharedControl ?? true,
       targetControl: options.targetControl ?? false,
       rasterDemand: options.rasterDemand ?? false,
@@ -5358,12 +5438,10 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     if (this.#profiles.get(input.profileId)?.ownerId !== input.ownerId) {
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
     }
-    const changed = !this.#deletedProfiles.has(input.profileId);
     this.#deletedProfiles.add(input.profileId);
     this.#profileRevisions.delete(input.profileId);
     if (this.#grant?.profileId === input.profileId) this.#grant = null;
     return {
-      changed,
       sessionIds: [...this.#sessions.values()]
         .filter((session) => session.profileId === input.profileId && !terminal(session.state))
         .map((session) => session.id),
@@ -5525,7 +5603,9 @@ async function startFakeRuntime(
             },
           ],
           type: "browser.snapshot",
-          ...(options.navigationAttribution === false ? {} : { navigationAttributionVersion: 1 }),
+          ...(claims.navigationAttributionVersion === 1 && options.navigationAttribution !== false
+            ? { navigationAttributionVersion: 1 }
+            : {}),
           ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
           ...(options.editing && claims.editingVersion
             ? {

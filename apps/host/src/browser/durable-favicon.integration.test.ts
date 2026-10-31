@@ -118,7 +118,13 @@ integration("Durable tab icons", () => {
         idempotencyKey: "history-browser",
         name: "History browser",
       }),
-      { agentReady: true, targetedStreaming: true, navigation: true, workspaceTabs: true },
+      {
+        agentReady: true,
+        targetedStreaming: true,
+        navigation: true,
+        navigationAttribution: true,
+        workspaceTabs: true,
+      },
     );
     cleanups.push(() => runtime.close());
     await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 5_000 });
@@ -580,16 +586,28 @@ integration("Durable tab icons", () => {
       await host.store.database.selectFrom("browserHistoryEntries").selectAll().execute(),
     ).toEqual([]);
     await host.runtime.browser.deleteProfile({ ownerId: host.ownerId, profileId });
-    await changed();
     await host.runtime.browser.deleteProfile({ ownerId: host.ownerId, profileId });
-    // A final real write is a delivery barrier for the preceding no-op deletion.
+    await expect(host.runtime.browser.readHistory(host.ownerId, profileId)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    // A history mutation is a delivery barrier: neither deletion emits a history notice.
     const otherProfile = await host.store.createBrowserProfile({
       ownerId: host.ownerId,
       name: "Other",
       idempotencyKey: "other-history-profile",
     });
+    await host.store.browserHistory.recordVisit({
+      profileId: otherProfile.id,
+      ownerId: host.ownerId,
+      url: "https://other.example/",
+      title: "Other",
+      typed: false,
+    });
     const otherChanged = devices.slice(0, 2).map((device) => device.messages.length);
-    await host.runtime.browser.deleteProfile({ ownerId: host.ownerId, profileId: otherProfile.id });
+    await host.runtime.browser.forgetHistory(host.ownerId, {
+      profileId: otherProfile.id,
+      idempotencyKey: "history-after-profile-deletion",
+    });
     await vi.waitFor(
       () => {
         for (const [index, device] of devices.slice(0, 2).entries()) {

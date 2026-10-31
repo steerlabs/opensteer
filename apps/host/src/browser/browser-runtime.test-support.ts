@@ -43,6 +43,7 @@ export async function startBrowserRuntime(
     /** Advertise the agent CDP boundary and shared tab identity, as a current Runtime does. */
     readonly agentReady?: boolean;
     readonly navigation?: boolean;
+    readonly navigationAttribution?: boolean;
     readonly editing?: boolean;
     /** Relay the real Chromium runtime instead of synthesizing its messages. */
     readonly runtimeUrl?: string;
@@ -78,6 +79,7 @@ export async function startBrowserRuntime(
         profileSnapshotVersion: 2,
         ...(options.editing ? { editing: 1, targetControl: 1 } : {}),
         ...(options.navigation ? { navigationVersion: 1 } : {}),
+        ...(options.navigationAttribution ? { navigationAttributionVersion: 1 } : {}),
         runtimeId: "browser-runtime-integration",
         ...(options.agentReady ? { cdpBoundary: 1, sharedControl: 1 } : {}),
         ...(options.workspaceTabs ? { workspaceTabRestoreVersion: 1 } : {}),
@@ -249,7 +251,9 @@ export async function startBrowserRuntime(
           capability: message.capability,
           channelId: message.channelId,
           message: {
-            navigationAttributionVersion: 1,
+            ...(latestClaims.navigationAttributionVersion === 1
+              ? { navigationAttributionVersion: 1 }
+              : {}),
             ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
             access: latestClaims.access,
             dialog: options.initialDialog ?? null,

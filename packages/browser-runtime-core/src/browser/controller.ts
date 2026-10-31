@@ -368,7 +368,9 @@ export class BrowserController {
       surfaces,
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
-      navigationAttributionVersion: 1,
+      ...(this.claims.navigationAttributionVersion === 1
+        ? { navigationAttributionVersion: 1 }
+        : {}),
       ...(this.editing
         ? {
             editingVersion: this.claims.editingVersion,
@@ -528,6 +530,14 @@ export class BrowserController {
   }
 
   private enqueue(message: BrowserClientMessage): Promise<void> {
+    if (
+      (message.type === "navigation.go" || message.type === "cdp.command") &&
+      message.navigationId !== undefined &&
+      this.claims.navigationAttributionVersion !== 1
+    )
+      return this.enqueueFailure(
+        new BrowserRuntimeError("forbidden", "Browser navigation attribution was not negotiated."),
+      );
     const extension =
       editingMessageKinds.has(message.type) ||
       (message.type === "input.key" &&
@@ -2107,7 +2117,8 @@ export class BrowserController {
 
   private onLedgerEvent(event: SurfaceLedgerEvent): void {
     if (event.type === "navigation.committed") {
-      if (!this.closed) void this.send(event).catch(() => undefined);
+      if (!this.closed && this.claims.navigationAttributionVersion === 1)
+        void this.send(event).catch(() => undefined);
       return;
     }
     if (

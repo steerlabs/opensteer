@@ -2251,6 +2251,66 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  it.each(["address", "initial", "tab-open"] as const)(
+    "refuses unnegotiated attribution for %s navigation and keeps baseline navigation available",
+    async (path) => {
+      const controller = createController();
+      await controller.start();
+      const url = "https://person.test/";
+      const navigationId = globalThis.crypto.randomUUID();
+      try {
+        expect(
+          sink.messages.find((message) => message.type === "browser.snapshot"),
+        ).not.toHaveProperty("navigationAttributionVersion");
+        if (path === "address")
+          await controller.handle({ type: "navigation.go", url, navigationId });
+        else {
+          const attached = await cdpRouter.send(validClaims().sessionId, {
+            method: "Target.attachToTarget",
+            parameters: { targetId: await page.targetId(), flatten: true },
+          });
+          const { sessionId } = attached as { sessionId: string };
+          await controller.handle({
+            type: "cdp.command",
+            requestId: globalThis.crypto.randomUUID(),
+            navigationId,
+            command:
+              path === "initial"
+                ? { method: "Page.navigate", sessionId, parameters: { url } }
+                : {
+                    method: browserHostMethods.openTab,
+                    parameters: { idempotencyKey: "unnegotiated-open", url },
+                  },
+          });
+        }
+        expect(sink.messages).toContainEqual(
+          expect.objectContaining({
+            type: "browser.error",
+            error: expect.objectContaining({ code: "forbidden" }),
+          }),
+        );
+        expect(commandsNamed("Page.navigate", page)).toHaveLength(0);
+        await controller.handle({ type: "navigation.go", url });
+        expect(commandsNamed("Page.navigate", page)).toHaveLength(1);
+        // A ledger attribution must not escape a session admitted by an older Host.
+        page.cdpSession.responses.set("Page.navigate", () => {
+          page.cdpSession.emit("Page.frameNavigated", {
+            frame: { id: "main", loaderId: "person-loader", url },
+          });
+          return { loaderId: "person-loader" };
+        });
+        await ledger.navigate(activeSurfaceId(), url, navigationId);
+        await flushMicrotasks();
+        expect(sink.messages.some((message) => message.type === "navigation.committed")).toBe(
+          false,
+        );
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
+
   it.each(
     (["address", "initial", "tab-open"] as const).flatMap((path) =>
       (["reply-first", "commit-first", "push-state", "redirect"] as const).map((ordering) => ({
@@ -2259,8 +2319,16 @@ describe("BrowserController", () => {
       })),
     ),
   )("uses browser attribution for $path navigation ($ordering)", async ({ path, ordering }) => {
-    const controller = createController();
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ navigationAttributionVersion: 1 }),
+    );
     await controller.start();
+    expect(sink.messages.find((message) => message.type === "browser.snapshot")).toHaveProperty(
+      "navigationAttributionVersion",
+      1,
+    );
     const navigationId = globalThis.crypto.randomUUID();
     const url = "https://person.test/";
     let navigatedPage = page;
@@ -2453,10 +2521,11 @@ describe("BrowserController", () => {
   function createController(
     maxPendingCommands?: number,
     outputLimits: { maxPendingMessageBytes?: number; maxPendingMessages?: number } = {},
+    claims: BrowserAttachTicketClaims = validClaims(),
   ): BrowserController {
     return new BrowserController({
       cdpRouter,
-      claims: validClaims(),
+      claims,
       exportSnapshot,
       files,
       ledger,

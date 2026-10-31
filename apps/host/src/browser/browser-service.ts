@@ -423,7 +423,7 @@ export interface BrowserSessionRepository {
   deleteBrowserProfile(input: {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
-  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[]; readonly changed: boolean }>;
+  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }>;
   listActiveBrowserSessionsForAgent(input: {
     readonly allOwnerWorkspaces: boolean;
     readonly ownerId: UserId;
@@ -493,6 +493,7 @@ export interface BrowserRuntimeTarget {
   /** The Runtime observes a target without starting a screencast. */
   readonly targetControl?: boolean;
   readonly navigationVersion?: boolean;
+  readonly navigationAttributionVersion?: boolean;
   readonly workspaceTabRestoreVersion?: boolean;
   readonly captureRegion?: boolean;
   readonly rasterDemand?: boolean;
@@ -1099,8 +1100,7 @@ export class BrowserService {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
   }): Promise<void> {
-    const { sessionIds, changed } = await this.#repository.deleteBrowserProfile(input);
-    if (changed) this.#onHistoryChanged(input.ownerId, input.profileId);
+    const { sessionIds } = await this.#repository.deleteBrowserProfile(input);
     this.invalidatePlaceAuthority();
     const stops = await Promise.allSettled(
       sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
@@ -1152,10 +1152,14 @@ export class BrowserService {
   /**
    * Opens a session. One a person opens from a conversation belongs to that
    * conversation from the start, before any Run has used it.
+   * Restored sessions keep their opener, so visit attribution is a caller opt-in.
    */
-  start(input: StartBrowserSessionInput): Promise<StartBrowserSessionResult> {
+  start(
+    input: StartBrowserSessionInput,
+    personNavigation?: { readonly typed: boolean },
+  ): Promise<StartBrowserSessionResult> {
     return this.#serialize(async () => {
-      const result = await this.#start(input);
+      const result = await this.#start(input, personNavigation);
       if (input.threadId) {
         this.announceUsage(
           await this.#repository.recordBrowserSessionUse({
@@ -3334,8 +3338,17 @@ export class BrowserService {
     return this.#closePromise;
   }
 
-  async #start(input: StartBrowserSessionInput): Promise<StartBrowserSessionResult> {
-    return (await this.#prepareStart(input))();
+  async #start(
+    input: StartBrowserSessionInput,
+    personNavigation?: { readonly typed: boolean },
+  ): Promise<StartBrowserSessionResult> {
+    return (
+      await this.#prepareStart(
+        input,
+        undefined,
+        personNavigation ? { ownerId: input.ownerId, typed: personNavigation.typed } : undefined,
+      )
+    )();
   }
 
   async #prepareStart(
@@ -3469,6 +3482,7 @@ export class BrowserService {
       access: "full-control",
       ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
+      ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
       ...(target.editing
         ? {
             editingVersion: target.editing,

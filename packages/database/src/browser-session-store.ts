@@ -384,7 +384,7 @@ export async function renameBrowserProfile(
 export async function deleteBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
-): Promise<{ readonly sessionIds: readonly BrowserSessionId[]; readonly changed: boolean }> {
+): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }> {
   return withDatabaseTransaction(database, async (transaction) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${input.profileId}`}, 0))`.execute(
       transaction,
@@ -453,12 +453,12 @@ export async function deleteBrowserProfile(
         .where("id", "in", groupIds)
         .execute();
     }
-    const archived = await transaction
+    await transaction
       .updateTable("browserProfiles")
       .set({ archivedAt: now, updatedAt: now })
       .where("id", "=", input.profileId)
       .where("archivedAt", "is", null)
-      .executeTakeFirst();
+      .execute();
     await lockBrowserHistory(transaction, input.profileId);
     await transaction
       .deleteFrom("browserHistoryEntries")
@@ -488,7 +488,7 @@ export async function deleteBrowserProfile(
       .where("state", "not in", ["closed", "failed"])
       .orderBy("id")
       .execute();
-    return { sessionIds: live.map((session) => session.id), changed: archived.numUpdatedRows > 0n };
+    return { sessionIds: live.map((session) => session.id) };
   });
 }
 

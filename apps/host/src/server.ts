@@ -2666,6 +2666,7 @@ export async function createHostServer(
           "profileId" in command.input
             ? { ...start, profileId: command.input.profileId }
             : { ...start, fresh: true },
+          { typed: false },
         );
         return { ...result, type: command.type };
       }

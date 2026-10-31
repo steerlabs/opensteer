@@ -361,16 +361,20 @@ describe("mobile browsing history", () => {
       entries: [
         entry("https://bank.example/one", "Account"),
         entry("https://bank.example/two?tab=2", "Account"),
+        entry("https://bank.example/#/account", "Account"),
+        entry("https://bank.example/#/billing", "Account"),
       ],
       icons: [],
     });
     await render();
     expect(text()).toContain("bank.example/one");
     expect(text()).toContain("bank.example/two?tab=2");
+    expect(text()).toContain("bank.example#/account");
+    expect(text()).toContain("bank.example#/billing");
     const labels = [...document.querySelectorAll("[aria-label^='History actions for']")].map(
       (control) => control.getAttribute("aria-label"),
     );
-    expect(new Set(labels).size).toBe(2);
+    expect(new Set(labels).size).toBe(4);
   });
 
   it("reports mutation errors", async () => {

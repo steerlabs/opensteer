@@ -218,7 +218,7 @@ function HistoryRow({
   const url = new URL(entry.url);
   const host = url.host;
   // The address without its scheme tells apart pages that share a title.
-  const address = `${host}${url.pathname === "/" ? "" : url.pathname}${url.search}`;
+  const address = `${host}${url.pathname === "/" ? "" : url.pathname}${url.search}${url.hash}`;
   const title = entry.title.trim() || host;
   const history = hostClient.browserHistory;
   const icon = disabled ? null : history.icon(profileId, history.iconRef(profileId, entry.url));

@@ -163,6 +163,8 @@ export const BrowserAttachTicketClaimsSchema = z
     audience: z.literal("opensteer-browser-runtime"),
     passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
+    /** Host opt-in to navigation IDs and committed-document reports. */
+    navigationAttributionVersion: z.literal(1).optional(),
     /**
      * The Host understands the editing contract (`editing.ts`): the runtime may
      * put `editingVersion` in its snapshot, accept editing commands and emit
