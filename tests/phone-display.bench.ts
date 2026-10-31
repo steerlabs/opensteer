@@ -1,13 +1,14 @@
 /* oxlint-disable opensteer/no-real-time-wait-in-tests, opensteer/no-polling-loop-in-tests -- This opt-in benchmark uses fixed sampling/workload intervals to measure real-time delivery and idle traffic; no wait establishes readiness. */
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { build as bundle } from "esbuild";
 import { chromium, type Page } from "playwright-core";
 import WebSocket from "ws";
 import { it, vi } from "vitest";
 import { ComputerAppHub } from "../apps/host/src/computer-apps/computer-app-hub.js";
+import { DisplayViewerBitrate } from "../apps/host/src/computer-use/display-viewer-bitrate.js";
 import type { WebSocketClient } from "../packages/client/src/host/host-session-client.js";
 import { decodeDisplayMediaFrame } from "../packages/protocol/src/display-stream.js";
 import {
@@ -59,6 +60,60 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
   const results: unknown[] = [];
   const failures: unknown[] = [];
   try {
+    const bitrateSamples: unknown[] = [];
+    const keyframeSamples: unknown[] = [];
+    const controllers = new Map<DisplayViewerBitrate, number>();
+    const controller = (rate: DisplayViewerBitrate) => {
+      if (!controllers.has(rate)) controllers.set(rate, controllers.size);
+      return controllers.get(rate)!;
+    };
+    if (process.env.OPENSTEER_PHONE_BENCH_TRACE === "1") {
+      const send = ComputerAppHub.prototype.sendDisplay;
+      vi.spyOn(ComputerAppHub.prototype, "sendDisplay").mockImplementation(function (
+        this: ComputerAppHub,
+        fence,
+        message,
+      ) {
+        if (message.type === "host.integrations.display.refresh")
+          keyframeSamples.push({ type: "refresh", at: performance.now() });
+        return send.call(this, fence, message);
+      });
+      const ack = DisplayViewerBitrate.prototype.ack;
+      const stall = DisplayViewerBitrate.prototype.stall;
+      vi.spyOn(DisplayViewerBitrate.prototype, "ack").mockImplementation(function (
+        this: DisplayViewerBitrate,
+        now,
+        bytes,
+        delay,
+        minimumDelay,
+      ) {
+        const before = this.cap;
+        ack.call(this, now, bytes, delay, minimumDelay);
+        bitrateSamples.push({
+          controller: controller(this),
+          now,
+          bytes,
+          delay,
+          minimumDelay,
+          before,
+          cap: this.cap,
+        });
+      });
+      vi.spyOn(DisplayViewerBitrate.prototype, "stall").mockImplementation(function (
+        this: DisplayViewerBitrate,
+        now,
+      ) {
+        const before = this.cap;
+        stall.call(this, now);
+        bitrateSamples.push({
+          controller: controller(this),
+          now,
+          stall: true,
+          before,
+          cap: this.cap,
+        });
+      });
+    }
     const authority = await createTestCertificateAuthority(scratch);
     const build = await buildE2eAgentPhone({ authority, log: join(directory, "build.log") });
     process.stdout.write("Benchmark APK built\n");
@@ -92,6 +147,12 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
       port: Number(new URL(host.publicOrigin).port),
       onDisplayMedia: (bytes) => {
         const frame = decodeDisplayMediaFrame(bytes);
+        if (frame.header.key && process.env.OPENSTEER_PHONE_BENCH_TRACE === "1")
+          keyframeSamples.push({
+            type: "key",
+            at: performance.now(),
+            bytes: frame.payload.byteLength,
+          });
         ingress.set(frame.header.sequence, performance.now());
         if (ingress.size > 1200) ingress.delete(ingress.keys().next().value!);
       },
@@ -156,6 +217,9 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
       if (!["0", "1"].includes(window)) throw new Error("Window must be 0 or 1");
       if (!["0", "1"].includes(cap)) throw new Error("Cap must be 0 or 1");
       capEnabled = cap === "1";
+      const uptime = (await runCommand("uptime", [])).trim();
+      const sampleStart = bitrateSamples.length;
+      const keyframeSampleStart = keyframeSamples.length;
       ingress.clear();
       if (!Object.hasOwn(linkProfiles, profile))
         throw new Error(`Unknown link profile: ${profile}`);
@@ -330,6 +394,8 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
         );
         const record = {
           profile,
+          uptime,
+          loadAverage: loadavg(),
           variant:
             process.env.OPENSTEER_PHONE_BENCH_CAPS === undefined
               ? (process.env.OPENSTEER_PHONE_BENCH_VARIANT ?? "default")
@@ -343,6 +409,8 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
           window: window === "1",
           coldPaintMs: cold.firstPaintMs,
           motionDurationMs: motionEnd - motionStart,
+          motionStartedAt: new Date(performance.timeOrigin + motionStart).toISOString(),
+          motionEndedAt: new Date(performance.timeOrigin + motionEnd).toISOString(),
           lateJoinPaintMs: joined.firstPaintMs,
           lateJoinBytes: joined.joinBytes,
           fps: active.length / ((motionEnd - motionStart) / 1000),
@@ -381,6 +449,16 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
         if (record.relayToPaintP50Ms === null || record.relayToPaintP95Ms === null)
           throw new Error("The relay observer did not timestamp painted frames");
         results.push(record);
+        if (process.env.OPENSTEER_PHONE_BENCH_TRACE === "1")
+          await writeFile(
+            join(directory, `${profile}-${results.length - 1}-keyframes.json`),
+            JSON.stringify(keyframeSamples.slice(keyframeSampleStart)),
+          );
+        if (process.env.OPENSTEER_PHONE_BENCH_TRACE === "1")
+          await writeFile(
+            join(directory, `${profile}-${results.length - 1}-bitrate.json`),
+            JSON.stringify(bitrateSamples.slice(sampleStart)),
+          );
         process.stdout.write(`${JSON.stringify(record)}\n`);
         await writeFile(join(directory, "results.json"), JSON.stringify(results, null, 2));
       } finally {
