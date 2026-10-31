@@ -49,23 +49,49 @@ describe("LocalProfileStore", () => {
     await mkdir(profile, { recursive: true });
     const temporary = "binding.v1.json.tmp-00000000-0000-4000-8000-000000000001";
     await writeFile(path.join(profile, temporary), "incomplete");
-    expect(await store.inventory()).toEqual([]);
+    await store.close();
+    const recovered = await LocalProfileStore.acquire(root, "chromium");
+    stores.push(recovered);
+    expect(await recovered.inventory()).toEqual([]);
     expect(await readdir(profile)).toEqual([]);
-    await store.initialize(binding, seed);
-    await store.ready(binding, seed);
-    await store.tombstone(binding, "00000000-0000-4000-8000-000000000003");
+    await recovered.initialize(binding, seed);
+    await recovered.ready(binding, seed);
+    await recovered.tombstone(binding, "00000000-0000-4000-8000-000000000003");
     const tombstones = path.join(root, "tombstones");
     await writeFile(
       path.join(tombstones, `${binding.profileId}.json.tmp-00000000-0000-4000-8000-000000000001`),
       "incomplete",
     );
-    await store.close();
+    await recovered.close();
     const next = await LocalProfileStore.acquire(root, "chromium");
     stores.push(next);
     expect(await next.inventory()).toEqual([expect.objectContaining({ phase: "deleted" })]);
     expect(await readdir(tombstones)).toEqual([`${binding.profileId}.json`]);
     await writeFile(path.join(tombstones, `${binding.profileId}.json`), "incomplete");
     await expect(next.inventory()).rejects.toThrow(/invalid/);
+  });
+  it("does not discard another admitted write during inventory", async () => {
+    const { root, store, binding } = await setup();
+    await store.initialize(binding, seed);
+    const profile = path.join(root, "profiles", binding.profileId);
+    const marker = path.join(profile, "binding.v1.json.tmp-00000000-0000-4000-8000-000000000001");
+    await writeFile(marker, "in-flight");
+    const tombstones = path.join(root, "tombstones");
+    await mkdir(tombstones);
+    const deletion = path.join(
+      tombstones,
+      `${binding.profileId}.json.tmp-00000000-0000-4000-8000-000000000001`,
+    );
+    await writeFile(deletion, "in-flight");
+    expect(await store.inventory()).toEqual([{ phase: "initializing", binding, seed }]);
+    expect(await readFile(marker, "utf8")).toBe("in-flight");
+    expect(await readFile(deletion, "utf8")).toBe("in-flight");
+    await store.close();
+    const restarted = await LocalProfileStore.acquire(root, "chromium");
+    stores.push(restarted);
+    expect(await restarted.inventory()).toEqual([{ phase: "initializing", binding, seed }]);
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(deletion)).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("does not mistake invalid committed filenames for atomic sidecars", async () => {
     const { root, store } = await setup();

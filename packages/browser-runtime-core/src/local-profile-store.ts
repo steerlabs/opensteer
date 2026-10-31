@@ -13,6 +13,7 @@ import {
 } from "@opensteer/protocol";
 import {
   discardPrivateFileTemporaryFiles,
+  privateFileTemporaryTarget,
   readPrivateFileText,
   replacePrivateFileAtomically,
   securePrivateDirectory,
@@ -84,6 +85,17 @@ export class LocalProfileStore {
         );
       }
       const store = new LocalProfileStore(canonical, identity.storageInstanceId, engine);
+      // Inventory may overlap live publications after acquire returns. Only
+      // acquisition has exclusive access to every marker and tombstone writer.
+      const tombstones = path.join(canonical, "tombstones");
+      await realDirectoryIfPresent(tombstones);
+      await discardPrivateFileTemporaryFiles(tombstones, tombstoneName);
+      for (const name of await names(path.join(canonical, "profiles"))) {
+        if (!/^bpr_[a-f0-9-]+$/iu.test(name)) throw invalid();
+        const directory = path.join(canonical, "profiles", name);
+        if (!(await realDirectoryIfPresent(directory))) throw invalid();
+        await discardPrivateFileTemporaryFiles(directory, profileSidecar);
+      }
       // A same-process re-acquire is not proof that Electron released its Session.
       // After process exit this registry is empty, so erasure precedes fromPath.
       for (const claim of await store.tombstones()) {
@@ -117,7 +129,6 @@ export class LocalProfileStore {
     const profile = this.profile(binding);
     await realDirectoryIfPresent(path.join(this.root, "profiles"));
     await realDirectoryIfPresent(profile);
-    await discardPrivateFileTemporaryFiles(profile, profileSidecar);
     const marker = await readJson(path.join(profile, "binding.v1.json"), markerSchema);
     if (marker && !sameLocalBinding(marker.binding, binding))
       throw invalid("The local browser profile binding does not match.");
@@ -242,11 +253,15 @@ export class LocalProfileStore {
       if (claims.has(name)) continue;
       const directory = path.join(this.root, "profiles", name);
       if (!(await realDirectoryIfPresent(directory))) throw invalid();
-      await discardPrivateFileTemporaryFiles(directory, profileSidecar);
       const marker = await readJson(path.join(directory, "binding.v1.json"), markerSchema);
       // A crash before marker creation can leave an empty directory; it is not a claim.
       if (!marker) {
-        if ((await readdir(directory)).length) throw invalid();
+        if (
+          (await readdir(directory)).some(
+            (name) => !profileSidecar(privateFileTemporaryTarget(name) ?? ""),
+          )
+        )
+          throw invalid();
         continue;
       }
       this.validate(marker.binding);
@@ -262,12 +277,8 @@ export class LocalProfileStore {
   }
   private async tombstones(): Promise<Tombstone[]> {
     const claims: Tombstone[] = [];
-    const directory = path.join(this.root, "tombstones");
-    await realDirectoryIfPresent(directory);
-    await discardPrivateFileTemporaryFiles(directory, (name) =>
-      /^bpr_[a-f0-9-]+\.json$/iu.test(name),
-    );
     for (const name of await names(path.join(this.root, "tombstones"))) {
+      if (tombstoneName(privateFileTemporaryTarget(name) ?? "")) continue;
       const claim = await readJson(
         path.join(this.root, "tombstones", name),
         HeldLocalProfileSchema,
@@ -316,4 +327,8 @@ async function names(directory: string): Promise<string[]> {
 
 function profileSidecar(name: string): boolean {
   return name === "binding.v1.json";
+}
+
+function tombstoneName(name: string): boolean {
+  return /^bpr_[a-f0-9-]+\.json$/iu.test(name);
 }

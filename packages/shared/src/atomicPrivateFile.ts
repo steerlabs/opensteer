@@ -72,16 +72,19 @@ export async function discardPrivateFileTemporaryFiles(
     throw error;
   });
   for (const name of names) {
-    const match =
-      /^(.*)\.tmp-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.exec(
-        name,
-      ) ??
-      // ProtectedJsonFile uses the older private-file publication convention.
-      /^\.(.*)\.[1-9][0-9]*\.[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp$/u.exec(
-        name,
-      );
-    if (match && isCommittedName(match[1]!)) await rm(join(directory, name), { force: true });
+    const target = privateFileTemporaryTarget(name);
+    if (target && isCommittedName(target)) await rm(join(directory, name), { force: true });
   }
+}
+
+export function privateFileTemporaryTarget(name: string): string | undefined {
+  const match =
+    /^(.*)\.tmp-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.exec(name) ??
+    // ProtectedJsonFile uses the older private-file publication convention.
+    /^\.(.*)\.[1-9][0-9]*\.[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp$/u.exec(
+      name,
+    );
+  return match?.[1];
 }
 
 export async function readPrivateFileText(
