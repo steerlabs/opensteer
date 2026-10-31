@@ -15,7 +15,11 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Voice's controls animate with Reanimated, which cannot load here; these tests are not about voice.
-vi.mock("../voice/controls.js", () => ({ VoiceDock: () => null, VoiceMic: () => null }));
+vi.mock("../voice/controls.js", () => ({
+  VoiceDock: () => null,
+  VoiceMic: () => null,
+  useVoiceAvailable: () => false,
+}));
 
 import { ExecutionSelectionSchema, type ThreadAccessMode } from "@opensteer/core";
 
