@@ -758,6 +758,53 @@ describe("IntegrationService hosted OAuth refresh", () => {
 });
 
 describe("IntegrationService OAuth source authority", () => {
+  it.each(["missing", "changed"] as const)(
+    "refuses %s installed managed qualification before reading the Account binding",
+    async (qualification) => {
+      const definition = refreshDefinition();
+      const hosted = hostedOAuthFixture();
+      const begin = vi.fn();
+      const service = new IntegrationService({
+        attempts: { begin } as never,
+        definitions: [definition],
+        installedDefinition: async () => ({
+          ...definition,
+          hostedOAuth:
+            qualification === "missing"
+              ? undefined
+              : { ...definition.hostedOAuth!, providerApplicationRevision: 2 },
+        }),
+        deploymentPosture: async () => "account-linked-personal",
+        hostedOAuth: hosted,
+        onConnectionConnected: vi.fn(async () => undefined),
+        publicUrl: new URL("http://127.0.0.1:43210"),
+        repository: {
+          listApplicationSourceDefaults: async () => ({}),
+          listProviderApplications: async () => [],
+        } as unknown as IntegrationRepository,
+        vault: {} as never,
+      });
+
+      await expect(
+        service.beginAuthorization({
+          definitionId: definition.id,
+          ownerUserId: createId("user"),
+          requestSurface: "canonical",
+          returnPath: "/integrations",
+          surface: "desktop",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        message:
+          qualification === "missing"
+            ? "Example's installed sign-in configuration is incomplete. Repair the integration before connecting."
+            : "The selected provider application changed; reload before connecting",
+      });
+      expect(hosted.accountSubject).not.toHaveBeenCalled();
+      expect(begin).not.toHaveBeenCalled();
+    },
+  );
+
   const applicationId = createIntegrationId("providerApplication");
   const application = {
     clientId: "deployment-client-id",
@@ -1476,6 +1523,7 @@ describe("IntegrationService hosted OAuth failures", () => {
         onConnectionConnected,
         attempts: attempts as never,
         definitions: [definition],
+        installedDefinition: async () => roundTripDefinition(definition),
         deploymentPosture: async () => "account-linked-personal" as const,
         fetch: vi.fn(async () => Response.json({ name: "Hosted user", sub: "subject-1" })),
         hostedOAuth: {
@@ -2241,6 +2289,20 @@ function hostedRefreshHarness(broker: unknown) {
   });
 }
 
+function roundTripDefinition(definition: IntegrationDefinition): IntegrationDefinition {
+  const row: Parameters<typeof installedIntegrationDefinition>[0] = JSON.parse(
+    JSON.stringify({
+      adapterSnapshot: {
+        adapter: definition.adapter,
+        config: definition.config,
+        definitionId: definition.id,
+      },
+      manifest: { definition: integrationDefinitionSummary(definition) },
+    }),
+  );
+  return installedIntegrationDefinition(row);
+}
+
 function deploymentRefreshHarness() {
   const applicationId = createIntegrationId("providerApplication");
   const definition = refreshDefinition();
@@ -2318,6 +2380,7 @@ function refreshHarness(input: {
     onConnectionConnected: vi.fn(async () => undefined),
     attempts: {} as never,
     definitions: [input.definition],
+    installedDefinition: async () => roundTripDefinition(input.definition),
     deploymentPosture: async () => input.posture,
     ...(input.fetch ? { fetch: input.fetch } : {}),
     ...(input.hostedOAuth ? { hostedOAuth: input.hostedOAuth } : {}),

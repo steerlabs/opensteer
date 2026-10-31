@@ -15,7 +15,10 @@ import {
 } from "@opensteer/integration-core";
 import type { ComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
-import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
+import {
+  authorizationDigest,
+  integrationDefinitionDigest,
+} from "@opensteer/integration-core/digest";
 import {
   type RunId,
   type ThreadId,
@@ -53,6 +56,98 @@ const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 
 integration.sequential("PostgreSQL integration installation lookups", () => {
+  function hostedDefinition(id: string) {
+    return IntegrationDefinitionSchema.parse({
+      adapter: "graphql",
+      authMethods: [
+        {
+          id: "oauth",
+          kind: "oauth",
+          label: "Sign in",
+          oauth: {
+            authorizationUrl: "https://provider.example/authorize",
+            clientAuth: "body",
+            identity: {
+              source: "userinfo",
+              identityPath: "sub",
+              userinfoUrl: "https://provider.example/userinfo",
+            },
+            scopes: ["read"],
+            tokenUrl: "https://provider.example/token",
+            usesPkce: true,
+          },
+          placements: [
+            {
+              carrier: "header",
+              name: "Authorization",
+              prefix: "Bearer ",
+              variable: "accessToken",
+            },
+          ],
+        },
+      ],
+      config: { endpoint: "https://provider.example/graphql" },
+      description: "Managed sign-in fixture",
+      hostedOAuth: {
+        providerApplicationRevision: 1,
+        qualification: { authorizationCodeExchange: true, refresh: true },
+      },
+      id,
+      name: id,
+      provider: "example",
+      setupUrl: "https://provider.example/developers",
+    });
+  }
+
+  async function installLegacyHostedDefinition(installations: IntegrationInstallStore, id: string) {
+    const definition = hostedDefinition(id);
+    const { hostedOAuth, ...legacy } = definition;
+    void hostedOAuth;
+    const installationId = createIntegrationId("installation");
+    await installations.install({
+      actorUserId: null,
+      adapterSnapshot: {
+        adapter: "graphql",
+        config: { endpoint: "https://provider.example/graphql", immutable: "saved" },
+        definitionId: id,
+      },
+      installation: {
+        description: definition.description,
+        id: installationId,
+        manifest: { definition: integrationDefinitionSummary(legacy) },
+        name: id,
+        provenance: {
+          definitionId: id,
+          definitionDigest: integrationDefinitionDigest(definition),
+          maintainedBy: "opensteer",
+        },
+        sourceKind: "built-in",
+        status: "active",
+        title: id,
+        trust: "built-in",
+        version: integrationDefinitionDigest(definition),
+      },
+      requestId: `legacy:${id}`,
+      servers: [
+        {
+          catalog: { definitions: {}, tools: [] },
+          connectionRequirement: {
+            definitionId: id,
+            kind: "provider",
+            provider: "example",
+            providerApplicationRequired: true,
+          },
+          id: createIntegrationId("server"),
+          name: "default",
+          status: "active",
+          statusDetail: null,
+          transport: { adapter: "graphql", definitionId: id, type: "adapter" },
+        },
+      ],
+    });
+    return { definition, legacy, installationId };
+  }
+
   async function createTestFixture() {
     const clone = await cloneTestDatabase("host");
     const databaseUrl = clone.url;
@@ -154,6 +249,281 @@ integration.sequential("PostgreSQL integration installation lookups", () => {
         installations.findInstalledDefinition(definition.id, { allowUnavailable: true }),
       ).resolves.toEqual(definition);
     }
+  });
+  it("repairs unchanged built-in OAuth metadata and only equivalent own-app fingerprints once", async ({
+    storeFixture,
+  }) => {
+    const { database, installations } = storeFixture;
+    const { definition, legacy, installationId } = await installLegacyHostedDefinition(
+      installations,
+      "hosted-mail",
+    );
+    const ownerUserId = await new OpensteerStore(database).createUser("OAuth repair owner");
+    const application = await new IntegrationStore(database).saveProviderApplication({
+      actorUserId: ownerUserId,
+      application: {
+        id: createIntegrationId("providerApplication"),
+        clientId: "own-client",
+        displayName: "Own app",
+        ownerUserId: null,
+        provider: "example",
+        status: "active",
+      },
+      expectedRevision: null,
+      requestId: "own-app",
+      secrets: { envelope: Buffer.from("encrypted-app"), keyVersion: 1 },
+    });
+    const ownSource = {
+      kind: "deployment-oauth" as const,
+      providerApplicationId: application.id,
+      providerApplicationRevision: application.revision,
+      callbackUrl: "https://host.example/callback",
+    };
+    const hostedSource = {
+      kind: "hosted-oauth" as const,
+      brokerIssuer: "https://account.example",
+      providerApplicationRevision: 1,
+    };
+    const cases = [
+      {
+        label: "own",
+        source: ownSource,
+        digest: authorizationDigest(legacy),
+        status: "connected" as const,
+        repaired: true,
+      },
+      {
+        label: "attention",
+        source: ownSource,
+        digest: authorizationDigest(legacy),
+        status: "needs-attention" as const,
+        repaired: true,
+      },
+      {
+        label: "revoked",
+        source: ownSource,
+        digest: authorizationDigest(legacy),
+        status: "revoked" as const,
+        repaired: false,
+      },
+      {
+        label: "hosted",
+        source: hostedSource,
+        digest: authorizationDigest(definition),
+        status: "connected" as const,
+        repaired: false,
+      },
+      {
+        label: "invalid-hosted",
+        source: hostedSource,
+        digest: authorizationDigest(legacy),
+        status: "connected" as const,
+        repaired: false,
+      },
+      {
+        label: "different-contract",
+        source: ownSource,
+        digest: "X".repeat(43),
+        status: "connected" as const,
+        repaired: false,
+      },
+    ];
+    for (const fixture of cases) {
+      await database
+        .insertInto("integrationConnections")
+        .values({
+          accountIdentifier: fixture.label,
+          applicationSource: jsonValue(fixture.source),
+          authMethodId: "oauth",
+          authorizationDigest: fixture.digest,
+          capabilities: jsonValue([]),
+          connectionKind: "provider-account",
+          connectionMethod: "managed-oauth",
+          credentialId: null,
+          displayName: fixture.label,
+          externalIdentityId: fixture.label,
+          externalTenantId: null,
+          grantedScopes: jsonValue(["read"]),
+          id: createIntegrationId("connection"),
+          integrationDefinitionId: definition.id,
+          integrationServerId: null,
+          ownerUserId,
+          provider: definition.provider,
+          providerApplicationId: fixture.source.kind === "deployment-oauth" ? application.id : null,
+          runnerId: null,
+          status: fixture.status,
+          statusDetail: fixture.status === "needs-attention" ? "Needs an explicit sign-in" : null,
+          transportKind: null,
+          updatedAt: new Date("2026-09-01T00:00:00Z"),
+        })
+        .execute();
+    }
+    const before = await database
+      .selectFrom("integrationInstallations")
+      .selectAll()
+      .where("id", "=", installationId)
+      .executeTakeFirstOrThrow();
+    const connections = await database
+      .selectFrom("integrationConnections")
+      .selectAll()
+      .orderBy("displayName")
+      .execute();
+    const servers = await database.selectFrom("integrationServers").selectAll().execute();
+    expect(
+      (
+        await Promise.all([
+          installations.backfillHostedOAuthMetadata([definition]),
+          installations.backfillHostedOAuthMetadata([definition]),
+        ])
+      ).sort(),
+    ).toEqual([0, 1]);
+    const after = await database
+      .selectFrom("integrationInstallations")
+      .selectAll()
+      .where("id", "=", installationId)
+      .executeTakeFirstOrThrow();
+    expect(after).toEqual({
+      ...before,
+      manifest: {
+        ...before.manifest,
+        definition: {
+          ...integrationDefinitionSummary(legacy),
+          hostedOAuth: definition.hostedOAuth,
+        },
+      },
+    });
+    expect(
+      await database
+        .selectFrom("integrationConnections")
+        .selectAll()
+        .orderBy("displayName")
+        .execute(),
+    ).toEqual(
+      connections.map((connection) => ({
+        ...connection,
+        authorizationDigest: cases.find((fixture) => fixture.label === connection.displayName)!
+          .repaired
+          ? authorizationDigest(definition)
+          : connection.authorizationDigest,
+      })),
+    );
+    expect(await database.selectFrom("integrationServers").selectAll().execute()).toEqual(servers);
+    expect(await installations.backfillHostedOAuthMetadata([definition])).toBe(0);
+  });
+
+  it("preserves unavailable states and refuses unverified, conflicting, or foreign installation authority", async ({
+    storeFixture,
+  }) => {
+    const { database, installations } = storeFixture;
+    const definitions = [];
+    const rows = [];
+    for (const label of [
+      "disabled",
+      "needs-attention",
+      "proposed",
+      "wrong-digest",
+      "wrong-id",
+      "wrong-contract",
+      "missing-snapshot",
+      "wrong-snapshot",
+      "conflicting",
+      "removed",
+    ] as const) {
+      const seeded = await installLegacyHostedDefinition(installations, `repair-${label}`);
+      definitions.push(seeded.definition);
+      const row = await database
+        .selectFrom("integrationInstallations")
+        .selectAll()
+        .where("id", "=", seeded.installationId)
+        .executeTakeFirstOrThrow();
+      if (label === "removed") {
+        await installations.uninstall({
+          actorUserId: await new OpensteerStore(database).createUser("Uninstall owner"),
+          installationId: row.id,
+          requestId: "uninstall-before-repair",
+        });
+        continue;
+      }
+      const summary = integrationDefinitionSummary(seeded.legacy);
+      await database
+        .updateTable("integrationInstallations")
+        .set({
+          ...(label === "disabled" || label === "needs-attention" ? { status: label } : {}),
+          ...(label === "proposed"
+            ? { sourceKind: "proposed", trust: "administrator-approved" }
+            : {}),
+          ...(label === "wrong-digest"
+            ? { provenance: jsonValue({ ...row.provenance, definitionDigest: "X".repeat(43) }) }
+            : {}),
+          ...(label === "wrong-id"
+            ? { provenance: jsonValue({ ...row.provenance, definitionId: "another-definition" }) }
+            : {}),
+          ...(label === "missing-snapshot" ? { adapterSnapshot: null } : {}),
+          ...(label === "wrong-snapshot"
+            ? {
+                adapterSnapshot: jsonValue({
+                  adapter: "graphql",
+                  config: {},
+                  definitionId: "another-definition",
+                }),
+              }
+            : {}),
+          ...(label === "wrong-contract"
+            ? { manifest: jsonValue({ definition: { ...summary, provider: "another-provider" } }) }
+            : {}),
+          ...(label === "conflicting"
+            ? {
+                manifest: jsonValue({
+                  definition: {
+                    ...summary,
+                    hostedOAuth: {
+                      ...seeded.definition.hostedOAuth,
+                      providerApplicationRevision: 2,
+                    },
+                  },
+                }),
+              }
+            : {}),
+        })
+        .where("id", "=", row.id)
+        .execute();
+      rows.push({
+        label,
+        definition: seeded.definition,
+        row: await database
+          .selectFrom("integrationInstallations")
+          .selectAll()
+          .where("id", "=", row.id)
+          .executeTakeFirstOrThrow(),
+      });
+    }
+    expect(await installations.backfillHostedOAuthMetadata(definitions)).toBe(2);
+    for (const fixture of rows) {
+      const repaired = fixture.label === "disabled" || fixture.label === "needs-attention";
+      const expected = repaired
+        ? {
+            ...fixture.row,
+            manifest: {
+              ...fixture.row.manifest,
+              definition: {
+                ...integrationDefinitionSummary({ ...fixture.definition, hostedOAuth: undefined }),
+                hostedOAuth: fixture.definition.hostedOAuth,
+              },
+            },
+          }
+        : fixture.row;
+      expect(
+        await database
+          .selectFrom("integrationInstallations")
+          .selectAll()
+          .where("id", "=", fixture.row.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual(expected);
+    }
+    expect(await installations.backfillHostedOAuthMetadata(definitions)).toBe(0);
+    expect(
+      await database.selectFrom("integrationInstallations").select("id").execute(),
+    ).toHaveLength(rows.length);
   });
 });
 

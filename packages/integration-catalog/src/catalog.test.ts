@@ -7,7 +7,11 @@ import {
   type GoogleService,
   validateJsonSchema,
 } from "@opensteer/integration-adapters";
-import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
+import {
+  IntegrationDefinitionSchema,
+  integrationDefinitionSummary,
+} from "@opensteer/integration-core";
+import { authorizationDigest } from "@opensteer/integration-core/digest";
 import { parseComputerAppConfig } from "@opensteer/integration-core/computer-app";
 import { describe, expect, it } from "vitest";
 import { getIntegrationDefinition, integrationDefinitions } from "./index.js";
@@ -15,6 +19,11 @@ import { getIntegrationDefinition, integrationDefinitions } from "./index.js";
 describe("first-party integration catalog", () => {
   it("qualifies hosted OAuth only when both exchange and refresh are reviewed", () => {
     const hosted = integrationDefinitions.filter((definition) => definition.hostedOAuth);
+    for (const definition of hosted) {
+      const summary = integrationDefinitionSummary(definition);
+      expect(summary.hostedOAuth, definition.id).toEqual(definition.hostedOAuth);
+      expect(authorizationDigest(summary), definition.id).toBe(authorizationDigest(definition));
+    }
     expect(hosted.map(({ id }) => id)).toEqual([
       "google-gmail",
       "google-calendar",
