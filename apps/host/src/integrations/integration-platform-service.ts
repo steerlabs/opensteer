@@ -1255,6 +1255,8 @@ export class IntegrationPlatformService {
     readonly actorUserId: UserId | null;
     readonly requestId: string;
   }): Promise<readonly IntegrationInstallation[]> {
+    if (this.#definitions.some((definition) => definition.hostedOAuth))
+      await this.#store.installations.backfillHostedOAuthMetadata(this.#definitions);
     const installations: IntegrationInstallation[] = [];
     const definitionsById = new Map(
       this.#definitions.map((definition) => [definition.id, definition]),
@@ -1332,6 +1334,8 @@ export class IntegrationPlatformService {
         message: "The catalog integration changed; review the current definition before installing",
       });
     }
+    if (definition.hostedOAuth)
+      await this.#store.installations.backfillHostedOAuthMetadata([definition]);
     const current = (await this.#store.listInstallations()).find(
       (installation) =>
         installation.sourceKind === "built-in" &&

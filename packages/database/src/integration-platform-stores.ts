@@ -13,6 +13,10 @@ import {
 import { jsonValue } from "./store-primitives.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
+  authorizationDigest,
+  integrationDefinitionDigest,
+} from "@opensteer/integration-core/digest";
+import {
   IntegrationAdapterSnapshotSchema,
   type IntegrationAdapterSnapshot,
 } from "@opensteer/integration-core/adapter";
@@ -1348,6 +1352,78 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
         discoverInstallationRequestWorkspaces(transaction, { id: input.installationId }),
       (transaction) => uninstallIntegrationInTransaction(transaction, input),
     );
+  }
+
+  /** Restore omitted managed qualification only under the original reviewed catalog contract. */
+  async backfillHostedOAuthMetadata(
+    definitions: readonly IntegrationDefinition[],
+  ): Promise<number> {
+    const qualified = new Map(
+      definitions
+        .filter((definition) => definition.hostedOAuth)
+        .map((definition) => [definition.id, definition]),
+    );
+    if (qualified.size === 0) return 0;
+    const missingMetadata = sql<boolean>`manifest -> 'definition' -> 'hostedOAuth' is null`;
+    const candidates = await this.database
+      .selectFrom("integrationInstallations")
+      .select("id")
+      .where("sourceKind", "=", "built-in")
+      .where(sql<string>`provenance ->> 'definitionId'`, "in", [...qualified.keys()])
+      .where(missingMetadata)
+      .orderBy("id", "asc")
+      .execute();
+    let repaired = 0;
+    for (const { id } of candidates) {
+      repaired += await withDatabaseTransaction(this.database, async (transaction) => {
+        const row = await transaction
+          .selectFrom("integrationInstallations")
+          .selectAll()
+          .where("id", "=", id)
+          .where("sourceKind", "=", "built-in")
+          .where(missingMetadata)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        if (!row) return 0;
+        const definitionId = exactCatalogDefinitionId(row);
+        const catalog = definitionId ? qualified.get(definitionId) : undefined;
+        if (!catalog || row.provenance.definitionDigest !== integrationDefinitionDigest(catalog))
+          return 0;
+        let installed: IntegrationDefinition;
+        try {
+          installed = installedIntegrationDefinition(row);
+        } catch {
+          return 0;
+        }
+        const correctedDigest = authorizationDigest({
+          ...installed,
+          hostedOAuth: catalog.hostedOAuth,
+        });
+        if (correctedDigest !== authorizationDigest(catalog)) return 0;
+        await transaction
+          .updateTable("integrationInstallations")
+          .set({
+            manifest: sql`jsonb_set(manifest, '{definition,hostedOAuth}', ${JSON.stringify(catalog.hostedOAuth)}::jsonb)`,
+          })
+          .where("id", "=", id)
+          .execute();
+        // Managed qualification does not change an own-app grant. Only translate the exact
+        // old contract; app/revision/callback pins and every connection state remain intact.
+        await transaction
+          .updateTable("integrationConnections")
+          .set({ authorizationDigest: correctedDigest })
+          .where("integrationDefinitionId", "=", catalog.id)
+          .where("provider", "=", catalog.provider)
+          .where("connectionKind", "=", "provider-account")
+          .where("connectionMethod", "=", "managed-oauth")
+          .where("authorizationDigest", "=", authorizationDigest(installed))
+          .where(sql<boolean>`application_source ->> 'kind' = 'deployment-oauth'`)
+          .where("status", "!=", "revoked")
+          .execute();
+        return 1;
+      });
+    }
+    return repaired;
   }
 
   /** Fill additive public facts from the original snapshot without rematerializing its authority. */

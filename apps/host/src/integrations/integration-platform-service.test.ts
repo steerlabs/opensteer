@@ -23,7 +23,7 @@ import {
   type IntegrationToolMaterial,
 } from "@opensteer/integration-core";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
-import { computerAppIntegrations } from "@opensteer/integration-catalog";
+import { computerAppIntegrations, googleIntegrations } from "@opensteer/integration-catalog";
 import { type IntegrationAdapterCredentialMaterializer } from "@opensteer/integration-core/ports";
 import {
   integrationDefinitionDigest,
@@ -130,6 +130,68 @@ function computerStatus(
 }
 
 describe("IntegrationPlatformService definition reconciliation", () => {
+  it.each(["startup", "install"] as const)(
+    "repairs unchanged OAuth metadata before the %s cached-installation path without rematerializing",
+    async (operation) => {
+      const definition = googleIntegrations.find(({ id }) => id === "google-gmail")!;
+      const { hostedOAuth, ...legacy } = definition;
+      void hostedOAuth;
+      let installation: IntegrationInstallation = {
+        createdAt: now,
+        description: definition.description,
+        id: createIntegrationId("installation"),
+        manifest: { definition: integrationDefinitionSummary(legacy) },
+        name: definition.id,
+        provenance: {
+          definitionId: definition.id,
+          definitionDigest: integrationDefinitionDigest(definition),
+        },
+        revision: 3,
+        sourceKind: "built-in",
+        status: "disabled",
+        title: definition.name,
+        trust: "built-in",
+        updatedAt: now,
+        version: integrationDefinitionDigest(definition),
+      };
+      const backfillHostedOAuthMetadata = vi.fn(async () => {
+        installation = {
+          ...installation,
+          manifest: { definition: integrationDefinitionSummary(definition) },
+        };
+        return 1;
+      });
+      const install = vi.fn();
+      const service = platform({
+        adapters: [],
+        definitions: [definition],
+        store: {
+          installations: {
+            backfillHostedOAuthMetadata,
+          } as unknown as IntegrationPlatformStore["installations"],
+          install,
+          listInstallations: vi.fn(async () => [installation]),
+        },
+      });
+      const actual =
+        operation === "startup"
+          ? (await service.ensureBuiltIns({ actorUserId: null, requestId: "startup" }))[0]
+          : await service.installCatalogDefinition({
+              actorUserId: createId("user"),
+              definitionId: definition.id,
+              digest: integrationDefinitionDigest(definition),
+              requestId: "install",
+            });
+
+      expect(actual).toEqual(installation);
+      expect(actual?.manifest.definition).toMatchObject({ hostedOAuth: definition.hostedOAuth });
+      expect(actual?.status).toBe("disabled");
+      expect(actual?.revision).toBe(3);
+      expect(backfillHostedOAuthMetadata).toHaveBeenCalledExactlyOnceWith([definition]);
+      expect(install).not.toHaveBeenCalled();
+    },
+  );
+
   it("materializes a computer app without an adapter snapshot or server tools", async () => {
     const install = vi.fn(async (input: Parameters<IntegrationPlatformStore["install"]>[0]) => ({
       installation: {

@@ -526,7 +526,12 @@ export class IntegrationService {
     const brokerReturnPath =
       input.requestSurface === "personal-remote" ? undefined : input.returnPath;
     if (applicationSource.kind === "hosted-oauth") {
-      return this.#beginHostedAuthorization({ ...input, brokerReturnPath }, definition, method);
+      return this.#beginHostedAuthorization(
+        { ...input, brokerReturnPath },
+        definition,
+        method,
+        applicationSource,
+      );
     }
     const application = await this.#repository.getProviderApplication(
       applicationSource.providerApplicationId,
@@ -643,10 +648,23 @@ export class IntegrationService {
     },
     definition: IntegrationDefinition,
     method: Extract<AuthMethod, { kind: "oauth" }>,
+    applicationSource: Extract<IntegrationOAuthApplicationSource, { kind: "hosted-oauth" }>,
   ) {
     const hosted = this.#hostedOAuth;
     const revision = definition.hostedOAuth?.providerApplicationRevision;
-    if (!hosted || !revision) {
+    if (!revision) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: `${definition.name}'s installed sign-in configuration is incomplete. Repair the integration before connecting.`,
+      });
+    }
+    if (revision !== applicationSource.providerApplicationRevision) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The selected provider application changed; reload before connecting",
+      });
+    }
+    if (!hosted) {
       throw new OpensteerError({
         code: "conflict",
         message: "Link Opensteer Account or Use your own OAuth app",

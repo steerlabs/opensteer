@@ -14,16 +14,22 @@ describe("integration adapter boundaries", () => {
       authMethods: [{ id: "none", kind: "none", label: "No authentication" }],
       config: { inline: { openapi: "3.1.0" } },
       description: "Example API",
+      hostedOAuth: {
+        providerApplicationRevision: 1,
+        qualification: { authorizationCodeExchange: true, refresh: true },
+      },
       id: "example",
       name: "Example",
       provider: "example",
     });
 
+    const { config, ...publicDefinition } = definition;
+    expect(integrationDefinitionSummary(definition)).toEqual({ ...publicDefinition, apiKey: null });
     expect(integrationDefinitionSummary(definition)).not.toHaveProperty("config");
     expect(
       IntegrationAdapterSnapshotSchema.parse({
         adapter: definition.adapter,
-        config: definition.config,
+        config,
         definitionId: definition.id,
       }),
     ).toEqual({

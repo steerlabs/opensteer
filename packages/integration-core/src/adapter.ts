@@ -110,20 +110,13 @@ export function integrationDefinitionSummary(
   definition: IntegrationDefinition,
   apiKey: ApiKeyDisclosure | null = null,
 ): IntegrationDefinitionSummary {
+  const { config, ...summary } = definition;
   return {
-    adapter: definition.adapter,
+    ...summary,
     apiKey,
-    authMethods: definition.authMethods,
-    description: definition.description,
-    ...(definition.icon === undefined ? {} : { icon: definition.icon }),
-    id: definition.id,
-    name: definition.name,
-    provider: definition.provider,
     ...(definition.adapter === "computer"
-      ? { computerApp: computerAppPresentation(ComputerAppConfigSchema.parse(definition.config)) }
+      ? { computerApp: computerAppPresentation(ComputerAppConfigSchema.parse(config)) }
       : {}),
-    ...(definition.setupSteps === undefined ? {} : { setupSteps: definition.setupSteps }),
-    ...(definition.setupUrl === undefined ? {} : { setupUrl: definition.setupUrl }),
   };
 }
 
