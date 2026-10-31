@@ -103,6 +103,14 @@ describe("usageLimitNotice", () => {
       }),
     ]);
     expect(notice({ placements: [nextWeek] })!.key).not.toBe(key);
+    const anotherLogin = {
+      ...spent,
+      observedConnections: spent.observedConnections.map((account) => ({
+        ...account,
+        accountLabel: "another@example.test",
+      })),
+    };
+    expect(notice({ placements: [anotherLogin] })!.key).not.toBe(key);
   });
 
   it("lifts once the window resets, and stays silent for another account or model", () => {
@@ -112,6 +120,32 @@ describe("usageLimitNotice", () => {
     const resetTime = new Date(weeklyReset).getTime();
     const freshFailure = { ...failed, createdAt: new Date(resetTime + 1_000).toISOString() };
     expect(notice({ entries: [freshFailure], now: resetTime + 2_000 })?.key).toContain("run:run-1");
+    const endedFailure = { ...failed, endedAt: new Date(resetTime - 1_000).toISOString() };
+    const recovered = placement([
+      connection({
+        limitReached: false,
+        observedAt: new Date(resetTime + 1_000).toISOString(),
+        windows: [
+          {
+            label: "weekly",
+            resetsAt: new Date(resetTime + 604_800_000).toISOString(),
+            usedPercent: 1,
+          },
+        ],
+      }),
+    ]);
+    expect(
+      notice({ entries: [endedFailure], placements: [recovered], now: resetTime + 2_000 }),
+    ).toBeNull();
+    const staleHealthy = placement([
+      connection({
+        ...recovered.observedConnections[0]!.usage!,
+        observedAt: new Date(resetTime - 2_000).toISOString(),
+      }),
+    ]);
+    expect(
+      notice({ entries: [endedFailure], placements: [staleHealthy], now: resetTime + 2_000 })?.key,
+    ).toContain("run:run-1");
     const changed: TranscriptEntry = {
       kind: "selection",
       id: "selection-2",
@@ -135,7 +169,7 @@ describe("usageLimitNotice", () => {
       entries: [run("failed", "run-1", harnessUsageLimitFailureCode)],
       placements: [quiet],
     });
-    expect(refused?.key).toBe("deployment-1/user-1/main/codex-work/run:run-1");
+    expect(refused?.key).toBe("deployment-1/user-1/main/codex-work/work@example.test/run:run-1");
     expect(refused && usageLimitNoticeText(refused)).toBe("Codex usage limit reached");
     for (const entries of [
       [run("failed", "run-1", "codex_harness_error")],

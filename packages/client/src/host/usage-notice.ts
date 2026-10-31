@@ -67,12 +67,19 @@ export function usageLimitNotice(input: UsageLimitNoticeInput): UsageLimitNotice
       Date.parse(refusedRun.endedAt ?? refusedRun.createdAt),
       model,
     )?.limitReached === true;
+  // Only a reading made after the refusal can confirm that capacity is back.
+  const refusalRecovered =
+    refusedRun !== null &&
+    usage?.limitReached === false &&
+    connection?.usage !== undefined &&
+    Date.parse(connection.usage.observedAt) >=
+      Date.parse(refusedRun.endedAt ?? refusedRun.createdAt);
   const episode =
     usage?.limitReached === true
       ? // The window's reset names the episode; a limit stated without one is
         // known only by the reading that stated it.
         (usage.constrainingWindow?.resetsAt ?? connection?.usage?.observedAt ?? "limit")
-      : refusedRun !== null && !refusalExpired
+      : refusedRun !== null && !refusalExpired && !refusalRecovered
         ? `run:${refusedRun.runId ?? refusedRun.id}`
         : null;
   if (episode === null) return null;
@@ -84,6 +91,7 @@ export function usageLimitNotice(input: UsageLimitNoticeInput): UsageLimitNotice
       input.scope.userId,
       placement.environmentId,
       placement.harnessInstanceId,
+      connection?.accountLabel ?? "",
       episode,
     ].join("/"),
     resetsAt: connection ? describeConnectionReset(connection, now, model) : null,
