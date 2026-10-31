@@ -918,10 +918,12 @@ label.action-row input {
 }
 
 .composer {
+  /* What a chip set into it follows to keep its corners concentric. */
+  --composer-radius: var(--radius-lg);
   max-width: var(--composer-max-width);
   margin: 0 auto;
   border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-lg);
+  border-radius: var(--composer-radius);
   background: var(--sheen) var(--fill-float);
   box-shadow: var(--edge-plate), var(--lift-float);
   transition:

@@ -402,8 +402,8 @@ a.update-line__source:hover {
 }
 
 .composer--conversation {
+  --composer-radius: 24px;
   container: conversation-composer / inline-size;
-  border-radius: 24px;
 }
 
 /* One line — Attach, the words, the controls — while what the field shows

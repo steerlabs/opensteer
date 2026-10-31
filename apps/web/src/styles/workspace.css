@@ -2617,11 +2617,14 @@ html[data-tab-sorting] * {
 
 /* Exactly the composer's width: an implicit column grows to a chip's whole
    untruncated title, and the chips' 100% cap then resolves against that. */
+/* Inset evenly from the composer's edge, so each chip's corner can follow
+   the composer's own. */
 .context-chips {
+  --chip-inset: var(--space-8);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-6);
-  padding: var(--space-10) var(--space-12) 0;
+  padding: var(--chip-inset) var(--chip-inset) 0;
 }
 
 .context-chips__row {
@@ -2639,7 +2642,8 @@ html[data-tab-sorting] * {
   max-width: min(100%, 320px);
   height: var(--control-height);
   padding: 0 var(--space-4);
-  border-radius: var(--radius-sm);
+  --chip-radius: calc(var(--composer-radius) - 1px - var(--chip-inset, var(--space-8)));
+  border-radius: var(--chip-radius);
   background-color: var(--fill-quiet);
   color: var(--text-soft);
   font-size: var(--text-md);
@@ -2649,7 +2653,7 @@ html[data-tab-sorting] * {
   flex: none;
   width: 44px;
   height: 28px;
-  border-radius: 5px;
+  border-radius: calc(var(--chip-radius) - var(--space-4));
   object-fit: cover;
   object-position: top;
   box-shadow: 0 0 0 1px var(--line);
@@ -2895,11 +2899,11 @@ html[data-tab-sorting] * {
   text-overflow: ellipsis;
 }
 
-/* A phone's row has room for the disc alone; its name and menu are the same. */
+/* A phone's row has room for the disc alone; its name and menu are the same.
+   Still a segment: square to the address's height, inset like the chip. */
 .browser-toolbar--compact .profile-chip {
   flex: none;
-  width: var(--control-height);
-  height: var(--control-height);
+  width: calc(var(--control-height) - 2px - 2 * var(--segment-inset, var(--space-2)));
   padding: 0;
   justify-content: center;
 }
