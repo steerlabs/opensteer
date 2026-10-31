@@ -402,6 +402,7 @@ export class RecentSitesStore {
       const current = () => this.#epoch === epoch && this.#iconReads.get(site) === ref;
       void this.#readIcon(sessionId, ref)
         .then((read) => {
+          if (read === null) throw new Error("The icon is not available yet.");
           const parsed = BrowserFaviconSchema.safeParse(read);
           if (!current() || !parsed.success) return;
           const favicon = parsed.data;
@@ -416,7 +417,7 @@ export class RecentSitesStore {
             },
           });
         })
-        // A failed request is tried again on the next tab observation; a reference's answer is final.
+        // A failed or empty read is tried again on the next tab observation; an invalid image is final.
         .catch(() => {
           if (current()) this.#iconReads.delete(site);
         });

@@ -132,6 +132,7 @@ it("retries on later metadata and reconnect, accepts newer references, and never
   const readIcon = vi
     .fn()
     .mockRejectedValueOnce(Error("Disconnected"))
+    .mockResolvedValueOnce(null)
     .mockResolvedValueOnce(blue)
     .mockResolvedValue(green);
   const store = new RecentSitesStore({ readIcon });
@@ -144,7 +145,12 @@ it("retries on later metadata and reconnect, accepts newer references, and never
   await settle();
   store.observeTabs(sessions("icon"), true);
   await settle();
-  expect(store.list(profile)[0]?.favicon).toBe(blue);
+  expect(store.list(profile)[0]?.favicon).toBeUndefined();
+  store.observeTabs(sessions("icon"), true);
+  await vi.waitFor(() => expect(store.list(profile)[0]?.favicon).toBe(blue), {
+    timeout: 1000,
+    interval: 1,
+  });
   store.observeTabs(sessions("icon"), false);
   store.observeTabs(sessions("icon"), true);
   await settle();
@@ -152,7 +158,7 @@ it("retries on later metadata and reconnect, accepts newer references, and never
   store.observeTabs(sessions("new-icon"), true);
   await settle();
   expect(store.list(profile)[0]?.favicon).toBe(green);
-  expect(readIcon).toHaveBeenCalledTimes(3);
+  expect(readIcon).toHaveBeenCalledTimes(4);
   expect(store.history(profile)).toHaveLength(1);
   store.clear(profile);
   expect(store.list(profile)).toEqual([]);
