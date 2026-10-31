@@ -1,3 +1,4 @@
+import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
@@ -80,6 +81,7 @@ type PhoneEvent = Extract<
 >;
 interface Viewer {
   readonly displayWindow: boolean;
+  readonly bitrate: DisplayViewerBitrate;
   readonly ackDelays: { readonly at: number; readonly delay: number }[];
   readonly sharedInput: boolean;
   readonly phoneOwnerControl: boolean;
@@ -122,6 +124,9 @@ interface PendingInput {
   readonly cut: boolean;
 }
 interface Stream {
+  readonly displayProfile?: 1;
+  maxBitrate: number | null;
+  bitrateAt: number;
   readonly sharedInput?: 1;
   readonly phoneOwnerControl?: 1;
   readonly pendingPower: Map<number, { viewer: Viewer; sequence: number }>;
@@ -388,6 +393,9 @@ export class DisplayStreamHub {
         streamId,
       });
       stream = {
+        ...(live.displayProfile === 1 && !target ? { displayProfile: 1 as const } : {}),
+        maxBitrate: null,
+        bitrateAt: -Infinity,
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
         ...(live.displayCut === 1 && !target ? { displayCut: 1 as const } : {}),
@@ -432,6 +440,9 @@ export class DisplayStreamHub {
       start = {
         ...stream.fence,
         type: "host.integrations.display.start",
+        ...(live.displayProfile === 1 && !target
+          ? { displayProfile: 1 as const, maxBitrate: null }
+          : {}),
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
         ...(live.displayCut === 1 && !target ? { displayCut: 1 as const } : {}),
@@ -467,6 +478,7 @@ export class DisplayStreamHub {
       phoneOwnerControl: options.phoneOwnerControl === true,
       displayWindow: options.displayWindow === true,
       ackDelays: [],
+      bitrate: new DisplayViewerBitrate(),
       sharedInput: options.sharedInput === true,
       authorized,
       inputSequence: -1,
@@ -499,6 +511,7 @@ export class DisplayStreamHub {
       attached.demandKey = JSON.stringify({
         sources: [source],
         ...(attached.phoneOwnerControl === 1 ? { inputSources } : {}),
+        ...(attached.displayProfile === 1 ? { maxBitrate: null } : {}),
       });
       this.#send(attached, {
         ...start,
@@ -959,6 +972,10 @@ export class DisplayStreamHub {
       // a GOP can legitimately output sequences older than a prior acknowledgement.
       const acknowledged = viewer.outstanding.get(message.sequence);
       if (!acknowledged) return;
+      const acknowledgedBytes = [...viewer.outstanding].reduce(
+        (bytes, [sequence, frame]) => (sequence <= message.sequence ? bytes + frame.bytes : bytes),
+        0,
+      );
       if (viewer.displayWindow) {
         const at = this.#now();
         const delay = at - acknowledged.sentAt;
@@ -971,6 +988,8 @@ export class DisplayStreamHub {
           viewer.ackDelays.pop();
         viewer.ackDelays.push({ at, delay });
         if (viewer.ackDelays.length > displayGopCacheFrames) viewer.ackDelays.shift();
+        viewer.bitrate.ack(at, acknowledgedBytes, delay, viewer.ackDelays[0]!.delay);
+        this.#bitrate(stream);
       }
       // Decoder outputs in stream order: acknowledgement returns all earlier credits.
       for (const [sequence, frame] of viewer.outstanding)
@@ -1298,6 +1317,10 @@ export class DisplayStreamHub {
     this.#binary(viewer.socket, frame.bytes);
   }
   #skip(stream: Stream, viewer: Viewer): void {
+    if (viewer.displayWindow) {
+      viewer.bitrate.stall(this.#now());
+      this.#bitrate(stream);
+    }
     // Measure an actual credit stall, not idle time between capture updates.
     // The sample includes network and decoder delay, both of which affect how
     // long this viewer would spend catching up on a cached dependency chain.
@@ -1430,6 +1453,7 @@ export class DisplayStreamHub {
         continue;
       }
       for (const viewer of stream.viewers) this.#viewerLive(stream, viewer);
+      this.#bitrate(stream);
       for (const viewer of stream.viewers) {
         // Every owner viewer that can type is rechecked, idle or not, so a
         // granted or removed approval reaches it without a reconnect.
@@ -1517,6 +1541,26 @@ export class DisplayStreamHub {
     );
     return false;
   }
+  #updateBitrate(stream: Stream): boolean {
+    if (stream.displayProfile !== 1) return false;
+    const caps = [...stream.viewers].flatMap((viewer) =>
+      viewer.displayWindow && viewer.bitrate.cap !== null ? [viewer.bitrate.cap] : [],
+    );
+    const cap = caps.length ? Math.min(...caps) : null;
+    if (cap === stream.maxBitrate || this.#now() - stream.bitrateAt < 2_000) return false;
+    if (
+      cap !== null &&
+      stream.maxBitrate !== null &&
+      Math.abs(cap - stream.maxBitrate) / stream.maxBitrate < 0.15
+    )
+      return false;
+    stream.maxBitrate = cap;
+    stream.bitrateAt = this.#now();
+    return true;
+  }
+  #bitrate(stream: Stream): void {
+    if (this.#updateBitrate(stream)) this.#demand(stream);
+  }
   #demand(stream: Stream): void {
     const sources = [
       ...new Map(
@@ -1542,7 +1586,9 @@ export class DisplayStreamHub {
       ? { sources: warmSources, durationMs: macDisplayWarmMs }
       : undefined;
     const inputSources = stream.phoneOwnerControl === 1 ? this.#inputSources(stream) : undefined;
-    const key = JSON.stringify({ sources, warm, inputSources });
+    this.#updateBitrate(stream);
+    const maxBitrate = stream.displayProfile === 1 ? stream.maxBitrate : undefined;
+    const key = JSON.stringify({ sources, warm, inputSources, maxBitrate });
     if (stream.demandKey === key) return;
     stream.demandKey = key;
     if (!sources.length) {
@@ -1574,6 +1620,7 @@ export class DisplayStreamHub {
       revision: ++stream.revision,
       sources,
       ...(inputSources ? { inputSources } : {}),
+      ...(maxBitrate !== undefined ? { maxBitrate } : {}),
       ...(warm ? { warm } : {}),
       ...(stream.target ? { maxLongSide: stream.maxLongSide } : {}),
     });

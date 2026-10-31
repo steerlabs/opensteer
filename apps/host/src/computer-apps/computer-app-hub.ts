@@ -950,6 +950,7 @@ export class ComputerAppHub {
         readonly displayCut?: 1;
         readonly sharedInput?: 1;
         readonly phoneOwnerControl?: 1;
+        readonly displayProfile?: 1;
       }
     | "unsupported"
     | null {
@@ -974,6 +975,9 @@ export class ComputerAppHub {
       fence: { ...stream.fence, module: stream.fence.module },
       ...(module.platform === "android" && module.sharedInput === 1
         ? { sharedInput: 1 as const }
+        : {}),
+      ...(module.platform === "android" && module.displayProfile === 1
+        ? { displayProfile: 1 as const }
         : {}),
       ...(module.platform === "android" && module.phoneOwnerControl === 1
         ? { phoneOwnerControl: 1 as const }

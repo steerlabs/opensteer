@@ -1434,6 +1434,13 @@ export const RunnerIntegrationsModuleSchema = z.object({
     .positive()
     .transform((version) => (version === 1 ? version : undefined))
     .optional(),
+  /** Shared phone encoder cap, confirmed by the Host on display.start. */
+  displayProfile: z
+    .number()
+    .int()
+    .positive()
+    .transform((version) => (version === 1 ? version : undefined))
+    .optional(),
   phoneOwnerControl: z
     .number()
     .int()

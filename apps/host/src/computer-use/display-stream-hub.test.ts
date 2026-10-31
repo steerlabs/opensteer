@@ -26,6 +26,7 @@ import WebSocket from "ws";
 import { normalizeHostError } from "../server/http-errors.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { DisplayStreamHub } from "./display-stream-hub.js";
 import { ComputerUseError } from "./computer-use-service.js";
 import { registerComputerUseDisplayRoutes } from "./computer-use-display-routes.js";
@@ -121,6 +122,7 @@ async function fixture(
   kind: {
     sharedInput?: boolean;
     phoneOwnerControl?: boolean;
+    displayProfile?: boolean;
     ownerViews?: boolean;
     editing?: boolean;
     displayCut?: boolean;
@@ -178,6 +180,7 @@ async function fixture(
           platform: mac ? "darwin" : "android",
           protocolVersion: mac ? 5 : 4,
           ...(!mac && kind.sharedInput !== false ? { sharedInput: 1 } : {}),
+          ...(kind.displayProfile ? { displayProfile: 1 } : {}),
           ...(kind.phoneOwnerControl ? { phoneOwnerControl: 1 } : {}),
           ...(editing ? { editing: 1 } : {}),
           ...(displayCut ? { displayCut: 1 } : {}),
@@ -2883,4 +2886,77 @@ it("does not create a phone producer when owner input authorization finishes aft
   resume();
   await vi.waitFor(() => expect(owner.socket.readyState).toBe(WebSocket.CLOSED));
   expect(h.start()).toBeUndefined();
+});
+
+describe("viewer-driven phone bitrate", () => {
+  it("keeps a high RTT alone uncapped, reduces queued flow and never raises through silence", () => {
+    const rate = new DisplayViewerBitrate();
+    for (let now = 0; now <= 4_000; now += 100) rate.ack(now, 12_500, 400, 400);
+    expect(rate.cap).toBeNull();
+    for (let now = 4_100; now <= 8_000; now += 100) rate.ack(now, 12_500, 750, 400);
+    expect(rate.cap).toBeGreaterThanOrEqual(400_000);
+    expect(rate.cap).toBeLessThan(1_000_000);
+    const reduced = rate.cap;
+    rate.ack(30_000, 12_500, 400, 400);
+    expect(rate.cap).toBe(reduced);
+    for (let now = 30_100; now <= 40_000; now += 100) rate.ack(now, 12_500, 400, 400);
+    expect(rate.cap).toBeGreaterThan(reduced!);
+  });
+  it("counts credit stalls without queue-delay samples and bounds the floor", () => {
+    const rate = new DisplayViewerBitrate();
+    for (let now = 0; now <= 20_000; now += 111) {
+      rate.stall(now);
+      rate.ack(now, 18_123, 400, 400);
+      expect(rate.cap === null || Number.isInteger(rate.cap)).toBe(true);
+    }
+    expect(rate.cap).toBe(400_000);
+  });
+  it("negotiates only with capable phones and clears the slowest attached viewer cap", async () => {
+    const old = await fixture();
+    await old.viewer(false, false, true);
+    expect(old.start()).not.toHaveProperty("maxBitrate");
+    expect(old.start()).not.toHaveProperty("displayProfile");
+    const f = await fixture(true, { displayProfile: true });
+    const slow = await f.viewer(false, false, true);
+    const fast = await f.viewer(false, false, true);
+    const legacy = await f.viewer();
+    expect(f.start()).toMatchObject({ displayProfile: 1, maxBitrate: null });
+    const phone = await f.phone();
+    await f.state();
+    const updates: { at: number; cap: number | null }[] = [];
+    let observedDemands = 0;
+    for (let sequence = 1; sequence <= 70; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(8_000)));
+      await phone.received(() => phone.json().length === sequence);
+      f.advance(100);
+      fast.send({ type: "display.ack", sequence });
+      legacy.send({ type: "display.ack", sequence });
+      if (sequence <= 5 || sequence % 5 === 0) slow.send({ type: "display.ack", sequence });
+      await fast.roundTrip();
+      await slow.roundTrip();
+      const demands = f.sent.filter(
+        (message) => message.type === "host.integrations.display.demand",
+      );
+      for (const demand of demands.slice(observedDemands)) {
+        if (demand.maxBitrate !== undefined)
+          updates.push({ at: sequence * 100, cap: demand.maxBitrate });
+      }
+      observedDemands = demands.length;
+    }
+    const demands = () => f.sent.filter((m) => m.type === "host.integrations.display.demand");
+    expect(demands().some((m) => m.maxBitrate !== undefined && m.maxBitrate !== null)).toBe(true);
+    for (let index = 1; index < updates.length; index++) {
+      const previous = updates[index - 1]!;
+      const next = updates[index]!;
+      expect(next.at - previous.at).toBeGreaterThanOrEqual(2_000);
+      if (previous.cap !== null && next.cap !== null)
+        expect(Math.abs(next.cap - previous.cap) / previous.cap).toBeGreaterThanOrEqual(0.15);
+    }
+    const removed = once(f.serverViewers[0]!, "close", { signal: AbortSignal.timeout(3_000) });
+    slow.socket.close();
+    await removed;
+    f.advance(2_001);
+    f.hub.sweep();
+    expect(demands().at(-1)).toMatchObject({ maxBitrate: null });
+  });
 });

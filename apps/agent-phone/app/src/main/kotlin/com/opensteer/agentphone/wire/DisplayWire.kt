@@ -13,10 +13,10 @@ sealed interface DisplaySource {
 sealed interface DisplayMessage : IntegrationsMessage {
     val streamId: String
     data class Start(override val fence: AuxiliaryFence, override val streamId: String,
-        val dataTicket: String, val maxLongSide: Int, val maxFps: Int, val revision: Long, val sources: List<DisplaySource>, val editingVersion: Int? = null, val displayCut: Int? = null, val sharedInput: Int? = null, val phoneOwnerControl: Int? = null, val inputSources: List<DisplaySource>? = null) : DisplayMessage
+        val dataTicket: String, val maxLongSide: Int, val maxFps: Int, val revision: Long, val sources: List<DisplaySource>, val editingVersion: Int? = null, val displayCut: Int? = null, val sharedInput: Int? = null, val phoneOwnerControl: Int? = null, val inputSources: List<DisplaySource>? = null, val displayProfile: Int? = null, val maxBitrate: Int? = null) : DisplayMessage
     data class Stop(override val fence: AuxiliaryFence, override val streamId: String) : DisplayMessage
     data class Refresh(override val fence: AuxiliaryFence, override val streamId: String) : DisplayMessage
-    data class Demand(override val fence: AuxiliaryFence, override val streamId: String, val revision: Long, val sources: List<DisplaySource>, val inputSources: List<DisplaySource>? = null) : DisplayMessage
+    data class Demand(override val fence: AuxiliaryFence, override val streamId: String, val revision: Long, val sources: List<DisplaySource>, val inputSources: List<DisplaySource>? = null, val maxBitrate: Int? = null) : DisplayMessage
     data class Control(override val fence: AuxiliaryFence, val sessionId: String, override val streamId: String, val controlId: String, val action: String) : DisplayMessage
     data class Input(override val fence: AuxiliaryFence, val sessionId: String?, override val streamId: String,
         val geometry: Long, val sequence: Long, val events: List<DisplayInput>, val controlId: String? = null, val source: DisplaySource = DisplaySource.Task(requireNotNull(sessionId)), val sourceAddressed: Boolean = false) : DisplayMessage
@@ -72,12 +72,13 @@ object DisplayWire {
         if (type !in setOf("host.integrations.display.control", "host.integrations.display.input", "host.integrations.display.input-reset", "host.integrations.display.power")) f.literal("display", "main")
         return when (type) {
             "host.integrations.display.start" -> DisplayMessage.Start(fence, stream,
-                f.string("dataTicket", pattern = Ids.ticket), f.int("maxLongSide", 320, 1920).toInt(), f.int("maxFps", 1, 60).toInt(), f.int("revision", 0), sources(f), f.optionalInt("editingVersion", 1, 1)?.toInt(), f.optionalInt("displayCut", 1, 1)?.toInt(), f.optionalInt("sharedInput", 1, 1)?.toInt(), f.optionalInt("phoneOwnerControl", 1, 1)?.toInt(), if (f.has("inputSources")) sources(f, "inputSources") else null).also { start ->
+                f.string("dataTicket", pattern = Ids.ticket), f.int("maxLongSide", 320, 1920).toInt(), f.int("maxFps", 1, 60).toInt(), f.int("revision", 0), sources(f), f.optionalInt("editingVersion", 1, 1)?.toInt(), f.optionalInt("displayCut", 1, 1)?.toInt(), f.optionalInt("sharedInput", 1, 1)?.toInt(), f.optionalInt("phoneOwnerControl", 1, 1)?.toInt(), if (f.has("inputSources")) sources(f, "inputSources") else null, f.optionalInt("displayProfile", 1, 1)?.toInt(), bitrate(f)).also { start ->
+                    if ((start.displayProfile == 1) != f.has("maxBitrate")) f.fail("maxBitrate", "requires profile negotiation")
                     if ((start.phoneOwnerControl == 1) != (start.inputSources != null) || start.inputSources?.any { it !in start.sources } == true) f.fail("inputSources", "requires negotiated input authority within demand")
                 }
             "host.integrations.display.stop" -> DisplayMessage.Stop(fence, stream)
             "host.integrations.display.refresh" -> DisplayMessage.Refresh(fence, stream)
-            "host.integrations.display.demand" -> DisplayMessage.Demand(fence, stream, f.int("revision", 0), sources(f), if (f.has("inputSources")) sources(f, "inputSources") else null).also { demand -> if (demand.inputSources?.any { it !in demand.sources } == true) f.fail("inputSources", "must belong to demand") }
+            "host.integrations.display.demand" -> DisplayMessage.Demand(fence, stream, f.int("revision", 0), sources(f), if (f.has("inputSources")) sources(f, "inputSources") else null, bitrate(f)).also { demand -> if (demand.inputSources?.any { it !in demand.sources } == true) f.fail("inputSources", "must belong to demand") }
             "host.integrations.display.control" -> DisplayMessage.Control(fence, f.string("sessionId", pattern = Ids.computerUseSession), stream, f.string("controlId", pattern = Ids.displayControl),
                 f.enum("action", setOf("acquire", "release")))
             "host.integrations.display.input" -> {
@@ -92,6 +93,11 @@ object DisplayWire {
             "host.integrations.display.power" -> DisplayMessage.Power(fence, stream, source(f.raw("source")), f.int("sequence", 0), f.enum("action", setOf("wake", "lock")))
             else -> f.fail("type", "is not a display message")
         }
+    }
+    private fun bitrate(f: Fields): Int? {
+        if (!f.has("maxBitrate")) return null
+        val value = f.raw("maxBitrate")
+        return if (value == JsonNull) null else Fields.of(jsonObject("value" to value), "maxBitrate").int("value", 400_000, 4_000_000).toInt()
     }
     private fun address(f: Fields): Pair<DisplaySource, Boolean> {
         if (f.has("source") == f.has("sessionId")) f.fail("source", "requires exactly one input address")

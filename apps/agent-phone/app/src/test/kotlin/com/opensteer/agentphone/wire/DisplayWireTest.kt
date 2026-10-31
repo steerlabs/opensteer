@@ -109,4 +109,24 @@ class DisplayWireTest {
             """{"kind":"scroll","x":0,"y":0,"dx":2,"dy":0}""", """{"kind":"nav","to":"quick_settings"}""")
         bad.forEach { assertThrows(WireException::class.java) { DisplayWire.event(JsonText.parse(it)) } }
     }
+    @Test fun profileNegotiationAndOldHostStart() {
+        val frame = ((vectors.fields.getValue("hostFrames") as JsonArray).items.map { (it as JsonObject).fields.getValue("frame") as JsonObject }
+            .first { it.fields["type"] == jsonOf("host.integrations.display.start") })
+        val fields = LinkedHashMap(frame.fields)
+        fields.remove("displayProfile"); fields.remove("maxBitrate")
+        val baseline = IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) as DisplayMessage.Start
+        assertNull(baseline.displayProfile); assertNull(baseline.maxBitrate)
+        fields["displayProfile"] = jsonOf(1)
+        assertThrows(WireException::class.java) { IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) }
+        fields.remove("displayProfile"); fields["maxBitrate"] = jsonOf(400_000)
+        assertThrows(WireException::class.java) { IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) }
+        fields["displayProfile"] = jsonOf(1)
+        val capped = IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) as DisplayMessage.Start
+        assertEquals(1, capped.displayProfile); assertEquals(400_000, capped.maxBitrate)
+        fields["maxBitrate"] = JsonNull
+        assertNull((IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) as DisplayMessage.Start).maxBitrate)
+        fields["maxBitrate"] = jsonOf(399_999)
+        assertThrows(WireException::class.java) { IntegrationsWire.decode(JsonText.stringify(JsonObject(fields))) }
+    }
+
 }

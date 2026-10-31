@@ -592,6 +592,8 @@
         "displayCut": 1,
         "sharedInput": 1,
         "phoneOwnerControl": 1,
+        "displayProfile": 1,
+        "maxBitrate": null,
         "inputSources": [
           {
             "kind": "owner-view",
@@ -622,7 +624,8 @@
             "generation": 1
           }
         ],
-        "inputSources": []
+        "inputSources": [],
+        "maxBitrate": 400000
       }
     },
     {

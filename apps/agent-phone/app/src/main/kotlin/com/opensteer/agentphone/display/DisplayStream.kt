@@ -40,7 +40,7 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
         var queuedBytes = 0
         var dropped = false
         val window = DisplayWindow(SystemClock::elapsedRealtime)
-        val bitrate = DisplayBitrate()
+        val bitrate = DisplayBitrate().apply { if (request.displayProfile == 1) cap(request.maxBitrate) }
         var sequence = 0L
         @Volatile var generation = 0L
         var waitingForKey = true
@@ -111,7 +111,9 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
                         } }
                     }.onFailure { encoderError(active) } }
                 is DisplayMessage.Demand -> current?.let { active ->
-                    if (message.revision > active.revision) { active.revision = message.revision; active.sources = message.sources; active.inputSources = if (active.request.phoneOwnerControl == 1) message.inputSources.orEmpty() else emptyList(); reconcile() }
+                    if (message.revision > active.revision) { active.revision = message.revision;
+                        if (active.request.displayProfile == 1 && active.bitrate.cap(message.maxBitrate)) runCatching { active.capture?.bitrate(active.bitrate.value) };
+                        active.sources = message.sources; active.inputSources = if (active.request.phoneOwnerControl == 1) message.inputSources.orEmpty() else emptyList(); reconcile() }
                 }
                 is DisplayMessage.Control -> Unit
                 is DisplayMessage.Input -> input(message)
