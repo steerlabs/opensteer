@@ -166,6 +166,8 @@ export async function openRunnerAuxiliaryStream(options: {
     ...(welcome.loginText === 1 ? { loginText: 1 } : {}),
     ...(welcome.passwordSignIn === 1 ? { passwordSignIn: 1 } : {}),
     ...(welcome.passkeys === 1 ? { passkeys: 1 } : {}),
+    ...(welcome.localProfiles === 1 ? { localProfiles: 1 } : {}),
+    ...(welcome.initialNavigationVersion === 1 ? { initialNavigationVersion: 1 } : {}),
     browserAttachPublicKeys: welcome.browserAttachPublicKeys,
     fence: fence.fence,
     send: (frame, binary) => send(socket, frame, binary),

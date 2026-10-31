@@ -21,6 +21,7 @@
     "@opensteer/runner-client": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "devtools-protocol": "0.0.1676105",
+    "fs-native-extensions": "1.5.2",
     "playwright-core": "1.62.1",
     "ws": "catalog:",
     "zod": "catalog:"

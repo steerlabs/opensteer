@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { type ProtocolError, type RunnerAuxiliaryRequestId } from "@opensteer/protocol";
 import {
-  HostToBrowserRelayMessageSchema,
+  type BrowserBridgeAttached,
+  type ProtocolError,
+  type RunnerAuxiliaryRequestId,
+} from "@opensteer/protocol";
+import {
+  createHostToBrowserRelayMessageSchema,
   encodeBrowserRelayFrame,
   sameBrowserCapability,
   type BrowserCapabilityLease,
@@ -40,6 +44,7 @@ interface ActiveChannel {
 export class BrowserModuleRelay {
   readonly #bridge: LocalBrowserRuntimeBridge;
   readonly #channels = new Map<BrowserChannelId, ActiveChannel>();
+  #inventoryComplete = false;
   #capability: BrowserCapabilityLease | undefined;
   #stream: RunnerModuleStream | undefined;
 
@@ -51,17 +56,44 @@ export class BrowserModuleRelay {
     return this.#bridge.runtimeId;
   }
 
-  attach(stream: RunnerModuleStream): void {
+  async attach(stream: RunnerModuleStream): Promise<void> {
     this.#stream = stream;
+    this.#inventoryComplete = stream.localProfiles !== 1;
     this.#bridge.setPasskeysEnabled(stream.passkeys === 1);
+    this.#bridge.setNegotiation({
+      ...(stream.localProfiles === 1 ? { localProfiles: 1 } : {}),
+      ...(stream.initialNavigationVersion === 1 ? { initialNavigationVersion: 1 } : {}),
+    });
     if (!stream.browserAttachPublicKeys) {
       throw new BrowserRelayError("The Host did not provide Browser Runtime attach keys.");
     }
     this.#bridge.setAttachPublicKeys(stream.browserAttachPublicKeys);
+    if (stream.localProfiles === 1) {
+      const inventory = await this.#bridge.localProfileInventory();
+      for (let offset = 0; offset < inventory.profiles.length || offset === 0; offset += 128) {
+        if (this.#stream !== stream)
+          throw new BrowserRelayError("The browser inventory stream was superseded.");
+        await stream.send(
+          JSON.stringify({
+            ...stream.fence,
+            type: "browser.profile.inventory",
+            storageInstanceId: inventory.storage.storageInstanceId,
+            engine: inventory.storage.engine,
+            profiles: inventory.profiles.slice(offset, offset + 128),
+            complete: offset + 128 >= inventory.profiles.length,
+          }),
+          false,
+        );
+      }
+    }
+    if (this.#stream !== stream)
+      throw new BrowserRelayError("The browser inventory stream was superseded.");
+    this.#inventoryComplete = true;
   }
 
   detach(): void {
     this.#bridge.setPasskeysEnabled(false);
+    this.#bridge.setNegotiation({});
     this.#stream = undefined;
     this.#capability = undefined;
     for (const channel of this.#channels.values()) clearTimeout(channel.expiryTimer);
@@ -72,8 +104,10 @@ export class BrowserModuleRelay {
   async handleFrame(frame: Buffer, isBinary: boolean): Promise<void> {
     if (isBinary)
       throw new BrowserRelayError("The browser module stream expects JSON from the Host.");
-    const message = HostToBrowserRelayMessageSchema.parse(JSON.parse(frame.toString("utf8")));
     const stream = this.#requireStream();
+    const message = createHostToBrowserRelayMessageSchema(stream).parse(
+      JSON.parse(frame.toString("utf8")),
+    );
     if (
       message.type === "host.auxiliary.challenge" ||
       message.type === "host.auxiliary.welcome" ||
@@ -90,18 +124,28 @@ export class BrowserModuleRelay {
     if (message.auxiliaryStreamId !== stream.fence.auxiliaryStreamId) {
       throw new BrowserRelayError("The Host addressed a superseded browser stream.");
     }
-    try {
-      await this.#handle(message);
-    } catch (error) {
-      if (message.type === "browser.client-message") throw error;
-      await this.#send({
-        ...stream.fence,
-        channelId: "channelId" in message ? message.channelId : null,
-        error: protocolError(error),
-        requestId: message.requestId,
-        type: "browser.command-error",
-      });
+    const handle = async () => {
+      try {
+        await this.#handle(message);
+      } catch (error) {
+        if (this.#stream !== stream) return;
+        if (message.type === "browser.client-message") throw error;
+        await this.#send({
+          ...stream.fence,
+          channelId: "channelId" in message ? message.channelId : null,
+          error: protocolError(error),
+          requestId: message.requestId,
+          type: "browser.command-error",
+        });
+      }
+    };
+    // Process start/import never occupies the auxiliary stream's ordered input
+    // dispatcher. Channel registration happens synchronously before the await.
+    if (message.type === "browser.attach" || message.type === "browser.profile.delete") {
+      void handle().catch(() => undefined);
+      return;
     }
+    await handle();
   }
 
   async #handle(
@@ -148,6 +192,8 @@ export class BrowserModuleRelay {
         });
         return;
       case "browser.attach": {
+        if (!this.#inventoryComplete)
+          throw new BrowserRelayError("Local browser profile inventory has not completed.");
         const lease = this.#assertCapability(message.capability);
         if (this.#channels.has(message.channelId)) {
           throw new BrowserRelayError("The browser relay channel already exists.");
@@ -165,8 +211,13 @@ export class BrowserModuleRelay {
           expiryTimer,
           sequence: 0,
         });
+        let attached: BrowserBridgeAttached;
         try {
-          await this.#bridge.attach(message.channelId, message.attachTicket, this.#sink());
+          attached = await this.#bridge.attach(
+            message.channelId,
+            message.attachTicket,
+            this.#sink(),
+          );
         } catch (error) {
           this.#removeChannel(message.channelId);
           throw error;
@@ -178,6 +229,9 @@ export class BrowserModuleRelay {
           channelId: message.channelId,
           requestId: message.requestId,
           type: "browser.attached",
+          ...(stream.initialNavigationVersion === 1 && attached.initialPage
+            ? { initialPage: attached.initialPage }
+            : {}),
         });
         return;
       }
@@ -191,6 +245,15 @@ export class BrowserModuleRelay {
         } catch (error) {
           await this.#failChannel(message.channelId, channel, error);
         }
+        return;
+      }
+      case "browser.profile.delete": {
+        this.#assertCapability(message.capability);
+        const state = await this.#bridge.deleteLocalProfile(message.binding, message.deletionId);
+        if (this.#stream !== stream)
+          throw new BrowserRelayError("The browser deletion stream was superseded.");
+        this.#assertCapability(message.capability);
+        await this.#send({ ...message, type: "browser.profile.delete.result", state });
         return;
       }
       case "browser.close":
