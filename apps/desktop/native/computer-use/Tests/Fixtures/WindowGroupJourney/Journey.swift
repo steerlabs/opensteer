@@ -104,7 +104,15 @@ func require(_ condition: Bool, _ message: String) throws {
           plan.cropPoints == plan.keyWindowFrame, "A crop includes an overlapping sibling document")
         try await Contracts.run(out: out, fixture: fixture, pid: process.processIdentifier)
         result["passed"] = true
-      } catch { result["error"] = String(describing: error) }
+      } catch {
+        result["error"] = String(describing: error)
+        // The helper runs in this process: keep its threads' state (encoder,
+        // capture and publication queues) as the failure left it.
+        let sampler = Process()
+        sampler.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
+        sampler.arguments = [String(getpid()), "2", "-mayDie", "-file", out.appendingPathComponent("failure-stack.txt").path]
+        if (try? sampler.run()) != nil { sampler.waitUntilExit() }
+      }
       try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
         .write(to: out.appendingPathComponent("result.json"))
       exit(result["passed"] as? Bool == true ? 0 : 1)
