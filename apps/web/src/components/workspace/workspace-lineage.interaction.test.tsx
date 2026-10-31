@@ -46,6 +46,14 @@ function withHelper(
             { ...list, entries: unlisted(list.entries) },
           ]),
         ),
+        // A helper hands nothing out and runs no automations of its own, so its
+        // header shows only the way back.
+        assignments: Object.fromEntries(
+          Object.entries(snapshot.assignments).filter(
+            ([, assignment]) => assignment.parentThreadId !== helper.id,
+          ),
+        ),
+        threadAutomations: { ...snapshot.threadAutomations, [helper.id]: [] },
       };
       cache.set(snapshot, held);
     }
