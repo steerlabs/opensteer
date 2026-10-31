@@ -222,7 +222,7 @@ export function BrowserPage(props: {
       return;
     }
     // The address stays as typed until the page has taken it.
-    if (!send({ type: "navigation.go", url: url.href })) return;
+    if (!send({ type: "navigation.go", url: url.href, typed: true })) return;
     setProblem(null);
     setAddressDraft(null);
     setAddressOpen(false);

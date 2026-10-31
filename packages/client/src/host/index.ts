@@ -44,7 +44,7 @@ export * from "./place-activity.js";
 export * from "./browser-watch.js";
 export * from "./latest-place.js";
 export * from "./start-page-model.js";
-export * from "./recent-sites.js";
+export * from "./browser-history.js";
 export * from "./navigation-input.js";
 export * from "./computer-view-retention.js";
 export * from "./action-review.js";

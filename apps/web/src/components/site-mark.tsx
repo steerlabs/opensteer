@@ -1,46 +1,45 @@
-import type { CSSProperties } from "react";
+import { useState } from "react";
+import type { BrowserFavicon } from "@opensteer/client/host";
 import { Icon } from "./icon.js";
 
-/**
- * A site's icon: the one its browser fetched, when it has one, else the
- * site's first letter on a tint of its own, so two sites side by side are
- * told apart at a glance.
- */
-export function SiteMark({
-  favicon = null,
-  site,
-}: {
-  /** The icon the browser fetched for the site's page, as a data URL. */
-  readonly favicon?: string | null | undefined;
-  readonly site: string | null;
-}) {
-  if (favicon) {
-    return (
-      <img
-        alt=""
-        aria-hidden
-        className="site-mark site-mark--icon"
-        decoding="async"
-        draggable={false}
-        src={favicon}
-      />
-    );
-  }
-  const name = site?.replace(/^www\./u, "") ?? "";
-  const letter = name.charAt(0).toUpperCase();
+/** A neutral tile stays beneath the site's icon as it decodes and fades in. */
+export function SiteMark({ favicon }: { readonly favicon: BrowserFavicon }) {
   return (
-    <span
-      aria-hidden
-      className="site-mark"
-      style={letter ? ({ "--site-hue": siteHue(name) } as CSSProperties) : undefined}
-    >
-      {letter || <Icon name="globe" />}
+    <span aria-hidden className="site-mark">
+      <Icon name="globe" />
+      {favicon ? <SiteImage key={favicon} src={favicon} /> : null}
     </span>
   );
 }
 
-function siteHue(name: string): number {
-  let hash = 0;
-  for (const character of name) hash = (hash * 31 + character.charCodeAt(0)) % 360;
-  return hash;
+function SiteImage({ src }: { readonly src: string }) {
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <img
+      alt=""
+      className={`site-mark__image${ready ? " is-ready" : ""}`}
+      decoding="async"
+      draggable={false}
+      src={src}
+      onError={() => setFailed(true)}
+      onLoad={({ currentTarget: image }) => {
+        // Placeholder pixels cannot serve as recognizable site icons.
+        if (image.naturalWidth < 8) {
+          setFailed(true);
+          return;
+        }
+        const decoded = typeof image.decode === "function" ? image.decode() : Promise.resolve();
+        void decoded.then(
+          () => {
+            if (image.isConnected) setReady(true);
+          },
+          () => {
+            if (image.isConnected) setFailed(true);
+          },
+        );
+      }}
+    />
+  );
 }

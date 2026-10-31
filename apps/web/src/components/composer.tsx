@@ -1252,7 +1252,7 @@ function ContextChips({
             {chip.thumbnail ? (
               <img alt="" className="context-chip__thumb" src={chip.thumbnail} />
             ) : null}
-            <PlaceMark hostClient={hostClient} icon={chip.icon} site={chip.site} />
+            <PlaceMark hostClient={hostClient} icon={chip.icon} />
             <span className="context-chip__title">{chip.title}</span>
             <button
               aria-label={`Don’t include ${chip.title}`}

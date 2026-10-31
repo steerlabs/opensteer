@@ -24,6 +24,10 @@ import {
   PlaceIdentitySchema,
   PlaceActivitySchema,
   type PlaceOccupant,
+  type BrowserHistory,
+  BrowserHistoryUrlSchema,
+  browserHistoryMaxEntries,
+  browserHistoryRetentionMs,
 } from "@opensteer/protocol";
 import type { MachineSummary } from "@opensteer/protocol";
 import type {
@@ -40,6 +44,7 @@ import { placeList } from "../host/places.js";
 
 const iconData =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+const historyIconRef = "2640059609118b695c139804676372eca75c30d30e5906775902d13e44f5356c";
 const emptyWatch: BrowserWatchState = { frame: null, error: null, status: "unavailable" };
 /** How long a mock page takes to load, long enough to see its tab's spinner. */
 const mockPageLoadMs = 900;
@@ -510,6 +515,9 @@ export interface MockPlaceScript {
 
 /** All animation derives from elapsed injected-clock time and stable fixture IDs. */
 export class MockPlaceWorld {
+  readonly #history = new Map<string, BrowserHistory>();
+  readonly #historyChanged: (profileId: string) => void;
+  readonly #historyOwner: string | undefined;
   readonly activity: PlaceActivityStore;
   readonly latest = new LatestPlaceStore();
   readonly #watches = new Map<
@@ -569,8 +577,11 @@ export class MockPlaceWorld {
     snapshot: () => HostSnapshot,
     update: (snapshot: HostSnapshot) => void,
     now: () => Date,
+    historyChanged: (profileId: string) => void = () => undefined,
   ) {
     this.#snapshot = snapshot;
+    this.#historyChanged = historyChanged;
+    this.#historyOwner = snapshot().user?.id;
     this.#update = update;
     this.#now = now;
     this.activity = new PlaceActivityStore();
@@ -875,7 +886,10 @@ export class MockPlaceWorld {
           : {
               ...tab,
               ...(command.type === "navigation.go"
-                ? { url: command.url, title: new URL(command.url).hostname || "New tab" }
+                ? {
+                    url: new URL(command.url).href,
+                    title: new URL(command.url).hostname || "New tab",
+                  }
                 : {}),
               loading,
             },
@@ -917,6 +931,12 @@ export class MockPlaceWorld {
       ),
     };
     this.#update(updated);
+    const committed = updated.browserSessions.find((value) => value.id === sessionId)!;
+    if (command.type === "navigation.go") {
+      const surfaceId = command.surfaceId ?? this.activeSurface(sessionId);
+      if (surfaceId) this.#recordVisit(committed, surfaceId, command.typed === true);
+    }
+    this.#retainHistoryIcons(updated);
     this.latest.reconcile(updated);
     this.#frames();
   }
@@ -989,11 +1009,7 @@ export class MockPlaceWorld {
   }
   async #resolveOpen(command: BrowserTabOpenCommand): Promise<BrowserTabOpenResult> {
     if (command.sessionId !== undefined)
-      return this.open(
-        command.sessionId,
-        command.url === undefined ? {} : { url: command.url },
-        command.idempotencyKey,
-      );
+      return this.open(command.sessionId, { ...command }, command.idempotencyKey);
     const snapshot = this.#snapshot();
     const identity = command.identity!;
     if (
@@ -1051,8 +1067,7 @@ export class MockPlaceWorld {
         (a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id),
       )[0];
     this.#rememberedPlacements.set(rememberedKey, placement.runnerId);
-    if (reused)
-      return this.open(reused.id, command.url ? { url: command.url } : {}, command.idempotencyKey);
+    if (reused) return this.open(reused.id, command, command.idempotencyKey);
     const id = createBrowserSessionId();
     const at = this.#now().toISOString();
     const session: BrowserSessionSummary = {
@@ -1075,16 +1090,12 @@ export class MockPlaceWorld {
       viewerState: "disconnected",
     };
     this.#update({ ...snapshot, browserSessions: [...snapshot.browserSessions, session] });
-    const opened = await this.open(
-      id,
-      command.url ? { url: command.url } : {},
-      command.idempotencyKey,
-    );
+    const opened = await this.open(id, command, command.idempotencyKey);
     return { ...opened, browserStarted: true };
   }
   async open(
     sessionId: string,
-    options: { readonly url?: string },
+    options: { readonly url?: string | undefined; readonly typed?: boolean | undefined },
     idempotencyKey: string,
     activate = false,
   ) {
@@ -1092,6 +1103,7 @@ export class MockPlaceWorld {
       type: "browser.tab.open",
       sessionId,
       ...(options.url === undefined ? {} : { url: options.url }),
+      ...(options.typed === undefined ? {} : { typed: options.typed }),
       idempotencyKey,
     });
     const snapshot = this.#snapshot();
@@ -1102,7 +1114,7 @@ export class MockPlaceWorld {
         status: 404,
         message: "Browser session not found.",
       });
-    const fingerprint = JSON.stringify({ sessionId, url: command.url });
+    const fingerprint = JSON.stringify({ sessionId, url: command.url, typed: command.typed });
     const previous = this.#openedTabs.get(idempotencyKey);
     if (previous) {
       if (previous.fingerprint !== fingerprint)
@@ -1136,7 +1148,7 @@ export class MockPlaceWorld {
         });
     }
     const id = BrowserSurfaceIdSchema.parse(`${sessionId}-tab-${session.tabCatalog.revision + 1}`);
-    const url = command.url ?? "about:blank";
+    const url = command.url ? new URL(command.url).href : "about:blank";
     const tab = {
       id,
       title: command.url ?? "New tab",
@@ -1187,6 +1199,12 @@ export class MockPlaceWorld {
     });
     this.#openedTabs.set(idempotencyKey, { fingerprint, result });
     this.#update(updated);
+    if (command.url)
+      this.#recordVisit(
+        updated.browserSessions.find((value) => value.id === sessionId)!,
+        id,
+        command.typed === true,
+      );
     if (tab.loading) this.#loading(sessionId, id, true);
     this.latest.reconcile(updated);
     this.#frames();
@@ -1408,6 +1426,104 @@ export class MockPlaceWorld {
       outcome: ended ? "session-closed" : "tab-closed",
       catalog: next,
     });
+  }
+  #requireHistoryOwner(profileId: string): void {
+    const snapshot = this.#snapshot();
+    if (snapshot.session !== "authenticated" || !snapshot.user)
+      throw new HostClientRequestError({
+        code: "unauthorized",
+        status: 401,
+        message: "Sign in to read history.",
+      });
+    if (
+      snapshot.user.id !== this.#historyOwner ||
+      !snapshot.browserProfiles.some((profile) => profile.id === profileId)
+    )
+      throw new HostClientRequestError({
+        code: "not_found",
+        status: 404,
+        message: "Profile not found.",
+      });
+  }
+  history(profileId: string): BrowserHistory {
+    this.#requireHistoryOwner(profileId);
+    const value = this.#history.get(profileId) ?? { entries: [], icons: [] };
+    const cutoff = this.#now().getTime() - browserHistoryRetentionMs;
+    const entries = value.entries
+      .filter((entry) => Date.parse(entry.lastVisitAt) > cutoff)
+      .slice(0, browserHistoryMaxEntries);
+    const origins = new Set(entries.map((entry) => new URL(entry.url).origin));
+    const bounded = { entries, icons: value.icons.filter((icon) => origins.has(icon.origin)) };
+    this.#history.set(profileId, bounded);
+    return structuredClone(bounded);
+  }
+  historyIcons(profileId: string, refs: readonly string[]) {
+    const retained = new Set(this.history(profileId).icons.map((icon) => icon.iconRef));
+    return {
+      icons: [...new Set(refs)].flatMap((iconRef) =>
+        retained.has(iconRef) ? [{ iconRef, favicon: iconData }] : [],
+      ),
+    };
+  }
+  removeHistory(profileId: string, url?: string): void {
+    const value = this.history(profileId);
+    this.#history.set(
+      profileId,
+      url === undefined
+        ? { entries: [], icons: [] }
+        : { ...value, entries: value.entries.filter((entry) => entry.url !== url) },
+    );
+    this.history(profileId);
+    this.#historyChanged(profileId);
+  }
+  deleteHistory(profileId: string): void {
+    this.#history.delete(profileId);
+  }
+  #recordVisit(session: BrowserSessionSummary, surfaceId: string, typed: boolean): void {
+    const profileId = session.profileId;
+    const tab = session.tabs.find((tab) => tab.id === surfaceId);
+    if (!profileId || !tab || !BrowserHistoryUrlSchema.safeParse(tab.url).success) return;
+    try {
+      const value = this.history(profileId);
+      const previous = value.entries.find((entry) => entry.url === tab.url);
+      this.#history.set(profileId, {
+        ...value,
+        entries: [
+          {
+            url: tab.url,
+            title: tab.title.slice(0, 200),
+            typedCount: Math.min(
+              Number.MAX_SAFE_INTEGER,
+              (previous?.typedCount ?? 0) + Number(typed),
+            ),
+            visitCount: Math.min(Number.MAX_SAFE_INTEGER, (previous?.visitCount ?? 0) + 1),
+            lastVisitAt: this.#now().toISOString(),
+          },
+          ...value.entries.filter((entry) => entry.url !== tab.url),
+        ].slice(0, browserHistoryMaxEntries),
+      });
+      this.history(profileId);
+      this.#historyChanged(profileId);
+    } catch {
+      /* Guest and other people's profiles keep no history for this viewer. */
+    }
+  }
+  #retainHistoryIcons(snapshot: HostSnapshot): void {
+    for (const session of snapshot.browserSessions) {
+      if (!session.profileId || !this.#history.has(session.profileId)) continue;
+      const value = this.#history.get(session.profileId)!;
+      for (const tab of session.tabCatalog?.tabs ?? []) {
+        if (!tab.iconRef || !value.entries.some((entry) => new URL(entry.url).origin === tab.site))
+          continue;
+        if (value.icons.some((icon) => icon.origin === tab.site && icon.iconRef === historyIconRef))
+          continue;
+        value.icons = [
+          ...value.icons.filter((icon) => icon.origin !== tab.site),
+          { origin: tab.site, iconRef: historyIconRef },
+        ];
+        this.#historyChanged(session.profileId);
+      }
+    }
   }
   async icon(sessionId: string, iconRef: string): Promise<string | null> {
     BrowserTabIconInputSchema.parse({ sessionId, iconRef });

@@ -44,29 +44,19 @@ try {
       (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot().browserProfiles[0]!
         .name,
   );
-  await page.evaluate(() => {
-    const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-    const snapshot = client.getSnapshot();
-    localStorage.setItem(
-      `opensteer.recent-sites.v1:${JSON.stringify([snapshot.deploymentId, snapshot.user!.id])}`,
-      JSON.stringify({
-        [snapshot.browserProfiles[0]!.id]: [{ origin: "https://gmail.com", lastUsed: Date.now() }],
-      }),
-    );
-  });
   await page.locator(".start-page__pill").click();
   await page.getByRole("menuitemradio").filter({ hasText: profileName }).click();
-  await check("migrated origins are tiles and matches without inline completion", async () => {
+  await check("profile history starts fresh without importing local sites", async () => {
     await field().pressSequentially("gma");
-    const migrated = await value(field());
-    const matches = await rows().filter({ hasText: "gmail.com" }).count();
+    const text = await value(field());
+    const historyRows = await page.locator("[data-history-url]").count();
     expectThat(
-      { migrated, matches },
-      migrated.value === "gma" && matches > 0,
-      "migration inline-completed or lost history",
+      { text, historyRows },
+      text.value === "gma" && historyRows === 0,
+      "unexpected imported history",
     );
     await field().fill("");
-    return { migrated, matches };
+    return { text, historyRows };
   });
   await check(
     "provider suggestions in New tab; requests spaced and URL input excluded",
@@ -231,17 +221,16 @@ try {
     },
   );
   await check("a late provider answer cannot change a highlighted history action", async () => {
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const params = new URLSearchParams(location.search);
       const session = client
         .getSnapshot()
-        .browserSessions.find((session) => session.id === params.get("browser"))!;
-      client.recentSites.record(
-        { kind: "profile", profileId: session.profileId! },
-        "https://slow.example.com/",
-        client.recentSites.epoch,
-        { title: "Slow weather reference", typed: false },
+        .browserSessions.find(
+          (session) => session.id === new URLSearchParams(location.search).get("browser"),
+        )!;
+      await client.openBrowserTab(
+        { sessionId: session.id },
+        { url: "https://slow.example.com/weather" },
       );
     });
     await launcher();
@@ -251,7 +240,7 @@ try {
     const action = await field().getAttribute("aria-activedescendant");
     expectThat(
       { before },
-      before.value === "slow.example.com",
+      before.value === "slow.example.com/weather",
       "history not selected before provider answer",
     );
     await page.waitForTimeout(650);
@@ -398,17 +387,16 @@ try {
     );
     return { settled, dressed };
   });
-  await check("Stop from the keyboard records no visit", async () => {
+  await check("Stop from the keyboard preserves a page already committed by the mock", async () => {
     const history = () =>
-      page.evaluate(() => {
+      page.evaluate(async () => {
         const client = Reflect.get(window, "opensteerMock") as MockHostClient;
         const params = new URLSearchParams(location.search);
         const session = client
           .getSnapshot()
           .browserSessions.find((session) => session.id === params.get("browser"))!;
-        return client.recentSites
-          .history({ kind: "profile", profileId: session.profileId! })
-          .map((entry) => entry.url);
+        await client.browserHistory.load(session.profileId!);
+        return client.browserHistory.entries(session.profileId!).map((entry) => entry.url);
       });
     await address().fill("stopped.example.com");
     await address().press("Enter");
@@ -420,8 +408,8 @@ try {
     const urls = await history();
     expectThat(
       { urls },
-      !urls.some((url) => url.includes("stopped.example.com")),
-      "a navigation stopped with Esc was recorded",
+      urls.some((url) => url.includes("stopped.example.com")),
+      "the mock lost a committed visit",
     );
     return { urls };
   });
@@ -530,7 +518,7 @@ try {
     return { remaining };
   });
   await check(
-    "only person navigations record full URLs and their own titles; Guest and agent activity do not",
+    "Host history records full committed URLs and typed intent; Guest keeps none",
     async () => {
       await address().fill("person-history.example.com/path?q=1#hash");
       await address().press("Enter");
@@ -544,7 +532,7 @@ try {
           toolbarHistory.start === 11,
         "toolbar did not refresh history after its own navigation",
       );
-      const person = await page.evaluate(() => {
+      const person = await page.evaluate(async () => {
         const client = Reflect.get(window, "opensteerMock") as MockHostClient;
         const snapshot = client.getSnapshot();
         const params = new URLSearchParams(location.search);
@@ -553,11 +541,12 @@ try {
         )!;
         const tab = session.tabs.find((tab) => tab.id === params.get("browserTab"))!;
         const identity = { kind: "profile", profileId: session.profileId! } as const;
-        const entry = client.recentSites
-          .history(identity)
+        await client.browserHistory.load(identity.profileId);
+        const entry = client.browserHistory
+          .entries(identity.profileId)
           .find((entry) => entry.url === "https://person-history.example.com/path?q=1#hash")!;
         Reflect.set(window, "historyIdentity", identity);
-        const before = JSON.stringify(client.recentSites.history(identity));
+        const before = JSON.stringify(client.browserHistory.entries(identity.profileId));
         client.sendBrowserCommand(session.id, {
           type: "navigation.go",
           surfaceId: tab.id,
@@ -566,21 +555,25 @@ try {
         return { entry, title: tab.title, before };
       });
       await page.waitForTimeout(1200);
-      const afterAgent = await page.evaluate(() => {
+      const afterNavigation = await page.evaluate(async () => {
         const client = Reflect.get(window, "opensteerMock") as MockHostClient;
         const identity = Reflect.get(window, "historyIdentity") as {
           kind: "profile";
           profileId: string;
         };
-        return JSON.stringify(client.recentSites.history(identity));
+        await client.browserHistory.load(identity.profileId);
+        return client.browserHistory.entries(identity.profileId);
       });
       expectThat(
-        { person, afterAgent },
+        { person, afterNavigation },
         person.entry.title === person.title &&
           person.entry.typedCount > 0 &&
           person.entry.visitCount > 0 &&
-          person.before === afterAgent,
-        "agent navigation altered person history or lost person metadata",
+          afterNavigation.some(
+            (entry) =>
+              entry.url === "https://agent-history.example.com/private" && entry.typedCount === 0,
+          ),
+        "consumer navigation lost committed history or typed metadata",
       );
       await launcher();
       await page.locator(".start-page__pill").click();
@@ -594,12 +587,11 @@ try {
       await page.waitForTimeout(1200);
       const guest = await page.evaluate(
         () =>
-          (Reflect.get(window, "opensteerMock") as MockHostClient).recentSites.history({
-            kind: "guest",
-          }).length,
+          (Reflect.get(window, "opensteerMock") as MockHostClient).browserHistory.entries(null)
+            .length,
       );
       expectThat({ guest }, guest === 0, "Guest recorded history");
-      return { person, afterAgent, guest };
+      return { person, afterNavigation, guest };
     },
   );
   await check("URL classification and scheme choice agree at the address field", async () => {
@@ -691,134 +683,6 @@ try {
     expectThat({ oldHost, after }, oldHost === after, "old Host received request");
     return { before, after, oldHost };
   });
-  await check(
-    "history migration, scope, retention, count and byte bounds, Guest and epoch fencing",
-    async () => {
-      const observed = await page.evaluate(() => {
-        const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-        const Store = client.recentSites.constructor as typeof client.recentSites.constructor & {
-          new (options: {
-            storage: {
-              getItem(key: string): string | null;
-              setItem(key: string, value: string): void;
-              removeItem(key: string): void;
-            };
-            now: () => number;
-          }): typeof client.recentSites;
-        };
-        let now = 100 * 86400000;
-        const data = new Map<string, string>();
-        const storage = {
-          getItem: (key: string) => data.get(key) ?? null,
-          setItem: (key: string, value: string) => {
-            data.set(key, value);
-          },
-          removeItem: (key: string) => {
-            data.delete(key);
-          },
-        };
-        const scope = { deploymentId: "journey", userId: "person" };
-        const identity = { kind: "profile", profileId: "work" } as const;
-        const legacyKey = `opensteer.recent-sites.v1:${JSON.stringify([scope.deploymentId, scope.userId])}`;
-        const key = `opensteer.browsing-history.v1:${JSON.stringify([scope.deploymentId, scope.userId])}`;
-        storage.setItem(
-          legacyKey,
-          JSON.stringify({ work: [{ origin: "https://gmail.com", lastUsed: now }] }),
-        );
-        const store = new Store({ storage, now: () => now });
-        store.setScope(scope);
-        const migrated = store.history(identity);
-        for (let i = 0; i < 310; i++) {
-          now++;
-          store.record(identity, `https://example.com/${i}`, store.epoch, {
-            title: "T".repeat(250),
-          });
-        }
-        const bounded = store.history(identity);
-        store.record(identity, `https://example.com/${"x".repeat(2048)}`, store.epoch);
-        store.record({ kind: "guest" }, "https://guest.example/", store.epoch);
-        const afterRejectedUrl = store.history(identity).length;
-        const maximumUrlLength = Math.max(
-          ...store.history(identity).map((entry) => entry.url.length),
-        );
-        const oldEpoch = store.epoch;
-        store.clear(identity);
-        store.record(identity, "https://late.example/", oldEpoch);
-        const fenced = store.history(identity).length;
-        for (let profile = 0; profile < 140; profile++) {
-          now++;
-          store.record(
-            { kind: "profile", profileId: `small${profile}` },
-            `https://example.com/${profile}`,
-            store.epoch,
-          );
-        }
-        const profileBound = Object.keys(
-          JSON.parse(data.get(key)!) as Record<string, unknown>,
-        ).length;
-        // Every write crosses global scope and UTF-8 bounds, with old visits evicted first.
-        for (let profile = 0; profile < 140; profile++)
-          for (let visit = 0; visit < 4; visit++) {
-            now++;
-            store.record(
-              { kind: "profile", profileId: `profile${profile}` },
-              `https://example.com/${"x".repeat(1800)}?visit=${visit}`,
-              store.epoch,
-              { title: "界".repeat(200) },
-            );
-          }
-        const bytes = new TextEncoder().encode(data.get(key)!).byteLength;
-        const scopes = Object.keys(JSON.parse(data.get(key)!) as Record<string, unknown>).length;
-        const oldest = store.history({ kind: "profile", profileId: "profile0" }).length;
-        const newest = store.history({ kind: "profile", profileId: "profile139" }).length;
-        store.setScope({ deploymentId: "journey", userId: "other" });
-        const isolated = store.history({ kind: "profile", profileId: "profile139" }).length;
-        store.setScope(scope);
-        now += 90 * 86400000;
-        const expired = store.history({ kind: "profile", profileId: "profile139" }).length;
-        store.setScope(null);
-        store.setScope(scope);
-        return {
-          migrated,
-          profileBound,
-          afterRejectedUrl,
-          maximumUrlLength,
-          boundedCount: bounded.length,
-          titleLength: bounded[0]!.title.length,
-          fenced,
-          bytes,
-          scopes,
-          oldest,
-          newest,
-          isolated,
-          expired,
-          legacyRemoved: !data.has(legacyKey),
-          cleared: store.history(identity).length,
-        };
-      });
-      expectThat(
-        observed,
-        observed.migrated[0]?.typedCount === 0 &&
-          observed.migrated[0]?.title === "" &&
-          observed.afterRejectedUrl === 300 &&
-          observed.maximumUrlLength <= 2048 &&
-          observed.profileBound === 128 &&
-          observed.boundedCount === 300 &&
-          observed.titleLength === 200 &&
-          observed.fenced === 0 &&
-          observed.bytes <= 1024 * 1024 &&
-          observed.scopes <= 128 &&
-          observed.oldest === 0 &&
-          observed.newest === 4 &&
-          observed.isolated === 0 &&
-          observed.expired === 0 &&
-          observed.legacyRemoved &&
-          observed.cleared === 0,
-        "history bounds, migration or isolation failed",
-      );
-      return observed;
-    },
-  );
   trace.push(...checks.map((item) => ({ name: item.name, ...item.observed })));
 } catch (error) {
   abort(error);

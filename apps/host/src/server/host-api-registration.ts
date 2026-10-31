@@ -43,6 +43,8 @@ const hostApiScopes = {
   "browser.searchSuggestions.get": "session",
   "workspace.tabs.get": "session",
   "browser.tabIcon.get": "session",
+  "browser.history.get": "session",
+  "browser.history.icons.get": "session",
   "browser.sources.get": "session",
   "browser.sources.inspect": "mutation",
   "channel.connection.check": "mutation",

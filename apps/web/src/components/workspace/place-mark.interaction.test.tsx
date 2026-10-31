@@ -19,23 +19,14 @@ let root: Root | null = null;
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.stubGlobal(
-    "Image",
-    class {
-      naturalWidth = 32;
-      onload: (() => void) | null = null;
-      set src(_value: string) {
-        queueMicrotask(() => this.onload?.());
-      }
-    },
-  );
+  vi.spyOn(HTMLImageElement.prototype, "naturalWidth", "get").mockReturnValue(32);
 });
 afterEach(() => {
   act(() => root?.unmount());
   root = null;
   expect(vi.getTimerCount()).toBe(0);
   vi.useRealTimers();
-  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   document.body.replaceChildren();
 });
 
@@ -59,7 +50,7 @@ function host(read = vi.fn<HostClient["readBrowserTabIcon"]>(async () => blue)) 
   return { client, connect, listeners, read };
 }
 
-async function mount(client: HostClient, ref = "same-ref", copies = 1) {
+async function mount(client: HostClient, ref: string | null = "same-ref", copies = 1) {
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -72,7 +63,6 @@ async function mount(client: HostClient, ref = "same-ref", copies = 1) {
               key={index}
               hostClient={nextClient}
               icon={{ kind: "site", sessionId: "same-session", ref: nextRef }}
-              site="https://example.com"
             />
           ))}
         </>,
@@ -82,6 +72,44 @@ async function mount(client: HostClient, ref = "same-ref", copies = 1) {
   await render();
   return { container, render };
 }
+
+it("keeps the mark neutral before an icon reference exists and while its read is pending", async () => {
+  let finish!: (src: string) => void;
+  const read = vi.fn<HostClient["readBrowserTabIcon"]>(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const owner = host(read);
+  const { container, render } = await mount(owner.client, null);
+  expect(container.textContent).toBe("");
+  expect(container.querySelector(".site-mark > svg")).not.toBeNull();
+  expect(read).not.toHaveBeenCalled();
+  await render(owner.client, "new-ref");
+  expect(container.querySelector("img")).toBeNull();
+  expect(container.textContent).toBe("");
+  let finishDecode!: () => void;
+  vi.spyOn(HTMLImageElement.prototype, "decode").mockReturnValue(
+    new Promise<void>((resolve) => {
+      finishDecode = resolve;
+    }),
+  );
+  await act(async () => finish(blue));
+  const image = container.querySelector("img")!;
+  Object.defineProperty(image, "naturalWidth", { value: 32 });
+  expect(image.getAttribute("src")).toBe(blue);
+  expect(image.classList.contains("is-ready")).toBe(false);
+  await act(async () => image.dispatchEvent(new Event("load")));
+  await act(async () => finishDecode());
+  expect(image.classList.contains("is-ready")).toBe(true);
+  await act(async () => image.dispatchEvent(new Event("error")));
+  expect(container.querySelector("img")).toBeNull();
+  expect(container.querySelector(".site-mark > svg")).not.toBeNull();
+  expect(container.textContent).toBe("");
+  await render(owner.client, null);
+  expect(container.textContent).toBe("");
+});
 
 it.each(["error", "null"])(
   "recovers a mounted icon after a transient %s with the same reference",
@@ -126,6 +154,7 @@ it("bounds failed retries and retries the same reference after reconnect", async
     await vi.advanceTimersByTimeAsync(30_000);
   });
   expect(read).toHaveBeenCalledTimes(3);
+  expect(container.textContent).toBe("");
   await owner.connect("offline");
   await act(async () => {
     await vi.advanceTimersByTimeAsync(30_000);

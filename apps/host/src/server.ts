@@ -1355,6 +1355,14 @@ export async function createHostServer(
           input.sessionId,
         ),
       ),
+    "browser.history.get": async (input, context) =>
+      rpcSuccess(
+        await dependencies.browser.readHistory(requireRpcSession(context).user.id, input.profileId),
+      ),
+    "browser.history.icons.get": async (input, context) =>
+      rpcSuccess(
+        await dependencies.browser.readHistoryIcons(requireRpcSession(context).user.id, input),
+      ),
     "browser.tabIcon.get": async (input, context) =>
       rpcSuccess(await dependencies.browser.readTabIcon(requireRpcSession(context).user.id, input)),
     "thread.browserUsage.get": async (input, context) => {
@@ -1549,6 +1557,8 @@ export async function createHostServer(
     | "browser.tabs.get"
     | "workspace.tabs.get"
     | "browser.tabIcon.get"
+    | "browser.history.get"
+    | "browser.history.icons.get"
     | "thread.browserUsage.get"
     | "attachment.get"
     | "attachment.upload"
@@ -2656,6 +2666,7 @@ export async function createHostServer(
           "profileId" in command.input
             ? { ...start, profileId: command.input.profileId }
             : { ...start, fresh: true },
+          { typed: false },
         );
         return { ...result, type: command.type };
       }
@@ -2753,6 +2764,10 @@ export async function createHostServer(
         return dependencies.browser.reopenWorkspaceTab(userId, command.idempotencyKey);
       case "workspace.tab.close":
         return dependencies.browser.closeWorkspaceTab(userId, command.tabId);
+      case "browser.history.remove":
+      case "browser.history.clear":
+        await dependencies.browser.forgetHistory(userId, command);
+        return { type: command.type };
       case "browser.tab.open":
         return dependencies.browser.openTab(userId, command);
       case "browser.tab.close":

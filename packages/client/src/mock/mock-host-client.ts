@@ -23,7 +23,8 @@ import {
   previousReleaseEligibility,
 } from "@opensteer/protocol";
 import { MockComputerViews } from "./mock-computer-views.js";
-import { RecentSitesStore, type RecentSitesStorage } from "../host/recent-sites.js";
+import { BrowserHistoryClient } from "../host/browser-history.js";
+import type { BrowserPreferencesStorage } from "../host/browser-preferences.js";
 import type { ClientLifecycle } from "../host/lifecycle.js";
 import { computerViewMethods } from "../host/computer-views.js";
 import { ViewerScope, viewerScopeOf } from "../host/viewer-scope.js";
@@ -1762,7 +1763,7 @@ const mockMachines: readonly MachineSummary[] = [
 ];
 
 export interface MockHostClientOptions {
-  readonly recentSitesStorage?: RecentSitesStorage;
+  readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly sharedTaskDoneAvailable?: boolean;
   /** The platform's lifecycle, reported to display sockets as the real client reports it. */
   readonly lifecycle?: ClientLifecycle;
@@ -1949,6 +1950,20 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "auth.signOut": async () => {
       await client.signOut();
       return rpcSuccess({});
+    },
+    "browser.history.get": async ({ profileId }) => {
+      try {
+        return rpcSuccess(client.places!.history(profileId));
+      } catch (error) {
+        return mockRefusal(error);
+      }
+    },
+    "browser.history.icons.get": async ({ profileId, iconRefs }) => {
+      try {
+        return rpcSuccess(client.places!.historyIcons(profileId, iconRefs));
+      } catch (error) {
+        return mockRefusal(error);
+      }
     },
     "browser.searchSuggestions.get": async ({ query }) => {
       client.searchSuggestionRequests.push({ query, at: Date.now() });
@@ -2893,8 +2908,24 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "browser.profileGrant.revoke":
       await client.revokeBrowserProfileGrant(command.grantId);
       return unsupportedMockRpc();
+    case "browser.history.remove":
+      client.places!.removeHistory(command.profileId, command.url);
+      return rpcSuccess({ type: command.type });
+    case "browser.history.clear":
+      client.places!.removeHistory(command.profileId);
+      return rpcSuccess({ type: command.type });
+    case "browser.profile.delete": {
+      client.places!.history(command.profileId);
+      client.places!.deleteHistory(command.profileId);
+      client.updatePlaces({
+        ...client.getSnapshot(),
+        browserProfiles: client
+          .getSnapshot()
+          .browserProfiles.filter((profile) => profile.id !== command.profileId),
+      });
+      return rpcSuccess({ type: command.type });
+    }
     case "browser.profile.rename":
-    case "browser.profile.delete":
       return unsupportedMockRpc();
     case "computer.view.open":
     case "computer.view.close":
@@ -3366,7 +3397,7 @@ type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
   readonly browserPasskeys = new BrowserPasskeys();
-  readonly recentSites: RecentSitesStore;
+  readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: HostClient["retainComputerView"];
   readonly #viewer = new ViewerScope();
@@ -3397,11 +3428,27 @@ export class MockHostClient implements HostClient {
   constructor(options: MockHostClientOptions = {}) {
     this.#lifecycle = options.lifecycle ?? null;
     this.#state = new MockHostState(options);
-    this.browserPreferences = new BrowserPreferences(options.recentSitesStorage);
-    this.recentSites = new RecentSitesStore({
-      ...(options.recentSitesStorage ? { storage: options.recentSitesStorage } : {}),
-      now: () => (options.now?.() ?? new Date()).getTime(),
-      readIcon: (sessionId, iconRef) => this.readBrowserTabIcon(sessionId, iconRef),
+    this.browserPreferences = new BrowserPreferences(options.browserPreferencesStorage);
+    this.browserHistory = new BrowserHistoryClient({
+      get: async (profileId) =>
+        unwrapRpcResult(await this.rpc["browser.history.get"]({ profileId })),
+      icons: async (profileId, iconRefs) =>
+        unwrapRpcResult(await this.rpc["browser.history.icons.get"]({ profileId, iconRefs })),
+      remove: async (profileId, url) => {
+        await this.dispatch({
+          type: "browser.history.remove",
+          profileId,
+          url,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
+      clear: async (profileId) => {
+        await this.dispatch({
+          type: "browser.history.clear",
+          profileId,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
     });
     if (
       options.places !== "absent" &&
@@ -3415,6 +3462,7 @@ export class MockHostClient implements HostClient {
       this.#state.getSnapshot,
       (snapshot) => this.#state.updatePlaces(snapshot),
       options.now ?? (() => new Date()),
+      (profileId) => this.browserHistory.changed(profileId),
     );
     this.#state.places = this.#places;
     this.#workspaceTabActivations = new WorkspaceTabActivations({
@@ -3461,7 +3509,8 @@ export class MockHostClient implements HostClient {
     this.#state.computerViews = this.#ownerViews;
     // The same viewer authority and paused-while-disconnected views as the
     // Host's client; this world's only disconnection is going offline.
-    const syncRecents = () => {
+    let knownProfiles: string[] = [];
+    const syncHistory = () => {
       const snapshot = this.#state.getSnapshot();
       const scope = viewerScopeOf(snapshot);
       if (this.#viewer.change(scope)) {
@@ -3469,13 +3518,17 @@ export class MockHostClient implements HostClient {
         this.#computerViews.clear();
       }
       this.#computerViews.setConnected(scope !== null && snapshot.connection !== "offline");
-      this.recentSites.setScope(scope);
-      this.recentSites.observeTabs(snapshot.browserSessions, snapshot.connection === "connected");
+      this.browserHistory.setScope(scope);
+      for (const profile of knownProfiles)
+        if (!snapshot.browserProfiles.some((value) => value.id === profile))
+          this.browserHistory.drop(profile);
+      knownProfiles = snapshot.browserProfiles.map((profile) => profile.id);
+      this.browserHistory.setConnected(snapshot.connection === "connected");
       this.browserPreferences.setScope(scope);
     };
-    syncRecents();
+    syncHistory();
     this.#worldSubscription = this.#state.subscribe(() => {
-      syncRecents();
+      syncHistory();
       this.#places.reconcile();
     });
     const frames: BrowserFrameStore = {
@@ -4260,7 +4313,7 @@ export class MockHostClient implements HostClient {
 
   dispose(): void {
     this.#workspaceTabActivations.dispose();
-    this.recentSites.dispose();
+    this.browserHistory.dispose();
     this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingWorkspaceTabs: [] });
     this.#computerViews.clear();
     this.#worldSubscription();

@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import {
-  browserSiteLabel,
+  type BrowserFavicon,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -17,11 +17,9 @@ import { SiteMark } from "../site-mark.js";
 export const PlaceMark = memo(function PlaceMark({
   hostClient,
   icon,
-  site,
 }: {
   readonly hostClient: HostClient;
   readonly icon: PlaceItem["icon"];
-  readonly site: string | null;
 }) {
   if (icon.kind === "app") {
     return (
@@ -39,7 +37,7 @@ export const PlaceMark = memo(function PlaceMark({
   }
   return (
     <span aria-hidden className="place-mark">
-      <SiteIcon hostClient={hostClient} iconRef={icon.ref} sessionId={icon.sessionId} site={site} />
+      <SiteIcon hostClient={hostClient} iconRef={icon.ref} sessionId={icon.sessionId} />
     </span>
   );
 });
@@ -77,22 +75,21 @@ function SiteIcon({
   hostClient,
   iconRef,
   sessionId,
-  site,
 }: {
   readonly hostClient: HostClient;
   readonly iconRef: string | null;
   readonly sessionId: string;
-  readonly site: string | null;
 }) {
   const connection = useHostSelector(hostClient, selectConnection);
   const [favicon, setFavicon] = useState<{
     readonly hostClient: HostClient;
     readonly key: string;
-    readonly src: string;
+    readonly src: BrowserFavicon;
   } | null>(null);
   const key = iconRef ? `${sessionId}:${iconRef}` : null;
   useEffect(() => {
     if (!iconRef || connection !== "connected") return;
+    setFavicon({ hostClient, key: `${sessionId}:${iconRef}`, src: null });
     let current = true;
     let timer: number | undefined;
     const read = (attempt: number) => {
@@ -101,15 +98,10 @@ function SiteIcon({
         if (!src) {
           const delay = [250, 1_000][attempt];
           if (delay !== undefined) timer = window.setTimeout(() => read(attempt + 1), delay);
+          else setFavicon({ hostClient, key: `${sessionId}:${iconRef}`, src: null });
           return;
         }
-        // A placeholder pixel is not an icon; the letter mark reads better than a dot.
-        const probe = new Image();
-        probe.onload = () => {
-          if (current && probe.naturalWidth >= 8)
-            setFavicon({ hostClient, key: `${sessionId}:${iconRef}`, src });
-        };
-        probe.src = src;
+        setFavicon({ hostClient, key: `${sessionId}:${iconRef}`, src });
       });
     };
     read(0);
@@ -121,7 +113,6 @@ function SiteIcon({
   return (
     <SiteMark
       favicon={favicon?.hostClient === hostClient && favicon.key === key ? favicon.src : null}
-      site={site ? browserSiteLabel(site) : null}
     />
   );
 }
