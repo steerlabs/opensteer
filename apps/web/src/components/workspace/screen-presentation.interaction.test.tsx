@@ -237,6 +237,28 @@ describe("an agent's presentation on the web", () => {
     expect(history.length).toBe(before);
   });
 
+  it("on a narrow screen, opening the drawer outdates it and the open drawer blocks", async () => {
+    await mount("/", { width: 820 });
+    const guard = guardSince();
+    const prepared = await prepare({ surface: surface() });
+    await click(element(".conv-header .drawer-btn"));
+    expect(port().blocked()).toEqual({ outcome: "superseded", reason: "busy" });
+    const before = history.length;
+    const whileOpen = await prepare({ surface: surface() });
+    expect(await commit(whileOpen, guardSince())).toEqual({
+      outcome: "superseded",
+      reason: "busy",
+    });
+    await click(element(".sidebar-scrim"));
+    expect(port().blocked()).toBeNull();
+    // Closing it does not bring back what was captured before it opened.
+    expect(await commit(prepared, guard)).toEqual({
+      outcome: "superseded",
+      reason: "interaction-ended",
+    });
+    expect(history.length).toBe(before);
+  });
+
   it("input into the live page outdates it", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const guard = guardSince();

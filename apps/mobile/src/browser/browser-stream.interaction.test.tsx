@@ -16,6 +16,7 @@ import type {
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, TargetedBrowserClientMessageSchema } from "@opensteer/protocol";
 import type { PictureMetadata, PictureOutcome } from "../computers/phone-display-native.js";
+import { observeInteraction } from "../voice/interaction.js";
 import { BrowserStream, type BrowserStreamProps } from "./browser-stream.js";
 
 const native = vi.hoisted(() => ({
@@ -328,10 +329,15 @@ describe.each(["image", "picture"] as const)(
       expect(container.textContent).toBe("");
       expect(container.querySelector('img[alt="A page, example.com"]')).not.toBeNull();
       const { event, gesture } = touch(200, 300);
+      const pressed = vi.fn();
+      const stopObserving = observeInteraction(pressed);
       act(() => {
         native.gestures?.onPanResponderGrant?.(event, gesture);
         native.gestures?.onPanResponderRelease?.(event, gesture);
       });
+      stopObserving();
+      // A press into the page outdates a presentation captured before it.
+      expect(pressed).toHaveBeenCalledOnce();
       expect(send.mock.calls).toEqual(
         (["down", "up"] as const).map((action) => [
           sessionId,

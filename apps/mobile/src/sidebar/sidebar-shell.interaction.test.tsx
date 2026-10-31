@@ -45,7 +45,11 @@ const harness = vi.hoisted(() => ({
     };
     scroll: { offset: number };
   }[],
-  drawer: { lock: "", panel: null as ReactNode },
+  drawer: {
+    lock: "",
+    panel: null as ReactNode,
+    changed: null as ((state: string, willShow: boolean) => void) | null,
+  },
   openDrawer: vi.fn(),
   closeDrawer: vi.fn(),
 }));
@@ -122,6 +126,7 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
       props: {
         children?: ReactNode;
         drawerLockMode: string;
+        onDrawerStateChanged: (state: string, willShow: boolean) => void;
         renderNavigationView: () => ReactNode;
       },
       ref,
@@ -131,6 +136,7 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
         openDrawer: harness.openDrawer,
       }));
       harness.drawer.lock = props.drawerLockMode;
+      harness.drawer.changed = props.onDrawerStateChanged;
       return (
         <div>
           <aside>{props.renderNavigationView()}</aside>
@@ -163,6 +169,7 @@ vi.mock("./sidebar-panel.js", () => ({
   },
 }));
 
+import { drawerOpen, observeInteraction } from "../voice/interaction.js";
 import { SidebarShell } from "./sidebar-shell.js";
 import { useSidebarControl, useSidebarDocked, useSidebarVisible } from "./sidebar-context.js";
 
@@ -371,6 +378,24 @@ describe("the sidebar as the window changes shape", () => {
     press(container, "Menu");
     expect(harness.openDrawer).toHaveBeenCalledTimes(1);
     expect(harness.dismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells a pending presentation the drawer began to cover the screen, by drag or Menu, until it left", async () => {
+    await mount();
+    const interacted = vi.fn();
+    const stop = observeInteraction(interacted);
+    try {
+      // A drag from the edge reports movement before it decides to open.
+      act(() => harness.drawer.changed!("dragging", false));
+      expect(drawerOpen()).toBe(true);
+      act(() => harness.drawer.changed!("idle", true));
+      expect(interacted).toHaveBeenCalledOnce();
+      act(() => harness.drawer.changed!("idle", false));
+      expect(drawerOpen()).toBe(false);
+      expect(interacted).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+    }
   });
 
   it("keeps the sidebar docked beside a page, and marks that exact page as the one open", async () => {

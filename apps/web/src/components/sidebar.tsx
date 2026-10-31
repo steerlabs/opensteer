@@ -390,9 +390,12 @@ export function Sidebar({
     <nav
       aria-hidden={mobile && !mobileOpen}
       aria-label="Main navigation"
+      // The open drawer holds the keyboard over a scrim: a modal, which no presentation moves under.
+      aria-modal={mobile && mobileOpen ? true : undefined}
       className={classes.join(" ")}
       id="app-sidebar"
       inert={mobile && !mobileOpen}
+      role={mobile && mobileOpen ? "dialog" : undefined}
       onKeyDown={handleKeyDown}
       ref={sidebarRef}
     >

@@ -75,12 +75,14 @@ function container(initial: readonly { name: string; params?: object }[]) {
 const device = {
   active: true,
   editing: false,
+  covered: false,
   macVideo: true,
   rise: null as (() => void) | null,
 };
 const phone: PresentationDevice = {
   active: () => device.active,
   editing: () => device.editing,
+  covered: () => device.covered,
   get macVideo() {
     return device.macVideo;
   },
@@ -98,7 +100,13 @@ let task: ThreadId;
 let chat: ThreadId;
 let page: Extract<ScreenSurface, { kind: "browser" }>;
 beforeEach(async () => {
-  Object.assign(device, { active: true, editing: false, macVideo: true, rise: null });
+  Object.assign(device, {
+    active: true,
+    editing: false,
+    covered: false,
+    macVideo: true,
+    rise: null,
+  });
   host = new MockHostClient({ automations: "absent", latencyMs: 0 });
   await host.load();
   snapshot = host.getSnapshot();
@@ -204,7 +212,9 @@ describe("a presentation on the phone", () => {
     });
     const toChat = await present(port, { conversationId: chat });
     await expect(toChat.prepared.confirmation).resolves.toEqual({ outcome: "applied" });
+    // Chat is the root and its only screen: there is nothing above it for Back.
     expect(stack.routes()).toEqual([{ name: "Home", deploymentId }]);
+    expect(stack.navigator.canGoBack()).toBe(false);
   });
 
   it("refuses after the person goes Back, before the container announces it", async () => {
@@ -226,7 +236,7 @@ describe("a presentation on the phone", () => {
     });
   });
 
-  it("is blocked by a sheet, the keyboard, typing or the background, and outdated by them", async () => {
+  it("is blocked by a sheet, the keyboard, typing, the drawer or the background, and outdated by them", async () => {
     const stack = container([home, { name: "Settings" }]);
     const { port } = presentation(stack);
     expect(port.blocked()).toEqual({ outcome: "superseded", reason: "busy" });
@@ -239,6 +249,9 @@ describe("a presentation on the phone", () => {
     device.editing = true;
     expect(port.blocked()).toEqual({ outcome: "superseded", reason: "busy" });
     device.editing = false;
+    device.covered = true;
+    expect(port.blocked()).toEqual({ outcome: "superseded", reason: "busy" });
+    device.covered = false;
     device.active = false;
     const { committed } = await present(port, { conversationId: task });
     expect(committed).toEqual({ outcome: "superseded", reason: "busy" });

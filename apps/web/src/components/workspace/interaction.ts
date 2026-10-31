@@ -1,3 +1,4 @@
+import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import { observePageVisibility, pageVisible } from "../../page-visibility.js";
 
 /**
@@ -23,8 +24,9 @@ let stopObserving: (() => void) | null = null;
 
 /**
  * Counts the interactions no navigation call sees: edits anywhere, input into
- * a live page, Back and Forward before the router renders them, and leaving
- * the window. Each listener only bumps a number; nothing re-renders.
+ * a live page (the desktop app's native page reports its own, which no
+ * listener here can see), Back and Forward before the router renders them,
+ * and leaving the window. Each listener only bumps a number; nothing re-renders.
  */
 export function observeInteraction(): () => void {
   observers += 1;
@@ -40,7 +42,11 @@ export function observeInteraction(): () => void {
     document.addEventListener("keydown", live, true);
     window.addEventListener("popstate", interact);
     const stopVisibility = observePageVisibility(visibility);
+    const stopNativePage = desktopBridge()?.browserPresentation?.onEvent((event) => {
+      if (event.type === "page-input") interact();
+    });
     stopObserving = () => {
+      stopNativePage?.();
       document.removeEventListener("input", interact, true);
       document.removeEventListener("pointerdown", live, true);
       document.removeEventListener("keydown", live, true);

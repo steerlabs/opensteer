@@ -9,19 +9,23 @@ import { voiceMediaPort } from "../platform/voice.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { VoiceContext } from "./controls.js";
 import { mobileScreenPresentation, type PresentationDevice } from "./presentation.js";
+import { drawerOpen, observeInteraction } from "./interaction.js";
 
 const device: PresentationDevice = {
   active: () => AppState.currentState === "active",
   editing: () => TextInput.State.currentlyFocusedInput() != null,
+  covered: drawerOpen,
   macVideo: Platform.OS !== "ios",
   observe(listener) {
     const keyboard = Keyboard.addListener("keyboardDidShow", listener);
+    const stopInteraction = observeInteraction(listener);
     const app = AppState.addEventListener("change", (state) => {
       if (state !== "active") listener();
     });
     return () => {
       keyboard.remove();
       app.remove();
+      stopInteraction();
     };
   },
 };

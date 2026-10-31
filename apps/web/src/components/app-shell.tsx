@@ -1,4 +1,5 @@
 import { useScreenPresentation } from "./workspace/screen-presentation.js";
+import { interact } from "./workspace/interaction.js";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext, VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { useDictation } from "./dictation.js";
@@ -478,6 +479,8 @@ export function AppShell({
             useApp:
               useComputerViewOnThisMac && viewedDeploymentId && localActivationReady
                 ? async (view, app) => {
+                    // Going to the real app is the person's choice; what they do there is out of sight.
+                    interact();
                     return useComputerViewOnThisMac(
                       DesktopUseComputerViewInputSchema.parse({
                         ...view,
@@ -542,7 +545,11 @@ export function AppShell({
     [openConversation],
   );
   const closeMobileNavigation = useCallback(() => setMobileNavigationOpen(false), []);
-  const openMobileNavigation = useCallback(() => setMobileNavigationOpen(true), []);
+  const openMobileNavigation = useCallback(() => {
+    // Opening the drawer is the person's own step, like opening any modal.
+    interact();
+    setMobileNavigationOpen(true);
+  }, []);
   const openNewWorkspace = useCallback(() => {
     setNewWorkspaceError(null);
     setNewWorkspaceOpen(true);

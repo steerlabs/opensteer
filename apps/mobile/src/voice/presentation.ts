@@ -42,10 +42,12 @@ export interface PresentationNavigator {
   addListener(type: "state", listener: () => void): () => void;
 }
 
-/** What the phone itself says about the person: in front, typing, able to play Mac video. */
+/** What the phone itself says about the person: in front, typing, in the drawer, able to play Mac video. */
 export interface PresentationDevice {
   active(): boolean;
   editing(): boolean;
+  /** The drawer lies over the screen; navigating under it would close it. */
+  covered(): boolean;
   readonly macVideo: boolean;
   /** The keyboard rising or the app leaving the foreground. */
   observe(listener: () => void): () => void;
@@ -91,11 +93,15 @@ function shows(route: Route | undefined, destination: Destination): boolean {
 
 /**
  * Showing something from the voice call on a phone, as an agent asked or as
- * the person said: exactly one stack transition — back to Chat, or one pushed
- * screen naming the conversation, the tab alone, or the tab over the
- * conversation's sheet — and none when it is already in front, so Back
- * returns to what was there before. Every navigation the presentation did not
- * make, the keyboard rising and the app leaving the foreground count as the
+ * the person said: exactly one stack transition, and none when it is already
+ * in front. A conversation, a tab alone, or a tab over a conversation's sheet
+ * is one pushed screen, so Back returns to what was there before. Chat is the
+ * stack's root, and the one screen it has: showing it returns there, as the
+ * person's own Chat choice does, and leaves nothing above it for Back. A
+ * second Chat over the stack would let a draft drift between two copies, and
+ * the sidebar and the Deployment both read the root. Every navigation the
+ * presentation did not make, the keyboard rising, a press into a live page or
+ * display, the drawer opening and the app leaving the foreground count as the
  * person's own, so nothing captured before them can land after.
  */
 export function mobileScreenPresentation(input: {
@@ -136,7 +142,7 @@ export function mobileScreenPresentation(input: {
 
   const blocked = (): ScreenPresentationReceipt | null => {
     observe();
-    if (!device.active() || device.editing()) return busy;
+    if (!device.active() || device.editing() || device.covered()) return busy;
     const root = navigator.getRootState();
     // A nested navigator in front is a flow presented over the app, such as adding a deployment.
     if (root?.routes[root.index ?? 0]?.state) return busy;
