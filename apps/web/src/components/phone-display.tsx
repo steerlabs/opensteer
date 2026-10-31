@@ -789,7 +789,8 @@ export function PhoneControlBar({ display }: { readonly display: ComputerDisplay
   const powerAvailable =
     !display.viewportEnabled &&
     display.snapshot.power === "available" &&
-    display.snapshot.display?.state === "live";
+    (display.snapshot.display?.state === "live" ||
+      display.snapshot.display?.state === "screen-off");
   if ((!input || display.viewportEnabled) && !display.receipt && !powerAvailable) return null;
   return (
     <div className="phone-display__control surface-row">
@@ -802,9 +803,11 @@ export function PhoneControlBar({ display }: { readonly display: ComputerDisplay
         <button
           className="btn btn--small"
           type="button"
-          onClick={() => display.lease?.power("lock")}
+          onClick={() =>
+            display.lease?.power(display.snapshot.display?.state === "screen-off" ? "wake" : "lock")
+          }
         >
-          Lock phone
+          {display.snapshot.display?.state === "screen-off" ? "Wake phone" : "Lock phone"}
         </button>
       ) : null}
       {input && !display.viewportEnabled ? (

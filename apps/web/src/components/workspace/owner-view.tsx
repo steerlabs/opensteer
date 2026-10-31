@@ -346,7 +346,10 @@ export function OwnerView({
           </div>
         ) : null}
       </div>
-      {canControl || (phone && display.snapshot.power === "available") ? (
+      {canControl ||
+      (phone &&
+        display.snapshot.power === "available" &&
+        display.snapshot.display?.state === "live") ? (
         <PhoneControlBar display={display} />
       ) : null}
     </section>
