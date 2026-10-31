@@ -1560,6 +1560,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../shared
       zod:
         specifier: 'catalog:'
         version: 4.6.7
