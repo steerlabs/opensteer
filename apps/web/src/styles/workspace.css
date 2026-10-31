@@ -607,7 +607,7 @@
   height: 15px;
 }
 
-.side-profile-filter.is-active {
+.side-tab-filter.is-active {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -619,22 +619,22 @@
   background-color: var(--fill-quiet);
 }
 
-.side-profile-filter .pavatar {
+.side-tab-filter .pavatar {
   flex: none;
 }
 
-.side-profile-filter > span:last-child {
+.side-tab-filter > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--text-sm);
 }
 
-.side-profile-clear {
+.side-tab-filter__clear {
   width: 22px;
 }
 
-.side-profile-count {
+.side-tab-filter__count {
   margin-inline-start: auto;
   color: var(--muted);
   font-size: var(--text-sm);
