@@ -550,6 +550,7 @@ vi.mock("./request-card.js", () => ({
 
 const { ThreadPane } = await import("./thread-pane.js");
 const { useScopedThreadHeader, useThreadHeader } = await import("../screens/thread-header.js");
+const { stackScreenOptions } = await import("../navigation-header.js");
 
 /**
  * The conversation as a Thread screen draws it: the pane, and the native bar
@@ -2247,6 +2248,37 @@ describe("a conversation's own title in its bar", () => {
     const title = base.threads.find(({ id }) => id === workId)?.title ?? "";
     expect(text(container)).toContain(title);
     expect(hasButton(container, title)).toBe(false);
+  });
+});
+
+describe("the bar over a conversation", () => {
+  // At rest against the scroll edge, iOS gives the bar the large style's
+  // ground when one is set. Under a conversation's transparent bar that ground
+  // hides what scrolls under it, drops the pre-glass blur, and on iPhone Duo's
+  // front screen leaves a strip of the conversation showing above the bar.
+  it("keeps the same see-through bar at rest against the scroll edge", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: chatId }));
+    const options: Record<string, unknown> = { ...stackScreenOptions };
+    harness.setOptions = (next) => Object.assign(options, next);
+    function Bar(): ReactNode {
+      useThreadHeader({
+        deploymentId,
+        fallbackTitle: "Chat",
+        header: null,
+        hostClient: host.client,
+        threadId: chatId,
+      });
+      return null;
+    }
+    const root = createRoot(document.body.appendChild(document.createElement("div")));
+    roots.push(root);
+    await act(async () => root.render(<Bar />));
+
+    expect(options).toMatchObject({
+      headerStyle: { backgroundColor: "transparent" },
+      headerTransparent: true,
+    });
+    expect(options).not.toHaveProperty("headerLargeStyle");
   });
 });
 
