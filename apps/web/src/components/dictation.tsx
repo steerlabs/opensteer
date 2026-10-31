@@ -27,6 +27,7 @@ const absent: DictationSnapshot = {
   owner: null,
   preview: null,
   progress: null,
+  startedAt: null,
   listeningSince: null,
   notice: null,
 };
@@ -110,61 +111,68 @@ export function DictationLive({
   controller,
   view,
   onCancel,
+  onStop,
   returnFocusTo,
 }: {
   controller: DictationController;
   view: DictationView;
   onCancel: () => void;
+  onStop: () => void;
   returnFocusTo: { readonly current: HTMLTextAreaElement | null };
 }) {
+  const stopRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (view.phase === "finishing" && document.activeElement === stopRef.current)
+      returnFocusTo.current?.focus();
+  }, [view.phase, returnFocusTo]);
   return (
     <FocusRow returnFocusTo={returnFocusTo} live>
-      {view.phase === "listening" ? (
+      {view.phase !== "downloading" ? (
         <>
-          <LevelMeter controller={controller} />
-          <Elapsed since={view.listeningSince!} />
+          <button
+            className="icon-btn"
+            type="button"
+            aria-label={dictationLabels.cancel}
+            onClick={onCancel}
+          >
+            <Icon name="close" />
+          </button>
+          <LevelMeter controller={controller} active={view.phase === "listening"} />
+          <span className="dictation-recording-dot" aria-hidden />
+          <Elapsed since={view.startedAt ?? Date.now()} />
+          <button
+            ref={stopRef}
+            className="dictation-keep"
+            type="button"
+            aria-label={dictationLabels.stop}
+            aria-busy={view.phase === "finishing"}
+            disabled={view.phase === "finishing"}
+            onClick={onStop}
+          >
+            <Icon name="check" />
+          </button>
         </>
       ) : (
-        <span
-          className="dictation-status__copy"
-          title={
-            view.phase === "downloading"
-              ? dictationDownloadStatus(view.languageName ?? "", view.progress)
-              : undefined
-          }
-        >
-          <span className="dictation-live__full">
-            {view.phase === "downloading"
-              ? `Downloading ${view.languageName ?? ""}…`
-              : view.phase === "starting"
-                ? dictationLabels.starting
-                : dictationLabels.finishing}
-          </span>
-          <span className="dictation-live__compact">
-            {view.phase === "downloading"
-              ? "↓"
-              : view.phase === "starting"
-                ? "Starting"
-                : "Finishing"}
-          </span>
-        </span>
+        <span className="dictation-status__copy">Downloading {view.languageName}…</span>
       )}
       {view.phase === "downloading" && view.progress !== null ? (
         <span className="dictation-progress">{Math.round(view.progress * 100)}%</span>
       ) : null}
-      <button
-        className="icon-btn"
-        type="button"
-        aria-label={
-          view.phase === "downloading" ? dictationLabels.cancelDownload : dictationLabels.cancel
-        }
-        title={
-          view.phase === "downloading" ? dictationLabels.cancelDownload : dictationLabels.cancel
-        }
-        onClick={onCancel}
-      >
-        <Icon name="close" />
-      </button>
+      {view.phase === "downloading" ? (
+        <button
+          className="icon-btn"
+          type="button"
+          aria-label={
+            view.phase === "downloading" ? dictationLabels.cancelDownload : dictationLabels.cancel
+          }
+          title={
+            view.phase === "downloading" ? dictationLabels.cancelDownload : dictationLabels.cancel
+          }
+          onClick={onCancel}
+        >
+          <Icon name="close" />
+        </button>
+      ) : null}
     </FocusRow>
   );
 }
@@ -180,13 +188,36 @@ function Elapsed({ since }: { since: number }) {
     </span>
   );
 }
-function LevelMeter({ controller }: { controller: DictationController }) {
-  const [level, setLevel] = useState(0);
-  useEffect(() => controller.subscribeLevel(setLevel), [controller]);
+/** Enough bars to fill the widest composer; the oldest fade out at the left. */
+const waveBars = 64;
+
+function LevelMeter({ controller, active }: { controller: DictationController; active: boolean }) {
+  const bars = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    performance.mark("dictation-listening");
+    let first = true;
+    let last = 0;
+    const history = Array<number>(waveBars).fill(0);
+    return controller.subscribeLevel((level) => {
+      if (first) {
+        performance.mark("dictation-first-level");
+        first = false;
+      }
+      const now = performance.now();
+      if (now - last < 100) return;
+      last = now;
+      history.shift();
+      history.push(level);
+      bars.current?.querySelectorAll("i").forEach((bar, index) => {
+        bar.style.height = `${3 + (history[index] ?? 0) * 19}px`;
+      });
+    });
+  }, [active, controller]);
   return (
-    <span className="dictation-level" aria-hidden="true">
-      {[0.45, 0.8, 1, 0.8, 0.45].map((scale, index) => (
-        <i key={index} style={{ height: `${3 + level * scale * 15}px` }} />
+    <span ref={bars} className="dictation-level" aria-hidden="true">
+      {Array.from({ length: waveBars }, (_, index) => (
+        <i key={index} />
       ))}
     </span>
   );

@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import type { WorkspaceSummary } from "@opensteer/client/host";
 import { BrandMark } from "./brand.js";
+import { composerFold } from "./fold-to-fit.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
@@ -31,7 +32,6 @@ export function AssigneePicker({
   };
   return (
     <div className="assignee">
-      <span aria-hidden>Who should do it?</span>
       <button
         aria-expanded={open}
         aria-haspopup="menu"
@@ -51,8 +51,10 @@ export function AssigneePicker({
             color={workspace.color}
           />
         )}
-        <span className="assignee__name">{name}</span>
-        <Icon name="chevron-down" />
+        <span className="assignee__name" data-fold={composerFold.assignee}>
+          {name}
+        </span>
+        <Icon data-fold={composerFold.assignee} name="chevron-down" />
       </button>
       {open && anchorRef.current ? (
         <Popover

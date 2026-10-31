@@ -413,6 +413,15 @@ export interface BrowserSessionRepository {
     ownerId: UserId,
   ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "specialized" } | null>;
   listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]>;
+  renameBrowserProfile(input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<BrowserProfileRecord>;
+  deleteBrowserProfile(input: {
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }>;
   listActiveBrowserSessionsForAgent(input: {
     readonly allOwnerWorkspaces: boolean;
     readonly ownerId: UserId;
@@ -1054,6 +1063,41 @@ export class BrowserService {
     const profile = await this.#repository.createBrowserProfile(input);
     if (input.workspaceId) this.#onProfilesChanged(input.ownerId, input.workspaceId);
     return publicProfile(profile);
+  }
+
+  async renameProfile(input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<BrowserProfile> {
+    const profile = await this.#repository.renameBrowserProfile(input);
+    await this.#ownerProfilesChanged(input.ownerId);
+    return publicProfile(profile);
+  }
+
+  /**
+   * Deletes a profile, its tabs and its grants at once, then stops its live
+   * sessions. The deletion already fences those: they can neither save nor
+   * start again, and a Host that stops first fails them on restart, so a stop
+   * that fails is reported rather than failing a deletion that has happened.
+   */
+  async deleteProfile(input: {
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<void> {
+    const { sessionIds } = await this.#repository.deleteBrowserProfile(input);
+    this.invalidatePlaceAuthority();
+    const stops = await Promise.allSettled(
+      sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
+    );
+    for (const stop of stops) if (stop.status === "rejected") this.#onError(stop.reason);
+    await this.#ownerProfilesChanged(input.ownerId);
+  }
+
+  /** Every device of the owner rereads its profiles, whichever Workspace it follows. */
+  async #ownerProfilesChanged(ownerId: UserId): Promise<void> {
+    const main = await this.#repository.findMainWorkspaceForOwner(ownerId);
+    if (main) this.#onProfilesChanged(ownerId, main.id);
   }
 
   async profileSiteData(input: {

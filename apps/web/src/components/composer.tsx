@@ -146,6 +146,7 @@ interface ComposerProps {
   disabled?: boolean;
   readOnly?: boolean;
   footerExtras?: ReactNode;
+  leadingFooter?: ReactNode;
   /** Chat's voice button, beside Send. */
   voice?: ReactNode;
   /**
@@ -226,6 +227,7 @@ export function Composer({
   disabled = false,
   readOnly = false,
   footerExtras,
+  leadingFooter,
   voice,
   inputRef,
   onDraftChange,
@@ -312,7 +314,8 @@ export function Composer({
     else if (view.notice) dictation?.dismissNotice();
   };
   const startDictation = () => {
-    if (!dictation) return;
+    if (!dictation || dictation.getSnapshot().phase !== "idle") return;
+    performance.mark("dictation-press");
     const field = textareaRef.current;
     baseSelection.current = {
       start: field?.selectionStart ?? draft.length,
@@ -811,31 +814,23 @@ export function Composer({
     view.visible && voiceState.phase === "idle" ? (
       <button
         ref={microphoneRef}
-        className={`composer__attach ${view.phase === "listening" ? "dictation-stop" : ""}`}
+        className="composer__attach"
         type="button"
-        aria-label={
-          view.phase === "listening" || view.phase === "finishing"
-            ? dictationLabels.stop
-            : dictationStartLabel(view.languageName ?? "")
-        }
+        aria-label={dictationStartLabel(view.languageName ?? "")}
         title={dictationLabels.dictate}
-        disabled={
-          disabled ||
-          readOnly ||
-          view.blocked ||
-          (view.phase !== "idle" && view.phase !== "listening")
-        }
-        onClick={() => {
-          textareaRef.current?.focus();
-          if (view.phase === "listening") void dictation?.stop(owner);
-          else startDictation();
+        disabled={disabled || readOnly || view.blocked || view.phase !== "idle"}
+        // The press is the start: the bar shows on pointer-down, not on release.
+        onPointerDown={(event) => {
+          if (event.button === 0) {
+            event.preventDefault();
+            startDictation();
+          }
+        }}
+        onClick={(event) => {
+          if (event.detail === 0) startDictation();
         }}
       >
-        {["starting", "finishing", "downloading"].includes(view.phase) ? (
-          <span className="spinner" aria-hidden="true" />
-        ) : (
-          <Icon name={view.phase === "listening" ? "stop" : "microphone"} />
-        )}
+        <Icon name="microphone" />
       </button>
     ) : null;
   const mentionList =
@@ -888,29 +883,23 @@ export function Composer({
   );
   const footer = (
     <>
-      {variant !== "conversation" ? (
+      {view.phase !== "idle" && dictation ? (
+        <DictationLive
+          controller={dictation}
+          view={view}
+          onCancel={cancelDictation}
+          onStop={() => void dictation.stop(owner)}
+          returnFocusTo={textareaRef}
+        />
+      ) : (
         <>
           {attachmentControl}
-          {microphone}
+          {leadingFooter}
+          <FoldRow className="composer__settings">{footerExtras}</FoldRow>
         </>
-      ) : null}
-      {dictation ? (
-        <div className="composer__dictation-slot">
-          {dictation && view.phase !== "idle" ? (
-            <DictationLive
-              controller={dictation}
-              view={view}
-              onCancel={cancelDictation}
-              returnFocusTo={textareaRef}
-            />
-          ) : (
-            <FoldRow className="composer__settings">{footerExtras}</FoldRow>
-          )}
-        </div>
-      ) : (
-        <FoldRow className="composer__settings">{footerExtras}</FoldRow>
       )}
-      {voice}
+      {/* Voice and dictation share the microphone: each steps aside for the other. */}
+      {view.phase === "idle" ? voice : null}
       {showStop ? (
         <StopButton
           disabled={stopping || disabled || readOnly}
@@ -919,6 +908,7 @@ export function Composer({
           returnFocusTo={textareaRef}
         />
       ) : null}
+      {view.phase === "idle" ? microphone : null}
       {showSend ? (
         <button
           aria-label={queues ? "Queue message" : sendLabel}
@@ -964,6 +954,7 @@ export function Composer({
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
+      <div data-composer-notice="" />
       {dictation ? (
         <DictationStatus
           controller={dictation}
@@ -1056,8 +1047,6 @@ export function Composer({
         // room for the whole placeholder is the last thing given up.
         <FoldToFit className="composer__entry">
           {mentionList}
-          {attachmentControl}
-          {microphone}
           {field}
           <div className="composer__footer">{footer}</div>
         </FoldToFit>

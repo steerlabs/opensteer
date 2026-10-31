@@ -379,6 +379,7 @@ describe("Host signing keys", () => {
           "browser-capture-region-v1",
           "browser-search-suggestions-v1",
           "workspace-tab-reopen-v1",
+          "browser-profile-manage-v1",
         ],
       });
       await app.inject({
@@ -435,6 +436,7 @@ describe("Host signing keys", () => {
           "browser-capture-region-v1",
           "browser-search-suggestions-v1",
           "workspace-tab-reopen-v1",
+          "browser-profile-manage-v1",
           "native-oauth",
           "personal-session-header",
         ],

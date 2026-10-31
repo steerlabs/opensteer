@@ -17,7 +17,6 @@ import { useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import {
   HostClientRequestError,
-  mainWorkspace,
   mutationIdempotencyKey,
   sameIdentity,
   startPageChoice,
@@ -40,7 +39,6 @@ import {
 import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
 import { actionErrorMessage } from "../../ui-utils.js";
-import { WorkspaceBrowserProfiles } from "../browser/browser-view.js";
 import { browserTargetViewport } from "../browser/browser-viewport.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";
 import { Icon } from "../icon.js";
@@ -127,7 +125,6 @@ function sameStart(left: HostSnapshot, right: HostSnapshot): boolean {
     left.browserSessions === right.browserSessions &&
     left.browserProfiles === right.browserProfiles &&
     left.browserPlacements === right.browserPlacements &&
-    left.browserProfileGrants === right.browserProfileGrants &&
     left.browserAvailable === right.browserAvailable &&
     left.machines === right.machines &&
     left.ownerViewWindowsAvailable === right.ownerViewWindowsAvailable &&
@@ -211,7 +208,6 @@ export const StartPage = memo(function StartPage({
   const [pending, setPending] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [profilesOpen, setProfilesOpen] = useState(false);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [recentMenu, setRecentMenu] = useState<{
     readonly anchor: HTMLElement;
@@ -449,7 +445,10 @@ export const StartPage = memo(function StartPage({
   };
 
   const firstRun = snapshot.browserProfiles.length === 0;
-  const main = mainWorkspace(snapshot);
+  const manageProfiles = (adding: boolean) => {
+    setPickerOpen(false);
+    void navigate(`/settings/browser-profiles${adding ? "?new" : ""}`);
+  };
   const browsing = snapshot.browserAvailable && snapshot.browserPlacements.length > 0;
   const occupants = useMemo(() => {
     const byKey = new Map<string, PlaceItem>();
@@ -718,15 +717,9 @@ export const StartPage = memo(function StartPage({
           anchor={pickerRef.current}
           choice={choice}
           firstRun={firstRun}
-          onAddProfile={() => {
-            setPickerOpen(false);
-            setProfilesOpen(true);
-          }}
+          onAddProfile={() => manageProfiles(true)}
           onClose={() => setPickerOpen(false)}
-          onManage={() => {
-            setPickerOpen(false);
-            setProfilesOpen(true);
-          }}
+          onManage={() => manageProfiles(false)}
           onPick={(identity) => {
             setPickerOpen(false);
             pick(identity);
@@ -771,19 +764,6 @@ export const StartPage = memo(function StartPage({
             </button>
           </div>
         </Popover>
-      ) : null}
-      {profilesOpen && main ? (
-        <WorkspaceBrowserProfiles
-          available={snapshot.browserAvailable}
-          hostClient={hostClient}
-          onClose={() => {
-            setProfilesOpen(false);
-            inputRef.current?.focus();
-          }}
-          profileGrants={snapshot.browserProfileGrants}
-          profiles={snapshot.browserProfiles}
-          workspace={main}
-        />
       ) : null}
     </div>
   );

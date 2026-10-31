@@ -8,6 +8,7 @@ import { Symbol } from "../ui/symbol.js";
 import {
   chromeSettingsFooter,
   chromeSettingsRow,
+  browserProfilesSettingsRow,
   connectedAppsSettingsRow,
   type SettingsActionModel,
 } from "./settings-model.js";
@@ -112,7 +113,9 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </View>
         )}
 
-        {props.onChromeAction === undefined && props.passwords === null ? null : (
+        {props.onChromeAction === undefined &&
+        props.onBrowserProfilesAction === undefined &&
+        props.passwords === null ? null : (
           <View style={styles.section}>
             <SectionLabel>Browser</SectionLabel>
             <RowGroup>
@@ -130,6 +133,24 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
                       <AppText role="bodyMedium">{chromeSettingsRow.title}</AppText>
                       <AppText role="secondary" tone="soft">
                         {chromeSettingsRow.detail}
+                      </AppText>
+                    </View>
+                    <Symbol name="chevron.right" size={13} tint={color.muted} />
+                  </Pressable>
+                ),
+                props.onBrowserProfilesAction === undefined ? null : (
+                  <Pressable
+                    accessibilityLabel={`${browserProfilesSettingsRow.title}, ${browserProfilesSettingsRow.detail}`}
+                    accessibilityRole="button"
+                    key="browser-profiles"
+                    onPress={props.onBrowserProfilesAction}
+                    style={({ pressed }) => [styles.linkRow, pressed && styles.pressed]}
+                  >
+                    <Symbol name="globe" size={20} tint={color.textSoft} />
+                    <View style={[styles.identityText, styles.computerText]}>
+                      <AppText role="bodyMedium">{browserProfilesSettingsRow.title}</AppText>
+                      <AppText role="secondary" tone="soft">
+                        {browserProfilesSettingsRow.detail}
                       </AppText>
                     </View>
                     <Symbol name="chevron.right" size={13} tint={color.muted} />

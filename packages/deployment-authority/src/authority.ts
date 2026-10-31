@@ -266,6 +266,8 @@ export const HostCapabilitySchema = z.enum([
   /** A subscription may omit snapshot message history and its windows. */
   "snapshot-messages-omit-v1",
   "shared-task-done-v1",
+  /** A person can rename and delete their browser profiles. */
+  "browser-profile-manage-v1",
   /** Clients can hold a voice call through `voice.*` (see docs/voice.md). */
   "voice-v1",
 ]);

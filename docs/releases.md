@@ -36,13 +36,26 @@ Per-channel concurrency coalesces pending runs but never cancels a running build
 mid-notarization. A coalesced stable dispatch may need redispatch. Never publish
 an older insider after a newer one: the updater selects the first eligible feed entry.
 
-A dispatch of either channel stops at the draft unless `publish=true`, which needs
-the zip sha256 the [update journey](testing.md#gui-test-vms) certified for that
-draft. Publish downloads the draft again and refuses any other zip, even one whose
-release.json and SHA256SUMS were rewritten to match. Automatic insiders on push
-carry no certificate. Publish jobs run the workflow commit's publisher, not the
-source's, so a source older than a publisher flag can still be promoted; the
-publisher must keep reading release.json from any source still eligible for it.
+Each final signed and notarized build is launched as an ordinary child process
+in the ephemeral release VM, from a disposable copy in Applications. The normal
+HOME is retained only on these disposable runners, so macOS can
+use its existing Keychain. The checker refuses other machines unless they have
+`CI=true` and `RUNNER_TEMP` or the repository test-VM guest marker. A fresh data
+directory contains only Personal setup intent; the app creates its own database
+and credentials. Packaged builds reject Workspace overrides and symlinks. The
+checker therefore uses a fresh default Workspace on the disposable machine, refuses
+to reuse an existing one, and removes it after the check. The external check observes the
+supervisor's published Personal selection, loopback health and visible loaded window, then sends the app's normal
+SIGTERM quit and waits for its captured children to exit. The three-minute check
+retains logs and an optional VM screenshot on failure. It changes no shipped-app
+behavior, launch policy, debugger fuses, Keychain use or environment resolution.
+Database upgrade coverage belongs to the migration compatibility tests. VM update
+journeys remain optional on-demand tools.
+
+A dispatch of either channel stops at the draft unless `publish=true`. Publication
+re-downloads and verifies draft assets, manifest hashes, SHA256SUMS, source identity
+and signer. No agent certification receipt is required. Publish jobs run the
+workflow commit's publisher, rather than the release source's publisher.
 
 ### Derived versions
 
@@ -60,7 +73,7 @@ Stable rebuilds an already published insider's exact source with the same numeri
 version and its distinct stable bundle identity. Tag, target and release.json
 must agree; exact-source push CI and the latest completed full main CI must be
 green and include the source on first-parent main. Tim approves only publication
-of the certified draft via the `publish` environment. Matching drafts are reused;
+of the verified draft via the `publish` environment. Matching drafts are reused;
 mismatches and already published stable versions fail closed.
 
 ### Hosted build and keyless proof

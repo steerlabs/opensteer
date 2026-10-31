@@ -63,17 +63,18 @@ async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expire
   const checkDeployments = vi.fn(async () => undefined);
   const signIn = vi.fn(async () => undefined);
   const onClose = vi.fn();
+  const onAddPlace = vi.fn();
   const bridge = { select, checkDeployments, signIn } as unknown as OpensteerDesktopBridge;
   root = createRoot(document.body.appendChild(document.createElement("div")));
   await act(async () =>
     root?.render(
       <PlaceMenuPlaces
         onClose={onClose}
-        places={{ bridge, snapshot, cloudDeploymentIds: new Set(), onAddPlace: vi.fn() }}
+        places={{ bridge, snapshot, cloudDeploymentIds: new Set(), onAddPlace }}
       />,
     ),
   );
-  return { id, select, checkDeployments, signIn, onClose };
+  return { id, select, checkDeployments, signIn, onClose, onAddPlace };
 }
 async function click(selector: string) {
   const button = document.querySelector<HTMLButtonElement>(selector);
@@ -141,4 +142,18 @@ it("the current place expands its problem without closing or selecting and offer
   expect(fixture.onClose).not.toHaveBeenCalled();
   await click(".place-row__actions button");
   expect(fixture.checkDeployments).toHaveBeenCalledTimes(2);
+});
+
+it("adding a computer closes the chooser before opening the add screen", async () => {
+  const fixture = await mount();
+  const add = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Add a computer or server",
+  );
+  expect(add).toBeDefined();
+  await act(async () => add!.click());
+  expect(fixture.onClose).toHaveBeenCalledOnce();
+  expect(fixture.onAddPlace).toHaveBeenCalledOnce();
+  expect(fixture.onClose.mock.invocationCallOrder[0]).toBeLessThan(
+    fixture.onAddPlace.mock.invocationCallOrder[0]!,
+  );
 });

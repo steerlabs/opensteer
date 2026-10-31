@@ -29,6 +29,11 @@ export interface DictationSnapshot {
   /** Apply this selection only when preview.text changes; selection moves are not edits. */
   preview: { text: string; selection: DictationSelection } | null;
   progress: number | null;
+  /**
+   * When the person pressed to dictate. The recording bar counts from here
+   * and shows at once, before native capture reports that it is listening.
+   */
+  startedAt: number | null;
   listeningSince: number | null;
   notice: DictationNotice | null;
 }
@@ -45,6 +50,7 @@ export interface DictationView {
   languageName: string | null;
   preview: DictationSnapshot["preview"];
   progress: number | null;
+  startedAt: number | null;
   listeningSince: number | null;
   notice: DictationNotice | null;
 }
@@ -61,6 +67,7 @@ export function dictationView(snapshot: DictationSnapshot, owner: string): Dicta
       (availability?.available === true ? availability.languageName : null),
     preview: mine ? snapshot.preview : null,
     progress: mine ? snapshot.progress : null,
+    startedAt: mine ? snapshot.startedAt : null,
     listeningSince: mine ? snapshot.listeningSince : null,
     notice: snapshot.notice?.owner === owner ? snapshot.notice : null,
   };
@@ -122,6 +129,7 @@ export class DictationController {
     language: null,
     preview: null,
     progress: null,
+    startedAt: null,
     listeningSince: null,
     notice: null,
   };
@@ -200,6 +208,7 @@ export class DictationController {
       phase: session.download ? "downloading" : "starting",
       owner: target.owner,
       language: session.language,
+      startedAt: session.download ? null : (this.#input.now ?? Date.now)(),
     });
     this.#command(session, session.download ? "download" : "start");
   }
@@ -437,6 +446,7 @@ export class DictationController {
       language: null,
       preview: null,
       progress: null,
+      startedAt: null,
       listeningSince: null,
     });
     for (const listener of this.#levels) listener(0);

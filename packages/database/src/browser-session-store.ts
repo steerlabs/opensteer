@@ -205,12 +205,18 @@ export async function createBrowserProfile(
         recorded.data.request.name !== input.name
       )
         throw idempotencyConflict(input.idempotencyKey);
-      return transaction
+      const profile = await transaction
         .selectFrom("browserProfiles")
         .select(["id", "name", "ownerId", "revision"])
         .where("id", "=", recorded.data.profileId)
         .where("ownerId", "=", input.ownerId)
-        .executeTakeFirstOrThrow();
+        .where("archivedAt", "is", null)
+        .executeTakeFirst();
+      // A replay after deletion must not hand the deleted profile back.
+      if (!profile) {
+        throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+      }
+      return profile;
     }
     await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
       transaction,
@@ -340,6 +346,140 @@ export async function listBrowserProfiles(
     .orderBy("createdAt", "asc")
     .limit(129)
     .execute();
+}
+
+/** A deleted profile, or another person's, is not found. */
+export async function renameBrowserProfile(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  },
+): Promise<BrowserProfileRecord> {
+  const row = await database
+    .updateTable("browserProfiles")
+    .set({ name: input.name, updatedAt: new Date() })
+    .where("id", "=", input.profileId)
+    .where("ownerId", "=", input.ownerId)
+    .where("archivedAt", "is", null)
+    .returning(["id", "name", "ownerId", "revision"])
+    .executeTakeFirst();
+  if (!row) throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+  return row;
+}
+
+/**
+ * Deletes one of the owner's profiles in one transaction: its waiting and open
+ * tabs close, its saved state is erased and its grants are revoked. It holds
+ * the session lock that every session start and revision commit takes, and the
+ * grant lock that every grant takes, so no session, save or grant can follow.
+ * The row stays, archived, because sessions keep naming the identity they were
+ * created with.
+ *
+ * Returns the profile's live sessions for the caller to stop. Nothing durable
+ * is left to them: a Host that stops before they do fails them on restart.
+ */
+export async function deleteBrowserProfile(
+  database: Kysely<DatabaseSchema>,
+  input: { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
+): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }> {
+  return withDatabaseTransaction(database, async (transaction) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${input.profileId}`}, 0))`.execute(
+      transaction,
+    );
+    const owned = await transaction
+      .selectFrom("browserProfiles")
+      .select("id")
+      .where("id", "=", input.profileId)
+      .where("ownerId", "=", input.ownerId)
+      .executeTakeFirst();
+    if (!owned) {
+      throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+    }
+    // No session can join these lineages while the session lock is held.
+    const lineages = await transaction
+      .selectFrom("browserSessions as session")
+      .select("session.tabGroupId")
+      .where("session.profileId", "=", input.profileId)
+      .where(({ exists, not, selectFrom }) =>
+        not(
+          exists(
+            selectFrom("browserSessions as newer")
+              .select("newer.id")
+              .whereRef("newer.tabGroupId", "=", "session.tabGroupId")
+              .where(sql<boolean>`(newer.created_at, newer.id) > (session.created_at, session.id)`),
+          ),
+        ),
+      )
+      .where(({ exists, selectFrom }) =>
+        exists(
+          selectFrom("workspaceTabs as tab")
+            .select("tab.id")
+            .whereRef("tab.groupId", "=", "session.tabGroupId")
+            .where("tab.closedAt", "is", null),
+        ),
+      )
+      .orderBy("session.tabGroupId")
+      .execute();
+    const groupIds = lineages.map((lineage) => lineage.tabGroupId);
+    const now = new Date();
+    if (groupIds.length > 0) {
+      // Each lineage, then its tabs, in key order, as closing one lineage locks them.
+      await transaction
+        .selectFrom("browserSessions")
+        .select("id")
+        .where("id", "in", groupIds)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      await transaction
+        .selectFrom("workspaceTabs")
+        .select("id")
+        .where("groupId", "in", groupIds)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      await transaction
+        .updateTable("workspaceTabs")
+        .set({ closedAt: now })
+        .where("groupId", "in", groupIds)
+        .where("closedAt", "is", null)
+        .execute();
+      await transaction
+        .updateTable("browserSessions")
+        .set((eb) => ({ tabRevision: eb("tabRevision", "+", 1) }))
+        .where("id", "in", groupIds)
+        .execute();
+    }
+    await transaction
+      .updateTable("browserProfiles")
+      .set({ archivedAt: now, updatedAt: now })
+      .where("id", "=", input.profileId)
+      .where("archivedAt", "is", null)
+      .execute();
+    await transaction
+      .deleteFrom("browserProfileRevisions")
+      .where("profileId", "=", input.profileId)
+      .execute();
+    await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-grants:${input.ownerId}`}, 0))`.execute(
+      transaction,
+    );
+    await transaction
+      .updateTable("browserProfileGrants")
+      .set({ revokedAt: now })
+      .where("profileId", "=", input.profileId)
+      .where("revokedAt", "is", null)
+      .execute();
+    const live = await transaction
+      .selectFrom("browserSessions")
+      .select("id")
+      .where("profileId", "=", input.profileId)
+      .where("state", "not in", ["closed", "failed"])
+      .orderBy("id")
+      .execute();
+    return { sessionIds: live.map((session) => session.id) };
+  });
 }
 
 export async function readBrowserProfileRevision(
@@ -482,6 +622,15 @@ export async function createBrowserSession(
       await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${profileId}`}, 0))`.execute(
         transaction,
       );
+      // Under the lock a deletion takes, so a session cannot outlive its profile.
+      const profile = await transaction
+        .selectFrom("browserProfiles")
+        .select("archivedAt")
+        .where("id", "=", profileId)
+        .executeTakeFirst();
+      if (!profile || profile.archivedAt) {
+        throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+      }
       const placementHolders = await transaction
         .selectFrom("browserSessions")
         .select(["id", "placementKey", "state"])
@@ -1848,6 +1997,7 @@ export async function createBrowserProfileGrant(
       transaction,
     );
     const [profile, existing, activeOwnerGrants] = await Promise.all([
+      // Read under the grant lock a deletion also takes, so a deleted profile is never granted.
       transaction
         .selectFrom("browserProfiles")
         .select(["archivedAt", "ownerId"])

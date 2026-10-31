@@ -1,5 +1,8 @@
 import {
   canContinueThreadOnPlacement,
+  routeOnAccount,
+  withSetting,
+  type ModelSetting,
   composerExecutionSelection,
   lastExecutionSelection,
   accessModeOptions,
@@ -22,23 +25,21 @@ import { useHostSnapshot } from "@opensteer/client/react";
 import type { ModelSelection, ThreadAccessMode } from "@opensteer/core";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   BackHandler,
-  FlatList,
   Pressable,
   ScrollView,
   StyleSheet,
   TextInput,
   View,
-  type ListRenderItemInfo,
 } from "react-native";
 import { canRespondToRequests } from "@opensteer/client/host";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
-import { executionLabel, startingPlacement } from "../thread/first-message.js";
+import { startingPlacement } from "../thread/first-message.js";
 import {
   cancelFirstMessagePickerAttempt,
   finishFirstMessagePickerAttempt,
@@ -47,32 +48,25 @@ import {
   buildThreadModelPicker,
   settingsDisabledReason,
   type AccountRow,
-  type EngineRow,
   type ModelRow,
-  type OptionControl,
-  type PickerRow,
   type PickerStep,
   type ThreadModelPicker,
 } from "../thread/settings/settings-controller.js";
 import { useThreadMutation } from "../thread/thread-mutation-registry.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import {
-  AppText,
-  Notice,
-  PrimaryButton,
-  RowGroup,
-  SecondaryButton,
-  SwitchRow,
-} from "../ui/primitives.js";
+import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
+import { EngineMark } from "../thread/settings/engine-mark.js";
 import { Symbol } from "../ui/symbol.js";
 
 export type ThreadSettingsScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
   readonly threadId: string;
+  readonly conversation?: boolean;
 }>;
 
 export type NewThreadScreenProps = StaticScreenProps<{
+  readonly conversation?: boolean;
   readonly deploymentId: string;
   /**
    * Set when the choice is for Chat's first message. Chat takes no default
@@ -86,7 +80,7 @@ export type NewThreadScreenProps = StaticScreenProps<{
 /** The route gate prevents an old sheet from ever subscribing to a replacement Host. */
 export function ThreadSettingsScreen(props: ThreadSettingsScreenProps): ReactNode {
   const navigation = useNavigation();
-  const { deploymentId, threadId } = props.route.params;
+  const { deploymentId, threadId, conversation } = props.route.params;
   const { selection } = useMobileState();
   if (selection.deploymentId !== deploymentId || selection.hostClient === null) {
     return (
@@ -98,6 +92,7 @@ export function ThreadSettingsScreen(props: ThreadSettingsScreenProps): ReactNod
   }
   return (
     <SubscribedThreadSettings
+      conversation={conversation ?? false}
       deploymentId={deploymentId}
       hostClient={selection.hostClient}
       key={`${deploymentId}:${threadId}`}
@@ -107,6 +102,7 @@ export function ThreadSettingsScreen(props: ThreadSettingsScreenProps): ReactNod
 }
 
 function SubscribedThreadSettings(props: {
+  readonly conversation: boolean;
   readonly deploymentId: string;
   readonly hostClient: HostClient;
   readonly threadId: string;
@@ -134,6 +130,7 @@ function SubscribedThreadSettings(props: {
 }
 
 interface PickerForUserProps {
+  readonly conversation: boolean;
   readonly deploymentId: string;
   readonly hostClient: HostClient;
   readonly snapshot: HostSnapshot;
@@ -146,7 +143,9 @@ const firstStep: PickerStep = { kind: "engines" };
 function ModelPickerForUser(props: PickerForUserProps): ReactNode {
   const navigation = useNavigation();
   const client = useMobileClient();
-  const [step, setStep] = useState<PickerStep>(firstStep);
+  const [step, setStep] = useState<PickerStep>(
+    props.conversation ? { kind: "conversation" } : firstStep,
+  );
   const [query, setQuery] = useState("");
   const [failure, setFailure] = useState<string | null>(null);
   const [applyingKey, setApplyingKey] = useState<string | null>(null);
@@ -206,23 +205,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     setFailure(null);
   }, []);
 
-  // A half-made choice whose model or account has left the catalog is not
-  // carried into a different pair: the picker returns to the start and says why.
-  useEffect(() => {
-    if (picker.lostStep === null) return;
-    setStep(firstStep);
-    setQuery("");
-    setFailure(picker.lostStep);
-  }, [picker.lostStep]);
-
-  const back = useCallback((): void => {
-    const account = step.kind === "account-models" ? placementForSelection(placements, step) : null;
-    goToStep(
-      step.kind === "account-models" && step.returnTo === "accounts" && account !== null
-        ? { kind: "accounts", driverKind: account.driverKind }
-        : firstStep,
-    );
-  }, [goToStep, step, placements]);
+  const back = useCallback(() => goToStep(firstStep), [goToStep]);
 
   // Bound to focus, so a picker under another screen never takes its back press.
   useFocusEffect(
@@ -340,8 +323,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       const next = {
         ...selected,
         modelSelection: selectionForModel(descriptor, {
-          ...selected.modelSelection.options,
-          ...change.optionValues,
+          ...(change.optionValues ?? selected.modelSelection.options),
         }),
       };
       const startsFresh = !canContinueThreadOnPlacement(live.thread, placement);
@@ -426,7 +408,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
             });
       })()
         .then(() => {
-          void Haptics.selectionAsync();
+          if (change.optionValues === undefined) void Haptics.selectionAsync();
           if (change.closeOnSuccess) close();
         })
         .catch((error: unknown) => {
@@ -460,18 +442,30 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
 
   const chooseAccount = useCallback(
     (row: AccountRow): void => {
+      if (row.selected) return;
       if (row.action.kind === "blocked" || row.action.kind === "refresh") {
         setFailure(row.action.reason);
         return;
       }
-      goToStep({
-        environmentId: row.placement.environmentId,
-        harnessInstanceId: row.placement.harnessInstanceId,
-        kind: "account-models",
-        returnTo: step.kind === "account-models" ? step.returnTo : "accounts",
-      });
+      const route = routeOnAccount(
+        row.placement,
+        picker.currentRoute
+          ? {
+              environmentId: picker.currentRoute.placement.environmentId,
+              harnessInstanceId: picker.currentRoute.placement.harnessInstanceId,
+              modelSelection: props.thread.modelSelection,
+            }
+          : null,
+        props.snapshot.executionPreferences.history,
+      );
+      if (route) dispatchRoute(route, { busyKey: row.key, closeOnSuccess: false });
     },
-    [goToStep, step],
+    [
+      dispatchRoute,
+      picker.currentRoute,
+      props.thread.modelSelection,
+      props.snapshot.executionPreferences.history,
+    ],
   );
 
   const changeOption = useCallback(
@@ -481,10 +475,14 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       dispatchRoute(variant, {
         busyKey: `option:${id}`,
         closeOnSuccess: false,
-        optionValues: { [id]: value },
+        optionValues: withSetting(
+          variant.model,
+          props.thread.modelSelection.options,
+          typeof value === "boolean" ? { id, on: value } : { id, value },
+        ),
       });
     },
-    [dispatchRoute, picker.currentRoute],
+    [dispatchRoute, picker.currentRoute, props.thread.modelSelection.options],
   );
 
   const changeAccess = useCallback(
@@ -599,7 +597,6 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     <ModelPickerList
       accessMode={props.thread.accessMode}
       accessPlacement={currentPlacement}
-      currentTitle={`Current · ${currentPlacement?.engineName ?? props.thread.harnessLabel} · ${props.thread.modelLabel}`}
       onChangeAccess={changeAccess}
       applyingKey={applyingKey}
       disabledReason={applyingKey === null ? disabledReason : "Updating thread settings…"}
@@ -607,7 +604,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       hostClient={props.hostClient}
       onFailure={setFailure}
       footer={
-        picker.step.kind === "engines" && currentPlacement !== null ? (
+        picker.step.kind === "conversation" && currentPlacement !== null ? (
           <View style={styles.freshStart}>
             <SecondaryButton
               disabled={disabledReason !== null}
@@ -627,7 +624,8 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       onClose={close}
       onDismissFailure={() => setFailure(null)}
       onModel={chooseModel}
-      onEngine={(row) => goToStep(row.nextStep)}
+      onEngine={(driverKind) => goToStep({ kind: "engines", driverKind })}
+      onConversation={() => goToStep({ kind: "conversation" })}
       picker={picker}
       query={query}
     />
@@ -737,7 +735,6 @@ function ExecutionSwitchReviewPanel(props: {
 interface CurrentSettingsProps {
   readonly accessMode: ThreadAccessMode;
   readonly accessPlacement: ThreadPlacementOption | null;
-  readonly currentTitle: string;
   readonly onChangeAccess: (mode: ThreadAccessMode) => void;
 }
 
@@ -756,7 +753,8 @@ function ModelPickerList(
     readonly onDismissFailure: () => void;
     readonly onFailure: (failure: string | null) => void;
     readonly onModel: (row: ModelRow) => void;
-    readonly onEngine: (row: EngineRow) => void;
+    readonly onEngine: (driverKind: string) => void;
+    readonly onConversation: () => void;
     readonly picker: ThreadModelPicker;
     readonly query: string;
   },
@@ -800,64 +798,236 @@ function ModelPickerList(
     },
     [props.disabledReason, props.hostClient, props.onAccount, props.onFailure],
   );
-  const listInsets = useListContentInsets(space[24]);
+  const [searching, setSearching] = useState(false);
   const column = useReadingColumn();
-  const data = useMemo(() => displayItems(props.picker), [props.picker]);
-  const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<DisplayItem>) => (
-      <PickerListItem
-        busy={
-          item.kind === "row" &&
-          (props.applyingKey === item.row.key || refreshingKey === item.row.key)
-        }
-        disabled={props.disabledReason !== null || refreshingKey !== null}
-        item={item}
-        onAccount={chooseAccount}
-        onModel={props.onModel}
-        onEngine={props.onEngine}
-      />
-    ),
-    [
-      props.applyingKey,
-      props.disabledReason,
-      chooseAccount,
-      props.onModel,
-      props.onEngine,
-      refreshingKey,
-    ],
-  );
+  const insets = useListContentInsets(space[24]);
+  const { picker } = props;
+  const conversation = picker.step.kind === "conversation";
+  const disabled = props.disabledReason !== null || refreshingKey !== null;
+  const access = accessModeOptions.find((o) => o.mode === props.accessMode);
   return (
-    <FlatList
-      automaticallyAdjustKeyboardInsets
-      contentContainerStyle={[styles.content, column, listInsets]}
-      contentInsetAdjustmentBehavior="never"
-      data={data}
-      extraData={props.applyingKey}
-      keyExtractor={(item) => item.key}
-      keyboardDismissMode="on-drag"
-      keyboardShouldPersistTaps="handled"
-      ListFooterComponent={<>{props.footer}</>}
-      ListHeaderComponent={
-        <PickerHeader
-          accessMode={props.accessMode}
-          accessPlacement={props.accessPlacement}
-          currentTitle={props.currentTitle}
-          onChangeAccess={props.onChangeAccess}
-          applyingKey={props.applyingKey}
-          disabledReason={props.disabledReason}
-          failure={props.failure}
+    <View style={{ flex: 1 }}>
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[styles.content, column, insets]}
+      >
+        <SheetBar
+          title={conversation ? "This conversation" : "AI"}
+          {...(conversation
+            ? {}
+            : {
+                onSearch: () => {
+                  if (searching) props.onChangeQuery("");
+                  setSearching((v) => !v);
+                },
+              })}
+          subtitle={null}
           onBack={props.onBack}
-          onChangeOption={props.onChangeOption}
-          onChangeQuery={props.onChangeQuery}
           onClose={props.onClose}
-          onDismissFailure={props.onDismissFailure}
-          picker={props.picker}
-          query={props.query}
         />
-      }
-      nestedScrollEnabled
-      renderItem={renderItem}
-    />
+        {props.disabledReason ? <AppText tone="muted">{props.disabledReason}</AppText> : null}
+        {props.failure ? (
+          <Notice
+            title="That did not change"
+            detail={props.failure}
+            action={{ label: "Dismiss", onPress: props.onDismissFailure }}
+          />
+        ) : null}
+        {conversation ? (
+          <>
+            <AppText role="title">Access</AppText>
+            {accessModeOptions.map((option) => {
+              const reason = accessModeUnavailableReason(
+                option.mode,
+                props.accessPlacement ?? { accessModes: null, engineName: "This engine" },
+              );
+              return (
+                <Pressable
+                  key={option.mode}
+                  accessibilityRole="radio"
+                  accessibilityState={{
+                    selected: option.mode === props.accessMode,
+                    disabled: disabled || reason !== null,
+                  }}
+                  disabled={disabled || reason !== null}
+                  onPress={() => props.onChangeAccess(option.mode)}
+                  style={styles.row}
+                >
+                  <View style={styles.rowCopy}>
+                    <AppText>{option.label}</AppText>
+                    <AppText role="caption" tone="muted">
+                      {reason ?? option.description}
+                    </AppText>
+                  </View>
+                  {option.mode === props.accessMode ? <Symbol name="checkmark" /> : null}
+                </Pressable>
+              );
+            })}
+            <AppText role="title">Account</AppText>
+            {picker.accounts.map((row) => (
+              <Pressable
+                key={row.key}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: row.selected, disabled }}
+                disabled={disabled}
+                onPress={() => chooseAccount(row)}
+                style={styles.row}
+              >
+                <View style={styles.rowCopy}>
+                  <AppText>{row.title}</AppText>
+                  <AppText role="caption" tone={row.exhausted ? "danger" : "muted"}>
+                    {row.detail}
+                  </AppText>
+                </View>
+                {row.selected ? <Symbol name="checkmark" /> : null}
+              </Pressable>
+            ))}
+            {props.footer}
+          </>
+        ) : (
+          <>
+            {searching ? (
+              <TextInput
+                accessibilityLabel="Search models"
+                placeholder="Search models"
+                value={props.query}
+                onChangeText={props.onChangeQuery}
+                style={styles.searchField}
+                maxFontSizeMultiplier={controlFontScaleLimit}
+              />
+            ) : null}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 8, paddingVertical: 12, paddingRight: 32 }}
+            >
+              {[...picker.menu.ready, ...picker.menu.unavailable].map((engine) => {
+                const selected = picker.menu.browsed?.driverKind === engine.driverKind;
+                return (
+                  <Pressable
+                    key={engine.driverKind}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    accessibilityLabel={`Engine: ${engine.name}${engine.note ? `, ${engine.note}` : ""}`}
+                    onPress={() => props.onEngine(engine.driverKind)}
+                    style={[
+                      styles.chip,
+                      selected && { backgroundColor: color.ember },
+                      engine.status !== "ready" && styles.dimmed,
+                    ]}
+                  >
+                    <EngineMark
+                      driverKind={engine.driverKind}
+                      tint={selected ? color.inkOnEmber : color.textSoft}
+                    />
+                    <AppText style={{ color: selected ? color.inkOnEmber : color.text }}>
+                      {engine.name}
+                    </AppText>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            {picker.unavailableCurrent ? (
+              <Notice
+                title={picker.unavailableCurrent.title}
+                detail={picker.unavailableCurrent.detail}
+                tone="neutral"
+              />
+            ) : null}
+            {picker.menu.blocked ? (
+              <View style={styles.review}>
+                <AppText tone="muted">{picker.menu.blocked.detail}</AppText>
+                <SecondaryButton
+                  label={
+                    picker.menu.blocked.availability === "authentication-required"
+                      ? "Sign in"
+                      : "Check again"
+                  }
+                  disabled={disabled}
+                  onPress={() => {
+                    const placement = picker.menu.blocked!;
+                    chooseAccount({
+                      key: placement.harnessInstanceId,
+                      placement,
+                      title: placement.accountName,
+                      detail: placement.detail,
+                      selected: false,
+                      exhausted: false,
+                      action: { kind: "refresh", reason: placement.detail },
+                    });
+                  }}
+                />
+              </View>
+            ) : null}
+            {picker.models.map((row) => (
+              <Pressable
+                key={row.key}
+                accessibilityRole="radio"
+                accessibilityState={{
+                  selected: row.selected,
+                  disabled: disabled || row.blockedReason !== null,
+                }}
+                disabled={disabled || row.blockedReason !== null}
+                onPress={() => props.onModel(row)}
+                style={styles.row}
+              >
+                <View style={styles.rowCopy}>
+                  <AppText style={{ fontSize: 15 }}>{row.title}</AppText>
+                  {row.detail ? (
+                    <AppText numberOfLines={1} role="caption" tone="muted" style={{ fontSize: 13 }}>
+                      {row.detail}
+                    </AppText>
+                  ) : null}
+                </View>
+                {row.selected ? <Symbol name="checkmark" /> : null}
+              </Pressable>
+            ))}
+            {picker.options.length ? (
+              <View
+                style={{
+                  borderTopWidth: StyleSheet.hairlineWidth,
+                  borderColor: color.line,
+                  paddingTop: 16,
+                }}
+              >
+                {picker.options.map((option) => (
+                  <OptionField
+                    key={option.id}
+                    option={option}
+                    busy={props.applyingKey === `option:${option.id}`}
+                    disabledReason={props.disabledReason}
+                    onChange={props.onChangeOption}
+                  />
+                ))}
+              </View>
+            ) : null}
+          </>
+        )}
+      </ScrollView>
+      {!conversation ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="This conversation"
+          onPress={props.onConversation}
+          style={[
+            styles.control,
+            {
+              paddingHorizontal: 16,
+              paddingBottom: insets.paddingBottom,
+              borderTopWidth: StyleSheet.hairlineWidth,
+              borderColor: color.line,
+            },
+          ]}
+        >
+          <Symbol name={props.accessMode === "full-access" ? "lock.open" : "lock"} />
+          <AppText style={styles.rowCopy}>
+            {access?.label ?? props.accessMode} ·{" "}
+            {picker.accounts.find((a) => a.selected)?.title ?? "Choose account"}
+          </AppText>
+          <Symbol name="chevron.right" />
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 
@@ -868,7 +1038,7 @@ function ModelPickerList(
  */
 export function NewThreadScreen(props: NewThreadScreenProps): ReactNode {
   const navigation = useNavigation();
-  const { deploymentId, home = false, pickerAttemptId } = props.route.params;
+  const { deploymentId, home = false, pickerAttemptId, conversation } = props.route.params;
   const { selection } = useMobileState();
   const unavailable = selection.deploymentId !== deploymentId || selection.hostClient === null;
   useEffect(() => {
@@ -886,6 +1056,7 @@ export function NewThreadScreen(props: NewThreadScreenProps): ReactNode {
   }
   return (
     <SubscribedNewThread
+      conversation={conversation ?? false}
       deploymentId={deploymentId}
       home={home}
       hostClient={selection.hostClient}
@@ -896,6 +1067,7 @@ export function NewThreadScreen(props: NewThreadScreenProps): ReactNode {
 }
 
 function SubscribedNewThread(props: {
+  readonly conversation: boolean;
   readonly deploymentId: string;
   readonly home: boolean;
   readonly hostClient: HostClient;
@@ -905,7 +1077,9 @@ function SubscribedNewThread(props: {
   const navigation = useNavigation();
   const client = useMobileClient();
   const [chosen, setChosen] = useState<ExecutionSelection | null>(null);
-  const [step, setStep] = useState<PickerStep>(firstStep);
+  const [step, setStep] = useState<PickerStep>(
+    props.conversation ? { kind: "conversation" } : firstStep,
+  );
   const [query, setQuery] = useState("");
   const [failure, setFailure] = useState<string | null>(null);
   const [applyingKey, setApplyingKey] = useState<string | null>(null);
@@ -993,14 +1167,7 @@ function SubscribedNewThread(props: {
     setQuery("");
     setFailure(null);
   }, []);
-  const back = useCallback(() => {
-    const account = step.kind === "account-models" ? placementForSelection(placements, step) : null;
-    goToStep(
-      step.kind === "account-models" && step.returnTo === "accounts" && account !== null
-        ? { kind: "accounts", driverKind: account.driverKind }
-        : firstStep,
-    );
-  }, [goToStep, step, placements]);
+  const back = useCallback(() => goToStep(firstStep), [goToStep]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1013,17 +1180,14 @@ function SubscribedNewThread(props: {
     }, [back, step.kind]),
   );
 
-  useEffect(() => {
-    if (picker.lostStep === null) return;
-    setStep(firstStep);
-    setQuery("");
-    setFailure(picker.lostStep);
-  }, [picker.lostStep]);
-
   const chooseRoute = useCallback(
     (
       requested: ExecutionRoute,
-      change: { readonly busyKey: string; readonly optionValues?: ModelSelection["options"] },
+      change: {
+        readonly busyKey: string;
+        readonly optionValues?: ModelSelection["options"];
+        readonly keepOpen?: boolean;
+      },
     ): void => {
       if (working.current || disabledReason !== null) return;
       const selected = client.getSnapshot().selection;
@@ -1085,8 +1249,7 @@ function SubscribedNewThread(props: {
       const next: ExecutionSelection = {
         ...selectedRoute,
         modelSelection: selectionForModel(descriptor, {
-          ...selectedRoute.modelSelection.options,
-          ...change.optionValues,
+          ...(change.optionValues ?? selectedRoute.modelSelection.options),
         }),
       };
       const validated = resolveExecutionSelection(next, livePlacements);
@@ -1101,8 +1264,8 @@ function SubscribedNewThread(props: {
       const outcome = props.hostClient.rememberExecution({ selection: validated }).then(
         () => {
           acceptedChoice.current = validated;
-          if (mounted.current && change.optionValues === undefined) goToStep(firstStep);
-          void Haptics.selectionAsync();
+          if (mounted.current && change.optionValues === undefined && !change.keepOpen) close();
+          if (change.optionValues === undefined) void Haptics.selectionAsync();
           return validated;
         },
         (error: unknown) => {
@@ -1121,7 +1284,7 @@ function SubscribedNewThread(props: {
         if (mounted.current) setApplyingKey(null);
       });
     },
-    [client, disabledReason, displayed, goToStep, props.deploymentId, props.hostClient],
+    [client, disabledReason, displayed, close, props.deploymentId, props.hostClient],
   );
 
   const changeAccess = useCallback(
@@ -1196,46 +1359,41 @@ function SubscribedNewThread(props: {
         setFailure(row.blockedReason);
         return;
       }
-      if (!row.selected) chooseRoute(row.route, { busyKey: row.key });
-      else goToStep(firstStep);
+      chooseRoute(row.route, { busyKey: row.key });
     },
-    [chooseRoute, goToStep],
+    [chooseRoute],
   );
   const chooseAccount = useCallback(
     (row: AccountRow): void => {
+      if (row.selected) return;
       if (row.action.kind === "blocked" || row.action.kind === "refresh") {
         setFailure(row.action.reason);
         return;
       }
-      goToStep({
-        environmentId: row.placement.environmentId,
-        harnessInstanceId: row.placement.harnessInstanceId,
-        kind: "account-models",
-        returnTo: step.kind === "account-models" ? step.returnTo : "accounts",
-      });
+      const route = routeOnAccount(row.placement, displayed, preferences.history);
+      if (route) chooseRoute(route, { busyKey: row.key, keepOpen: true });
     },
-    [goToStep, step],
+    [chooseRoute, displayed, preferences.history],
   );
   const changeOption = useCallback(
     (id: string, value: boolean | string): void => {
       if (picker.currentRoute !== null) {
         chooseRoute(picker.currentRoute, {
           busyKey: `option:${id}`,
-          optionValues: { [id]: value },
+          optionValues: withSetting(
+            picker.currentRoute.model,
+            displayed?.modelSelection.options ?? {},
+            typeof value === "boolean" ? { id, on: value } : { id, value },
+          ),
         });
       }
     },
-    [chooseRoute, picker.currentRoute],
+    [chooseRoute, picker.currentRoute, displayed],
   );
   return (
     <ModelPickerList
       accessMode={preferences.accessMode}
       accessPlacement={displayed === null ? null : placementForSelection(placements, displayed)}
-      currentTitle={
-        displayed === null
-          ? "Current · Choose AI"
-          : `Current · ${placementForSelection(placements, displayed)?.engineName ?? "Unavailable engine"} · ${executionLabel(placements, displayed)}`
-      }
       onChangeAccess={changeAccess}
       applyingKey={applyingKey}
       disabledReason={applyingKey === null ? disabledReason : "Updating thread settings…"}
@@ -1257,7 +1415,8 @@ function SubscribedNewThread(props: {
       onClose={close}
       onDismissFailure={() => setFailure(null)}
       onModel={chooseModel}
-      onEngine={(row) => goToStep(row.nextStep)}
+      onEngine={(driverKind) => goToStep({ kind: "engines", driverKind })}
+      onConversation={() => goToStep({ kind: "conversation" })}
       picker={picker}
       query={query}
     />
@@ -1277,6 +1436,7 @@ function UnavailableSheet(props: {
 }
 
 function SheetBar(props: {
+  readonly onSearch?: () => void;
   readonly onBack: (() => void) | null;
   readonly onClose: () => void;
   readonly subtitle: string | null;
@@ -1297,13 +1457,16 @@ function SheetBar(props: {
           </AppText>
         )}
       </View>
+      {props.onSearch ? (
+        <BarButton icon="magnifyingglass" label="Search all AIs" onPress={props.onSearch} />
+      ) : null}
       <BarButton icon="xmark" label="Close model picker" onPress={props.onClose} />
     </View>
   );
 }
 
 function BarButton(props: {
-  readonly icon: "chevron.left" | "xmark";
+  readonly icon: "chevron.left" | "xmark" | "magnifyingglass";
   readonly label: string;
   readonly onPress: () => void;
 }): ReactNode {
@@ -1320,174 +1483,43 @@ function BarButton(props: {
   );
 }
 
-function PickerHeader(
-  props: CurrentSettingsProps & {
-    readonly applyingKey: string | null;
-    readonly disabledReason: string | null;
-    readonly failure: string | null;
-    readonly onBack: (() => void) | null;
-    readonly onChangeOption: (id: string, value: boolean | string) => void;
-    readonly onChangeQuery: (query: string) => void;
-    readonly onClose: () => void;
-    readonly onDismissFailure: () => void;
-    readonly picker: ThreadModelPicker;
-    readonly query: string;
-  },
-): ReactNode {
-  const { picker } = props;
-  return (
-    <View style={styles.header}>
-      <SheetBar
-        onBack={props.onBack}
-        onClose={props.onClose}
-        subtitle={picker.subtitle}
-        title={picker.title}
-      />
-      {props.disabledReason === null ? null : (
-        <AppText role="caption" tone="muted">
-          {props.disabledReason}
-        </AppText>
-      )}
-      {props.failure === null ? null : (
-        <Notice
-          action={{ label: "Dismiss", onPress: props.onDismissFailure }}
-          detail={props.failure}
-          title="That did not change"
-        />
-      )}
-      {picker.step.kind === "engines" ? (
-        <View style={styles.header}>
-          <AppText role="secondaryMedium" tone="muted">
-            {props.currentTitle}
-          </AppText>
-          <RowGroup>
-            {picker.options.map((option) => (
-              <OptionField
-                busy={props.applyingKey === `option:${option.id}`}
-                disabledReason={props.disabledReason}
-                key={option.id}
-                onChange={props.onChangeOption}
-                option={option}
-              />
-            ))}
-            <AccessField
-              accessMode={props.accessMode}
-              busy={props.applyingKey === "access"}
-              disabledReason={props.disabledReason}
-              onChange={props.onChangeAccess}
-              placement={props.accessPlacement}
-            />
-          </RowGroup>
-        </View>
-      ) : null}
-      {picker.showSearch ? (
-        <View style={styles.search}>
-          <Symbol name="magnifyingglass" size={15} tint={color.muted} />
-          <TextInput
-            accessibilityLabel="Search models"
-            autoCapitalize="none"
-            autoCorrect={false}
-            cursorColor={color.ember}
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            onChangeText={props.onChangeQuery}
-            placeholder="Search models"
-            placeholderTextColor={color.muted}
-            returnKeyType="search"
-            selectionColor={color.ember}
-            style={styles.searchField}
-            value={props.query}
-          />
-          {props.query.length === 0 ? null : (
-            <Pressable
-              accessibilityLabel="Clear search"
-              accessibilityRole="button"
-              onPress={() => props.onChangeQuery("")}
-              style={styles.searchClear}
-            >
-              <Symbol name="xmark" size={13} tint={color.muted} />
-            </Pressable>
-          )}
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function AccessField(props: {
-  readonly accessMode: ThreadAccessMode;
-  readonly busy: boolean;
-  readonly disabledReason: string | null;
-  readonly onChange: (mode: ThreadAccessMode) => void;
-  readonly placement: ThreadPlacementOption | null;
-}): ReactNode {
-  const label =
-    accessModeOptions.find((option) => option.mode === props.accessMode)?.label ?? props.accessMode;
-  return (
-    <NativeMenu
-      accessibilityHint="Changes what this thread may do without asking"
-      accessibilityLabel={`Access: ${label}`}
-      disabledReason={props.disabledReason}
-      onPresent={noop}
-      onSettle={noop}
-      style={styles.menuTrigger}
-      title="Access"
-      options={accessModeOptions.map((option) => {
-        const reason = accessModeUnavailableReason(
-          option.mode,
-          props.placement ?? { accessModes: null, engineName: "This engine" },
-        );
-        return {
-          id: option.mode,
-          label: reason === null ? option.label : `${option.label} — ${reason}`,
-          disabled: reason !== null,
-          selected: option.mode === props.accessMode,
-          onPress: () => {
-            if (reason === null && option.mode !== props.accessMode) props.onChange(option.mode);
-          },
-        };
-      })}
-    >
-      <View style={styles.control}>
-        <AppText role="body" style={styles.rowCopy}>
-          Access
-        </AppText>
-        {props.busy ? (
-          <ActivityIndicator color={color.ember} />
-        ) : (
-          <>
-            <AppText role="body" style={styles.controlValue} tone="muted">
-              {label}
-            </AppText>
-            <Symbol name="chevron.down" size={12} tint={color.muted} />
-          </>
-        )}
-      </View>
-    </NativeMenu>
-  );
-}
-
 function OptionField(props: {
   readonly busy: boolean;
   readonly disabledReason: string | null;
   readonly onChange: (id: string, value: boolean | string) => void;
-  readonly option: OptionControl;
+  readonly option: ModelSetting;
 }): ReactNode {
   const { option } = props;
-  if (option.kind === "toggle") {
+  if (option.kind === "switch") {
     return (
-      <View style={[styles.control, styles.toggle]}>
-        <View style={styles.rowCopy}>
-          <SwitchRow
-            disabled={props.disabledReason !== null || props.busy}
-            label={option.label}
-            onChange={(next) => props.onChange(option.id, next)}
-            value={option.value}
-          />
+      <View>
+        <View style={[styles.control, styles.toggle]}>
+          <View style={styles.rowCopy}>
+            <SwitchRow
+              disabled={props.disabledReason !== null || props.busy}
+              label={option.label}
+              onChange={(next) => props.onChange(option.id, next)}
+              value={option.on}
+            />
+          </View>
+          {props.busy ? <ActivityIndicator color={color.ember} /> : null}
         </View>
-        {props.busy ? <ActivityIndicator color={color.ember} /> : null}
+        {option.description ? (
+          <AppText role="caption" tone="muted">
+            {option.description}
+          </AppText>
+        ) : null}
       </View>
     );
   }
+  if (option.kind === "ladder")
+    return (
+      <ReasoningLadder
+        option={option}
+        disabled={props.disabledReason !== null || props.busy}
+        onChange={props.onChange}
+      />
+    );
   // A native menu holds any number of values, where a segmented control
   // squeezes past four into labels nobody can read.
   return (
@@ -1497,7 +1529,7 @@ function OptionField(props: {
       disabledReason={props.disabledReason}
       onPresent={noop}
       onSettle={noop}
-      options={option.values.map((value) => ({
+      options={option.choices.map((value) => ({
         id: value.value,
         label: value.label,
         onPress: () => {
@@ -1519,7 +1551,7 @@ function OptionField(props: {
             <AppText role="body" style={styles.controlValue} tone="muted">
               {option.valueLabel}
             </AppText>
-            <Symbol name="chevron.down" size={12} tint={color.muted} />
+            <Symbol name="chevron.right" size={12} tint={color.muted} />
           </>
         )}
       </View>
@@ -1529,151 +1561,183 @@ function OptionField(props: {
 
 function noop(): void {}
 
-type DisplayItem =
-  | { readonly key: string; readonly kind: "heading"; readonly title: string }
-  | {
-      readonly first: boolean;
-      readonly key: string;
-      readonly kind: "row";
-      readonly last: boolean;
-      readonly row: PickerRow;
-    }
-  | { readonly key: string; readonly kind: "empty"; readonly message: string };
-
-function displayItems(picker: ThreadModelPicker): DisplayItem[] {
-  if (picker.emptyMessage !== null) {
-    return [{ key: "empty", kind: "empty", message: picker.emptyMessage }];
-  }
-  return picker.sections.flatMap((section): DisplayItem[] => [
-    ...(section.title === null
-      ? []
-      : [{ key: `heading:${section.id}`, kind: "heading" as const, title: section.title }]),
-    ...section.rows.map((row, index) => ({
-      first: index === 0,
-      key: `${section.id}:${row.key}`,
-      kind: "row" as const,
-      last: index === section.rows.length - 1,
-      row,
-    })),
-  ]);
-}
-
-const PickerListItem = memo(function PickerListItem(props: {
-  readonly busy: boolean;
-  readonly disabled: boolean;
-  readonly item: DisplayItem;
-  readonly onAccount: (row: AccountRow) => void;
-  readonly onEngine: (row: EngineRow) => void;
-  readonly onModel: (row: ModelRow) => void;
+function ReasoningLadder({
+  option,
+  disabled,
+  onChange,
+}: {
+  option: Extract<ModelSetting, { kind: "ladder" }>;
+  disabled: boolean;
+  onChange: (id: string, value: string) => void;
 }): ReactNode {
-  const { item } = props;
-  if (item.kind === "heading") {
-    return (
-      <AppText role="secondaryMedium" style={styles.sectionLabel} tone="muted">
-        {item.title}
-      </AppText>
+  const width = useRef(1);
+  const [dragged, setDragged] = useState<number | undefined>(undefined);
+  const step = dragged ?? option.step;
+  const last = useRef(option.step);
+  useEffect(() => {
+    last.current = option.step;
+    setDragged(undefined);
+  }, [option.step]);
+  const pick = (x: number) => {
+    if (disabled) return;
+    const step = Math.max(
+      0,
+      Math.min(
+        option.steps.length - 1,
+        Math.round((x / width.current) * (option.steps.length - 1)),
+      ),
     );
-  }
-  if (item.kind === "empty") {
-    return (
-      <View style={styles.empty}>
-        <AppText role="secondary" tone="muted">
-          {item.message}
+    if (last.current === step) return;
+    last.current = step;
+    void Haptics.selectionAsync();
+    setDragged(step);
+  };
+  return (
+    <View style={{ gap: 8, paddingVertical: 12 }}>
+      <View style={styles.control}>
+        <AppText style={styles.rowCopy}>{option.label}</AppText>
+        <AppText tone="muted">
+          {dragged === undefined ? option.valueLabel : option.steps[dragged]?.label}
         </AppText>
       </View>
-    );
-  }
-  const { row } = item;
-  const frame = [
-    styles.rowFrame,
-    item.first && styles.rowFirst,
-    item.last && styles.rowLast,
-    !item.last && styles.rowJoined,
-  ];
-  if (row.kind === "unavailable") {
-    return (
       <View
-        accessibilityState={{ disabled: true, selected: row.selected }}
-        style={[frame, styles.row, styles.dimmed]}
+        accessible
+        accessibilityRole="adjustable"
+        accessibilityLabel={option.label}
+        accessibilityValue={{
+          min: 0,
+          max: option.steps.length - 1,
+          now: option.step ?? 0,
+          text: option.valueLabel,
+        }}
+        accessibilityState={{ disabled }}
+        accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
+        onAccessibilityAction={(event) => {
+          const step = Math.max(
+            0,
+            Math.min(
+              option.steps.length - 1,
+              (option.step ?? 0) + (event.nativeEvent.actionName === "increment" ? 1 : -1),
+            ),
+          );
+          if (!disabled) {
+            void Haptics.selectionAsync();
+            onChange(option.id, option.steps[step]!.value);
+          }
+        }}
+        onLayout={(event) => {
+          width.current = event.nativeEvent.layout.width;
+        }}
+        onStartShouldSetResponder={() => !disabled}
+        onMoveShouldSetResponder={() => !disabled}
+        onResponderGrant={(event) => pick(event.nativeEvent.locationX)}
+        onResponderMove={(event) => pick(event.nativeEvent.locationX)}
+        onResponderRelease={() => {
+          if (last.current !== null && last.current !== option.step)
+            onChange(option.id, option.steps[last.current]!.value);
+          setDragged(undefined);
+        }}
+        onResponderTerminate={() => {
+          last.current = option.step;
+          setDragged(undefined);
+        }}
+        style={styles.track}
       >
-        <RowCopy detail={row.detail} detailTone="danger" title={row.title} />
-        {row.selected ? <Symbol name="checkmark" tint={color.ember} /> : null}
+        {/* Decoration never takes the touch: a press on the thumb would report
+            its position inside the thumb, not along the track. */}
+        <View pointerEvents="none" style={styles.rail} />
+        {step === null ? null : (
+          <View
+            pointerEvents="none"
+            style={[styles.fill, { width: `${(step / (option.steps.length - 1)) * 100}%` }]}
+          />
+        )}
+        {option.steps.map((choice, index) => (
+          <View
+            key={choice.value}
+            pointerEvents="none"
+            style={[
+              styles.tick,
+              { left: `${(index / (option.steps.length - 1)) * 100}%` },
+              step !== null && index <= step && styles.tickFilled,
+            ]}
+          />
+        ))}
+        {step === null ? null : (
+          <View
+            pointerEvents="none"
+            style={[styles.thumb, { left: `${(step / (option.steps.length - 1)) * 100}%` }]}
+          />
+        )}
       </View>
-    );
-  }
-  if (row.kind === "account" && row.action.kind === "refresh") {
-    return (
-      <View style={[frame, styles.row]}>
-        <RowCopy detail={row.detail} detailTone="danger" title={row.title} />
-        <SecondaryButton
-          disabled={props.disabled}
-          label={props.busy ? "Checking…" : "Check again"}
-          onPress={() => props.onAccount(row)}
-        />
-      </View>
-    );
-  }
-  // A blocked row stays pressable to repeat its reason in the notice above,
-  // but it reads as unavailable and never changes anything.
-  const blocked =
-    row.kind === "model"
-      ? row.blockedReason !== null
-      : row.kind === "account" && row.action.kind === "blocked";
-  const leadsOn =
-    row.kind === "engine" || (row.kind === "account" && row.action.kind === "choose-model");
-  return (
-    <Pressable
-      accessibilityHint={leadsOn ? "Opens a second choice" : undefined}
-      accessibilityRole={leadsOn ? "button" : "radio"}
-      accessibilityLabel={row.kind === "engine" ? `Engine: ${row.title}, ${row.detail}` : undefined}
-      accessibilityState={{
-        busy: props.busy,
-        disabled: props.disabled || blocked,
-        selected: row.selected,
-      }}
-      disabled={props.disabled}
-      onPress={() => {
-        if (row.kind === "engine") props.onEngine(row);
-        else if (row.kind === "model") props.onModel(row);
-        else props.onAccount(row);
-      }}
-      style={({ pressed }) => [
-        frame,
-        styles.row,
-        pressed && styles.pressed,
-        blocked && styles.dimmed,
-      ]}
-    >
-      <RowCopy detail={row.detail} detailTone={blocked ? "danger" : "muted"} title={row.title} />
-      {props.busy ? (
-        <ActivityIndicator color={color.ember} />
-      ) : row.selected ? (
-        <Symbol name="checkmark" tint={color.ember} />
-      ) : leadsOn ? (
-        <Symbol name="chevron.right" size={14} tint={color.muted} />
-      ) : null}
-    </Pressable>
-  );
-});
-
-function RowCopy(props: {
-  readonly detail: string | null;
-  readonly detailTone: "danger" | "muted";
-  readonly title: string;
-}): ReactNode {
-  return (
-    <View style={styles.rowCopy}>
-      <AppText role="body">{props.title}</AppText>
-      {props.detail === null ? null : (
-        <AppText role="caption" tone={props.detailTone}>
-          {props.detail}
+      <View style={styles.control}>
+        <AppText role="caption" tone="muted" style={styles.rowCopy}>
+          Quicker
         </AppText>
-      )}
+        <AppText role="caption" tone="muted">
+          Deeper
+        </AppText>
+      </View>
+      {option.automatic ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ selected: option.step === null, disabled }}
+          disabled={disabled}
+          onPress={() => {
+            void Haptics.selectionAsync();
+            onChange(option.id, option.automatic!.value);
+          }}
+          style={[styles.chip, option.step === null && { borderColor: color.ember }]}
+        >
+          <AppText>{option.automatic.label}</AppText>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  fill: {
+    backgroundColor: color.textSoft,
+    borderRadius: 2,
+    height: 4,
+    left: 0,
+    position: "absolute",
+  },
+  rail: { backgroundColor: color.lineStrong, borderRadius: 2, height: 4 },
+  thumb: {
+    backgroundColor: color.text,
+    borderRadius: 11,
+    height: 22,
+    marginLeft: -11,
+    position: "absolute",
+    shadowColor: "#000",
+    shadowOffset: { height: 1, width: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 3,
+    width: 22,
+  },
+  tick: {
+    backgroundColor: color.muted,
+    borderRadius: 2,
+    height: 4,
+    marginLeft: -2,
+    position: "absolute",
+    width: 4,
+  },
+  tickFilled: { backgroundColor: color.surface },
+  track: { justifyContent: "center", minHeight: 44 },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 44,
+    paddingHorizontal: 16,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: color.lineControl,
+    alignSelf: "flex-start",
+  },
   review: { gap: space[12], padding: space[16] },
   reviewCancel: { alignItems: "center", justifyContent: "center", minHeight: touchTarget },
   bar: {
@@ -1705,10 +1769,7 @@ const styles = StyleSheet.create({
     paddingVertical: space[8],
   },
   dimmed: { opacity: 0.62 },
-  empty: { alignItems: "center", paddingHorizontal: space[16], paddingVertical: space[32] },
-  header: { gap: space[12], marginBottom: space[4] },
   menuTrigger: { alignSelf: "stretch" },
-  pressed: { backgroundColor: color.surfacePressed },
   row: {
     alignItems: "center",
     flexDirection: "row",
@@ -1718,45 +1779,15 @@ const styles = StyleSheet.create({
     paddingVertical: space[8],
   },
   rowCopy: { flex: 1, gap: space[2], minWidth: 0 },
-  rowFirst: { borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg },
-  rowFrame: {
-    backgroundColor: color.surface,
-    borderColor: color.line,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
-  },
-  rowJoined: { borderBottomWidth: 0 },
-  rowLast: { borderBottomLeftRadius: radius.lg, borderBottomRightRadius: radius.lg },
-  search: {
-    alignItems: "center",
-    backgroundColor: color.surfaceElevated,
-    borderRadius: radius.md,
-    flexDirection: "row",
-    gap: space[8],
-    minHeight: touchTarget,
-    paddingLeft: space[12],
-  },
-  searchClear: {
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: touchTarget,
-    minWidth: touchTarget,
-  },
   // No line height: iOS lifts a text field's glyphs inside a fixed one.
   searchField: {
     color: color.text,
-    flex: 1,
     fontSize: type.body.fontSize,
     minHeight: touchTarget,
     paddingVertical: space[8],
   },
   freshStart: { gap: space[8], paddingTop: space[24] },
   startThread: { paddingTop: space[24] },
-  sectionLabel: {
-    paddingBottom: space[6],
-    paddingHorizontal: space[12],
-    paddingTop: space[18],
-  },
   toggle: { paddingVertical: 0 },
   unavailable: { gap: space[12], padding: space[16] },
 });

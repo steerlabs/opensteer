@@ -570,70 +570,7 @@
   line-height: 1.4;
 }
 
-/* ---- Profiles and agent access ---- */
-
-.browser-profiles__intro,
-.browser-profiles__empty,
-.browser-profiles__note {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-md);
-  line-height: 1.5;
-}
-
-.browser-profiles__note {
-  color: var(--muted-dim);
-  font-size: var(--text-xs);
-}
-
-.browser-profiles {
-  display: grid;
-  gap: var(--space-10);
-}
-
-.browser-profiles__list {
-  display: grid;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  list-style: none;
-}
-
-.browser-profiles__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 1px var(--space-10);
-  padding: var(--space-10) var(--space-12);
-}
-
-.browser-profiles__row + .browser-profiles__row {
-  border-top: 1px solid var(--line);
-}
-
-.browser-profiles__name {
-  overflow: hidden;
-  color: var(--text);
-  font-size: var(--text-lg);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.browser-profiles__access {
-  grid-row: 2;
-  color: var(--muted-dim);
-  font-size: var(--text-xs);
-}
-
-.browser-profiles__access.is-allowed {
-  color: var(--amber-text);
-}
-
-.browser-profiles__row .btn {
-  grid-row: 1 / span 2;
-  grid-column: 2;
-}
+/* ---- Naming a profile ---- */
 
 .browser-name-form {
   display: grid;

@@ -29,6 +29,7 @@ import {
   type PlaceItem,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
+import { useNavigate } from "react-router";
 import type { BrowserSurfaceId } from "@opensteer/core";
 import type { ChromeConnectEnvironment } from "../chrome/chrome-environment.js";
 import { Icon } from "../icon.js";
@@ -44,7 +45,6 @@ import { BrowserDownloads } from "./browser-downloads.js";
 import { BrowserToolbar } from "./browser-chrome.js";
 import { BrowserPageDialog } from "./browser-page-dialog.js";
 import {
-  BrowserProfilesDialog,
   SaveBrowserProfileDialog,
   runBrowserAction,
   type BrowserActionRunner,
@@ -69,25 +69,21 @@ export interface BrowserChromeSignIn {
   readonly online: boolean;
 }
 
-type BrowserSheet = "profiles" | "save";
+type BrowserSheet = "save";
 
 interface BrowserReads {
   readonly session: BrowserSessionSummary | null;
   readonly profiles: HostSnapshot["browserProfiles"];
-  readonly profileGrants: HostSnapshot["browserProfileGrants"];
   readonly workspaces: HostSnapshot["workspaces"];
   readonly workspaceId: string | null;
-  readonly available: boolean;
 }
 
 function sameReads(left: BrowserReads, right: BrowserReads): boolean {
   return (
     left.session === right.session &&
     left.profiles === right.profiles &&
-    left.profileGrants === right.profileGrants &&
     left.workspaces === right.workspaces &&
-    left.workspaceId === right.workspaceId &&
-    left.available === right.available
+    left.workspaceId === right.workspaceId
   );
 }
 
@@ -142,8 +138,6 @@ export function PlaceBrowserView({
 }) {
   const select = useCallback(
     (snapshot: HostSnapshot): BrowserReads => ({
-      available: snapshot.browserAvailable,
-      profileGrants: snapshot.browserProfileGrants,
       profiles: snapshot.browserProfiles,
       session: snapshot.browserSessions.find((session) => session.id === sessionId) ?? null,
       workspaces: snapshot.workspaces,
@@ -160,6 +154,7 @@ export function PlaceBrowserView({
   const toast = useToast();
   const [actionError, setActionError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<BrowserSheet | null>(null);
+  const navigate = useNavigate();
   const [signInOpen, setSignInOpen] = useState(false);
   const [menuButton, setMenuButton] = useState<HTMLButtonElement | null>(null);
   const closeTab = useTabCloser();
@@ -541,6 +536,7 @@ export function PlaceBrowserView({
     setActionError(null);
     setSheet(next);
   };
+  const manageProfiles = () => void navigate("/settings/browser-profiles");
 
   const hasBrowser = session !== null || dormant;
   const menu: SurfaceMenuItem[] = hasBrowser
@@ -620,7 +616,7 @@ export function PlaceBrowserView({
         {
           icon: "shield",
           label: "Profiles and agent access…",
-          onSelect: () => openSheet("profiles"),
+          onSelect: manageProfiles,
         },
         {
           danger: true,
@@ -640,16 +636,6 @@ export function PlaceBrowserView({
 
   const sheets = (
     <>
-      {sheet === "profiles" && workspace ? (
-        <WorkspaceBrowserProfiles
-          available={reads.available}
-          hostClient={hostClient}
-          onClose={() => setSheet(null)}
-          profileGrants={reads.profileGrants}
-          profiles={reads.profiles}
-          workspace={workspace}
-        />
-      ) : null}
       {sheet === "save" && session ? (
         <SaveBrowserProfileDialog
           actionError={actionError}
@@ -729,7 +715,7 @@ export function PlaceBrowserView({
               <ProfileChip
                 disabled={!live}
                 hostClient={hostClient}
-                onManageProfiles={() => openSheet("profiles")}
+                onManageProfiles={manageProfiles}
                 place={place}
                 presentation={presentation}
               />
@@ -995,66 +981,4 @@ function placeEnded(
     return { detail: null, title: "This tab was closed" };
   if (viewerError) return { detail: viewerError, title: "This tab can’t be shown" };
   return null;
-}
-
-/** Profiles and which agents may use them, for one Workspace's browsers. */
-export function WorkspaceBrowserProfiles({
-  available,
-  hostClient,
-  onClose,
-  profileGrants,
-  profiles,
-  workspace,
-}: {
-  readonly available: boolean;
-  readonly hostClient: HostClient;
-  readonly onClose: () => void;
-  readonly profileGrants: HostSnapshot["browserProfileGrants"];
-  readonly profiles: HostSnapshot["browserProfiles"];
-  readonly workspace: HostSnapshot["workspaces"][number];
-}) {
-  const [actionError, setActionError] = useState<string | null>(null);
-  return (
-    <BrowserProfilesDialog
-      actionError={actionError}
-      canCreate={available}
-      onClose={onClose}
-      onCreate={(name) =>
-        hostClient
-          .dispatch({
-            idempotencyKey: mutationIdempotencyKey("browser-profile"),
-            input: { name },
-            type: "browser.profile.create",
-          })
-          .then(() => undefined)
-      }
-      onGrant={(input) =>
-        hostClient
-          .dispatch({
-            idempotencyKey: mutationIdempotencyKey(`browser-grant:${workspace.id}`),
-            profileId: input.profileId,
-            type: "browser.profile.grant",
-            workspaceId: workspace.id,
-          })
-          .then(() => undefined)
-      }
-      onRevoke={(grantId) =>
-        hostClient
-          .dispatch({
-            grantId,
-            idempotencyKey: mutationIdempotencyKey(`browser-grant:${grantId}`),
-            type: "browser.profileGrant.revoke",
-          })
-          .then(() => undefined)
-      }
-      performAction={(action) => {
-        setActionError(null);
-        return runBrowserAction(action, setActionError);
-      }}
-      profileGrants={profileGrants.filter((grant) => grant.workspaceId === workspace.id)}
-      profiles={profiles}
-      workspaceKind={workspace.kind}
-      workspaceName={workspace.name}
-    />
-  );
 }

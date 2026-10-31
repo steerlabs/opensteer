@@ -123,3 +123,25 @@ describe("composer connection transitions", () => {
     );
   });
 });
+
+it("places leading footer content before the trailing model control", () => {
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  act(() =>
+    root.render(
+      <Composer
+        placeholder="What should Opensteer do?"
+        onSend={async () => {}}
+        leadingFooter={<button type="button">Opensteer</button>}
+        footerExtras={<button type="button">GPT</button>}
+      />,
+    ),
+  );
+  const footer = node.querySelector(".composer__footer")!;
+  expect(
+    [...footer.querySelectorAll("button")].map(
+      (button) => button.textContent || button.getAttribute("aria-label"),
+    ),
+  ).toEqual(["Opensteer", "GPT", "Send message"]);
+});

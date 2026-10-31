@@ -43,6 +43,38 @@ describe("independent browser creation", () => {
   });
 });
 
+describe("browser profile patches", () => {
+  it("renames a profile in place and forgets a deleted one with its grants", () => {
+    const work = { id: "bpr_work", name: "Work", revision: 3 };
+    const shopping = { id: "bpr_shopping", name: "Shopping", revision: 1 };
+    const grant = (id: string, profileId: string) => ({
+      access: "full-control" as const,
+      createdAt: now,
+      id,
+      profileId,
+      workspaceId: "specialist",
+    });
+    const snapshot = {
+      ...baseSnapshot(),
+      browserProfiles: [work, shopping],
+      browserProfileGrants: [grant("work-grant", work.id), grant("shopping-grant", shopping.id)],
+    };
+
+    const renamed = applyOptimisticCommandPatch(snapshot, {
+      profile: { ...work, name: "Office" },
+      type: "browser.profile.rename",
+    });
+    expect(renamed.browserProfiles.map((profile) => profile.name)).toEqual(["Office", "Shopping"]);
+
+    const deleted = applyOptimisticCommandPatch(renamed, {
+      profileId: shopping.id,
+      type: "browser.profile.delete",
+    });
+    expect(deleted.browserProfiles.map((profile) => profile.id)).toEqual([work.id]);
+    expect(deleted.browserProfileGrants.map((entry) => entry.id)).toEqual(["work-grant"]);
+  });
+});
+
 describe("task mark patches", () => {
   it("keeps names in every task copy and completed assignment worker without changing page state", () => {
     const mock = new MockHostClient({ latencyMs: 0 });

@@ -3218,6 +3218,35 @@ describe("BrowserService", () => {
     expect(runtime.connectionCount()).toBe(2);
   });
 
+  it("stops a deleted profile's sessions, tells the owner's devices and never starts it again", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const profile = repository.addHostedProfile("Shopping");
+    const onProfilesChanged = vi.fn();
+    const service = new BrowserService({
+      ...profileStateOptions,
+      onProfilesChanged,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: runnerTarget({ url: runtime.url }),
+    });
+    cleanups.push(async () => service.close());
+    const { session } = await service.start({ ownerId, profileId: profile.id, workspaceId });
+
+    await service.deleteProfile({ ownerId, profileId: profile.id });
+
+    expect(repository.session(session.id)?.state).toBe("closed");
+    expect(onProfilesChanged).toHaveBeenCalledWith(ownerId, workspaceId);
+    await expect(
+      service.start({ ownerId, profileId: profile.id, workspaceId }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("opens a fresh agent session with no profile, no grant, and no lease", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -3927,6 +3956,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
   readonly #otherWorkspaces = new Map<WorkspaceId, "main" | "specialized">();
   readonly #leaseHashes = new Map<BrowserSessionId, string>();
   readonly #profiles = new Map<BrowserProfileId, BrowserProfileRecord>();
+  readonly #deletedProfiles = new Set<BrowserProfileId>();
   readonly #profileRevisions = new Map<
     BrowserProfileId,
     { readonly ciphertext: Uint8Array; readonly ciphertextSha256: string; readonly revision: 1 }
@@ -4490,7 +4520,38 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     ownerId: UserId,
   ): Promise<BrowserProfileRecord | null> {
     const profile = this.#profiles.get(profileId);
-    return profile?.ownerId === ownerId ? profile : null;
+    return profile?.ownerId === ownerId && !this.#deletedProfiles.has(profileId) ? profile : null;
+  }
+
+  async renameBrowserProfile(input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }): Promise<BrowserProfileRecord> {
+    const profile = await this.getBrowserProfile(input.profileId, input.ownerId);
+    if (!profile)
+      throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+    const renamed = { ...profile, name: input.name };
+    this.#profiles.set(renamed.id, renamed);
+    return renamed;
+  }
+
+  /** The archived row stays, as the database keeps it, so its sessions still name an owner. */
+  async deleteBrowserProfile(input: {
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  }) {
+    if (this.#profiles.get(input.profileId)?.ownerId !== input.ownerId) {
+      throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+    }
+    this.#deletedProfiles.add(input.profileId);
+    this.#profileRevisions.delete(input.profileId);
+    if (this.#grant?.profileId === input.profileId) this.#grant = null;
+    return {
+      sessionIds: [...this.#sessions.values()]
+        .filter((session) => session.profileId === input.profileId && !terminal(session.state))
+        .map((session) => session.id),
+    };
   }
 
   /** Session reads that never answer, as a stalled database's would not. */
@@ -4529,7 +4590,9 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
   }
 
   async listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]> {
-    return [...this.#profiles.values()].filter((profile) => profile.ownerId === ownerId);
+    return [...this.#profiles.values()].filter(
+      (profile) => profile.ownerId === ownerId && !this.#deletedProfiles.has(profile.id),
+    );
   }
 
   async listBrowserSessions(ownerId: UserId): Promise<readonly BrowserSessionRecord[]> {

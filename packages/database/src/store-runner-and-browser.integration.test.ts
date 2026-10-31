@@ -4,6 +4,7 @@ import {
   HarnessIdSchema,
   ThreadIdSchema,
   createId,
+  type BrowserSessionId,
   type Workspace,
   type ThreadId,
   type UserId,
@@ -3686,6 +3687,187 @@ describeStore("PostgreSQL store", (it) => {
       attachedAfterRunEnd: [],
       durableUseAfterRunEnd: "credited",
     });
+  });
+
+  it("deletes a profile with its tabs so no session, save or grant can follow", async ({
+    storeFixture,
+  }) => {
+    const { store, database, enrollBrowserRunner } = storeFixture;
+    const ownerId = await store.createUser("Robin");
+    const outsiderId = await store.createUser("Sam");
+    const workspace = await store.createWorkspace({
+      backing: {
+        generation: 1,
+        kind: "portablefs",
+        serviceId: "test-portablefs",
+        volumeId: "wsp_bpd",
+      },
+      capacityPolicy: {
+        blockHardLimitBytes: 10_000_000,
+        inodeHardLimit: 10_000,
+        kind: "hard-quota",
+      },
+      createdBy: ownerId,
+      idempotencyKey: "workspace-profile-delete",
+      name: "Main",
+      status: "ready",
+    });
+    const specialist = await store.createWorkspace({
+      backing: {
+        generation: 1,
+        kind: "portablefs",
+        serviceId: "test-portablefs",
+        volumeId: "wsp_bpd_s",
+      },
+      capacityPolicy: {
+        blockHardLimitBytes: 10_000_000,
+        inodeHardLimit: 10_000,
+        kind: "hard-quota",
+      },
+      createdBy: ownerId,
+      idempotencyKey: "workspace-profile-delete-specialist",
+      kind: "specialized",
+      name: "Buyer",
+      status: "ready",
+    });
+    const profile = await store.createBrowserProfile({
+      idempotencyKey: "profile-delete-shopping",
+      name: "Shopping",
+      ownerId,
+    });
+    const kept = await store.createBrowserProfile({
+      idempotencyKey: "profile-delete-work",
+      name: "Work",
+      ownerId,
+    });
+    await expect(
+      store.renameBrowserProfile({ name: "Errands", ownerId, profileId: profile.id }),
+    ).resolves.toMatchObject({ id: profile.id, name: "Errands" });
+    await expect(
+      store.renameBrowserProfile({ name: "Mine", ownerId: outsiderId, profileId: profile.id }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(
+      store.deleteBrowserProfile({ ownerId: outsiderId, profileId: profile.id }),
+    ).rejects.toMatchObject({ code: "not_found" });
+
+    await store.createBrowserProfileGrant({
+      access: "full-control",
+      createdBy: ownerId,
+      profileId: profile.id,
+      workspaceId: specialist.id,
+    });
+    const keptGrant = await store.createBrowserProfileGrant({
+      access: "full-control",
+      createdBy: ownerId,
+      profileId: kept.id,
+      workspaceId: specialist.id,
+    });
+    const runnerId = await enrollBrowserRunner(ownerId, "Browser Mac");
+    const startSession = (id: BrowserSessionId, tabGroupId?: BrowserSessionId) =>
+      store.createBrowserSession({
+        id,
+        leaseGeneration: 1,
+        leaseTokenHash: `sha256:${id}`,
+        origin: "workspace",
+        placementKey: `runner:${runnerId}:local-browser`,
+        profileId: profile.id,
+        runnerId,
+        runtimeId: "local-browser",
+        ...(tabGroupId ? { tabGroupId } : {}),
+        workspaceId: workspace.id,
+      });
+    const close = (id: BrowserSessionId) =>
+      database
+        .updateTable("browserSessions")
+        .set({ closedAt: new Date(), profileLeaseExpiresAt: new Date(0), state: "closed" })
+        .where("id", "=", id)
+        .execute();
+    const live = await startSession(createBrowserSessionId());
+    // A lineage restored once, its tab still waiting to restore the profile.
+    const first = await startSession(createBrowserSessionId());
+    await close(first.id);
+    const restored = await startSession(createBrowserSessionId(), first.id);
+    await close(restored.id);
+    await database
+      .insertInto("workspaceTabs")
+      .values({
+        closedAt: null,
+        createdAt: new Date(),
+        groupId: first.id,
+        id: `${first.id}-tab-0`,
+        openerId: null,
+        order: 0,
+        sessionId: restored.id,
+        state: "suspended",
+        title: "Cart",
+        url: "https://shop.example/cart",
+      })
+      .execute();
+    // Finished history holds nothing.
+    await close((await startSession(createBrowserSessionId())).id);
+    const ciphertext = new Uint8Array(32).fill(7);
+    await store.commitBrowserProfileRevision({
+      ciphertext,
+      ciphertextSha256: "a".repeat(64),
+      expectedRevision: 0,
+      profileId: profile.id,
+    });
+
+    const deleted = await store.deleteBrowserProfile({ ownerId, profileId: profile.id });
+
+    // Only the live session is left for the Host to stop; the waiting tab closed with it.
+    expect(deleted.sessionIds).toEqual([live.id]);
+    expect(
+      await database
+        .selectFrom("workspaceTabs")
+        .select("closedAt")
+        .where("id", "=", `${first.id}-tab-0`)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ closedAt: expect.any(Date) });
+    expect((await store.listBrowserProfiles(ownerId)).map(({ id }) => id)).toEqual([kept.id]);
+    expect(await store.readBrowserProfileRevision(profile.id)).toBeNull();
+    expect(await store.listActiveBrowserProfileGrants(ownerId)).toEqual([
+      expect.objectContaining({ grantId: keptGrant.grantId }),
+    ]);
+    expect(
+      (await store.listActiveBrowserProfileGrantsForWorkspace(workspace.id, ownerId)).map(
+        ({ profileId }) => profileId,
+      ),
+    ).toEqual([kept.id]);
+    await expect(startSession(createBrowserSessionId())).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(
+      store.commitBrowserProfileRevision({
+        ciphertext,
+        ciphertextSha256: "b".repeat(64),
+        expectedRevision: 1,
+        profileId: profile.id,
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(
+      store.renameBrowserProfile({ name: "Back", ownerId, profileId: profile.id }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    // A late replay of its creation must not hand it back.
+    await expect(
+      store.createBrowserProfile({
+        idempotencyKey: "profile-delete-shopping",
+        name: "Shopping",
+        ownerId,
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(
+      store.createBrowserProfileGrant({
+        access: "full-control",
+        createdBy: ownerId,
+        profileId: profile.id,
+        workspaceId: specialist.id,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    // Deleting again changes nothing and still names the session to stop.
+    await expect(store.deleteBrowserProfile({ ownerId, profileId: profile.id })).resolves.toEqual(
+      deleted,
+    );
   });
 
   it("persists portable browser profiles and keeps active sessions on one placement", async ({

@@ -214,13 +214,13 @@ function ChromeProfileRow({
   };
 
   return (
-    <div className="chrome-profile">
+    <div className="settings-item">
       <div className="card__row">
         <span className="card__row-glyph">
           <Icon name="browser" />
         </span>
         {mode === "rename" ? (
-          <form className="chrome-profile__rename" onSubmit={rename}>
+          <form className="settings-item__rename" onSubmit={rename}>
             <input
               aria-label={`New name for ${source.name}`}
               className="text-input"
@@ -288,7 +288,7 @@ function ChromeProfileRow({
       </div>
       {mode === "disconnect" ? (
         <div
-          className="chrome-profile__confirm"
+          className="settings-item__confirm"
           role="group"
           aria-label={`Disconnect ${source.name}`}
         >
@@ -296,7 +296,7 @@ function ChromeProfileRow({
             Agents stop getting new sign-ins from {source.name}. Browsers already signed in stay
             signed in. You can connect it again anytime.
           </p>
-          <div className="chrome-profile__confirm-actions">
+          <div className="settings-item__confirm-actions">
             <button className="btn btn--small" onClick={close} type="button">
               Cancel
             </button>
@@ -313,7 +313,7 @@ function ChromeProfileRow({
         </div>
       ) : null}
       {error ? (
-        <p className="chrome-profile__error" role="alert">
+        <p className="settings-item__error" role="alert">
           {error}
         </p>
       ) : null}

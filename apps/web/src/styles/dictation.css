@@ -45,13 +45,6 @@
   }
 }
 
-.composer__dictation-slot {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  height: 32px;
-}
 .dictation-live {
   display: flex;
   align-items: center;
@@ -66,40 +59,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.composer__attach.dictation-stop,
-.composer__attach.dictation-stop:hover:not(:disabled),
-.composer--conversation .composer__attach.dictation-stop:hover:not(:disabled) {
-  background: var(--ember);
-  color: var(--bg);
-  border-radius: var(--radius-full);
-}
-
-.composer--conversation .composer__dictation-slot {
-  width: 180px;
-  flex: none;
-  max-width: 45cqi;
-}
 .dictation-live .icon-btn {
   flex: none;
 }
 .dictation-live .dictation-status__timer {
   flex: none;
 }
-.dictation-live__compact {
-  display: none;
-}
-@container conversation-composer (max-width: 500px) {
-  .composer--conversation .composer__dictation-slot {
-    width: 96px;
-  }
-  .dictation-live__full {
-    display: none;
-  }
-  .dictation-live__compact {
-    display: inline;
-  }
-}
-
 .dictation-progress {
   flex: none;
   font-variant-numeric: tabular-nums;
@@ -107,15 +72,68 @@
 
 @container conversation-composer (max-width: 500px) {
   /* A readable draft and the live controls cannot share one narrow line. */
-  .composer--dictation .composer__entry {
+  .composer--dictation:has(.dictation-live) .composer__entry {
     flex-wrap: wrap;
   }
-  .composer--dictation .composer__input {
+  .composer--dictation:has(.dictation-live) .composer__input {
     order: -1;
     flex: 0 0 100%;
     width: 100%;
   }
-  .composer--dictation .composer__footer {
+  .composer--dictation:has(.dictation-live) .composer__footer {
     margin-left: auto;
+  }
+}
+.dictation-live {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+/* In the bar the meter is a waveform: it fills the row, the newest level at
+   the right and the oldest fading out at the left. */
+.dictation-live .dictation-level {
+  flex: 1;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  width: auto;
+  min-width: var(--space-20);
+  overflow: hidden;
+  color: var(--text-soft);
+  mask-image: linear-gradient(to right, transparent, black var(--space-48));
+}
+.dictation-live .dictation-level i {
+  flex: 0 0 2.5px;
+  height: 3px;
+}
+.dictation-recording-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--red);
+  box-shadow: var(--ring-red);
+}
+.dictation-keep {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--bg);
+}
+.dictation-keep:disabled {
+  opacity: 0.45;
+}
+.dictation-keep svg {
+  width: 15px;
+  height: 15px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dictation-level i {
+    height: 9px !important;
+    transition: none;
   }
 }

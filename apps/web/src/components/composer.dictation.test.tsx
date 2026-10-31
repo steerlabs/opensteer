@@ -131,7 +131,7 @@ it("disables another composer and leaves on hide", async () => {
   const t = await setup();
   t.render(false, true);
   await t.start();
-  expect(t.node.querySelectorAll<HTMLButtonElement>('[title="Dictate"]')[1]!.disabled).toBe(true);
+  expect(t.node.querySelectorAll<HTMLButtonElement>('[title="Dictate"]')[0]!.disabled).toBe(true);
   t.render(false, true, true);
   expect(t.port.stop).toHaveBeenCalledOnce();
 });
@@ -333,4 +333,22 @@ it("rescues a focused Stop when finalization disables it", async () => {
   expect(stop.disabled).toBe(true);
   expect(document.activeElement).toBe(t.field);
   await t.end();
+});
+
+it("starts on primary pointerdown and shows the bar before listening without double start", async () => {
+  const t = await setup();
+  const mic = t.node.querySelector<HTMLButtonElement>('[title="Dictate"]')!;
+  await act(async () =>
+    mic.dispatchEvent(new PointerEvent("pointerdown", { button: 2, bubbles: true })),
+  );
+  expect(t.port.start).not.toHaveBeenCalled();
+  await act(async () =>
+    mic.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true })),
+  );
+  expect(t.port.start).toHaveBeenCalledOnce();
+  expect(t.node.querySelector(".dictation-live")).not.toBeNull();
+  expect(t.node.querySelector('[aria-label="Dictation duration"]')?.textContent).toBe("0:00");
+  expect(t.node.querySelector(".dictation-live")?.textContent).not.toContain("Starting");
+  await act(async () => mic.click());
+  expect(t.port.start).toHaveBeenCalledOnce();
 });

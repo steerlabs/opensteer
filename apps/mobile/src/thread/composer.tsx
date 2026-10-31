@@ -1,9 +1,11 @@
+import { UsageNotice } from "./usage-notice.js";
 import { useFocusEffect } from "@react-navigation/native";
 import { VoiceDock, VoiceMic, useVoice } from "../voice/controls.js";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
-import { DictationMic, DictationStatus } from "../dictation/controls.js";
+import { DictationBar, DictationMic, DictationStatus } from "../dictation/controls.js";
 import { dictationLabels, dictationView } from "@opensteer/client/dictation";
+import { threadPlacementOptions } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import {
@@ -125,7 +127,7 @@ export function Composer(props: {
    * they remove it. Removing it holds for this message and this page only.
    */
   readonly page?: BrowserPageContentPart | null;
-  readonly onChangeModel: () => void;
+  readonly onChangeModel: (conversation?: boolean) => void;
   /** Opens Find in conversation for this Thread. */
   readonly onFind: () => void;
   readonly placeholder: string;
@@ -171,6 +173,28 @@ export function Composer(props: {
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, threadId);
   const text = draft?.text ?? "";
+  const usageEnvironments = useHostSelector(hostClient, (snapshot) => snapshot.environments);
+  const usageHarnesses = useHostSelector(hostClient, (snapshot) => snapshot.harnesses);
+  const usageThread = useHostSelector(hostClient, (snapshot) =>
+    snapshot.threads.find((thread) => thread.id === threadId),
+  );
+  // Typing re-renders the composer on every keystroke; the notice's inputs
+  // change only with the Host's snapshot.
+  const usagePlacements = useMemo(
+    () => threadPlacementOptions(usageEnvironments, usageHarnesses),
+    [usageEnvironments, usageHarnesses],
+  );
+  const usageSelection = useMemo(
+    () =>
+      usageThread
+        ? {
+            environmentId: usageThread.environmentId,
+            harnessInstanceId: usageThread.harnessInstanceId,
+            modelSelection: usageThread.modelSelection,
+          }
+        : null,
+    [usageThread],
+  );
   const dictation = useDictation();
   const dictationState = useSyncExternalStore(dictation.subscribe, dictation.getSnapshot);
   const instance = useId();
@@ -212,7 +236,6 @@ export function Composer(props: {
    * leave while the menu was still anchored to it.
    */
   const [presenting, setPresenting] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const inFlight = useRef(false);
   const stoppingRef = useRef(false);
   const draftText = useRef(text);
@@ -276,7 +299,7 @@ export function Composer(props: {
     disabledReason: props.disabledReason,
     focused,
     pendingCommand: pending !== null,
-    presenting: presenting || settingsOpen,
+    presenting,
     readOnly,
     running: props.running,
     sending,
@@ -360,6 +383,7 @@ export function Composer(props: {
   const voiceOn = useVoice().snapshot.phase !== "idle";
   const startDictation = (): void => {
     if (voiceOn) return;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     dictation.start({
       owner,
       read: () => ({
@@ -666,7 +690,7 @@ export function Composer(props: {
       icon: "gearshape",
       id: "model",
       label: props.variant === "conversation" ? "AI settings" : "Change model…",
-      onPress: props.variant === "conversation" ? () => setSettingsOpen(true) : props.onChangeModel,
+      onPress: () => props.onChangeModel(),
     },
     {
       icon: "magnifyingglass",
@@ -821,6 +845,11 @@ export function Composer(props: {
           onRetry={staged.retry}
         />
       )}
+      <UsageNotice
+        placements={usagePlacements}
+        selection={usageSelection}
+        onSwitch={() => props.onChangeModel(true)}
+      />
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <VoiceDock />
       <ComposerBar
@@ -851,15 +880,6 @@ export function Composer(props: {
                   >
                     <ComposerCircleFace icon="plus" />
                   </NativeMenu>
-                  {voiceOn ? null : (
-                    <DictationMic
-                      controller={dictation}
-                      snapshot={dictationState}
-                      owner={owner}
-                      disabled={readOnly || textHidden}
-                      onStart={startDictation}
-                    />
-                  )}
                   {props.voice === true ? <VoiceMic disabled={readOnly || textHidden} /> : null}
                 </View>
               ),
@@ -919,64 +939,73 @@ export function Composer(props: {
           ? {}
           : {
               action: (
-                <View style={composerControlStyle}>
-                  {view.action === "stop" && !dictating ? (
-                    <ComposerAction
-                      busy={stopping || props.runStopping}
-                      disabled={stopping || props.runStopping || !props.canRespond}
-                      kind="stop"
-                      label={props.stopLabel ?? "Stop this run"}
-                      onPress={() => void stop()}
+                <View style={{ flexDirection: "row" }}>
+                  {!dictating && !voiceOn ? (
+                    <DictationMic
+                      controller={dictation}
+                      snapshot={dictationState}
+                      owner={owner}
+                      disabled={readOnly || textHidden}
+                      onStart={startDictation}
                     />
-                  ) : (
-                    <ComposerAction
-                      busy={sending}
-                      disabled={!canSend}
-                      kind="send"
-                      label={sending ? "Sending" : "Send message"}
-                      onPress={() => void send()}
-                    />
-                  )}
-                </View>
-              ),
-            })}
-        {...(view.showPills && (props.variant !== "conversation" || settingsOpen)
-          ? {
-              accessory: (
-                <View>
-                  <ComposerPills
-                    accessMode={props.accessMode}
-                    accessModes={props.accessModes}
-                    disabledReason={props.settingsDisabledReason}
-                    blockedReason={props.executionBlockedReason}
-                    driverKind={props.driverKind}
-                    engineName={props.engineName}
-                    modelLabel={props.modelLabel}
-                    model={props.model}
-                    modelOptions={props.modelOptions}
-                    onOpenModel={props.onChangeModel}
-                    onPresent={hold}
-                  />
-                  {props.variant === "conversation" ? (
-                    <Pressable
-                      accessibilityLabel="Close AI settings"
-                      accessibilityRole="button"
-                      onPress={() => setSettingsOpen(false)}
-                      style={{
-                        minHeight: touchTarget,
-                        justifyContent: "center",
-                        alignItems: "center",
-                      }}
-                    >
-                      <AppText role="secondaryMedium" tone="muted">
-                        Done
-                      </AppText>
-                    </Pressable>
+                  ) : null}
+                  {!dictating ? (
+                    <View style={composerControlStyle}>
+                      {view.action === "stop" && !dictating ? (
+                        <ComposerAction
+                          busy={stopping || props.runStopping}
+                          disabled={stopping || props.runStopping || !props.canRespond}
+                          kind="stop"
+                          label={props.stopLabel ?? "Stop this run"}
+                          onPress={() => void stop()}
+                        />
+                      ) : (
+                        <ComposerAction
+                          busy={sending}
+                          disabled={!canSend}
+                          kind="send"
+                          label={sending ? "Sending" : "Send message"}
+                          onPress={() => void send()}
+                        />
+                      )}
+                    </View>
                   ) : null}
                 </View>
               ),
+            })}
+        {...(dictating
+          ? {
+              accessory: (
+                <DictationBar
+                  canSend={canSend}
+                  controller={dictation}
+                  onSend={() => void send()}
+                  owner={owner}
+                  snapshot={dictationState}
+                />
+              ),
             }
-          : {})}
+          : view.showPills
+            ? {
+                accessory: (
+                  <View>
+                    <ComposerPills
+                      accessMode={props.accessMode}
+                      accessModes={props.accessModes}
+                      disabledReason={props.settingsDisabledReason}
+                      blockedReason={props.executionBlockedReason}
+                      driverKind={props.driverKind}
+                      engineName={props.engineName}
+                      modelLabel={props.modelLabel}
+                      model={props.model}
+                      modelOptions={props.modelOptions}
+                      onOpenModel={() => props.onChangeModel()}
+                      onPresent={hold}
+                    />
+                  </View>
+                ),
+              }
+            : {})}
       />
     </View>
   );

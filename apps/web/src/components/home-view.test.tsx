@@ -191,7 +191,7 @@ describe("newThreadPlaceholder", () => {
 
   it("keeps storage readiness distinct from execution selection", () => {
     expect(newThreadPlaceholder("provisioning", true)).toBe("This Workspace is not ready yet.");
-    expect(newThreadPlaceholder("ready", true)).toBe("What should this task do?");
+    expect(newThreadPlaceholder("ready", true)).toBe("What should Opensteer do?");
   });
 
   it("names the option the reader chose when that option is what blocks sending", () => {

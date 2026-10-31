@@ -5,6 +5,7 @@ import { act, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   threadPlacementOptions,
+  executionAccounts,
   type ExecutionSelection,
   type HostSnapshot,
   type HostClient,
@@ -122,10 +123,18 @@ describe("Expo engine/account/model journeys", () => {
     await act(async () => target!.click());
   }
   async function browseSecond() {
-    const engine = document.querySelector<HTMLButtonElement>('[aria-label="Engine: Codex, Ready"]');
+    const engine = document.querySelector<HTMLButtonElement>('[aria-label="Engine: Codex"]');
     expect(engine).not.toBeNull();
     await act(async () => engine!.click());
-    await press(second.accountName);
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
+    );
+    const title = executionAccounts(placements, {
+      environmentId: codex.environmentId,
+      harnessInstanceId: codex.harnessInstanceId,
+      modelSelection: codex.modelSelection,
+    }).find((row) => row.placement.harnessInstanceId === second.harnessInstanceId)!.title;
+    await press(title);
   }
   afterEach(async () => {
     const artifacts =
@@ -163,12 +172,11 @@ describe("Expo engine/account/model journeys", () => {
     expect(access).not.toHaveBeenCalled();
     expect(execution).not.toHaveBeenCalled();
     expect(remember).not.toHaveBeenCalled();
-    await press(codex.models[0]!.displayName);
     expect(document.body.textContent).toContain("starts fresh");
     expect(execution).not.toHaveBeenCalled();
     await press("Keep Codex");
     expect(execution).not.toHaveBeenCalled();
-    await press(codex.models[0]!.displayName);
+    await press("alex@opensteer.test");
     await press("Use Codex");
     expect(execution).toHaveBeenCalledExactlyOnceWith(
       original.id,
@@ -192,7 +200,6 @@ describe("Expo engine/account/model journeys", () => {
     };
     await mount(false, false, [remembered]);
     await browseSecond();
-    await press(second.models[0]!.displayName);
     await press("Use Codex");
     expect(execution.mock.calls[0]?.[1]).toMatchObject({
       modelSelection: { options: { effort: "medium", speed: "priority" } },
@@ -230,7 +237,6 @@ describe("Expo engine/account/model journeys", () => {
   it("revalidates busy state when review confirms", async () => {
     await mount();
     await browseSecond();
-    await press(second.models[0]!.displayName);
     await act(async () =>
       move({
         ...snapshot,
@@ -245,7 +251,6 @@ describe("Expo engine/account/model journeys", () => {
   it("does not apply a review after the target account disappears", async () => {
     await mount();
     await browseSecond();
-    await press(second.models[0]!.displayName);
     await act(async () =>
       move({
         ...snapshot,
@@ -257,25 +262,15 @@ describe("Expo engine/account/model journeys", () => {
     expect(document.body.textContent).toContain("not available");
   });
 
-  it("records draft routes only after picking a model and leaves options available", async () => {
+  it("browses AI chips without mutation and picks a model", async () => {
     await mount(true);
-    await browseSecond();
+    await press("Cursor");
     expect(remember).not.toHaveBeenCalled();
-    await press(second.models[0]!.displayName);
+    await press(cursor.models[0]!.displayName);
     expect(remember).toHaveBeenCalledExactlyOnceWith({
-      selection: {
-        environmentId: second.environmentId,
-        harnessInstanceId: second.harnessInstanceId,
-        modelSelection: { ...second.modelSelection, options: {} },
-      },
+      selection: expect.objectContaining({ harnessInstanceId: cursor.harnessInstanceId }),
     });
-    expect(document.body.textContent).toContain(
-      `Current · Codex · ${second.models[0]!.displayName}`,
-    );
-    expect(document.querySelector('[aria-label^="Reasoning:"]')).not.toBeNull();
-    expect(document.querySelector('[aria-label^="Access:"]')).not.toBeNull();
-    expect(access).not.toHaveBeenCalled();
-    expect(execution).not.toHaveBeenCalled();
+    expect(navigation.goBack).toHaveBeenCalled();
   });
 
   it("blocks a draft's send until the person selects an enforceable access mode", async () => {
@@ -352,10 +347,14 @@ describe("Expo engine/account/model journeys", () => {
         />,
       ),
     );
-    expect(document.body.textContent).toContain(
-      `Current · Cursor · ${cursor.models[0]!.displayName}`,
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
     );
-    expect(button("Auto — Cursor cannot enforce this mode")?.disabled).toBe(true);
+    expect(
+      Array.from(document.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find((button) =>
+        button.textContent?.startsWith("AutoCursor"),
+      )?.disabled,
+    ).toBe(true);
     expect(remember).not.toHaveBeenCalled();
     let complete: (() => void) | undefined;
     remember.mockImplementationOnce(async () => {
@@ -404,7 +403,7 @@ describe("Expo engine/account/model journeys", () => {
       ),
     );
     const capsule = document.querySelector('[aria-label="AI: Cursor · Composer 2.5 · High"]');
-    expect(capsule?.textContent).toBe("Cursor · Composer 2.5 · High · Unavailable");
+    expect(capsule?.textContent).toBe("Composer 2.5 High · Unavailable");
     expect(document.querySelectorAll("button")).toHaveLength(1);
     expect(capsule?.getAttribute("aria-description")).toContain("Access: Auto");
     expect(capsule?.getAttribute("aria-description")).toContain("Cursor cannot enforce this mode");
@@ -445,10 +444,12 @@ describe("Expo engine/account/model journeys", () => {
       }),
     );
 
-    expect(document.body.textContent).toContain(
-      `Current · Codex · ${codex.models[0]!.displayName}`,
+    expect(document.body.textContent).toContain(codex.models[0]!.displayName);
+    await act(async () =>
+      document
+        .querySelector<HTMLElement>('[role="adjustable"]')!
+        .dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })),
     );
-    await press("Medium");
     expect(execution).toHaveBeenCalledExactlyOnceWith(original.id, {
       harnessInstanceId: codex.harnessInstanceId,
       modelSelection: { ...codex.modelSelection, options: { effort: "medium" } },
@@ -466,14 +467,108 @@ describe("Expo engine/account/model journeys", () => {
       harnessInstanceId: codex.harnessInstanceId,
       modelSelection: { ...codex.modelSelection, options: { effort: "high", cache: true } },
     });
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
+    );
     await press("Full access");
     expect(access).toHaveBeenCalledExactlyOnceWith(original.id, "full-access");
     expect(navigation.goBack).not.toHaveBeenCalled();
   });
 
+  it("returns reasoning to the automatic choice", async () => {
+    await mount();
+    await act(async () =>
+      move({
+        ...snapshot,
+        environments: snapshot.environments.map((environment) => ({
+          ...environment,
+          harnessCatalogs: environment.harnessCatalogs.map((catalog) => ({
+            ...catalog,
+            models: catalog.models.map((model) => ({
+              ...model,
+              options: model.options.map((option) =>
+                option.type === "select" && option.id === "effort"
+                  ? { ...option, values: [{ value: "auto", label: "Default" }, ...option.values] }
+                  : option,
+              ),
+            })),
+          })),
+        })),
+      }),
+    );
+    await press("Default");
+    expect(execution).toHaveBeenCalledExactlyOnceWith(original.id, {
+      harnessInstanceId: codex.harnessInstanceId,
+      modelSelection: { ...codex.modelSelection, options: { effort: "auto" } },
+    });
+    expect(navigation.goBack).not.toHaveBeenCalled();
+  });
+
+  it("opens This conversation from the usage notice's Switch account", async () => {
+    await mount();
+    const { UsageNotice } = await import("../thread/usage-notice.js");
+    const exhausted = {
+      ...codex,
+      observedConnections: [
+        {
+          accountLabel: "demo@opensteer.test",
+          authKind: "subscription" as const,
+          billingLabel: "Pro",
+          connectionSlot: "chatgpt",
+          label: "ChatGPT",
+          status: "connected" as const,
+          usage: {
+            limitReached: true,
+            observedAt: new Date().toISOString(),
+            windows: [
+              {
+                label: "weekly",
+                resetsAt: new Date(Date.now() + 86400000).toISOString(),
+                usedPercent: 100,
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const selection = {
+      environmentId: codex.environmentId,
+      harnessInstanceId: codex.harnessInstanceId,
+      modelSelection: codex.modelSelection,
+    };
+    await act(async () =>
+      root!.render(
+        <UsageNotice
+          placements={[exhausted, second]}
+          selection={selection}
+          onSwitch={() =>
+            root!.render(
+              <ThreadSettingsScreen
+                route={{
+                  params: {
+                    deploymentId: "test-deployment",
+                    threadId: original.id,
+                    conversation: true,
+                  },
+                }}
+              />,
+            )
+          }
+        />,
+      ),
+    );
+    expect(document.body.textContent).toContain("is out of Codex usage until");
+    await press("Switch account");
+    expect(document.body.textContent).toContain("This conversation");
+    expect(document.body.textContent).toContain("Account");
+  });
+
   it("shows a failed access mutation without changing the selected access", async () => {
     await mount();
     access.mockRejectedValueOnce(new Error("Access refused"));
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
+    );
     await press("Full access");
     expect(document.body.textContent).toContain("Access refused");
     expect(snapshot.threads[0]!.accessMode).toBe("approval-required");
@@ -482,6 +577,9 @@ describe("Expo engine/account/model journeys", () => {
 
   it("starts fresh on the current route only after review", async () => {
     await mount();
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
+    );
     await press("Start fresh with Codex");
     expect(execution).not.toHaveBeenCalled();
     await press("Start fresh");

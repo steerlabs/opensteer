@@ -189,6 +189,7 @@ async function releaseFixture(channel: "stable" | "beta" = "stable") {
     assets,
     feedURL:
       channel === "stable" ? publicFeedURL : "https://github.com/steerlabs/opensteer#insider",
+    launchCheck: "passed",
     privateFeed: false,
   });
   await writeFile(path.join(dir, "release.json"), JSON.stringify(manifest));
@@ -266,9 +267,9 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
   await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("Asset differs");
 });
 
-// Publication must ship exactly the zip the gate certified, even when a later swap
+// Optional pinning must ship exactly the selected zip, even when a later swap
 // rewrote release.json and SHA256SUMS to match the new bytes.
-it("publishes only the certified zip and never publishes stable without certification", async () => {
+it("honors optional zip pinning and publishes stable without certification", async () => {
   const certified = await releaseFixture("beta");
   const swapped = await releaseFixture("beta");
   const zip = "Opensteer-Beta-mac-arm64.zip";
@@ -311,10 +312,17 @@ it("publishes only the certified zip and never publishes stable without certific
   await publish("steerlabs/opensteer", tag, provider(certified), expected);
   expect(patches).toBe(1);
   const stable = await releaseFixture("stable");
+  const unchecked = { ...stable.manifest };
+  delete unchecked.launchCheck;
+  await writeFile(path.join(stable.dir, "release.json"), JSON.stringify(unchecked));
   await expect(
-    publish("steerlabs/opensteer", stable.manifest.tag, provider(stable), { channel: "stable" }),
-  ).rejects.toThrow(/certified/u);
-  expect(patches).toBe(1);
+    publish("steerlabs/opensteer", stable.manifest.tag, provider(stable)),
+  ).rejects.toThrow(/launch-check evidence/u);
+  await writeFile(path.join(stable.dir, "release.json"), JSON.stringify(stable.manifest));
+  await publish("steerlabs/opensteer", stable.manifest.tag, provider(stable), {
+    channel: "stable",
+  });
+  expect(patches).toBe(2);
 });
 
 it("publishes only verified drafts through a fake provider and rechecks anonymous asset hashes", async () => {

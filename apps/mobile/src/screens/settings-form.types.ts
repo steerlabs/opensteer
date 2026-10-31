@@ -23,6 +23,7 @@ export interface AgentNotificationRow {
 
 export interface SettingsFormActionHandlers {
   readonly onAccountAction: () => void;
+  readonly onBrowserProfilesAction?: (() => void) | undefined;
   /** Absent while no Deployment is open: Chrome belongs to one. */
   readonly onChromeAction?: (() => void) | undefined;
   /** Absent while no Deployment is open: its accounts belong to one. */
