@@ -15,6 +15,7 @@ import {
   turnState,
   turnWords,
   workRows,
+  traceWindow,
   workSummary,
   type ActivityIcon,
   type ActivityStepHead,
@@ -505,6 +506,7 @@ function TurnContent(props: {
   readonly live: boolean;
 }): ReactNode {
   const { fold, turn } = props;
+  const [showAll, setShowAll] = useState(false);
   const active = turnState(turn) !== "settled";
   const status = props.status !== false;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
@@ -514,6 +516,7 @@ function TurnContent(props: {
     () => workRows(closed ? turnWords(turn) : (props.entries ?? turn.work)),
     [closed, props.entries, turn],
   );
+  const trace = traceWindow(rows, closed || showAll);
   return (
     <>
       {summary === null ? null : (
@@ -524,21 +527,39 @@ function TurnContent(props: {
           {...(fold === undefined ? {} : fold)}
         />
       )}
-      {/* What is there when the turn is first drawn simply stands; what
-          arrives or unfolds after it eases in, and what folds away eases out.
-          Every row keeps one wrapper, so nothing remounts as the turn grows. */}
+      {trace.hidden > 0 ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setShowAll(true)}
+          style={styles.earlierSteps}
+        >
+          <AppText role="secondaryMedium" tone="muted">
+            Show {trace.hidden} earlier {trace.hidden === 1 ? "step" : "steps"}
+          </AppText>
+        </Pressable>
+      ) : null}
+      {/* Steps ease in and out after the turn is first drawn. Notes stay
+          unanimated when a streamed message receives its durable id. */}
       <LayoutAnimationConfig skipEntering>
-        {rows.map((row) => (
-          <Animated.View entering={appear} exiting={exit} key={row.key}>
+        {trace.rows.map((row) => {
+          const content = (
             <WorkRowView
               active={active}
               highlightRequestId={props.highlightRequestId}
               onOpenStep={props.onOpenStep}
               row={row}
               subagentWork={turn.subagentWork}
+              key={row.key}
             />
-          </Animated.View>
-        ))}
+          );
+          return row.kind === "note" ? (
+            content
+          ) : (
+            <Animated.View entering={appear} exiting={exit} key={row.key}>
+              {content}
+            </Animated.View>
+          );
+        })}
       </LayoutAnimationConfig>
     </>
   );
@@ -1366,6 +1387,7 @@ export function WorkingIndicator({
 
 const styles = StyleSheet.create({
   askAbout: { justifyContent: "center", minHeight: touchTarget, paddingTop: space[4] },
+  earlierSteps: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },
   unread: {
     alignItems: "center",
     flexDirection: "row",

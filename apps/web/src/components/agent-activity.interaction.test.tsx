@@ -311,6 +311,48 @@ describe("AgentTranscript work", () => {
     expect(container.querySelector(`[data-message-id="${note.id}"]`)?.textContent).toBe(note.body);
   });
 
+  it("does not reapply a visible reveal when the named reply loads later", () => {
+    const fallback = { ...note, id: "fallback", body: "Fallback last word." };
+    const reply = { ...note, id: "named-reply", body: "Named reply." };
+    const settled = { ...run, replyMessageId: reply.id };
+    const reveal = { id: fallback.id };
+    const container = mount([settled, tool(), fallback]);
+    const root = roots.at(-1)!;
+    const draw = (entries: TranscriptEntry[]) =>
+      act(() =>
+        root.render(
+          <MemoryRouter>
+            <AgentTranscript entries={entries} revealMessage={reveal} />
+          </MemoryRouter>,
+        ),
+      );
+    const step = tool();
+    draw([settled, step, fallback]);
+    expect(status(container).getAttribute("aria-expanded")).toBe("false");
+    click(status(container));
+    click(status(container));
+    draw([settled, reply, step, fallback]);
+    expect(status(container).getAttribute("aria-expanded")).toBe("false");
+    expect(container.textContent).not.toContain(fallback.body);
+    expect(container.textContent).toContain(reply.body);
+  });
+
+  it("windows a long open trace and reveals its earlier rows", () => {
+    const notes = Array.from({ length: 32 }, (_, i) => ({
+      ...note,
+      id: `note-${i}`,
+      body: `Trace note ${i}.`,
+    }));
+    const container = mount([{ ...run, status: "running" }, ...notes]);
+    expect(container.querySelectorAll(".msg--assistant__body")).toHaveLength(30);
+    expect(container.textContent).not.toContain("Trace note 0.");
+    expect(container.textContent).toContain("Trace note 31.");
+    click(button(container, "Show 2 earlier steps"));
+    expect(container.querySelectorAll(".msg--assistant__body")).toHaveLength(32);
+    expect(container.textContent).toContain("Trace note 0.");
+    expect(button(container, "earlier steps")).toBeUndefined();
+  });
+
   it("keeps the same status line above the reply through writing, waiting, stopping and completion", () => {
     const first = tool();
     const answer = {

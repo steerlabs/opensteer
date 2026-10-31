@@ -1037,6 +1037,21 @@ export type WorkRow =
 
 export type StepGroup = "command" | "computer" | "edit" | "explore" | "integrations" | "web";
 
+// Bounds what a long turn mounts and redraws on each streamed step on a phone.
+export const traceWindowRows = 30;
+
+/**
+ * The rows an open trace draws: its latest, where the story is, with how many
+ * earlier ones wait behind one control. The last word is always among them.
+ */
+export function traceWindow(
+  rows: readonly WorkRow[],
+  showAll: boolean,
+): { rows: readonly WorkRow[]; hidden: number } {
+  const hidden = showAll ? 0 : Math.max(0, rows.length - traceWindowRows);
+  return { rows: hidden === 0 ? rows : rows.slice(hidden), hidden };
+}
+
 /**
  * Rows are only ever appended to or grown at the end, so a row's key — its
  * first entry — is stable while the turn streams, and a row a reader opened

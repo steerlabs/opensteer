@@ -64,7 +64,11 @@ vi.mock("react-native-reanimated", () => ({
     }: {
       children?: ReactNode;
       accessibilityLabel?: string;
-    }) => <div aria-label={accessibilityLabel}>{children}</div>,
+    }) => (
+      <div aria-label={accessibilityLabel} data-animated-view>
+        {children}
+      </div>
+    ),
   },
   LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
@@ -218,6 +222,34 @@ function press(container: HTMLElement, text: string): void {
 }
 
 describe("native transcript prose", () => {
+  it("keeps finalized streamed prose outside row animations", () => {
+    const { container, render } = setup();
+    render([run, command, { ...note, id: "stream:a", streaming: true }]);
+    const prose = () =>
+      [...container.querySelectorAll("p")].find((p) => p.textContent === note.body)!;
+    expect(prose().closest("[data-animated-view]")).toBeNull();
+    render([run, command, note]);
+    expect(prose().closest("[data-animated-view]")).toBeNull();
+    expect(container.querySelector("[data-animated-view]")?.textContent).toContain("Ran a command");
+  });
+
+  it("windows a long open trace and reveals its earlier rows", () => {
+    const { container, render } = setup();
+    const notes = Array.from({ length: 32 }, (_, i) => ({
+      ...note,
+      id: `note-${i}`,
+      body: `Trace note ${i}.`,
+    }));
+    render([run, ...notes]);
+    expect(container.querySelectorAll("p")).toHaveLength(30);
+    expect(container.textContent).not.toContain("Trace note 0.");
+    expect(container.textContent).toContain("Trace note 31.");
+    press(container, "Show 2 earlier steps");
+    expect(container.querySelectorAll("p")).toHaveLength(32);
+    expect(container.textContent).toContain("Trace note 0.");
+    expect(container.textContent).not.toContain("earlier steps");
+  });
+
   it("keeps an incoming update to one line on Home and opens the exact report in place", () => {
     const { container, render, onOpenThread } = setup(true);
     const threadId = createId("thread");

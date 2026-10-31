@@ -40,6 +40,7 @@ import {
   turnComputer,
   turnState,
   workRows,
+  traceWindow,
   workSummary,
   workspaceMonogram,
   messageAuthorName,
@@ -414,13 +415,16 @@ function TurnView({
   const renderTask = useContext(TaskViews);
   const [chosen, setChosen] = useState<boolean | null>(null);
   const open = turnOpen(turn, chosen);
-  const hiddenTarget =
+  const handledReveal = useRef<typeof reveal>(null);
+  const targetInWork =
     reveal !== null &&
-    turn.work.some((entry) => entry.kind === "message" && entry.id === reveal.id) &&
-    !turnWords(turn).some((entry) => entry.id === reveal.id);
+    turn.work.some((entry) => entry.kind === "message" && entry.id === reveal.id);
+  const hiddenTarget = targetInWork && !turnWords(turn).some((entry) => entry.id === reveal.id);
   useLayoutEffect(() => {
-    if (!conversation && hiddenTarget) setChosen(true);
-  }, [conversation, reveal, hiddenTarget]);
+    if (conversation || !targetInWork || handledReveal.current === reveal) return;
+    handledReveal.current = reveal;
+    if (hiddenTarget) setChosen(true);
+  }, [conversation, reveal, hiddenTarget, targetInWork]);
   if (conversation) return <ConversationTurn turn={turn} turnKey={turnKey} />;
   const spoken = turn.reply ?? turn.work.find((entry) => entry.kind === "message");
   const outcome = turn.run !== null && showsRunOutcome(turn.run);
@@ -1289,6 +1293,7 @@ function TurnContent({
   status?: boolean;
   turn: Turn;
 }) {
+  const [showAll, setShowAll] = useState(false);
   const active = turnState(turn) !== "settled";
   const folded = fold !== undefined && !fold.open;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
@@ -1297,6 +1302,7 @@ function TurnContent({
     () => workRows(folded ? turnWords(turn) : (entries ?? turn.work)),
     [entries, folded, turn],
   );
+  const trace = traceWindow(rows, folded || showAll);
   return (
     <div className="turn__content">
       {summary === null ? null : (
@@ -1306,7 +1312,12 @@ function TurnContent({
           {...(fold ? { onToggle: fold.onToggle, open: fold.open } : {})}
         />
       )}
-      {rows.map((row) => (
+      {trace.hidden > 0 ? (
+        <button className="trace__earlier" type="button" onClick={() => setShowAll(true)}>
+          Show {trace.hidden} earlier {trace.hidden === 1 ? "step" : "steps"}
+        </button>
+      ) : null}
+      {trace.rows.map((row) => (
         <WorkRowView active={active} key={row.key} live={live} row={row} turn={turn} />
       ))}
     </div>
