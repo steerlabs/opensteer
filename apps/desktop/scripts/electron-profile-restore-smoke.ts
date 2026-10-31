@@ -1,3 +1,4 @@
+import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
 import { profileFailureDiagnostic } from "../src/browser/profile-failure-diagnostic.js";
 import {
   nativeProfileSmokePhases,
@@ -339,7 +340,10 @@ async function main() {
     ? path.join(state, "native-user-data")
     : mkdtempSync(path.join(tmpdir(), "profile-restore-electron-"));
   mkdirSync(userData, { recursive: true });
-  app.setPath("userData", userData);
+  if (phase.startsWith("native-")) {
+    mkdirSync(path.join(userData, "session"), { recursive: true });
+    configureDesktopApplicationPaths(app, userData);
+  } else app.setPath("userData", userData);
   app.commandLine.appendSwitch("headless");
   app.commandLine.appendSwitch("host-resolver-rules", "MAP *.example.test 127.0.0.1");
   app.commandLine.appendSwitch("no-proxy-server");
@@ -365,12 +369,13 @@ async function main() {
     launcher = new ElectronBrowserLauncher({
       downloads: smokeDownloads,
       onLocalProfileOpenTiming: (timing) => nativeOpenTimings.push(timing),
-      localProfileRoot: path.join(state, "native-profiles"),
+      localProfileRoot: path.join(state, "native-user-data", "session", "browser-profiles"),
       pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
     });
     if (phase.startsWith("native-")) {
       let crash = false;
       await scenario(phase, async (observed) => {
+        observed.openTimings = nativeOpenTimings;
         const result = await runNativeProfileSmokePhase({
           phase,
           state,

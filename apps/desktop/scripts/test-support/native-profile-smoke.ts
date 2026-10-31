@@ -81,7 +81,7 @@ export async function runNativeProfileSmokePhase(input: {
 }): Promise<{ crash: boolean; cookieCount: number; cookieChange?: boolean }> {
   const { phase, state, launcher, origin } = input;
   const converted = phase.startsWith("native-convert");
-  const root = path.join(state, "native-profiles");
+  const root = path.join(state, "native-user-data", "session", "browser-profiles");
   const record = path.join(state, converted ? "converted-binding.json" : "native-binding.json");
   const initialize = phase === "native-create" || phase === "native-convert-crash";
   const binding = initialize
@@ -223,7 +223,11 @@ export async function runNativeProfileSmokePhase(input: {
     }
     if (phase === "native-network") {
       const mirror = path.join(path.dirname(directory), "session-cookies.v1.json");
-      await browser.replaceSiteCookies("example.test", expected, new AbortController().signal);
+      await browser.replaceSiteCookies(
+        "https://example.test",
+        expected,
+        new AbortController().signal,
+      );
       const before = await readFile(mirror, "utf8");
       const utility = app.getAppMetrics().find((metric) => isNetworkService(metric));
       assert.ok(utility, "owned Network Service utility PID was not found");
@@ -261,7 +265,11 @@ export async function runNativeProfileSmokePhase(input: {
         "Network Service restart lost CacheStorage",
       );
       cookieChange = survivingWorker.cookieChange;
-      await browser.replaceSiteCookies("example.test", expected, new AbortController().signal);
+      await browser.replaceSiteCookies(
+        "https://example.test",
+        expected,
+        new AbortController().signal,
+      );
       assert.equal(
         await readFile(mirror, "utf8"),
         before,

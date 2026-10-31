@@ -28,6 +28,7 @@ const root = realpathSync(
 const userData = path.join(root, childPhase ? "child" : "driver");
 mkdirSync(userData, { recursive: true, mode: 0o700 });
 app.setPath("userData", userData);
+app.setPath("sessionData", userData);
 app.commandLine.appendSwitch("headless");
 // The state.import scenario's HTTP fixture answers as *.example.test.
 app.commandLine.appendSwitch(
@@ -230,7 +231,7 @@ async function run(): Promise<void> {
     storage: { kind: "local", binding, directory },
   });
   await assertCookies(nativeReopened, nativeCookies);
-  await nativeReopened.replaceSiteCookies("example.test", [], new AbortController().signal);
+  await nativeReopened.replaceSiteCookies("https://example.test", [], new AbortController().signal);
   await assertCookies(nativeReopened, []);
   await nativeReopened.close();
 

@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from "node:fs";
 import { ensurePrivateDirectorySync } from "@opensteer/shared/privateFiles";
 import path from "node:path";
 import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
@@ -17,7 +18,9 @@ export function configureDesktopApplicationPaths(
   application: DesktopApplicationPaths,
   dataDirectory: string,
 ): void {
-  const rootDirectory = path.resolve(dataDirectory);
+  const rootDirectory = existsSync(dataDirectory)
+    ? realpathSync(dataDirectory)
+    : path.resolve(dataDirectory);
   const sessionDirectory = path.join(rootDirectory, "session");
   const logsDirectory = path.join(rootDirectory, "logs");
   const crashDirectory = path.join(rootDirectory, "crash-dumps");
@@ -72,7 +75,14 @@ export function desktopDeploymentPaths(
   const id = DeploymentIdSchema.parse(deploymentId);
   const rootDirectory = path.join(path.resolve(dataDirectory), "deployments", id);
   return {
-    browserProfilesDirectory: path.join(rootDirectory, "browser-profiles"),
+    // Electron grants the Network Service only sessionData at process launch.
+    // Keep native storage there without granting access to Host databases or credentials.
+    browserProfilesDirectory: path.join(
+      path.resolve(dataDirectory),
+      "session",
+      "browser-profiles",
+      id,
+    ),
     hostDataDirectory: path.join(rootDirectory, "host"),
     logsDirectory: path.join(rootDirectory, "logs"),
     manifestPath: path.join(rootDirectory, "deployment.v1.json"),
@@ -130,6 +140,8 @@ export function prepareDesktopDeploymentDirectories(
     path.resolve(dataDirectory),
     path.join(path.resolve(dataDirectory), "deployments"),
     paths.rootDirectory,
+    path.join(path.resolve(dataDirectory), "session"),
+    path.join(path.resolve(dataDirectory), "session", "browser-profiles"),
     paths.browserProfilesDirectory,
     paths.hostDataDirectory,
     paths.logsDirectory,
@@ -156,6 +168,8 @@ export async function preparePrivateDesktopDeploymentDirectories(
     path.resolve(dataDirectory),
     path.join(path.resolve(dataDirectory), "deployments"),
     paths.rootDirectory,
+    path.join(path.resolve(dataDirectory), "session"),
+    path.join(path.resolve(dataDirectory), "session", "browser-profiles"),
     paths.browserProfilesDirectory,
     paths.hostDataDirectory,
     paths.logsDirectory,

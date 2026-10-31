@@ -466,6 +466,13 @@ create an empty replacement, use another computer or substitute Guest. Chromium
 owns recovery within its databases; marker validation is not an internal
 corruption check.
 
+Electron's native roots live beneath its `sessionData` tree, namespaced by
+Deployment, outside disposable Runner slots. The Network Service's macOS sandbox
+receives only that tree at process launch; `session.fromPath()` outside it can
+appear to work while persistent cookies and caches never reach disk. Keep Host
+databases and credentials outside this browser-only grant. See the
+[desktop paths](../apps/desktop/src/app/application-paths.ts).
+
 The caller holds exclusive ownership of the profile root for its process lifetime:
 the desktop application lock covers its Deployment roots, and the standalone
 runtime holds an OS file lock. Logical runtime restarts may re-acquire a root in
