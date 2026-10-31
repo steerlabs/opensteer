@@ -78,12 +78,25 @@ it("embeds one extension target with standalone native sources and signing setti
     return value;
   }
   project.hash.project.objects = references(sections);
+  // Like Expo's prebuild template: the app target keeps MARKETING_VERSION = 1.0.
+  for (const config of Object.values(project.pbxXCBuildConfigurationSection()) as {
+    buildSettings?: Record<string, string>;
+  }[])
+    if (config.buildSettings)
+      Object.assign(config.buildSettings, {
+        PRODUCT_BUNDLE_IDENTIFIER: "com.opensteer.mobile",
+        MARKETING_VERSION: "1.0",
+        CURRENT_PROJECT_VERSION: "1",
+      });
   plugin.project(project, { version: "1.2.3", ios: { buildNumber: "42" } });
   const once = project.writeSync();
   plugin.project(project, { version: "1.2.3", ios: { buildNumber: "42" } });
   expect(project.writeSync()).toBe(once);
   expect(once).toContain("com.opensteer.mobile.NotificationService");
   expect(once).toContain("APPLICATION_EXTENSION_API_ONLY = YES");
+  // The extension must match the app's Info.plist, which Expo writes from config.
+  expect(once).toContain("MARKETING_VERSION = 1.2.3;");
+  expect(once).toContain("CURRENT_PROJECT_VERSION = 42;");
   expect(once).toContain("SKIP_INSTALL = YES");
   expect(once).toContain("NotificationService.swift");
   expect(once).toContain("KeyStore.swift");
