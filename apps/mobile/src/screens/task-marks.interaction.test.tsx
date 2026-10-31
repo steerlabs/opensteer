@@ -176,6 +176,9 @@ vi.mock("../ui/primitives.js", () => ({
   }) => <button onClick={onPress}>{label}</button>,
   StatusDot: () => null,
 }));
+vi.mock("../ui/sheet.js", () => ({
+  Sheet: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-chat-orb /> }));
 vi.mock("../ui/workspace-mark.js", () => ({
