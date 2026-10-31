@@ -13,6 +13,7 @@ type Bounds = { x: number; y: number; width: number; height: number };
 
 const electron = vi.hoisted(() => ({
   storage: undefined as undefined | (() => Promise<unknown>),
+  blankLoad: undefined as undefined | (() => Promise<void>),
   bootstrap: undefined as
     | undefined
     | ((
@@ -102,7 +103,9 @@ vi.mock("electron", () => {
     readonly getTitle = vi.fn(() => "");
     readonly getURL = vi.fn(() => "about:blank");
     readonly isDestroyed = vi.fn(() => false);
-    readonly loadURL = vi.fn(async () => undefined);
+    readonly loadURL = vi.fn(async (url: string) =>
+      url === "about:blank" ? electron.blankLoad?.() : undefined,
+    );
     readonly executeJavaScriptInIsolatedWorld = vi.fn(async () => electron.storage?.() ?? {});
     readonly off = vi.fn();
     readonly on = vi.fn();
@@ -2033,8 +2036,9 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
-  it("creates a native page without loading a throwaway document before the real navigation", async () => {
+  it("announces a native page and registers its ledger without awaiting the initial renderer load", async () => {
     const f = await fixture();
+    const loaded = Promise.withResolvers<void>();
     try {
       await f.launcher.localProfiles.importAndFlush({
         directory: f.directory,
@@ -2044,19 +2048,30 @@ describe("native Electron profiles", () => {
       });
       const browser = await f.launch(true);
       await browser.profile!.admit();
-      const page = await browser.context.createPage();
+      electron.blankLoad = () => loaded.promise;
+      const creating = browser.context.createPage();
+      const announced = vi.fn();
+      void creating.then(announced, () => undefined);
+      await vi.waitFor(() => expect(announced).toHaveBeenCalled(), { timeout: 1000 });
+      const page = await creating;
       const view = electron.views.at(-1)!;
-      expect(view.webContents.loadURL).not.toHaveBeenCalled();
+      expect(view.webContents.loadURL).toHaveBeenCalledExactlyOnceWith("about:blank");
       view.webContents.getURL.mockReturnValue("");
       expect(page.url()).toBe("about:blank");
       const ledger = new SurfaceLedger(browser.context, { rootPages: [page] });
       await ledger.start();
       expect(ledger.snapshot()).toHaveLength(1);
       page.submitNavigation!("https://site.test/");
-      expect(view.webContents.loadURL).toHaveBeenCalledExactlyOnceWith("https://site.test/");
+      expect(view.webContents.loadURL.mock.calls).toEqual([
+        ["about:blank"],
+        ["https://site.test/"],
+      ]);
+      loaded.reject(new Error("ERR_ABORTED: superseded by real navigation"));
       await ledger.close();
       await browser.close();
     } finally {
+      loaded.resolve();
+      electron.blankLoad = undefined;
       await f.launcher.localProfiles.release(f.directory);
       f.launcher.close();
       await rm(f.root, { recursive: true, force: true });
@@ -2334,7 +2349,9 @@ describe("native Electron profiles", () => {
         "web-contents-view-created",
         "resting-host-created",
         "page-policy-dispatched",
+        "blank-navigation-submitted",
         "page-policy-ready",
+        "blank-loaded",
         "renderer-ready",
         "page-announced",
         "first-page-created",

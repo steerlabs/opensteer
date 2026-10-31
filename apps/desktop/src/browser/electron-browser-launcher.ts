@@ -96,6 +96,8 @@ export interface ElectronLocalProfileOpenTiming {
     | "resting-host-created"
     | "page-policy-dispatched"
     | "page-policy-ready"
+    | "blank-navigation-submitted"
+    | "blank-loaded"
     | "renderer-ready"
     | "page-announced"
     | "first-page-created";
@@ -726,9 +728,14 @@ class ElectronBrowserContext implements BrowserContext {
       timing,
     );
     try {
-      // Native contexts need no import document. Browser-side target identity
-      // lets the ledger subscribe before the first real navigation.
-      if (!this.#localProfile) await page.loadInitialUrl("about:blank");
+      // Electron needs a renderer to answer Page.enable. Start it while target
+      // identity and ledger ownership are established; the real navigation may
+      // supersede this blank load before it finishes.
+      const loading = page.loadInitialUrl("about:blank");
+      if (this.#localProfile) {
+        timing?.("blank-navigation-submitted");
+        void loading.then(() => timing?.("blank-loaded")).catch(() => undefined);
+      } else await loading;
       await this.#announcePage(page);
       timing?.("page-announced");
       timing?.("first-page-created");
