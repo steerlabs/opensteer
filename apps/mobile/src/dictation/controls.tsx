@@ -22,7 +22,7 @@ import { color, radius, space, touchTarget } from "../theme.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { ComposerCircleFace, composerControlStyle } from "../thread/composer-bar.js";
+import { ComposerGlyph } from "../thread/composer-bar.js";
 
 export function DictationMic(props: {
   controller: DictationController;
@@ -40,10 +40,10 @@ export function DictationMic(props: {
       accessibilityLabel={dictationStartLabel(s.languageName ?? "")}
       accessibilityState={{ disabled }}
       disabled={disabled}
-      style={[composerControlStyle, disabled && { opacity: 0.45 }]}
+      style={disabled && { opacity: 0.45 }}
       onPress={props.onStart}
     >
-      <ComposerCircleFace icon="mic" />
+      <ComposerGlyph icon="mic" />
     </Pressable>
   );
 }
@@ -76,7 +76,7 @@ export function DictationBar({
         accessibilityRole="button"
         onPress={() => c.cancel(owner)}
       >
-        <ComposerCircleFace icon="xmark" />
+        <ComposerGlyph icon="xmark" />
       </Pressable>
       <Waveform controller={c} live={s.phase === "listening"} />
       <View

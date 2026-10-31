@@ -138,7 +138,13 @@ export interface Turn {
 export type TranscriptGroup =
   | { readonly key: string; readonly kind: "assignment"; readonly entry: AssignmentEntry }
   | { readonly key: string; readonly kind: "delegation"; readonly entry: DelegationEntry }
-  | { readonly key: string; readonly kind: "message"; readonly entry: MessageEntry }
+  | {
+      readonly key: string;
+      readonly kind: "message";
+      readonly entry: MessageEntry;
+      /** It joined a Run already under way, as a steer does, rather than starting one. */
+      readonly joinedRun?: true;
+    }
   | { readonly key: string; readonly kind: "turn"; readonly turn: Turn };
 
 /**
@@ -178,6 +184,7 @@ export function groupTranscriptEntries(
   // Each subagent's stretch: its later steps belong with it, wherever the
   // Run's own agent has got to since.
   const nodeStretch = new Map<string, Extract<Slot, { kind: "stretch" }>>();
+  const runsDrawn = new Set<string>();
   for (const entry of entries) {
     // The composer shows the current AI choice; its retained history is state, not conversation.
     if (entry.kind === "selection") continue;
@@ -203,7 +210,14 @@ export function groupTranscriptEntries(
     }
     if (entry.kind === "message" && (entry.messageKind === "input" || entry.runId === null)) {
       open = null;
-      slots.push({ group: { entry, key: entry.id, kind: "message" }, kind: "group" });
+      // A Run's first entry follows the message that seeds it, so a Run already
+      // drawn above is one this message joined while it ran.
+      const joinedRun =
+        entry.messageKind === "input" && entry.runId !== null && runsDrawn.has(entry.runId);
+      slots.push({
+        group: { entry, key: entry.id, kind: "message", ...(joinedRun ? { joinedRun } : {}) },
+        kind: "group",
+      });
       // A message a Run took — its seed, or one that joined it while it ran —
       // is answered by what that Run does next, so the Run carries on after
       // it even before it has done anything more.
@@ -232,6 +246,7 @@ export function groupTranscriptEntries(
       slots.push(open);
     }
     open.entries.push(entry);
+    if (entry.runId !== null) runsDrawn.add(entry.runId);
     if (entry.kind === "node") nodeStretch.set(entry.nodeId, open);
     if (entry.kind === "message" && turnReplies.has(entry.id)) open = null;
   }

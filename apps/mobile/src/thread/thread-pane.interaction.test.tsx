@@ -36,7 +36,7 @@ import { VoiceContext, VoiceOverlay, type VoiceControls } from "../voice/control
 
 /*
  * One conversation on the phone, drawn by the real pane, transcript, composer
- * and queue tray against a Host whose snapshot the test moves. Native controls
+ * and queued bubbles against a Host whose snapshot the test moves. Native controls
  * are DOM stand-ins that keep their labels and their presses.
  *
  * What can go wrong in Chat:
@@ -58,7 +58,7 @@ import { VoiceContext, VoiceOverlay, type VoiceControls } from "../voice/control
  *   - Stop pauses Chat and asks for Resume before the next message.
  *   - replies in one Run borrow each other's app and phone chips, or lose
  *     chips from a stretch before a message that joined the reply.
- * What can go wrong in a task: any of that leaks into it, and its tray loses
+ * What can go wrong in a task: any of that leaks into it, and its queued bubbles lose
  * a control.
  */
 
@@ -115,6 +115,7 @@ vi.mock("react-native", async () => {
       readonly keyExtractor: (item: unknown) => string;
       readonly ListEmptyComponent?: ReactNode;
       readonly ListHeaderComponent?: ReactNode;
+      readonly ListFooterComponent?: ReactNode;
       readonly ref?: Ref<unknown>;
       readonly renderItem: (info: { readonly index: number; readonly item: unknown }) => ReactNode;
     }) => {
@@ -133,6 +134,7 @@ vi.mock("react-native", async () => {
                   {props.renderItem({ index, item })}
                 </div>
               ))}
+          {props.ListFooterComponent}
         </div>
       );
     },
@@ -361,6 +363,7 @@ vi.mock("../client/mobile-client.js", () => ({
     error instanceof Error && error.message ? error.message : fallback,
 }));
 vi.mock("../platform/attachment-draft-files.js", () => ({
+  shareChatAttachment: vi.fn(async (client: HostClient, id: string) => client.readAttachment(id)),
   openChatDraftFile: vi.fn(),
   pickChatFile: vi.fn(async () => null),
   pickChatPhoto: vi.fn(async () => null),
@@ -462,14 +465,6 @@ vi.mock("./message-menu.js", async () => {
     ),
   };
 });
-vi.mock("./attachment-views.js", async () => {
-  const React = await vi.importActual<typeof import("react")>("react");
-  return {
-    AttachmentReader: React.createContext<HostClient | null>(null),
-    AttachmentStrip: () => null,
-    MessageAttachments: () => null,
-  };
-});
 vi.mock("./task-line.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   const actual = await vi.importActual<typeof import("./task-line.js")>("./task-line.js");
@@ -496,8 +491,7 @@ vi.mock("./composer-bar.js", () => ({
       {props.accessory}
     </div>
   ),
-  ComposerCircleFace: () => null,
-  composerControlStyle: {},
+  ComposerGlyph: () => null,
   composerLaneHeight: 36,
 }));
 vi.mock("./composer-menu.js", () => ({
@@ -968,6 +962,7 @@ function fakeHost(initial: HostSnapshot) {
     loadEarlierTranscript,
     loadLatestTranscript: vi.fn(async () => undefined),
     loadTranscriptAround,
+    readAttachment: vi.fn(async () => new Blob()),
     markThreadRead: vi.fn(async () => undefined),
     moveThreadInput: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
@@ -1118,14 +1113,7 @@ function sent(dispatch: ReturnType<typeof fakeHost>["dispatch"]): readonly strin
   return dispatch.mock.calls.map(([command]) => command.type);
 }
 
-const queueControls = [
-  "Queued",
-  "Paused",
-  "Resume",
-  "Steer into this turn",
-  "Edit",
-  "Remove",
-] as const;
+const queueControls = ["Queued", "Paused", "Resume", "Steer", "Up next", "Edit", "Remove"] as const;
 
 it("counts each tab in the Tabs control, which always opens the collection, and the preview opens the tab", async () => {
   const source = snapshotFor({ entries: [], run: null, threadId: workId, machines: [] });
@@ -1300,6 +1288,7 @@ describe("Chat while Opensteer is replying", () => {
       expect(text(container)).not.toContain(control);
       expect(hasButton(container, control)).toBe(false);
     }
+    expect(container.querySelector('[aria-label="Queued messages"]')).toBeNull();
     expect(headers.at(-1)).toMatchObject({ title: "Chat", workspaceName: null });
   });
 
@@ -2377,7 +2366,40 @@ describe("a task", () => {
     return { entries, note, runId };
   }
 
-  it("keeps its queue tray, every control on it, its steps behind its status line and its own Stop", async () => {
+  it("opens queued and sent artifacts with the pane's attachment reader", async () => {
+    const attachment = {
+      artifactId: createId("attachment"),
+      mediaType: "text/plain",
+      name: "notes.txt",
+      sizeBytes: 5,
+      type: "artifact" as const,
+    };
+    const waiting = { ...said("Read these notes", null), attachments: [attachment] };
+    const sent = {
+      ...said("Earlier notes", null),
+      attachments: [{ ...attachment, artifactId: createId("attachment"), name: "earlier.txt" }],
+    };
+    const host = fakeHost(
+      snapshotFor({
+        entries: [sent],
+        queue: [
+          {
+            ...waitingInput(waiting, workId),
+            message: { ...waitingInput(waiting, workId).message, content: [attachment] },
+          },
+        ],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const read = vi.spyOn(host.client, "readAttachment").mockResolvedValue(new Blob(["notes"]));
+    const { container } = await mount(host, workId);
+    await press(container, "notes.txt, TXT · 5 B");
+    await press(container, "earlier.txt, TXT · 5 B");
+    expect(read.mock.calls).toEqual([[attachment.artifactId], [sent.attachments[0]!.artifactId]]);
+  });
+
+  it("shows queued bubbles after the transcript with actions, its steps and its own Stop", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
     const host = fakeHost(
@@ -2391,9 +2413,9 @@ describe("a task", () => {
     const { container, headers } = await mount(host, workId);
 
     const tray = container.querySelector('[aria-label="Queued messages"]');
-    expect(tray?.textContent).toContain("Queued");
+    expect(tray?.textContent).toContain("Up next");
     expect(tray?.textContent).toContain(waiting.body);
-    for (const control of ["Steer into this turn", "Edit", "Remove"]) {
+    for (const control of ["Steer", "Edit", "Remove"]) {
       expect(hasButton(container, control)).toBe(true);
     }
     expect(text(container)).toContain(task.note.body);
@@ -2403,6 +2425,147 @@ describe("a task", () => {
     expect(button(container, "Stop this run").dataset["kind"]).toBe("stop");
     expect(hasButton(container, "Stop the reply")).toBe(false);
     expect(headers.at(-1)?.title).toBe(base.threads.find(({ id }) => id === workId)?.title);
+  });
+
+  it("marks a message that joins a running task, and leaves Chat unmarked", async () => {
+    const task = taskAtWork();
+    const steer = said("Check the other statement too", task.runId);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, steer],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(
+      container.querySelector('[aria-label="Steered into the running turn"]')?.textContent,
+    ).toBe("Steer");
+    const chat = chatAtWork();
+    const chatHost = fakeHost(
+      snapshotFor({
+        entries: [...chat.entries, said("Also check tomorrow", chat.runB)],
+        run: { id: chat.runB, status: "running" },
+        threadId: chatId,
+      }),
+    );
+    const mountedChat = await mount(chatHost, chatId);
+    expect(
+      mountedChat.container.querySelector('[aria-label="Steered into the running turn"]'),
+    ).toBeNull();
+  });
+
+  it("shows the first two waiting bubbles, expands the rest, and restores a draft for Edit", async () => {
+    const task = taskAtWork();
+    const waiting = [
+      "First queued ask",
+      "Second queued ask",
+      "Third queued ask",
+      "Fourth queued ask",
+    ].map((body) => said(body, null));
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, ...waiting],
+        queue: waiting.map((entry) => waitingInput(entry, workId)),
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain(waiting[0]!.body);
+    expect(text(container)).toContain(waiting[1]!.body);
+    expect(text(container)).not.toContain(waiting[2]!.body);
+    await press(container, "Show 2 more");
+    expect(text(container)).toContain(waiting[2]!.body);
+    expect(text(container)).toContain(waiting[3]!.body);
+    await press(container, "Show fewer");
+    expect(text(container)).not.toContain(waiting[2]!.body);
+    const edit = Array.from(container.querySelectorAll("button")).find(
+      (node) => node.textContent === "Edit",
+    );
+    expect(edit).toBeDefined();
+    await act(async () => edit!.click());
+    await settle();
+    expect(host.client.cancelThreadInput).toHaveBeenCalledWith(workId, waiting[0]!.id);
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(waiting[0]!.body);
+  });
+
+  it("pins footer growth and removal only while the reader stays at the tail", async () => {
+    const task = taskAtWork();
+    const waiting = said("A queued footer", null);
+    const initial = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const { container } = await mount(host, workId);
+    const list = () => harness.list!;
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 1000);
+    });
+    const queued = {
+      ...initial,
+      inputQueues: {
+        [workId]: {
+          threadId: workId,
+          paused: false,
+          steerRunId: task.runId,
+          items: [waitingInput(waiting, workId)],
+        } as ThreadInputQueue,
+      },
+    };
+    await act(async () => host.move(queued));
+    expect(container.querySelector('[aria-label="Queued messages"]')).not.toBeNull();
+    act(() => list().onContentSizeChange?.(390, 1200));
+    expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 600 });
+    await act(async () => host.move(initial));
+    act(() => list().onContentSizeChange?.(390, 1000));
+    expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 400 });
+    act(() => {
+      list().onScrollBeginDrag?.();
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 0 },
+          contentSize: { height: 1000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onScrollEndDrag?.();
+    });
+    harness.scrollToOffset.mockReset();
+    await act(async () => host.move(queued));
+    act(() => list().onContentSizeChange?.(390, 1200));
+    expect(harness.scrollToOffset).not.toHaveBeenCalled();
+  });
+
+  it("shows Resume with a paused queue and no waiting messages", async () => {
+    const host = fakeHost(
+      snapshotFor({ entries: [], paused: true, queue: [], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    expect(container.querySelector('[aria-label="Queued messages"]')?.textContent).toContain(
+      "Paused",
+    );
+    await press(container, "Resume");
+    expect(host.resumeThreadInputQueue).toHaveBeenCalledWith(workId);
+  });
+
+  it("renders an empty task's queued bubble alongside its empty state", async () => {
+    const waiting = said("Start with these statements", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [],
+        queue: [waitingInput(waiting, workId)],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(container.querySelector('[aria-label="Queued message 1 of 1, up next"]')).not.toBeNull();
+    expect(text(container)).toContain("What would you like to do?");
+    expect(text(container)).toContain(waiting.body);
   });
 
   it("is paused by Stop and offers Resume", async () => {

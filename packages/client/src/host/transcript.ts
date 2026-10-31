@@ -822,10 +822,10 @@ export function isTerminalRunEntryStatus(status: RunEntry["status"]): boolean {
  * What the conversation shows: every entry except the markers a withdrawn or
  * unloaded message left behind, and a message the Thread's queue still holds.
  * The queue read is the one authority on what is waiting, so in a work Thread
- * a message sent behind a running turn stands in the tray above the composer
- * and joins the conversation only once a Run takes it.
+ * a message sent behind a running turn is drawn unsent from the queue, at the
+ * conversation's foot, and joins the conversation only once a Run takes it.
  *
- * A conversation has no tray. A person's own message that waits there for a
+ * A conversation draws no queue. A person's own message that waits there for a
  * moment — its reply has not started, or waits on an approval — is what they
  * just said, so it is drawn as a sent bubble after everything else, in queue
  * order, until a Run takes it. Someone else's waiting input stays hidden, as

@@ -1,4 +1,4 @@
-import { VoiceDock, VoiceMic } from "../voice/controls.js";
+import { VoiceDock, VoiceMic, useVoiceAvailable } from "../voice/controls.js";
 import {
   accountGettingReady,
   accessModeConflict,
@@ -50,12 +50,7 @@ import { Symbol } from "../ui/symbol.js";
 import { ComposerPills } from "./composer-pills.js";
 import { UsageNotice } from "./usage-notice.js";
 import { AttachmentStrip } from "./attachment-views.js";
-import {
-  ComposerBar,
-  ComposerCircleFace,
-  composerControlStyle,
-  composerLaneHeight,
-} from "./composer-bar.js";
+import { ComposerBar, ComposerGlyph, composerLaneHeight } from "./composer-bar.js";
 import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import {
   attachmentKey,
@@ -422,6 +417,7 @@ export function FirstMessageComposer(props: {
   // one, so Send waits for words or a file to go with it. When the only thing
   // missing is which AI to start on, Send asks that rather than standing dead.
   const actionable = written && !held && !sending && (blocker === null || blocker.choose);
+  const voiceReady = useVoiceAvailable() && props.voice === true;
 
   // Only the outcome of the picker opened by this Send may finish it. A later
   // preference update, including one from another screen or device, cannot.
@@ -639,18 +635,24 @@ export function FirstMessageComposer(props: {
             />
           }
           action={
-            <ComposerAction
-              busy={sending}
-              disabled={!actionable}
-              kind="send"
-              label={
-                sending ? "Sending" : blocker?.choose === true ? "Choose an AI" : "Send message"
-              }
-              onPress={() => {
-                if (blocker?.choose === true) chooseThenSend();
-                else props.onSend(null);
-              }}
-            />
+            // With nothing typed the circle is voice where it exists, as in a
+            // thread's own bar, rather than a Send that cannot be pressed.
+            voiceReady && !written ? (
+              <VoiceMic disabled={held} face="disc" />
+            ) : (
+              <ComposerAction
+                busy={sending}
+                disabled={!actionable}
+                kind="send"
+                label={
+                  sending ? "Sending" : blocker?.choose === true ? "Choose an AI" : "Send message"
+                }
+                onPress={() => {
+                  if (blocker?.choose === true) chooseThenSend();
+                  else props.onSend(null);
+                }}
+              />
+            )
           }
           field={
             <Pressable
@@ -676,19 +678,15 @@ export function FirstMessageComposer(props: {
             </Pressable>
           }
           leading={
-            <View style={styles.leading}>
-              <NativeMenu
-                accessibilityHint="Attach files or choose which AI this starts on"
-                accessibilityLabel="Message actions"
-                onPresent={noop}
-                onSettle={noop}
-                options={menuOptions}
-                style={composerControlStyle}
-              >
-                <ComposerCircleFace icon="plus" />
-              </NativeMenu>
-              {props.voice === true ? <VoiceMic disabled={held} /> : null}
-            </View>
+            <NativeMenu
+              accessibilityHint="Attach files or choose which AI this starts on"
+              accessibilityLabel="Message actions"
+              onPresent={noop}
+              onSettle={noop}
+              options={menuOptions}
+            >
+              <ComposerGlyph icon="plus" />
+            </NativeMenu>
           }
           shape="rounded"
         />
@@ -782,7 +780,6 @@ export function FirstMessageHeld(props: {
 }
 
 const styles = StyleSheet.create({
-  leading: { flexDirection: "row" },
   content: { flexGrow: 1, gap: space[16], paddingBottom: space[24] },
   dock: { gap: space[8], paddingTop: space[8] },
   example: {

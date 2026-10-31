@@ -1502,6 +1502,7 @@ export class BrowserService {
             parameters: {
               idempotencyKey: binding.initialPageOperationKey,
               ...(command.url === undefined ? {} : { url: command.url }),
+              ...(command.viewport === undefined ? {} : { viewport: command.viewport }),
             },
           },
         });

@@ -12,7 +12,7 @@ import {
   type HostClient,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type BrowserPageContentPart } from "@opensteer/core";
-import { browserPromptTextMaxLength } from "@opensteer/protocol";
+import { browserPromptTextMaxLength, browserViewportFits } from "@opensteer/protocol";
 import {
   useCallback,
   useEffect,
@@ -97,7 +97,11 @@ export function BrowserPage(props: {
   const [mayType, setMayType] = useState(false);
   const [typing, setTyping] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
-  const newTabAttempt = useRef<string | null>(null);
+  /** An open whose answer was lost is retried as the same request, size and all. */
+  const newTabAttempt = useRef<{
+    readonly idempotencyKey: string;
+    readonly viewport?: { readonly height: number; readonly width: number };
+  } | null>(null);
   const openingTab = useRef(false);
   const presence = useRef(true);
   useEffect(() => {
@@ -199,7 +203,7 @@ export function BrowserPage(props: {
   const viewport = () => {
     const width = Math.round(area.current.width);
     const height = Math.round(area.current.height);
-    return width > 0 && height > 0 ? { height, width } : null;
+    return width > 0 && height > 0 && browserViewportFits(width, height) ? { height, width } : null;
   };
   const navigate = () => {
     if (!ready) return;
@@ -239,11 +243,19 @@ export function BrowserPage(props: {
   const openTab = async () => {
     if (openingTab.current) return;
     openingTab.current = true;
-    newTabAttempt.current ??= mutationIdempotencyKey("browser-tab-open");
+    if (!newTabAttempt.current) {
+      // The new page shows in this same area, and a phone never resizes a page
+      // on its own, so it starts at this area's size.
+      const size = viewport();
+      newTabAttempt.current = {
+        idempotencyKey: mutationIdempotencyKey("browser-tab-open"),
+        ...(size ? { viewport: size } : {}),
+      };
+    }
     try {
       const result = await hostClient.openBrowserTab(
         { sessionId: session.id },
-        { idempotencyKey: newTabAttempt.current },
+        newTabAttempt.current,
       );
       newTabAttempt.current = null;
       if (presence.current) props.onOpenTab(result.sessionId, result.tabId);

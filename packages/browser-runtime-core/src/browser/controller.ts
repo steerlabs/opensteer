@@ -2481,7 +2481,7 @@ export class BrowserController {
       ).safeParse(parameters);
       if (!parsed.success)
         throw new BrowserRuntimeError("bad_message", "Invalid tab-open parameters.");
-      const { idempotencyKey, url: requestedUrl } = parsed.data;
+      const { idempotencyKey, url: requestedUrl, viewport } = parsed.data;
       const url = requestedUrl === undefined ? undefined : safeNavigationUrl(requestedUrl);
       const fingerprint = createHash("sha256")
         .update(JSON.stringify({ url: requestedUrl }))
@@ -2498,6 +2498,7 @@ export class BrowserController {
         const opened = await this.ledger.openSurface({
           activate: false,
           ...(surfaceId ? { surfaceId } : {}),
+          ...(viewport ? { viewport: { devicePixelRatio: 1, ...viewport } } : {}),
         });
         tabId = opened.id;
         // Retain the identity before navigation: a lost response must never create another page.

@@ -1,6 +1,6 @@
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
-import { VoiceDock, VoiceMic, useVoice } from "../voice/controls.js";
+import { VoiceDock, VoiceMic, useVoice, useVoiceAvailable } from "../voice/controls.js";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationBar, DictationMic, DictationStatus } from "../dictation/controls.js";
@@ -67,12 +67,7 @@ import {
 import { appear, enter, exit } from "../ui/motion.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
-import {
-  ComposerBar,
-  ComposerCircleFace,
-  composerControlStyle,
-  composerLaneHeight,
-} from "./composer-bar.js";
+import { ComposerBar, ComposerGlyph, composerLaneHeight } from "./composer-bar.js";
 import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import { composerView } from "./composer-model.js";
 import { ComposerPills } from "./composer-pills.js";
@@ -280,6 +275,7 @@ export function Composer(props: {
   // arithmetic over the state above — including the rule that keeps one message
   // in flight at a time, because a second claim would be a second key for a
   // Thread that has not answered the first.
+  const voiceReady = useVoiceAvailable() && props.voice === true;
   const view = composerView({
     attachments: staged.items.length,
     attachmentsReady,
@@ -293,6 +289,7 @@ export function Composer(props: {
     sending,
     text: displayedText,
     textHidden,
+    voice: voiceReady,
   });
   const canSend =
     view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
@@ -859,11 +856,9 @@ export function Composer(props: {
                     onPresent={hold}
                     onSettle={settle}
                     options={menuOptions}
-                    style={composerControlStyle}
                   >
-                    <ComposerCircleFace icon="plus" />
+                    <ComposerGlyph icon="plus" />
                   </NativeMenu>
-                  {props.voice === true ? <VoiceMic disabled={readOnly || textHidden} /> : null}
                 </View>
               ),
             })}
@@ -933,8 +928,10 @@ export function Composer(props: {
                     />
                   ) : null}
                   {!dictating ? (
-                    <View style={composerControlStyle}>
-                      {view.action === "stop" && !dictating ? (
+                    <View>
+                      {view.action === "voice" ? (
+                        <VoiceMic disabled={readOnly || textHidden} face="disc" />
+                      ) : view.action === "stop" ? (
                         <ComposerAction
                           busy={stopping || props.runStopping}
                           disabled={stopping || props.runStopping || !props.canRespond}

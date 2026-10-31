@@ -484,6 +484,10 @@ describe("a reply that a message joined", () => {
       `message:${joined.id}`,
       { key: `turn:after:${joined.id}`, reply: null, run: "running", work: [] },
     ]);
+    // The message that seeded the Run started it; only the later one joined it.
+    expect(
+      groups.flatMap((group) => (group.kind === "message" ? [group.joinedRun === true] : [])),
+    ).toEqual([false, true]);
     const composing = groups.flatMap((group) =>
       group.kind === "turn" ? [conversationTurn(group.turn).composing] : [],
     );

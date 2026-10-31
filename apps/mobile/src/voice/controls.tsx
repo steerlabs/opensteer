@@ -20,7 +20,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { color, material, radius, space } from "../theme.js";
-import { ComposerCircleFace, composerControlStyle } from "../thread/composer-bar.js";
+import { ComposerGlyph } from "../thread/composer-bar.js";
 import { enter, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -69,8 +69,21 @@ const labels: Record<VoicePhase, string> = {
   speaking: "Speaking",
 };
 
-/** Chat composer's way in: starts voice, or ends the call. */
-export function VoiceMic(props: { readonly disabled: boolean }): ReactNode {
+/** Whether a call can be started or is under way, for a bar choosing its controls. */
+export function useVoiceAvailable(): boolean {
+  const { controller, snapshot } = useVoice();
+  return controller !== null && (snapshot.available || snapshot.phase !== "idle");
+}
+
+/**
+ * Chat composer's way in: starts voice, or ends the call. `disc` is the bar's
+ * trailing circle when there is nothing to send; `glyph` sits among the
+ * other toolbar glyphs.
+ */
+export function VoiceMic(props: {
+  readonly disabled: boolean;
+  readonly face?: "disc" | "glyph";
+}): ReactNode {
   const { controller, snapshot } = useVoice();
   if (!controller || (!snapshot.available && snapshot.phase === "idle")) return null;
   const on = snapshot.phase !== "idle";
@@ -81,21 +94,33 @@ export function VoiceMic(props: { readonly disabled: boolean }): ReactNode {
       accessibilityState={{ disabled: props.disabled, selected: on }}
       disabled={props.disabled && !on}
       onPress={() => (on ? void controller.stop() : void controller.start())}
-      style={[composerControlStyle, props.disabled && !on && { opacity: 0.45 }]}
+      style={props.disabled && !on ? styles.quiet : null}
     >
-      {snapshot.phase === "connecting" ? (
-        <View style={styles.micBox}>
-          <ActivityIndicator color={color.ember} />
-        </View>
-      ) : on ? (
-        <View style={styles.micBox}>
-          <View style={styles.micOn}>
-            <Symbol name="waveform" size={17} tint={color.inkOnEmber} weight="semibold" />
+      {({ pressed }) =>
+        snapshot.phase === "connecting" ? (
+          <View style={styles.micBox}>
+            <ActivityIndicator color={color.ember} />
           </View>
-        </View>
-      ) : (
-        <ComposerCircleFace icon="waveform" />
-      )}
+        ) : on || props.face === "disc" ? (
+          <View style={styles.micBox}>
+            <View
+              style={[
+                on ? styles.micOn : styles.micDisc,
+                pressed && (on ? material.accentPressed : styles.micDiscPressed),
+              ]}
+            >
+              <Symbol
+                name="waveform"
+                size={17}
+                tint={on ? color.inkOnEmber : color.background}
+                weight="semibold"
+              />
+            </View>
+          </View>
+        ) : (
+          <ComposerGlyph icon="waveform" />
+        )
+      }
     </Pressable>
   );
 }
@@ -385,6 +410,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 34,
   },
+  // The light disc: the page's own ink inverted, the way Stop reads on desktop.
+  micDisc: {
+    ...material.mark,
+    alignItems: "center",
+    backgroundColor: color.text,
+    borderRadius: radius.full,
+    height: 34,
+    justifyContent: "center",
+    width: 34,
+  },
+  micDiscPressed: { backgroundColor: color.textSoft, transform: [{ scale: 0.95 }] },
   notice: { gap: space[8], paddingLeft: space[16] },
   noticeText: { flex: 1 },
   orb: { height: 32, width: 32 },
