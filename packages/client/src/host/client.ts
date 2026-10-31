@@ -262,6 +262,19 @@ export interface ThreadSummary {
 }
 
 /**
+ * An automation anchored to a conversation, as much of it as that
+ * conversation shows: an archived one is gone, so it is never held.
+ */
+export interface ThreadAutomation {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: "schedule" | "webhook" | "watch";
+  readonly paused: boolean;
+  /** When a schedule next fires; null for a watch, a webhook or a paused one. */
+  readonly nextFireAt: string | null;
+}
+
+/**
  * One of the reader's tasks as the Host's task list reports it: the Thread,
  * what it last said, and why its latest Run failed when it did.
  */
@@ -722,6 +735,12 @@ export interface HostSnapshot {
    * task details read it here and nowhere else.
    */
   assignments: Record<string, AssignmentSummary>;
+  /**
+   * The automations anchored to each conversation this client has open, read
+   * with its assignments. A conversation not read yet, or on a Host that cannot
+   * list them by conversation, has no entry.
+   */
+  threadAutomations: Readonly<Record<string, readonly ThreadAutomation[]>>;
   /** Null until the Host has identified the deployment owning this session. */
   deploymentId: string | null;
   requests: Record<string, Request[]>;

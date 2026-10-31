@@ -6005,6 +6005,7 @@ function emptySnapshot(): HostSnapshot {
     sharedTaskDoneAvailable: false,
     iphoneAppsAvailable: false,
     assignments: {},
+    threadAutomations: {},
     requests: {},
     waitingRequests: [],
     runQueue: [],

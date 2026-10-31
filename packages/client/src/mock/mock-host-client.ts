@@ -11273,6 +11273,7 @@ function createInitialSnapshot(): HostSnapshot {
 
   return {
     assignments: {},
+    threadAutomations: {},
     inputQueues: {},
     waitingRequests: [],
     requests: {
