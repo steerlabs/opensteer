@@ -194,8 +194,11 @@ unsupported Runners stay visible but cannot execute. Refused durable events end
 only their still-bound Run, not unrelated Runs or the connection.
 
 Deploy the Account's notification preview migration and reader on every replica
-of the issuer before shipping preview Hosts. Keep that reader during Account
-rollback while those Hosts exist. `notification-preview-v1` gates phone key
+of the issuer before distributing phone builds that register preview keys. A Host
+sends `previews` only for registered installations, so preview Hosts (including
+auto-published Beta builds) are safe earlier; one registered phone makes its
+recipient's publications fail against an old strict reader. Keep that reader
+during Account rollback while registered phones exist. `notification-preview-v1` gates phone key
 registration and is advertised only with a preview service and Account channel;
 it changes no epoch. Old phones keep generic alerts, and new phones never
 register against an older Host. The Account receives per-installation ciphertext,

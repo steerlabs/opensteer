@@ -277,7 +277,8 @@ Phone push requires an Account channel and raw APNs/FCM tokens. The Account gets
 routing identifiers and expiry, plus optional encrypted preview envelopes. The Host
 seals its already-decided title/body independently for each registered installation;
 the Account never receives plaintext or preview keys. Account readers must deploy
-before preview-capable Hosts. Older phones/Hosts retain generic alerts.
+before rebuilt phones register keys (see
+[Active compatibility gates](host-boundaries.md#active-compatibility-gates)). Older phones/Hosts retain generic alerts.
 
 A rebuilt phone registers only after authenticated attachment, Host capability
 `notification-preview-v1`, native version 1 and successful Account push registration.
