@@ -103,8 +103,7 @@ function isAllowedBrowserRequest(value: string): boolean {
 
 /** Session-wide: worker requests need the same restoration fence as page requests. */
 export class BrowserSessionRequestGate {
-  #open = false;
-  #failed = false;
+  #mode: "closed" | "dormant" | "open" | "failed" = "closed";
   readonly #pending = new Set<(response: { cancel: boolean }) => void>();
   readonly #helpers = new Set<number>();
 
@@ -112,23 +111,32 @@ export class BrowserSessionRequestGate {
     webContentsId: number | undefined,
     callback: (response: { cancel: boolean }) => void,
   ): void {
-    if (this.#failed) callback({ cancel: true });
-    else if (this.#open || (webContentsId !== undefined && this.#helpers.has(webContentsId)))
+    if (this.#mode === "failed") callback({ cancel: true });
+    else if (
+      this.#mode === "open" ||
+      (webContentsId !== undefined && this.#helpers.has(webContentsId))
+    )
       callback({ cancel: false });
+    else if (this.#mode === "dormant") callback({ cancel: true });
     else this.#pending.add(callback);
   }
   close(): void {
-    this.#open = false;
+    if (this.#mode !== "failed") this.#mode = "closed";
+  }
+  dormant(): void {
+    if (this.#mode === "failed") return;
+    this.#mode = "dormant";
+    for (const callback of this.#pending) callback({ cancel: true });
+    this.#pending.clear();
   }
   open(): void {
-    if (this.#failed) return;
-    this.#open = true;
+    if (this.#mode === "failed") return;
+    this.#mode = "open";
     for (const callback of this.#pending) callback({ cancel: false });
     this.#pending.clear();
   }
   fail(): void {
-    this.#failed = true;
-    this.#open = false;
+    this.#mode = "failed";
     for (const callback of this.#pending) callback({ cancel: true });
     this.#pending.clear();
   }

@@ -64,6 +64,7 @@ import {
 } from "./browser-session-policy.js";
 import {
   acquireElectronLocalProfile,
+  prepareElectronLocalProfiles,
   releaseElectronLocalProfile,
   type ElectronLocalProfile,
 } from "./electron-local-profile.js";
@@ -86,10 +87,24 @@ const storageViewConcurrency = 3;
 const blankDocument = Buffer.from("<!doctype html><meta charset=utf-8>", "utf8").toString("base64");
 
 export interface ElectronLocalProfileOpenTiming {
-  readonly stage: "session-created" | "mirror-restored" | "admitted" | "first-page-created";
-  /** Cumulative time from local launch, before any navigation is submitted. */
+  readonly stage:
+    | "session-created"
+    | "mirror-restored"
+    | "admitted"
+    | "page-create-started"
+    | "web-contents-view-created"
+    | "resting-host-created"
+    | "page-policy-dispatched"
+    | "page-policy-ready"
+    | "renderer-ready"
+    | "blank-loaded"
+    | "page-announced"
+    | "first-page-created";
+  /** Cumulative time from local launch; preparation and the real open share this clock. */
   readonly elapsedMs: number;
 }
+
+type PageOpenTiming = (stage: ElectronLocalProfileOpenTiming["stage"]) => void;
 
 interface ElectronBrowserLauncherOptions {
   readonly onLocalProfileOpenTiming?: (timing: ElectronLocalProfileOpenTiming) => void;
@@ -124,6 +139,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #onLocalProfileOpenTiming: ElectronBrowserLauncherOptions["onLocalProfileOpenTiming"];
   readonly localProfiles: LocalProfileEngine = {
     engine: "electron",
+    preparation: 1,
     release: releaseElectronLocalProfile,
     importAndFlush: async (input) => {
       input.signal.throwIfAborted();
@@ -139,6 +155,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
             undefined,
             owner.gate,
           );
+          const untrack = owner.trackContext(() => context.close());
           try {
             await owner.mirror.initialize(
               async () => {
@@ -169,10 +186,21 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
             input.signal.throwIfAborted();
           } finally {
             await context.close();
+            untrack();
           }
         },
       });
-      await profile.ready();
+      const cancel = () => {
+        void profile.retire().catch(() => undefined);
+      };
+      input.signal.addEventListener("abort", cancel, { once: true });
+      if (input.signal.aborted) cancel();
+      try {
+        await profile.ready();
+        input.signal.throwIfAborted();
+      } finally {
+        input.signal.removeEventListener("abort", cancel);
+      }
     },
   };
   #preparation: Promise<void> | undefined;
@@ -193,6 +221,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   prepare(): Promise<void> {
     this.#preparation ??= (async () => {
       await app.whenReady();
+      await prepareElectronLocalProfiles();
       const sessionId = createBrowserSessionId();
       const browser = await this.launch({
         initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
@@ -220,10 +249,11 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     this.#views.close();
   }
 
-  async launch(request: BrowserLaunchRequest): Promise<LaunchedBrowser> {
+  async launch(request: BrowserLaunchRequest, signal?: AbortSignal): Promise<LaunchedBrowser> {
+    signal?.throwIfAborted();
     if (request.storage.kind === "local") {
       const started = performance.now();
-      const timing = (stage: ElectronLocalProfileOpenTiming["stage"]) =>
+      const timing: PageOpenTiming = (stage) =>
         this.#onLocalProfileOpenTiming?.({ stage, elapsedMs: performance.now() - started });
       const profile = acquireElectronLocalProfile({
         ...request.storage,
@@ -236,27 +266,53 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
           ),
       });
       timing("session-created");
-      await profile.ready();
-      timing("mirror-restored");
-      await profile.admit();
-      timing("admitted");
-      this.#configureSession(
-        profile.session,
-        request.authenticator !== undefined || this.#authenticator !== undefined,
-        profile.gate,
-      );
-      const context = this.#context(
-        profile.session,
-        request.initialViewport,
-        request.authenticator ?? this.#authenticator,
-        profile,
-      );
+      const cancel = () => {
+        void profile.retire().catch(() => undefined);
+      };
+      const removeCancellation = () => signal?.removeEventListener("abort", cancel);
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) cancel();
+      let context: ElectronBrowserContext | undefined;
       try {
-        await context.createPage();
-        timing("first-page-created");
-        return new ElectronLaunchedBrowser(context, profile.session, this.#clipboard, profile);
+        await profile.ready();
+        signal?.throwIfAborted();
+        timing("mirror-restored");
+        this.#configureSession(
+          profile.session,
+          request.authenticator !== undefined || this.#authenticator !== undefined,
+          profile.gate,
+        );
+        context = this.#context(
+          profile.session,
+          request.initialViewport,
+          request.authenticator ?? this.#authenticator,
+          profile,
+          undefined,
+          timing,
+        );
+        const browser = new ElectronLaunchedBrowser(
+          context,
+          profile.session,
+          this.#clipboard,
+          profile,
+          {
+            admitted: () => {
+              signal?.throwIfAborted();
+              removeCancellation();
+              timing("admitted");
+            },
+            closed: removeCancellation,
+          },
+        );
+        if (!request.preparation) {
+          await browser.profile!.admit();
+          await context.createPage();
+        }
+        signal?.throwIfAborted();
+        return browser;
       } catch (error) {
-        await context.close().catch(() => undefined);
+        removeCancellation();
+        await context?.close().catch(() => undefined);
         throw error;
       }
     }
@@ -279,6 +335,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       // The first page holds a blank document until launch returns, so it
       // opens while the saved sites restore; nothing can navigate it before.
       await joined([context.createPage(), context.importSnapshot(snapshot)]);
+      signal?.throwIfAborted();
       return new ElectronLaunchedBrowser(context, profileSession, this.#clipboard);
     } catch (error) {
       await context.close().catch(() => undefined);
@@ -293,14 +350,17 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     authenticator?: PasskeyAuthenticator,
     localProfile?: ElectronLocalProfile,
     importGate?: BrowserSessionRequestGate,
+    onPageTiming?: PageOpenTiming,
   ): ElectronBrowserContext {
     return new ElectronBrowserContext({
-      createView: (options, opener) => this.#views.create(options, opener, viewport),
+      createView: (options, opener, timing) =>
+        this.#views.create(options, opener, viewport, timing),
       createHelper: (options) => this.#views.createHelper(options),
       profileSession,
       ...(authenticator ? { authenticator } : {}),
       ...(localProfile ? { localProfile } : {}),
       ...(importGate ? { importGate } : {}),
+      ...(onPageTiming ? { onPageTiming } : {}),
     });
   }
 
@@ -445,12 +505,14 @@ class ElectronBrowserViewPool {
     options: ElectronBrowserViewOptions,
     opener: WebContentsView | null,
     restingBounds: { readonly height: number; readonly width: number },
+    timing?: PageOpenTiming,
   ): ElectronBrowserView {
     if (this.#closed) throw new Error("The Electron browser is stopping.");
     if (this.#views.size >= this.#maxWebContents) {
       throw new Error("Electron Browser Runtime WebContents capacity is full.");
     }
     const view = new WebContentsView(options);
+    timing?.("web-contents-view-created");
     const size = opener?.getBounds() ?? restingBounds;
     const bounds = { height: Math.round(size.height), width: Math.round(size.width) };
     let host: BaseWindow | null = null;
@@ -489,6 +551,7 @@ class ElectronBrowserViewPool {
       this.#views.delete(view);
       if (!restingHost.isDestroyed()) restingHost.destroy();
     });
+    timing?.("resting-host-created");
     return { view, host: restingHost };
   }
 }
@@ -513,15 +576,32 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
   readonly #profileSession: Session;
   #closePromise: Promise<void> | null = null;
   readonly #localProfile: ElectronLocalProfile | undefined;
+  readonly #onProfileClose: (() => void) | undefined;
+  readonly profile?: NonNullable<LaunchedBrowser["profile"]>;
+  #admitted = false;
 
   constructor(
     context: ElectronBrowserContext,
     profileSession: Session,
     clipboard?: EngineClipboard,
     localProfile?: ElectronLocalProfile,
+    lifecycle?: { admitted(): void; closed(): void },
   ) {
     if (clipboard) this.clipboard = clipboard;
     this.#localProfile = localProfile;
+    this.#onProfileClose = lifecycle?.closed;
+    if (localProfile)
+      this.profile = {
+        ready: () => localProfile.ready(),
+        admit: async () => {
+          if (this.#closePromise) throw new Error("Electron browser profile is closed.");
+          await localProfile.admit();
+          if (!this.#admitted) {
+            lifecycle?.admitted();
+            this.#admitted = true;
+          }
+        },
+      };
     this.context = context;
     this.#profileSession = profileSession;
     this.cdp = new ElectronBrowserCdpBackend(context);
@@ -556,10 +636,14 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
 
   async #close(): Promise<void> {
     await (this.cdp as ElectronBrowserCdpBackend).close().catch(() => undefined);
+    this.#onProfileClose?.();
     await this.context.close();
     if (this.#localProfile) {
-      await this.#profileSession.cookies.flushStore();
-      await this.#localProfile.mirror.flush();
+      if (!this.#admitted) await this.#localProfile.retire();
+      else {
+        await this.#profileSession.cookies.flushStore();
+        await this.#localProfile.mirror.flush();
+      }
     } else {
       await Promise.all([
         this.#profileSession.clearCache(),
@@ -576,11 +660,13 @@ interface ElectronBrowserContextOptions {
   readonly createView: (
     options: ElectronBrowserViewOptions,
     opener: WebContentsView | null,
+    timing?: PageOpenTiming,
   ) => ElectronBrowserView;
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
   readonly profileSession: Session;
   readonly localProfile?: ElectronLocalProfile;
   readonly importGate?: BrowserSessionRequestGate;
+  readonly onPageTiming?: PageOpenTiming;
 }
 
 class ElectronBrowserContext implements BrowserContext {
@@ -601,6 +687,8 @@ class ElectronBrowserContext implements BrowserContext {
   readonly #importGate: BrowserSessionRequestGate | undefined;
   readonly #untrack: (() => void) | undefined;
   #closed = false;
+  #onPageTiming: PageOpenTiming | undefined;
+  readonly #storageViews = new Set<WebContentsView>();
   readonly #displayChanged = () => {
     for (const page of this.#pages) page.displayChanged();
   };
@@ -613,6 +701,7 @@ class ElectronBrowserContext implements BrowserContext {
     this.#profileSession = options.profileSession;
     this.#localProfile = options.localProfile;
     this.#importGate = options.importGate;
+    this.#onPageTiming = options.onPageTiming;
     this.#untrack = options.localProfile?.trackContext(() => this.close());
     screen.on("display-metrics-changed", this.#displayChanged);
     screen.on("display-added", this.#displayChanged);
@@ -626,12 +715,23 @@ class ElectronBrowserContext implements BrowserContext {
   async createPage(): Promise<BrowserPage> {
     await this.#localProfile?.ready();
     this.#assertOpen();
-    const page = this.#newPage(null, {
-      webPreferences: this.#securePreferences(),
-    });
+    this.#localProfile?.assertAdmitted();
+    const timing = this.#onPageTiming;
+    this.#onPageTiming = undefined;
+    timing?.("page-create-started");
+    const page = this.#newPage(
+      null,
+      {
+        webPreferences: this.#securePreferences(),
+      },
+      timing,
+    );
     try {
       await page.loadInitialUrl("about:blank");
+      timing?.("blank-loaded");
       await this.#announcePage(page);
+      timing?.("page-announced");
+      timing?.("first-page-created");
       return page;
     } catch (error) {
       await page.close().catch(() => undefined);
@@ -784,6 +884,9 @@ class ElectronBrowserContext implements BrowserContext {
     screen.off("display-removed", this.#displayChanged);
     const pages = [...this.#pages];
     this.#pages.clear();
+    for (const view of this.#storageViews) {
+      if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
+    }
     await Promise.allSettled(pages.map((page) => page.close()));
     this.#untrack?.();
     this.#events.removeAllListeners();
@@ -807,13 +910,15 @@ class ElectronBrowserContext implements BrowserContext {
   #newPage(
     opener: ElectronBrowserPage | null,
     options: ElectronBrowserViewOptions,
+    timing?: PageOpenTiming,
   ): ElectronBrowserPage {
     this.#assertOpen();
     const page = new ElectronBrowserPage(
-      this.#createView(options, opener?.view ?? null),
+      this.#createView(options, opener?.view ?? null, timing),
       opener,
       this.#authenticator,
       this.#providerConfig,
+      timing,
     );
     this.#pages.add(page);
     page.onClose(() => {
@@ -897,6 +1002,7 @@ class ElectronBrowserContext implements BrowserContext {
     await this.#localProfile?.ready();
     this.#assertOpen();
     const view = this.#createHelper({ webPreferences: this.#securePreferences() });
+    this.#storageViews.add(view);
     const contents = view.webContents;
     const inspector = contents.debugger;
     const pending = new Set<Promise<unknown>>();
@@ -934,6 +1040,7 @@ class ElectronBrowserContext implements BrowserContext {
       removeHelper = this.#importGate?.allowStorageHelper(contents.id);
       return await operation(view, send);
     } finally {
+      this.#storageViews.delete(view);
       removeHelper?.();
       await Promise.allSettled(pending);
       inspector.off("message", onMessage);
@@ -1044,6 +1151,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     opener: ElectronBrowserPage | null,
     authenticator?: PasskeyAuthenticator,
     providerConfig?: BrowserPagePolicyConfig,
+    timing?: PageOpenTiming,
   ) {
     this.view = view;
     this.#restingHost = host;
@@ -1079,7 +1187,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         source: browserPagePolicyScriptFor(providerConfig),
         runImmediately: true,
       });
-    const pagePolicy = authenticator ? undefined : dispatchPolicy();
+    const timedPolicy = () => {
+      const pending = dispatchPolicy();
+      timing?.("page-policy-dispatched");
+      return pending.then(() => timing?.("page-policy-ready"));
+    };
+    const pagePolicy = authenticator ? undefined : timedPolicy();
     this.#hub = new ElectronDebuggerHub(
       view.webContents,
       (demanded) => {
@@ -1089,6 +1202,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       () => this.waitForPaint(),
       () => this.#displayScale(),
       authenticator ? ["Network", "Security"] : [],
+      () => timing?.("renderer-ready"),
     );
     const installBridge = (channel: ElectronCdpChannel) => {
       if (!authenticator || !providerConfig) return;
@@ -1106,7 +1220,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       ? Promise.resolve(this.#hub.bootstrapPlatform(installBridge))
       : this.#hub.open("platform");
     if (authenticator)
-      void dispatchPolicy()
+      void timedPolicy()
         .catch(() => this.close())
         .catch(() => undefined);
     if (this.#passkeyBridge)
@@ -1854,6 +1968,7 @@ class ElectronDebuggerHub {
   readonly #destroyed: Promise<void>;
   readonly #domainOwners = new Map<string, Set<ElectronCdpChannel>>();
   readonly #persistentPlatformDomains: ReadonlySet<string>;
+  readonly #onRendererReady: (() => void) | undefined;
   readonly #events = new EventEmitter();
   /**
    * Chromium's own answers to input it has not answered yet. Callers can be
@@ -1892,8 +2007,10 @@ class ElectronDebuggerHub {
     prepareInput: () => Promise<void>,
     displayScale: () => number,
     persistentPlatformDomains: readonly string[] = [],
+    onRendererReady?: () => void,
   ) {
     this.#persistentPlatformDomains = new Set(persistentPlatformDomains);
+    this.#onRendererReady = onRendererReady;
     this.#webContents = webContents;
     this.#setRenderingDemand = setRenderingDemand;
     this.#prepareInput = prepareInput;
@@ -2333,7 +2450,9 @@ class ElectronDebuggerHub {
     if (!this.#debugger.isAttached()) this.#debugger.attach("1.3");
     this.#contexts.clear();
     // Runtime commands wait until every context has been inventoried.
-    const attachment = this.#dispatch("Runtime.enable").then(() => undefined);
+    const attachment = this.#dispatch("Runtime.enable").then(() => {
+      this.#onRendererReady?.();
+    });
     this.#attachment = attachment;
     const settled = attachment.then(
       () => undefined,

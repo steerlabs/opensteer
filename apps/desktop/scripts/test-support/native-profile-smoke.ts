@@ -3,13 +3,30 @@ import { randomUUID } from "node:crypto";
 import { watch } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { app } from "electron";
+import { app, session, webContents } from "electron";
 import { createId } from "@opensteer/core";
-import { LocalProfileBindingSchema, createBrowserSessionId } from "@opensteer/protocol/browser";
+import {
+  BrowserAttachTicketClaimsSchema,
+  BrowserPreparationTicketClaimsSchema,
+  type BrowserPreparationTicketClaims,
+  LocalProfileBindingSchema,
+  createBrowserSessionId,
+} from "@opensteer/protocol/browser";
 import type { BrowserCookie, BrowserProfileSnapshot } from "@opensteer/browser-profile";
-import type { BrowserPage, CdpSession, LaunchedBrowser } from "@opensteer/browser-runtime-core";
+import {
+  BrowserRuntime,
+  type BrowserAttachment,
+  type BrowserLauncher,
+  type BrowserPage,
+  type CdpSession,
+  type LaunchedBrowser,
+  type BrowserOpenTiming,
+} from "@opensteer/browser-runtime-core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import type { ElectronBrowserLauncher } from "../../src/browser/electron-browser-launcher.js";
+import type {
+  ElectronBrowserLauncher,
+  ElectronLocalProfileOpenTiming,
+} from "../../src/browser/electron-browser-launcher.js";
 import { isNetworkService } from "../../src/browser/electron-local-profile.js";
 
 export const nativeProfileSmokePhases = [
@@ -25,6 +42,8 @@ export const nativeProfileSmokePhases = [
   "native-logout-reopen",
   "native-clear",
   "native-clear-reopen",
+  "native-prepare-convert",
+  "native-prepare-ready",
 ] as const;
 
 export function nativeSmokeCookies(origin: string): BrowserCookie[] {
@@ -303,6 +322,285 @@ export async function runNativeProfileSmokePhase(input: {
     };
   } finally {
     if (!crash) await browser.close();
+  }
+}
+
+export const nativePreparationWorker = `
+self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(clients.claim()));
+fetch('/native-dormant-worker-probe').then(
+  () => console.info('native-probe-admitted'),
+  () => console.info('native-probe-cancelled')
+);`;
+
+/** Real runtime acquisition/attach, with only the Host's ticket and seed endpoints supplied by the fixture. */
+export async function runNativeProfilePreparationSmoke(input: {
+  phase: string;
+  state: string;
+  launcher: ElectronBrowserLauncher;
+  timings: ElectronLocalProfileOpenTiming[];
+  origin(index: number): string;
+  siteRequestCount(): number;
+  dormantProbeCount(): number;
+  navigationObserved(phase: string): Promise<void>;
+}): Promise<Record<string, unknown> & { crash: boolean }> {
+  const { phase, state, launcher, origin } = input;
+  const converting = phase === "native-prepare-convert";
+  const root = path.join(state, "native-user-data", "session", "browser-preparation");
+  const record = path.join(state, "prepared-binding.json");
+  const entered = Promise.withResolvers<void>();
+  const seed = Promise.withResolvers<void>();
+  const counts = { loads: 0, imports: 0, completions: 0, launches: 0 };
+  let launched: LaunchedBrowser | undefined;
+  let launchAt = 0;
+  let pagesAtPreparedLaunch = -1;
+  const measured: BrowserLauncher = {
+    prepare: () => launcher.prepare(),
+    localProfiles: {
+      ...launcher.localProfiles,
+      importAndFlush: async (request) => {
+        counts.imports++;
+        await launcher.localProfiles.importAndFlush(request);
+      },
+    },
+    launch: async (request, signal) => {
+      counts.launches++;
+      launchAt = performance.now();
+      launched = await launcher.launch(request, signal);
+      assert.equal(request.preparation, true, "open bypassed the shared preparation acquisition");
+      pagesAtPreparedLaunch = launched.context.pages().length;
+      assert.equal(pagesAtPreparedLaunch, 0, "prepared launch created a user page");
+      return launched;
+    },
+  };
+  const runtimeTimings: BrowserOpenTiming[] = [];
+  const runtimeId = "electron-preparation-smoke";
+  let identity: BrowserPreparationTicketClaims["identity"];
+  const common = {
+    audience: "opensteer-browser-runtime",
+    runtimeId,
+    subject: "preparation-smoke",
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    nonce: randomUUID(),
+  };
+  const runtime = new BrowserRuntime({
+    launcher: measured,
+    runtimeId,
+    localProfiles: { root },
+    initialViewport: { width: 640, height: 480, devicePixelRatio: 1 },
+    sessionFilesRoot: path.join(state, "prepare-sessions"),
+    onOpenTiming: (timing) => runtimeTimings.push(timing),
+    profileStateClient: {
+      load: async () => {
+        throw new Error("Native preparation used the legacy seed path.");
+      },
+      commit: async () => {
+        throw new Error("Native preparation used the legacy commit path.");
+      },
+    },
+    initializationClient: {
+      load: async () => {
+        counts.loads++;
+        entered.resolve();
+        await deadline(seed.promise, "conversion seed admission");
+        return {
+          cookies: nativeSmokeCookies(origin(0)),
+          origins: [
+            { origin: origin(0), localStorage: [{ name: "saved", value: "prepared-conversion" }] },
+          ],
+        };
+      },
+      complete: async () => {
+        counts.completions++;
+      },
+    },
+    ticketVerifier: {
+      verifyPreparation: async () =>
+        BrowserPreparationTicketClaimsSchema.parse({
+          ...common,
+          purpose: "profile-prepare",
+          identity,
+        }),
+      verify: async () =>
+        BrowserAttachTicketClaimsSchema.parse({
+          ...common,
+          access: "full-control",
+          identity,
+          sessionId: createBrowserSessionId(),
+          initialNavigationVersion: 1,
+          initialNavigation: {
+            operationKey: randomUUID(),
+            url: `${origin(0)}/native-page?phase=${phase}`,
+          },
+        }),
+    },
+  });
+  let prepared: Awaited<ReturnType<BrowserRuntime["prepareProfile"]>> | undefined;
+  let attachment: BrowserAttachment | undefined;
+  try {
+    await runtime.prepare();
+    const binding = converting
+      ? LocalProfileBindingSchema.parse({
+          version: 1,
+          deploymentId: createId("deployment"),
+          profileId: createId("browserProfile"),
+          runnerId: createId("runner"),
+          storageInstanceId: runtime.localProfileStorage!.storageInstanceId,
+          bindingId: randomUUID(),
+          engine: "electron",
+        })
+      : LocalProfileBindingSchema.parse(JSON.parse(await readFile(record, "utf8")));
+    identity = {
+      kind: "profile-local",
+      binding,
+      ...(converting
+        ? {
+            initialization: {
+              seed: { revision: 1, digest: "a".repeat(64) },
+              initializationUrl: "https://host.test/init",
+              initializationToken: "a".repeat(43),
+            },
+          }
+        : {}),
+    };
+    const requestsBefore = input.siteRequestCount();
+    const preparing = runtime.prepareProfile("prepare", {
+      localProfiles: true,
+      profilePrepare: true,
+    });
+    let attachStarted: number;
+    if (converting) {
+      await deadline(entered.promise, "preparation seed request");
+      assert.equal(runtime.health().sessionCount, 0);
+      assert.equal(input.siteRequestCount(), requestsBefore);
+      attachStarted = performance.now();
+      const attaching = runtime.attach(
+        "open",
+        { sendServer: async () => {}, sendFrame: async () => {} },
+        { localProfiles: true, initialNavigation: true },
+      );
+      seed.resolve();
+      [prepared, attachment] = await deadline(
+        Promise.all([preparing, attaching]),
+        "racing conversion/open",
+      );
+      assert.deepEqual(
+        counts,
+        { loads: 1, imports: 1, completions: 1, launches: 1 },
+        "racing open imported or launched twice",
+      );
+      await writeFile(record, JSON.stringify(binding), { mode: 0o600 });
+    } else {
+      prepared = await deadline(preparing, "ready profile preparation");
+      assert.equal(prepared.retained, true);
+      assert.equal(runtime.health().sessionCount, 0);
+      assert.equal(launched!.context.pages().length, 0);
+      assert.equal(input.siteRequestCount(), requestsBefore, "preparation issued a site request");
+      assert.equal(
+        webContents.getAllWebContents().filter((contents) => contents.getURL().startsWith("https:"))
+          .length,
+        0,
+        "prepared a site renderer",
+      );
+      const directory = path.join(root, "profiles", binding.profileId, "native");
+      const native = session.fromPath(directory);
+      const workerProbe = Promise.withResolvers<void>();
+      const onConsole = (_event: Electron.Event, details: Electron.MessageDetails) => {
+        if (details.message === "native-probe-cancelled") workerProbe.resolve();
+        if (details.message === "native-probe-admitted")
+          workerProbe.reject(new Error("Dormant worker request was admitted."));
+      };
+      native.serviceWorkers.on("console-message", onConsole);
+      try {
+        await deadline(
+          native.serviceWorkers.startWorkerForScope(`${origin(0)}/`),
+          "prepared service worker start",
+        );
+        await deadline(workerProbe.promise, "worker request cancellation before admission");
+      } finally {
+        native.serviceWorkers.off("console-message", onConsole);
+      }
+      assert.equal(input.siteRequestCount(), requestsBefore, "dormant worker reached the site");
+      await restartNetworkService();
+      await deadline(launched!.profile!.ready(), "prepared Network Service recovery");
+      await assert.rejects(
+        deadline(
+          native.fetch(`${origin(0)}/native-dormant-session-probe`),
+          "dormant request cancellation after recovery",
+        ),
+        /ERR_(FAILED|BLOCKED_BY_CLIENT|ABORTED)/u,
+      );
+      assert.equal(input.siteRequestCount(), requestsBefore, "recovery admitted a dormant Session");
+      attachStarted = performance.now();
+      attachment = await deadline(
+        runtime.attach(
+          "open",
+          { sendServer: async () => {}, sendFrame: async () => {} },
+          { localProfiles: true, initialNavigation: true },
+        ),
+        "prepared first open",
+      );
+      assert.deepEqual(
+        counts,
+        { loads: 0, imports: 0, completions: 0, launches: 1 },
+        "click reacquired native storage",
+      );
+    }
+    assert.equal(prepared.retained, true);
+    assert.equal(pagesAtPreparedLaunch, 0);
+    await deadline(input.navigationObserved(phase), "first submitted navigation reaching the site");
+    const page = launched!.context.pages()[0]!;
+    await assertCookies(launched!, nativeSmokeCookies(origin(0)));
+    const firstPage = input.timings.find((timing) => timing.stage === "first-page-created")!;
+    const submitted = runtimeTimings.find((timing) => timing.stage === "navigation-submitted")!;
+    assert.ok(firstPage && submitted, "first-open timing receipt is incomplete");
+    if (converting) {
+      // Wait for the document before registering the worker the next process will start without a page.
+      await load(page, `${origin(0)}/native-page?phase=${phase}-worker`);
+      assert.equal(await evaluate(page, "localStorage.getItem('saved')"), "prepared-conversion");
+      await evaluate(
+        page,
+        `(async () => {
+        await navigator.serviceWorker.register('/native-prepare-sw.js');
+        await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) await new Promise(resolve => navigator.serviceWorker.addEventListener('controllerchange', resolve, {once:true}));
+      })()`,
+      );
+    } else
+      assert.equal(input.dormantProbeCount(), 0, "cancelled dormant traffic replayed on admission");
+    return {
+      crash: false,
+      counts,
+      pagesAtPreparedLaunch,
+      sessionCountAfterOpen: runtime.health().sessionCount,
+      workerCancelledBeforeAdmit: !converting,
+      attachToPageCreatedMs: launchAt + firstPage.elapsedMs - attachStarted,
+      attachToNavigationSubmittedMs: submitted.elapsedSinceStartMs,
+      runtimeTimings,
+    };
+  } finally {
+    seed.resolve();
+    await attachment?.close();
+    await prepared?.close();
+    await runtime.shutdown();
+    launcher.close();
+  }
+}
+
+async function restartNetworkService(): Promise<void> {
+  const utility = app.getAppMetrics().find((metric) => isNetworkService(metric));
+  assert.ok(utility, "owned Network Service utility PID was not found");
+  const listener = (_event: Electron.Event, details: Electron.Details) => {
+    if (isNetworkService(details)) gone.resolve();
+  };
+  const gone = Promise.withResolvers<void>();
+  app.on("child-process-gone", listener);
+  try {
+    process.kill(utility.pid, "SIGKILL");
+    await deadline(gone.promise, "Network Service loss notification");
+  } finally {
+    app.off("child-process-gone", listener);
   }
 }
 

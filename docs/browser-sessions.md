@@ -514,8 +514,9 @@ protection; named launches must not disable OS cookie encryption or use testing
 key-store fallbacks. An unavailable approved mirror-key provider refuses opening
 with instructions to unlock the login keychain and restart the app; the store and mirror stay intact.
 This also prevents an already-created Session from bypassing restoration on retry.
-The Session-wide request gate covers workers as well as pages and stays closed
-until restoration. Cookie-change events
+The Session-wide request gate covers workers as well as pages. Prepared Sessions
+cancel requests until a real open admits them, including after Network Service
+recovery; restoration alone never admits them. Cookie-change events
 invalidate an authoritative Session-scoped capture rather than supplying cookie
 identities, because Electron's event payload omits partition keys. Controlled
 cookie writes await native and mirror persistence. A missing, corrupt or mismatched

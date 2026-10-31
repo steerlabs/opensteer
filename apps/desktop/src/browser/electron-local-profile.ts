@@ -13,6 +13,18 @@ const retainedDirectories = new Set<string>();
 const cryptography = new VerifiedDesktopSecretCryptography(safeStorage);
 let watchingNetworkService = false;
 
+/** Provider consent is resolved at engine startup; actual profile keys stay lazy. */
+export async function prepareElectronLocalProfiles(): Promise<void> {
+  if (
+    !(await cryptography.isAsyncEncryptionAvailable()) ||
+    (process.platform === "linux" &&
+      ["basic_text", "unknown"].includes(cryptography.getSelectedStorageBackend()))
+  )
+    throw persistenceFailure(
+      new ProtectedStorageUnavailableError("Protected storage unavailable."),
+    );
+}
+
 export function acquireElectronLocalProfile(input: {
   root: string | undefined;
   directory: string;
@@ -81,6 +93,7 @@ export class ElectronLocalProfile {
   #failure: BrowserRuntimeError | undefined;
   #retired = false;
   #admitted = false;
+  #retirement: Promise<void> | undefined;
   #cookieTarget: WebContentsView | undefined;
   #cookieCommands = 0;
   #idle = false;
@@ -92,11 +105,13 @@ export class ElectronLocalProfile {
     configure: (session: Session, gate: BrowserSessionRequestGate) => void,
   ) {
     this.binding = binding;
+    this.gate.dormant();
     this.session = session.fromPath(directory);
     retainedDirectories.add(directory);
     configure(this.session, this.gate);
     // This private target exists only for the cookie bridge, never as a user page.
     const command = async (method: string, parameters?: Record<string, unknown>) => {
+      this.assertUsable();
       this.#cookieCommands++;
       try {
         if (!this.#cookieTarget) {
@@ -174,8 +189,11 @@ export class ElectronLocalProfile {
 
   async admit(): Promise<void> {
     await this.ready();
-    this.#admitted = true;
-    this.gate.open();
+    this.assertReady();
+    if (!this.#admitted) {
+      this.#admitted = true;
+      this.gate.open();
+    }
   }
 
   assertUsable(): void {
@@ -186,18 +204,27 @@ export class ElectronLocalProfile {
     this.assertUsable();
     if (this.#suspended) throw persistenceFailure();
   }
+  assertAdmitted(): void {
+    this.assertReady();
+    if (!this.#admitted) throw new Error("Electron browser profile is not admitted.");
+  }
   trackContext(close: () => Promise<void>): () => void {
     this.#contexts.add(close);
     this.#idle = false;
     return () => {
       this.#contexts.delete(close);
+      if (!this.#contexts.size) {
+        this.#admitted = false;
+        this.gate.dormant();
+      }
       this.#releaseIdleCookieTarget();
     };
   }
   suspend(): void {
     this.#suspended = true;
     this.mirror.suspend();
-    this.gate.close();
+    if (this.#admitted) this.gate.close();
+    else this.gate.dormant();
   }
   recoverAfterNetworkLoss(): void {
     if (this.#failure || this.#retired) return;
@@ -207,6 +234,7 @@ export class ElectronLocalProfile {
         if (restored) {
           this.#suspended = false;
           if (this.#admitted) this.gate.open();
+          else this.gate.dormant();
         }
       })
       .catch((error: unknown) => {
@@ -215,20 +243,29 @@ export class ElectronLocalProfile {
       });
     void this.#ready.catch(() => undefined);
   }
-  async eraseLiveData(): Promise<void> {
+  retire(): Promise<void> {
+    if (this.#retirement) return this.#retirement;
     this.#retired = true;
     this.gate.fail();
-    await this.mirror.stop();
-    await Promise.all([...this.#contexts].map((close) => close()));
+    const stopped = this.mirror.stop();
     this.#releaseIdleCookieTarget();
+    const contexts = [...this.#contexts].map((close) => close());
+    this.#retirement = (async () => {
+      await Promise.all([stopped, ...contexts]);
+      this.#releaseIdleCookieTarget();
+    })();
+    return this.#retirement;
+  }
+  async eraseLiveData(): Promise<void> {
+    await this.retire();
     // This is explicit profile deletion, never eviction or failure cleanup.
     await this.session.clearStorageData();
     await this.session.clearCache();
   }
   #releaseIdleCookieTarget(): void {
-    if (this.#contexts.size) return;
+    if (!this.#retired && this.#contexts.size) return;
     this.#idle = true;
-    if (this.#cookieCommands) return;
+    if (!this.#retired && this.#cookieCommands) return;
     const target = this.#cookieTarget;
     this.#cookieTarget = undefined;
     if (target && !target.webContents.isDestroyed())

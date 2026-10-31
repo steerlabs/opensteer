@@ -4,6 +4,8 @@ import {
   nativeProfileSmokePhases,
   nativeSmokeWorker,
   runNativeProfileSmokePhase,
+  runNativeProfilePreparationSmoke,
+  nativePreparationWorker,
 } from "./test-support/native-profile-smoke.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 /**
@@ -85,6 +87,9 @@ const observations = new Map<string, Record<string, unknown>>();
 const swRuns: string[] = [];
 const nativeOpenTimings: ElectronLocalProfileOpenTiming[] = [];
 const nativeFirstRequests = new Map<string, string>();
+const nativeRequestObservers = new Set<() => void>();
+let nativeSiteRequestCount = 0;
+let dormantProbeCount = 0;
 const open = new Set<LaunchedBrowser>();
 const port = 18766;
 const origin = (i: number) => `https://s${i}.example.test:${port}`;
@@ -155,8 +160,16 @@ window.firstState.then(async value=>{if(new URL(location.href).searchParams.has(
 const server = createServer({ key, cert }, (req, res) => {
   const url = new URL(req.url ?? "/", `https://${req.headers.host}`);
   res.setHeader("Cache-Control", "no-store");
+  nativeSiteRequestCount++;
+  if (url.pathname.startsWith("/native-dormant-")) dormantProbeCount++;
   if (url.pathname === "/native-page")
     nativeFirstRequests.set(url.searchParams.get("phase") ?? "", req.headers.cookie ?? "");
+  for (const observer of nativeRequestObservers) observer();
+  if (url.pathname === "/native-prepare-sw.js") {
+    res.setHeader("Content-Type", "text/javascript");
+    res.end(nativePreparationWorker);
+    return;
+  }
   if (url.pathname === "/native-sw.js") {
     res.setHeader("Content-Type", "text/javascript");
     res.end(nativeSmokeWorker);
@@ -369,20 +382,45 @@ async function main() {
     launcher = new ElectronBrowserLauncher({
       downloads: smokeDownloads,
       onLocalProfileOpenTiming: (timing) => nativeOpenTimings.push(timing),
-      localProfileRoot: path.join(state, "native-user-data", "session", "browser-profiles"),
+      localProfileRoot: path.join(
+        state,
+        "native-user-data",
+        "session",
+        phase.startsWith("native-prepare-") ? "browser-preparation" : "browser-profiles",
+      ),
       pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
     });
     if (phase.startsWith("native-")) {
       let crash = false;
       await scenario(phase, async (observed) => {
         observed.openTimings = nativeOpenTimings;
-        const result = await runNativeProfileSmokePhase({
-          phase,
-          state,
-          launcher,
-          origin,
-          firstRequest: (name) => nativeFirstRequests.get(name),
-        });
+        const result = phase.startsWith("native-prepare-")
+          ? await runNativeProfilePreparationSmoke({
+              phase,
+              state,
+              launcher,
+              origin,
+              timings: nativeOpenTimings,
+              siteRequestCount: () => nativeSiteRequestCount,
+              dormantProbeCount: () => dormantProbeCount,
+              navigationObserved: (name) =>
+                new Promise<void>((resolve) => {
+                  const observe = () => {
+                    if (!nativeFirstRequests.has(name)) return;
+                    nativeRequestObservers.delete(observe);
+                    resolve();
+                  };
+                  nativeRequestObservers.add(observe);
+                  observe();
+                }),
+            })
+          : await runNativeProfileSmokePhase({
+              phase,
+              state,
+              launcher,
+              origin,
+              firstRequest: (name) => nativeFirstRequests.get(name),
+            });
         Object.assign(observed, result, { openTimings: nativeOpenTimings });
         crash = result.crash;
       });
