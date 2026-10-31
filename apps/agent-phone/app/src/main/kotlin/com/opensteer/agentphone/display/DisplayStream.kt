@@ -459,8 +459,15 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
             active.send(DisplayWire.powerResult(message, dispatched))
             handler.post { if (current === active) reconcile() }
         }
-        if (message.action == "lock") personLane.reset(::apply)
-        else executor.ownerInput { apply() }
+        if (message.action == "lock") {
+            // A lock that is already refused must not reset another holder's input.
+            if (!admitted(active, message.source, false, power = true)) { active.send(DisplayWire.powerResult(message, false)); return }
+            // Lane cleanup can wait on rejected cancellation strokes; the lock answers within its bound either way.
+            val settled = java.util.concurrent.atomic.AtomicBoolean()
+            val expired = Runnable { if (settled.compareAndSet(false, true)) active.send(DisplayWire.powerResult(message, false)) }
+            handler.postDelayed(expired, LOCK_BARRIER_MS)
+            personLane.reset { if (settled.compareAndSet(false, true)) { handler.removeCallbacks(expired); apply() } }
+        } else executor.ownerInput { apply() }
     }
 
     private fun input(message: DisplayMessage.Input) {
@@ -565,5 +572,6 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
         const val HOST_ENDED = 1000
         const val HOST_STOPPING = 1001
         const val AUTHORITY_ENDED = 4003
+        const val LOCK_BARRIER_MS = 7_000L
     }
 }
