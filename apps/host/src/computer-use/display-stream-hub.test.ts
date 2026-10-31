@@ -1889,7 +1889,7 @@ describe("phone display Host sockets", () => {
       await viewer.received(() => viewer.media().length === sequence);
       viewer.send({ type: "display.ack", sequence });
       await viewer.roundTrip();
-      expect(refreshes()).toHaveLength(sequence < 4 ? 0 : 1);
+      expect(refreshes()).toHaveLength(sequence < 3 ? 0 : 1);
     }
     const joined = await f.viewer();
     await joined.received(() => joined.media().length === 4);
@@ -1916,6 +1916,23 @@ describe("phone display Host sockets", () => {
     const joined = await f.viewer();
     await joined.received(() => joined.media().length === 1);
     expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual([]);
+  });
+
+  it("bounds motion after an IDR larger than the refresh budget", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    for (let sequence = 1; sequence <= 3; sequence++) {
+      phone.socket.send(
+        f.frame(sequence, sequence === 1, 1, new Uint8Array(sequence === 1 ? 300_000 : 70_000)),
+      );
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+      expect(refreshes()).toHaveLength(sequence === 3 ? 1 : 0);
+    }
   });
 
   it("delivers a coalesced byte refresh even when no viewer is waiting", async () => {
@@ -2000,6 +2017,8 @@ describe("phone display Host sockets", () => {
         viewer.send({ type: "display.ack", sequence });
         await delay(5);
       }
+      const refreshes = f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+      expect(refreshes).toHaveLength(size === 6 ? 0 : 1);
       const joined = await f.viewer();
       await until(() => joined.media().length === credit);
       phone.socket.send(f.frame(count + 1, false, 1, new Uint8Array(size)));
@@ -2016,7 +2035,9 @@ describe("phone display Host sockets", () => {
       expect(joined.media().map(({ header }) => header.sequence)).toEqual(
         Array.from({ length: count + 1 }, (_, index) => index + 1),
       );
-      expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual([]);
+      expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual(
+        refreshes,
+      );
     },
   );
   it.each(["key", "generation", "overflow"])(
@@ -2291,7 +2312,7 @@ describe("phone display Host sockets", () => {
     const phone = await f.phone();
     await f.state();
     for (let sequence = 1; sequence <= 5; sequence++)
-      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(40_000)));
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(20_000)));
     await phone.received(() => phone.json().length === 5);
     await viewer.roundTrip();
     f.advance(800);

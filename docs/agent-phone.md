@@ -148,8 +148,8 @@ main activity also uses FLAG_SECURE. Control and media sockets are unordered: la
 must not blank already-arrived media of the same generation or revive an ended generation.
 H.264 must have no B-frames or reordering so clients can display decoded frames immediately.
 Backpressure must recover at a keyframe, including on static screens. Phone replay stays
-intact on join. The Host requests a coalesced refresh when a GOP's cached bytes cross
-256 KiB; the encoder's ten-second GOP avoids frequent idle IDRs. Bitrate reductions
+intact on join. The Host requests a coalesced refresh after 128 KiB of cached deltas,
+in addition to the unavoidable keyframe; the encoder's ten-second GOP avoids frequent idle IDRs. Bitrate reductions
 require sustained viewer queueing; healthy ACK flow allows recovery. Negotiated visible
 viewers share the slowest viewer's bitrate cap; the phone uses the lower of that cap
 and its own estimate. Only a Host cap allows bitrate below the local 1 Mbps floor.
