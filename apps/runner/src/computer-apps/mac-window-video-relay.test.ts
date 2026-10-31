@@ -57,6 +57,8 @@ it.each([
   "warm-unchanged-readiness",
   "readiness-failed",
   "readiness-revoked",
+  "uncached-readiness-revoked",
+  "uncached-unchanged-readiness",
   "previous-desktop-unchanged-readiness",
   "previous-helper-unchanged-readiness",
 ] as const)(
@@ -143,7 +145,8 @@ it.each([
           );
         changeReadiness = () => {
           if (peer === "readiness-failed") readinessFailed = true;
-          else if (peer === "readiness-revoked") permissionRevoked = true;
+          else if (peer === "readiness-revoked" || peer === "uncached-readiness-revoked")
+            permissionRevoked = true;
           else if (!unchangedReadiness) supported = false;
           socket.send(JSON.stringify({ kind: "event", event: "grants.changed" }));
         };
@@ -274,6 +277,7 @@ it.each([
         source,
         ...(supported && !legacy ? { ownerInputVersion: 2 } : {}),
       });
+      if (peer.startsWith("uncached-")) handler.releaseSessions();
       relay.handle(
         HostIntegrationsDisplayStartSchema.parse({
           ...fence,
@@ -292,6 +296,7 @@ it.each([
       await expect.poll(() => received.length).toBe(1);
       expect(received[0]).toEqual(Buffer.from(media));
       await expect.poll(() => credits).toEqual([{ type: "display.ack", sequence: 0 }]);
+      if (peer.startsWith("uncached-")) expect(handler.ownerViewVersion()).toBeUndefined();
       if (peer === "current") {
         const otherSource = DisplaySourceSchema.parse({
           kind: "owner-view",
@@ -416,7 +421,7 @@ it.each([
           events.some((event) => event.type === "runner.integrations.display.source-changed"),
         ).toBe(true);
       }
-      if (peer === "readiness-revoked") {
+      if (peer === "readiness-revoked" || peer === "uncached-readiness-revoked") {
         changeReadiness();
         await vi.waitFor(() =>
           expect(

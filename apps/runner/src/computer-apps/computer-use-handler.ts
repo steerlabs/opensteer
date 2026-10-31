@@ -247,8 +247,20 @@ export class ComputerUseHandler {
   /** Revalidate owner media independently of an individual caller's request budget. */
   async revalidateReadiness(): Promise<void> {
     const epoch = this.#readinessEpoch;
+    const hadReadiness = this.#readiness !== undefined;
     try {
       await this.permissions();
+      const current = this.#readiness;
+      // Attachment can open a new bridge after the target was resolved.
+      if (
+        !hadReadiness &&
+        epoch === this.#readinessEpoch &&
+        (current?.permissions.accessibility !== "granted" ||
+          current.permissions.screenRecording !== "granted" ||
+          current.computerUseVersion !== 2 ||
+          current.ownerViewVersion !== 3)
+      )
+        this.#announceReadinessChanged("readiness-unknown");
     } catch {
       if (epoch === this.#readinessEpoch) this.#announceReadinessChanged("readiness-unknown");
     }
