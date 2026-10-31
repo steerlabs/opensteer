@@ -792,6 +792,85 @@ describe("mobile conversation pages", () => {
     expect(state.dispatch).toHaveBeenCalledOnce();
   });
 
+  it("keeps an ambiguous opening's address and completes it on the chosen available computer", async () => {
+    const gate = Promise.withResolvers<{ sessionId: string; tabId: string }>();
+    const beginBrowserTabOpen = vi.fn(() => ({
+      idempotencyKey: "chosen-computer",
+      result: gate.promise,
+    }));
+    const dismissPendingBrowserTab = vi.fn();
+    state.hostClient = { beginBrowserTabOpen, dismissPendingBrowserTab };
+    const ambiguousSnapshot: HostSnapshot = {
+      ...snapshot([]),
+      browserPlacements: [
+        {
+          runnerId: "available",
+          label: "Available Mac",
+          available: true,
+          kind: "runner",
+          runtimeId: null,
+          environmentIds: [],
+        },
+        {
+          runnerId: "offline",
+          label: "Offline Mac",
+          available: false,
+          kind: "runner",
+          runtimeId: null,
+          environmentIds: [],
+        },
+      ],
+      pendingBrowserTabs: [
+        {
+          idempotencyKey: "ambiguous",
+          target: { identity: { kind: "guest" } },
+          url: "https://waiting.example/",
+          state: "failed",
+          typed: true,
+          viewport: { width: 390, height: 612 },
+          error: {
+            code: "browser-placement-ambiguous",
+            message: "Choose a computer to browse on.",
+          },
+        },
+      ],
+    };
+    const { container } = setup(
+      { pendingBrowserTab: "ambiguous" },
+      { snapshot: ambiguousSnapshot },
+    );
+    expect(container.textContent).toContain("https://waiting.example/");
+    expect(container.textContent).not.toContain("Open on Offline Mac");
+    await pressAsync(container, "Open on Available Mac");
+    expect(beginBrowserTabOpen).toHaveBeenCalledExactlyOnceWith(
+      { identity: { kind: "guest" }, placement: { kind: "runner", runnerId: "available" } },
+      { url: "https://waiting.example/", typed: true, viewport: { width: 390, height: 612 } },
+    );
+    expect(dismissPendingBrowserTab).toHaveBeenCalledExactlyOnceWith("ambiguous");
+    state.routes = [
+      {
+        name: "WorkspaceBrowser",
+        params: {
+          deploymentId: "deployment-a",
+          threadId: "thread-parent",
+          pendingBrowserTab: "chosen-computer",
+        },
+      },
+    ];
+    await act(async () => gate.resolve({ sessionId: "chosen", tabId: "new-page" }));
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      type: "REPLACE",
+      name: "WorkspaceBrowser",
+      params: {
+        deploymentId: "deployment-a",
+        threadId: "thread-parent",
+        sessionId: "chosen",
+        tabId: "new-page",
+        editAddress: true,
+      },
+    });
+  });
+
   it.each([false, true])(
     "opens at the valid page size and replaces only the selected pending route (oversized=%s)",
     async (oversized) => {

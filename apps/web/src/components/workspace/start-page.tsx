@@ -129,7 +129,7 @@ export function openWorkspaceWebLink(
     },
   );
   rememberBrowsingChoice(scope, choice);
-  nav.showPendingBrowserTab(opening.idempotencyKey);
+  nav.showPendingBrowserTab(opening.idempotencyKey, { address: url });
   void opening.result.then(
     (opened) => {
       nav.replacePendingBrowserTab(opening.idempotencyKey, {
@@ -448,7 +448,7 @@ export const StartPage = memo(function StartPage({
         idempotencyKey: mutationIdempotencyKey("start-page-open"),
       });
       rememberBrowsingChoice(scope, choice);
-      nav.showPendingBrowserTab(opening.idempotencyKey, { replace: true });
+      nav.showPendingBrowserTab(opening.idempotencyKey, { replace: true, address: url });
       const opened = await opening.result;
       nav.replacePendingBrowserTab(opening.idempotencyKey, {
         kind: "browser",

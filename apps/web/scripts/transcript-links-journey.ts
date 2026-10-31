@@ -352,13 +352,13 @@ try {
         .getByRole("alert")
         .filter({ hasText: "Which computer" })
         .waitFor({ timeout: 5_000 });
-      const refusedAddress = await page.locator(".start-page__input").inputValue();
+      const refusedAddress = await page.locator(".browser-address").textContent();
       const consumed = await page.evaluate(() => history.state.usr);
-      const chips = await page.locator(".start-page__refusal-actions button").allTextContents();
+      const chips = await page.getByRole("button", { name: /^Open on /u }).allTextContents();
       const refusalCount = (await mockTabs(page)).length;
       await page.locator(".side-task .side-task__main").first().click();
       await page.goBack();
-      await page.locator(".start-page__input").waitFor();
+      await page.getByRole("alert").filter({ hasText: "Which computer" }).waitFor();
       await page.goForward();
       await page.goBack();
       await page.reload();
@@ -392,7 +392,10 @@ try {
         "history or reload reran the refused arrival",
       );
       await page.locator(".start-page__input").press("Enter");
-      await page.locator(".start-page__refusal-actions button").first().click();
+      await page
+        .getByRole("button", { name: /^Open on /u })
+        .first()
+        .click();
       await page.locator(".browser-address input").waitFor();
       const tabs = await mockTabs(page);
       expectThat(

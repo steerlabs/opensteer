@@ -131,10 +131,9 @@ export interface BrowserTabOpenOptions {
   readonly viewport?: { readonly width: number; readonly height: number };
   readonly idempotencyKey?: string;
 }
-export interface PendingBrowserTab {
+export interface PendingBrowserTab extends Omit<BrowserTabOpenOptions, "idempotencyKey"> {
   readonly idempotencyKey: string;
   readonly target: BrowserTabOpenInput;
-  readonly url?: string;
   readonly state: "opening" | "unknown" | "failed";
   readonly error?: { readonly code: string; readonly message: string };
 }

@@ -402,7 +402,7 @@ export interface WorkspaceNavigation {
   ) => void;
   readonly showPendingBrowserTab: (
     idempotencyKey: string,
-    options?: { readonly replace?: boolean },
+    options?: { readonly replace?: boolean; readonly address?: string },
   ) => void;
   readonly replacePendingBrowserTab: (
     idempotencyKey: string,
@@ -420,6 +420,7 @@ export interface WorkspaceNavigation {
     readonly replace?: boolean;
     /** A web address to open through the start page with its default profile. */
     readonly address?: string;
+    readonly open?: boolean;
   }) => void;
   /** Esc or × on the start page: the place it was opened from, else the conversation alone. */
   readonly leaveLauncher: (from: string | null) => void;
@@ -554,7 +555,12 @@ export function useWorkspaceNavigation(
   currentScope.current = { deploymentId, userId };
   const showPendingBrowserTab = useCallback<WorkspaceNavigation["showPendingBrowserTab"]>(
     (idempotencyKey, options) =>
-      choosePlace({ kind: "pending", idempotencyKey }, undefined, options),
+      choosePlace({ kind: "pending", idempotencyKey }, undefined, {
+        ...options,
+        ...(options?.address === undefined
+          ? {}
+          : { state: { startAddress: options.address, startOpen: false } }),
+      }),
     [choosePlace],
   );
   const replacePendingBrowserTab = useCallback<WorkspaceNavigation["replacePendingBrowserTab"]>(
@@ -598,7 +604,7 @@ export function useWorkspaceNavigation(
           startId: `${Date.now().toString(36)}-${openings}`,
           ...(options.address === undefined
             ? {}
-            : { startAddress: options.address, startOpen: true }),
+            : { startAddress: options.address, startOpen: options.open ?? true }),
         },
       });
     },

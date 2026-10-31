@@ -44,6 +44,7 @@ interface PendingBrowserTabPorts {
 /** Presentation only: an unknown submission can be replayed, never replaced implicitly. */
 export class PendingBrowserTabs {
   readonly #opens = new Map<string, Opening>();
+  readonly #completed = new Set<string>();
   #rows: readonly PendingBrowserTab[] = [];
   #generation = 0;
 
@@ -116,6 +117,8 @@ export class PendingBrowserTabs {
         idempotencyKey: key,
         target: opening.target,
         ...(opening.options.url === undefined ? {} : { url: opening.options.url }),
+        ...(opening.options.typed === undefined ? {} : { typed: opening.options.typed }),
+        ...(opening.options.viewport ? { viewport: opening.options.viewport } : {}),
         state: "opening",
       });
     void this.#run(key, opening, generation, uncertain).then(resolve, reject);
@@ -136,6 +139,12 @@ export class PendingBrowserTabs {
       if (opening.dismissed) await this.#ports.close(result);
       this.#requireCurrent(generation);
       this.#remove(key);
+      this.#completed.add(key);
+      if (this.#completed.size > 100) {
+        const oldest = this.#completed.values().next().value!;
+        this.#completed.delete(oldest);
+        this.#opens.delete(oldest);
+      }
       return result;
     } catch (error) {
       if (generation === this.#generation) {
@@ -151,6 +160,8 @@ export class PendingBrowserTabs {
             idempotencyKey: key,
             target: opening.target,
             ...(opening.options.url === undefined ? {} : { url: opening.options.url }),
+            ...(opening.options.typed === undefined ? {} : { typed: opening.options.typed }),
+            ...(opening.options.viewport ? { viewport: opening.options.viewport } : {}),
             state: opening.state,
             error: {
               code:
@@ -187,6 +198,7 @@ export class PendingBrowserTabs {
   clear(): void {
     this.#generation += 1;
     this.#opens.clear();
+    this.#completed.clear();
     this.#rows = [];
   }
 
