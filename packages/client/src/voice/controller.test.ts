@@ -376,6 +376,56 @@ describe("VoiceController", () => {
     },
   );
 
+  it("captures page context before delayed Chat creation can change the selected view", async () => {
+    let selected = "https://example.com/original";
+    const places = vi.fn(async () => [
+      browserPagePart({
+        sessionId: "bsn_12345678-1234-4123-8123-123456789abc",
+        tabId: "tab:test",
+        title: "Selected page",
+        url: selected,
+      }),
+    ]);
+    const f = setup({ home: "absent", input: { places } });
+    const initial = f.host.getSnapshot();
+    const account = voiceAccount(initial)!;
+    f.publish({
+      harnesses: initial.harnesses.filter((harness) => harness.id === account.harnessInstanceId),
+      executionPreferences: { ...initial.executionPreferences, history: [] },
+    });
+    const create = f.host.createHome.bind(f.host);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const creating = vi.spyOn(f.host, "createHome").mockImplementation(async (input) => {
+      await held;
+      return create(input);
+    });
+    const dispatch = vi.spyOn(f.host, "dispatch");
+    await f.controller.start();
+    f.emit({ type: "heard", turnId: "page", text: "Explain this" });
+    await vi.waitFor(
+      () => expect(creating, "voice did not start creating Chat").toHaveBeenCalled(),
+      { timeout: 100 },
+    );
+    selected = "https://example.com/later";
+    release();
+    await vi.waitFor(
+      () => expect(dispatch, "voice did not send its captured page").toHaveBeenCalled(),
+      { timeout: 100 },
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: [
+          { type: "text", text: "Explain this" },
+          expect.objectContaining({ url: "https://example.com/original" }),
+        ],
+      }),
+    );
+    f.dispose();
+  });
+
   it("returns to listening when Chat's Run ends without a spoken reply", async () => {
     const f = setup();
     const dispatch = vi.spyOn(f.host, "dispatch");

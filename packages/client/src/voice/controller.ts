@@ -369,10 +369,12 @@ export class VoiceController {
         );
         if (target) this.#input.navigate(target);
         else {
+          const captured = this.#input.presentation?.capture();
+          const places = this.#places(captured?.places ?? this.#input.places);
           session.pending.set(event.turnId, { messageId: null, runId: null });
           this.#settlePhase(session);
           session.sends = session.sends
-            .then(() => this.#send(session, event.turnId, event.text))
+            .then(() => this.#send(session, event.turnId, event.text, places))
             .catch(() => {
               if (this.#session !== session) return;
               session.pending.delete(event.turnId);
@@ -405,7 +407,12 @@ export class VoiceController {
         break;
     }
   }
-  async #send(session: VoiceSession, turnId: string, text: string): Promise<void> {
+  async #send(
+    session: VoiceSession,
+    turnId: string,
+    text: string,
+    capturedPlaces: Promise<readonly PlaceContentPart[]>,
+  ): Promise<void> {
     if (this.#session !== session) return;
     const host = this.#input.hostClient;
     const snapshot = host.getSnapshot();
@@ -431,7 +438,7 @@ export class VoiceController {
       threadId = home.id;
     }
     if (this.#session !== session) return;
-    const places = await this.#places();
+    const places = await capturedPlaces;
     if (this.#session !== session) return;
     const command: PendingSendCommand = {
       type: "thread.sendMessage",
@@ -449,12 +456,12 @@ export class VoiceController {
     }
     this.#hostChanged();
   }
-  async #places(): Promise<readonly PlaceContentPart[]> {
-    if (!this.#input.places) return [];
+  async #places(resolve: VoiceControllerInput["places"]): Promise<readonly PlaceContentPart[]> {
+    if (!resolve) return [];
     let timer: VoiceTimer | null = null;
     try {
       return await Promise.race([
-        Promise.resolve().then(() => this.#input.places!()),
+        Promise.resolve(resolve()),
         new Promise<readonly PlaceContentPart[]>((resolve) => {
           timer = this.#timers.set(() => resolve([]), 1_500);
         }),
