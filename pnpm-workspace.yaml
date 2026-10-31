@@ -40,6 +40,7 @@ catalog:
   opencode-ai: 1.18.32
 
 patchedDependencies:
+  expo-notifications@58.1.6: patches/expo-notifications@58.1.6.patch
   playwright-core@1.62.1: patches/playwright-core@1.62.1.patch
   react-native-webrtc@155.0.1: patches/react-native-webrtc@155.0.1.patch
 

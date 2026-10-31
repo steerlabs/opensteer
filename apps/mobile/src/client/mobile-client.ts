@@ -1,3 +1,7 @@
+import type {
+  NotificationPreviews,
+  PreviewCommand,
+} from "../notifications/notification-preview.js";
 import { SavedViewCache } from "./saved-view-cache.js";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import { hostApiVersion, hostKeyFingerprint, isSameHost } from "@opensteer/deployment-authority";
@@ -156,6 +160,7 @@ export interface MobileClientOptions {
  * afterwards means the route did not move while the operation was in flight.
  */
 export class MobileClient {
+  notificationPreviews: NotificationPreviews | null = null;
   readonly savedViews: SavedViewPresentation;
   readonly #lifecycle: ClientLifecycle | undefined;
   readonly accountDirectory: AccountDeploymentDirectoryService;
@@ -287,8 +292,12 @@ export class MobileClient {
     });
     this.#authStore = createSecureAuthStore(options.records);
     this.sessions = createPersonalSessionStore(options.records, {
-      beforeChange: (id) => this.#invalidateSavedView(id),
+      beforeChange: async (id) => {
+        await this.notificationPreviews?.clear(id, false);
+        await this.#invalidateSavedView(id);
+      },
       changed: (session) => {
+        this.notificationPreviews?.signedIn(session.deploymentId);
         if (
           this.#hostClient !== null &&
           session.deploymentId === this.#attachedDeploymentId &&
@@ -326,10 +335,14 @@ export class MobileClient {
         await this.sessions.clear(DeploymentIdSchema.parse(deploymentId));
       },
     });
+    // Expiry hooks can run inside credential refresh. Erase locally there;
+    // explicit sign-out unregisters first without reentering refresh.
     this.oauth = new NativeOAuthManager({
-      beforeAccountChange: () => this.#invalidateAccountSavedViews(),
-      beforeHostChange: (connection) =>
-        this.#invalidateSavedView(connection.authority.document.deploymentId),
+      beforeAccountChange: () => this.clearAccountSavedViews(false),
+      beforeHostChange: async (connection) => {
+        await this.notificationPreviews?.clear(connection.authority.document.deploymentId, false);
+        await this.#invalidateSavedView(connection.authority.document.deploymentId);
+      },
       accountOrigin: options.accountOrigin,
       accountSessions,
       catalog: this.catalog,
@@ -543,7 +556,9 @@ export class MobileClient {
     if (connection.kind === "self-hosted") {
       // The browser adapter waits for callback processing; the credential
       // subscription owns attachment and publishes any authorization failure.
+      await this.notificationPreviews?.clear(connection.authority.document.deploymentId);
       await this.oauth.beginHostSignIn(connection);
+      this.notificationPreviews?.signedIn(connection.authority.document.deploymentId);
       return;
     }
     const resolved = resolveConnection(connection, null, { authorization: null });
@@ -573,10 +588,12 @@ export class MobileClient {
   signOut(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.#authorizationEpoch += 1;
+    const previewCleanup = this.notificationPreviews?.clear(id);
     const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
     return this.#operations.run(async () => {
       try {
+        await previewCleanup;
         await invalidation;
         if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
         await this.#signOutNow(id);
@@ -602,6 +619,7 @@ export class MobileClient {
    * app switch.
    */
   async foregrounded(): Promise<void> {
+    void this.notificationPreviews?.reconcile().catch(noop);
     await this.#savedViewCache.retryInvalidation();
     await this.directoryRefresh.request("app-focus");
     const id = this.#state.selection.deploymentId;
@@ -751,16 +769,19 @@ export class MobileClient {
     if (result.account.status !== "signed-in" || result.account.identity === null) {
       throw new Error(result.account.detail ?? "Opensteer Account sign-in did not complete.");
     }
+    this.notificationPreviews?.accountSignedIn();
   }
 
   /** Account UI unregisters push while its credential is held; saved pixels/keys leave first. */
-  clearAccountSavedViews(): Promise<void> {
+  clearAccountSavedViews(unregisterPreviews = true): Promise<void> {
     this.#authorizationEpoch += 1;
-    return this.#invalidateAccountSavedViews();
+    const previews = this.notificationPreviews?.clear(null, unregisterPreviews);
+    return Promise.all([previews, this.#invalidateAccountSavedViews()]).then(() => {});
   }
 
   signOutAccount(): Promise<void> {
     this.#authorizationEpoch += 1;
+    const previewCleanup = this.notificationPreviews?.clear(null);
     const invalidation = this.#invalidateAccountSavedViews();
     // Decided before anything awaits: only a Deployment the Account lists
     // leaves with it, and this iPhone stops sharing with it at once.
@@ -773,6 +794,7 @@ export class MobileClient {
       )?.authority.document.deploymentId ?? null;
     const iphone = leaving === null ? null : this.#stopIphoneApps(leaving);
     return this.#operations.run(async () => {
+      await previewCleanup;
       await invalidation;
       if (leaving !== null && iphone !== null) await this.#tellHostIphoneStopped(leaving, iphone);
       const selected = this.#attachedDeploymentId;
@@ -790,17 +812,21 @@ export class MobileClient {
   }
 
   async signInHost(connection: DeploymentConnection): Promise<void> {
+    await this.notificationPreviews?.clear(connection.authority.document.deploymentId);
     await this.oauth.beginHostSignIn(connection);
+    this.notificationPreviews?.signedIn(connection.authority.document.deploymentId);
   }
 
   /** Forgets a Deployment this phone added itself. */
   remove(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.#authorizationEpoch += 1;
+    const previewCleanup = this.notificationPreviews?.clear(id);
     const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
     return this.#operations.run(async () => {
       try {
+        await previewCleanup;
         await invalidation;
         if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
         await this.#removeNow(id);
@@ -1062,8 +1088,31 @@ export class MobileClient {
       this.#hostClient = hostClient;
       this.#hostOrigin = attachment.resolved.origin;
       this.#readAttachment(hostClient);
+      let previewAuthenticated = false;
       this.#hostClientDetach = hostClient.subscribe(() => {
+        const previous = this.#attachmentState;
         if (this.#readAttachment(hostClient)) void this.#republish();
+        const authenticated = hostClient.getSnapshot().session === "authenticated";
+        if (
+          authenticated &&
+          (!previewAuthenticated ||
+            (previous !== "connected" && this.#attachmentState === "connected"))
+        )
+          void this.notificationPreviews?.reconcile().catch(noop);
+        previewAuthenticated = authenticated;
+      });
+      this.notificationPreviews?.attach({
+        deploymentId: id,
+        get capabilities() {
+          return evidence?.capabilities ?? [];
+        },
+        current: () =>
+          this.#hostClient === hostClient &&
+          hostClient.getSnapshot().session === "authenticated" &&
+          generation === this.#fence.generation &&
+          !this.#changingLogins.has(id),
+        dispatch: (command) =>
+          (hostClient.rpc["commands.dispatch"] as (input: unknown) => Promise<unknown>)(command),
       });
       this.savedViews.attach(hostClient);
       await this.#republish();
@@ -1565,6 +1614,34 @@ export class MobileClient {
       await this.sessions.clear(deploymentId);
       return false;
     });
+  }
+
+  async unregisterNotificationPreview(id: string, command: PreviewCommand): Promise<unknown> {
+    const connection = this.#requireConnection(DeploymentIdSchema.parse(id));
+    const authorization = await this.#authorizationFor(connection);
+    if (authorization === null) return;
+    const resolved = resolveConnection(connection, null, { authorization });
+    const agreement = await this.#host.verifyEpoch(resolved, connection);
+    if (
+      typeof agreement === "string" ||
+      !agreement.capabilities.some(
+        (capability) => capability === ("notification-preview-v1" as string),
+      )
+    )
+      return;
+    const client = this.#host.attach({
+      authorization: createHostAuthorization(() => this.#authorizationFor(connection)),
+      capabilities: agreement.capabilities,
+      connection,
+      origin: resolved.origin,
+    });
+    try {
+      return await (client.rpc["commands.dispatch"] as (input: unknown) => Promise<unknown>)(
+        command,
+      );
+    } finally {
+      client.dispose();
+    }
   }
 
   /**

@@ -175,6 +175,27 @@ export class PushRegistration {
     this.#options = options;
   }
 
+  previewFailed(): Promise<void> {
+    return this.#queue.run(async () => {
+      this.#publishFailure(
+        await this.#load(),
+        "This phone could not prepare private notification previews.",
+      );
+    });
+  }
+
+  registeredAccountSubject(): Promise<string | null> {
+    return this.#queue.run(async () =>
+      this.#state.status === "registered"
+        ? ((await this.#load()).registered?.accountSubject ?? null)
+        : null,
+    );
+  }
+
+  installationId(): Promise<string> {
+    return this.#queue.run(async () => (await this.#load()).installationId);
+  }
+
   getSnapshot = (): PushRegistrationState => this.#state;
 
   subscribe = (listener: () => void): (() => void) => {
