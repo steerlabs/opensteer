@@ -22,7 +22,7 @@ cleanup() {
   status="$?"
   if [[ -n "$coordinator" ]]; then kill "$coordinator" >/dev/null 2>&1 || true; wait "$coordinator" 2>/dev/null || true; fi
   if [[ -n "$emulator_pid" ]]; then
-    adb -s "${serial:-}" emu kill >/dev/null 2>&1 || kill "$emulator_pid" >/dev/null 2>&1 || true
+    kill "$emulator_pid" >/dev/null 2>&1 || true
     wait "$emulator_pid" 2>/dev/null || true
   fi
   "$avdmanager" delete avd -n "$avd" >/dev/null 2>&1 || true
@@ -79,13 +79,28 @@ emulator -avd "$avd" -port "$port" -no-window -no-audio -no-snapshot -no-boot-an
   -gpu swiftshader_indirect > "$evidence/emulator.log" 2>&1 &
 emulator_pid="$!"
 printf 'avd=%s\nserial=%s\nemulatorPid=%s\n' "$avd" "$serial" "$emulator_pid" > "$evidence/emulator.txt"
-booted=0
-for _ in $(seq 1 180); do
-  if [[ "$(adb -s "$serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == 1 ]]; then booted=1; break; fi
-  kill -0 "$emulator_pid" 2>/dev/null || break
-  sleep 1
-done
-[[ "$booted" == 1 ]] || { echo "$serial did not boot within 180 s" >&2; exit 1; }
+# Read the boot event from this fresh image, including the log buffer if it
+# arrived before ADB attached. The deadline also covers device discovery.
+python3 - "$serial" "$avd" <<'PYBOOT'
+import subprocess, sys
+serial, avd = sys.argv[1:]
+try:
+    event = subprocess.run(
+        ["adb", "-s", serial, "wait-for-device", "shell", "logcat", "-b", "events",
+         "-s", "boot_progress_enable_screen:I", "*:S", "-m", "1"],
+        check=True, capture_output=True, text=True, timeout=180,
+    ).stdout
+except subprocess.TimeoutExpired:
+    sys.exit(f"{serial} did not announce boot_progress_enable_screen within 180 s")
+if "boot_progress_enable_screen" not in event:
+    sys.exit(f"{serial} ended its boot event stream before the screen was enabled")
+actual = subprocess.run(
+    ["adb", "-s", serial, "emu", "avd", "name"],
+    check=True, capture_output=True, text=True, timeout=5,
+).stdout.splitlines()
+if not actual or actual[0] != avd:
+    sys.exit(f"{serial} is not the AVD this harness created")
+PYBOOT
 adb -s "$serial" shell getprop ro.build.fingerprint >> "$evidence/emulator.txt"
 adb -s "$serial" shell wm size >> "$evidence/emulator.txt"
 adb -s "$serial" shell wm density >> "$evidence/emulator.txt"

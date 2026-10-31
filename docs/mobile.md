@@ -213,6 +213,11 @@ exports do not qualify playback. Native H.264 viewing requires a matching binary
 JavaScript sends media bytes, and draws browser pictures in the native view,
 only when the binary declares `binaryPresentationVersion`; an update running on
 an older binary keeps base64 decoding and Image data URIs.
+A zero-reorder H.264 stream does not guarantee immediate Android output: the
+platform software AVC decoder can retain pictures until more input arrives, and
+[low-latency decoding](https://source.android.com/docs/core/media/low-latency-media)
+is optional. Continuous playback therefore does not qualify a lone or final still
+picture.
 
 Human and agent browser input remain concurrent; viewing scales a page, and only
 explicit Fit page resizes it. Dialog responses bind to the exact tab and dialog.
