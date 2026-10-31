@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createId } from "@opensteer/core";
@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { LocalProfileBinding } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import * as atomicFiles from "@opensteer/shared/atomicPrivateFile";
 import { SessionCookieMirror } from "./session-cookie-mirror.js";
 import type { DesktopSecretCryptography } from "../secrets/protected-json-file.js";
 
@@ -103,6 +104,74 @@ async function fixture() {
 }
 
 describe("encrypted Session cookie mirror", () => {
+  it("reads the committed mirror while its OS key is unwrapping, before creating a cookie target", async () => {
+    const f = await fixture();
+    const first = f.create();
+    await first.initialize(async () => {});
+    await first.stop();
+    const entered = deferred();
+    const release = deferred();
+    vi.mocked(f.crypto.decryptStringAsync).mockImplementation(async (value) => {
+      entered.resolve();
+      await release.promise;
+      return { result: value.toString(), shouldReEncrypt: false };
+    });
+    f.capture.mockClear();
+    const read = vi.spyOn(atomicFiles, "readPrivateFileText");
+    const mirror = f.create();
+    const recovering = mirror.recover();
+    try {
+      await withTimeout(entered.promise, 1000, {
+        timeoutError: () => new Error("Cookie key unwrap never started"),
+      });
+      expect(read).toHaveBeenCalledWith(
+        path.join(f.directory, "session-cookies.v1.json"),
+        expect.any(Number),
+        expect.any(Object),
+      );
+      expect(f.capture).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await recovering;
+      await mirror.stop();
+      read.mockRestore();
+    }
+  });
+  it("discards uncommitted mirror and key sidecars without promoting either", async () => {
+    const f = await fixture();
+    const first = f.create();
+    await first.initialize(async () => {});
+    await first.stop();
+    await writeFile(
+      path.join(f.directory, `session-cookies.v1.json.tmp-${randomUUID()}`),
+      "incomplete",
+    );
+    await writeFile(
+      path.join(f.directory, `.session-cookie-key.v1.json.123.${randomUUID()}.tmp`),
+      "incomplete",
+    );
+    const mirror = f.create();
+    try {
+      await mirror.recover();
+      expect((await readdir(f.directory)).sort()).toEqual([
+        "session-cookie-key.v1.json",
+        "session-cookies.v1.json",
+      ]);
+    } finally {
+      await mirror.stop();
+    }
+    await rm(path.join(f.directory, "session-cookies.v1.json"));
+    await writeFile(
+      path.join(f.directory, `session-cookies.v1.json.tmp-${randomUUID()}`),
+      f.writes[0]!,
+    );
+    const missing = f.create();
+    try {
+      await expect(missing.recover()).rejects.toThrow(/missing/);
+    } finally {
+      await missing.stop();
+    }
+  });
   it("captures again for changes during capture and publication, with one lane", async () => {
     const f = await fixture();
     const mirror = f.create();

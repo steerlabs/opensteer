@@ -760,13 +760,13 @@ class ElectronBrowserContext implements BrowserContext {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    this.#untrack?.();
     screen.off("display-metrics-changed", this.#displayChanged);
     screen.off("display-added", this.#displayChanged);
     screen.off("display-removed", this.#displayChanged);
     const pages = [...this.#pages];
     this.#pages.clear();
     await Promise.allSettled(pages.map((page) => page.close()));
+    this.#untrack?.();
     this.#events.removeAllListeners();
   }
 
@@ -806,10 +806,11 @@ class ElectronBrowserContext implements BrowserContext {
         })
         .catch(() => undefined);
     });
-    page.onFrameNavigated((url) => {
-      const origin = httpOrigin(url);
-      if (origin) this.#visitedOrigins.add(origin);
-    });
+    if (!this.#localProfile)
+      page.onFrameNavigated((url) => {
+        const origin = httpOrigin(url);
+        if (origin) this.#visitedOrigins.add(origin);
+      });
     const securePreferences = this.#securePreferences();
     page.installPopupHandler(securePreferences, (popupOptions, details) => {
       // A view wrapping existing contents resets their preferences unless it is

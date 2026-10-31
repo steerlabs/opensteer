@@ -12,6 +12,7 @@ import {
   type LocalProfileBinding,
 } from "@opensteer/protocol";
 import {
+  discardPrivateFileTemporaryFiles,
   readPrivateFileText,
   replacePrivateFileAtomically,
   securePrivateDirectory,
@@ -68,6 +69,7 @@ export class LocalProfileStore {
       throw invalid("This local browser profile storage is already in use.");
     activeRoots.add(canonical);
     try {
+      await discardPrivateFileTemporaryFiles(canonical, (name) => name === "storage.v1.json");
       let identity = await readJson(path.join(canonical, "storage.v1.json"), identitySchema);
       if (!identity) {
         const entries = (await readdir(canonical)).filter(
@@ -115,6 +117,7 @@ export class LocalProfileStore {
     const profile = this.profile(binding);
     await realDirectoryIfPresent(path.join(this.root, "profiles"));
     await realDirectoryIfPresent(profile);
+    await discardPrivateFileTemporaryFiles(profile, profileSidecar);
     const marker = await readJson(path.join(profile, "binding.v1.json"), markerSchema);
     if (marker && !sameLocalBinding(marker.binding, binding))
       throw invalid("The local browser profile binding does not match.");
@@ -239,6 +242,7 @@ export class LocalProfileStore {
       if (claims.has(name)) continue;
       const directory = path.join(this.root, "profiles", name);
       if (!(await realDirectoryIfPresent(directory))) throw invalid();
+      await discardPrivateFileTemporaryFiles(directory, profileSidecar);
       const marker = await readJson(path.join(directory, "binding.v1.json"), markerSchema);
       // A crash before marker creation can leave an empty directory; it is not a claim.
       if (!marker) {
@@ -258,6 +262,11 @@ export class LocalProfileStore {
   }
   private async tombstones(): Promise<Tombstone[]> {
     const claims: Tombstone[] = [];
+    const directory = path.join(this.root, "tombstones");
+    await realDirectoryIfPresent(directory);
+    await discardPrivateFileTemporaryFiles(directory, (name) =>
+      /^bpr_[a-f0-9-]+\.json$/iu.test(name),
+    );
     for (const name of await names(path.join(this.root, "tombstones"))) {
       const claim = await readJson(
         path.join(this.root, "tombstones", name),
@@ -303,4 +312,8 @@ async function realDirectoryIfPresent(directory: string): Promise<boolean> {
 }
 async function names(directory: string): Promise<string[]> {
   return (await realDirectoryIfPresent(directory)) ? readdir(directory) : [];
+}
+
+function profileSidecar(name: string): boolean {
+  return name === "binding.v1.json";
 }

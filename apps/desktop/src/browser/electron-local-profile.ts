@@ -80,7 +80,9 @@ export class ElectronLocalProfile {
   #failed = false;
   #retired = false;
   #admitted = false;
-  #cookieTarget: Promise<WebContentsView> | undefined;
+  #cookieTarget: WebContentsView | undefined;
+  #cookieCommands = 0;
+  #idle = false;
   #suspended = true;
 
   constructor(
@@ -94,23 +96,28 @@ export class ElectronLocalProfile {
     configure(this.session, this.gate);
     // This private target exists only for the cookie bridge, never as a user page.
     const command = async (method: string, parameters?: Record<string, unknown>) => {
-      this.#cookieTarget ??= (async () => {
-        const view = new WebContentsView({
-          webPreferences: {
-            session: this.session,
-            sandbox: true,
-            contextIsolation: true,
-            nodeIntegration: false,
-            devTools: false,
-            backgroundThrottling: true,
-          },
-        });
-        view.webContents.debugger.attach("1.3");
-        await view.webContents.loadURL("about:blank");
-        return view;
-      })();
-      const view = await this.#cookieTarget;
-      return view.webContents.debugger.sendCommand(method, parameters);
+      this.#cookieCommands++;
+      try {
+        if (!this.#cookieTarget) {
+          const view = new WebContentsView({
+            webPreferences: {
+              session: this.session,
+              sandbox: true,
+              contextIsolation: true,
+              nodeIntegration: false,
+              devTools: false,
+              backgroundThrottling: true,
+            },
+          });
+          this.#cookieTarget = view;
+          // Cookie CDP commands need the Session, not a loaded renderer document.
+          view.webContents.debugger.attach("1.3");
+        }
+        return await this.#cookieTarget.webContents.debugger.sendCommand(method, parameters);
+      } finally {
+        this.#cookieCommands--;
+        if (this.#idle) this.#releaseIdleCookieTarget();
+      }
     };
     this.mirror = new SessionCookieMirror({
       directory: path.dirname(directory),
@@ -138,6 +145,7 @@ export class ElectronLocalProfile {
         };
       },
       onFailure: () => this.#fail(),
+      onIdle: () => this.#releaseIdleCookieTarget(),
     });
   }
 
@@ -178,8 +186,10 @@ export class ElectronLocalProfile {
   }
   trackContext(close: () => Promise<void>): () => void {
     this.#contexts.add(close);
+    this.#idle = false;
     return () => {
       this.#contexts.delete(close);
+      this.#releaseIdleCookieTarget();
     };
   }
   suspend(): void {
@@ -208,12 +218,19 @@ export class ElectronLocalProfile {
     this.gate.fail();
     await this.mirror.stop();
     await Promise.all([...this.#contexts].map((close) => close()));
-    const target = await this.#cookieTarget?.catch(() => undefined);
-    if (target && !target.webContents.isDestroyed())
-      target.webContents.close({ waitForBeforeUnload: false });
+    this.#releaseIdleCookieTarget();
     // This is explicit profile deletion, never eviction or failure cleanup.
     await this.session.clearStorageData();
     await this.session.clearCache();
+  }
+  #releaseIdleCookieTarget(): void {
+    if (this.#contexts.size) return;
+    this.#idle = true;
+    if (this.#cookieCommands) return;
+    const target = this.#cookieTarget;
+    this.#cookieTarget = undefined;
+    if (target && !target.webContents.isDestroyed())
+      target.webContents.close({ waitForBeforeUnload: false });
   }
   #fail(): void {
     this.#failed = true;

@@ -46,6 +46,7 @@ export class BrowserModuleRelay {
   readonly #channels = new Map<BrowserChannelId, ActiveChannel>();
   #inventoryComplete = false;
   #capability: BrowserCapabilityLease | undefined;
+  #authority = Symbol();
   #stream: RunnerModuleStream | undefined;
 
   constructor(bridge: LocalBrowserRuntimeBridge) {
@@ -96,6 +97,7 @@ export class BrowserModuleRelay {
     this.#bridge.setNegotiation({});
     this.#stream = undefined;
     this.#capability = undefined;
+    this.#authority = Symbol();
     for (const channel of this.#channels.values()) clearTimeout(channel.expiryTimer);
     this.#channels.clear();
     this.#bridge.closeAll();
@@ -163,6 +165,16 @@ export class BrowserModuleRelay {
     const stream = this.#requireStream();
     switch (message.type) {
       case "capability.grant":
+        if (
+          !this.#capability ||
+          this.#capability.runtimeId !== message.lease.runtimeId ||
+          Date.parse(this.#capability.expiresAt) <= Date.now() ||
+          (message.lease.capabilityGeneration <= this.#capability.capabilityGeneration &&
+            !sameBrowserCapability(message.lease, this.#capability))
+        ) {
+          if (this.#capability) this.#closeCapabilityChannels(this.#capability);
+          this.#authority = Symbol();
+        }
         this.#capability = message.lease;
         this.#renewChannels(message.lease);
         await this.#send({
@@ -176,6 +188,7 @@ export class BrowserModuleRelay {
         this.#assertCapability(message.capability);
         this.#closeCapabilityChannels(message.capability);
         this.#capability = undefined;
+        this.#authority = Symbol();
         await this.#send({
           ...stream.fence,
           capability: message.capability,
@@ -206,23 +219,35 @@ export class BrowserModuleRelay {
           Math.max(0, Date.parse(lease.expiresAt) - Date.now()),
         );
         expiryTimer.unref();
-        this.#channels.set(message.channelId, {
+        const channel: ActiveChannel = {
           capability: message.capability,
           expiryTimer,
           sequence: 0,
-        });
+        };
+        this.#channels.set(message.channelId, channel);
+        const authority = this.#authority;
         let attached: BrowserBridgeAttached;
         try {
           attached = await this.#bridge.attach(
             message.channelId,
             message.attachTicket,
-            this.#sink(),
+            this.#sink(channel),
           );
+          if (
+            this.#stream !== stream ||
+            this.#authority !== authority ||
+            this.#channels.get(message.channelId) !== channel
+          )
+            throw new BrowserRelayError("The browser attachment authority was superseded.");
+          this.#assertCapability(channel.capability);
         } catch (error) {
-          this.#removeChannel(message.channelId);
+          const current = this.#channels.get(message.channelId);
+          if (!current || current === channel) {
+            this.#removeChannel(message.channelId);
+            this.#bridge.close(message.channelId, 4003, "browser attachment invalidated");
+          }
           throw error;
         }
-        this.#assertChannel(message.channelId, message.capability);
         await this.#send({
           ...stream.fence,
           capability: message.capability,
@@ -249,10 +274,11 @@ export class BrowserModuleRelay {
       }
       case "browser.profile.delete": {
         this.#assertCapability(message.capability);
+        const authority = this.#authority;
         const state = await this.#bridge.deleteLocalProfile(message.binding, message.deletionId);
-        if (this.#stream !== stream)
-          throw new BrowserRelayError("The browser deletion stream was superseded.");
-        this.#assertCapability(message.capability);
+        if (this.#stream !== stream || this.#authority !== authority || !this.#capability)
+          throw new BrowserRelayError("The browser deletion authority was superseded.");
+        this.#assertCapability(capabilityReference(this.#capability));
         await this.#send({ ...message, type: "browser.profile.delete.result", state });
         return;
       }
@@ -273,12 +299,12 @@ export class BrowserModuleRelay {
     }
   }
 
-  #sink(): BrowserChannelSink {
+  #sink(owner: ActiveChannel): BrowserChannelSink {
     return {
       onClosed: (channelId, code, reason) => {
         const channel = this.#channels.get(channelId);
         const stream = this.#stream;
-        if (!channel || !stream) return;
+        if (!channel || channel !== owner || !stream) return;
         this.#removeChannel(channelId);
         void this.#send({
           ...stream.fence,
@@ -292,7 +318,7 @@ export class BrowserModuleRelay {
       onFrame: (channelId, frame) => {
         const channel = this.#channels.get(channelId);
         const stream = this.#stream;
-        if (!channel || !stream) return;
+        if (!channel || channel !== owner || !stream) return;
         const envelope = encodeBrowserRelayFrame(
           {
             ...stream.fence,
@@ -309,7 +335,7 @@ export class BrowserModuleRelay {
       onServerMessage: (channelId, message) => {
         const channel = this.#channels.get(channelId);
         const stream = this.#stream;
-        if (!channel || !stream) return;
+        if (!channel || channel !== owner || !stream) return;
         void this.#send({
           ...stream.fence,
           capability: channel.capability,

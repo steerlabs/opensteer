@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/protocol";
 import {
+  discardPrivateFileTemporaryFiles,
   readPrivateFileText,
   replacePrivateFileAtomically,
 } from "@opensteer/shared/atomicPrivateFile";
@@ -71,6 +72,7 @@ interface SessionCookieMirrorOptions {
   readonly restore: (cookies: readonly Record<string, unknown>[]) => Promise<void>;
   readonly subscribe: (invalidate: () => void) => () => void;
   readonly onFailure: () => void;
+  readonly onIdle?: () => void;
   readonly publish?: (file: string, content: string) => Promise<void>;
 }
 
@@ -154,8 +156,7 @@ export class SessionCookieMirror {
     const epoch = this.#epoch;
     return this.#enqueue(async () => {
       try {
-        await this.#loadKey(false);
-        const saved = await this.#read();
+        const saved = await this.#read(this.#loadKey(false));
         this.#sequence = saved.sequence;
         this.#canonical = canonicalCookies(saved.cookies);
         const live = parseCookieJar(await this.#options.capture());
@@ -227,9 +228,13 @@ export class SessionCookieMirror {
     fatal: (error: unknown) => boolean = () => true,
   ): Promise<T> {
     const result = this.#lane.then(async () => {
-      if (this.#failure) throw this.#failure;
-      if (this.#stopped) throw unreadable();
-      return operation();
+      try {
+        if (this.#failure) throw this.#failure;
+        if (this.#stopped) throw unreadable();
+        return await operation();
+      } finally {
+        this.#options.onIdle?.();
+      }
     });
     this.#lane = result.catch((error: unknown) => {
       if (!fatal(error)) return;
@@ -286,6 +291,10 @@ export class SessionCookieMirror {
 
   async #loadKey(create: boolean): Promise<void> {
     // Availability must be checked on reopen/recovery even with a cached key.
+    await discardPrivateFileTemporaryFiles(
+      this.#options.directory,
+      (name) => name === "session-cookies.v1.json" || name === "session-cookie-key.v1.json",
+    );
     await this.#keyFile.assertAvailable();
     if (this.#key) return;
     let wrapped = await this.#keyFile.read();
@@ -300,11 +309,14 @@ export class SessionCookieMirror {
     this.#key = key;
   }
 
-  async #read(): Promise<z.infer<typeof plaintextSchema>> {
-    const text = await readPrivateFileText(this.#file, maximumBytes, {
-      invalid: unreadable,
-      exposed: unreadable,
-    });
+  async #read(keyReady: Promise<void>): Promise<z.infer<typeof plaintextSchema>> {
+    const [read, key] = await Promise.allSettled([
+      readPrivateFileText(this.#file, maximumBytes, { invalid: unreadable, exposed: unreadable }),
+      keyReady,
+    ]);
+    if (key.status === "rejected") throw key.reason;
+    if (read.status === "rejected") throw read.reason;
+    const text = read.value;
     if (!text) throw unreadable();
     try {
       const envelope = envelopeSchema.parse(JSON.parse(text));

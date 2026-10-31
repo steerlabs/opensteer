@@ -365,7 +365,10 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       }
     } catch (error) {
       connection.acceptError(normalizeError(error));
-      if (channel) this.#dropChannel(channel, 1011, "Browser Runtime attach failed");
+      if (channel) {
+        this.#dropChannel(channel, 1011, "Browser Runtime attach failed");
+        await this.#bestEffortCloseAndRevoke(channel);
+      }
       if (placementLease) await this.#releasePlacementLease(placementLease).catch(() => undefined);
       connection.acceptClose(1011, "Browser Runtime attach failed");
     } finally {
@@ -595,6 +598,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         pending.reject(protocolFailure(message.error));
         return;
       }
+      if (message.channelId && !this.#channels.has(message.channelId)) return;
       throw relayError("The browser relay returned an unknown request error.");
     }
 
@@ -614,7 +618,10 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       message.type === "capability.revoked"
     ) {
       const pending = this.#takePending(message.requestId);
-      if (!pending) throw relayError("The browser relay response is not correlated.");
+      if (!pending) {
+        if (message.type === "browser.attached" && !this.#channels.has(message.channelId)) return;
+        throw relayError("The browser relay response is not correlated.");
+      }
       this.#assertPendingResponse(
         pending,
         stream,
@@ -636,20 +643,22 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     }
 
     if (message.type === "browser.closed") {
-      const channel = this.#requireChannel(stream, message.channelId, message.capability);
-      const placementLease = channel.placementLease;
-      if (message.requestId) {
-        const pending = this.#takePending(message.requestId);
-        if (!pending) throw relayError("The browser close is not correlated.");
+      const channel = this.#channels.get(message.channelId);
+      const pending = message.requestId ? this.#takePending(message.requestId) : undefined;
+      if (pending) {
         this.#assertPendingResponse(pending, stream, message.channelId, message.capability);
         if (pending.expectedType !== "browser.closed") {
           pending.reject(new Error("The browser relay returned the wrong correlated response."));
           throw relayError("The browser close response is unexpected.");
         }
         pending.resolve(message);
+      } else if (channel && message.requestId) {
+        throw relayError("The browser close is not correlated.");
       }
+      if (!channel) return;
+      this.#requireChannel(stream, message.channelId, message.capability);
       this.#dropChannel(channel, message.code, message.reason);
-      void this.#releasePlacementLease(placementLease).catch(() => undefined);
+      void this.#releasePlacementLease(channel.placementLease).catch(() => undefined);
       return;
     }
 
@@ -717,6 +726,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
 
   async #bestEffortCloseAndRevoke(channel: RoutedChannel): Promise<void> {
     const placementLease = channel.placementLease;
+    if (placementLease.renewal) await placementLease.renewal.catch(() => undefined);
     const stream = this.#registry.stream(placementLease.runnerId);
     if (!stream || !sameRunnerAuxiliaryFence(stream.fence, placementLease.fence)) return;
     await this.#request(placementLease.runnerId, placementLease.fence, {

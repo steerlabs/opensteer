@@ -39,6 +39,8 @@ const electron = vi.hoisted(() => ({
   views: [] as Array<{
     options: { webPreferences?: { focusOnNavigation?: boolean } };
     webContents: {
+      close: ReturnType<typeof vi.fn>;
+      loadURL: ReturnType<typeof vi.fn>;
       isDestroyed: ReturnType<typeof vi.fn<() => boolean>>;
       beginFrameSubscription: ReturnType<typeof vi.fn>;
       focus: ReturnType<typeof vi.fn>;
@@ -1898,6 +1900,66 @@ describe("native Electron profiles", () => {
       expect(await f.launcher.localProfiles.release(f.directory)).toBe("retained-until-exit");
       await expect(f.launch()).rejects.toThrow();
     } finally {
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("releases idle cookie renderers and recreates them for cookie changes and Network Service recovery", async () => {
+    const f = await fixture();
+    const { app, session } = await import("electron");
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    try {
+      const start = electron.views.length;
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const first = electron.views
+        .slice(start)
+        .filter((view) =>
+          view.webContents.debugger.sendCommand.mock.calls.some(
+            ([method]) => method === "Network.getAllCookies",
+          ),
+        )
+        .at(-1)!;
+      expect(first.webContents.close).toHaveBeenCalled();
+      expect(first.webContents.loadURL).not.toHaveBeenCalled();
+      const browser = await f.launch();
+      const page = browser.context.pages()[0]!;
+      const view = electron.views.at(-1)!;
+      // Snapshot-only bookkeeping must not add a navigation subscription here.
+      expect(
+        view.webContents.on.mock.calls.filter(([name]) => name === "did-frame-navigate"),
+      ).toHaveLength(0);
+      await page.close();
+      await browser.close();
+      const owner = acquireElectronLocalProfile({
+        root: f.root,
+        directory: f.directory,
+        binding: f.binding,
+        configure: () => {},
+      });
+      await owner.mirror.flush();
+      const captured = electron.views.at(-1)!;
+      await vi.waitFor(() => expect(captured.webContents.close).toHaveBeenCalled(), {
+        timeout: 1000,
+      });
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      const beforeRecovery = electron.views.length;
+      for (const [event, listener] of vi.mocked(app.on).mock.calls)
+        if (event === "child-process-gone")
+          (listener as (event: unknown, details: unknown) => void)(
+            {},
+            { type: "Utility", serviceName: "network.mojom.NetworkService" },
+          );
+      await owner.ready();
+      expect(electron.views.length).toBeGreaterThan(beforeRecovery);
+      expect(electron.views.at(-1)!.webContents.close).toHaveBeenCalled();
+      expect(profile.clearStorageData).not.toHaveBeenCalled();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
       f.launcher.close();
       await rm(f.root, { recursive: true, force: true });
     }

@@ -871,3 +871,113 @@ it("gives negotiated page readiness the browser startup budget while control req
     router.close();
   }
 });
+
+it.each(["timeout", "cancel"] as const)(
+  "closes only the pending runtime attachment on Host %s with a live sibling",
+  async (cause) => {
+    vi.useFakeTimers();
+    const runnerId = createId("runner");
+    const stream = {
+      fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
+      identity: {
+        runnerId,
+        modules: { browser: { profileSnapshotVersion: 2, runtimeId: "browser" } },
+      },
+      streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    } as RunnerAuxiliaryStream;
+    let hooks: RunnerBrowserHooks = {};
+    const sent: RoutedHostToBrowserRelayMessage[] = [];
+    const responseErrors: unknown[] = [];
+    let siblingId: string | undefined;
+    const router = new RunnerBrowserRuntimeRouter({
+      requestTimeoutMs: 1000,
+      registry: {
+        browserStreams: () => [stream],
+        stream: () => stream,
+        subscribe: (value) => {
+          hooks = value;
+          return () => {};
+        },
+        send: async (_runnerId, message) => {
+          sent.push(message);
+          if (message.type === "capability.grant")
+            await hooks.onMessage?.(stream, {
+              ...stream.fence,
+              type: "capability.accepted",
+              requestId: message.requestId,
+              capability: {
+                capabilityGeneration: message.lease.capabilityGeneration,
+                capabilityLeaseId: message.lease.capabilityLeaseId,
+                runtimeId: message.lease.runtimeId,
+              },
+            });
+          if (message.type === "browser.attach" && !siblingId) {
+            siblingId = message.channelId;
+            await hooks.onMessage?.(stream, {
+              ...stream.fence,
+              type: "browser.attached",
+              channelId: message.channelId,
+              capability: message.capability,
+              requestId: message.requestId,
+            });
+          }
+          if (message.type === "browser.close")
+            await hooks
+              .onMessage?.(stream, {
+                ...stream.fence,
+                ...message,
+                type: "browser.closed",
+                code: 1000,
+                reason: "cancelled",
+              })
+              .catch((error: unknown) => {
+                responseErrors.push(error);
+              });
+        },
+      },
+    });
+    try {
+      const target = router.resolve({ kind: "runner", runnerId })!;
+      const sibling = target.connect("ticket");
+      sibling.on("error", () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sibling.readyState).toBe(WebSocket.OPEN);
+      const pending = target.connect("ticket");
+      pending.on("error", () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const attach = sent.filter((message) => message.type === "browser.attach").at(-1)!;
+      if (cause === "cancel") pending.close();
+      await vi.advanceTimersByTimeAsync(cause === "timeout" ? 1000 : 0);
+      expect(sent.filter((message) => message.type === "browser.close")).toEqual([
+        expect.objectContaining({
+          channelId: "channelId" in attach ? attach.channelId : undefined,
+        }),
+      ]);
+      expect(responseErrors).toEqual([]);
+      if (cause === "timeout" && attach.type === "browser.attach") {
+        await expect(
+          hooks.onMessage!(stream, {
+            ...stream.fence,
+            type: "browser.attached",
+            requestId: attach.requestId,
+            channelId: attach.channelId,
+            capability: attach.capability,
+          }),
+        ).resolves.toBeUndefined();
+        await expect(
+          hooks.onMessage!(stream, {
+            ...stream.fence,
+            type: "browser.command-error",
+            requestId: attach.requestId,
+            channelId: attach.channelId,
+            error: { code: "conflict", message: "attach cancelled", retryable: false },
+          }),
+        ).resolves.toBeUndefined();
+      }
+      expect(sibling.readyState).toBe(WebSocket.OPEN);
+      expect(sent.some((message) => message.type === "capability.revoke")).toBe(false);
+    } finally {
+      router.close();
+    }
+  },
+);

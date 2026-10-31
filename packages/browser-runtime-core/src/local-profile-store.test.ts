@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import * as atomicFiles from "@opensteer/shared/atomicPrivateFile";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +34,45 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 describe("LocalProfileStore", () => {
+  it("discards interrupted identity publication without promoting its contents", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "native-atomic-"));
+    roots.push(root);
+    const temporary = "storage.v1.json.tmp-00000000-0000-4000-8000-000000000001";
+    await writeFile(path.join(root, temporary), "incomplete");
+    const store = await LocalProfileStore.acquire(root, "chromium");
+    stores.push(store);
+    expect(await readdir(root)).toEqual(["storage.v1.json"]);
+  });
+  it("discards interrupted binding and tombstone publications but rejects invalid committed records", async () => {
+    const { root, store, binding } = await setup();
+    const profile = path.join(root, "profiles", binding.profileId);
+    await mkdir(profile, { recursive: true });
+    const temporary = "binding.v1.json.tmp-00000000-0000-4000-8000-000000000001";
+    await writeFile(path.join(profile, temporary), "incomplete");
+    expect(await store.inventory()).toEqual([]);
+    expect(await readdir(profile)).toEqual([]);
+    await store.initialize(binding, seed);
+    await store.ready(binding, seed);
+    await store.tombstone(binding, "00000000-0000-4000-8000-000000000003");
+    const tombstones = path.join(root, "tombstones");
+    await writeFile(
+      path.join(tombstones, `${binding.profileId}.json.tmp-00000000-0000-4000-8000-000000000001`),
+      "incomplete",
+    );
+    await store.close();
+    const next = await LocalProfileStore.acquire(root, "chromium");
+    stores.push(next);
+    expect(await next.inventory()).toEqual([expect.objectContaining({ phase: "deleted" })]);
+    expect(await readdir(tombstones)).toEqual([`${binding.profileId}.json`]);
+    await writeFile(path.join(tombstones, `${binding.profileId}.json`), "incomplete");
+    await expect(next.inventory()).rejects.toThrow(/invalid/);
+  });
+  it("does not mistake invalid committed filenames for atomic sidecars", async () => {
+    const { root, store } = await setup();
+    await mkdir(path.join(root, "tombstones"));
+    await writeFile(path.join(root, "tombstones", "unknown.json.tmp-invalid"), "incomplete");
+    await expect(store.inventory()).rejects.toThrow(/invalid/);
+  });
   it("accepts existing replay/session metadata without mistaking it for native profile data", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "native-metadata-"));
     roots.push(root);
