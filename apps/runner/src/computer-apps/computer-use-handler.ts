@@ -82,6 +82,9 @@ const bridgeResults = {
   "approvals.key-challenge": ComputerUseBridgeApprovalKeyProofSchema,
 } satisfies Readonly<Record<ComputerUseBridgeMethod, z.ZodType>>;
 
+type ComputerUseReadiness = z.infer<(typeof bridgeResults)["permissions.get"]>;
+type ReadinessChange = "readiness-changed" | "readiness-unknown";
+
 /** A helper session event, which the Host hears as a computer-use event. */
 export type ComputerUseSessionEvent = Extract<ComputerUseBridgeEvent, { event: "session.stopped" }>;
 
@@ -141,16 +144,10 @@ export class ComputerUseHandler {
     receiver: LoginReceiverKey | null;
   } = { authority: null, receiver: null };
   readonly #grantListeners = new Set<() => void>();
+  readonly #readinessListeners = new Set<(reason: ReadinessChange) => void>();
   readonly #now: () => number;
-  #readiness:
-    | {
-        readonly at: number;
-        readonly ownerViewVersion?: number | undefined;
-        readonly ownerInputVersion?: 2 | undefined;
-        readonly computerUseVersion?: 2 | undefined;
-        readonly permissions: ComputerUsePermissions;
-      }
-    | undefined;
+  #readinessEpoch = 0;
+  #readiness: (ComputerUseReadiness & { readonly at: number }) | undefined;
   readonly #stopped = new Set<ComputerUseSessionId>();
 
   constructor(options: {
@@ -166,6 +163,7 @@ export class ComputerUseHandler {
       now: this.#now,
       // A desktop this Runner just (re)connected to may have missed the list.
       onConnected: () => {
+        // The initial probe opens this connection; loss already fenced older replies.
         this.#readiness = undefined;
         this.#announceApproval({ kind: "sync" });
       },
@@ -225,32 +223,66 @@ export class ComputerUseHandler {
   async permissions(options?: RequestOptions): Promise<ComputerUsePermissions> {
     options?.signal?.throwIfAborted();
     const at = this.#now();
-    let permissions: ComputerUsePermissions;
-    if (this.#readiness && at - this.#readiness.at < computerUsePermissionsCacheMs)
-      permissions = this.#readiness.permissions;
-    else {
-      const result = await this.#request(
-        "permissions.get",
-        {},
-        {
-          deadline: Math.min(options?.deadline ?? Infinity, at + computerUsePermissionsTimeoutMs),
-          ...(options?.signal ? { signal: options.signal } : {}),
-        },
-      );
-      this.#readiness = { ...result, at };
-      permissions = result.permissions;
-    }
+    const readiness =
+      this.#readiness && at - this.#readiness.at < computerUsePermissionsCacheMs
+        ? this.#readiness
+        : await this.#probePermissions({
+            deadline: Math.min(options?.deadline ?? Infinity, at + computerUsePermissionsTimeoutMs),
+            ...(options?.signal ? { signal: options.signal } : {}),
+          });
+    const { permissions } = readiness;
     options?.signal?.throwIfAborted();
     // Bridge configuration advertises this Runner's implementation, not what
     // its authenticated Desktop/helper actually negotiated. Probe failures
     // keep their original diagnosis and are retried rather than cached here.
     if (
-      this.computerUseVersion() !== 2 &&
+      readiness.computerUseVersion !== 2 &&
       permissions.accessibility === "granted" &&
       permissions.screenRecording === "granted"
     )
       throw new ComputerUseBridgeError("incompatible-version", computerUseUpdateSentence);
     return permissions;
+  }
+
+  /** Revalidate owner media independently of an individual caller's request budget. */
+  async revalidateReadiness(): Promise<void> {
+    const epoch = this.#readinessEpoch;
+    const hadReadiness = this.#readiness !== undefined;
+    try {
+      await this.permissions();
+      const current = this.#readiness;
+      // Attachment can open a new bridge after the target was resolved.
+      if (
+        !hadReadiness &&
+        epoch === this.#readinessEpoch &&
+        (current?.permissions.accessibility !== "granted" ||
+          current.permissions.screenRecording !== "granted" ||
+          current.computerUseVersion !== 2 ||
+          current.ownerViewVersion !== 3)
+      )
+        this.#announceReadinessChanged("readiness-unknown");
+    } catch {
+      if (epoch === this.#readinessEpoch) this.#announceReadinessChanged("readiness-unknown");
+    }
+  }
+
+  async #probePermissions(options: RequestOptions): Promise<ComputerUseReadiness> {
+    const epoch = this.#readinessEpoch;
+    const result = await this.#request("permissions.get", {}, options);
+    if (epoch === this.#readinessEpoch) {
+      const previous = this.#readiness;
+      this.#readiness = { ...result, at: this.#now() };
+      if (
+        previous &&
+        (previous.permissions.accessibility !== result.permissions.accessibility ||
+          previous.permissions.screenRecording !== result.permissions.screenRecording ||
+          previous.ownerViewVersion !== result.ownerViewVersion ||
+          previous.ownerInputVersion !== result.ownerInputVersion ||
+          previous.computerUseVersion !== result.computerUseVersion)
+      )
+        this.#announceReadinessChanged("readiness-changed");
+    }
+    return result;
   }
 
   async #requireWindowProtocol(options: RequestOptions): Promise<void> {
@@ -413,8 +445,7 @@ export class ComputerUseHandler {
     const options = (): RequestOptions => ({ deadline, signal });
     switch (frame.operation) {
       case "permissions": {
-        const result = await this.#request("permissions.get", {}, options());
-        this.#readiness = { ...result, at: this.#now() };
+        const result = await this.#probePermissions(options());
         return { permissions: result.permissions };
       }
       case "installed_apps": {
@@ -552,6 +583,7 @@ export class ComputerUseHandler {
 
   /** The bridge connection owns all native work, including pending opens. */
   releaseSessions(): void {
+    this.#readinessEpoch += 1;
     this.#readiness = undefined;
     this.#forgetEverySession();
     this.#passwordCapabilities = { authority: null, receiver: null };
@@ -568,6 +600,12 @@ export class ComputerUseHandler {
   onGrantsChanged(listener: () => void): () => void {
     this.#grantListeners.add(listener);
     return () => this.#grantListeners.delete(listener);
+  }
+
+  /** A completed check changed window readiness, or its authority could not be checked. */
+  onReadinessChanged(listener: (reason: ReadinessChange) => void): () => void {
+    this.#readinessListeners.add(listener);
+    return () => this.#readinessListeners.delete(listener);
   }
 
   onApprovalEvent(listener: (event: ComputerUseApprovalEvent) => void): () => void {
@@ -607,6 +645,8 @@ export class ComputerUseHandler {
   }
 
   close(): void {
+    this.#readinessEpoch += 1;
+    this.#readiness = undefined;
     this.#forgetEverySession();
     this.#client.close();
   }
@@ -770,7 +810,9 @@ export class ComputerUseHandler {
     }
     if (event.event === "grants.changed") {
       this.#passwordCapabilities = { ...this.#passwordCapabilities, receiver: null };
-      this.#readiness = undefined;
+      this.#readinessEpoch += 1;
+      // A refresh hint invalidates freshness, not the last negotiated capability.
+      if (this.#readiness) this.#readiness = { ...this.#readiness, at: -Infinity };
       for (const listener of this.#grantListeners) listener();
       return;
     }
@@ -807,10 +849,16 @@ export class ComputerUseHandler {
     this.#sessions.clear();
   }
 
+  #announceReadinessChanged(reason: ReadinessChange): void {
+    for (const listener of this.#readinessListeners) listener(reason);
+  }
+
   #bridgeLost(): void {
     this.#passwordsBridgeConfirmed = false;
     this.#passwordCapabilities = { authority: null, receiver: null };
+    this.#readinessEpoch += 1;
     this.#readiness = undefined;
+    this.#announceReadinessChanged("readiness-unknown");
     for (const listener of this.#grantListeners) listener();
     const sessions = [...this.#sessions.keys()];
     this.#forgetEverySession();

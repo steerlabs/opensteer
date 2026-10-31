@@ -70,8 +70,9 @@ integration("Machine access session lifecycle", () => {
   });
 
   afterEach(async () => {
-    await scenario?.close();
+    const closing = scenario;
     scenario = undefined;
+    await closing?.close();
   }, 60_000);
 
   it("fulfills a full access Request only after the Mac reports its grant", async () => {
@@ -697,8 +698,9 @@ integration("Machine access across a Run's authority", () => {
   });
 
   afterEach(async () => {
-    await scenario?.close();
+    const closing = scenario;
     scenario = undefined;
+    await closing?.close();
   }, 60_000);
 
   /** What the database says happened to one Run's grants and sessions, for the artifact. */

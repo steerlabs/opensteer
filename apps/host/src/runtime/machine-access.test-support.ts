@@ -1,4 +1,5 @@
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -378,7 +379,13 @@ async function createMachineAccessHost(
   const close = async () => {
     const failures: unknown[] = [];
     for (const stop of [
-      () => runtime?.close(),
+      () =>
+        withTimeout(runtime?.close() ?? Promise.resolve(), 8_000, {
+          timeoutError: () =>
+            new Error(
+              `Machine-access Host shutdown stalled at ${runtime?.closingStep() ?? "startup"}`,
+            ),
+        }),
       () => portableFs.close(),
       () => rm(dataDirectory, { force: true, recursive: true }),
     ]) {
