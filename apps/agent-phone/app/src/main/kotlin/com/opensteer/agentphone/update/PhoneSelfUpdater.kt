@@ -38,8 +38,7 @@ class PhoneSelfUpdater(
         data object Closed : Frame
     }
     private val journal = UpdateInstaller(context)
-    private var checkedFor: String? = null
-    private var checkedAt = Long.MIN_VALUE / 2
+    private val checks = UpdateCheckPolicy()
     @Volatile private var active: WebSocket? = null
     @Volatile private var cancelled = false
 
@@ -54,10 +53,8 @@ class PhoneSelfUpdater(
         val key = "${identity.runnerId} ${identity.hostUrl}"
         val now = SystemClock.elapsedRealtime()
         journal.finishIfInstalled()
-        if (journal.takeCancelled(identity)) return PhoneUpdateResult.Pending("Update cancelled. Opensteer will try again.")
-        if (journal.pendingState(identity) == null && !required && key == checkedFor && now - checkedAt < TimeUnit.HOURS.toMillis(6)) return PhoneUpdateResult.Current
-        checkedFor = key
-        checkedAt = now
+        checks.cancellation { journal.takeCancelled(identity) }?.let { return it }
+        if (!checks.begin(key, now, required, pending = journal.pendingState(identity) != null)) return PhoneUpdateResult.Current
         cancelled = false
         var offered = false
         var release: UpdateOffer? = null
@@ -141,7 +138,9 @@ class PhoneSelfUpdater(
             } else sendState(journal.state())
             var previous = if (pending) journal.state() else "installing"
             while (!cancelled && samePairing() && SystemClock.elapsedRealtime() < deadline) {
+                checks.cancellation { journal.takeCancelled(identity) }?.let { return it }
                 val state = journal.state()
+                if (state == "cancelled") return checks.cancellation { journal.takeCancelled(identity) } ?: PhoneUpdateResult.Current
                 if (state != previous) {
                     sendState(state)
                     previous = state
@@ -155,11 +154,15 @@ class PhoneSelfUpdater(
                 Thread.sleep(200)
             }
             // A committed Android session outlives this bounded network attempt.
-            if (samePairing()) journal.pendingState(identity)?.let { return pendingResult(it) }
+            if (samePairing()) {
+                checks.cancellation { journal.takeCancelled(identity) }?.let { return it }
+                journal.pendingState(identity)?.let { return pendingResult(it) }
+            }
             journal.abandon()
             error("The update was not completed in ten minutes")
         } catch (error: Exception) {
             if (samePairing()) {
+                checks.cancellation { journal.takeCancelled(identity) }?.let { return it }
                 journal.pendingState(identity)?.let { state ->
                     sendState(state)
                     if (state == "awaiting-user") status("Tap Update to finish updating Agent Phone.")
