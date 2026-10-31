@@ -124,4 +124,43 @@ describe("private preview lifecycle", () => {
     );
     expect(f.dispatch).toHaveBeenCalled();
   });
+  it("lands a registration still in flight before the next one after sign-out", async () => {
+    const f = fixture();
+    const landed: string[] = [];
+    let releaseOld!: () => void;
+    const oldDispatch = vi.fn(
+      (command: { keyId: string }) =>
+        new Promise<void>((resolve) => {
+          releaseOld = () => {
+            landed.push(command.keyId);
+            resolve();
+          };
+        }),
+    );
+    f.controller.attach({
+      deploymentId: f.deploymentId,
+      capabilities: ["notification-preview-v1"],
+      current: () => true,
+      dispatch: oldDispatch,
+    });
+    await vi.waitFor(() => expect(oldDispatch, "old registration never sent").toHaveBeenCalled(), {
+      timeout: 1_000,
+    });
+    await f.controller.clear(null);
+    f.native.key.mockResolvedValue({ keyId: "new-key-id", key: "new-key" });
+    f.controller.attach({
+      deploymentId: f.deploymentId,
+      capabilities: ["notification-preview-v1"],
+      current: () => true,
+      dispatch: async (command) => {
+        landed.push(command.keyId);
+      },
+    });
+    const fresh = f.controller.reconcile();
+    // Let every queued continuation run: an unordered registration would land here.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseOld();
+    await fresh;
+    expect(landed).toEqual(["key-id", "new-key-id", "new-key-id"]);
+  });
 });

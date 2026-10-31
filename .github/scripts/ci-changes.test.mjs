@@ -574,8 +574,7 @@ test("notification preview native suites select their existing lanes", () => {
     ).lanes.android,
     true,
   );
-  assert.equal(
-    decide(["packages/core/src/fixtures/notification-preview-v1.json"], graph).lanes.android,
-    true,
-  );
+  const fixture = decide(["packages/core/src/fixtures/notification-preview-v1.json"], graph);
+  assert.equal(fixture.lanes.android, true);
+  assert.equal(fixture.lanes.tests, true);
 });

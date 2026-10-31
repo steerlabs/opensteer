@@ -17,6 +17,9 @@ export class NotificationPreviews {
   #attachment: PreviewAttachment | null = null;
   // Serialize key lookup and erasure so sign-out cannot leave a late-created key.
   #queue: Promise<void> = Promise.resolve();
+  // Registrations land in order, so an older key cannot overwrite a newer one on the
+  // Host. Clearing never waits on this chain: only reconcile joins it.
+  #registrations: Promise<void> = Promise.resolve();
   readonly native: NotificationPreviewNative | null;
   readonly push: PushRegistration;
   readonly subject: () => Promise<string | null>;
@@ -41,7 +44,7 @@ export class NotificationPreviews {
   reconcile(): Promise<void> {
     const attachment = this.#attachment;
     const current = () => this.#attachment === attachment && attachment?.current();
-    return (async () => {
+    const registration = this.#registrations.then(async () => {
       const native = this.native;
       if (
         !native ||
@@ -72,7 +75,9 @@ export class NotificationPreviews {
         accountId: ControlPlaneAccountIdSchema.parse(accountId),
         ...key,
       });
-    })().catch(() => {});
+    });
+    this.#registrations = registration.catch(() => {});
+    return this.#registrations;
   }
   /** Invalidate immediately; erase before the caller revokes its credentials. */
   clear(deploymentId: string | null): Promise<void> {
