@@ -11,9 +11,9 @@ import {
 import { createPortal } from "react-dom";
 import type { DictationController } from "@opensteer/client/dictation";
 import type { HostClient } from "@opensteer/client/host";
+import type { ScreenPresentationPort } from "@opensteer/client/screen";
 import {
   VoiceController,
-  type VoiceControllerInput,
   type VoiceLevels,
   type VoicePhase,
   type VoiceSnapshot,
@@ -45,10 +45,10 @@ export function useVoiceRuntime(
   hostClient: HostClient,
   navigate: (target: VoiceTarget) => void,
   dictation: DictationController | null,
-  places?: VoiceControllerInput["places"],
+  presentation: ScreenPresentationPort,
 ): VoiceController | null {
-  const latest = useRef({ navigate, dictation, places });
-  latest.current = { navigate, dictation, places };
+  const latest = useRef({ navigate, dictation, presentation });
+  latest.current = { navigate, dictation, presentation };
   const [controller, setController] = useState<VoiceController | null>(null);
   useEffect(() => {
     const created = new VoiceController({
@@ -56,7 +56,7 @@ export function useVoiceRuntime(
       media: createBrowserVoiceMediaPort(),
       navigate: (target) => latest.current.navigate(target),
       createId: () => crypto.randomUUID(),
-      places: () => latest.current.places?.() ?? Promise.resolve([]),
+      presentation: latest.current.presentation,
       onStart: async () => {
         const dictating = latest.current.dictation;
         const owner = dictating?.getSnapshot().owner;
@@ -93,13 +93,14 @@ export function useVoice() {
   return { controller, snapshot };
 }
 
+/** Chat is whom a call talks to, whatever is on screen; each phase says it once. */
 const labels: Record<VoicePhase, string> = {
   idle: "",
   connecting: "Connecting…",
-  listening: "Listening",
+  listening: "Talking to Chat",
   hearing: "Listening",
-  thinking: "Working on it",
-  speaking: "Speaking",
+  thinking: "Chat is working",
+  speaking: "Chat",
 };
 
 /** The composer's way in: starts voice, or ends the call it started. */
@@ -109,11 +110,11 @@ export function VoiceButton() {
   const on = snapshot.phase !== "idle";
   return (
     <button
-      aria-label={on ? "End voice" : "Talk to Opensteer"}
+      aria-label={on ? "End voice" : "Talk to Chat"}
       aria-pressed={on}
       className={`composer__attach composer__voice${on ? " composer__voice--on" : ""}`}
       onClick={() => (on ? void controller.stop() : void controller.start())}
-      title={on ? "End voice" : "Talk to Opensteer"}
+      title={on ? "End voice" : "Talk to Chat"}
       type="button"
     >
       {snapshot.phase === "connecting" ? (

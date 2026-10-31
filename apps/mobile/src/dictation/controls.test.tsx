@@ -6,7 +6,17 @@ import type { DictationPort } from "@opensteer/protocol/dictation";
 import "../screens/thread-settings.test-support.js";
 import { DictationBar } from "./controls.js";
 
-vi.mock("react-native-reanimated", () => ({ useReducedMotion: () => false }));
+vi.mock("react-native-reanimated", async () => {
+  const { View } = await import("react-native");
+  return {
+    default: { View },
+    Easing: { linear: (value: number) => value },
+    useAnimatedStyle: () => ({}),
+    useReducedMotion: () => false,
+    useSharedValue: (value: number[]) => ({ value }),
+    withTiming: (value: number) => value,
+  };
+});
 vi.mock("../ui/motion.js", () => ({
   appear: undefined,
   duration: { enter: 0, exit: 0 },

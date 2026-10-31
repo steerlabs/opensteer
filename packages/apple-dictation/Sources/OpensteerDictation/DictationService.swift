@@ -115,7 +115,7 @@ public actor DictationService {
         while !Task.isCancelled {
           do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
           self.flush(s)
-          self.level(s, s.queue.latestLevel)
+          self.level(s)
         }
       }
       try await s.recognizer.admit()
@@ -236,11 +236,11 @@ public actor DictationService {
     guard current(s), let payload = s.tracker.take() else { return }
     deliver(s, payload)
   }
-  private func level(_ s: Session, _ value: Double) {
+  private func level(_ s: Session) {
     let now = ContinuousClock.now
     guard current(s), s.lastLevel.duration(to: now) >= .milliseconds(100) else { return }
     s.lastLevel = now
-    deliver(s, .level(value))
+    deliver(s, .level(s.queue.takeLevel()))
   }
   private func deliver(_ s: Session, _ payload: DictationEvent.Payload) {
     guard current(s) else { return }

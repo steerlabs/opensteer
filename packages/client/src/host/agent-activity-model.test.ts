@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createId, createToolArguments, type IntegrationCallSubject } from "@opensteer/core";
+import {
+  createId,
+  createToolArguments,
+  ModelSelectionSchema,
+  type IntegrationCallSubject,
+} from "@opensteer/core";
 import { computerUseActHeadline, formatComputerUseResultHead } from "@opensteer/protocol";
 import type {
   DelegationEntry,
@@ -7,6 +12,7 @@ import type {
   ReasoningEntry,
   RequestReceiptEntry,
   RunEntry,
+  SelectionEntry,
   ToolEntry,
   TranscriptEntry,
 } from "./client.js";
@@ -34,6 +40,7 @@ import {
   type Turn,
 } from "./agent-activity-model.js";
 import { threadActivityIndicator } from "./thread-activity.js";
+import { visibleTranscript } from "./transcript.js";
 import {
   mockComputerUseSlack,
   mockComputerUseSubject,
@@ -174,6 +181,49 @@ function shape(groups: readonly TranscriptGroup[]): unknown[] {
 }
 
 describe("groupTranscriptEntries", () => {
+  it("keeps model, reasoning and account changes out of the conversation, including saved history", () => {
+    const selected: SelectionEntry = {
+      createdAt: at(0),
+      harnessInstanceId: "codex-personal",
+      id: "selection-1",
+      kind: "selection",
+      modelSelection: ModelSelectionSchema.parse({
+        modelId: "gpt-6.1-sol",
+        options: { effort: "high" },
+        providerId: "openai",
+      }),
+      providerSessionId: "session-1",
+      runId: null,
+    };
+    const changes: SelectionEntry[] = [
+      selected,
+      {
+        ...selected,
+        id: "selection-2",
+        modelSelection: { ...selected.modelSelection, options: { effort: "xhigh" } },
+      },
+      { ...selected, harnessInstanceId: "codex-work", id: "selection-3" },
+      {
+        ...selected,
+        id: "selection-4",
+        modelSelection: ModelSelectionSchema.parse({
+          ...selected.modelSelection,
+          modelId: "gpt-mini",
+        }),
+      },
+    ];
+    expect(groupTranscriptEntries(changes)).toEqual([]);
+    expect(visibleTranscript(changes, null)).toEqual([]);
+    expect(visibleTranscript(changes, null, { conversation: true })).toEqual([]);
+
+    const ask = input({ runId: null });
+    const answer = message({ runId: null });
+    expect(shape(groupTranscriptEntries([ask, ...changes, answer]))).toEqual([
+      `message:${ask.id}`,
+      `message:${answer.id}`,
+    ]);
+  });
+
   it("makes one turn of a Run: all it did and wrote in order, and the reply the Host named", () => {
     const ask = input();
     const thought = reasoning();
@@ -741,6 +791,58 @@ describe("Opensteer's own steps", () => {
     });
     expect(opensteer("trigger_write", { action: "pause_all" }).label).toBe("Changed an automation");
     expect(opensteer("thread_message").label).toBe("Sent a message");
+  });
+
+  // A view the receipt does not say switched must never read as switched.
+  it("say a view switched only when its receipt applied", () => {
+    const show = (overrides: Partial<ToolEntry>) => {
+      const entry = tool({
+        arguments: { messageId: "msg_1", target: { conversationId: "thr_1" } },
+        tool: { name: "screen_show", namespace: "opensteer" },
+        ...overrides,
+      });
+      const { detail, icon, label, tone } = activityStepHead(entry);
+      return { detail, icon, label, status: toolStatusLabel(entry), tone };
+    };
+    const receipt = (value: unknown) => ({ output: { text: JSON.stringify(value) } });
+
+    expect(show({ completedAt: null, state: "running" })).toMatchObject({
+      detail: "",
+      label: "Switching the view",
+      tone: "running",
+    });
+    expect(show(receipt({ outcome: "applied" }))).toEqual({
+      detail: "",
+      icon: "check-circle",
+      label: "Switched the view",
+      status: "Done",
+      tone: "done",
+    });
+    expect(show(receipt({ outcome: "superseded", reason: "interaction-ended" }))).toEqual({
+      detail: "The conversation had moved on",
+      icon: "alert-circle",
+      label: "Didn’t switch the view",
+      status: "Didn’t switch the view",
+      tone: "stopped",
+    });
+    expect(show(receipt({ outcome: "unavailable", reason: "forbidden" }))).toMatchObject({
+      detail: "That view isn’t available here",
+      label: "Didn’t switch the view",
+      tone: "stopped",
+    });
+    expect(show(receipt({ outcome: "unsupported" }))).toMatchObject({
+      detail: "Not supported on this device",
+      label: "Didn’t switch the view",
+      tone: "stopped",
+    });
+    expect(show(receipt({ outcome: "unconfirmed", reason: "expired" }))).toMatchObject({
+      detail: "It took too long",
+      label: "Couldn’t confirm the view switched",
+      status: "Not confirmed",
+      tone: "stopped",
+    });
+    for (const unread of [{ output: { text: "not a receipt" } }, receipt({ outcome: "shown" })])
+      expect(show(unread)).toMatchObject({ label: "Tried to switch the view", tone: "done" });
   });
 });
 

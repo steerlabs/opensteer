@@ -731,7 +731,10 @@ describe("OpenCode sessions", () => {
   it("sends the account's native model id and the selected variant", async () => {
     const fixture = await setup("happy", { effort: "high" });
     const session = await fixture.adapter.startSession(fixture.context);
-    await session.execute(fixture.turn("Go"));
+    const turn = fixture.turn("Go");
+    const input = turn.inputs[0]!;
+    input.presentationContext = { currentThreadId: createId("thread") };
+    await session.execute(turn);
     await session.stop();
     await fixture.adapter.close();
 
@@ -745,6 +748,10 @@ describe("OpenCode sessions", () => {
     expect(prompt.parts[0]?.text).toMatch(/^\[Opensteer thread context\]/u);
     expect(prompt.parts[1]?.text).toContain("Go");
     expect(prompt.parts[1]?.text).toContain("[Opensteer input]");
+    expect(prompt.parts[1]?.text).toContain(`Message ID: ${input.messageId}\n`);
+    expect(prompt.parts[1]?.text).toContain(
+      `Viewed conversation at input: ${input.presentationContext.currentThreadId}`,
+    );
   });
 
   it("writes the Run's configuration under the Thread's own state directory at 0600", async () => {

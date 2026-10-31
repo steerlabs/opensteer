@@ -3,7 +3,7 @@
 Voice is an input and output mode of the person's client, like dictation. A
 call can only do what that client already does: send the person's words to
 Chat, change what the screen shows, and tell the person things. Nothing about a
-call is durable, and no voice state carries authority.
+call is durable, and no voice state grants work or resource access.
 
 ## Ownership
 
@@ -11,9 +11,12 @@ call is durable, and no voice state carries authority.
   the call: microphone, WebRTC, routing what was heard, and choosing what to
   say. Audio flows between the device and the vendor only; it never reaches a
   Host or Runner.
-- **Host** relays `voice.*` without keeping state. Every call, not just start,
+- **Host** relays `voice.*` without keeping call state. Every call, not just start,
   re-resolves the authorized profile for (user, environment, account), so
-  revocation ends a call within one lease.
+  revocation ends a call within one lease. A separate, bounded in-memory registry
+  can associate a newly committed input with its originating authenticated socket
+  for a single requested presentation. These associations never enter history or
+  survive disconnection or Host restart.
 - **Runner** creates the call with an account it holds, so the vendor
   credential never leaves that computer. It owns the call's life: idempotent
   start per client-chosen session id, one call per person per Runner (the
@@ -57,9 +60,27 @@ undocumented Codex API; every engine pin bump must re-qualify a live call.
 - Navigation takes only whole utterances that start with a navigation verb
   and name exactly one Chat, task or place; "open" is not one ("open a PR" is
   work). Everything else is sent to Chat verbatim, as the person's message.
+- A voice input may offer Main Chat one `screen_show` of existing resources. The
+  input's message ID correlates the request; the live execution grant, exact
+  attempt/input admission, socket binding and current resource access supply
+  authority. Several devices can contribute to one Run, so neither the Run's seed
+  nor the person's latest call identifies the receiving screen. The client must
+  still reject a superseded utterance, changed interaction or expired deadline
+  immediately before committing its route. This is one presentation, never a
+  continuing Follow mode; an uncertain acknowledgement cannot cause another send.
+  Manual navigation, Back, editing, opening a blocking sheet or drawer, leaving
+  the foreground, or a later utterance supersedes a pending presentation. On
+  mobile, showing Chat returns to the existing stack root, just like the sidebar;
+  other presented screens return with Back.
 - While a call is on, the client speaks Chat's new durable replies and
   announces new "needs you" Requests by Thread title only, never their
   contents. Approvals still need a tap or Face ID.
+
+The common MCP route authenticates a Run, and native helpers share that
+credential. Presentation uses Main Chat's existing Run authority, including its
+native helpers; independent tasks and Triggers remain excluded. The transport
+does not establish which native node invoked a tool, so root-only restrictions
+cannot be inferred from tool discovery or a model-supplied node identity.
 
 ## Privacy
 

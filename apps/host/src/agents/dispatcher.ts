@@ -1,3 +1,4 @@
+import type { ScreenPresentationRegistry } from "../screen/screen-presentation-registry.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -106,6 +107,7 @@ const supportedCommandTypes = new Set([
 ]);
 
 export class HostCommandDispatcher implements DurableCommandDispatcher {
+  readonly #screenPresentation: ScreenPresentationRegistry | undefined;
   readonly #attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
   readonly #attachments: Pick<AttachmentStore, "listForRun">;
   readonly #agentControlTokens: AgentControlTokenService;
@@ -134,6 +136,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #workspaceAccess: WorkspaceExecutionAccessService;
 
   constructor(options: {
+    readonly screenPresentation?: ScreenPresentationRegistry;
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
     readonly requestResponseVault: RequestResponseVault;
@@ -156,6 +159,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly workspaceWake?: Pick<WorkspaceWakeService, "wake">;
     readonly workspaceAccess: WorkspaceExecutionAccessService;
   }) {
+    this.#screenPresentation = options.screenPresentation;
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
@@ -631,6 +635,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           createdAt: message.createdAt,
           kind: message.kind,
           messageId: message.id,
+          ...((identity.capabilities as readonly string[]).includes("screen-show-v1") &&
+          this.#screenPresentation?.contextFor(message.id) !== undefined
+            ? { presentationContext: this.#screenPresentation.contextFor(message.id) }
+            : {}),
           ...(message.quote ? { quote: message.quote } : {}),
         }),
       ),
@@ -681,6 +689,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // Recheck it at the send itself, so a revocation that committed meanwhile,
     // a Stop included, cannot launch new work.
     const dispatch = {
+      onSending: () =>
+        this.#screenPresentation?.noteInputsSending(
+          context.inputs.map((message) => message.id),
+          context.run.id,
+          binding.bindingGeneration,
+        ),
       beforeSend: () =>
         this.#store.assertActiveGrant({
           bindingGeneration: binding.bindingGeneration,
@@ -878,6 +892,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         }
       case "run.steer": {
         const steer = await this.#store.loadSteerDispatchInput(command.id);
+        const steerIdentity = this.#runners.identityForEnvironment(command.environmentId);
         runnerCommand = {
           ...base,
           input: HarnessInputSchema.parse({
@@ -886,31 +901,43 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             createdAt: steer.message.createdAt,
             kind: steer.message.kind,
             messageId: steer.message.id,
+            ...((steerIdentity?.capabilities as readonly string[] | undefined)?.includes(
+              "screen-show-v1",
+            ) && this.#screenPresentation?.contextFor(steer.message.id) !== undefined
+              ? { presentationContext: this.#screenPresentation.contextFor(steer.message.id) }
+              : {}),
             ...(steer.message.quote ? { quote: steer.message.quote } : {}),
           }),
           runId: steer.runId,
           threadId: steer.threadId,
           type: "run.steer",
         };
-        await this.#dispatchSteer(command, runnerCommand, signal, async () => {
-          if (!steer.message.content.some((part) => part.type !== "text")) return;
-          const harness = await this.#store.getHarnessInstance(steer.run.harnessInstanceId);
-          if (!harness?.enabled || harness.environmentId !== steer.run.environmentId) {
-            throw new CommandDispatchError(
-              "The active AI engine is no longer available.",
-              "failed",
-            );
-          }
-          const failure = this.#runners.attachmentInputFailure({
-            content: steer.message.content,
-            driverKind: harness.driverKind,
-            environmentId: steer.run.environmentId,
-            harnessInstanceId: steer.run.harnessInstanceId,
-            modelSelection: steer.run.modelSelection,
-            steering: true,
-          });
-          if (failure) throw new CommandDispatchError(failure, "failed");
-        });
+        await this.#dispatchSteer(
+          command,
+          runnerCommand,
+          signal,
+          steer.bindingGeneration,
+          steerIdentity?.connectionGeneration,
+          async () => {
+            if (!steer.message.content.some((part) => part.type !== "text")) return;
+            const harness = await this.#store.getHarnessInstance(steer.run.harnessInstanceId);
+            if (!harness?.enabled || harness.environmentId !== steer.run.environmentId) {
+              throw new CommandDispatchError(
+                "The active AI engine is no longer available.",
+                "failed",
+              );
+            }
+            const failure = this.#runners.attachmentInputFailure({
+              content: steer.message.content,
+              driverKind: harness.driverKind,
+              environmentId: steer.run.environmentId,
+              harnessInstanceId: steer.run.harnessInstanceId,
+              modelSelection: steer.run.modelSelection,
+              steering: true,
+            });
+            if (failure) throw new CommandDispatchError(failure, "failed");
+          },
+        );
         return;
       }
     }
@@ -918,6 +945,19 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     for (const event of await this.#store.succeedCommand(command.id)) {
       this.#onWorkspaceEvent(event);
     }
+  }
+
+  #noteSteerSending(
+    command: Pick<CommandRow, "id">,
+    runnerCommand: Extract<RunnerCommand, { readonly type: "run.steer" }>,
+    bindingGeneration: number,
+  ): void {
+    this.#screenPresentation?.noteInputsSending(
+      [runnerCommand.input.messageId],
+      runnerCommand.runId,
+      bindingGeneration,
+      command.id,
+    );
   }
 
   /**
@@ -928,6 +968,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     command: CommandRow,
     runnerCommand: Extract<RunnerCommand, { readonly type: "run.steer" }>,
     signal: AbortSignal,
+    bindingGeneration: number,
+    connectionGeneration: number | undefined,
     validate: () => Promise<void>,
   ): Promise<void> {
     try {
@@ -936,14 +978,21 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         for (const event of await this.#store.dispatchChannelCommand(
           command.id,
           async (beforeAck) => {
-            await this.#runners.dispatch(runnerCommand, signal, { beforeAck });
+            await this.#runners.dispatch(runnerCommand, signal, {
+              beforeAck,
+              ...(connectionGeneration === undefined ? {} : { connectionGeneration }),
+              onSending: () => this.#noteSteerSending(command, runnerCommand, bindingGeneration),
+            });
           },
         )) {
           this.#onWorkspaceEvent(event);
         }
         return;
       }
-      await this.#runners.dispatch(runnerCommand, signal);
+      await this.#runners.dispatch(runnerCommand, signal, {
+        ...(connectionGeneration === undefined ? {} : { connectionGeneration }),
+        onSending: () => this.#noteSteerSending(command, runnerCommand, bindingGeneration),
+      });
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
       for (const event of await this.#store.refuseSteer(command.id, error.message)) {

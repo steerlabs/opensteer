@@ -1924,6 +1924,7 @@ function runnerCapabilities(): RunnerCapability[] {
     "network-egress",
     "native-session-continuation-v1",
     "requester-time-zone-v1",
+    "screen-show-v1",
     "steer-answer-v1",
     "thread-state-v1",
     "thread-title-v1",

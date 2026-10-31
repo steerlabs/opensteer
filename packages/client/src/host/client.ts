@@ -998,6 +998,7 @@ export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
 export interface HostClient {
+  readonly screenPresentation?: import("../screen/contract.js").ScreenPresentationTransport;
   readonly browserPasskeys?: BrowserPasskeys;
   readonly recentSites: RecentSitesStore;
   readonly browserPreferences: BrowserPreferences;

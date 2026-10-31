@@ -3,6 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserPagePart } from "../host/pending-send.js";
 import { threadPlacementOptions } from "../host/thread-placement.js";
 import type { RunEntry } from "../host/client.js";
+import type {
+  ScreenPresentationEndpoint,
+  ScreenPresentationTransport,
+} from "../screen/contract.js";
+import type { ScreenShowMessage } from "@opensteer/protocol";
 import { VoiceStartError, type VoiceCall, type VoiceSnapshot as Snapshot } from "./contract.js";
 import { VoiceController, voiceAccount, type VoiceControllerInput } from "./controller.js";
 import {
@@ -24,9 +29,15 @@ afterEach(() => {
 });
 
 function setup(
-  options: { home?: "seeded" | "absent"; input?: Partial<VoiceControllerInput> } = {},
+  options: {
+    home?: "seeded" | "absent";
+    input?: Partial<VoiceControllerInput>;
+    transport?: ScreenPresentationTransport;
+  } = {},
 ) {
   const f = voiceHost(options.home);
+  if (options.transport)
+    Object.defineProperty(f.host, "screenPresentation", { value: options.transport });
   const voice = semanticVoice();
   const navigate = vi.fn();
   const onStart = vi.fn();
@@ -190,6 +201,86 @@ describe("VoiceController", () => {
     expect(result.type === "thread.sendMessage" && result.wasDuplicate).toBe(true);
     f.dispose();
   });
+
+  it.each(["queued", "retry"])(
+    "keeps %s work sendable after its presentation endpoint ends",
+    async (when) => {
+      let endpoint: ScreenPresentationEndpoint | null = {
+        endpointRef: "a".repeat(64),
+        serverTimeUpperBound: () => 0,
+      };
+      const listeners = new Set<(message: ScreenShowMessage | null) => void>();
+      const loseEndpoint = () => {
+        endpoint = null;
+        for (const listener of listeners) listener(null);
+      };
+      const places = Promise.withResolvers<[]>();
+      const f = setup({
+        transport: {
+          getEndpoint: () => endpoint,
+          subscribe: (listener) => {
+            listeners.add(listener);
+            return () => {
+              listeners.delete(listener);
+            };
+          },
+          acknowledge: vi.fn(),
+        },
+        input: {
+          presentation: {
+            capture: () => ({ interactionRevision: 0, places: () => places.promise }),
+            blocked: () => null,
+            prepare: vi.fn(),
+          },
+        },
+      });
+      await f.controller.start();
+      const realDispatch = f.host.dispatch.bind(f.host);
+      let first = true;
+      const dispatch = vi.spyOn(f.host, "dispatch").mockImplementation(async (command) => {
+        if (when === "retry" && first) {
+          first = false;
+          const receipt = await realDispatch(command);
+          loseEndpoint();
+          throw new TypeError(`lost response for ${receipt.type}`);
+        }
+        if (command.type === "thread.sendMessage" && command.screenPresentation && !endpoint)
+          throw new Error("Ended presentation endpoint must not reject the person's work");
+        return realDispatch(command);
+      });
+      f.emit({
+        type: "heard",
+        turnId: "present",
+        text: "Please show me the result when it is ready",
+      });
+      if (when === "queued") loseEndpoint();
+      places.resolve([]);
+      await vi.waitFor(
+        () =>
+          expect(dispatch, "voice work was never sent").toHaveBeenCalledTimes(
+            when === "retry" ? 2 : 1,
+          ),
+        { timeout: 100 },
+      );
+      const last = dispatch.mock.calls.at(-1)![0];
+      expect(last).toMatchObject({
+        type: "thread.sendMessage",
+        idempotencyKey: `voice:${voiceTestId}:present`,
+      });
+      expect(last).not.toHaveProperty("screenPresentation");
+      if (when === "retry") {
+        expect(dispatch.mock.calls[0]![0]).toHaveProperty(
+          "screenPresentation.endpointRef",
+          "a".repeat(64),
+        );
+        expect(last.idempotencyKey).toBe(dispatch.mock.calls[0]![0].idempotencyKey);
+      }
+      await expect(dispatch.mock.results.at(-1)!.value).resolves.toMatchObject({
+        type: "thread.sendMessage",
+      });
+      f.dispose();
+    },
+  );
 
   it("routes navigation, leaves ambiguity for Chat, and never creates Chat just to navigate", async () => {
     const f = setup({ home: "absent" });
@@ -375,6 +466,60 @@ describe("VoiceController", () => {
       f.dispose();
     },
   );
+
+  it("captures page context before delayed Chat creation can change the selected view", async () => {
+    let selected = "https://example.com/original";
+    const places = vi.fn(async () => [
+      browserPagePart({
+        sessionId: "bsn_12345678-1234-4123-8123-123456789abc",
+        tabId: "tab:test",
+        title: "Selected page",
+        url: selected,
+      }),
+    ]);
+    const f = setup({ home: "absent", input: { places } });
+    const initial = f.host.getSnapshot();
+    const account = voiceAccount(initial)!;
+    f.publish({
+      harnesses: initial.harnesses.filter((harness) => harness.id === account.harnessInstanceId),
+      executionPreferences: { ...initial.executionPreferences, history: [] },
+    });
+    const create = f.host.createHome.bind(f.host);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const creating = vi.spyOn(f.host, "createHome").mockImplementation(async (input) => {
+      await held;
+      return create(input);
+    });
+    const dispatch = vi.spyOn(f.host, "dispatch");
+    await f.controller.start();
+    f.emit({ type: "heard", turnId: "page", text: "Explain this" });
+    await vi.waitFor(
+      () => expect(creating, "voice did not start creating Chat").toHaveBeenCalled(),
+      { timeout: 100 },
+    );
+    selected = "https://example.com/later";
+    release();
+    await vi.waitFor(
+      () =>
+        expect(
+          dispatch.mock.calls.some(([command]) => command.type === "thread.sendMessage"),
+          "voice did not send its captured page",
+        ).toBe(true),
+      { timeout: 100 },
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: [
+          { type: "text", text: "Explain this" },
+          expect.objectContaining({ url: "https://example.com/original" }),
+        ],
+      }),
+    );
+    f.dispose();
+  });
 
   it("returns to listening when Chat's Run ends without a spoken reply", async () => {
     const f = setup();

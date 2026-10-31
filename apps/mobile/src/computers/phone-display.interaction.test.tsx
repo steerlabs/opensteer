@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import type { HostClient, WebSocketClient } from "@opensteer/client/host";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
+import { remoteEditing } from "../voice/interaction.js";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
   os: "android",
@@ -123,6 +124,7 @@ vi.mock("../browser/surface-header.js", () => ({ useSurfaceHeader: () => undefin
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
+import { observeInteraction } from "../voice/interaction.js";
 import {
   ComputerDisplay,
   ComputerTaskView,
@@ -315,6 +317,8 @@ it("accepts input without a button, maps touch, edits, reports receipts, copies 
   expect(container.textContent).not.toMatch(/Take over|Give back|controlling/);
   await act(async () => state.layout?.({ nativeEvent: { layout: { width: 400, height: 400 } } }));
   const touch = { nativeEvent: { locationX: 200, locationY: 200, timestamp: 10, touches: [{}] } };
+  const pressed = vi.fn();
+  const stopObserving = observeInteraction(pressed);
   await act(async () => {
     state.touch?.onTouchStart?.(touch);
     state.touch?.onTouchEnd?.({
@@ -322,6 +326,9 @@ it("accepts input without a button, maps touch, edits, reports receipts, copies 
       nativeEvent: { ...touch.nativeEvent, timestamp: 20, touches: [] },
     });
   });
+  stopObserving();
+  // A press into the display outdates a presentation captured before it.
+  expect(pressed).toHaveBeenCalledOnce();
   expect(input().map((m) => m.events)).toEqual([
     [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 10 }],
     [{ kind: "pointer", phase: "up", x: 0.5, y: 0.5, t: 20 }],
@@ -542,7 +549,9 @@ it("offers Mac input only where its video is available", async () => {
 
 it("resets input when its keyboard blurs", async () => {
   await setup();
+  expect(remoteEditing()).toBe(false);
   await holdAndType();
+  expect(remoteEditing()).toBe(true);
   await act(async () =>
     state.proxy?.onEvent({
       type: "compositionstart",
@@ -557,6 +566,7 @@ it("resets input when its keyboard blurs", async () => {
     }),
   );
   await act(async () => state.proxy?.onEvent({ type: "blur" }));
+  expect(remoteEditing()).toBe(false);
   expect(input()).toEqual([]);
   expect(socket.sent).toContainEqual({ type: "display.input-reset" });
 });

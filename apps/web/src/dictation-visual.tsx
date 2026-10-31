@@ -48,6 +48,9 @@ const emit = (
     | { type: "downloading"; progress: number }
     | { type: "level"; level: number },
 ) => receive({ ...event, session, seq: ++seq } as DictationEvent);
+Object.assign(window, {
+  __dictationVisual: { level: (level: number) => emit({ type: "level", level }) },
+});
 const port: DictationPort = {
   availability: async () => ({
     available: true,

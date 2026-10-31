@@ -1,10 +1,12 @@
-import type {
-  AssignmentSummary,
-  BrowserTabWriteInput,
-  WaitingRequest,
-  MessageAuthor,
-  IntegrationCallSubject,
-  ThreadWriteInput,
+import {
+  ScreenPresentationReceiptSchema,
+  type AssignmentSummary,
+  type BrowserTabWriteInput,
+  type WaitingRequest,
+  type MessageAuthor,
+  type IntegrationCallSubject,
+  type ScreenPresentationReceipt,
+  type ThreadWriteInput,
 } from "@opensteer/core";
 import type { TriggerWriteInput } from "@opensteer/triggers";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
@@ -16,7 +18,6 @@ import type {
   ReasoningEntry,
   RequestReceiptEntry,
   RunEntry,
-  SelectionEntry,
   NodeEntry,
   ToolEntry,
   TranscriptEntry,
@@ -137,7 +138,6 @@ export interface Turn {
 }
 
 export type TranscriptGroup =
-  | { readonly key: string; readonly kind: "selection"; readonly entry: SelectionEntry }
   | { readonly key: string; readonly kind: "assignment"; readonly entry: AssignmentEntry }
   | { readonly key: string; readonly kind: "delegation"; readonly entry: DelegationEntry }
   | { readonly key: string; readonly kind: "message"; readonly entry: MessageEntry }
@@ -181,11 +181,8 @@ export function groupTranscriptEntries(
   // Run's own agent has got to since.
   const nodeStretch = new Map<string, Extract<Slot, { kind: "stretch" }>>();
   for (const entry of entries) {
-    if (entry.kind === "selection") {
-      open = null;
-      slots.push({ group: { entry, key: entry.id, kind: "selection" }, kind: "group" });
-      continue;
-    }
+    // The composer shows the current AI choice; its retained history is state, not conversation.
+    if (entry.kind === "selection") continue;
     if (entry.kind === "delegation") {
       // Another Thread's result arriving is news, not this Run's work: it can
       // land long after the Run that asked for it has replied.
@@ -1423,8 +1420,11 @@ function toolTone(tool: ToolEntry): ActivityTone {
     case "stopped":
       return "stopped";
     case "done":
-      // A sign-in that came back without signing in must not read as done.
-      return signInResult(tool)?.signedIn === false ? "stopped" : "done";
+      // A sign-in that did not sign in, or a view that did not switch, must
+      // not read as done.
+      return signInResult(tool)?.signedIn === false || screenShowNotApplied(tool)
+        ? "stopped"
+        : "done";
     default:
       return tool.state;
   }
@@ -1795,6 +1795,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ],
   ["request_list", said(["Checking its requests", "Checked its requests"], "list")],
   ["request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
+  ["screen_show", screenShowPresentation],
   ["sign_in", signInPresentation],
   [
     "thread_delegate",
@@ -2109,6 +2110,69 @@ function signInResult(tool: ToolEntry): BrowserSignInStep | null {
   return result === null
     ? null
     : browserSignInStep(result, stringField(effectiveArguments(tool), "site"));
+}
+
+/**
+ * `screen_show` reads by its receipt. Applied means the view switched on the
+ * person's device, not that anything there finished; every other outcome, and
+ * a receipt it cannot read, never reads as switched.
+ */
+function screenShowPresentation(tool: ToolEntry): ToolPresentation {
+  const receipt = screenShowReceipt(tool);
+  const outcome = receipt?.outcome;
+  return step({
+    activeLabel: "Switching the view",
+    hint: receipt
+      ? (screenShowReasons[receipt.reason ?? ""] ?? screenShowOutcomes[receipt.outcome] ?? "")
+      : "",
+    hintKind: "prose",
+    icon: outcome === "applied" ? "check-circle" : outcome ? "alert-circle" : "laptop",
+    kind: "tool",
+    label:
+      outcome === "applied"
+        ? "Switched the view"
+        : outcome === "unconfirmed"
+          ? "Couldn’t confirm the view switched"
+          : outcome
+            ? "Didn’t switch the view"
+            : "Tried to switch the view",
+  });
+}
+
+const screenShowReasons: Partial<Record<string, string>> = {
+  "already-requested": "This message already asked for a view",
+  busy: "The screen was busy",
+  closed: "That view was closed",
+  expired: "It took too long",
+  forbidden: "That view isn’t available here",
+  "interaction-ended": "The conversation had moved on",
+};
+
+const screenShowOutcomes: Partial<Record<ScreenPresentationReceipt["outcome"], string>> = {
+  superseded: "Something newer came first",
+  unavailable: "That view isn’t available here",
+  unsupported: "Not supported on this device",
+};
+
+function screenShowReceipt(tool: ToolEntry): ScreenPresentationReceipt | null {
+  if (
+    tool.tool?.namespace !== "opensteer" ||
+    tool.tool.name !== "screen_show" ||
+    tool.state !== "done" ||
+    !tool.output
+  )
+    return null;
+  try {
+    const parsed = ScreenPresentationReceiptSchema.safeParse(JSON.parse(tool.output.text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function screenShowNotApplied(tool: ToolEntry): boolean {
+  const outcome = screenShowReceipt(tool)?.outcome;
+  return outcome !== undefined && outcome !== "applied";
 }
 
 /** A gateway step's hint is always words about the step, never a reference. */
@@ -2508,7 +2572,16 @@ export function toolStatusLabel(tool: ToolEntry): string {
     case "running":
       return "Running";
     case "done":
-      return signInResult(tool)?.signedIn === false ? "Didn’t sign in" : "Done";
+      if (signInResult(tool)?.signedIn === false) return "Didn’t sign in";
+      switch (screenShowReceipt(tool)?.outcome) {
+        case undefined:
+        case "applied":
+          return "Done";
+        case "unconfirmed":
+          return "Not confirmed";
+        default:
+          return "Didn’t switch the view";
+      }
     case "failed":
       return toolTone(tool) === "stopped" ? "Stopped before finishing" : "Returned an error";
     case "stopped":

@@ -54,7 +54,6 @@ import {
   type DelegationEntry,
   type MessageEntry,
   type ReasoningEntry,
-  type SelectionEntry,
   type RequestReceiptEntry,
   type RunEntry,
   type ThreadActivity,
@@ -197,7 +196,6 @@ export function AgentTranscript({
   waitingRequests = noWaitingRequests,
   assignments = noAssignments,
   browserSessions = noBrowsers,
-  engineName,
   homeThreadId = null,
   activityOwner = null,
   askAbout,
@@ -232,11 +230,6 @@ export function AgentTranscript({
   waitingRequests?: readonly WaitingRequest[];
   assignments?: Readonly<Record<string, AssignmentSummary>>;
   browserSessions?: readonly BrowserSessionSummary[];
-  /**
-   * Names the engine behind a recorded selection, as the reader knows it.
-   * Without it the marker names the model alone rather than guessing.
-   */
-  engineName?: ((harnessInstanceId: string) => string | null) | undefined;
   homeThreadId?: string | null;
   /** Given, every update published by another agent offers it. */
   askAbout?: AskAbout | undefined;
@@ -351,11 +344,6 @@ export function AgentTranscript({
                                         <DelegationNotice delegation={group.entry} />
                                       ) : group.kind === "assignment" ? (
                                         renderTask?.([group.entry])
-                                      ) : group.kind === "selection" ? (
-                                        <SelectionMarker
-                                          entry={group.entry}
-                                          engineName={engineName}
-                                        />
                                       ) : (
                                         <Message
                                           reveal={
@@ -1854,33 +1842,6 @@ function UnreadDivider() {
     <div aria-label="New since you were last here" className="unread-divider" role="separator">
       <span className="unread-divider__label">New</span>
     </div>
-  );
-}
-
-/**
- * A change of the AI running this conversation, recorded by the Host.
- *
- * It is a platform event, not a message: it never claims the new engine
- * started, caught up or carried anything over, and it never rewrites what
- * came before it.
- */
-function SelectionMarker({
-  engineName,
-  entry,
-}: {
-  engineName: ((harnessInstanceId: string) => string | null) | undefined;
-  entry: SelectionEntry;
-}) {
-  const engine = engineName?.(entry.harnessInstanceId) ?? null;
-  return (
-    <p className="selection-marker" role="note">
-      <span className="selection-marker__text">
-        {engine === null
-          ? `Switched to ${entry.modelSelection.modelId}`
-          : `Switched to ${entry.modelSelection.modelId} on ${engine}`}
-      </span>
-      <time dateTime={entry.createdAt}>{formatClockTime(entry.createdAt)}</time>
-    </p>
   );
 }
 

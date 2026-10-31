@@ -1474,6 +1474,8 @@ export class RunnerRegistry {
        * command is written straight after it with nothing in between.
        */
       readonly beforeSend?: () => Promise<void>;
+      /** Synchronous record of a send that may reach the Runner, before it can call a tool. */
+      readonly onSending?: () => void;
       readonly connectionGeneration?: number;
     } = {},
   ): Promise<RunnerCommandReceipt> {
@@ -1611,6 +1613,7 @@ export class RunnerRegistry {
       }
       throwIfAborted(signal, "Aborted");
       sent = true;
+      options.onSending?.();
       await connection.peer.send({
         ...connection.identity.fence,
         command,

@@ -123,6 +123,7 @@ const releasedMigrationNames = [
   "0113_person_asked_threads",
   "0114_run_started_by",
   "0115_better_auth_17",
+  "0116_screen_show",
 ];
 
 describe("migration names", () => {

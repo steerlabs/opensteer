@@ -49,6 +49,18 @@ function command(included?: ReturnType<typeof page>, body = "Read this page"): P
 }
 
 describe("durable current-page sends", () => {
+  it("never persists a socket presentation credential or restores navigation authority", () => {
+    const storage = memoryStorage();
+    const send = command();
+    const transient = Object.assign({}, send, {
+      screenPresentation: { endpointRef: "PRIVATE-PRESENTATION-ENDPOINT" },
+    });
+    const store = createPendingSendStore(storage);
+    expect(store.claim(scope, transient)).toEqual(send);
+    expect([...storage.values.values()].join()).not.toContain("PRIVATE-PRESENTATION-ENDPOINT");
+    expect(store.read(scope)).toEqual(send);
+    expect(transient.screenPresentation.endpointRef).toBe("PRIVATE-PRESENTATION-ENDPOINT");
+  });
   it("keeps the page as its own part, so the person's words stay only their words", () => {
     const storage = memoryStorage();
     const included = page();

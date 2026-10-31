@@ -3105,12 +3105,15 @@ function contentToPrompt(
 
 /**
  * Whether Claude reads a text input under the shared header. Claude Code's own
- * origin names a person or a peer agent in full, but an automation only as a
- * notification, without its name or occurrence, and it has no place for a quote.
+ * origin preserves typed authorship, but omits human input identity and viewed
+ * context. It also lacks quotes and an automation's name and occurrence.
  */
 function claudeReadsHeader(input: HarnessInput): boolean {
   return (
-    input.quote !== undefined || input.author.kind === "trigger" || input.author.kind === "watch"
+    input.author.kind === "human" ||
+    input.quote !== undefined ||
+    input.author.kind === "trigger" ||
+    input.author.kind === "watch"
   );
 }
 
