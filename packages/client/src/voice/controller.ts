@@ -120,7 +120,9 @@ interface VoiceSession {
   readonly pending: Map<string, { messageId: string | null; runId: string | null }>;
   readonly links: VoiceContextLinks;
   readonly answers: Map<string, Promise<{ ok: boolean; text: string }>>;
+  /** The person's utterances not yet handed to Chat, oldest first. */
   utterances: { turnId: string; text: string }[];
+  readonly heardWaiters: Set<() => void>;
   contextDesired: string | null;
   contextTimer: VoiceTimer | null;
   contextSends: Promise<void>;
@@ -200,6 +202,7 @@ export class VoiceController {
       links: new VoiceContextLinks(),
       answers: new Map(),
       utterances: [],
+      heardWaiters: new Set(),
       contextDesired: null,
       contextTimer: null,
       contextSends: Promise.resolve(),
@@ -397,8 +400,11 @@ export class VoiceController {
         this.#settlePhase(session);
         if (!event.text.trim()) return;
         if (session.call?.agent) {
-          session.utterances.push({ turnId: event.turnId, text: event.text });
-          session.utterances = session.utterances.slice(-5);
+          session.utterances = [
+            ...session.utterances,
+            { turnId: event.turnId, text: event.text },
+          ].slice(-10);
+          for (const notify of session.heardWaiters) notify();
           session.thinking = true;
           this.#timers.clear(session.thinkingTimer);
           session.thinkingTimer = this.#timers.set(() => {
@@ -549,6 +555,45 @@ export class VoiceController {
     }
   }
 
+  /**
+   * The utterances a hand-off names: its turn's last input, located in this
+   * device's own transcript, and up to `count - 1` unsent ones before it.
+   * Speech and tool calls travel separately, so wait briefly for the
+   * transcript; never substitute whatever was said most recently.
+   */
+  async #utterancesFor(
+    session: VoiceSession,
+    heard: readonly string[],
+    count: number,
+  ): Promise<VoiceSession["utterances"] | null> {
+    const said = normalizedSpeech(heard.at(-1) ?? "");
+    if (!said) return null;
+    const find = () => {
+      const index = session.utterances.findLastIndex((item) => {
+        const text = normalizedSpeech(item.text);
+        return !!text && (said.includes(text) || text.includes(said));
+      });
+      return index < 0 ? null : session.utterances.slice(Math.max(0, index + 1 - count), index + 1);
+    };
+    const found = find();
+    if (found || session.abort.signal.aborted) return found;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        this.#timers.clear(timer);
+        session.heardWaiters.delete(check);
+        session.abort.signal.removeEventListener("abort", done);
+        resolve();
+      };
+      const check = () => {
+        if (find()) done();
+      };
+      const timer = this.#timers.set(done, 3_000);
+      session.heardWaiters.add(check);
+      session.abort.signal.addEventListener("abort", done, { once: true });
+    });
+    return this.#session === session ? find() : null;
+  }
+
   async #execute(
     session: VoiceSession,
     call: VoiceToolCall,
@@ -571,17 +616,27 @@ export class VoiceController {
         const count = call.input.messages;
         if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > 5)
           return { ok: false, text: "Choose between 1 and 5 messages." };
-        const buffered = [...session.utterances];
-        const text = buffered
-          .slice(-count)
-          .map((item) => item.text)
-          .join("\n");
-        if (!text) return { ok: false, text: "There is nothing to send to Chat." };
-        await this.#send(session, call.id, text);
+        const chosen = await this.#utterancesFor(session, call.heard, count);
         if (this.#session !== session) return { ok: false, text: "The call ended." };
-        session.utterances = session.utterances.filter(
-          (item) => !buffered.some((sent) => sent.turnId === item.turnId),
-        );
+        if (!chosen)
+          return {
+            ok: false,
+            text: "Nothing was sent: I couldn't find those words in what the person said. Ask them to say it again.",
+          };
+        const text = chosen.map((item) => item.text).join("\n");
+        session.pending.set(call.id, { messageId: null, runId: null });
+        try {
+          await this.#send(session, call.id, text);
+        } catch (error) {
+          session.pending.delete(call.id);
+          return classifyClientFailure(error).classification === "transient"
+            ? {
+                ok: false,
+                text: "Chat may or may not have received this; the outcome is unknown. Don't send it again unless the person asks.",
+              }
+            : { ok: false, text: "Chat didn't accept this, so nothing was sent." };
+        }
+        session.utterances = session.utterances.filter((item) => !chosen.includes(item));
         return { ok: true, text: `Sent to Chat: “${text.slice(0, 3900)}”.` };
       }
       return { ok: false, text: "This device can't do that yet." };
@@ -675,4 +730,11 @@ export class VoiceController {
     for (const listener of this.#levels) listener({ input: 0, output: 0 });
     return session.call?.close().catch(() => {}) ?? Promise.resolve();
   }
+}
+
+function normalizedSpeech(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }

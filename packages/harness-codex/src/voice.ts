@@ -9,6 +9,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   VoiceSdpSchema,
   voiceNextHoldMs,
+  voiceSayMaxLength,
   voiceToolCallTimeoutMs,
   type VoiceToolCall,
   type VoiceRefusalReason,
@@ -82,6 +83,8 @@ export async function startCodexVoiceCall(options: {
     { call: VoiceToolCall; finish: (ok: boolean, text: string) => Promise<void> }
   >();
   const waiters = new Set<() => void>();
+  // Each agent turn's spoken input, so a tool call names the utterances that caused it.
+  const turnHeard = new Map<string, string[]>();
   const wake = () => {
     for (const resolve of waiters) resolve();
   };
@@ -179,6 +182,7 @@ export async function startCodexVoiceCall(options: {
               id: callId,
               tool: String(params.tool),
               input: parsed.data,
+              heard: turnHeard.get(String(params.turnId)) ?? [],
             };
             const timer = setTimeout(() => {
               void finish(
@@ -203,6 +207,23 @@ export async function startCodexVoiceCall(options: {
             return;
           }
           if (!isRecord(message.params) || message.params.threadId !== threadId) return;
+          if (input.agent && message.method === "item/started") {
+            const { item, turnId } = message.params;
+            if (isRecord(item) && item.type === "userMessage" && typeof turnId === "string") {
+              const text = (Array.isArray(item.content) ? item.content : [])
+                .flatMap((part) =>
+                  isRecord(part) && typeof part.text === "string" ? [part.text] : [],
+                )
+                .join("\n")
+                .slice(0, voiceSayMaxLength);
+              if (text.trim()) {
+                turnHeard.set(turnId, [...(turnHeard.get(turnId) ?? []), text].slice(-5));
+                while (turnHeard.size > 16) turnHeard.delete(turnHeard.keys().next().value!);
+              }
+            }
+          }
+          if (message.method === "turn/completed" && isRecord(message.params.turn))
+            turnHeard.delete(String(message.params.turn.id));
           if (message.method === "turn/started" && !input.agent) {
             const turnId = isRecord(message.params.turn) ? message.params.turn.id : undefined;
             if (typeof turnId !== "string") {

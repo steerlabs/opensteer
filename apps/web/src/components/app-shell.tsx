@@ -322,8 +322,12 @@ export function AppShell({
       return part ? [part] : [];
     },
     () => {
+      // Pages such as Settings cover the conversation and any place behind them.
+      if (settingsMode) return { title: "Settings" };
+      const match = /^\/threads\/([^/]+)/.exec(location.pathname);
+      if (!match && location.pathname !== "/")
+        return { title: location.pathname.split("/")[1]?.replace(/-/g, " ") ?? "Opensteer" };
       const selection = placeSelection(new URLSearchParams(location.search));
-      const match = /\/threads\/([^/]+)/.exec(location.pathname);
       return {
         threadId: match ? decodeURIComponent(match[1]!) : (snapshot.homeThreadId ?? undefined),
         ...(selection.kind === "place" ? { destination: selection.destination } : {}),

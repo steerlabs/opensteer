@@ -676,11 +676,29 @@ function handleClientMethod(message) {
             : message.params.text === "queue"
               ? Array.from({ length: 9 }, () => ["send_to_chat", {}])
               : [["show", { link: "opensteer://chat" }]];
+        // The delegated speech that starts the agent's turn precedes its tool calls.
+        send({
+          method: "item/started",
+          params: {
+            threadId,
+            turnId: `voice-turn-${message.params.text}`,
+            item: {
+              id: "spoken",
+              type: "userMessage",
+              content: [{ type: "text", text: "Book a flight" }],
+            },
+          },
+        });
         for (const [tool, args] of specs)
           send({
             id: randomUUID(),
             method: "item/tool/call",
-            params: { threadId, tool, arguments: args },
+            params: {
+              threadId,
+              turnId: `voice-turn-${message.params.text}`,
+              tool,
+              arguments: args,
+            },
           });
       }
       if (scenario === "voice-exit") process.exit(1);

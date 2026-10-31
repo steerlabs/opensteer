@@ -57,6 +57,7 @@ describe("Runner voice owner", () => {
         id: "opaque",
         tool: "show",
         input: { link: "opensteer://chat" },
+        heard: ["Show me Chat."],
       })),
       answerCall: vi.fn(async () => undefined),
       context: vi.fn(async () => undefined),

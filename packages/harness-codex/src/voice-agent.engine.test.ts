@@ -107,7 +107,7 @@ describe.skipIf(!qualify).each([
       await page.waitForFunction("window.pc.connectionState === 'connected'", null, {
         timeout: 15_000,
       });
-      console.log(`Voice connected in ${Date.now() - started}ms`);
+      process.stderr.write(`Voice connected in ${Date.now() - started}ms\n`);
       const screen = `Visible: Rho (opensteer://browser/sess/tab_rho). Recent activity, newest first: Chat opened Brex (opensteer://browser/sess/tab_brex) ten seconds ago; Chat opened Rho two minutes ago. Openable: Chat (opensteer://chat), expenses task (opensteer://thread/thr_expenses).`;
       const cases = [
         {
@@ -159,6 +159,15 @@ describe.skipIf(!qualify).each([
           timeoutError: () => new Error(`No tool for ${scenario.text}`),
         }).finally(() => controller.abort());
         expect(tool).toMatchObject({ tool: scenario.tool, input: scenario.input });
+        // The device finds hand-off words by this; Codex must supply the turn's speech.
+        const words = (text: string) =>
+          text
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}]+/gu, " ")
+            .trim();
+        expect(words(tool.heard.at(-1) ?? "")).toContain(
+          words(scenario.text).split(" ").slice(-3).join(" "),
+        );
         expect(
           events.filter((event) => event.at >= before && scenario.speech.test(event.text)),
         ).toEqual([]);
@@ -174,8 +183,8 @@ describe.skipIf(!qualify).each([
         expect(events.at(-1)!.at).toBeGreaterThanOrEqual(answered);
         const finalAt = Date.now();
         expect(await call.next(new AbortController().signal)).toBeNull();
-        console.log(
-          `Voice case ${index + 1}: tool ${answered - before}ms, spoken final ${finalAt - before}ms`,
+        process.stderr.write(
+          `Voice case ${index + 1}: tool ${answered - before}ms, spoken final ${finalAt - before}ms\n`,
         );
       }
     } finally {

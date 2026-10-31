@@ -66,6 +66,12 @@ export const VoiceToolCallSchema = z.object({
   id: voiceToolCallIdSchema,
   tool: z.string().min(1).max(64),
   input: z.record(z.string(), z.unknown()),
+  /**
+   * What the person said in the turn that made this call, as the agent
+   * received it. Set by the Runner, never by the model, so the device can
+   * find those utterances in its own transcript whatever order they arrive in.
+   */
+  heard: z.array(z.string().max(voiceSayMaxLength)).max(5),
 });
 export const VoiceNextInputSchema = z.strictObject(voiceCall);
 export const VoiceNextResultSchema = z.object({ call: VoiceToolCallSchema.nullable() });
