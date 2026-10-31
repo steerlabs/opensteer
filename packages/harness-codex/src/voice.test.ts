@@ -93,7 +93,7 @@ describe("Codex voice calls", () => {
     expect(first).toMatchObject({
       tool: "send_to_chat",
       input: { messages: 1 },
-      heard: ["Book a flight"],
+      heard: ["Book a flight & hotel"],
     });
     expect(await call.next(new AbortController().signal)).toEqual(first);
     await call.answerCall(first!.id, true, "Sent.");

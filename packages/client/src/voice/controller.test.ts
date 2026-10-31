@@ -1,3 +1,8 @@
+import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  type PlaceContentPart,
+} from "@opensteer/core";
 import type { VoiceToolCall } from "@opensteer/protocol/voice";
 import { EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -686,6 +691,29 @@ it("waits for negotiation before handling an utterance received while opening", 
   expect(f.answer).toHaveBeenCalledTimes(1);
   expect(f.dispatch).toHaveBeenCalledWith(
     expect.objectContaining({ content: [{ type: "text", text: "do this" }] }),
+  );
+  f.dispose();
+});
+
+it("hands off exactly the words that were said and the page shown while saying them", async () => {
+  const page = (title: string): PlaceContentPart => ({
+    type: "browser-page",
+    auto: true,
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
+    tabId: BrowserSurfaceIdSchema.parse(`tab_${title}`),
+    title,
+    url: `https://example.com/${title}`,
+  });
+  let showing = page("A");
+  const f = agentSetup({ places: async () => [showing] });
+  await f.controller.start();
+  f.emit({ type: "heard", turnId: "ask", text: "Book a flight." });
+  showing = page("B");
+  f.emit({ type: "heard", turnId: "unsay", text: "Don't book a flight." });
+  f.tool({ id: "send", tool: "send_to_chat", input: { messages: 1 }, heard: ["Book a flight"] });
+  await settle();
+  expect(f.dispatch).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ content: [{ type: "text", text: "Book a flight." }, page("A")] }),
   );
   f.dispose();
 });

@@ -123,6 +123,8 @@ interface VoiceSession {
   /** The person's utterances not yet handed to Chat, oldest first. */
   utterances: { turnId: string; text: string }[];
   readonly heardWaiters: Set<() => void>;
+  /** Page context captured as each utterance was heard, by turn. */
+  readonly pages: Map<string, Promise<readonly PlaceContentPart[]>>;
   contextDesired: string | null;
   contextTimer: VoiceTimer | null;
   contextSends: Promise<void>;
@@ -203,6 +205,7 @@ export class VoiceController {
       answers: new Map(),
       utterances: [],
       heardWaiters: new Set(),
+      pages: new Map(),
       contextDesired: null,
       contextTimer: null,
       contextSends: Promise.resolve(),
@@ -387,6 +390,11 @@ export class VoiceController {
         this.#settlePhase(session);
         break;
       case "heard": {
+        // What the person was looking at when they spoke, not when a send runs.
+        if (event.text.trim() && !session.pages.has(event.turnId)) {
+          session.pages.set(event.turnId, this.#places());
+          if (session.pages.size > 10) session.pages.delete(session.pages.keys().next().value!);
+        }
         if (!session.call) {
           this.#publish({ heard: event.text });
           session.earlyUtterances.push(event);
@@ -416,7 +424,7 @@ export class VoiceController {
           session.pending.set(event.turnId, { messageId: null, runId: null });
           this.#settlePhase(session);
           session.sends = session.sends
-            .then(() => this.#send(session, event.turnId, event.text))
+            .then(() => this.#send(session, event.turnId, event.text, event.turnId))
             .catch(() => {
               if (this.#session !== session) return;
               session.pending.delete(event.turnId);
@@ -569,10 +577,10 @@ export class VoiceController {
     const said = normalizedSpeech(heard.at(-1) ?? "");
     if (!said) return null;
     const find = () => {
-      const index = session.utterances.findLastIndex((item) => {
-        const text = normalizedSpeech(item.text);
-        return !!text && (said.includes(text) || text.includes(said));
-      });
+      // Exact words only: "book a flight" must never match "don't book a flight".
+      const index = session.utterances.findLastIndex(
+        (item) => normalizedSpeech(item.text) === said,
+      );
       return index < 0 ? null : session.utterances.slice(Math.max(0, index + 1 - count), index + 1);
     };
     const found = find();
@@ -626,7 +634,7 @@ export class VoiceController {
         const text = chosen.map((item) => item.text).join("\n");
         session.pending.set(call.id, { messageId: null, runId: null });
         try {
-          await this.#send(session, call.id, text);
+          await this.#send(session, call.id, text, chosen.at(-1)!.turnId);
         } catch (error) {
           session.pending.delete(call.id);
           return classifyClientFailure(error).classification === "transient"
@@ -646,7 +654,12 @@ export class VoiceController {
     }
   }
 
-  async #send(session: VoiceSession, turnId: string, text: string): Promise<void> {
+  async #send(
+    session: VoiceSession,
+    turnId: string,
+    text: string,
+    spokenTurnId: string,
+  ): Promise<void> {
     if (this.#session !== session) return;
     const host = this.#input.hostClient;
     const snapshot = host.getSnapshot();
@@ -672,7 +685,7 @@ export class VoiceController {
       threadId = home.id;
     }
     if (this.#session !== session) return;
-    const places = await this.#places();
+    const places = (await session.pages.get(spokenTurnId)) ?? [];
     if (this.#session !== session) return;
     const command: PendingSendCommand = {
       type: "thread.sendMessage",
@@ -695,7 +708,8 @@ export class VoiceController {
     let timer: VoiceTimer | null = null;
     try {
       return await Promise.race([
-        Promise.resolve().then(() => this.#input.places!()),
+        // Read the platform now: the caller is capturing what is showing this instant.
+        this.#input.places(),
         new Promise<readonly PlaceContentPart[]>((resolve) => {
           timer = this.#timers.set(() => resolve([]), 1_500);
         }),

@@ -55,6 +55,7 @@ describe.skipIf(!qualify).each([
       });
       const page = await browser.newPage();
       const events: { at: number; text: string }[] = [];
+      const userTurns: { at: number; text: string }[] = [];
       let spoken = new Deferred<void>();
       let answeredAt = Number.POSITIVE_INFINITY;
       let lastSpeechAt = 0;
@@ -64,6 +65,8 @@ describe.skipIf(!qualify).each([
           turn?: { id?: string; role?: string; transcript?: string };
         };
         if (event.type === "output_transcript.added") lastSpeechAt = Date.now();
+        if (event.type === "turn.done" && event.turn?.role === "user")
+          userTurns.push({ at: Date.now(), text: event.turn.transcript ?? "" });
         if (event.type === "turn.done" && event.turn?.role === "assistant") {
           const text = event.turn.transcript ?? "";
           events.push({ at: Date.now(), text });
@@ -159,15 +162,16 @@ describe.skipIf(!qualify).each([
           timeoutError: () => new Error(`No tool for ${scenario.text}`),
         }).finally(() => controller.abort());
         expect(tool).toMatchObject({ tool: scenario.tool, input: scenario.input });
-        // The device finds hand-off words by this; Codex must supply the turn's speech.
+        // The device finds hand-off words by exact match against its own transcript.
         const words = (text: string) =>
           text
             .toLowerCase()
             .replace(/[^\p{L}\p{N}]+/gu, " ")
             .trim();
-        expect(words(tool.heard.at(-1) ?? "")).toContain(
-          words(scenario.text).split(" ").slice(-3).join(" "),
-        );
+        expect(
+          userTurns.filter((turn) => turn.at >= before).map((turn) => words(turn.text)),
+          "Codex's turn speech differs from the device transcript",
+        ).toContain(words(tool.heard.at(-1) ?? ""));
         expect(
           events.filter((event) => event.at >= before && scenario.speech.test(event.text)),
         ).toEqual([]);

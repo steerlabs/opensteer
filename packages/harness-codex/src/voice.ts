@@ -214,10 +214,10 @@ export async function startCodexVoiceCall(options: {
                 .flatMap((part) =>
                   isRecord(part) && typeof part.text === "string" ? [part.text] : [],
                 )
-                .join("\n")
-                .slice(0, voiceSayMaxLength);
-              if (text.trim()) {
-                turnHeard.set(turnId, [...(turnHeard.get(turnId) ?? []), text].slice(-5));
+                .join("\n");
+              const spoken = delegatedSpeech(text).slice(0, voiceSayMaxLength);
+              if (spoken.trim()) {
+                turnHeard.set(turnId, [...(turnHeard.get(turnId) ?? []), spoken].slice(-5));
                 while (turnHeard.size > 16) turnHeard.delete(turnHeard.keys().next().value!);
               }
             }
@@ -368,4 +368,23 @@ export async function startCodexVoiceCall(options: {
         /method not found|unknown method/iu.test(error.message));
     throw voiceError(unsupported ? "voice-engine-unsupported" : "voice-refused");
   }
+}
+
+const xmlEntities: Readonly<Record<string, string>> = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  quot: '"',
+};
+/**
+ * The person's words in a delegated turn. Codex wraps them as
+ * `<realtime_delegation><input>…</input>…</realtime_delegation>`; the input is
+ * the same transcript the device heard.
+ */
+function delegatedSpeech(text: string): string {
+  const input = /<realtime_delegation>\s*<input>([\s\S]*?)<\/input>/u.exec(text)?.[1];
+  return input === undefined
+    ? text
+    : input.replace(/&(amp|apos|gt|lt|quot);/gu, (_, name: string) => xmlEntities[name]!);
 }

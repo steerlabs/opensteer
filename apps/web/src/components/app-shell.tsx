@@ -308,7 +308,10 @@ export function AppShell({
     hostClient,
     (target) => {
       if (target.kind === "back") void routerNavigate(-1);
-      else if (target.kind === "place") nav.showPlace(target.destination);
+      // Settings covers places, so a shown place opens over Chat instead.
+      else if (target.kind === "place")
+        if (settingsMode) nav.showPlaceWithConversation(target.destination, "/");
+        else nav.showPlace(target.destination);
       else nav.openConversation(target.kind === "chat" ? "/" : nav.threadPath(target.threadId));
     },
     dictation,

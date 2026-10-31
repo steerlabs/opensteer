@@ -685,7 +685,12 @@ function handleClientMethod(message) {
             item: {
               id: "spoken",
               type: "userMessage",
-              content: [{ type: "text", text: "Book a flight" }],
+              content: [
+                {
+                  type: "text",
+                  text: "<realtime_delegation>\n  <input>Book a flight &amp; hotel</input>\n  <transcript_delta>user: Book a flight &amp; hotel</transcript_delta>\n</realtime_delegation>",
+                },
+              ],
             },
           },
         });
