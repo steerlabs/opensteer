@@ -772,6 +772,22 @@ it.each(["android", "ios"])(
         display: {
           type: "display.state",
           state: "screen-off",
+          generation: 1,
+          width: 200,
+          height: 400,
+        },
+      }),
+    );
+    expect(container.textContent).toContain("screen is off");
+    await press("Wake phone");
+    expect(power).toHaveBeenLastCalledWith("wake");
+    await act(async () =>
+      setDisplay({
+        input: "unavailable",
+        power: "available",
+        display: {
+          type: "display.state",
+          state: "protected",
           reason: "locked-screen",
           generation: 1,
           width: 200,
@@ -779,9 +795,8 @@ it.each(["android", "ios"])(
         },
       }),
     );
-    expect(container.textContent).toContain("Unlock on the phone");
-    await press("Wake phone");
-    expect(power).toHaveBeenLastCalledWith("wake");
+    expect(container.textContent).toContain("Unlock it on the phone.");
+    expect(container.textContent).not.toContain("Wake phone");
   },
 );
 

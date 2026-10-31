@@ -188,11 +188,9 @@ export function ComputerDisplay({
       setDisplayState(snapshot);
       const status = computerDisplayStatus(snapshot, phone);
       setWords(
-        phone && snapshot.display?.reason === "locked-screen"
-          ? "Unlock on the phone"
-          : status.reason
-            ? computerReasonWords(status.reason, { machine: label, target: label, phone })
-            : null,
+        status.reason
+          ? computerReasonWords(status.reason, { machine: label, target: label, phone })
+          : null,
       );
       setTerminal(snapshot.connection === "closed");
       if (

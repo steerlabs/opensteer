@@ -53,10 +53,11 @@ pairing; stale revocation must never erase a replacement identity. See
 
 Agents cannot launch or operate Agent Phone's own foreground UI. Observations retain
 foreground identity but expose neither tree nor pixels. Agents may navigate away or wake.
-Secure keyguards stay protected in the live display: Android hides their pixels from
-MediaProjection. Wake dismisses only a keyguard that needs no credential; otherwise the
-person unlocks on the phone. Lock is not Stop. Any PIN supplied to an agent enters
-its transcript and, if remembered, the Workspace; follow the existing
+Agents can operate a secure keyguard with observed controls. The live display keeps it
+protected: Android 13+ hides the bouncer from MediaProjection, so wake dismisses only a
+keyguard that needs no credential and otherwise the person unlocks on the phone. Lock is
+not Stop. Any PIN supplied to an agent enters its transcript and, if remembered, the
+Workspace; follow the existing
 [credential boundaries](../apps/runner/agent-skills/skills/opensteer-integrations/SKILL.md#boundaries).
 
 ## 4. The Runner

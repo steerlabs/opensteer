@@ -1145,7 +1145,7 @@ describe("Mac owner viewer", () => {
 });
 
 describe("phone owner controls", () => {
-  it("follows lease input and power availability, including a locked screen-off phone", async () => {
+  it("follows lease input and power availability through screen-off and a locked screen", async () => {
     const pool = sharedDisplayStreams(client);
     const retain = pool.retain.bind(pool);
     const power = vi.fn(() => true);
@@ -1220,14 +1220,25 @@ describe("phone owner controls", () => {
       sockets[0]!.deliver({
         type: "display.state",
         state: "screen-off",
+        generation: 1,
+        width: 360,
+        height: 780,
+      }),
+    );
+    expect(container.textContent).toContain("screen is off");
+    act(() => button("Wake phone").click());
+    expect(power).toHaveBeenLastCalledWith("wake");
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.state",
+        state: "protected",
         reason: "locked-screen",
         generation: 1,
         width: 360,
         height: 780,
       }),
     );
-    expect(container.textContent).toContain("Unlock on the phone");
-    act(() => button("Wake phone").click());
-    expect(power).toHaveBeenLastCalledWith("wake");
+    expect(container.textContent).toContain("Unlock it on the phone.");
+    expect(container.textContent).not.toContain("Wake phone");
   });
 });

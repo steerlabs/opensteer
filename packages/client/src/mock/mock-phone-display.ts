@@ -90,7 +90,8 @@ export class MockPhoneDisplaySocket implements WebSocketClient {
     const message = parsed.data;
     if (message.type === "display.power") {
       const allowed = this.#phone && this.#writable();
-      if (allowed) {
+      // Like the phone, waking an awake screen or locking a locked one changes nothing.
+      if (allowed && this.#locked !== (message.action === "lock")) {
         this.#locked = message.action === "lock";
         if (!this.#locked) this.#generation++;
         this.#replay();
