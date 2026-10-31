@@ -272,6 +272,18 @@
   object-fit: contain;
   border-radius: 50%;
 }
+
+/* The orb is a picture, which an inset light would sit beneath; its light
+   is a layer over it. */
+.chat-orb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--sheen-mark);
+  box-shadow: var(--edge-mark);
+  pointer-events: none;
+}
 .task-state {
   display: inline-grid;
   flex: none;
@@ -607,7 +619,7 @@
   height: 15px;
 }
 
-.side-profile-filter.is-active {
+.side-tab-filter.is-active {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -619,22 +631,22 @@
   background-color: var(--fill-quiet);
 }
 
-.side-profile-filter .pavatar {
+.side-tab-filter .pavatar {
   flex: none;
 }
 
-.side-profile-filter > span:last-child {
+.side-tab-filter > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--text-sm);
 }
 
-.side-profile-clear {
+.side-tab-filter__clear {
   width: 22px;
 }
 
-.side-profile-count {
+.side-tab-filter__count {
   margin-inline-start: auto;
   color: var(--muted);
   font-size: var(--text-sm);
@@ -648,9 +660,11 @@
   align-items: center;
   gap: var(--space-4);
   height: 22px;
-  padding: 0 var(--space-8) 0 var(--space-4);
+  padding: 0 calc(var(--space-8) - 1px) 0 calc(var(--space-4) - 1px);
+  border: 1px solid var(--amber-line);
   border-radius: var(--radius-full);
   background: var(--amber-wash);
+  box-shadow: var(--edge-tint);
   color: var(--amber-text);
   font-size: var(--text-sm);
   font-weight: var(--weight-heavy);
@@ -810,9 +824,14 @@ button.side-needs:hover {
   -webkit-touch-callout: none;
 }
 
+/* The conversation docked beside the place: lit like the selection, a step
+   quieter, so the place's own row stays the one that reads as chosen. */
 .side-home.is-open,
 .side-task.is-open {
+  --ring-bg: var(--cutout-quiet);
   border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-quiet);
+  box-shadow: var(--edge-plate);
 }
 
 .side-home__main,
@@ -1959,11 +1978,11 @@ button.start-apps__row--away:focus-visible {
   padding: var(--space-6);
   border: 1px solid var(--rim-plate);
   border-radius: 14px;
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   list-style: none;
   box-shadow: var(--edge-plate), var(--lift-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .start-result {
@@ -2149,7 +2168,8 @@ button.start-apps__row--away:focus-visible {
   width: var(--pavatar-size);
   height: var(--pavatar-size);
   border-radius: 50%;
-  background: var(--pavatar-tint);
+  background: var(--sheen-mark) var(--pavatar-tint);
+  box-shadow: var(--edge-mark);
   color: var(--text-on-color);
   font: 800 calc(var(--pavatar-size) * 0.6) / 1 var(--font-sans);
   letter-spacing: -0.03em;
@@ -2597,11 +2617,14 @@ html[data-tab-sorting] * {
 
 /* Exactly the composer's width: an implicit column grows to a chip's whole
    untruncated title, and the chips' 100% cap then resolves against that. */
+/* Inset evenly from the composer's edge, so each chip's corner can follow
+   the composer's own. */
 .context-chips {
+  --chip-inset: var(--space-8);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-6);
-  padding: var(--space-10) var(--space-12) 0;
+  padding: var(--chip-inset) var(--chip-inset) 0;
 }
 
 .context-chips__row {
@@ -2610,6 +2633,7 @@ html[data-tab-sorting] * {
   gap: var(--space-6);
 }
 
+/* A segment of the composer it sits in: no frame of its own. */
 .context-chip {
   --ring-bg: var(--surface-raised);
   display: inline-flex;
@@ -2617,20 +2641,19 @@ html[data-tab-sorting] * {
   gap: var(--space-8);
   max-width: min(100%, 320px);
   height: var(--control-height);
-  padding: 0 var(--space-4) 0 var(--space-4);
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-sm);
-  background: var(--sheen) var(--fill-plate);
+  padding: 0 var(--space-4);
+  --chip-radius: calc(var(--composer-radius) - 1px - var(--chip-inset, var(--space-8)));
+  border-radius: var(--chip-radius);
+  background-color: var(--fill-quiet);
   color: var(--text-soft);
   font-size: var(--text-md);
-  box-shadow: var(--edge-plate);
 }
 
 .context-chip__thumb {
   flex: none;
   width: 44px;
   height: 28px;
-  border-radius: 5px;
+  border-radius: calc(var(--chip-radius) - var(--space-4));
   object-fit: cover;
   object-position: top;
   box-shadow: 0 0 0 1px var(--line);
@@ -2838,8 +2861,11 @@ html[data-tab-sorting] * {
 
 /* ---- The omnibox's profile chip and its menu ---- */
 
+/* The profile is a segment of the address: one capsule inside the other,
+   the same gap all round. */
 .browser-address--chip {
-  padding-left: var(--space-4);
+  --segment-inset: var(--space-2);
+  padding-left: var(--segment-inset);
 }
 
 .profile-chip {
@@ -2849,17 +2875,16 @@ html[data-tab-sorting] * {
   gap: var(--space-6);
   min-width: 0;
   max-width: 200px;
-  height: var(--control-height-sm);
-  padding: 0 calc(var(--space-8) - 1px) 0 calc(var(--space-4) - 1px);
+  height: calc(var(--control-height) - 2px - 2 * var(--segment-inset, var(--space-2)));
+  padding: 0 var(--space-8) 0 var(--space-2);
   border-radius: var(--radius-full);
-  background: var(--sheen) var(--fill-plate);
+  background-color: var(--fill-quiet);
   color: var(--text);
   font-size: var(--text-sm);
   font-weight: var(--weight-strong);
   white-space: nowrap;
   --ring-bg: transparent;
-  border: 1px solid var(--rim-plate);
-  box-shadow: var(--edge-plate);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .profile-chip:hover,
@@ -2874,11 +2899,26 @@ html[data-tab-sorting] * {
   text-overflow: ellipsis;
 }
 
-/* A phone's row has room for the disc alone; its name and menu are the same. */
+/* A finger gets the address's whole height to aim at, while the chip itself
+   keeps its even inset: the target is a layer over it, not its size. */
+@media (any-pointer: coarse) {
+  .profile-chip {
+    position: relative;
+    min-height: 0;
+  }
+
+  .profile-chip::before {
+    content: "";
+    position: absolute;
+    inset: calc(-1px - var(--segment-inset, var(--space-2))) 0;
+  }
+}
+
+/* A phone's row has room for the disc alone; its name and menu are the same.
+   Still a segment: square to the address's height, inset like the chip. */
 .browser-toolbar--compact .profile-chip {
   flex: none;
-  width: var(--control-height);
-  height: var(--control-height);
+  width: calc(var(--control-height) - 2px - 2 * var(--segment-inset, var(--space-2)));
   padding: 0;
   justify-content: center;
 }
@@ -3119,11 +3159,11 @@ html[data-tab-sorting] * {
   padding: var(--space-14) var(--space-18);
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   box-shadow: var(--edge-plate), var(--lift-float);
   transform: translate(-50%, -50%);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .occupant-mark {

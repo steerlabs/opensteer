@@ -86,10 +86,23 @@
        plate  — lit fill, rim and top light: buttons, cards, bubbles, fields,
                 selection. Most things.
        float  — a plate that sits over content: composer, menus, popovers,
-                toasts, dialogs. The only material with a shadow, and the
-                only one that may turn to glass.
+                toasts, dialogs. The only material with a shadow. Floats
+                that never hold another float — menus, popovers, toasts,
+                result lists — are glass where the person allows it; a
+                blurred element is the backdrop for everything inside it,
+                so a menu opened inside a glass composer would blur nothing
+                and turn see-through. Anything that can open a menu stays
+                opaque.
        accent — the ember, lit: the one action that matters, the person's
                 own words, send.
+     Two rules hold them together. Something set into another surface — a
+     chip in the composer, the profile in the address bar — is a segment of
+     its host: a quiet fill with no rim or light of its own, its corners
+     concentric with the host's, so the two read as one object. And a mark
+     drawn in its own colour — an avatar, a site's letter tile, the Chat
+     orb — is lit like the accent: --sheen-mark with --edge-mark, the rim a
+     shade deeper than whatever hue it carries. Dots and badges stay flat;
+     at that size an edge is noise.
      A surface paints `background: var(--sheen) var(--fill-*)`, a border in a
      --rim-*, and box-shadow from an --edge-* (plus --lift-float on floats).
      Fills are plain colours so hover and press can glide; the sheen is the
@@ -105,6 +118,7 @@
 
   --sheen: linear-gradient(rgb(var(--light) / 3.5%), rgb(var(--light) / 0%));
   --sheen-accent: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0%));
+  --sheen-mark: linear-gradient(rgb(255 255 255 / 18%), rgb(255 255 255 / 0%) 70%);
 
   --orb-light: color-mix(in srgb, var(--ember) 20%, var(--text-on-color));
   --orb-core: color-mix(in srgb, var(--ember) 45%, var(--ink-on-ember));
@@ -118,10 +132,11 @@
   --fill-accent-hover: var(--ember-bright);
   /* The work beside the sidebar: one step up from the ground. */
   --fill-sheet: color-mix(in srgb, var(--bg), white 2.5%);
-  /* Opaque until the person's settings allow transparency (below). */
   --fill-float: var(--surface-elevated);
   --fill-float-hover: color-mix(in srgb, var(--fill-float), rgb(var(--light)) 5%);
-  --blur-float: none;
+  /* Opaque until the person's settings allow transparency (below). */
+  --fill-glass: var(--fill-float);
+  --blur-glass: none;
 
   /* Rims. --rim-plate is decoration: a labelled button or a card is found by
      its words. --rim-control is a boundary a person has to find — a text
@@ -137,6 +152,12 @@
   --edge-accent: inset 0 1px 0 rgb(255 255 255 / 50%);
   --edge-attention: inset 0 1px 0 color-mix(in srgb, var(--ember) 30%, transparent);
   --edge-sheet: inset 0 1px 0 rgb(var(--light) / 5%);
+  /* A mark's colour is the person's or the site's, so its rim deepens
+     whatever hue is there rather than naming one. */
+  --edge-mark: inset 0 1px 0 rgb(255 255 255 / 24%), inset 0 0 0 1px rgb(0 0 0 / 22%);
+  /* A tinted control (an attention count, a wash-filled pill) keeps its
+     tint and takes the plate's top light. */
+  --edge-tint: inset 0 1px 0 rgb(var(--light) / 10%);
   --lift-float: 0 12px 32px -16px rgb(0 0 0 / 60%);
   /* The colour a row's fill composites to over the page, for a badge's
      cut-out ring that must match what it is cut from. */
@@ -259,8 +280,10 @@
    that cannot answer keep the opaque float above. */
 @media (prefers-reduced-transparency: no-preference) {
   :root {
-    --fill-float: color-mix(in srgb, var(--surface-elevated) 72%, transparent);
-    --blur-float: blur(20px) saturate(1.5);
+    /* Dense enough that what is behind reads as colour and light, never as
+       words: a menu's own text keeps its contrast over a white page. */
+    --fill-glass: color-mix(in srgb, var(--surface-elevated) 88%, transparent);
+    --blur-glass: blur(28px) saturate(1.6);
   }
 }
 

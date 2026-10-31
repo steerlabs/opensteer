@@ -740,8 +740,9 @@ kbd.kbd {
   min-width: 17px;
   padding: 1px var(--space-6);
   border-radius: 5px;
-  border: 1px solid var(--line-strong);
-  background: var(--surface-raised);
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
   color: var(--muted);
   font-size: var(--text-3xs);
   line-height: 1.5;

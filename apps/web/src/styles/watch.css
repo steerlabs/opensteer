@@ -236,10 +236,10 @@ button.computer-watch__picture {
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
   color: var(--text-soft);
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   box-shadow: var(--edge-plate), var(--lift-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .computer-watch__mark .computer-use__app-mark {

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   conversationSurfaces,
+  placeHasAgents,
   placeList,
   type HostClient,
   type HostSnapshot,
@@ -1216,8 +1217,10 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       expect(tile(screen, title)).toBeDefined();
     // The person's own Mac view is its own tile, apart from the task working in Notes.
     expect(ownerTile(screen, "Notes — Shopping list")).toBeDefined();
-    // Title and site, never who opened it or which task holds it.
-    const words = screen.textContent ?? "";
+    // Titled Tabs; each tile says its title and site, never who opened it or which task holds it.
+    expect(screen.querySelector("[data-header-title]")?.textContent).toBe("Tabs");
+    const words = screen.querySelector("[data-list]")!.textContent;
+    expect(words).toContain("Q4 roadmap – Linear");
     for (const thread of w.host.getSnapshot().threads.filter(({ listed }) => listed))
       expect(words).not.toContain(thread.title);
     expect(words).not.toMatch(/Opened by|Agent|This task|All tabs/u);
@@ -1237,6 +1240,26 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     // Two columns on an ordinary phone.
     expect(screen.querySelector("[data-list]")?.getAttribute("data-columns")).toBe("2");
     w.record("J1 global list", { tiles: tiles(screen).map((b) => b.dataset["testid"]) });
+  });
+
+  it("narrows to the tabs agents are in from the bar's filter, titled so, and back to every tab", async () => {
+    const w = await world();
+    await openSidebarTabs(w);
+    const places = placeList(w.host.getSnapshot());
+    const busy = places.filter(placeHasAgents).map(({ title }) => title);
+    expect(busy.length).toBeGreaterThan(0);
+    expect(busy.length).toBeLessThan(places.length);
+    const title = () => front(w).querySelector("[data-header-title]")?.textContent;
+    const filter = () => front(w).querySelector<HTMLElement>("[data-header-right] [data-menu]")!;
+    const shown = () => tiles(front(w)).map((b) => b.getAttribute("aria-label")!.split(", ")[0]);
+    expect(filter().getAttribute("aria-label")).toBe("Filter");
+    await press(control(filter(), "Tabs with agents"));
+    expect(title()).toBe("Tabs with agents");
+    expect(filter().getAttribute("aria-label")).toBe("Filter, showing tabs with agents");
+    expect(shown()).toEqual(busy);
+    await press(control(filter(), "All tabs"));
+    expect(title()).toBe("Tabs");
+    expect(shown()).toEqual(places.map(({ title }) => title));
   });
 
   it("uses one column on a narrow pane or with large text, and stable picture shapes", async () => {

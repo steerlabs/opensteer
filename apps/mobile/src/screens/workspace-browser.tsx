@@ -319,7 +319,10 @@ function Grid(props: {
     <Screen edgeToEdge>
       <SurfaceGrid
         active={props.active}
-        emptyDetail="Tabs and apps this conversation uses appear here."
+        empty={{
+          title: "No tabs yet",
+          detail: "Tabs and apps this conversation uses appear here.",
+        }}
         header={<View style={styles.notices}>{props.notices}</View>}
         hostClient={props.hostClient}
         loading={props.loading && props.tiles.length === 0}
