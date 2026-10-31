@@ -426,23 +426,6 @@ button.message-attachment:hover:not(:disabled) {
   border-radius: var(--radius-sm);
 }
 
-/* ---- In the queue tray ---- */
-
-.queue-card__attachments {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--muted);
-  font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
-}
-
-.queue-card__attachments svg {
-  width: 13px;
-  height: 13px;
-}
-
 @media (max-width: 680px) {
   .staged-attachment {
     width: 200px;

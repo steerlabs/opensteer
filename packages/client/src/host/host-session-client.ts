@@ -3069,23 +3069,6 @@ export class HttpHostClient {
     );
   }
 
-  async moveThreadInput(
-    threadId: string,
-    messageId: string,
-    beforeMessageId: string | null,
-  ): Promise<void> {
-    const patch = { beforeMessageId, messageId, threadId, type: "thread.input.move" } as const;
-    this.#update(applyOptimisticCommandPatch(this.#snapshot, patch));
-    try {
-      // Each drop is its own arrangement, so a lost answer is settled by the
-      // reread below rather than replayed over whatever came after it.
-      await this.dispatch({ ...patch, idempotencyKey: mutationIdempotencyKey("input-move") });
-    } catch (error) {
-      this.#reloadInputQueue(threadId);
-      throw error;
-    }
-  }
-
   async resumeThreadInputQueue(threadId: string): Promise<void> {
     // Resume is idempotent on the Host, so a lost answer is simply asked again.
     await this.dispatch({

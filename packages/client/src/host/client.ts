@@ -1238,16 +1238,6 @@ export interface HostClient {
    * the Thread mutations below call it themselves once the Host accepts.
    */
   rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences>;
-  /**
-   * Stands one of the reader's own queued messages in front of another, or
-   * at the back when `beforeMessageId` is null. The snapshot's queue takes the
-   * new order at once; a refusal rereads the Host's order and is rethrown.
-   */
-  moveThreadInput(
-    threadId: string,
-    messageId: string,
-    beforeMessageId: string | null,
-  ): Promise<void>;
   /** Lets a queue a Stop paused admit work again. Idempotent on the Host. */
   resumeThreadInputQueue(threadId: string): Promise<void>;
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void;

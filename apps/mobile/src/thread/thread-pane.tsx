@@ -439,6 +439,11 @@ function ThreadPaneForUser(
     readonly quote?: ThreadDraftQuote | null;
     readonly text: string;
   } | null>(null);
+  const restoreQueuedDraft = useCallback(
+    (message: { readonly attachments: readonly ArtifactContentPart[]; readonly text: string }) =>
+      setRestoredDraft((current) => ({ ...message, key: (current?.key ?? 0) + 1 })),
+    [],
+  );
   const handedQuote = props.quote ?? null;
   const onQuoteTaken = props.onQuoteTaken;
   useEffect(() => {
@@ -1046,6 +1051,21 @@ function ThreadPaneForUser(
     return rows;
   }, [conversational, drawn, groups, indicator, outcomes, unreadBoundarySequence, viewerUserId]);
 
+  const queueCanRespond = canRespond && thread?.status !== "archived";
+  const queueFooter = useMemo(
+    () =>
+      thread?.role === "work" && inputQueue !== null ? (
+        <QueuedMessages
+          canRespond={queueCanRespond}
+          hostClient={hostClient}
+          onEdit={restoreQueuedDraft}
+          queue={inputQueue}
+          viewerUserId={viewerUserId}
+        />
+      ) : null,
+    [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
+  );
+
   // Never under a finger: the list moves only where the reader puts it.
   const keepPinned = (): void => {
     if (pinned.current && !dragging.current) scrollToLatest(false);
@@ -1212,6 +1232,7 @@ function ThreadPaneForUser(
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         keyExtractor={(item) => item.key}
+        ListFooterComponent={queueFooter ?? undefined}
         ListEmptyComponent={
           sheet === null ? (
             <EmptyThread />
@@ -1411,20 +1432,7 @@ function ThreadPaneForUser(
                 threadId={thread.id}
               />
             ) : null}
-            {/* One dock: the tray tucks under the composer's top edge, so the
-                two share a wrapper the dock's own gap cannot reach between.
-                Only work has a tray; a conversation shows what was sent. */}
             <View>
-              {inputQueue === null || thread.role !== "work" ? null : (
-                <QueuedMessages
-                  canRespond={canRespond && thread.status !== "archived"}
-                  hostClient={props.hostClient}
-                  onEdit={(message) =>
-                    setRestoredDraft((current) => ({ ...message, key: (current?.key ?? 0) + 1 }))
-                  }
-                  queue={inputQueue}
-                />
-              )}
               <Composer
                 variant={conversational ? "conversation" : "work"}
                 voice={isHome}
@@ -1690,7 +1698,12 @@ function sameGroup(left: TranscriptGroup, right: TranscriptGroup): boolean {
       sameEntries(left.turn.assignments, right.turn.assignments)
     );
   }
-  return right.kind !== "turn" && right.kind === left.kind && left.entry === right.entry;
+  return (
+    right.kind !== "turn" &&
+    right.kind === left.kind &&
+    left.entry === right.entry &&
+    (left.kind !== "message" || (right.kind === "message" && left.joinedRun === right.joinedRun))
+  );
 }
 
 function sameEntries(left: readonly object[], right: readonly object[]): boolean {

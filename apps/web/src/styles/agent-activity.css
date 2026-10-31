@@ -61,6 +61,186 @@
   padding: var(--space-10) var(--space-14);
 }
 
+/* ---- Waiting to be sent ----
+
+   A queued message is the bubble it will become, unfilled behind a dashed
+   edge, at the conversation's foot in the order Runs take them. When a Run
+   takes it, it is drawn sent where it stands. */
+.queued {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-top: var(--space-8);
+}
+
+.queued__list {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.queued__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  animation: rise-in var(--duration-med) var(--ease-out);
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+/* Full width, so a bubble's limit stays relative to the transcript. */
+.queued__item > .msg--user-row {
+  align-self: stretch;
+}
+
+.queued__item--busy {
+  opacity: 0.55;
+}
+
+.msg--queued > .msg--user,
+.msg--queued > .input-card {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--muted) 55%, transparent);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-soft);
+  animation: none;
+}
+
+.msg--queued > .msg--user,
+.msg--input.msg--queued {
+  margin-bottom: var(--space-2);
+  animation: none;
+}
+
+.queued__row,
+.queued__paused {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-height: var(--control-height-sm);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.queued__status {
+  padding: 0 var(--space-4) 0 var(--space-6);
+}
+
+.queued__paused {
+  gap: var(--space-6);
+  color: var(--amber-text);
+}
+
+.queued__paused-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--amber);
+}
+
+.queued__action,
+.queued__more {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-6);
+  border-radius: var(--radius-xs);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.queued__action--icon {
+  justify-content: center;
+  width: var(--control-height-sm);
+  padding: 0;
+  color: var(--muted);
+}
+
+.queued__action svg,
+.queued__more svg {
+  width: 13px;
+  height: 13px;
+}
+
+.queued__action:hover:not(:disabled),
+.queued__more:hover {
+  color: var(--text);
+  background-color: var(--fill-quiet);
+}
+
+.queued__action:disabled {
+  opacity: 0.5;
+}
+
+/* Where a pointer can hover, the status stands under each message alone and
+   its actions join it on hover or focus; a touch screen always shows them. */
+@media (hover: hover) {
+  .queued__row .queued__action {
+    opacity: 0;
+    transition:
+      opacity var(--duration-fast) var(--ease-out),
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
+  }
+
+  .queued__item:hover .queued__action,
+  .queued__item:focus-within .queued__action {
+    opacity: 1;
+  }
+
+  .queued__item:hover .queued__action:disabled,
+  .queued__item:focus-within .queued__action:disabled {
+    opacity: 0.5;
+  }
+}
+
+.queued__more {
+  color: var(--muted);
+  font-weight: inherit;
+}
+
+.queued__more[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+/* A message that joined the turn under way says so above it, quietly. */
+.msg__steer {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin: var(--space-8) var(--space-4) calc(var(--space-6) * -1) 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 16px;
+}
+
+.msg--input > .msg__steer {
+  align-self: flex-end;
+  margin-bottom: calc(var(--space-2) * -1);
+}
+
+.msg__steer svg {
+  width: 12px;
+  height: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queued__item {
+    animation: none;
+  }
+}
+
 /* Who sent it, on one line that never wraps: the mark and name the sidebar
    gives it, which lead there. When it was sent is the line's tooltip. */
 .input-card__from {
