@@ -11,8 +11,17 @@ import {
 import { computerUseView, isIphone, phoneUseView } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  useRef,
+  useEffect,
+  type ReactNode,
+} from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, View } from "react-native";
+import { workspaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { threadReturn } from "../navigation-state.js";
 import { ComputerUseBlock, PhoneUseBlock } from "../computers/computer-use-block.js";
@@ -102,6 +111,43 @@ function ComputerDetail(props: {
   readonly machineId: string;
 }): ReactNode {
   const navigation = useNavigation();
+  const [openingPhone, setOpeningPhone] = useState(false);
+  const [openFailure, setOpenFailure] = useState<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const openPhone = async () => {
+    setOpeningPhone(true);
+    setOpenFailure(null);
+    try {
+      const apps = await props.hostClient.listApprovedComputerApps();
+      const target = apps.find(
+        (app) => app.machineId === props.machineId && app.target.kind === "phone",
+      )?.target;
+      if (!mounted.current || !navigation.isFocused()) return;
+      if (!target) throw new Error("This phone is no longer approved for viewing.");
+      const view = await props.hostClient.openComputerView(props.machineId, target);
+      if (mounted.current && navigation.isFocused())
+        navigation.dispatch(
+          StackActions.push(
+            "WorkspaceBrowser",
+            workspaceRoute(props.deploymentId, {
+              kind: "phone",
+              machineId: props.machineId,
+              source: { kind: "owner-view", viewId: view.viewId, generation: view.generation },
+            }),
+          ),
+        );
+    } catch (error) {
+      if (mounted.current) setOpenFailure(operationDetail(error, "The phone could not be opened."));
+    } finally {
+      if (mounted.current) setOpeningPhone(false);
+    }
+  };
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const machines = useHostSelector(props.hostClient, selectMachines);
@@ -193,14 +239,24 @@ function ComputerDetail(props: {
             onChanged={data.reload}
           />
         ) : phone !== null ? (
-          <PhoneUseBlock
-            canRespond={canRespond}
-            hostClient={props.hostClient}
-            machine={machine}
-            onChanged={data.reload}
-            onOpenThread={openThread}
-            view={phone}
-          />
+          <View style={styles.summary}>
+            {canRespond && phone.access !== null && phone.state.kind === "ready" ? (
+              <SecondaryButton
+                busy={openingPhone}
+                label="Open phone"
+                onPress={() => void openPhone()}
+              />
+            ) : null}
+            {openFailure ? <Notice title="That did not open" detail={openFailure} /> : null}
+            <PhoneUseBlock
+              canRespond={canRespond}
+              hostClient={props.hostClient}
+              machine={machine}
+              onChanged={data.reload}
+              onOpenThread={openThread}
+              view={phone}
+            />
+          </View>
         ) : view !== null ? (
           <ComputerUseBlock
             canRespond={canRespond}

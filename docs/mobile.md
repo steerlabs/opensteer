@@ -199,8 +199,9 @@ over its conversation. Owner
 metadata does not advance Workspace event cursors or enter conversation context.
 Saved tabs restore through the shared activation owner; a late result after leaving
 or switching users must not navigate. Older Hosts retain the live-session listing
-path. The phone can view existing owner views and manage connected Chrome profiles;
-creating owner views, starting browsers and connecting Chrome stay on computers. See `surfaceRoute`,
+path. The phone can open Agent Phone owner views, view existing Mac owner views and manage
+connected Chrome profiles; opening Mac owner views, starting browsers and connecting
+Chrome stay on computers. See `surfaceRoute`,
 `workspaceRoute` and `placeList` in `packages/client/src/host`.
 
 Native decoder epochs clear old pixels and queued output before a replacement

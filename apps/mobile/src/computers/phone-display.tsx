@@ -6,6 +6,7 @@ import {
   computerDisplayStatus,
   sharedDisplayStreams,
   type DisplayFrame,
+  type DisplaySnapshot,
   type DisplayLease,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
@@ -20,6 +21,8 @@ import {
   StyleSheet,
   View,
 } from "react-native";
+import { StackActions, useNavigation } from "@react-navigation/native";
+import { workspaceRoute } from "../browser/surface-route.js";
 import { useSurfaceHeader } from "../browser/surface-header.js";
 import { color } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
@@ -61,7 +64,9 @@ export function ComputerDisplay({
   machineId,
   onPageSize,
   interactive = false,
+  onReopen,
 }: {
+  readonly onReopen?: (() => void) | undefined;
   readonly active: boolean;
   readonly interactive?: boolean;
   readonly hostClient: HostClient;
@@ -85,6 +90,7 @@ export function ComputerDisplay({
     [kind, sessionId, appKey, viewId, generation],
   );
   const controls = useRef<DisplayControlsHandle>(null);
+  const [displayState, setDisplayState] = useState<DisplaySnapshot | null>(null);
   const [inputLease, setInputLease] = useState<DisplayLease | null>(null);
   const [picture, setPicture] = useState<DisplayPicture | null>(null);
   const decodingPicture = useRef<DisplayPicture | null>(null);
@@ -179,11 +185,14 @@ export function ComputerDisplay({
     };
     const changed = () => {
       const snapshot = lease.getSnapshot();
+      setDisplayState(snapshot);
       const status = computerDisplayStatus(snapshot, phone);
       setWords(
-        status.reason
-          ? computerReasonWords(status.reason, { machine: label, target: label, phone })
-          : null,
+        phone && snapshot.display?.reason === "locked-screen"
+          ? "Unlock on the phone"
+          : status.reason
+            ? computerReasonWords(status.reason, { machine: label, target: label, phone })
+            : null,
       );
       setTerminal(snapshot.connection === "closed");
       if (
@@ -266,6 +275,7 @@ export function ComputerDisplay({
     return () => {
       controls.current?.resetInput();
       setInputLease(null);
+      setDisplayState(null);
       viewportChanged.current = null;
       disposed = true;
       requestKeyframe.current = null;
@@ -323,6 +333,40 @@ export function ComputerDisplay({
           visible={active && foreground && shown && !words}
         />
       ) : null}
+      {interactive && phone && active && foreground && displayState?.input !== "available" ? (
+        <View style={styles.badge}>
+          <AppText>View only</AppText>
+        </View>
+      ) : null}
+      {interactive && phone && inputLease && active && foreground ? (
+        <View style={styles.navigation}>
+          {shown && displayState?.input === "available" && picture
+            ? (["back", "home", "recents"] as const).map((to) => (
+                <Pressable
+                  key={to}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    to === "back" ? "Back" : to === "home" ? "Home" : "Recent apps"
+                  }
+                  onPress={() => inputLease.input(picture.generation, [{ kind: "nav", to }])}
+                >
+                  <AppText>
+                    {to === "back" ? "Back" : to === "home" ? "Home" : "Recent apps"}
+                  </AppText>
+                </Pressable>
+              ))
+            : null}
+          {displayState?.power === "available" && displayState.display?.state === "live" ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Lock phone"
+              onPress={() => inputLease.power("lock")}
+            >
+              <AppText>Lock phone</AppText>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
       {unavailable || !shown || words || updateName !== null ? (
         <View style={styles.status}>
           {!unavailable && !words && updateName === null ? (
@@ -340,9 +384,24 @@ export function ComputerDisplay({
                       ? "macOS is taking longer to start sharing this window."
                       : "Starting window sharing…"))}
           </AppText>
-          {terminal && !phone && !unavailable ? (
-            <Pressable accessibilityRole="button" onPress={() => reopen.current?.()}>
-              <AppText>Open again</AppText>
+          {interactive &&
+          phone &&
+          displayState?.power === "available" &&
+          displayState.display?.state === "screen-off" ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Wake phone"
+              onPress={() => inputLease?.power("wake")}
+            >
+              <AppText>Wake phone</AppText>
+            </Pressable>
+          ) : null}
+          {terminal && (!phone || onReopen) && !unavailable ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => (onReopen ? onReopen() : reopen.current?.())}
+            >
+              <AppText>{phone ? "Reopen" : "Open again"}</AppText>
             </Pressable>
           ) : null}
         </View>
@@ -453,7 +512,7 @@ function useVisibleOwnerRetention(
 }
 
 /**
- * The person's own view of an app or phone — one they opened on the Mac — by
+ * The person's own view of an app or phone — one they opened — by
  * its exact generation. It is kept alive only while it is in front of the
  * reader here, as the web keeps it. A closed or replaced view says so and
  * stays ended: a task holding the same app never stands in for it.
@@ -467,6 +526,46 @@ export function ComputerOwnerView(props: {
   readonly viewId: string;
 }) {
   const { active, generation, hostClient, viewId } = props;
+  const navigation = useNavigation();
+  const [reopening, setReopening] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const reopen = async () => {
+    setReopening(true);
+    setFailure(null);
+    try {
+      const apps = await hostClient.listApprovedComputerApps();
+      const target = apps.find(
+        (app) => app.machineId === props.machineId && app.target.kind === "phone",
+      )?.target;
+      if (!mounted.current || !navigation.isFocused()) return;
+      if (!target) throw new Error("This phone is no longer approved for viewing.");
+      const opened = await hostClient.openComputerView(props.machineId, target);
+      const snapshot = hostClient.getSnapshot();
+      if (mounted.current && navigation.isFocused() && snapshot.deploymentId)
+        navigation.dispatch(
+          StackActions.replace(
+            "WorkspaceBrowser",
+            workspaceRoute(snapshot.deploymentId, {
+              kind: "phone",
+              machineId: props.machineId,
+              source: { kind: "owner-view", viewId: opened.viewId, generation: opened.generation },
+            }),
+          ),
+        );
+    } catch (error) {
+      if (mounted.current)
+        setFailure(error instanceof Error ? error.message : "The phone could not be opened.");
+    } finally {
+      if (mounted.current) setReopening(false);
+    }
+  };
   const machine = useHostSelector(hostClient, (snapshot) =>
     snapshot.machines.find((value) => value.id === props.machineId),
   );
@@ -492,24 +591,48 @@ export function ComputerOwnerView(props: {
       <View style={styles.stage}>
         <View style={styles.status}>
           <AppText tone="soft">This view has ended</AppText>
-          <AppText tone="muted">Open it again on the computer to see it here.</AppText>
+          {phone ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Reopen phone"
+              disabled={reopening}
+              onPress={() => void reopen()}
+            >
+              <AppText>{reopening ? "Opening…" : "Reopen"}</AppText>
+            </Pressable>
+          ) : (
+            <AppText tone="muted">Open it again on the computer to see it here.</AppText>
+          )}
+          {failure ? <AppText>{failure}</AppText> : null}
         </View>
       </View>
     );
   return (
     <ComputerDisplay
-      interactive={!phone}
+      interactive
       active={active}
       hostClient={hostClient}
       label={label}
       machineId={props.machineId}
       phone={phone}
+      onReopen={phone ? () => void reopen() : undefined}
       source={{ generation, kind: "owner-view", viewId }}
     />
   );
 }
 
 const styles = StyleSheet.create({
+  badge: { position: "absolute", top: 12, right: 12 },
+  navigation: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "space-around",
+    padding: 12,
+    backgroundColor: "black",
+  },
   stage: { flex: 1, backgroundColor: "black" },
   status: {
     position: "absolute",
