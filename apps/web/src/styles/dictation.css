@@ -89,7 +89,7 @@
   min-width: var(--space-20);
   overflow: hidden;
   color: var(--text-soft);
-  mask-image: linear-gradient(to right, transparent, black var(--space-48));
+  mask-image: linear-gradient(to right, transparent, var(--mask-ink) var(--space-48));
 }
 .dictation-live .dictation-level i {
   flex: 0 0 2.5px;
@@ -110,12 +110,14 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border: 0;
+  width: var(--control-height);
+  height: var(--control-height);
+  border: 1px solid var(--rim-plate);
   border-radius: 50%;
-  background: var(--text);
-  color: var(--bg);
+  background: var(--sheen-accent) var(--fill-accent);
+  color: var(--ink-on-ember);
+  box-shadow: var(--edge-accent);
+  border-color: var(--rim-accent);
 }
 .dictation-keep:disabled {
   opacity: 0.45;

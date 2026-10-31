@@ -14,20 +14,21 @@
   gap: 12px;
   padding: 14px 15px;
   text-align: left;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   cursor: pointer;
   transition:
     border-color var(--duration-fast) var(--ease-out),
     background-color var(--duration-fast) var(--ease-out),
     transform var(--duration-fast) var(--ease-out);
+  box-shadow: var(--edge-plate);
 }
 
 .intg-card:hover {
   border-color: var(--ember-line);
-  background: var(--surface-elevated);
   transform: translateY(-1px);
+  background-color: var(--fill-plate-hover);
 }
 
 .intg-card:focus-visible {
@@ -44,13 +45,13 @@
 }
 
 .intg-card__name {
-  font-size: 13.5px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text);
 }
 
 .intg-card__description {
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.45;
   color: var(--muted);
   display: -webkit-box;
@@ -78,7 +79,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--ember);
 }
@@ -93,9 +94,10 @@
 }
 
 .intg-advanced {
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .intg-advanced > summary {
@@ -105,7 +107,7 @@
   padding: 11px 13px;
   cursor: pointer;
   color: var(--text-soft);
-  font-size: 12.5px;
+  font-size: var(--text-md);
   font-weight: 600;
 }
 
@@ -143,10 +145,12 @@
   height: var(--intg-icon-size);
   flex: none;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--surface-raised);
-  font-size: 17px;
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen) var(--fill-plate);
+  font-size: var(--display-sm);
   overflow: hidden;
+  box-shadow: var(--edge-plate);
+  --intg-hue: 30;
 }
 
 .intg-icon img {
@@ -168,7 +172,7 @@
 }
 
 .intg-icon--monogram {
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   font-weight: 650;
   letter-spacing: 0.04em;
   color: oklch(0.85 0.06 var(--intg-hue));
@@ -180,11 +184,11 @@
   width: 46px;
   height: 46px;
   border-radius: var(--radius-md);
-  font-size: 23px;
+  font-size: var(--display-lg);
 }
 
 .intg-icon--lg.intg-icon--monogram {
-  font-size: 15px;
+  font-size: var(--text-root);
 }
 
 .intg-hero {
@@ -203,7 +207,7 @@
 
 .intg-hero__name {
   font-family: var(--font-display);
-  font-size: 21px;
+  font-size: var(--display-md);
   font-weight: 520;
   letter-spacing: -0.01em;
 }
@@ -213,7 +217,7 @@
 }
 
 .intg-hero__description {
-  font-size: 13px;
+  font-size: var(--text-lg);
   color: var(--muted);
 }
 
@@ -222,7 +226,7 @@
 .intg-hero__requirement,
 .intg-hero__provenance,
 .intg-card__requirement {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -274,12 +278,12 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background 120ms ease;
+  transition: background-color 120ms ease;
 }
 
 .intg-account--add:hover:not(:disabled),
 .intg-link:hover:not(:disabled) {
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 
 .intg-account--add:focus-visible,
@@ -342,9 +346,10 @@
   gap: var(--space-10);
   min-height: 54px;
   padding: var(--space-10) var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .intg-account-selection__icon {
@@ -353,10 +358,11 @@
   width: 32px;
   height: 32px;
   flex: none;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
-  background: var(--surface-raised);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
+  box-shadow: var(--edge-plate);
 }
 
 .intg-account-selection__icon svg {
@@ -406,14 +412,16 @@
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--amber) 7%, transparent);
+  background: var(--sheen) var(--fill-plate);
+  border-color: var(--rim-attention);
+  box-shadow: var(--edge-attention);
 }
 
 .intg-grant__drift-title {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   color: var(--text-soft);
 }
 
@@ -465,9 +473,10 @@
   flex-wrap: wrap;
   gap: var(--space-8);
   padding: var(--space-10) var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .connect-sheet__app-copy {

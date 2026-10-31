@@ -138,13 +138,14 @@
   place-items: center;
   width: 22px;
   height: 22px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
-  background: var(--surface-elevated);
+  background: var(--sheen) var(--fill-plate);
   color: var(--text-soft);
   font-size: var(--text-2xs);
   font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
+  box-shadow: var(--edge-plate);
 }
 
 .connect-chrome__step-body {
@@ -180,9 +181,10 @@
   max-width: 100%;
   height: 32px;
   padding: 0 var(--space-2) 0 var(--space-12);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--rim-control);
   border-radius: var(--radius-full);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
 
 .connect-chrome__omnibox code {
@@ -208,11 +210,12 @@
   gap: var(--space-8) var(--space-16);
   width: min(100%, 19rem);
   padding: var(--space-8) var(--space-10);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   color: var(--muted);
   font-size: var(--text-xs);
+  box-shadow: var(--edge-plate);
 }
 
 .connect-chrome__sketch-button {
@@ -376,10 +379,11 @@
   padding: var(--space-10) var(--space-12);
   border: 1px solid var(--amber-line);
   border-radius: var(--radius-sm);
-  background: var(--amber-wash);
+  background: var(--sheen) var(--fill-plate);
   color: var(--amber-text);
   font-size: var(--text-md);
   line-height: 1.5;
+  box-shadow: var(--edge-attention);
 }
 
 .sign-in-card__problem p {
@@ -493,10 +497,11 @@
   padding: var(--space-4);
   overflow-y: auto;
   overscroll-behavior: contain;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--sheen) var(--fill-plate);
   scroll-padding-block: var(--space-4);
+  box-shadow: var(--edge-plate);
 }
 
 .account-choice__option {
@@ -505,21 +510,24 @@
   gap: var(--space-10);
   min-width: 0;
   min-height: var(--account-row);
-  padding: 0 var(--space-10);
+  padding: 0 calc(var(--space-10) - 1px);
   border-radius: var(--radius-xs);
   color: var(--text-soft);
   font-size: var(--text-lg);
   cursor: pointer;
   transition: background-color var(--duration-fast) var(--ease-out);
+  border: 1px solid transparent;
 }
 
 .account-choice__option:hover {
-  background: var(--surface-hover);
+  background-color: var(--fill-quiet);
 }
 
 .account-choice__option:has(input:checked) {
-  background: var(--ember-wash);
+  background: var(--sheen) var(--fill-plate-hover);
   color: var(--text);
+  border-color: var(--rim-selected);
+  box-shadow: var(--edge-plate);
 }
 
 .account-choice__option input {
@@ -585,8 +593,8 @@
 }
 
 .account-choice__others > summary:hover {
-  background: var(--surface-hover);
   color: var(--text-soft);
+  background-color: var(--fill-quiet);
 }
 
 .account-choice__others > summary:focus-visible {
