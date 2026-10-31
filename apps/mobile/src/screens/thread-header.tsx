@@ -1,10 +1,17 @@
-import type { HostClient } from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
+import {
+  sameTaskFamilyGlance,
+  taskFamilyGlance,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useState, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, View } from "react-native";
 import { browserHeaderActions } from "../navigation-header.js";
-import { headerFontScaleLimit, space } from "../theme.js";
+import { color, headerFontScaleLimit, space } from "../theme.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
+import { FamilyButton, TaskFamilySheet, familyCount, familyLabel } from "../thread/task-family.js";
 import { TaskMenu, useTaskMenuChoices } from "../thread/task-status.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
@@ -101,14 +108,9 @@ export function useThreadHeader(props: {
   useLayoutEffect(() => {
     const attached = hostClient !== null && threadId !== null;
     navigation.setOptions({
-      ...browserHeaderActions(
-        attached && header?.surfacesActing === true,
-        attached && (header?.surfaceCount ?? 0) > 0,
-        () => {
-          if (threadId === null || hostClient === null) return;
-          navigation.dispatch(StackActions.push("WorkspaceBrowser", { deploymentId, threadId }));
-        },
-      ),
+      ...(attached && header !== null && !savedSubtitle
+        ? {}
+        : browserHeaderActions(false, false, () => {})),
       // The route table paints every header with the product's ground. A
       // transparent header has to be told to keep none, or nothing scrolls
       // under it and the blur has nothing to blur.
@@ -154,6 +156,7 @@ export function useThreadHeader(props: {
               headerTitle: () => (
                 <ThreadTitle
                   {...header}
+                  deploymentId={deploymentId}
                   threadId={threadId}
                   hostClient={hostClient}
                   // Chat is the root under every stack, so it is returned to,
@@ -184,15 +187,86 @@ export function useThreadHeader(props: {
  */
 function ThreadTitle(
   props: ThreadHeaderState & {
+    readonly deploymentId: string;
     readonly hostClient: HostClient;
     readonly threadId: string | null;
     readonly onOpenThread: (threadId: string) => void;
     readonly onRetry: () => void;
   },
 ): ReactNode {
+  const navigation = useNavigation();
+  const userId = useHostUserId(props.hostClient);
+  const [familyOwner, setFamilyOwner] = useState<{
+    host: HostClient;
+    thread: string | null;
+    user: string | null;
+  } | null>(null);
+  const familyOpen =
+    familyOwner?.host === props.hostClient &&
+    familyOwner.thread === props.threadId &&
+    familyOwner.user === userId;
+  const selectGlance = useCallback(
+    (snapshot: HostSnapshot) =>
+      props.threadId === null ? null : taskFamilyGlance(snapshot, props.threadId),
+    [props.threadId],
+  );
+  const glance = useHostSelector(props.hostClient, selectGlance, sameTaskFamilyGlance);
+  const { deploymentId, threadId, surfacesActing, surfaceCount } = props;
+  useLayoutEffect(() => {
+    const open = () => setFamilyOwner({ host: props.hostClient, thread: threadId, user: userId });
+    navigation.setOptions(
+      browserHeaderActions(
+        surfacesActing,
+        surfaceCount > 0,
+        () =>
+          navigation.dispatch(StackActions.push("WorkspaceBrowser", { deploymentId, threadId })),
+        glance === null
+          ? undefined
+          : {
+              action: {
+                // UIKit displays the image instead of the title. Badges carry
+                // the counts on iOS 26; older bars use a compact text glyph.
+                ...(Platform.OS === "ios" && Number.parseInt(String(Platform.Version), 10) < 26
+                  ? { label: `⑂ ${familyCount(glance)}` }
+                  : {
+                      icon: "arrow.triangle.branch" as const,
+                      label: familyCount(glance),
+                      badge: familyCount(glance),
+                    }),
+                accessibilityLabel: familyLabel(glance),
+                tintColor: glance.needsYou
+                  ? color.amber
+                  : glance.running > 0
+                    ? color.text
+                    : color.muted,
+                onPress: open,
+              },
+              content: <FamilyButton glance={glance} onPress={open} />,
+            },
+      ),
+    );
+  }, [
+    deploymentId,
+    glance,
+    navigation,
+    surfaceCount,
+    surfacesActing,
+    threadId,
+    props.hostClient,
+    userId,
+  ]);
   const menu = useTaskMenuChoices(props.hostClient, props.threadId, props.task);
   return (
     <View style={styles.title}>
+      {familyOpen && threadId !== null ? (
+        <TaskFamilySheet
+          key={threadId}
+          hostClient={props.hostClient}
+          threadId={threadId}
+          onClose={() => setFamilyOwner(null)}
+          onOpenThread={props.onOpenThread}
+        />
+      ) : null}
       <TaskMenu
         hostClient={props.hostClient}
         maxWidth={titleWidth}

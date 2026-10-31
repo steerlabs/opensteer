@@ -55,7 +55,7 @@ vi.mock("./ui/primitives.js", () => ({
 vi.mock("./ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("./browser/browser-button.js", () => ({ BrowserButton: () => null }));
 
-import { useSidebarMenu } from "./navigation-header.js";
+import { browserHeaderActions, useSidebarMenu } from "./navigation-header.js";
 import { SidebarControlContext, SidebarDockedContext } from "./sidebar/sidebar-context.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -128,5 +128,34 @@ describe("the Menu in a sidebar destination's bar", () => {
     expect(harness.options["headerBackVisible"]).toBe(false);
     render(false);
     expect(leadingItems().map((item) => item.label)).toEqual(["Menu"]);
+  });
+});
+
+describe("the conversation bar's family and tabs", () => {
+  it("keeps separate native items with accessible counts and an attention tint", () => {
+    const open = vi.fn();
+    const options = browserHeaderActions(false, true, vi.fn(), {
+      action: {
+        icon: "arrow.triangle.branch",
+        label: "2 · ◷ 1",
+        badge: "2 · ◷ 1",
+        accessibilityLabel: "2 tasks running, Needs you, 1 automation",
+        tintColor: "#amber",
+        onPress: open,
+      },
+      content: null,
+    });
+    const items = options.unstable_headerRightItems?.({ tintColor: "white", canGoBack: true });
+    expect(items).toEqual([
+      expect.objectContaining({
+        icon: { name: "arrow.triangle.branch", type: "sfSymbol" },
+        accessibilityLabel: "2 tasks running, Needs you, 1 automation",
+        tintColor: "#amber",
+        badge: expect.objectContaining({ value: "2 · ◷ 1" }),
+      }),
+      expect.objectContaining({ accessibilityLabel: "Tabs" }),
+    ]);
+    if (items?.[0]?.type === "button") items[0].onPress();
+    expect(open).toHaveBeenCalledOnce();
   });
 });
