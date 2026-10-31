@@ -1448,35 +1448,40 @@ describe("phone display Host sockets", () => {
       await until(() => viewer.media().length === 1);
     },
   );
-  it.each([6, 30_000])(
-    "replays 60 frames with byte credit alone and stays live while acking (%i bytes)",
-    async (size) => {
+  it.each([
+    { size: 6, displayWindow: false },
+    { size: 30_000, displayWindow: false },
+    { size: 6, displayWindow: true },
+    { size: 30_000, displayWindow: true },
+  ])(
+    "replays 90 frames with byte credit alone and stays live while acking ($size bytes, window=$displayWindow)",
+    async ({ size, displayWindow }) => {
       const f = await fixture();
       const first = await f.viewer();
       const phone = await f.phone();
       await f.state();
-      for (let sequence = 1; sequence <= 60; sequence++) {
+      for (let sequence = 1; sequence <= 90; sequence++) {
         phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(size)));
         await first.received(() => first.media().length >= sequence);
         first.send({ type: "display.ack", sequence });
         await first.roundTrip();
       }
-      const joined = await f.viewer();
-      const window = size === 6 ? 60 : 34;
+      const joined = await f.viewer(false, false, displayWindow);
+      const window = size === 6 ? 90 : 34;
       await joined.received(() => joined.media().length >= window);
       expect(joined.media()).toHaveLength(window);
-      expect(joined.json()[0]).toMatchObject({ replayThrough: 60 });
-      for (let sequence = 1; sequence <= 60; sequence++) {
+      expect(joined.json()[0]).toMatchObject({ replayThrough: 90 });
+      for (let sequence = 1; sequence <= 90; sequence++) {
         joined.send({ type: "display.ack", sequence });
         await joined.roundTrip();
         f.advance(9_000);
         f.hub.sweep();
       }
-      expect(joined.media()).toHaveLength(60);
-      phone.socket.send(f.frame(61));
-      await joined.received(() => joined.media().length >= 61);
+      expect(joined.media()).toHaveLength(90);
+      phone.socket.send(f.frame(91));
+      await joined.received(() => joined.media().length >= 91);
       expect(joined.media().map((m) => m.header.sequence)).toEqual(
-        Array.from({ length: 61 }, (_, i) => i + 1),
+        Array.from({ length: 91 }, (_, i) => i + 1),
       );
       expect(joined.socket.readyState).toBe(WebSocket.OPEN);
       expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(0);

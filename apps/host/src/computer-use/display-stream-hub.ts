@@ -1164,9 +1164,10 @@ export class DisplayStreamHub {
   }
   #hasCredit(viewer: Viewer, bytes: number, replay = false): boolean {
     return (
-      (viewer.displayWindow
-        ? viewer.outstanding.size < displayViewerWindowFrames && this.#withinCreditAge(viewer)
-        : replay || viewer.outstanding.size < displayViewerCreditFrames) &&
+      (replay ||
+        (viewer.displayWindow
+          ? viewer.outstanding.size < displayViewerWindowFrames && this.#withinCreditAge(viewer)
+          : viewer.outstanding.size < displayViewerCreditFrames)) &&
       (viewer.outstanding.size === 0 || viewer.bytes + bytes <= displayViewerCreditBytes)
     );
   }
