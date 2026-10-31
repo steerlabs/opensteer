@@ -4,6 +4,7 @@ import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/
 import { BrowserRuntimeError } from "@opensteer/browser-runtime-core";
 import { VerifiedDesktopSecretCryptography } from "../secrets/verified-secret-cryptography.js";
 import { BrowserSessionRequestGate } from "./browser-session-policy.js";
+import { ProtectedStorageUnavailableError } from "../secrets/protected-json-file.js";
 import { SessionCookieMirror } from "./session-cookie-mirror.js";
 
 // Electron retains Sessions by path until exit, across logical runtime/host eviction.
@@ -154,9 +155,9 @@ export class ElectronLocalProfile {
       .then(() => {
         this.#suspended = false;
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         this.#fail();
-        throw persistenceFailure();
+        throw persistenceFailure(error);
       });
     void this.#ready.catch(() => undefined);
   }
@@ -207,9 +208,9 @@ export class ElectronLocalProfile {
           if (this.#admitted) this.gate.open();
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         this.#fail();
-        throw persistenceFailure();
+        throw persistenceFailure(error);
       });
     void this.#ready.catch(() => undefined);
   }
@@ -240,10 +241,12 @@ export class ElectronLocalProfile {
   }
 }
 
-function persistenceFailure(): BrowserRuntimeError {
+function persistenceFailure(cause?: unknown): BrowserRuntimeError {
   return new BrowserRuntimeError(
     "conflict",
-    "Browser profile storage is unavailable. The profile was preserved.",
-    { reason: "browser-profile-persistence-failed" },
+    cause instanceof ProtectedStorageUnavailableError
+      ? "Browser profile encryption is unavailable. Unlock the login keychain in Keychain Access, then restart Opensteer and reopen this profile. The profile was preserved."
+      : "Browser profile storage is unavailable. The profile was preserved.",
+    { cause, reason: "browser-profile-persistence-failed" },
   );
 }

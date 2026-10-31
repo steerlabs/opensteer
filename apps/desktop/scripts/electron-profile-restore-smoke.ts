@@ -1,3 +1,4 @@
+import { profileFailureDiagnostic } from "../src/browser/profile-failure-diagnostic.js";
 import {
   nativeProfileSmokePhases,
   nativeSmokeWorker,
@@ -56,7 +57,12 @@ const out =
   path.join(process.env.OPENSTEER_QUIT_E2E_ARTIFACT_DIR ?? tmpdir(), "profile-restore");
 mkdirSync(out, { recursive: true });
 
-type Result = { status: "pass" | "fail"; observed: Record<string, unknown>; error?: string };
+type Result = {
+  status: "pass" | "fail";
+  observed: Record<string, unknown>;
+  error?: string;
+  diagnostic?: unknown;
+};
 const results: Record<string, Result> = {};
 const helpers: { origin: string; id: number; at: number }[] = [];
 const destroyedAt = new Map<number, number>();
@@ -211,6 +217,7 @@ async function scenario(id: string, run: (observed: Record<string, unknown>) => 
       status: "fail",
       observed,
       error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+      diagnostic: profileFailureDiagnostic(error),
     };
   }
   persist();

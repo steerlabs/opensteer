@@ -1873,6 +1873,33 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
+  it("retains the underlying initialization cause without exposing it on the wire", async () => {
+    const f = await fixture();
+    const failure = new Error("private cookie=secret https://private.test", {
+      cause: new TypeError("private key"),
+    });
+    electron.storage = () => Promise.reject(failure);
+    try {
+      const error = await f.launcher.localProfiles
+        .importAndFlush({
+          directory: f.directory,
+          binding: f.binding,
+          snapshot: {
+            cookies: [],
+            origins: [{ origin: "https://a.test", localStorage: [{ name: "k", value: "v" }] }],
+          },
+          signal: new AbortController().signal,
+        })
+        .catch((error: unknown) => error);
+      expect(error).toHaveProperty("cause.cause", failure);
+      expect(JSON.stringify(error)).not.toContain("secret");
+    } finally {
+      electron.storage = undefined;
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it("prepares with Guest only and never allocates a persistent Session", async () => {
     const f = await fixture();
     const { session } = await import("electron");

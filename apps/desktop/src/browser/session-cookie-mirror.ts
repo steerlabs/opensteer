@@ -242,7 +242,9 @@ export class SessionCookieMirror {
         error instanceof ProtectedStorageUnavailableError ||
         error instanceof ProtectedStateUnreadableError
           ? error
-          : new Error("Browser profile cookie persistence failed. The profile was preserved.");
+          : new Error("Browser profile cookie persistence failed. The profile was preserved.", {
+              cause: error,
+            });
       this.#failure = failure;
       this.#suspended = true;
       this.#options.onFailure();

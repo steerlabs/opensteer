@@ -1,3 +1,4 @@
+import { profileFailureDiagnostic } from "../browser/profile-failure-diagnostic.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
@@ -84,7 +85,7 @@ export async function startLocalBrowserRuntime(
       ),
     onStartFailure: ({ correlationId, stage, error }) =>
       diagnostics.append(
-        `${JSON.stringify({ event: "browser.session.start.failed", correlationId, stage, error: error instanceof Error ? error.stack : String(error) })}\n`,
+        `${JSON.stringify({ event: "browser.session.start.failed", correlationId, stage, error: profileFailureDiagnostic(error) })}\n`,
       ),
     launcher,
     // Native data and its exclusive root ownership outlive enrollment slots.
