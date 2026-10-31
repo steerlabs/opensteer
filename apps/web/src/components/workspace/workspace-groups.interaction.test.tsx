@@ -535,7 +535,8 @@ describe("task marks", () => {
     if (route === "thread") expect(history.at(-1)?.type).toBe("REPLACE");
     expect(element(".conv-header__name").textContent).toBe("Chat");
     expect(element(".conv-header .chat-orb")).toBeDefined();
-    expect(document.querySelector(".conv-header .task-mark")).toBeNull();
+    expect(document.querySelector(".conv-header__mark .task-mark")).toBeNull();
+    // Docked beside its tab, Chat's menu holds Find and nothing to rename or mark.
     await click(element(".conv-header__menu"));
     expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
     expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
@@ -809,8 +810,8 @@ describe("task marks", () => {
   });
   it("excludes Chat and hides task mark edits for an older Host", async () => {
     await mount("/");
-    await click(element(".conv-header__menu"));
-    expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
+    // Chat has nothing of its own to rename, mark or finish: undocked it has no menu.
+    expect(document.querySelector(".conv-header__menu")).toBeNull();
     act(() => root?.unmount());
     setRoot(null);
     client.dispose();

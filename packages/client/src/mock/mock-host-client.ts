@@ -2184,8 +2184,10 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "thread.assignments.list": async ({ threadId }) => {
-      const assignments = client.listThreadAssignments(threadId);
+    "thread.assignments.list": async ({ open, threadId }) => {
+      const assignments = client
+        .listThreadAssignments(threadId)
+        .filter(({ status }) => !open || status === "open");
       return rpcSuccess(
         hostApi["thread.assignments.list"].success.parse({
           assignments,
@@ -2264,7 +2266,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "triggers.list": async (input) =>
       rpcSuccess(
         hostApi["triggers.list"].success.parse({
-          triggers: client.listTriggers(input.workspaceId),
+          triggers: client.listTriggers(input.workspaceId, input.anchorThreadId),
         }),
       ),
     "workspace.catalog.list": async () => {
@@ -6240,12 +6242,13 @@ class MockHostState {
   }
 
   /** What `triggers.list` answers: every Trigger still in use, most recently changed first. */
-  listTriggers(workspaceId?: string): TriggerSummary[] {
+  listTriggers(workspaceId?: string, anchorThreadId?: string): TriggerSummary[] {
     return [...this.triggers.values()]
       .filter(
         ({ trigger }) =>
           trigger.status !== "archived" &&
-          (workspaceId === undefined || trigger.workspaceId === workspaceId),
+          (workspaceId === undefined || trigger.workspaceId === workspaceId) &&
+          (anchorThreadId === undefined || trigger.anchorThreadId === anchorThreadId),
       )
       .sort((left, right) => right.trigger.updatedAt.localeCompare(left.trigger.updatedAt))
       .map((record) => mockTriggerSummary(record, this.anchorThreadTitle(record)));
@@ -10467,6 +10470,24 @@ class MockHostState {
         ),
       };
     }
+    this.snapshot = {
+      ...this.snapshot,
+      threadAutomations: Object.fromEntries(
+        this.snapshot.threads.map((thread) => [
+          thread.id,
+          this.listTriggers(undefined, thread.id).map((trigger) => ({
+            id: trigger.id,
+            name: trigger.name,
+            kind: trigger.kind,
+            paused: trigger.status === "paused",
+            nextFireAt:
+              trigger.status === "active" && trigger.kind === "schedule"
+                ? trigger.nextFireAt
+                : null,
+          })),
+        ]),
+      ),
+    };
     const tasks = this.taskList(this.snapshot.tasks);
     this.snapshot = {
       ...this.snapshot,
@@ -11276,6 +11297,7 @@ function createInitialSnapshot(): HostSnapshot {
 
   return {
     assignments: {},
+    threadAutomations: {},
     inputQueues: {},
     waitingRequests: [],
     requests: {

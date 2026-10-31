@@ -23,6 +23,7 @@ import {
   RunIdSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
+  WaitingRequestSchema,
   type Request,
   type ThreadInputQueue,
 } from "@opensteer/core";
@@ -74,6 +75,7 @@ import { mobileScreenPresentation, type PresentationNavigator } from "../voice/p
 
 const harness = vi.hoisted(() => ({
   paneRenders: 0,
+  headerWrites: 0,
   focused: true,
   drafts: null as ThreadDraftStore | null,
   focusCleanups: new Set<() => void>(),
@@ -288,6 +290,8 @@ vi.mock("react-native-reanimated", () => {
   };
 });
 vi.mock("react-native-safe-area-context", () => ({
+  SafeAreaProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SafeAreaView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
 vi.mock("@react-navigation/elements", () => ({
@@ -303,7 +307,10 @@ vi.mock("@react-navigation/native", async () => {
     // The conversation is the screen in front: a chip opens over it.
     getState: () => ({ index: 0, routes: [{ name: "Thread" }] }),
     navigate: harness.navigate,
-    setOptions: (options: Record<string, unknown>) => harness.setOptions?.(options),
+    setOptions: (options: Record<string, unknown>) => {
+      harness.headerWrites += 1;
+      harness.setOptions?.(options);
+    },
     setParams: harness.setParams,
   };
   return {
@@ -2510,10 +2517,19 @@ describe("a finished task's title", () => {
   );
 });
 
-// Ways it can fail: the tasks a conversation started are only reachable by
-// scrolling back to where it started them, or the menu lists finished ones.
-describe("a task's title menu", () => {
-  it("lists the tasks it started that are still going, each opening its own conversation", async () => {
+describe("a conversation's task family", () => {
+  it("has no item when the conversation has no family", async () => {
+    const host = fakeHost({
+      ...snapshotFor({ entries: [], run: null, threadId: workId }),
+      assignments: {},
+      threadAutomations: {},
+    });
+    const { container } = await mount(host, workId, { header: true });
+    expect(container.querySelector('button[aria-label*="tasks running"]')).toBeNull();
+    expect(container.querySelector('button[aria-label*="task running"]')).toBeNull();
+  });
+
+  it("opens its family separately from its own actions and navigates to a child", async () => {
     const work = base.threads.find(({ id }) => id === workId)!;
     const task = (title: string, status: "completed" | "open") =>
       AssignmentSummarySchema.parse({
@@ -2547,11 +2563,71 @@ describe("a task's title menu", () => {
     const host = fakeHost({
       ...snapshotFor({ entries: [], run: null, threadId: workId }),
       assignments: { [going.id]: going, [finished.id]: finished },
+      threadAutomations: {
+        [workId]: [
+          {
+            id: "schedule",
+            name: "Morning brief",
+            kind: "schedule",
+            paused: false,
+            nextFireAt: "2026-11-01T09:00:00Z",
+          },
+          { id: "watch", name: "Repository", kind: "watch", paused: false, nextFireAt: null },
+          { id: "hook", name: "Deploy", kind: "webhook", paused: false, nextFireAt: null },
+          { id: "paused", name: "Later", kind: "schedule", paused: true, nextFireAt: null },
+        ],
+      },
     });
     const { container } = await mount(host, workId, { header: true });
-    expect(hasButton(container, "Started here")).toBe(true);
-    expect(hasButton(container, "Check Resy")).toBe(false);
-    await press(container, "Check OpenTable · Working");
+    expect(hasButton(container, "Started here")).toBe(false);
+    expect(container.querySelector("[data-modal-visible]")).toBeNull();
+    const writes = harness.headerWrites;
+    await act(async () =>
+      host.move({
+        ...host.client.getSnapshot(),
+        assignments: {
+          [going.id]: { ...going, objectivePreview: "A streaming child's changing subject" },
+          [finished.id]: finished,
+        },
+      }),
+    );
+    expect(harness.headerWrites).toBe(writes);
+    await act(async () =>
+      host.move({
+        ...host.client.getSnapshot(),
+        waitingRequests: [
+          WaitingRequestSchema.parse({
+            request: approval(going.currentRunId!, "Allow check"),
+            subagent: null,
+            assignments: [
+              {
+                id: going.id,
+                parentThreadId: workId,
+                workerThread: { id: going.workerThread.id, title: going.workerThread.title },
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    await press(container, "1 task running, one needs you, 4 automations");
+    expect(text(container)).toContain("Running · 1");
+    expect(text(container)).toContain("Automations · 4");
+    expect(text(container)).toContain("Watching");
+    expect(text(container)).toContain("On webhook");
+    expect(text(container)).toContain("Paused");
+    const automation = container.querySelector('[aria-label="Repository, Watching"]');
+    expect(automation).not.toBeNull();
+    expect(automation?.closest("button")).toBeNull();
+    expect(text(container)).not.toContain("Check Resy");
+    await press(container, "Earlier · 1");
+    expect(text(container)).toContain("Check Resy");
+    const child = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Check OpenTable, Needs you"]',
+    )!;
+    expect(child).not.toBeNull();
+    await act(async () => child.click());
+    expect(container.querySelector("[data-modal-visible]")).toBeNull();
     expect(harness.dispatch).toHaveBeenLastCalledWith(
       expect.objectContaining({
         name: "Thread",
@@ -2559,6 +2635,22 @@ describe("a task's title menu", () => {
         type: "PUSH",
       }),
     );
+    const settled = Array.from({ length: 5 }, (_, index) =>
+      task(`Earlier task ${index}`, "completed"),
+    );
+    await act(async () =>
+      host.move({
+        ...host.client.getSnapshot(),
+        waitingRequests: [],
+        assignments: Object.fromEntries(settled.map((task) => [task.id, task])),
+        threadAutomations: {},
+      }),
+    );
+    await press(container, "5 earlier");
+    expect(text(container)).toContain("Earlier · 5");
+    expect(container.querySelectorAll('button[aria-label^="Earlier task"]')).toHaveLength(4);
+    await press(container, "Show all");
+    expect(container.querySelectorAll('button[aria-label^="Earlier task"]')).toHaveLength(5);
   });
 });
 

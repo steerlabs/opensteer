@@ -36,6 +36,7 @@ export function createTriggerRpcHandlers(
             requireUserId(context),
             {
               limit: 100,
+              ...(input.anchorThreadId ? { anchorThreadId: input.anchorThreadId } : {}),
               ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
             },
             { kind: "user" },

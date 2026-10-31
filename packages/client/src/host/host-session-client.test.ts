@@ -1428,6 +1428,251 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
+  it.each([true, false])(
+    "holds every open child however long the history, without paging settled history (family %s)",
+    async (family) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const mock = new MockHostClient({ latencyMs: 0 });
+      const seed = Object.values(mock.getSnapshot().assignments).find((a) => a.status === "open")!;
+      const older = { ...seed, parentThreadId: thread.id };
+      const recent = Array.from({ length: 100 }, () => ({
+        ...older,
+        id: createId("delegation"),
+        status: "completed" as const,
+        finishedAt: now,
+      }));
+      const reads: { readonly open: unknown; readonly before: unknown }[] = [];
+      const client = createHttpHostClient({
+        capabilities: family ? ["task-family-v1"] : [],
+        refreshIntervalMs: 0,
+        webSocketFactory: () => new FakeSocket(),
+        fetch: async (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          if (url.pathname === "/v1/rpc/thread.assignments.list") {
+            const payload = rpcPayload(url, init);
+            reads.push({ open: payload.open, before: payload.before });
+            // The open set spans two pages; history has more than the newest page.
+            const assignments = payload.open ? (payload.before ? [older] : []) : recent;
+            const more = payload.open ? !payload.before : true;
+            return json({
+              assignments,
+              threadId: thread.id,
+              window: {
+                byteCount: 1,
+                hasMore: more,
+                itemCount: assignments.length,
+                nextBefore: more ? "older" : null,
+                totalItems: 101,
+              },
+            });
+          }
+          return json({ ...bootstrap([workspace]), threads: [thread] });
+        },
+      });
+      await client.load();
+      client.observeThread(thread.id);
+      await vi.waitFor(() => expect(reads).toHaveLength(family ? 3 : 1), { timeout: 1000 });
+      await vi.waitFor(
+        () =>
+          expect(Object.keys(client.getSnapshot().assignments)).toHaveLength(family ? 101 : 100),
+        { timeout: 1000 },
+      );
+      expect(reads.filter(({ open }) => open === undefined)).toEqual([
+        { open: undefined, before: undefined },
+      ]);
+      expect(client.getSnapshot().assignments[older.id] !== undefined).toBe(family);
+      client.dispose();
+      mock.dispose();
+    },
+  );
+
+  it.each([true, false])(
+    "loads task automations only with capability (%s), coalescing notices and preserving unchanged arrays",
+    async (enabled) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const socket = new FakeSocket();
+      const mock = new MockHostClient({ latencyMs: 0 });
+      const listed = await mock.rpc["triggers.list"]({});
+      if (!listed.ok) throw new Error(listed.error.message);
+      const triggers = listed.data.triggers
+        .filter((t) => t.kind === "schedule" && t.status === "active")
+        .slice(0, 1);
+      let reads = 0;
+      let hold: ReturnType<typeof Promise.withResolvers<Response>> | undefined;
+      const client = createHttpHostClient({
+        capabilities: enabled ? ["task-family-v1"] : [],
+        refreshIntervalMs: 0,
+        webSocketFactory: () => socket,
+        fetch: async (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          if (url.pathname === "/v1/rpc/triggers.list") {
+            reads++;
+            expect(rpcPayload(url, init)).toEqual({ anchorThreadId: thread.id });
+            return hold ? hold.promise : json({ triggers });
+          }
+          return json(bootstrap([workspace]));
+        },
+      });
+      await client.load();
+      socket.open();
+      socket.receive({
+        type: "host.snapshot",
+        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      });
+      client.observeThread(thread.id);
+      if (!enabled) {
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        await client.refresh();
+        expect(reads).toBe(0);
+      } else {
+        await vi.waitFor(
+          () => expect(client.getSnapshot().threadAutomations[thread.id]).toHaveLength(1),
+          { timeout: 1000 },
+        );
+        const held = client.getSnapshot().threadAutomations[thread.id];
+        hold = Promise.withResolvers<Response>();
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        expect(reads).toBe(2);
+        const answer = hold;
+        hold = undefined;
+        answer.resolve(json({ triggers }));
+        await vi.waitFor(() => expect(reads).toBe(3), { timeout: 1000 });
+        expect(client.getSnapshot().threadAutomations[thread.id]).toBe(held);
+        socket.receive({
+          type: "host.snapshot",
+          snapshot: { ...workspaceSnapshot(workspace, "1"), threads: [thread] },
+        });
+        await vi.waitFor(() => expect(reads).toBe(4), { timeout: 1000 });
+      }
+      client.dispose();
+      mock.dispose();
+    },
+  );
+
+  it("reads a conversation's automations afresh when it is opened again, after a failure, and after a replayed reconnect", async () => {
+    const workspace = makeWorkspace();
+    const a = makeThread(workspace.id);
+    const b = makeThread(workspace.id);
+    const mock = new MockHostClient({ latencyMs: 0 });
+    const listed = await mock.rpc["triggers.list"]({});
+    if (!listed.ok) throw new Error(listed.error.message);
+    const trigger = listed.data.triggers.find((t) => t.kind === "schedule")!;
+    const reads: string[] = [];
+    let fail = false;
+    let gate: Promise<void> | null = null;
+    const sockets: FakeSocket[] = [];
+    const client = createHttpHostClient({
+      capabilities: ["task-family-v1"],
+      random: () => 0,
+      reconnectBaseDelayMs: 1,
+      reconnectMaxDelayMs: 2,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      fetch: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname === "/v1/rpc/triggers.list") {
+          const anchor = String(rpcPayload(url, init).anchorThreadId);
+          reads.push(anchor);
+          if (gate !== null && anchor === a.id) {
+            const held = gate;
+            gate = null;
+            await held;
+          }
+          if (fail) return json({ error: { code: "internal", message: "down" } }, 500);
+          // Named for the read that answered, so a test can see which one it holds.
+          return json({
+            triggers:
+              anchor === a.id
+                ? [{ ...trigger, anchorThreadId: a.id, name: `Read ${reads.length}` }]
+                : [],
+          });
+        }
+        return json(bootstrap([workspace]));
+      },
+    });
+    await client.load();
+    sockets[0]!.open();
+    sockets[0]!.receive({
+      type: "host.snapshot",
+      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [a, b] },
+    });
+    sockets[0]!.receive({
+      sequence: sequence("0"),
+      type: "host.synchronized",
+      workspaceId: workspace.id,
+    });
+    const held = () => client.getSnapshot().threadAutomations[a.id]?.[0]?.name;
+    const holds = async (name: string) =>
+      vi.waitFor(() => expect(held(), `holds ${name}`).toBe(name), { timeout: 1000 });
+
+    client.activateThread(a.id);
+    await holds("Read 1");
+    // Opened again after another conversation: read afresh.
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    await vi.waitFor(() => expect(held()).toMatch(/^Read [2-9]/u), { timeout: 1000 });
+
+    // A failed read keeps what was held and is retried when it is opened again.
+    const readsOfA = () => reads.filter((id) => id === a.id).length;
+    const beforeFailure = readsOfA();
+    fail = true;
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    await vi.waitFor(() => expect(readsOfA(), "the failing read").toBe(beforeFailure + 1), {
+      timeout: 1000,
+    });
+    const failed = reads.length;
+    expect(held()).toMatch(/^Read /u);
+    fail = false;
+    await vi.waitFor(
+      () => {
+        client.activateThread(b.id);
+        client.activateThread(a.id);
+        expect(Number(held()?.slice(5))).toBeGreaterThan(failed);
+      },
+      { timeout: 1000 },
+    );
+
+    // Opened again while a read from before is still out: that answer may
+    // predate a change made meanwhile, so one more read follows it.
+    const release = Promise.withResolvers<void>();
+    gate = release.promise;
+    const beforeReopen = readsOfA();
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    await vi.waitFor(() => expect(readsOfA(), "the held read").toBe(beforeReopen + 1), {
+      timeout: 1000,
+    });
+    client.activateThread(b.id);
+    client.activateThread(a.id);
+    release.resolve();
+    await vi.waitFor(() => expect(readsOfA(), "the read after it").toBe(beforeReopen + 2), {
+      timeout: 1000,
+    });
+
+    // A triggers notice lost while away is recovered when the stream replays.
+    const before = held();
+    sockets[0]!.serverClose();
+    await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 1000 });
+    sockets[1]!.open();
+    sockets[1]!.receive({
+      sequence: sequence("0"),
+      type: "host.synchronized",
+      workspaceId: workspace.id,
+    });
+    await vi.waitFor(() => expect(held()).not.toBe(before), { timeout: 1000 });
+    client.dispose();
+    mock.dispose();
+  });
+
   it("loads conversation browser facts separately and preserves other scopes across bootstrap", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();

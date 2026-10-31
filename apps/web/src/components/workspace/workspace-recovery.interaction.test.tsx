@@ -470,9 +470,8 @@ describe("stopping a task and finishing it: one Stop", () => {
 
   it("Chat offers no Done action", async () => {
     await mount("/");
-    await openMenu();
-    expect(menuRow("Mark Done")).toBeNull();
-    expect(menuRow("Reopen")).toBeNull();
+    // Chat has nothing of its own to rename, mark or finish: undocked it has no menu.
+    expect(document.querySelector(".conv-header__menu")).toBeNull();
   });
 
   it("confirms shared Done on running work, freezes sending and reopens the composer", async () => {

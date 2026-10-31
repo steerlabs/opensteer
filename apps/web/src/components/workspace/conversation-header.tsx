@@ -10,14 +10,11 @@ import { TaskIconEditor } from "../task-icon-editor.js";
 import { WorkspaceOrb } from "../workspace-orb.js";
 import { ThreadTitleEditor } from "../thread-title-editor.js";
 import { useHostSelector } from "@opensteer/client/react";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  assignmentMark,
   assignmentPresentation,
   assignmentRequester,
-  assignmentTitle,
   placeList,
-  tasksUnderWay,
   threadRequester,
   threadStopTarget,
   workerAssignment,
@@ -30,7 +27,8 @@ import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
-import { TaskLineState } from "../task-line.js";
+import { TaskFamilyButton } from "./task-family.js";
+import { sameTaskFamilyGlance, taskFamilyGlance } from "@opensteer/client/host";
 import { TaskBadge, TaskMark, ChatOrb, taskStateWords } from "./task-mark.js";
 import { AreaLink } from "./area-link.js";
 import { destinationPlaceKey } from "./navigation.js";
@@ -99,32 +97,40 @@ export function ConversationHeader({
     [threadId],
   );
   const requester = useHostSelector(hostClient, selectRequester, sameRequester);
-  const selectUnderWay = useCallback(
-    (snapshot: HostSnapshot) => tasksUnderWay(threadId, snapshot.assignments).length > 0,
+  const selectFamily = useCallback(
+    (snapshot: HostSnapshot) => taskFamilyGlance(snapshot, threadId),
     [threadId],
   );
-  const underWay = useHostSelector(hostClient, selectUnderWay);
-  // Chat has nothing to rename or mark Done: its menu is the tasks it started
-  // and, docked, Find.
-  const menu = !home || underWay || docked;
+  const family = useHostSelector(hostClient, selectFamily, sameTaskFamilyGlance);
+  const menu = !home || docked;
   return (
-    <header className={requester ? "conv-header conv-header--trail" : "conv-header"}>
-      {requester ? (
-        <nav aria-label="Works for" className="conv-header__trail">
-          <AreaLink
-            aria-label={`Back to ${requester.title}`}
-            className="conv-header__back"
-            title={requester.title}
-            to={nav.threadPath(requester.threadId)}
-          >
-            <Icon name="arrow-left" />
-            {requester.threadId === directory.homeThreadId ? (
-              <ChatOrb size={16} />
-            ) : (
-              <TaskMark size={16} mark={threadMark(requester.threadId, directory.snapshot)} />
-            )}
-            <span className="conv-header__back-title">{requester.title}</span>
-          </AreaLink>
+    <header className={requester || family ? "conv-header conv-header--trail" : "conv-header"}>
+      {requester || family ? (
+        <nav aria-label="Task lineage" className="conv-header__trail">
+          {requester ? (
+            <AreaLink
+              aria-label={`Back to ${requester.title}`}
+              className="conv-header__back"
+              title={requester.title}
+              to={nav.threadPath(requester.threadId)}
+            >
+              <Icon name="arrow-left" />
+              {requester.threadId === directory.homeThreadId ? (
+                <ChatOrb size={16} />
+              ) : (
+                <TaskMark size={16} mark={threadMark(requester.threadId, directory.snapshot)} />
+              )}
+              <span className="conv-header__back-title">{requester.title}</span>
+            </AreaLink>
+          ) : null}
+          {family ? (
+            <TaskFamilyButton
+              key={threadId}
+              hostClient={hostClient}
+              threadId={threadId}
+              glance={family}
+            />
+          ) : null}
         </nav>
       ) : null}
       {/* In Work the place's own bar carries the way back to the sidebar. */}
@@ -301,12 +307,7 @@ export function ConversationHeader({
                 }
               : null
           }
-          onOpen={(task) => {
-            setMenuOpen(false);
-            nav.openConversation(nav.threadPath(task));
-          }}
           onClose={() => setMenuOpen(false)}
-          threadId={threadId}
         />
       ) : null}
     </header>
@@ -476,9 +477,7 @@ function TaskActions({
 }
 
 /**
- * The menu under a conversation's name, all about that conversation: the
- * tasks it started that are still going, each opening where it is, then what
- * can be done here. Another conversation is the sidebar's to open.
+ * The actions available under this conversation's name.
  */
 function ConversationMenu({
   actions,
@@ -486,8 +485,6 @@ function ConversationMenu({
   label,
   onClose,
   onFind,
-  onOpen,
-  threadId,
 }: {
   /** The open task's own actions, last; told when one asks first. */
   readonly actions: ((asking: (on: boolean) => void) => ReactNode) | null;
@@ -496,13 +493,8 @@ function ConversationMenu({
   readonly onClose: () => void;
   /** Given where the header has no room for Find: it is offered here instead. */
   readonly onFind: (() => void) | null;
-  readonly onOpen: (threadId: string) => void;
-  readonly threadId: string;
 }) {
-  const { snapshot } = useShell();
   const [asking, setAsking] = useState(false);
-  const tasksLabel = useId();
-  const tasks = tasksUnderWay(threadId, snapshot.assignments);
   return (
     <Popover
       anchor={anchor}
@@ -514,30 +506,6 @@ function ConversationMenu({
       <div className="conversation-menu">
         {asking ? null : (
           <>
-            {tasks.length > 0 ? (
-              <section aria-labelledby={tasksLabel} className="conversation-menu__tasks">
-                <h2 className="conversation-menu__label" id={tasksLabel}>
-                  Started here
-                </h2>
-                {tasks.map((assignment) => {
-                  const title = assignmentTitle(assignment, snapshot);
-                  const { moving, tone, word } = assignmentPresentation(assignment, snapshot);
-                  return (
-                    <button
-                      aria-label={`${title}, ${word}`}
-                      className="conversation-menu__task"
-                      key={assignment.id}
-                      onClick={() => onOpen(assignment.workerThread.id)}
-                      type="button"
-                    >
-                      <TaskMark size={20} mark={assignmentMark(assignment, snapshot)} />
-                      <span className="conversation-menu__title">{title}</span>
-                      <TaskLineState moving={moving} tone={tone} word={word} />
-                    </button>
-                  );
-                })}
-              </section>
-            ) : null}
             {onFind ? (
               <div
                 aria-label="This conversation"

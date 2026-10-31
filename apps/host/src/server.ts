@@ -1417,6 +1417,7 @@ export async function createHostServer(
         maxItems: Math.min(input.limit ?? 25, 100),
         maxBytes: 512 * 1_024,
         ...(input.before ? { before: input.before } : {}),
+        ...(input.open ? { open: true } : {}),
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
       return rpcSuccess(
@@ -3105,6 +3106,7 @@ export function advertisedCapabilities(
     ...(dependencies.screenPresentation ? ["screen-show-v1" as const] : []),
     "thread-titles-v1",
     "task-marks-v1",
+    "task-family-v1",
     "snapshot-messages-omit-v1",
     "shared-task-done-v1",
     "iphone-apps-v1",

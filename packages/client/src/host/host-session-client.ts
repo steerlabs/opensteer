@@ -585,6 +585,8 @@ export class HttpHostClient {
    * is not retried per event batch; an explicit refresh or a resync asks again.
    */
   readonly #assignmentReads = new Map<string, "read" | "reading">();
+  readonly #automationReads = new Map<string, { again: boolean }>();
+  readonly #readAutomations = new Set<string>();
   /**
    * Per shown conversation whose browser usage has been read, the Runs that
    * read covered. A conversation not here is read whole when it is shown.
@@ -1629,9 +1631,11 @@ export class HttpHostClient {
 
   activateThread(threadId: string): void {
     const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
+    const opened = !this.#showsThread(threadId);
     this.#activeThreadId = threadId;
     this.#ensureInputQueue(threadId);
     this.#ensureAssignments(threadId);
+    this.#ensureAutomations(threadId, opened);
     this.#ensureBrowserUsage(threadId, "missing");
     if (!thread) {
       // A deep link can reference a Thread the snapshot has not loaded yet.
@@ -1659,6 +1663,7 @@ export class HttpHostClient {
    * so observing it again, or reconnecting, resumes its stream.
    */
   observeThread(threadId: string): () => void {
+    const opened = !this.#showsThread(threadId);
     this.#observedThreads.set(threadId, (this.#observedThreads.get(threadId) ?? 0) + 1);
     if (!this.#snapshot.transcriptWindows[threadId]) {
       this.#update({
@@ -1671,6 +1676,7 @@ export class HttpHostClient {
     this.#ensureThreadHydration(threadId);
     this.#ensureRequests(threadId);
     this.#ensureAssignments(threadId);
+    this.#ensureAutomations(threadId, opened);
     this.#ensureBrowserUsage(threadId, "missing");
     let held = true;
     return () => {
@@ -1751,25 +1757,122 @@ export class HttpHostClient {
       });
   }
 
-  async #readAssignments(threadId: string): Promise<void> {
+  /**
+   * A conversation's automations are known only while it is shown: no notice
+   * says what changed in one off screen, so it is read afresh each time it is
+   * opened (after any read still under way, which may predate the change),
+   * and a shown one again whenever its Workspace says triggers changed or its
+   * stream comes back. Shown again while unchanged, it is not reread.
+   */
+  #ensureAutomations(threadId: string, again = false): void {
+    if (
+      this.#disposed ||
+      this.#snapshot.session !== "authenticated" ||
+      !this.#capabilities?.includes("task-family-v1")
+    )
+      return;
+    const pending = this.#automationReads.get(threadId);
+    if (pending) {
+      pending.again ||= again;
+      return;
+    }
+    if (!again && this.#readAutomations.has(threadId)) return;
+    const read = { again: false };
+    this.#automationReads.set(threadId, read);
+    void this.#loadAutomations(threadId, read)
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#automationReads.get(threadId) !== read) return;
+        this.#automationReads.delete(threadId);
+        // A failure counts as read too, so a streaming conversation does not
+        // ask again with every event; opening it again does.
+        this.#readAutomations.add(threadId);
+        if (read.again) this.#ensureAutomations(threadId, true);
+      });
+  }
+
+  async #loadAutomations(threadId: string, read: { again: boolean }): Promise<void> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
-    let response;
     try {
-      response = unwrapRpcResult(
-        await this.rpc["thread.assignments.list"]({ threadId, limit: 100 }),
+      const response = unwrapRpcResult(
+        await this.rpc["triggers.list"]({ anchorThreadId: threadId }),
       );
+      if (!this.#viewerStillCurrent(generation, userId)) return;
+      if (this.#automationReads.get(threadId) !== read) return;
+      const automations = response.triggers
+        .filter(({ status }) => status !== "archived")
+        .map((trigger) => ({
+          id: trigger.id,
+          name: trigger.name,
+          kind: trigger.kind,
+          paused: trigger.status === "paused",
+          nextFireAt:
+            trigger.status === "active" && trigger.kind === "schedule" ? trigger.nextFireAt : null,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      const held = this.#snapshot.threadAutomations[threadId] ?? [];
+      if (JSON.stringify(held) === JSON.stringify(automations)) return;
+      this.#update({
+        ...this.#snapshot,
+        threadAutomations: { ...this.#snapshot.threadAutomations, [threadId]: automations },
+      });
     } catch (error) {
-      if (this.#viewerStillCurrent(generation, userId))
-        this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
+      if (
+        this.#viewerStillCurrent(generation, userId) &&
+        this.#automationReads.get(threadId) === read &&
+        error instanceof HostClientRequestError &&
+        (error.status === 403 || error.status === 404)
+      ) {
+        const { [threadId]: _denied, ...threadAutomations } = this.#snapshot.threadAutomations;
+        this.#update({ ...this.#snapshot, threadAutomations });
+      }
       throw error;
     }
-    if (!this.#viewerStillCurrent(generation, userId)) return;
-    if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
-    this.#update({
-      ...this.#snapshot,
-      assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
-    });
+  }
+
+  /**
+   * The newest page, which is all the history a family shows, and every open
+   * Assignment however far back it was handed out, so work under way is never
+   * missing. A Host without `task-family-v1` gives the newest page alone.
+   */
+  async #readAssignments(threadId: string): Promise<void> {
+    await Promise.all([
+      this.#readAssignmentPages(threadId, false),
+      ...(this.#capabilities?.includes("task-family-v1")
+        ? [this.#readAssignmentPages(threadId, true)]
+        : []),
+    ]);
+  }
+
+  async #readAssignmentPages(threadId: string, open: boolean): Promise<void> {
+    const generation = this.#viewerGeneration;
+    const userId = this.#snapshot.user?.id;
+    let before: string | null = null;
+    do {
+      let response;
+      try {
+        response = unwrapRpcResult(
+          await this.rpc["thread.assignments.list"]({
+            threadId,
+            limit: 100,
+            ...(open ? { open } : {}),
+            ...(before === null ? {} : { before }),
+          }),
+        );
+      } catch (error) {
+        if (this.#viewerStillCurrent(generation, userId))
+          this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
+        throw error;
+      }
+      if (!this.#viewerStillCurrent(generation, userId)) return;
+      if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
+      this.#update({
+        ...this.#snapshot,
+        assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
+      });
+      before = open && response.window.hasMore ? response.window.nextBefore : null;
+    } while (before !== null);
   }
 
   /** Every Run whose browser use this Thread shows: its own, and its tasks' workers'. */
@@ -1795,6 +1898,14 @@ export class HttpHostClient {
 
   #showsThread(threadId: string): boolean {
     return threadId === this.#activeThreadId || this.#observedThreads.has(threadId);
+  }
+
+  /** What a triggers notice, or a stream that may have missed one, means for one Workspace. */
+  #refreshShownAutomations(workspaceId: string): void {
+    for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
+      if (threadId !== null && this.#threadWorkspace.get(threadId) === workspaceId)
+        this.#ensureAutomations(threadId, true);
+    }
   }
 
   /**
@@ -2110,6 +2221,8 @@ export class HttpHostClient {
         channel.protocolFailed = false;
       }
     this.#assignmentReads.clear();
+    this.#automationReads.clear();
+    this.#readAutomations.clear();
     this.#requestReads.clear();
     await this.#bootstrap(false, true);
   }
@@ -3156,6 +3269,8 @@ export class HttpHostClient {
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
     this.#assignmentReads.clear();
+    this.#automationReads.clear();
+    this.#readAutomations.clear();
     this.#deniedAssignments.clear();
     this.#observedThreads.clear();
     for (const sessionId of this.#browserChannels.keys()) this.#closeBrowserChannel(sessionId);
@@ -4417,6 +4532,7 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.triggers-changed") {
+      this.#refreshShownAutomations(message.workspaceId);
       this.#update({
         ...this.#snapshot,
         triggerRevision: this.#snapshot.triggerRevision + 1,
@@ -4501,8 +4617,10 @@ export class HttpHostClient {
     if (reconnected) this.#reread();
     this.#sendAck(channel);
     this.#recomputeConnection();
-    // A task notice sent while this socket was away is lost with it.
+    // A task notice sent while this socket was away is lost with it, and so is
+    // a triggers notice.
     this.#rereadTasks();
+    if (reconnected) this.#refreshShownAutomations(message.workspaceId);
     // A usage notice sent while this socket was away is lost: a shown
     // conversation of this Workspace that was read before is read again now,
     // and one not shown is read whole when it next is. One shown while the
@@ -4671,6 +4789,7 @@ export class HttpHostClient {
         this.#ensureThreadHydration(threadId);
       }
       this.#ensureAssignments(threadId, true);
+      this.#ensureAutomations(threadId, true);
     }
   }
 
@@ -5329,6 +5448,8 @@ export class HttpHostClient {
     this.#forbiddenWorkspaces.clear();
     this.#threadWorkspace.clear();
     this.#assignmentReads.clear();
+    this.#automationReads.clear();
+    this.#readAutomations.clear();
     this.#requestReads.clear();
     this.#deniedAssignments.clear();
     this.#observedThreads.clear();
@@ -5498,6 +5619,11 @@ export class HttpHostClient {
   #update(snapshot: HostSnapshot): void {
     if (this.#disposed) return;
     if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
+    if (
+      !this.#capabilities?.includes("task-family-v1") &&
+      Object.keys(snapshot.threadAutomations).length > 0
+    )
+      snapshot = { ...snapshot, threadAutomations: {} };
     const home = this.#savedViewReadiness.home;
     if (
       (home.status === "window" &&
@@ -5574,6 +5700,12 @@ export class HttpHostClient {
           .map(([threadId]) => threadId),
       );
       const retainThread = ([threadId]: [string, unknown]) => !deniedThreads.has(threadId);
+      snapshot = {
+        ...snapshot,
+        threadAutomations: Object.fromEntries(
+          Object.entries(snapshot.threadAutomations).filter(retainThread),
+        ),
+      };
       const deniedHome =
         snapshot.homeWorkspaceId !== null &&
         this.#forbiddenWorkspaces.has(snapshot.homeWorkspaceId);
@@ -6033,6 +6165,7 @@ function emptySnapshot(): HostSnapshot {
     sharedTaskDoneAvailable: false,
     iphoneAppsAvailable: false,
     assignments: {},
+    threadAutomations: {},
     requests: {},
     waitingRequests: [],
     runQueue: [],

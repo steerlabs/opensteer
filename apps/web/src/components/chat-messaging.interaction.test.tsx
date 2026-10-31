@@ -502,10 +502,12 @@ describe("Run details", () => {
   it("leaves the header the conversation's name, and names its way in by what it opens (F3)", async () => {
     stubLayout();
     const chat = await mount(new MockHostClient({ latencyMs: 0 }));
-    // The name is Chat's, with Opensteer's orb; its one button switches conversation.
+    // The name is Chat's, with Opensteer's orb, and plain: what Chat started
+    // is its family's, beside the name, not a menu under it.
     const heading = chat.querySelector(".conv-header h1");
     expect(heading?.querySelector(".conv-header__name")?.textContent).toBe("Chat");
-    expect(heading?.querySelector("button")?.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(heading?.querySelector("button")).toBeNull();
+    expect(chat.querySelector(".task-family-button")?.getAttribute("aria-haspopup")).toBe("dialog");
     expect(chat.querySelector(".conv-header .chat-orb")).not.toBeNull();
     const typing = chat.querySelector<HTMLButtonElement>(".transcript .typing button");
     expect(typing?.getAttribute("aria-label")).toMatch(/what Opensteer is doing/i);

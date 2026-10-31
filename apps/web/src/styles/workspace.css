@@ -1452,8 +1452,6 @@ button.side-needs:hover {
 
 /* ---- The menu under a conversation's name ---- */
 
-/* Only the tasks scroll: what can be done here stays in view below them
-   however many are going. */
 .popover--conversation-menu {
   display: flex;
   flex-direction: column;
@@ -1471,49 +1469,6 @@ button.side-needs:hover {
 /* Its groups part with a rule between them, never above the first. */
 .conversation-menu > * + * {
   border-top: 1px solid var(--line);
-}
-
-.conversation-menu__tasks {
-  display: grid;
-  align-content: start;
-  gap: 1px;
-  min-height: 0;
-  padding: var(--space-6);
-  overflow-y: auto;
-}
-
-.conversation-menu__label {
-  margin: 0;
-  padding: var(--space-4) var(--space-10) var(--space-2);
-  color: var(--muted);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-}
-
-.conversation-menu__task {
-  display: flex;
-  align-items: center;
-  gap: var(--space-10);
-  min-height: 36px;
-  padding: var(--space-6) var(--space-10);
-  border-radius: var(--radius-sm);
-  color: var(--text-soft);
-  font-size: var(--text-lg);
-  text-align: left;
-}
-
-.conversation-menu__task:hover,
-.conversation-menu__task:focus-visible {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.conversation-menu__title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .conversation-menu__actions {
@@ -2413,7 +2368,7 @@ button.start-apps__row--away:focus-visible {
   .side-task__main,
   .side-tab__main,
   .side-new__main,
-  .conversation-menu__task {
+  .task-family__row {
     min-height: var(--touch-target);
   }
 
@@ -3276,4 +3231,136 @@ html[data-tab-sorting] * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The family shares the lineage line; the parent's name yields first. */
+.conv-header__trail {
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.conv-header__back > :not(.conv-header__back-title) {
+  flex-shrink: 0;
+}
+
+.task-family-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  margin-left: auto;
+  padding: var(--space-4) var(--space-6);
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  font-size: var(--text-md);
+  white-space: nowrap;
+}
+
+.task-family-button:hover,
+.task-family-button[aria-expanded="true"] {
+  background: var(--surface-hover);
+}
+
+.task-family-button:focus-visible {
+  outline: 2px solid var(--ember);
+}
+
+.task-family-button__marks,
+.task-family-button__automations {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.task-family-button__marks .task-mark {
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+.task-family-button__marks .task-mark + .task-mark {
+  margin-left: calc(-1 * var(--space-8));
+}
+
+.task-family-button__attention {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--amber);
+}
+
+.task-family-button__automations--separated {
+  border-left: 1px solid var(--line-strong);
+  padding-left: var(--space-8);
+  margin-left: var(--space-2);
+}
+
+.task-family-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.popover.popover--task-family {
+  min-width: 0;
+  max-width: calc(100vw - 20px);
+  transform: translateX(6px);
+}
+
+/* However much came before, the list scrolls inside the window. */
+.task-family {
+  max-height: min(520px, calc(100vh - 120px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.task-family > section + section {
+  border-top: 1px solid var(--line);
+  margin-top: var(--space-6);
+  padding-top: var(--space-6);
+}
+
+.task-family__heading {
+  margin: 0;
+  padding: var(--space-6) var(--space-10);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.task-family__row {
+  gap: var(--space-10);
+  text-decoration: none;
+}
+
+.task-family__text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.task-family__title,
+.task-family__text .picker__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-family__state {
+  flex: none;
+}
+
+.task-family__state[data-needs-you] .task-line__state {
+  color: var(--amber);
+}
+
+.task-family__toggle {
+  justify-content: space-between;
+}
+
+.task-family__toggle svg {
+  width: 14px;
+  height: 14px;
 }

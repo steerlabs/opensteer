@@ -28,6 +28,7 @@ export type HeaderActionSpec = {
   readonly badge?: string;
   readonly disabled?: boolean;
   readonly icon?:
+    | "arrow.triangle.branch"
     | "gearshape"
     | "line.3.horizontal"
     | "plus"
@@ -77,7 +78,14 @@ function nativeHeaderItem(action: HeaderActionSpec): NativeStackHeaderItem {
       ? {}
       : {
           badge: {
-            style: { backgroundColor: color.amber, color: color.inkOnAmber, fontWeight: "700" },
+            style: {
+              backgroundColor: action.tintColor ?? color.amber,
+              color:
+                action.tintColor === undefined || action.tintColor === color.amber
+                  ? color.inkOnAmber
+                  : color.surfaceElevated,
+              fontWeight: "700",
+            },
             value: action.badge,
           },
         }),
@@ -104,6 +112,7 @@ export function browserHeaderActions(
   acting: boolean,
   visible: boolean,
   onPress: () => void,
+  family?: { readonly action: HeaderActionSpec; readonly content: ReactNode },
 ): NativeStackNavigationOptions {
   const tabs: HeaderActionSpec = {
     accessibilityHint: "Opens this conversation's tabs and apps",
@@ -114,8 +123,16 @@ export function browserHeaderActions(
     ...(acting ? { tintColor: color.green } : {}),
   };
   return {
-    headerRight: () => (visible ? <BrowserButton acting={acting} onPress={onPress} /> : null),
-    unstable_headerRightItems: () => (visible ? [nativeHeaderItem(tabs)] : []),
+    headerRight: () => (
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space[8] }}>
+        {family?.content}
+        {visible ? <BrowserButton acting={acting} onPress={onPress} /> : null}
+      </View>
+    ),
+    unstable_headerRightItems: () => [
+      ...(family ? [nativeHeaderItem(family.action)] : []),
+      ...(visible ? [nativeHeaderItem(tabs)] : []),
+    ],
   };
 }
 

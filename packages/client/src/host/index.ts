@@ -33,6 +33,7 @@ export * from "./transcript.js";
 export * from "./usage-notice.js";
 export * from "./browser-presentation.js";
 export * from "./surfaces.js";
+export * from "./task-family.js";
 export * from "./task-list.js";
 export * from "./workspace-icon-art.js";
 export * from "./workspace-storage.js";

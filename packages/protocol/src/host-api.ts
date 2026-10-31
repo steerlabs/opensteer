@@ -1621,7 +1621,13 @@ export const hostApi = defineRpc({
   ),
   "thread.assignments.list": declaration(
     "GET",
-    z.strictObject({ threadId: ThreadIdSchema }).extend(durablePageInputSchema.shape),
+    z
+      .strictObject({
+        /** Only work still under way, however far back it was handed out. Needs `task-family-v1`. */
+        open: z.boolean().optional(),
+        threadId: ThreadIdSchema,
+      })
+      .extend(durablePageInputSchema.shape),
     z.object({
       assignments: z.array(AssignmentSummarySchema).max(100),
       threadId: ThreadIdSchema,
@@ -1710,7 +1716,11 @@ export const hostApi = defineRpc({
   ),
   "triggers.list": declaration(
     "GET",
-    z.strictObject({ workspaceId: WorkspaceIdSchema.optional() }),
+    z.strictObject({
+      workspaceId: WorkspaceIdSchema.optional(),
+      /** Only those that run in this conversation. Needs `task-family-v1`. */
+      anchorThreadId: ThreadIdSchema.optional(),
+    }),
     z.object({ triggers: z.array(TriggerSummaryViewSchema).max(100) }),
   ),
   "workspace.catalog.list": declaration("GET", durablePageInputSchema, WorkspaceCatalogPageSchema),

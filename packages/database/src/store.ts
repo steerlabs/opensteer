@@ -1354,6 +1354,7 @@ export class OpensteerStore {
     readonly before?: string;
     readonly maxBytes?: number;
     readonly maxItems?: number;
+    readonly open?: boolean;
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
   }): Promise<{
