@@ -2899,6 +2899,21 @@ html[data-tab-sorting] * {
   text-overflow: ellipsis;
 }
 
+/* A finger gets the address's whole height to aim at, while the chip itself
+   keeps its even inset: the target is a layer over it, not its size. */
+@media (any-pointer: coarse) {
+  .profile-chip {
+    position: relative;
+    min-height: 0;
+  }
+
+  .profile-chip::before {
+    content: "";
+    position: absolute;
+    inset: calc(-1px - var(--segment-inset, var(--space-2))) 0;
+  }
+}
+
 /* A phone's row has room for the disc alone; its name and menu are the same.
    Still a segment: square to the address's height, inset like the chip. */
 .browser-toolbar--compact .profile-chip {
