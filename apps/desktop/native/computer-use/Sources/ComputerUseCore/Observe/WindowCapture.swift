@@ -18,6 +18,10 @@ import UniformTypeIdentifiers
 /// Capture happens in two steps. `plan` decides the crop, which the tree walk
 /// needs to know what is in the picture; `take` renders it afterwards.
 public enum WindowCapture {
+  /// Enumeration and AX discovery are different snapshots. A live stream can
+  /// plan again when their membership disagrees; a closed root stays terminal.
+  static let membershipChanged = HelperError(
+    .staleObservation, "This app changed while it was being observed.")
   /// `computerUseScreenshotMaxLongSide` and `computerUseScreenshotMaxPixels`:
   /// the largest picture every current vision model reads without resizing it
   /// first. A picture a model resizes moves every point it reads off it, so a
@@ -152,7 +156,7 @@ public enum WindowCapture {
       MacVideoDiagnostic.write(["event": "capture-plan-members-stale", "root": keyWindow.windowID,
         "members": group.members.count, "captured": capturedWindows.count,
         "rootOnScreen": root.isOnScreen, "alone": group.alone])
-      throw HelperError(.staleObservation, "This app changed while it was being observed.")
+      throw membershipChanged
     }
     let cropPoints = group.crop
     let filter = SCContentFilter(display: display, including: capturedWindows)

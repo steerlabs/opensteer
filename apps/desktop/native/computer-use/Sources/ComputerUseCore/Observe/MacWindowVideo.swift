@@ -132,6 +132,32 @@ struct MacVideoCredit {
   }
 }
 
+/// A static window may never send another complete sample after admission
+/// withholds its last change. Credit return retries only this newest sample.
+struct MacVideoPendingSample<Sample> {
+  private(set) var current: Sample?
+  private var withheld = false
+  private var scheduled = false
+
+  mutating func replace(_ sample: Sample) { current = sample; withheld = false }
+  mutating func hold() { withheld = current != nil }
+  mutating func schedule() -> Bool {
+    guard withheld, !scheduled else { return false }
+    scheduled = true
+    return true
+  }
+  mutating func take() -> Sample? {
+    scheduled = false
+    return withheld ? current : nil
+  }
+  mutating func clear(keepingCurrent: Bool = false) {
+    withheld = false
+    if !keepingCurrent { current = nil }
+    // A queued task still owns the scheduling slot. It reads current state
+    // when it runs rather than retaining a retired buffer in its closure.
+  }
+}
+
 final class MacVideoLease: @unchecked Sendable {
   private let expiry: Locked<TimeInterval>
   init(expiresAt: TimeInterval) { expiry = Locked(expiresAt) }
@@ -197,6 +223,12 @@ extension MacVideoProducing {
 final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput, SCStreamDelegate,
   @unchecked Sendable
 {
+  private struct CapturedSample {
+    let buffer: CVPixelBuffer
+    let pts: CMTime
+    let generation: Int
+    let incarnation: OwnerSampleFence.Incarnation
+  }
   private struct Publication {
     var suspendedRevision: Int?
     var profileDirty = false
@@ -215,7 +247,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     var credit = MacVideoCredit()
     var width = 0
     var height = 0
-    var current: CVPixelBuffer?
+    var samples = MacVideoPendingSample<CapturedSample>()
     var geometry: KeyWindow.CaptureState?
     var topology: WindowGroup?
     var topologyDirty = false
@@ -245,7 +277,6 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   private let resources = Locked(Resources())
   private let sampleFence = OwnerSampleFence()
   private var encoder: VTCompressionSession?
-  private var lastPts = CMTime.zero
   private var nextCheck: TimeInterval = 0
   private let topologyReadPending = Locked(false)
   private let queueHealth = Locked(ProcessInfo.processInfo.systemUptime)
@@ -269,7 +300,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   }
   var hasFrame: Bool { publication.withLock { $0.lastKeyGeneration == $0.generation } }
   var needsResume: Bool {
-    publication.withLock { (!$0.open || $0.topologyDirty) && !$0.ended && $0.geometry != nil }
+    publication.withLock { !$0.ended && ($0.topologyDirty || (!$0.open && $0.geometry != nil)) }
   }
 
   var inputVisible: Bool { publication.withLock { $0.visible && !$0.ended } }
@@ -348,9 +379,19 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   }
 
   func acknowledge(_ sequence: Int) {
-    publication.withLock { state in
-      guard state.credit.acknowledge(sequence) else { diagnostic("ack-rejected", state); return }
+    let accepted = publication.withLock { state in
+      guard state.credit.acknowledge(sequence) else { diagnostic("ack-rejected", state); return false }
       diagnostic("ack", state)
+      return true
+    }
+    if accepted { schedulePendingSample() }
+  }
+
+  private func schedulePendingSample() {
+    guard publication.withLock({ $0.samples.schedule() }) else { return }
+    queue.async { [self] in
+      guard let sample = publication.withLock({ $0.samples.take() }) else { return }
+      encode(sample)
     }
   }
 
@@ -417,6 +458,14 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       let helperCode = (error as? HelperError)?.code.rawValue ?? "none"
       startupFailure(nativeError, operation: operation, helperCode: helperCode)
       publication.withLock { diagnostic("native-start-error", $0, reason: "\(operation):\(nativeError.domain):\(nativeError.code):\(helperCode)") }
+      if error as? HelperError == WindowCapture.membershipChanged {
+        // The registry's existing lifecycle pass re-plans under the original
+        // first-frame deadline. No mismatched filter or input map is published.
+        publication.withLock { if !$0.ended { $0.topologyDirty = true } }
+        suppress(reason: "target-unavailable")
+        sampleFence.retire()
+        return
+      }
       Log.observe.error("Window video operation failed: stream=\(self.id, privacy: .public) operation=\(operation, privacy: .public) domain=\(nativeError.domain, privacy: .public) code=\(nativeError.code, privacy: .public) helperCode=\(helperCode, privacy: .public)")
       if !ended { fail(error is EncoderFailure ? "encoder-failed" : "capture-failed") }
     }
@@ -428,22 +477,26 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   }
 
   func resume(maxLongSide: Int, maxFps: Int) async {
+    var capture: SCStream?
     guard !ended, canResume,
-      let capture = resources.withLock({ state -> SCStream? in
-        guard state.startComplete, !state.stopping, !state.updating, let stream = state.stream
-        else { return nil }
+      resources.withLock({ state in
+        guard state.startComplete, !state.stopping, !state.updating
+        else { return false }
         state.updating = true
+        capture = state.stream
         state.stream = nil
-        return stream
+        return true
       }) else { return }
     defer { resources.withLock { $0.updating = false }; settleCapture() }
     // An update completion does not identify queued samples' crop/filter.
     // Close publication, stop the old SCStream and drain its encoder before
     // creating a different stream identity for the next display generation.
     suppress(reason: "target-unavailable")
-    do { try await capture.stopCapture() }
-    catch { if !ended { fail("capture-failed") }; return }
-    try? capture.removeStreamOutput(self, type: .screen)
+    if let capture {
+      do { try await capture.stopCapture() }
+      catch { if !ended { fail("capture-failed") }; return }
+      try? capture.removeStreamOutput(self, type: .screen)
+    }
     await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
       queue.async { [self] in
         if let encoder {
@@ -451,7 +504,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
           VTCompressionSessionInvalidate(encoder)
         }
         encoder = nil
-        publication.withLock { $0.credit.drained(); $0.current = nil }
+        publication.withLock { $0.credit.drained(); $0.samples.clear() }
         continuation.resume()
       }
     }
@@ -473,7 +526,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
           if advanceGeneration {
             publication.withLock {
               $0.generation += 1
-              $0.current = nil
+              $0.samples.clear()
               $0.credit.reset()
             }
           }
@@ -491,7 +544,12 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
               guard let context, let generation else { return }
               let producer = Unmanaged<MacWindowVideoProducer>.fromOpaque(context)
                 .takeUnretainedValue()
-              producer.publication.withLock { $0.credit.returned() }
+              defer {
+                // Keep the submission charged until its output has reserved
+                // peer bytes or recorded loss, including the next key decision.
+                producer.publication.withLock { $0.credit.returned() }
+                producer.schedulePendingSample()
+              }
               let inputGeneration = Int(bitPattern: generation)
               guard producer.publication.withLock({ !$0.ended && $0.generation == inputGeneration })
               else { return }
@@ -648,6 +706,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       if !visible {
         state.generation += 1
         state.credit.reset()
+        state.samples.clear(keepingCurrent: true)
       }
       return MacVideoState(
         streamId: id, state: visible ? "starting" : "warming", reason: nil,
@@ -664,7 +723,8 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     of type: SCStreamOutputType
   ) {
     guard type == .screen, sampleBuffer.isValid,
-      resources.withLock({ $0.stream === stream && $0.incarnation.map(sampleFence.accepts) == true })
+      let incarnation = resources.withLock({ $0.stream === stream ? $0.incarnation : nil }),
+      sampleFence.accepts(incarnation)
     else { return }
     guard eligible() else {
       if publication.withLock({ $0.open }) {
@@ -709,18 +769,21 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       "generation": publication.withLock { $0.generation },
       "ptsUs": CMTimeConvertScale(pts, timescale: 1_000_000, method: .default).value,
       "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
-    lastPts = pts
-    encode(buffer, pts: pts)
+    encode(CapturedSample(buffer: buffer, pts: pts,
+      generation: publication.withLock { $0.generation }, incarnation: incarnation))
   }
 
-  private func encode(_ buffer: CVPixelBuffer, pts: CMTime) {
-    guard eligible(), let encoder else { return }
+  private func encode(_ sample: CapturedSample) {
+    guard sampleFence.accepts(sample.incarnation), eligible(), let encoder else { return }
     let admitted: (Int, Bool)? = publication.withLock { state in
-      guard state.open, !state.ended else { diagnostic("encode-rejected", state, reason: "closed"); return nil }
-      state.current = buffer
+      guard state.open, !state.ended, state.generation == sample.generation,
+        sampleFence.accepts(sample.incarnation)
+      else { diagnostic("encode-rejected", state, reason: "closed"); return nil }
+      state.samples.replace(sample)
       guard state.visible else { diagnostic("encode-rejected", state, reason: "warm"); return nil }
       let admission = state.credit.admit(now: ProcessInfo.processInfo.systemUptime)
       guard case .submit(let key) = admission else {
+        state.samples.hold()
         if case .withheld(let reason) = admission { diagnostic("encode-rejected", state, reason: reason) }
         return nil
       }
@@ -736,8 +799,8 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     guard let (generation, key) = admitted else { return }
     let properties = key ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
     let status = VTCompressionSessionEncodeFrame(
-      encoder, imageBuffer: buffer,
-      presentationTimeStamp: pts, duration: .invalid, frameProperties: properties,
+      encoder, imageBuffer: sample.buffer,
+      presentationTimeStamp: sample.pts, duration: .invalid, frameProperties: properties,
       sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: generation), infoFlagsOut: nil)
     if status != noErr {
       publication.withLock { $0.credit.returned() }
@@ -748,12 +811,18 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   func refresh() {
     queue.async { [self] in
       guard eligible() else { return }
-      let buffer = publication.withLock { state -> CVPixelBuffer? in
+      let sample = publication.withLock { state -> CapturedSample? in
         state.credit.needsKey = true
-        return state.open && state.visible && !state.ended ? state.current : nil
+        guard state.open, state.visible, !state.ended, let current = state.samples.current,
+          sampleFence.accepts(current.incarnation) else { return nil }
+        // Warming changes the presentation generation, not the capture source.
+        // An explicit refresh can reuse that source as a new keyframe; an
+        // ordinary credit retry always retains its original generation.
+        return CapturedSample(buffer: current.buffer, pts: current.pts,
+          generation: state.generation, incarnation: current.incarnation)
       }
-      if let buffer {
-        encode(buffer, pts: lastPts)
+      if let sample {
+        encode(sample)
       }
     }
   }
@@ -907,7 +976,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       guard !state.ended, state.open else { return nil }
       state.open = false
       state.verified = false
-      state.current = nil
+      state.samples.clear()
       state.credit.reset()
       let withheld = state.generation
       state.generation += 1
@@ -925,7 +994,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       guard !state.ended else { return nil }
       state.ended = true
       state.open = false
-      state.current = nil
+      state.samples.clear()
       state.credit.reset()
       return MacVideoState(
         streamId: id, state: failed ? "failed" : "stopped", reason: reason,
