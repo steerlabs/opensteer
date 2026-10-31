@@ -1,3 +1,5 @@
+import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
+import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
@@ -1082,7 +1084,7 @@ export class HttpHostClient {
   #backgroundedAt: number | null = null;
   #workspacePageLoad: Promise<void> | null = null;
   #bootstrapPromise: Promise<void> | null = null;
-  #rereadPending = false;
+  #rereadPending: BootstrapReason | null = null;
   #waitingRead: "again" | "idle" | "reading" = "idle";
   /**
    * Per task list — `null` for the reader's whole list, else a Workspace's —
@@ -2307,7 +2309,7 @@ export class HttpHostClient {
 
   async load(): Promise<void> {
     if (this.#disposed) throw new Error("The Host client is closed.");
-    await this.#bootstrap();
+    await this.#bootstrap("load");
   }
 
   async refresh(options?: { readonly retryConnection?: boolean }): Promise<void> {
@@ -2317,11 +2319,15 @@ export class HttpHostClient {
         channel.refused = false;
         channel.protocolFailed = false;
       }
+    await this.#refresh("refresh");
+  }
+
+  async #refresh(reason: BootstrapReason): Promise<void> {
     this.#assignmentReads.clear();
     this.#automationReads.clear();
     this.#readAutomations.clear();
     this.#requestReads.clear();
-    await this.#bootstrap(false, true);
+    await this.#bootstrap(reason, false, true);
   }
 
   /**
@@ -2334,7 +2340,7 @@ export class HttpHostClient {
    */
   async reauthenticate(): Promise<void> {
     if (this.#disposed) return;
-    await this.#bootstrap(true, true);
+    await this.#bootstrap("reauthenticate", true, true);
   }
 
   async loadEarlierTranscript(threadId: string): Promise<void> {
@@ -3370,7 +3376,13 @@ export class HttpHostClient {
     this.#browserWatchFrameListeners.clear();
   }
 
-  async #bootstrap(force = false, revalidateCapabilities = false): Promise<void> {
+  async #bootstrap(
+    reason: BootstrapReason,
+    force = false,
+    revalidateCapabilities = false,
+    trigger = true,
+  ): Promise<void> {
+    if (trigger) bootstrapReadDiagnostics.trigger(reason);
     if (this.#bootstrapPromise && !force) {
       // A bootstrap already under way may be reusing evidence this caller
       // asked to replace, so the reverification runs beside it.
@@ -3378,10 +3390,10 @@ export class HttpHostClient {
       await Promise.all([this.#bootstrapPromise, this.#refreshCapabilities({ revalidate: true })]);
       // An explicit refresh may follow a mutation committed after that read
       // began. Read again after it settles so its stale answer cannot win.
-      if (!this.#disposed) await this.#bootstrap();
+      if (!this.#disposed) await this.#bootstrap(reason, false, false, false);
       return;
     }
-    const operation = this.#performBootstrap(revalidateCapabilities);
+    const operation = this.#performBootstrap(reason, revalidateCapabilities);
     this.#bootstrapPromise = operation;
     try {
       await operation;
@@ -3389,8 +3401,9 @@ export class HttpHostClient {
       if (this.#bootstrapPromise === operation) {
         this.#bootstrapPromise = null;
         if (this.#rereadPending) {
-          this.#rereadPending = false;
-          this.#reread();
+          const reason = this.#rereadPending;
+          this.#rereadPending = null;
+          this.#reread(reason, false);
         }
       }
     }
@@ -3405,13 +3418,14 @@ export class HttpHostClient {
    * and then ready, never leaves the client on the stale read it would have
    * joined. Hidden, it waits: coming to the foreground rereads anyway.
    */
-  #reread(): void {
+  #reread(reason: BootstrapReason, trigger = true): void {
     if (this.#disposed || this.#visibility === "background") return;
     if (this.#bootstrapPromise) {
-      this.#rereadPending = true;
+      if (trigger) bootstrapReadDiagnostics.trigger(reason);
+      this.#rereadPending ??= reason;
       return;
     }
-    void this.#bootstrap().catch(() => undefined);
+    void this.#bootstrap(reason, false, false, trigger).catch(() => undefined);
   }
 
   /**
@@ -3704,7 +3718,7 @@ export class HttpHostClient {
     }
   }
 
-  async #performBootstrap(revalidateCapabilities: boolean): Promise<void> {
+  async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
     const generation = this.#viewerGeneration;
     const presenceMark = this.#presenceCounter;
     const ownerViewRevision = this.#ownerViews.revision;
@@ -3714,6 +3728,7 @@ export class HttpHostClient {
     if (this.#readCapabilities)
       await this.#refreshCapabilities(revalidateCapabilities ? { revalidate: true } : undefined);
     if (generation !== this.#viewerGeneration || this.#disposed) return;
+    bootstrapReadDiagnostics.start(reason);
     const response = await this.rpc["bootstrap.get"]({});
     if (!response.ok && response.error.code === "unauthorized") {
       if (this.#disposed || this.#snapshot.session !== "authentication-required") return;
@@ -4026,7 +4041,7 @@ export class HttpHostClient {
     if (this.#refreshTimer || this.#refreshIntervalMs === 0) return;
     if (this.#visibility === "background") return;
     this.#refreshTimer = globalThis.setInterval(() => {
-      void this.#bootstrap().catch(() => undefined);
+      void this.#bootstrap("interval").catch(() => undefined);
     }, this.#refreshIntervalMs);
   }
 
@@ -4117,7 +4132,8 @@ export class HttpHostClient {
     }
     this.#recomputeConnection();
     this.#startRefresh();
-    if (this.#snapshot.session === "authenticated") void this.refresh().catch(() => undefined);
+    if (this.#snapshot.session === "authenticated")
+      void this.#refresh("foreground").catch(() => undefined);
   }
 
   /**
@@ -4612,7 +4628,7 @@ export class HttpHostClient {
       // the bootstrap, not the event stream, so the reread is the whole answer
       // — the same one the refresh poll gives, taken now instead of at the end
       // of the interval.
-      this.#reread();
+      this.#reread(message.type);
       return;
     }
     if (message.type === "host.thread-place-changed") {
@@ -4658,7 +4674,7 @@ export class HttpHostClient {
       // Machine state also says, in a Thread, when its turn is at work on a Mac.
       // Refresh it here so correctness never depends on mounting Computers.
       this.#update({ ...this.#snapshot, machineRevision: this.#snapshot.machineRevision + 1 });
-      this.#reread();
+      this.#reread(message.type);
       return;
     }
     channel.cursor = maxSequence(channel.cursor, message.sequence);
@@ -4681,7 +4697,7 @@ export class HttpHostClient {
     const reconnected = channel.reconnectAttempt > 0;
     channel.synchronized = true;
     channel.reconnectAttempt = 0;
-    if (reconnected) this.#reread();
+    if (reconnected) this.#reread("reconnect");
     this.#sendAck(channel);
     this.#recomputeConnection();
     // A task notice sent while this socket was away is lost with it, and so is

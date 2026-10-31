@@ -1,3 +1,4 @@
+import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
 import { forEachBoundedResponseChunk, readBoundedText } from "@opensteer/shared/boundedJson";
 import { ensurePrivateDirectory, setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { openAsBlob, promises as fs } from "node:fs";
@@ -133,6 +134,7 @@ export class DesktopHostTransport extends HostTransport {
   readonly #ownerGenerations = new Map<number, number>();
   #socketGeneration = 0;
   #openingBinary = 0;
+  readonly #bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
 
   constructor(options: {
     readonly catalog: Pick<
@@ -202,6 +204,20 @@ export class DesktopHostTransport extends HostTransport {
    */
   async request(input: unknown): Promise<DesktopHostHttpResponse> {
     const request = DesktopHostHttpRequestSchema.parse(input);
+    if (request.path.split("?")[0] === "/v1/rpc/bootstrap.get") {
+      const diagnostic = this.#bootstrapDiagnostics.report(request.headers.bootstrapDiagnostics);
+      if (diagnostic) {
+        try {
+          this.#log?.("host.bootstrap.loop", {
+            windowMs: diagnostic.windowMs,
+            triggers: diagnostic.triggers,
+            starts: diagnostic.starts,
+          });
+        } catch {
+          /* Diagnostics cannot prevent a read. */
+        }
+      }
+    }
     return this.exchange(request, async (response, progress) =>
       DesktopHostHttpResponseSchema.parse({
         body: await readBoundedText(response, {

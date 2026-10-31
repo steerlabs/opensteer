@@ -12,6 +12,32 @@ import { describe, expect, it, vi } from "vitest";
 import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";
 
 describe("snapshot-before-live synchronization", () => {
+  it("counts broad notices once at publication, before socket fanout", () => {
+    const hub = new RealtimeHub({ store: {} as OpensteerStore });
+    const summary = JSON.stringify({
+      windowMs: 1,
+      triggers: { refresh: 6 },
+      starts: { refresh: 6 },
+    });
+    hub.publishBrowserSessionsChanged(
+      createId("workspace"),
+      [createId("user"), createId("user")],
+      "browser.catalog-flush",
+    );
+    hub.broadcast({ type: "host.machines.changed" }, "computer-apps.status");
+    hub.sendToUsers(
+      [createId("user")],
+      { type: "host.machine.access.session.started" } as HostToClientMessage,
+      "machine.access",
+    );
+    hub.broadcast({ type: "host.tasks-changed" });
+    expect(JSON.parse(hub.bootstrapDiagnostics.report(summary)!.notices as string)).toEqual({
+      "host.browser-sessions-changed/browser.catalog-flush": 1,
+      "host.machines.changed/computer-apps.status": 1,
+      "host.machine.access.session.started/machine.access": 1,
+    });
+  });
+
   it.each([undefined, "omit"] as const)(
     "passes snapshotMessages=%s to the store",
     async (snapshotMessages) => {
