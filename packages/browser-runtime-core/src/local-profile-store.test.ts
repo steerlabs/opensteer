@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
 import { once } from "node:events";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import * as atomicFiles from "@opensteer/shared/atomicPrivateFile";
@@ -144,25 +146,29 @@ describe("LocalProfileStore", () => {
     const { root, store, binding: chromium } = await setup();
     await store.close();
     const binding = { ...chromium, engine: "electron" as const };
-    const script = `import { LocalProfileStore } from ${JSON.stringify(new URL("./local-profile-store.ts", import.meta.url).href)};
-      const store = await LocalProfileStore.acquire(process.argv[1], "electron");
-      const binding = JSON.parse(process.argv[2]); const seed = JSON.parse(process.argv[3]);
+    const script = `import { LocalProfileStore } from ${JSON.stringify(fileURLToPath(new URL("./local-profile-store.ts", import.meta.url)))};
+      const store = await LocalProfileStore.acquire(process.argv[2], "electron");
+      const binding = JSON.parse(process.argv[3]); const seed = JSON.parse(process.argv[4]);
       await store.initialize(binding, seed); store.engineOwnsDirectory(binding);
       await store.tombstone(binding, "00000000-0000-4000-8000-000000000003"); await store.close();`;
+    // Compile before forking so the process-death deadline measures the owner,
+    // rather than loading/transpiling the workspace through a TypeScript loader.
+    const fixture = path.join(root, ".opensteer-runtime", "owner.mjs");
+    await build({
+      stdin: { contents: script, resolveDir: import.meta.dirname, loader: "js" },
+      outfile: fixture,
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      target: "node24",
+      logLevel: "silent",
+    });
     const child = spawn(
       process.execPath,
-      [
-        "--import",
-        "tsx",
-        "--input-type",
-        "module",
-        "-e",
-        script,
-        root,
-        JSON.stringify(binding),
-        JSON.stringify(seed),
-      ],
-      { stdio: ["ignore", "ignore", "pipe"] },
+      [fixture, root, JSON.stringify(binding), JSON.stringify(seed)],
+      {
+        stdio: ["ignore", "ignore", "pipe"],
+      },
     );
     const exited = once(child, "exit");
     try {

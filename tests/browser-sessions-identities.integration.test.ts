@@ -619,9 +619,6 @@ run("Browser Sessions through a whole deployment", () => {
   }, 120_000);
 
   it("preserves final-save grace when a periodic commit overlaps session closure", async () => {
-    const periodic = gate({ label: "periodic host commit", deadlineMs: 10_000 });
-    const final = gate({ label: "final host commit", deadlineMs: 10_000 });
-    const closed = gate({ label: "Host session closed", deadlineMs: 10_000 });
     let commits = 0;
     const statuses: number[] = [];
     const snapshot = {
@@ -665,6 +662,9 @@ run("Browser Sessions through a whole deployment", () => {
       idempotencyKey: randomUUID(),
       workspaceId: stack.mainWorkspaceId,
     });
+    const periodic = gate({ label: "periodic host commit", deadlineMs: 10_000 });
+    const final = gate({ label: "final host commit", deadlineMs: 10_000 });
+    const closed = gate({ label: "Host session closed", deadlineMs: 10_000 });
     const open = () =>
       stack.host.browser.start({
         ownerId: owner.id,
