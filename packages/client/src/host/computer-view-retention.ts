@@ -39,17 +39,21 @@ export class ComputerViewRetainers {
   readonly #held = new Set<Retained>();
   readonly #live: (viewId: string, generation: number) => boolean;
   #connected = true;
+  readonly #left: (viewId: string, generation: number) => void;
   constructor(
     renew: (viewId: string, generation: number) => Promise<ComputerView>,
     live: (viewId: string, generation: number) => boolean,
+    left: (viewId: string, generation: number) => void = () => undefined,
   ) {
     this.#renew = renew;
     this.#live = live;
+    this.#left = left;
   }
   retain(viewId: string, generation: number, visible = true): ComputerViewRetention {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let released = false;
     let shown = visible;
+    if (!visible) this.#left(viewId, generation);
     let pending = false;
     let failures = 0;
     const schedule = () => {
@@ -61,6 +65,8 @@ export class ComputerViewRetainers {
       );
     };
     const release = () => {
+      if (released) return;
+      this.#left(viewId, generation);
       released = true;
       clearTimeout(timer);
       this.#held.delete(held);
@@ -97,7 +103,10 @@ export class ComputerViewRetainers {
         shown = value;
         // Shown again, it renews at once: it may have been hidden for most of its life.
         if (shown) void renew();
-        else schedule();
+        else {
+          this.#left(viewId, generation);
+          schedule();
+        }
       },
       release,
     };

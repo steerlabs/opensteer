@@ -23,7 +23,7 @@ const app: ComputerAppIdentity = {
   displayName: "Notes",
   teamId: null,
 };
-function harness() {
+function harness(phone = false) {
   let focused = 11;
   let approved = true;
   let access: "read" | "read-write" = "read";
@@ -40,9 +40,9 @@ function harness() {
         ? [
             {
               id: "notes",
-              definitionId: "macos-app",
+              definitionId: phone ? "android-phone" : "macos-app",
               status: "connected",
-              computer: { runnerId: machine, app, blockedAt: null, access },
+              computer: { runnerId: machine, app: phone ? null : app, blockedAt: null, access },
             } as unknown as IntegrationConnectionSummary,
           ]
         : [],
@@ -139,7 +139,9 @@ function harness() {
       service.command(owner, {
         type: "computer.view.open",
         machineId: machine,
-        target: { kind: "app", app, ...(window === undefined ? {} : { window }) },
+        target: phone
+          ? { kind: "phone", display: "main" }
+          : { kind: "app", app, ...(window === undefined ? {} : { window }) },
         idempotencyKey: crypto.randomUUID(),
       }),
   };
@@ -322,5 +324,28 @@ it("authorizes only the exact existing presentation source without opening or re
     ]);
   } finally {
     await h.service.shutdown();
+  }
+});
+
+it("keeps phone viewing live while read-write approval alone controls input", async () => {
+  const h = harness(true);
+  try {
+    const view = await h.open();
+    const source = {
+      kind: "owner-view" as const,
+      viewId: view.viewId,
+      generation: view.generation,
+    };
+    await expect(h.service.authorizeDisplay(source, owner)).resolves.toBe(machine);
+    await expect(h.service.authorizeInput(source, owner)).rejects.toThrow(/read-write/);
+    h.setAccess("read-write");
+    await expect(h.service.authorizeInput(source, owner)).resolves.toBe(machine);
+    h.setAccess("read");
+    await expect(h.service.authorizeInput(source, owner)).rejects.toThrow(/read-write/);
+    await expect(h.service.authorizeDisplay(source, owner)).resolves.toBe(machine);
+    h.revoke();
+    await expect(h.service.authorizeInput(source, owner)).rejects.toThrow();
+  } finally {
+    h.service.shutdown();
   }
 });

@@ -8,6 +8,7 @@ import {
   type DisplayViewerFrameHeader,
 } from "@opensteer/protocol";
 import { HttpHostClient, type WebSocketClient } from "../host/host-session-client.js";
+import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPhoneDisplaySocket } from "../mock/mock-phone-display.js";
 import type { HostSnapshot } from "../host/client.js";
 import {
@@ -246,7 +247,7 @@ describe("phone display socket", () => {
     });
     client.connectComputerDisplay(source);
     expect(urls).toEqual([
-      `wss://host.example/v1/computer-use/sessions/${sessionId}/display?sharedInput=1`,
+      `wss://host.example/v1/computer-use/sessions/${sessionId}/display?sharedInput=1&phoneOwnerControl=1`,
     ]);
     client.dispose();
   });
@@ -724,6 +725,7 @@ describe("reconnection", () => {
       closeCode: 4003,
       display: null,
       input: "unavailable",
+      power: "unavailable",
       keyframeFailed: false,
     } satisfies DisplaySnapshot);
     lease.release();
@@ -907,6 +909,7 @@ describe("phone display words", () => {
     closeCode: null,
     display: null,
     input: "unavailable",
+    power: "unavailable",
     keyframeFailed: false,
   };
   const state = (
@@ -1257,4 +1260,181 @@ describe("display editing receipt adapter", () => {
     await rejected;
     editing.dispose();
   });
+});
+
+describe("phone power and explicit-open intent", () => {
+  const owner = {
+    kind: "owner-view" as const,
+    viewId: "cvw_44444444-4444-4444-8444-444444444444",
+    generation: 1,
+  };
+  const ownerTarget = { scope: "owner", source: owner };
+  const state = {
+    type: "display.state",
+    state: "screen-off",
+    generation: 0,
+    width: 0,
+    height: 0,
+    sharedInput: 1,
+    phoneOwnerControl: 1,
+  };
+  it("wakes once on the first attachment without geometry, never on timeout or reconnect", () => {
+    streams.armAutoWake(owner);
+    const lease = streams.retain(ownerTarget);
+    const socket = sockets.at(-1)!;
+    socket.open();
+    socket.json(state);
+    expect(lease.getSnapshot()).toMatchObject({ input: "unavailable", power: "available" });
+    expect(socket.messages("display.power")).toEqual([
+      { type: "display.power", action: "wake", sequence: 0 },
+    ]);
+    socket.json(state);
+    expect(socket.messages("display.power")).toHaveLength(1);
+    expect(lease.power("lock")).toBe(true);
+    socket.json(state);
+    expect(socket.messages("display.power")).toHaveLength(2);
+    socket.drop();
+    vi.advanceTimersByTime(100);
+    const replacement = sockets.at(-1)!;
+    replacement.open();
+    replacement.json(state);
+    expect(replacement.messages("display.power")).toEqual([]);
+    lease.release();
+  });
+  it("requires an explicit Open to wake and reattach a terminal view", () => {
+    const lease = streams.retain(ownerTarget);
+    const socket = sockets.at(-1)!;
+    socket.open();
+    socket.json(state);
+    socket.drop(1000);
+    expect(lease.getSnapshot().connection).toBe("closed");
+    streams.armAutoWake(owner);
+    const replacement = sockets.at(-1)!;
+    expect(replacement).not.toBe(socket);
+    replacement.open();
+    replacement.json(state);
+    expect(replacement.messages("display.power")).toEqual([
+      { type: "display.power", action: "wake", sequence: 0 },
+    ]);
+    lease.release();
+  });
+
+  it("does not undo a lock chosen as the first power confirmation arrives", () => {
+    streams.armAutoWake(owner);
+    const lease = streams.retain(ownerTarget);
+    let locked = false;
+    lease.subscribe(() => {
+      if (!locked && lease.getSnapshot().power === "available") {
+        locked = true;
+        lease.power("lock");
+      }
+    });
+    const socket = sockets.at(-1)!;
+    socket.open();
+    socket.json(state);
+    expect(socket.messages("display.power")).toEqual([
+      { type: "display.power", action: "lock", sequence: 0 },
+    ]);
+    lease.release();
+  });
+
+  it("keeps power and input unavailable until the current socket confirms authority", () => {
+    const lease = streams.retain(ownerTarget);
+    const socket = sockets.at(-1)!;
+    socket.open();
+    socket.json({ ...state, state: "live", generation: 1, width: 360, height: 780 });
+    expect(lease.getSnapshot()).toMatchObject({ input: "available", power: "available" });
+    streams.reconnect();
+    const replacement = sockets.at(-1)!;
+    replacement.open();
+    expect(lease.getSnapshot()).toMatchObject({ input: "unavailable", power: "unavailable" });
+    expect(lease.power("wake")).toBe(false);
+    expect(lease.input(1, [{ kind: "nav", to: "home" }])).toBe(false);
+    expect(replacement.sent).toEqual([]);
+    replacement.json({ ...state, phoneOwnerControl: undefined, sharedInput: undefined });
+    expect(lease.power("wake")).toBe(false);
+    lease.release();
+  });
+
+  it("never wakes read-only or unconfirmed peers, even if authority later widens", () => {
+    streams.armAutoWake(owner);
+    const lease = streams.retain(ownerTarget);
+    const socket = sockets.at(-1)!;
+    socket.open();
+    socket.json({ ...state, phoneOwnerControl: undefined, sharedInput: undefined });
+    expect(lease.power("wake")).toBe(false);
+    socket.json(state);
+    expect(socket.messages("display.power")).toEqual([]);
+    socket.json({ ...state, state: "live", generation: 1, width: 360, height: 780 });
+    expect(lease.getSnapshot().input).toBe("available");
+    lease.release();
+  });
+  it("cancels an unspent intent on leave or socket replacement", () => {
+    streams.armAutoWake(owner);
+    const lease = streams.retain(ownerTarget);
+    const socket = sockets.at(-1)!;
+    socket.open();
+    streams.reconnect();
+    const replacement = sockets.at(-1)!;
+    replacement.open();
+    replacement.json(state);
+    expect(replacement.messages("display.power")).toEqual([]);
+    lease.release();
+    const restored = streams.retain(ownerTarget);
+    const fresh = sockets.at(-1)!;
+    fresh.open();
+    fresh.json(state);
+    expect(fresh.messages("display.power")).toEqual([]);
+    restored.release();
+  });
+});
+
+it("mock phone views cancel a hidden Open intent and withdraw write access live", async () => {
+  vi.useRealTimers();
+  const client = new MockHostClient({ latencyMs: 0 });
+  const pool = sharedDisplayStreams(client);
+  try {
+    const phone = (await client.listApprovedComputerApps()).find(
+      (item) => item.target.kind === "phone",
+    )!;
+    const view = await client.openComputerView(phone.machineId, phone.target);
+    const retained = client.retainComputerView(view.viewId, view.generation);
+    retained.setVisible(false);
+    const lease = pool.retain({
+      scope: "mock-phone",
+      source: { kind: "owner-view", viewId: view.viewId, generation: view.generation },
+    });
+    try {
+      await vi.waitFor(() => expect(lease.getSnapshot().input).toBe("available"));
+      expect(lease.getSnapshot().display?.generation).toBe(1);
+      expect(lease.power("lock")).toBe(true);
+      expect(lease.getSnapshot()).toMatchObject({ power: "available", input: "unavailable" });
+      expect(lease.power("wake")).toBe(true);
+      expect(lease.getSnapshot().input).toBe("available");
+      await client.dispatch({
+        type: "integration.computer.setup.set",
+        idempotencyKey: "lower-phone",
+        input: {
+          kind: "app",
+          runnerId: phone.machineId,
+          definitionId: "android-phone",
+          app: null,
+          access: "read",
+        },
+      });
+      await vi.waitFor(() =>
+        expect(lease.getSnapshot()).toMatchObject({
+          connection: "open",
+          input: "unavailable",
+          power: "unavailable",
+        }),
+      );
+    } finally {
+      lease.release();
+      retained.release();
+    }
+  } finally {
+    pool.dispose();
+    client.dispose();
+  }
 });

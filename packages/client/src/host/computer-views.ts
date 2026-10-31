@@ -18,6 +18,7 @@ export function computerViewMethods(
   authority: () => number,
   currentView: (viewId: string) => ComputerView | undefined,
   windowsSupported: () => boolean = () => true,
+  left: (viewId: string, generation: number) => void = () => undefined,
 ): Pick<
   HostClient,
   | "openComputerView"
@@ -81,6 +82,7 @@ export function computerViewMethods(
       const view = currentView(viewId);
       return view?.generation === generation && view.state === "ready";
     },
+    left,
   );
   return {
     clear: () => retainers.clear(),

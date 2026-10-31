@@ -109,6 +109,22 @@ export class MockComputerViews {
       ];
     });
   }
+  inputAvailable(viewId: string, generation: number): boolean {
+    const view = this.#snapshot()
+      .machines.flatMap((machine) => machine.computerUse?.ownerViews ?? [])
+      .find((view) => view.viewId === viewId && view.generation === generation);
+    return (
+      view?.state === "ready" &&
+      Date.parse(view.expiresAt) > this.#now().getTime() &&
+      this.#connections().some(
+        (connection) =>
+          connection.id === view.connectionId &&
+          connection.status === "connected" &&
+          connection.computer?.blockedAt === null &&
+          connection.computer.access === "read-write",
+      )
+    );
+  }
   #validate(machineId: string, target: ComputerViewTarget): ApprovedComputerApp {
     const snapshot = this.#authenticated();
     const machine = snapshot.machines.find((machine) => machine.id === machineId);

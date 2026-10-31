@@ -377,7 +377,9 @@ that evidence. Mac window video stays disabled on iOS pending that qualification
 ## Owner-view wire
 
 `packages/protocol/src/computer-view.ts` and `display-stream.ts` own schemas and bounds.
-Owner authority is independent of Run sessions. Video never renews it; visible retain
+Owner authority is independent of Run sessions and does not itself authorize input. Phone
+owner input and power require a separately negotiated write projection under current
+read-write approval; see [Agent Phone](agent-phone.md#live-display). Video never renews it; visible retain
 handles do. Transient renewal transport failures preserve authority until actual expiry;
 terminal/expired/revoked generations need explicit reopen. Lease durations are measured
 from receipt using local monotonic clocks; only the Host's client projection has an

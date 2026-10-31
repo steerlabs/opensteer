@@ -120,6 +120,8 @@ async function fixture(
   supported = true,
   kind: {
     sharedInput?: boolean;
+    phoneOwnerControl?: boolean;
+    ownerViews?: boolean;
     editing?: boolean;
     displayCut?: boolean;
     mac?: boolean;
@@ -153,6 +155,7 @@ async function fixture(
   let activities = 0;
   let authorizationGate: Promise<void> | undefined;
   let authorizationChecks = 0;
+  let inputAuthorizationChecks = 0;
   let authorizationFailure: Error | undefined;
   const fence = RunnerAuxiliaryFrameFenceSchema.extend({ module: z.literal("integrations") }).parse(
     {
@@ -175,6 +178,7 @@ async function fixture(
           platform: mac ? "darwin" : "android",
           protocolVersion: mac ? 5 : 4,
           ...(!mac && kind.sharedInput !== false ? { sharedInput: 1 } : {}),
+          ...(kind.phoneOwnerControl ? { phoneOwnerControl: 1 } : {}),
           ...(editing ? { editing: 1 } : {}),
           ...(displayCut ? { displayCut: 1 } : {}),
           ...(mac
@@ -244,16 +248,19 @@ async function fixture(
     computerUse: service,
     computerViews: {
       authorizeDisplay: async () => {
-        if (mac && authorized) return runnerId;
+        if ((mac || kind.ownerViews || kind.phoneOwnerControl) && authorized) return runnerId;
         throw new Error("No owner lease in this task fixture");
       },
       authorizeInput: async () => {
+        inputAuthorizationChecks++;
+        const allowed = inputAuthorized;
         await authorizationGate;
-        if (!mac || !inputAuthorized)
+        if (!(mac || kind.phoneOwnerControl) || !allowed)
           throw new OpensteerError({ code: "forbidden", message: "Read-write approval required" });
         return runnerId;
       },
-      isDisplayLive: () => mac && live && authorized,
+      isDisplayLive: () =>
+        (mac ? live : Boolean(kind.ownerViews || kind.phoneOwnerControl)) && authorized,
       endDisplaySource: () => undefined,
     },
     now: () => now,
@@ -367,9 +374,9 @@ async function fixture(
     app,
     base,
     macSource,
-    macViewer: (editing = false) =>
+    macViewer: (editing = false, phoneOwnerControl = false) =>
       connect(
-        `/v1/computer-use/views/${macSource.viewId}/1/display?sharedInput=1${editing ? "&editing=1" : ""}`,
+        `/v1/computer-use/views/${macSource.viewId}/1/display?sharedInput=1${editing ? "&editing=1" : ""}${phoneOwnerControl ? "&phoneOwnerControl=1&displayCut=1" : ""}`,
         "owner",
       ),
     serverViewers,
@@ -416,6 +423,7 @@ async function fixture(
     },
     activity: () => activities,
     authorizationChecks: () => authorizationChecks,
+    inputAuthorizationChecks: () => inputAuthorizationChecks,
     pauseAuthorization: () => {
       let resume: () => void = () => undefined;
       authorizationGate = new Promise<void>((resolve) => {
@@ -2636,4 +2644,157 @@ describe("Mac owner input over authenticated display sockets", () => {
       );
     }
   });
+});
+
+describe("phone owner input and power", () => {
+  it("routes source input without a task and keeps owner authority after task close", async () => {
+    const h = await fixture(true, { phoneOwnerControl: true, editing: true, displayCut: true });
+    const owner = await h.macViewer(true, true);
+    await owner.received(() => owner.json().some((m) => m.phoneOwnerControl === 1));
+    expect(h.start()).toMatchObject({ phoneOwnerControl: 1, inputSources: [h.macSource] });
+    await h.state("live");
+    await owner.received(() => owner.json().some((m) => m.state === "live"));
+    const task = await h.viewer(true);
+    await task.received(() => task.json().some((m) => m.state === "live"));
+    owner.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    await owner.roundTrip();
+    const command = h.sent.findLast((m) => m.type === "host.integrations.display.input")!;
+    expect(command).toMatchObject({ source: h.macSource });
+    expect(command).not.toHaveProperty("sessionId");
+    if (command.type !== "host.integrations.display.input") throw Error("Missing input");
+    await h.apps.handleMessage(h.peer, h.stream, {
+      ...h.fence,
+      type: "runner.integrations.display.clipboard",
+      streamId: h.start().streamId,
+      source: h.macSource,
+      geometry: 1,
+      sequence: command.sequence,
+      outcome: "copied",
+      text: "selection",
+    });
+    await owner.received(() => owner.json().some((m) => m.type === "display.clipboard"));
+    await task.roundTrip();
+    expect(task.json().some((m) => m.type === "display.clipboard")).toBe(false);
+    h.end();
+    await task.closed;
+    owner.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 1,
+      events: [{ kind: "nav", to: "home" }],
+    });
+    await owner.roundTrip();
+    expect(h.sent.findLast((m) => m.type === "host.integrations.display.input")).toMatchObject({
+      source: h.macSource,
+      events: [{ kind: "nav", to: "home" }],
+    });
+    expect(h.activity()).toBe(0);
+  });
+
+  it("withdraws held input immediately, fences stale reads, and keeps the read-only view", async () => {
+    const h = await fixture(true, { phoneOwnerControl: true });
+    const owner = await h.macViewer(false, true);
+    await owner.received(() => owner.json().some((m) => m.phoneOwnerControl === 1));
+    await h.state("live");
+    await owner.received(() => owner.json().some((m) => m.state === "live"));
+    owner.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 0,
+      events: [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 0 }],
+    });
+    await owner.roundTrip();
+    const resume = h.pauseAuthorization();
+    h.advance(5001);
+    h.hub.sweep();
+    h.inputAuthorization(false);
+    h.hub.withdrawOwnerInput(h.runnerId);
+    resume();
+    await owner.roundTrip();
+    expect(
+      h.sent.findLast((m) => m.type === "host.integrations.display.input-reset"),
+    ).toMatchObject({ source: h.macSource });
+    expect(h.sent.findLast((m) => m.type === "host.integrations.display.demand")).toMatchObject({
+      sources: [h.macSource],
+      inputSources: [],
+    });
+    expect(owner.json().at(-1)).not.toHaveProperty("sharedInput");
+    expect(owner.json().at(-1)).not.toHaveProperty("phoneOwnerControl");
+    owner.send({ type: "display.power", sequence: 1, action: "wake" });
+    await owner.received(() => owner.json().some((m) => m.type === "display.power.result"));
+    expect(owner.json().at(-1)).toMatchObject({ outcome: "refused" });
+    expect(h.sent.some((m) => m.type === "host.integrations.display.power")).toBe(false);
+    expect(owner.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("admits power before geometry and delivers its private receipt after protection", async () => {
+    const h = await fixture(true, { phoneOwnerControl: true });
+    const owner = await h.macViewer(false, true);
+    const other = await h.macViewer(false, true);
+    await owner.received(() => owner.json().some((m) => m.phoneOwnerControl === 1));
+    owner.send({ type: "display.power", sequence: 0, action: "lock" });
+    await owner.roundTrip();
+    const command = h.sent.findLast((m) => m.type === "host.integrations.display.power");
+    expect(command).toMatchObject({ source: h.macSource, action: "lock" });
+    if (command?.type !== "host.integrations.display.power") throw Error("Missing power");
+    await h.state("protected", 1, "locked-screen");
+    await h.apps.handleMessage(h.peer, h.stream, {
+      ...h.fence,
+      type: "runner.integrations.display.power-result",
+      streamId: h.start().streamId,
+      source: h.macSource,
+      sequence: command.sequence,
+      outcome: "dispatched",
+    });
+    await owner.received(() => owner.json().some((m) => m.type === "display.power.result"));
+    await other.roundTrip();
+    expect(other.json().some((m) => m.type === "display.power.result")).toBe(false);
+    expect(owner.json().at(-1)).toMatchObject({ sequence: 0, outcome: "dispatched" });
+  });
+
+  it("keeps old phones and non-opted-in viewers on the baseline wire", async () => {
+    const old = await fixture(true, { ownerViews: true });
+    const owner = await old.macViewer(false, true);
+    await owner.received(() => owner.json().length > 0);
+    expect(old.start()).not.toHaveProperty("phoneOwnerControl");
+    expect(old.start()).not.toHaveProperty("inputSources");
+    expect(owner.json().at(-1)).not.toHaveProperty("sharedInput");
+    const current = await fixture(true, { phoneOwnerControl: true });
+    const legacy = await current.macViewer();
+    await legacy.received(() => legacy.json().length > 0);
+    expect(legacy.json().at(-1)).not.toHaveProperty("phoneOwnerControl");
+    expect(legacy.json().at(-1)).not.toHaveProperty("sharedInput");
+  });
+});
+
+it("starts the producer before demand when concurrent owner authorization finishes out of order", async () => {
+  const h = await fixture(true, { phoneOwnerControl: true });
+  const resumeFirst = h.pauseAuthorization();
+  const first = await h.macViewer(false, true);
+  await vi.waitFor(() => expect(h.inputAuthorizationChecks()).toBe(1));
+  const resumeSecond = h.pauseAuthorization();
+  const second = await h.macViewer(false, true);
+  await vi.waitFor(() => expect(h.inputAuthorizationChecks()).toBe(2));
+  resumeSecond();
+  await second.received(() => second.json().some((m) => m.phoneOwnerControl === 1));
+  resumeFirst();
+  await first.received(() => first.json().some((m) => m.phoneOwnerControl === 1));
+  expect(
+    h.sent.filter(
+      (m) =>
+        m.type === "host.integrations.display.start" ||
+        m.type === "host.integrations.display.demand",
+    )[0]?.type,
+  ).toBe("host.integrations.display.start");
+});
+
+it("does not create a phone producer when owner input authorization finishes after shutdown", async () => {
+  const h = await fixture(true, { phoneOwnerControl: true });
+  const resume = h.pauseAuthorization();
+  const owner = await h.macViewer(false, true);
+  await vi.waitFor(() => expect(h.inputAuthorizationChecks()).toBe(1));
+  h.hub.close();
+  resume();
+  await vi.waitFor(() => expect(owner.socket.readyState).toBe(WebSocket.CLOSED));
+  expect(h.start()).toBeUndefined();
 });

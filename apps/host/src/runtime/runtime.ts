@@ -1420,6 +1420,7 @@ export async function createHostRuntime(
         });
       },
       mcpOauth,
+      onInputAccessWithdrawn: (runnerId) => displayStreams?.withdrawOwnerInput(runnerId),
       onConnectionsChanged: () => {
         void computerViews
           ?.revalidate()

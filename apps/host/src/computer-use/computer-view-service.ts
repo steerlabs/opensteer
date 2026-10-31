@@ -448,19 +448,20 @@ export class ComputerViewService {
     const connections = await this.#options.connections(owner);
     const approved = connections.find((connection) => connection.id === held.record.connectionId);
     if (
-      held.record.target.kind !== "app" ||
       held.record.state !== "ready" ||
       !this.#live(held) ||
       approved?.status !== "connected" ||
       approved.computer?.access !== "read-write" ||
       approved.computer.blockedAt !== null ||
       approved.computer.runnerId !== held.record.machineId ||
-      !approved.computer.app ||
-      !computerAppIdentitiesEqual(approved.computer.app, held.record.target.app)
+      (held.record.target.kind === "app"
+        ? !approved.computer.app ||
+          !computerAppIdentitiesEqual(approved.computer.app, held.record.target.app)
+        : approved.definitionId !== "android-phone" || approved.computer.app !== null)
     )
       throw new OpensteerError({
         code: "forbidden",
-        message: "Input requires a current read-write app approval.",
+        message: "Input requires a current read-write approval.",
       });
     return held.record.machineId;
   }

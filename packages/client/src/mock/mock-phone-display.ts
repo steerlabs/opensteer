@@ -29,7 +29,17 @@ export class MockPhoneDisplaySocket implements WebSocketClient {
   readyState = 0;
   readonly #listeners = new Map<string, Set<SocketListener>>();
 
-  constructor(availability: "live" | "unsupported" | "ended") {
+  #locked = false;
+  #generation = 1;
+  readonly #writable: () => boolean;
+  readonly #phone: boolean;
+  constructor(
+    availability: "live" | "unsupported" | "ended",
+    writable: () => boolean = () => true,
+    phone = true,
+  ) {
+    this.#writable = writable;
+    this.#phone = phone;
     this.#later(() => {
       this.readyState = 1;
       this.#emit("open", {});
@@ -78,10 +88,39 @@ export class MockPhoneDisplaySocket implements WebSocketClient {
       return;
     }
     const message = parsed.data;
+    if (message.type === "display.power") {
+      const allowed = this.#phone && this.#writable();
+      if (allowed) {
+        this.#locked = message.action === "lock";
+        if (!this.#locked) this.#generation++;
+        this.#replay();
+      }
+      this.#json({
+        type: "display.power.result",
+        sequence: message.sequence,
+        outcome: allowed ? "dispatched" : "refused",
+        ...(allowed ? {} : { reason: "unavailable" }),
+      });
+      return;
+    }
     if (message.type === "display.keyframe") {
       this.#later(() => this.#replay());
       return;
     }
+  }
+
+  refreshAuthority(): void {
+    const { width, height } = mockPhoneDisplayPicture;
+    this.#json({
+      type: "display.state",
+      state: this.#locked ? "screen-off" : "live",
+      generation: this.#generation,
+      width,
+      height,
+      ...(this.#writable()
+        ? { sharedInput: 1 as const, ...(this.#phone ? { phoneOwnerControl: 1 as const } : {}) }
+        : {}),
+    });
   }
 
   /**
@@ -93,15 +132,18 @@ export class MockPhoneDisplaySocket implements WebSocketClient {
     const sequence = 0;
     this.#json({
       type: "display.state",
-      state: "live",
-      sharedInput: 1,
-      generation: 1,
+      state: this.#locked ? "screen-off" : "live",
+      ...(this.#writable()
+        ? { sharedInput: 1 as const, ...(this.#phone ? { phoneOwnerControl: 1 as const } : {}) }
+        : {}),
+      generation: this.#generation,
       width,
       height,
       replayThrough: sequence,
     });
+    if (this.#locked) return;
     const frame = encodeDisplayViewerFrame(
-      { generation: 1, sequence, ptsUs: 0, key: true, codec, width, height },
+      { generation: this.#generation, sequence, ptsUs: 0, key: true, codec, width, height },
       decodeBase64Url(mockPhoneDisplayKeyframe),
     );
     // The display streams always ask for array buffers.

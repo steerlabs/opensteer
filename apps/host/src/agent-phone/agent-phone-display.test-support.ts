@@ -203,7 +203,11 @@ export class ComputerDisplayViewer {
   constructor(
     host: { origin: string; publicOrigin: string; ownerHeaders: Readonly<Record<string, string>> },
     source: NativeViewerSource,
-    options: { readonly acknowledge?: boolean; readonly editing?: boolean } = {},
+    options: {
+      readonly acknowledge?: boolean;
+      readonly editing?: boolean;
+      readonly phoneOwnerControl?: boolean;
+    } = {},
   ) {
     const route =
       source.kind === "task-session"
@@ -212,9 +216,10 @@ export class ComputerDisplayViewer {
     const url = new URL(route, host.origin);
     url.protocol = "ws:";
     url.searchParams.set("sharedInput", "1");
+    if (options.phoneOwnerControl) url.searchParams.set("phoneOwnerControl", "1");
     if (options.editing) {
       url.searchParams.set("editing", "1");
-      if (source.kind === "task-session") url.searchParams.set("displayCut", "1");
+      url.searchParams.set("displayCut", "1");
     }
     // Dial loopback exactly like owner RPCs; carry the real login cookie and
     // canonical Origin (and Host) through the browser-socket authentication path.

@@ -1,3 +1,4 @@
+import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
@@ -3516,11 +3517,30 @@ export class MockHostClient implements HostClient {
           .getSnapshot()
           .machines.flatMap((machine) => machine.computerUse?.ownerViews ?? [])
           .find((view) => view.viewId === viewId),
+      undefined,
+      (viewId, generation) =>
+        sharedDisplayStreams(this).cancelAutoWake({ kind: "owner-view", viewId, generation }),
     );
     this.#computerViews = views;
     this.retainComputerView = views.retainComputerView;
-    this.openComputerView = views.openComputerView;
-    this.closeComputerView = views.closeComputerView;
+    this.openComputerView = async (...args) => {
+      const view = await views.openComputerView(...args);
+      if (view.target.kind === "phone" && view.state === "ready")
+        sharedDisplayStreams(this).armAutoWake({
+          kind: "owner-view",
+          viewId: view.viewId,
+          generation: view.generation,
+        });
+      return view;
+    };
+    this.closeComputerView = (...args) => {
+      sharedDisplayStreams(this).cancelAutoWake({
+        kind: "owner-view",
+        viewId: args[0],
+        generation: args[1],
+      });
+      return views.closeComputerView(...args);
+    };
     this.renewComputerView = views.renewComputerView;
     this.listApprovedComputerApps = views.listApprovedComputerApps;
     this.listComputerAppWindows = views.listComputerAppWindows;
@@ -3887,10 +3907,18 @@ export class MockHostClient implements HostClient {
               view.state === "ready",
           ),
     );
-    return new MockPhoneDisplaySocket(
+    const socket = new MockPhoneDisplaySocket(
       !phone ? "ended" : phone.computerUse?.displayStreamSupported ? "live" : "unsupported",
+      () =>
+        source.kind === "task-session" ||
+        this.#state.computerViews?.inputAvailable(source.viewId, source.generation) === true,
+      phone?.device?.form === "phone",
     );
+    const unsubscribe = this.subscribe(() => socket.refreshAuthority());
+    socket.addEventListener("close", unsubscribe);
+    return socket;
   }
+
   acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId?: string): void {
     if (surfaceId) {
       this.#places.accept(sessionId, surfaceId, token);

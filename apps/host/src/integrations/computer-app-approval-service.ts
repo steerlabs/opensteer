@@ -188,6 +188,7 @@ export interface ComputerAppApprovalServiceOptions {
     ownerUserId: UserId,
   ) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly onConnectionsChanged: () => void;
+  readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
   /** An unexpected failure of work nobody is waiting on, such as pushing a Mac its list. */
   readonly onError?: (error: unknown) => void;
   /**
@@ -222,6 +223,7 @@ export class ComputerAppApprovalService {
   readonly #listCallableTools: ComputerAppApprovalServiceOptions["listCallableTools"];
   readonly #listConnections: ComputerAppApprovalServiceOptions["listConnections"];
   readonly #onConnectionsChanged: () => void;
+  readonly #onInputAccessWithdrawn: (runnerId: RunnerId) => void;
   readonly #onError: (error: unknown) => void;
   readonly #onLocalServerApproved: ComputerAppApprovalServiceOptions["onLocalServerApproved"];
   readonly #publishRequestEvents: (events: readonly AgentEvent[]) => void;
@@ -238,6 +240,7 @@ export class ComputerAppApprovalService {
     this.#listCallableTools = options.listCallableTools;
     this.#listConnections = options.listConnections;
     this.#onConnectionsChanged = options.onConnectionsChanged;
+    this.#onInputAccessWithdrawn = options.onInputAccessWithdrawn ?? (() => undefined);
     this.#onError = options.onError ?? (() => undefined);
     this.#onLocalServerApproved = options.onLocalServerApproved;
     this.#publishRequestEvents = options.publishRequestEvents;
@@ -670,6 +673,8 @@ export class ComputerAppApprovalService {
           runnerId: input.runnerId,
           tools: (connectionId) => computerAppTools(definition, input.access, connectionId),
         });
+        if (input.definitionId === androidPhoneDefinitionId && input.access !== "read-write")
+          this.#onInputAccessWithdrawn(input.runnerId);
         const reset = mutation.sessionReset;
         if (reset) {
           this.#computerUse?.closeForConnection(
@@ -721,6 +726,8 @@ export class ComputerAppApprovalService {
         policy?.appApproval === "automatic"
           ? await this.#store.blockComputerApp(input)
           : await this.#store.revokeComputerConnection(input);
+      if (connection.connection.definitionId === androidPhoneDefinitionId)
+        this.#onInputAccessWithdrawn(connection.runnerId);
       endComputerUseSessions(this.#computerUse, this.#definitions, revoked.removedApps);
       return revoked;
     });
