@@ -389,7 +389,7 @@ const definitions = [
     id: "person.notify",
     name: "person_notify",
     description:
-      "Use person_notify only when the person has likely walked away and there is something worth coming back for, or they asked to be told. Do not duplicate an imminent final reply. Never notify for routine progress. It publishes in this Thread and continues this Run.",
+      "Send the person who started this Run a short message in this Thread and alert them on their devices, without ending this Run. Use it only when they have likely walked away and something is worth coming back for, or they asked to be told; never for routine progress or when your final reply is imminent.",
     inputSchema: z.strictObject({ message: PersonNotifyMessageSchema }),
     annotations: {
       title: "Notify Person",
@@ -1007,7 +1007,7 @@ export function platformGuideForRun(input: {
     platformGuideForCapabilityProfile(input.capabilityProfileId),
     `Role: ${input.role}`,
     input.role === "conversation" ? conversationRoleGuide : workRoleGuide,
-    "Use person_notify only when the person has likely walked away and there is something worth coming back for, or they asked to be told. Do not duplicate an imminent final reply. Never notify for routine progress. It publishes in this Thread and continues this Run.",
+    "person_notify alerts the person mid-Run; reserve it for what they would want to know now.",
     replyFormatGuide,
   ].join("\n\n");
 }

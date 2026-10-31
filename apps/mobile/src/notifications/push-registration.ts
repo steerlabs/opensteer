@@ -175,15 +175,6 @@ export class PushRegistration {
     this.#options = options;
   }
 
-  previewFailed(): Promise<void> {
-    return this.#queue.run(async () => {
-      this.#publishFailure(
-        await this.#load(),
-        "This phone could not prepare private notification previews.",
-      );
-    });
-  }
-
   registeredAccountSubject(): Promise<string | null> {
     return this.#queue.run(async () =>
       this.#state.status === "registered"

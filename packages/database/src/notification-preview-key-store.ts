@@ -23,7 +23,6 @@ export class NotificationPreviewKeyStore {
     readonly keyId: string;
     readonly encryptedKey: Buffer;
     readonly encryptionKeyVersion: number;
-    readonly matchesExisting: (row: NotificationPreviewKeyRecord) => Promise<boolean>;
   }): Promise<void> {
     await withDatabaseTransaction(this.database, async (transaction) => {
       const now = this.now();
@@ -73,20 +72,6 @@ export class NotificationPreviewKeyStore {
         }
       const retained = rows.filter((row) => active.has(row.authSessionId));
       const existing = retained.find((row) => row.installationId === input.installationId);
-      if (existing?.keyId === input.keyId) {
-        if (
-          existing.authSessionId !== input.authSessionId ||
-          existing.accountId !== input.accountId ||
-          !(await input.matchesExisting(existing))
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            reason: "notification-preview-key-conflict",
-            message: "Notification preview key conflicts with its registration",
-          });
-        }
-        return;
-      }
       if (!existing && retained.length >= 16)
         throw new OpensteerError({
           code: "conflict",
@@ -118,21 +103,6 @@ export class NotificationPreviewKeyStore {
         )
         .execute();
     });
-  }
-
-  async unregister(input: {
-    readonly userId: UserId;
-    readonly authSessionId: AuthSessionId;
-    readonly installationId: string;
-    readonly keyId: string;
-  }): Promise<void> {
-    await this.database
-      .deleteFrom("notificationPreviewKeys")
-      .where("userId", "=", input.userId)
-      .where("authSessionId", "=", input.authSessionId)
-      .where("installationId", "=", input.installationId)
-      .where("keyId", "=", input.keyId)
-      .execute();
   }
 
   async eligible(

@@ -81,7 +81,6 @@ integration("session-bound notification preview keys", () => {
         issuer: configuredIssuer,
         encryptedKey: Buffer.from(input.key),
         encryptionKeyVersion: 1,
-        matchesExisting: async (row) => row.encryptedKey.equals(Buffer.from(input.key)),
       });
     }
     const input = {
@@ -105,7 +104,7 @@ integration("session-bound notification preview keys", () => {
     };
   }
 
-  it("is idempotent and fences stale unregister and other logins", async () => {
+  it("replaces an installation across key and session changes and cascades on revocation", async () => {
     const f = await fixture();
     await f.register(f.input);
     await f.register(f.input);
@@ -115,20 +114,22 @@ integration("session-bound notification preview keys", () => {
       .executeTakeFirstOrThrow();
     expect(row.authSessionId).toBe(f.input.authSessionId);
     expect(await f.keyStore.eligible(f.input.userId, [f.input.accountId])).toHaveLength(1);
-    await expect(
-      f.register({ ...f.input, key: randomBytes(32).toString("base64url") }),
-    ).rejects.toMatchObject({ code: "conflict", reason: "notification-preview-key-conflict" });
+    const replacement = randomBytes(32).toString("base64url");
+    await f.register({ ...f.input, key: replacement });
+    expect(
+      (await f.keyStore.eligible(f.input.userId, [f.input.accountId]))[0]!.encryptedKey,
+    ).toEqual(Buffer.from(replacement));
     const second = await f.session();
-    await expect(f.register({ ...f.input, authSessionId: second })).rejects.toMatchObject({
-      code: "conflict",
-    });
+    await f.register({ ...f.input, authSessionId: second });
+    expect((await f.keyStore.eligible(f.input.userId, [f.input.accountId]))[0]!.authSessionId).toBe(
+      second,
+    );
     const fresh = {
       ...f.input,
       authSessionId: second,
       keyId: randomBytes(16).toString("base64url"),
     };
     await f.register(fresh);
-    await f.keyStore.unregister(f.input);
     await f.database.deleteFrom("authSessions").where("id", "=", f.input.authSessionId).execute();
     expect(await f.keyStore.eligible(f.input.userId, [f.input.accountId])).toHaveLength(1);
     await f.database.deleteFrom("authSessions").where("id", "=", second).execute();

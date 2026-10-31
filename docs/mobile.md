@@ -287,13 +287,15 @@ iOS shares preview keys with the notification service extension through the App
 Group Keychain access group; ordinary credentials retain their private access group.
 Android wraps key records with AndroidKeyStore in noBackupFilesDir. Backup-excluded
 installation markers fence surviving keys after reinstall; launch purges stale keys.
-Sign-out fences registration, attempts native erasure, unregisters while authorized,
-then revokes credentials. Erasure failure does not stop session revocation.
+Sign-out fences registration and erases the local key before revoking credentials.
+Host keys die with the Host login session through cascading deletion; Account
+sign-out withdraws the push device. Erasure failure does not stop session revocation.
 
 The iOS extension and Android service authenticate routing and expiry before local
 decryption. They need no network or background JavaScript. Failure leaves generic
 text. Expo owns Android foreground presentation, responses and dismissal; notification
-response identifiers are distinct from drawer replacement tags. Payload logging is
+identifiers use deploymentId:notificationId, with notifications stacked in their
+Thread group. Payload logging is
 disabled in the pinned Expo dependency in every build.
 
 Keep the last confirmed Account registration after refusal so sign-out can withdraw

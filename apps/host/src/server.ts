@@ -1631,8 +1631,7 @@ export async function createHostServer(
         dependencies.realtime.publishNotificationPreference(userId, preference);
         return { type: command.type, ...preference };
       }
-      case "notification.preview.register":
-      case "notification.preview.unregister": {
+      case "notification.preview.register": {
         const previews = dependencies.notificationPreviews;
         if (!previews)
           throw new OpensteerError({
@@ -1640,21 +1639,12 @@ export async function createHostServer(
             message: "Notification previews are unavailable",
           });
         const identity = { userId, authSessionId: session.id };
-        if (command.type === "notification.preview.register") {
-          await previews.register({ ...command, ...identity });
-          return {
-            type: command.type,
-            installationId: command.installationId,
-            keyId: command.keyId,
-            registered: true,
-          };
-        }
-        await previews.unregister({ ...command, ...identity });
+        await previews.register({ ...command, ...identity });
         return {
           type: command.type,
           installationId: command.installationId,
           keyId: command.keyId,
-          unregistered: true,
+          registered: true,
         };
       }
       case "viewer.timeZone.update":

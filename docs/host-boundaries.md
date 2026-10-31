@@ -199,7 +199,9 @@ rollback while those Hosts exist. `notification-preview-v1` gates phone key
 registration and is advertised only with a preview service and Account channel;
 it changes no epoch. Old phones keep generic alerts, and new phones never
 register against an older Host. The Account receives per-installation ciphertext,
-never the Host's title or excerpt in plaintext.
+never the Host's title or excerpt in plaintext. Preview keys die with the Host
+login session through cascading deletion; the phone erases its local key on
+sign-out, and Account sign-out withdraws the push device.
 
 Thread titles use the existing state-change event with optional title; a new kind
 would break previous closed unions. Even tolerant readers acknowledging skipped

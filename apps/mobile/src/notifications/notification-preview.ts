@@ -1,71 +1,57 @@
-import type {
-  NotificationPreviewNative,
-  PreviewKey,
-} from "../../modules/notification-preview/index.js";
+import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
+import type { DeploymentId } from "@opensteer/core";
+import type { HostCapability } from "@opensteer/deployment-authority";
+import type { HostApiCommand } from "@opensteer/protocol";
+import type { NotificationPreviewNative } from "../../modules/notification-preview/types.js";
 import type { PushRegistration } from "./push-registration.js";
 
-// W2 integration: these are the exact SPEC §5 command shapes. Keep local until
-// the preview schemas land in core/protocol; no shared contract is defined here.
-export type PreviewCommand =
-  | ({
-      readonly type: "notification.preview.register";
-      readonly installationId: string;
-      readonly accountId: string;
-    } & PreviewKey)
-  | {
-      readonly type: "notification.preview.unregister";
-      readonly installationId: string;
-      readonly keyId: string;
-    };
 export interface PreviewAttachment {
-  readonly deploymentId: string;
-  readonly capabilities: readonly string[];
+  readonly deploymentId: DeploymentId;
+  readonly capabilities: readonly HostCapability[];
   readonly current: () => boolean;
-  readonly dispatch: (command: PreviewCommand) => Promise<unknown>;
+  readonly dispatch: (
+    command: Extract<HostApiCommand, { type: "notification.preview.register" }>,
+  ) => Promise<unknown>;
 }
 export class NotificationPreviews {
-  #generation = 0;
   #attachment: PreviewAttachment | null = null;
-  #queue: Promise<unknown> = Promise.resolve();
-  #accountBlocked = false;
-  #rotationRequired = new Set<string>();
-  unregister: ((deploymentId: string, command: PreviewCommand) => Promise<unknown>) | null = null;
-  #blocked = new Set<string>();
+  // Serialize key lookup and erasure so sign-out cannot leave a late-created key.
+  #queue: Promise<void> = Promise.resolve();
+  readonly native: NotificationPreviewNative | null;
+  readonly push: PushRegistration;
+  readonly subject: () => Promise<string | null>;
   constructor(
-    readonly native: NotificationPreviewNative | null,
-    readonly push: PushRegistration,
-    readonly subject: () => Promise<string | null>,
-  ) {}
+    native: NotificationPreviewNative | null,
+    push: PushRegistration,
+    subject: () => Promise<string | null>,
+  ) {
+    this.native = native;
+    this.push = push;
+    this.subject = subject;
+  }
   start(): Promise<void> {
     return this.#run(async () => {
       if (this.native?.notificationPreviewVersion === 1) await this.native.prepare();
-    }).catch(() => this.push.previewFailed());
+    });
   }
   attach(attachment: PreviewAttachment): void {
     this.#attachment = attachment;
-    void this.reconcile().catch(() => {});
+    void this.reconcile();
   }
   reconcile(): Promise<void> {
     const attachment = this.#attachment;
-    const generation = this.#generation;
+    const current = () => this.#attachment === attachment && attachment?.current();
     return this.#run(async () => {
       const native = this.native;
       if (
         !native ||
         native.notificationPreviewVersion !== 1 ||
         !attachment ||
-        !attachment.current() ||
+        !current() ||
         !attachment.capabilities.includes("notification-preview-v1") ||
-        this.#accountBlocked ||
-        this.#blocked.has(attachment.deploymentId) ||
         this.push.getSnapshot().status !== "registered"
       )
         return;
-      const current = () =>
-        !this.#accountBlocked &&
-        generation === this.#generation &&
-        attachment.current() &&
-        !this.#blocked.has(attachment.deploymentId);
       const accountId = await this.subject();
       if (
         !accountId ||
@@ -76,65 +62,23 @@ export class NotificationPreviews {
         return;
       const installationId = await this.push.installationId();
       if (!current()) return;
-      if (this.#rotationRequired.has(attachment.deploymentId)) {
-        await native.erase(attachment.deploymentId);
-        this.#rotationRequired.delete(attachment.deploymentId);
-        if (!current()) return;
-      }
       const key = await native.key(attachment.deploymentId);
       if (!current()) return;
       await attachment.dispatch({
         type: "notification.preview.register",
         installationId,
-        accountId,
-        keyId: key.keyId,
-        key: key.key,
+        accountId: ControlPlaneAccountIdSchema.parse(accountId),
+        ...key,
       });
-    }).catch(() => this.push.previewFailed());
+    }).catch(() => {});
   }
-  /** Fences immediately; local erasure precedes any remote work, even offline. */
-  clear(deploymentId: string | null, unregister = true): Promise<void> {
-    this.#generation += 1;
-    const attachment = this.#attachment;
-    if (deploymentId) this.#blocked.add(deploymentId);
-    else this.#accountBlocked = true;
+  /** Invalidate immediately; erase before the caller revokes its credentials. */
+  clear(deploymentId: string | null): Promise<void> {
+    if (deploymentId === null || this.#attachment?.deploymentId === deploymentId)
+      this.#attachment = null;
     return this.#run(async () => {
-      const native = this.native;
-      if (!native || native.notificationPreviewVersion !== 1) return;
-      const deployments =
-        deploymentId === null ? await native.deployments().catch(() => []) : [deploymentId];
-      const existing = await Promise.all(
-        deployments.map(async (id) => ({ id, key: await native.existing(id).catch(() => null) })),
-      );
-      for (const id of deployments) this.#rotationRequired.add(id);
-      await native
-        .erase(deploymentId)
-        .then(() => {
-          for (const id of deployments) this.#rotationRequired.delete(id);
-        })
-        .catch(() => {});
-      if (!unregister) return;
-      const installationId = await this.push.installationId().catch(() => null);
-      if (installationId === null) return;
-      for (const { id, key } of existing) {
-        if (!key) continue;
-        const command: PreviewCommand = {
-          type: "notification.preview.unregister",
-          installationId,
-          keyId: key.keyId,
-        };
-        if (this.unregister) await this.unregister(id, command).catch(() => {});
-        else if (attachment?.deploymentId === id && attachment.current())
-          await attachment.dispatch(command).catch(() => {});
-      }
-    });
-  }
-  accountSignedIn(): void {
-    this.#accountBlocked = false;
-  }
-  signedIn(deploymentId: string): void {
-    this.#accountBlocked = false;
-    this.#blocked.delete(deploymentId);
+      if (this.native?.notificationPreviewVersion === 1) await this.native.erase(deploymentId);
+    }).catch(() => {});
   }
   #run(work: () => Promise<void>): Promise<void> {
     const result = this.#queue.then(work);

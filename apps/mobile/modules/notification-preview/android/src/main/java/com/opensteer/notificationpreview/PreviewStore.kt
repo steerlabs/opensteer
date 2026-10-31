@@ -54,7 +54,6 @@ class PreviewStore(context: Context) {
     val files = if (dep == null) root.listFiles()?.filter { it.name.startsWith("dep_") } ?: emptyList() else listOf(file(dep))
     files.forEach { require(!it.exists() || it.delete()) }
   }
-  fun deployments(): List<String> = root.listFiles()?.filter { it.name.startsWith("dep_") }?.map { it.name } ?: emptyList()
   @Synchronized fun prepare() {
     marker()
     root.listFiles()?.filter { it.name.startsWith("dep_") }?.forEach { file ->

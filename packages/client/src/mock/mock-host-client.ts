@@ -2554,7 +2554,6 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         type: command.type,
       });
     }
-    // The preview's agents have no clock of the person's to keep.
     case "notification.preview.register":
       return rpcSuccess({
         type: command.type,
@@ -2562,13 +2561,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         keyId: command.keyId,
         registered: true,
       });
-    case "notification.preview.unregister":
-      return rpcSuccess({
-        type: command.type,
-        installationId: command.installationId,
-        keyId: command.keyId,
-        unregistered: true,
-      });
+    // The preview's agents have no clock of the person's to keep.
     case "viewer.timeZone.update":
       return rpcSuccess({ timeZone: command.timeZone, type: command.type });
     case "thread.access.update": {

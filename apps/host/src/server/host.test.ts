@@ -4562,7 +4562,6 @@ function volume(
 it("registers phone previews as a session mutation without durable command admission", async () => {
   const session = testAuthenticatedSession(createId("user"));
   const register = vi.fn(async () => undefined);
-  const unregister = vi.fn(async () => undefined);
   const authenticator = new HostAuthenticator({
     identity: {
       nativeOpenIdConfiguration: () => undefined,
@@ -4582,7 +4581,6 @@ it("registers phone previews as a session mutation without durable command admis
   });
   const previews = {
     register,
-    unregister,
   } as unknown as import("../notifications/notification-preview-service.js").NotificationPreviewService;
   const app = await createProductionHostServer(
     hostServerTestDependencies({
@@ -4638,20 +4636,6 @@ it("registers phone previews as a session mutation without durable command admis
       headers,
     );
     expect(spoof.statusCode).toBe(400);
-    const removal = {
-      type: "notification.preview.unregister",
-      installationId: command.installationId,
-      keyId: command.keyId,
-    };
-    expect(rpcData(await injectRpcRequest(app, "commands.dispatch", removal, headers))).toEqual({
-      ...removal,
-      unregistered: true,
-    });
-    expect(unregister).toHaveBeenCalledWith({
-      ...removal,
-      userId: session.user.id,
-      authSessionId: session.id,
-    });
   } finally {
     await app.close();
   }

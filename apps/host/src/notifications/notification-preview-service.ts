@@ -36,8 +36,6 @@ export class NotificationPreviewService {
         issuer: this.options.issuer,
         encryptedKey: sealed.envelope,
         encryptionKeyVersion: sealed.keyVersion,
-        matchesExisting: async (row) =>
-          (await this.options.vault.open(row.encryptedKey, keyContext(row))).key === input.key,
       });
     } catch (error) {
       if (
@@ -50,15 +48,6 @@ export class NotificationPreviewService {
         message: "Notification preview key could not be registered",
       });
     }
-  }
-
-  unregister(input: {
-    readonly userId: UserId;
-    readonly authSessionId: AuthSessionId;
-    readonly installationId: string;
-    readonly keyId: string;
-  }): Promise<void> {
-    return this.options.store.unregister(input);
   }
 
   async keys(userId: UserId, accountIds: readonly string[]) {

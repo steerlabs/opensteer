@@ -119,7 +119,10 @@ describe("account creation", () => {
     const secondRequest = spy.mock.calls[1]?.[0];
     expect(firstRequest).toMatchObject({ environmentId: main.id });
     expect(secondRequest).toMatchObject({ environmentId: second.id });
-    expect(secondRequest?.idempotencyKey).not.toBe(firstRequest?.idempotencyKey);
+    if (firstRequest?.type !== "harness.create" || secondRequest?.type !== "harness.create") {
+      throw new Error("Expected two harness creation requests");
+    }
+    expect(secondRequest.idempotencyKey).not.toBe(firstRequest.idempotencyKey);
   });
 
   it("keeps one creation active through preparation, then opens its sign-in once", async () => {

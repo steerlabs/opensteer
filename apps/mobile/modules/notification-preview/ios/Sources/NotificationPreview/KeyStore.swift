@@ -31,12 +31,6 @@ public final class PreviewKeyStore {
     let status = SecItemDelete(query(deployment) as CFDictionary)
     guard status == errSecSuccess || status == errSecItemNotFound else { throw PreviewError.invalid }
   }
-  public func deployments() throws -> [String] {
-    var q = query(); q[kSecReturnAttributes as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitAll
-    var result: CFTypeRef?; let status = SecItemCopyMatching(q as CFDictionary, &result)
-    guard status == errSecSuccess || status == errSecItemNotFound else { throw PreviewError.invalid }
-    return (result as? [[String: Any]] ?? []).compactMap { $0[kSecAttrAccount as String] as? String }
-  }
   public func prepare() throws {
     let current = try marker()
     var q = query(); q[kSecReturnAttributes as String] = true; q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitAll

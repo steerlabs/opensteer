@@ -142,7 +142,7 @@ describe("the iOS push entitlement", () => {
 });
 
 describe("preview notification response identity", () => {
-  it("opens successive notifications in one Thread even when the drawer tag is shared", () => {
+  it("opens both successive notifications grouped in one Thread", () => {
     const expo = expoNotifications();
     let opened!: Parameters<ExpoNotificationsLike["addNotificationResponseReceivedListener"]>[0];
     expo.notifications.addNotificationResponseReceivedListener = (listener) => {
@@ -177,7 +177,6 @@ describe("preview notification response identity", () => {
             identifier: `${dep}:ntf_00000000-0000-4000-8000-000000000${suffix}`,
             content: {
               data: {
-                opensteerDrawerTag: "same-drawer-tag",
                 deepLink: `com.opensteer.mobile:/deployments/${dep}/threads/${thread}?messageId=msg_00000000-0000-4000-8000-000000000${suffix}`,
               },
             },

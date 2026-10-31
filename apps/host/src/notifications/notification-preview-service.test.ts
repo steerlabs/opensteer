@@ -14,8 +14,7 @@ it("seals key material with the login binding and isolates unavailable vault rec
     register: async (input: Parameters<NotificationPreviewKeyStore["register"]>[0]) => {
       const existing = records.find((row) => row.installationId === input.installationId);
       if (existing) {
-        expect(await input.matchesExisting(existing)).toBe(true);
-        return;
+        records.splice(records.indexOf(existing), 1);
       }
       records.push({ ...input, createdAt: new Date(), updatedAt: new Date() });
     },
