@@ -8,11 +8,10 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "strict": true,
-    // The one file Node executes rather than Metro bundling: `app.config.ts`
-    // reads the repository's release version off disk. It is kept out of the
-    // application program so the app's own source can never reach a Node API.
+    // Node configuration and native-test coordination stay separate from
+    // the application program so app source cannot reach a Node API.
     "types": ["node"],
     "verbatimModuleSyntax": true
   },
-  "include": ["app.config.ts"]
+  "include": ["app.config.ts", "modules/phone-display/tests/native/serve.ts"]
 }

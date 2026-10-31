@@ -127,7 +127,10 @@ function classify(color: number[]) {
   let best: readonly number[] = palette[0];
   let distance = Infinity;
   for (const entry of palette) {
-    const d = entry.reduce((total, value, index) => total + (value - color[index]!) ** 2, 0);
+    const d = entry.reduce<number>(
+      (total, value, index) => total + (value - color[index]!) ** 2,
+      0,
+    );
     if (d < distance) [best, distance] = [entry, d];
   }
   return distance < 120 ** 2 ? best : null;
