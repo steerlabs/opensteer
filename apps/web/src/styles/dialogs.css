@@ -340,7 +340,6 @@
   height: var(--toast-row-height);
   padding: 0 8px;
   overflow: hidden;
-  --toast-row-height: 44px;
 }
 .toast-layer--toolbar > .toast {
   max-height: 32px;

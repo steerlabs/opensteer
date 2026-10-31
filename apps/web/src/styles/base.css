@@ -449,12 +449,6 @@ textarea.text-input {
   transform: translateX(14px);
 }
 
-.switch:focus-visible {
-  outline: none;
-  border-color: var(--ember);
-  box-shadow: var(--ring-ember);
-}
-
 .switch:hover:not(:disabled, :checked) {
   background-color: var(--fill-plate-hover);
 }
@@ -1093,6 +1087,10 @@ svg.icon {
     forced-color-adjust: none;
     border-color: Highlight;
     background: Highlight;
+  }
+
+  .switch:checked::after {
+    background: HighlightText;
   }
 }
 

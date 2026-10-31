@@ -22,15 +22,6 @@ export const color = {
   surfaceRaised: "#1d1d1d",
   surfacePressed: "#242424",
   surfaceCode: "#0d0d0d",
-  /**
-   * The ground an assistant turn's own furniture stands on — a collapsed
-   * activity row, a step hanging off its hairline. A single step above the
-   * page, so it reads as attached to the turn rather than drawn on the
-   * screen. The assistant's prose itself takes no ground at all: it is the
-   * reading surface, and a bubble around long markdown narrows it for nothing.
-   */
-  assistantSurface: "#151515",
-
   text: "#f5f4f2",
   textSoft: "#cecbc7",
   muted: "#8e8a86",

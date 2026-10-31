@@ -1849,7 +1849,7 @@ fieldset.action-panel {
 
 .transcript__jump:hover:not(:disabled) {
   border-color: var(--line-hover);
-  background-color: var(--fill-plate-hover);
+  background-color: var(--surface-raised);
 }
 
 .transcript__jump .icon {

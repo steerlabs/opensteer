@@ -399,8 +399,6 @@
 .sidebar {
   background: var(--ground);
   border-right: 0;
-  --tab-group-color: var(--tab-group-grey);
-  --sort-group-color: var(--tab-group-grey);
 }
 
 /* Search and collapse only: Chat's row below, with Opensteer's orb, is the brand and the way home. */
@@ -432,7 +430,6 @@
   flex: 1 1 0;
   flex-direction: column;
   min-height: 0;
-  --side-tasks-share: 5000;
 }
 
 .sidebar__lists[inert] {
@@ -787,21 +784,21 @@ button.side-needs:hover {
 .side-task:hover,
 .side-tab:hover,
 .side-result.is-selected {
-  --ring-bg: #131313;
+  --ring-bg: var(--cutout-quiet);
   background-color: var(--fill-quiet);
 }
 
 .side-task.is-match,
 .side-tab.is-match {
-  --ring-bg: #0f0f0f;
-  background-color: rgb(var(--light) / 2.6%);
+  --ring-bg: var(--cutout-match);
+  background-color: var(--fill-match);
 }
 
 .side-home.is-filled,
 .side-task.is-filled,
 .side-tab.is-active,
 .side-tab.is-active:hover {
-  --ring-bg: #161616;
+  --ring-bg: var(--cutout-selected);
   border-color: var(--rim-selected);
   background: var(--sheen) var(--fill-plate-hover);
   box-shadow: var(--edge-plate);
@@ -2156,7 +2153,6 @@ button.start-apps__row--away:focus-visible {
   color: var(--text-on-color);
   font: 800 calc(var(--pavatar-size) * 0.6) / 1 var(--font-sans);
   letter-spacing: -0.03em;
-  --pavatar-tint: var(--fill-quiet);
 }
 
 .pavatar--14 {
@@ -2787,12 +2783,12 @@ html[data-tab-sorting] * {
   max-height: 240px;
   padding: var(--space-4);
   overflow-y: auto;
+  /* It opens inside the composer, which may already be glass; glass on glass
+     only blurs the blur, so this float stays opaque. */
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--surface-elevated);
   box-shadow: var(--edge-plate), var(--lift-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
 }
 
 .mention-list--below {

@@ -110,6 +110,8 @@
   --orb-core: color-mix(in srgb, var(--ember) 45%, var(--ink-on-ember));
 
   --fill-quiet: rgb(var(--light) / 5%);
+  /* A search hit: found, not chosen. */
+  --fill-match: rgb(var(--light) / 2.6%);
   --fill-plate: rgb(var(--light) / 5%);
   --fill-plate-hover: rgb(var(--light) / 8%);
   --fill-accent: var(--ember);
@@ -136,6 +138,11 @@
   --edge-attention: inset 0 1px 0 color-mix(in srgb, var(--ember) 30%, transparent);
   --edge-sheet: inset 0 1px 0 rgb(var(--light) / 5%);
   --lift-float: 0 12px 32px -16px rgb(0 0 0 / 60%);
+  /* The colour a row's fill composites to over the page, for a badge's
+     cut-out ring that must match what it is cut from. */
+  --cutout-quiet: color-mix(in srgb, var(--bg), rgb(var(--light)) 5%);
+  --cutout-match: color-mix(in srgb, var(--bg), rgb(var(--light)) 2.6%);
+  --cutout-selected: color-mix(in srgb, var(--bg), rgb(var(--light)) 9%);
   /* The gap between the sidebar's ground and a sheet beside it. */
   --sheet-gutter: var(--space-6);
 

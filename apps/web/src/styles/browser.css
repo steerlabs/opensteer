@@ -676,7 +676,6 @@
   font-size: var(--text-3xs);
   font-weight: var(--weight-heavy);
   line-height: 1;
-  --site-hue: 30;
 }
 
 .site-mark svg {
