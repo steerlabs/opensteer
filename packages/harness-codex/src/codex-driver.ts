@@ -853,10 +853,11 @@ class CodexHarnessAdapter implements HarnessAdapter {
           input.providerState,
           this.#source,
         );
+        // Codex dispatches dynamic tools through code mode, even with shell tools disabled.
         const features = Object.fromEntries(
           Object.entries(await codexFeatureBoundary(this.#launch)).map(([name, approved]) => [
             name,
-            name === "unified_exec" && approved,
+            approved && (name === "unified_exec" || (input.agent && name === "code_mode_host")),
           ]),
         );
         return {

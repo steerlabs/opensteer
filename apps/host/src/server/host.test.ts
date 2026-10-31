@@ -367,6 +367,7 @@ describe("Host signing keys", () => {
         capabilities: [
           "chat-attachments",
           "voice-v1",
+          "voice-agent-v1",
           "thread-titles-v1",
           "task-marks-v1",
           "task-family-v1",
@@ -425,6 +426,7 @@ describe("Host signing keys", () => {
         capabilities: [
           "chat-attachments",
           "voice-v1",
+          "voice-agent-v1",
           "thread-titles-v1",
           "task-marks-v1",
           "task-family-v1",

@@ -2589,7 +2589,7 @@ describe("Runner voice relay", () => {
     harnessInstanceId,
     offer: "private-offer",
   };
-  async function fixture(voice = true) {
+  async function fixture(voice = true, agent = false) {
     const registry = new RunnerRegistry({
       hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
     });
@@ -2598,11 +2598,49 @@ describe("Runner voice relay", () => {
     const identity = hello(createId("runner"), environmentId, "boot-1");
     await registerAttached(
       registry,
-      { ...identity, capabilities: voice ? ["voice-v1"] : [] },
+      {
+        ...identity,
+        capabilities: voice ? ["voice-v1", ...(agent ? ["voice-agent-v1" as const] : [])] : [],
+      },
       peer,
     );
     return { registry, environmentId, peer };
   }
+  it.each([false, true])(
+    "negotiates agent support %s without sending new fields to old Runners",
+    async (agent) => {
+      const f = await fixture(true, agent);
+      try {
+        const pending = f.registry.voice(
+          f.environmentId,
+          userId,
+          { ...command, agent: true },
+          new AbortController().signal,
+        );
+        const sent = f.peer.messages.at(-1);
+        if (sent?.type !== "host.voice") throw new Error("Voice request missing");
+        expect(sent.command).toEqual({ ...command, ...(agent ? { agent: true } : {}) });
+        await f.registry.handle(f.peer, {
+          ...fenceOf(f.peer),
+          type: "runner.voice",
+          requestId: sent.requestId,
+          result: { ok: true, answer: "answer", ...(agent ? { agent: true } : {}) },
+        });
+        expect(await pending).toEqual({ ok: true, answer: "answer", agent });
+        if (!agent)
+          await expect(
+            f.registry.voice(
+              f.environmentId,
+              userId,
+              { action: "next", sessionId, harnessInstanceId },
+              new AbortController().signal,
+            ),
+          ).rejects.toMatchObject({ reason: "voice-ended" });
+      } finally {
+        await f.registry.close();
+      }
+    },
+  );
   it("correlates fenced answers and refusals, ignoring late replies", async () => {
     const f = await fixture();
     try {

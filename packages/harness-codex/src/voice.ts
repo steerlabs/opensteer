@@ -1,11 +1,20 @@
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { OpensteerError } from "@opensteer/core";
 import { Deferred, type HarnessAdapter, type HarnessInspectionContext } from "@opensteer/harness";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { VoiceSdpSchema, type VoiceRefusalReason } from "@opensteer/protocol";
+import {
+  VoiceSdpSchema,
+  voiceNextHoldMs,
+  voiceToolCallTimeoutMs,
+  type VoiceToolCall,
+  type VoiceRefusalReason,
+} from "@opensteer/protocol";
 import { CodexStdioClient, type CodexStdioClientOptions } from "./process.js";
+import { VOICE_AGENT_INSTRUCTIONS, voiceAgentTools } from "./voice-agent.js";
 import { requireObject, requireString, type JsonObject } from "./protocol.js";
 
 export const VOICE_PROMPT =
@@ -15,13 +24,16 @@ export interface CodexVoiceCall {
   readonly answer: string;
   /** Resolves after process exit and private directory cleanup. */
   readonly closed: Promise<void>;
+  next(signal: AbortSignal): Promise<VoiceToolCall | null>;
+  answerCall(callId: string, ok: boolean, text: string): Promise<void>;
+  context(text: string): Promise<void>;
   say(text: string): Promise<void>;
   stop(): Promise<void>;
 }
 export type CodexVoiceInput = Pick<
   HarnessInspectionContext,
   "environment" | "providerState" | "runtimeBoundary" | "signal" | "workingDirectory"
-> & { readonly offer: string };
+> & { readonly offer: string; readonly agent: boolean };
 export interface CodexVoiceAdapter extends HarnessAdapter {
   startVoiceCall(input: CodexVoiceInput): Promise<CodexVoiceCall>;
 }
@@ -65,11 +77,38 @@ export async function startCodexVoiceCall(options: {
   let threadId: string | undefined;
   let ended = false;
   let stopping: Promise<void> | undefined;
+  const pending = new Map<
+    string,
+    { call: VoiceToolCall; finish: (ok: boolean, text: string) => Promise<void> }
+  >();
+  const waiters = new Set<() => void>();
+  const wake = () => {
+    for (const resolve of waiters) resolve();
+  };
+  let injects: Promise<void> = Promise.resolve();
+  let lastContext: string | undefined;
+  const inject = (text: string, context?: string) => {
+    const result = injects.then(async () => {
+      if (context !== undefined && context === lastContext) return;
+      if (ended || !client) throw voiceError("voice-ended");
+      await client.request("thread/inject_items", {
+        threadId,
+        items: [{ type: "message", role: "developer", content: [{ type: "input_text", text }] }],
+      });
+      if (context !== undefined) lastContext = context;
+    });
+    injects = result.catch(() => undefined);
+    return result;
+  };
   const stop = (): Promise<void> => {
     if (stopping) return stopping;
     ended = true;
     answer.resolve(voiceError("voice-refused"));
+    wake();
     stopping = (async () => {
+      await Promise.all(
+        [...pending.values()].map((entry) => entry.finish(false, "The call ended.")),
+      );
       input.signal.removeEventListener("abort", abort);
       const running = client ?? (await clientStart?.catch(() => undefined));
       try {
@@ -104,6 +143,58 @@ export async function startCodexVoiceCall(options: {
         signal: lifetime.signal,
         onFailure: abort,
         onMethodMessage: (message) => {
+          if (
+            message.id !== undefined &&
+            input.agent &&
+            message.method === "item/tool/call" &&
+            isRecord(message.params) &&
+            message.params.threadId === threadId
+          ) {
+            const id = message.id;
+            const params = message.params;
+            const schema =
+              params.tool === "show"
+                ? z.strictObject({ link: z.string().min(1).max(16_000) })
+                : params.tool === "send_to_chat"
+                  ? z.strictObject({ messages: z.number().int().min(1).max(5).default(1) })
+                  : undefined;
+            const parsed = schema?.safeParse(params.arguments);
+            const respond = (ok: boolean, text: string) =>
+              client!
+                .respond(id, { success: ok, contentItems: [{ type: "inputText", text }] })
+                .catch(abort);
+            if (!parsed?.success || ended || pending.size >= 8) {
+              void respond(
+                false,
+                ended
+                  ? "The call ended."
+                  : pending.size >= 8
+                    ? "Too many pending requests."
+                    : "Unknown tool or invalid input.",
+              );
+              return;
+            }
+            const callId = randomUUID();
+            const call: VoiceToolCall = {
+              id: callId,
+              tool: String(params.tool),
+              input: parsed.data,
+            };
+            const timer = setTimeout(() => {
+              void finish(
+                false,
+                "The person's device didn't answer, so it's unknown whether this happened.",
+              );
+            }, voiceToolCallTimeoutMs);
+            const finish = async (ok: boolean, text: string) => {
+              if (!pending.delete(callId)) return;
+              clearTimeout(timer);
+              await respond(ok, text);
+            };
+            pending.set(callId, { call, finish });
+            wake();
+            return;
+          }
           if (message.id !== undefined) {
             void client
               ?.respondError(message.id, -32601, "Interactions are disabled for voice")
@@ -112,7 +203,7 @@ export async function startCodexVoiceCall(options: {
             return;
           }
           if (!isRecord(message.params) || message.params.threadId !== threadId) return;
-          if (message.method === "turn/started") {
+          if (message.method === "turn/started" && !input.agent) {
             const turnId = isRecord(message.params.turn) ? message.params.turn.id : undefined;
             if (typeof turnId !== "string") {
               abort();
@@ -159,14 +250,15 @@ export async function startCodexVoiceCall(options: {
           approvalPolicy: "never",
           sandbox: "read-only",
           ephemeral: true,
-          dynamicTools: [],
+          dynamicTools: input.agent ? voiceAgentTools : [],
           selectedCapabilityRoots: [],
           environments: [],
           runtimeWorkspaceRoots: [],
-          baseInstructions:
-            "You only acknowledge speech and relay messages. Never use tools or do work.",
+          baseInstructions: input.agent
+            ? VOICE_AGENT_INSTRUCTIONS
+            : "You only acknowledge speech and relay messages. Never use tools or do work.",
           developerInstructions: "",
-          config,
+          config: input.agent ? { ...config, model_reasoning_effort: "low" } : config,
         }),
         "voice thread",
       );
@@ -179,10 +271,9 @@ export async function startCodexVoiceCall(options: {
           threadId,
           transport: { type: "webrtc", sdp: input.offer },
           version: "v3",
-          clientManagedHandoffs: true,
+          ...(!input.agent ? { clientManagedHandoffs: true, prompt: VOICE_PROMPT } : {}),
           includeStartupContext: false,
           outputModality: "audio",
-          prompt: VOICE_PROMPT,
         },
         20_000,
       );
@@ -200,12 +291,51 @@ export async function startCodexVoiceCall(options: {
       if (ended || !client) throw voiceError("voice-ended");
       try {
         await client.request("thread/realtime/appendSpeech", { threadId, text }, 8_000);
+        if (input.agent)
+          await inject(`The voice just told the person this on Chat's behalf:\n${text}`);
       } catch {
         await stop();
         throw voiceError("voice-ended");
       }
     };
-    return { answer: sdp, closed: closed.promise, say: relay, stop };
+    return {
+      answer: sdp,
+      closed: closed.promise,
+      say: relay,
+      stop,
+      next: async (signal) => {
+        if (!input.agent || ended) throw voiceError("voice-ended");
+        signal.throwIfAborted();
+        if (!pending.size)
+          await new Promise<void>((resolve, reject) => {
+            const cleanup = () => {
+              clearTimeout(timer);
+              waiters.delete(done);
+              signal.removeEventListener("abort", cancelled);
+            };
+            const done = () => {
+              cleanup();
+              resolve();
+            };
+            const cancelled = () => {
+              cleanup();
+              reject(signal.reason);
+            };
+            const timer = setTimeout(done, voiceNextHoldMs);
+            waiters.add(done);
+            signal.addEventListener("abort", cancelled, { once: true });
+          });
+        if (ended) throw voiceError("voice-ended");
+        return pending.values().next().value?.call ?? null;
+      },
+      answerCall: async (id, ok, text) => {
+        await pending.get(id)?.finish(ok, text);
+      },
+      context: (text) => {
+        if (!input.agent || ended) return Promise.reject(voiceError("voice-ended"));
+        return inject(`What the person sees now:\n${text}`, text);
+      },
+    };
   } catch (error) {
     await stop();
     const unsupported =

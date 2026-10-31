@@ -2020,6 +2020,9 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     // The preview has no Runner to create a call, so voice never starts here.
     "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.next": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.answer": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.next": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.answer": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
