@@ -3935,6 +3935,38 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toThrow("authorization");
   });
 
+  it.for([false, true])(
+    "rejects seed access and completion after computer revocation (local=%s)",
+    async (local, { storeFixture }) => {
+      const { store } = storeFixture;
+      const { binding, seed, profile, ownerId } = await nativeProfileFixture(
+        storeFixture,
+        "authority",
+      );
+      const tokenHash = "f".repeat(64);
+      await store.reserveBrowserProfileInitialization({
+        binding,
+        seed,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      await expect(
+        store.readBrowserProfileInitialization({ profileId: profile.id, tokenHash }),
+      ).resolves.toMatchObject({ kind: "initializing" });
+      if (local) await store.completeBrowserProfileInitialization({ binding, seed, tokenHash });
+      await store.revokeRunner(binding.runnerId, ownerId, { allowDeployment: true });
+      await expect(
+        store.readBrowserProfileInitialization({ profileId: profile.id, tokenHash }),
+      ).rejects.toThrow(local ? "authorization" : "original computer ownership and browser grant");
+      await expect(
+        store.completeBrowserProfileInitialization({ binding, seed, tokenHash }),
+      ).rejects.toThrow("original computer ownership and browser grant");
+      expect((await store.getBrowserProfileStorage(profile.id)).kind).toBe(
+        local ? "local" : "initializing",
+      );
+    },
+  );
+
   it("drains legacy final-save ownership before conversion and gives native sessions no grace", async ({
     storeFixture,
   }) => {

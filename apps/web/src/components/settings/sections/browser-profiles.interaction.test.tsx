@@ -41,6 +41,29 @@ describe("Settings → Browser profiles", () => {
     expect(rows(page)).toEqual(["Shopping Opensteer and Buyer", "Work Opensteer only"]);
   });
 
+  it("keeps both pending disk erasure states visible without profile actions", async () => {
+    const { page, setDeletions } = await mount({
+      deletions: [
+        {
+          profileId: "bpr_deleted_offline",
+          computerId: "computer-delete",
+          state: "pending-computer",
+        },
+        {
+          profileId: "bpr_deleted_restart",
+          computerId: "computer-delete",
+          state: "pending-restart",
+        },
+      ],
+    });
+    expect(page.textContent).toContain("Will be erased when Studio Mac is back online");
+    expect(page.textContent).toContain("Erased after Opensteer restarts on Studio Mac");
+    expect(rows(page).filter((row) => row.includes("Deleted profile"))).toHaveLength(2);
+    expect(page.querySelectorAll('[aria-label^="Manage "]')).toHaveLength(2);
+    await setDeletions([]);
+    expect(page.textContent).not.toContain("Deleted profile");
+  });
+
   it("renames a profile in place", async () => {
     const { dispatch, page } = await mount();
     await click(button(page, "Manage Work"));
@@ -94,7 +117,13 @@ describe("Settings → Browser profiles", () => {
   });
 });
 
-async function mount(input: { readonly manageable?: boolean; readonly path?: string } = {}) {
+async function mount(
+  input: {
+    readonly manageable?: boolean;
+    readonly path?: string;
+    readonly deletions?: HostSnapshot["browserProfileDeletions"];
+  } = {},
+) {
   const hostClient = new MockHostClient({ latencyMs: 0 });
   // Each command's effect on the snapshot is the client's, covered with its patches.
   const dispatch = vi.spyOn(hostClient, "dispatch").mockResolvedValue(undefined as never);
@@ -103,6 +132,8 @@ async function mount(input: { readonly manageable?: boolean; readonly path?: str
   const snapshot: HostSnapshot = {
     ...base,
     browserProfileManageAvailable: input.manageable ?? true,
+    browserProfileDeletions: input.deletions,
+    machines: [{ ...base.machines[0]!, id: "computer-delete", name: "Studio Mac" }],
     browserProfiles: [
       { id: "bpr_work", name: "Work", revision: 2 },
       { id: "bpr_shopping", name: "Shopping", revision: 1 },
@@ -126,7 +157,7 @@ async function mount(input: { readonly manageable?: boolean; readonly path?: str
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  await act(async () =>
+  const paint = () =>
     root.render(
       <MemoryRouter initialEntries={[input.path ?? "/settings/browser-profiles"]}>
         <Routes>
@@ -135,9 +166,13 @@ async function mount(input: { readonly manageable?: boolean; readonly path?: str
           </Route>
         </Routes>
       </MemoryRouter>,
-    ),
-  );
+    );
+  await act(async () => paint());
   return {
+    async setDeletions(deletions: HostSnapshot["browserProfileDeletions"]) {
+      snapshot.browserProfileDeletions = deletions;
+      await act(async () => paint());
+    },
     dispatch,
     page: container,
     scope: { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },

@@ -77,3 +77,20 @@ function spokenList(names: readonly string[]): string {
     ? names.join("")
     : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
+
+export function browserProfileDeletionRows(
+  snapshot: Pick<HostSnapshot, "browserProfileDeletions" | "machines">,
+): { readonly profileId: string; readonly status: string }[] {
+  return (snapshot.browserProfileDeletions ?? []).map((deletion) => {
+    const computer =
+      snapshot.machines.find((machine) => machine.id === deletion.computerId)?.name ??
+      "its computer";
+    return {
+      profileId: deletion.profileId,
+      status:
+        deletion.state === "pending-restart"
+          ? `Erased after Opensteer restarts on ${computer}`
+          : `Will be erased when ${computer} is back online`,
+    };
+  });
+}

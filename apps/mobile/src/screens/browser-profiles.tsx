@@ -1,6 +1,7 @@
 import {
   browserProfileAccessSummary,
   browserProfileDeleteConsequence,
+  browserProfileDeletionRows,
   browserProfileSettingsRows,
   browserProfileSpecialists,
   canRespondToRequests,
@@ -89,6 +90,7 @@ function BrowserProfilesSettings({ hostClient }: { readonly hostClient: HostClie
   const snapshot = useHostSelector(hostClient, selectSnapshot);
   const online = canRespondToRequests(snapshot);
   const rows = browserProfileSettingsRows(snapshot);
+  const deletions = browserProfileDeletionRows(snapshot);
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const [draft, setDraft] = useState<string | null>(null);
@@ -125,7 +127,7 @@ function BrowserProfilesSettings({ hostClient }: { readonly hostClient: HostClie
             tone="neutral"
           />
         )}
-        {rows.length === 0 ? (
+        {rows.length === 0 && deletions.length === 0 ? (
           <AppText role="secondary" tone="muted">
             No profiles yet.
           </AppText>
@@ -142,6 +144,14 @@ function BrowserProfilesSettings({ hostClient }: { readonly hostClient: HostClie
             ))}
           </RowGroup>
         )}
+        {deletions.map((deletion) => (
+          <Notice
+            key={deletion.profileId}
+            title="Deleted profile"
+            detail={deletion.status}
+            tone="neutral"
+          />
+        ))}
         {draft === null ? (
           <SecondaryButton
             label="New profile"

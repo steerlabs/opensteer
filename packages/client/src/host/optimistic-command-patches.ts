@@ -2,6 +2,7 @@ import { moveQueueItem, type ThreadInputQueue } from "@opensteer/core";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type {
   BrowserProfileGrantSummary,
+  BrowserProfileDeletionSummary,
   BrowserProfileSummary,
   BrowserSessionSummary,
   HarnessSummary,
@@ -50,7 +51,11 @@ type OptimisticCommandPatch =
       readonly profile: BrowserProfileSummary;
       readonly type: Extract<CommandType, "browser.profile.rename">;
     }
-  | { readonly profileId: string; readonly type: Extract<CommandType, "browser.profile.delete"> }
+  | {
+      readonly profileId: string;
+      readonly deletion?: BrowserProfileDeletionSummary | undefined;
+      readonly type: Extract<CommandType, "browser.profile.delete">;
+    }
   | { readonly sessionId: string; readonly type: Extract<CommandType, "browser.session.close"> }
   | {
       readonly type: Extract<CommandType, "workspace.create">;
@@ -149,9 +154,17 @@ export const optimisticCommandPatches = {
       existing.id === profile.id ? profile : existing,
     ),
   }),
-  "browser.profile.delete": (snapshot, { profileId }) => ({
+  "browser.profile.delete": (snapshot, { profileId, deletion }) => ({
     ...snapshot,
     browserProfiles: snapshot.browserProfiles.filter((profile) => profile.id !== profileId),
+    browserProfileDeletions: deletion
+      ? [
+          ...(snapshot.browserProfileDeletions ?? []).filter(
+            (item) => item.profileId !== profileId,
+          ),
+          deletion,
+        ]
+      : snapshot.browserProfileDeletions?.filter((item) => item.profileId !== profileId),
     browserProfileGrants: snapshot.browserProfileGrants.filter(
       (grant) => grant.profileId !== profileId,
     ),

@@ -1389,6 +1389,10 @@ export class HttpHostClient {
           this.#update(
             applyOptimisticCommandPatch(this.#snapshot, {
               profileId: parsedCommand.profileId,
+              deletion:
+                result.deletion && result.deletion.state !== "deleted"
+                  ? { ...result.deletion, state: result.deletion.state }
+                  : undefined,
               type: result.type,
             }),
           );
@@ -3731,6 +3735,9 @@ export class HttpHostClient {
       browserAvailable: payload.browser.available,
       browserPlacements: payload.browser.placements.map((placement) => ({ ...placement })),
       browserProfiles: payload.browser.profiles.map((profile) => ({ ...profile })),
+      browserProfileDeletions: payload.browser.profileDeletions?.map((deletion) => ({
+        ...deletion,
+      })),
       browserSessions,
       latestPlaces: payload.latestPlaces ?? [],
       connection: workspaces.length ? this.#snapshot.connection : "connected",

@@ -35,7 +35,8 @@ export function sameAppGateSnapshot(previous: HostSnapshot, next: HostSnapshot):
 export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapshot): boolean {
   return (
     previous === next ||
-    (previous.connection === next.connection &&
+    (previous.browserProfileDeletions === next.browserProfileDeletions &&
+      previous.connection === next.connection &&
       previous.network === next.network &&
       previous.deploymentShape === next.deploymentShape &&
       previous.environments === next.environments &&

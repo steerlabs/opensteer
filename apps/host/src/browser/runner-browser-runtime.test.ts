@@ -268,9 +268,10 @@ it("keeps native execution unavailable until the exact stream completes reconcil
   }
 });
 
-it.each(["pending-restart", "deleted"] as const)(
-  "resumes durable native erasure and accepts %s only for the correlated binding",
-  async (state) => {
+it.each(["pending-restart", "deleted", "failed"] as const)(
+  "drains overlapping native deletions once per job after a %s result",
+  async (outcome) => {
+    const state = outcome === "failed" ? "deleted" : outcome;
     const runnerId = createId("runner"),
       storageInstanceId = crypto.randomUUID();
     const binding = {
@@ -283,6 +284,14 @@ it.each(["pending-restart", "deleted"] as const)(
       engine: "electron" as const,
     };
     const deletionId = crypto.randomUUID();
+    const secondBinding = {
+      ...binding,
+      profileId: createId("browserProfile"),
+      bindingId: crypto.randomUUID(),
+    };
+    const secondDeletionId = crypto.randomUUID();
+    const jobs = [{ binding, deletionId, state: "pending-computer" as const }];
+    let joined: Promise<void> | undefined;
     const stream = {
       fence: { runnerId, connectionId: "native-erasure", connectionGeneration: 1 },
       identity: {
@@ -321,12 +330,25 @@ it.each(["pending-restart", "deleted"] as const)(
               runtimeId: message.lease.runtimeId,
             },
           });
-        if (message.type === "browser.profile.delete")
+        if (message.type === "browser.profile.delete") {
+          if (message.deletionId === deletionId) {
+            jobs.push({
+              binding: secondBinding,
+              deletionId: secondDeletionId,
+              state: "pending-computer",
+            });
+            joined = router.resumeDeletions(runnerId);
+          }
           await hooks.onMessage?.(stream, {
             ...message,
             type: "browser.profile.delete.result",
+            deletionId:
+              outcome === "failed" && message.deletionId === deletionId
+                ? crypto.randomUUID()
+                : message.deletionId,
             state,
           });
+        }
         if (message.type === "capability.revoke")
           await hooks.onMessage?.(stream, {
             ...stream.fence,
@@ -340,7 +362,7 @@ it.each(["pending-restart", "deleted"] as const)(
       registry,
       localProfiles: {
         reconcileInventory: async () => undefined,
-        jobs: async () => [{ binding, deletionId, state: "pending-computer" }],
+        jobs: async () => [...jobs],
         acknowledgeDeletion,
       },
     });
@@ -356,9 +378,26 @@ it.each(["pending-restart", "deleted"] as const)(
         profiles: [],
         complete: true,
       });
-      await router.resumeDeletions(runnerId);
-      expect(acknowledgeDeletion).toHaveBeenCalledExactlyOnceWith({ binding, deletionId, state });
-      expect(sent).toEqual(["capability.grant", "browser.profile.delete", "capability.revoke"]);
+      const drained = router.resumeDeletions(runnerId);
+      if (outcome === "failed") {
+        await expect(drained).rejects.toThrow("mismatched profile erasure readiness");
+        await expect(joined).rejects.toThrow("mismatched profile erasure readiness");
+      } else {
+        await drained;
+        await joined;
+      }
+      expect(acknowledgeDeletion.mock.calls).toEqual([
+        ...(outcome === "failed" ? [] : [[{ binding, deletionId, state }]]),
+        [{ binding: secondBinding, deletionId: secondDeletionId, state }],
+      ]);
+      expect(sent).toEqual([
+        "capability.grant",
+        "browser.profile.delete",
+        "capability.revoke",
+        "capability.grant",
+        "browser.profile.delete",
+        "capability.revoke",
+      ]);
     } finally {
       router.close();
     }
