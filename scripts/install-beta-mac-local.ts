@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { stampReleaseVersion } from "./release-version.cjs";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { z } from "zod";
 import {
@@ -55,7 +56,11 @@ const localReceiptSchema = z.strictObject({
   verified: z.boolean().default(false),
 });
 
-export async function main(args = process.argv.slice(2), run: MacContext["run"] = runBounded) {
+export async function main(
+  args = process.argv.slice(2),
+  run: MacContext["run"] = runBounded,
+  root = path.resolve(fileURLToPath(new URL("..", import.meta.url))),
+) {
   const { values } = parseArgs({
     args,
     options: {
@@ -71,7 +76,6 @@ export async function main(args = process.argv.slice(2), run: MacContext["run"] 
     return;
   }
   const revision = sha.parse(values["source-sha"]);
-  const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const config = localInstallConfigSchema.parse(
     JSON.parse(
       await readFile(
@@ -129,14 +133,7 @@ export async function main(args = process.argv.slice(2), run: MacContext["run"] 
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
       await git(["worktree", "add", "--detach", snapshot, revision]);
     }
-    if (
-      (await git(["rev-parse", "HEAD"], snapshot)) !== revision ||
-      (await git(["status", "--porcelain", "--untracked-files=no"], snapshot))
-    )
-      throw new Error("Frozen local source changed; preserve it for investigation");
-    const version = z
-      .object({ version: z.string() })
-      .parse(JSON.parse(await readFile(path.join(snapshot, "package.json"), "utf8"))).version;
+    const version = stampReleaseVersion(snapshot, revision);
     const configDigest = createHash("sha256").update(JSON.stringify(config)).digest("hex");
     const receiptPath = path.join(directory, "local-install.json");
     let state = localReceiptSchema.parse({

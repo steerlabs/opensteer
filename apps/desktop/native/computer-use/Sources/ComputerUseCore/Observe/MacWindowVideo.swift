@@ -454,21 +454,33 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       try await capture.startCapture()
 
     } catch {
-      let nativeError = error as NSError
-      let helperCode = (error as? HelperError)?.code.rawValue ?? "none"
-      startupFailure(nativeError, operation: operation, helperCode: helperCode)
-      publication.withLock { diagnostic("native-start-error", $0, reason: "\(operation):\(nativeError.domain):\(nativeError.code):\(helperCode)") }
-      if error as? HelperError == WindowCapture.membershipChanged {
-        // The registry's existing lifecycle pass re-plans under the original
-        // first-frame deadline. No mismatched filter or input map is published.
-        publication.withLock { if !$0.ended { $0.topologyDirty = true } }
-        suppress(reason: "target-unavailable")
-        sampleFence.retire()
-        return
-      }
-      Log.observe.error("Window video operation failed: stream=\(self.id, privacy: .public) operation=\(operation, privacy: .public) domain=\(nativeError.domain, privacy: .public) code=\(nativeError.code, privacy: .public) helperCode=\(helperCode, privacy: .public)")
-      if !ended { fail(error is EncoderFailure ? "encoder-failed" : "capture-failed") }
+      startFailed(error, operation: operation)
     }
+  }
+
+  func startFailed(_ error: Error, operation: String) {
+    guard !ended else { return }
+    let nativeError = error as NSError
+    let helperError = error as? HelperError
+    let helperCode = helperError?.code.rawValue ?? "none"
+    startupFailure(nativeError, operation: operation, helperCode: helperCode)
+    publication.withLock { diagnostic("native-start-error", $0, reason: "\(operation):\(nativeError.domain):\(nativeError.code):\(helperCode)") }
+    if helperError == SessionWindows.closed || binding.unavailable == "window-closed" {
+      fail("window-closed")
+      return
+    }
+    if helperError?.code == .staleObservation {
+      guard authority() else { stop(reason: "owner-ended"); return }
+      // Both association discovery and capture enumeration can become stale.
+      // Re-plan the exact binding under the registry's existing deadline; never
+      // publish the rejected plan or treat definitive root loss as recoverable.
+      publication.withLock { if !$0.ended { $0.topologyDirty = true } }
+      suppress(reason: "target-unavailable")
+      sampleFence.retire()
+      return
+    }
+    Log.observe.error("Window video operation failed: stream=\(self.id, privacy: .public) operation=\(operation, privacy: .public) domain=\(nativeError.domain, privacy: .public) code=\(nativeError.code, privacy: .public) helperCode=\(helperCode, privacy: .public)")
+    if !ended { fail(error is EncoderFailure ? "encoder-failed" : "capture-failed") }
   }
 
   var canResume: Bool {

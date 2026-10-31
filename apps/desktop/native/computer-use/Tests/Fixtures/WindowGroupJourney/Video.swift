@@ -8,7 +8,7 @@ import VideoToolbox
 /// Records the production task-video producer's authenticated-media payload,
 /// decodes its IDR with VideoToolbox and retains both bitstream and pixels.
 @WorkActor enum VideoEvidence {
-  static func capture(bound: SessionWindow, observation: Observation, out: URL) async throws {
+  static func capture(bound: SessionWindow, observation: Observation, out: URL, recover: Bool = false) async throws {
     let target = CaptureTarget(
       observationId: bound.ref,
       app: observation.app, process: bound.process, windowID: bound.windowID,
@@ -35,21 +35,8 @@ import VideoToolbox
       Darwin.close(client)
     }
     try producer.attach(connection)
-    let read = Task.detached { () throws -> Data in
-      var decoder = FrameDecoder()
-      var bytes = [UInt8](repeating: 0, count: 65_536)
-      let end = Date().addingTimeInterval(12)
-      while Date() < end {
-        let count = Darwin.read(client, &bytes, bytes.count)
-        if count > 0 {
-          decoder.append(Data(bytes.prefix(count)))
-          if let frame = try decoder.next() { return frame }
-        } else if count == 0 {
-          break
-        }
-      }
-      throw JourneyFailure.failed("No H.264 key frame from production producer")
-    }
+    let decoder = Locked(FrameDecoder())
+    let read = keyframe(from: client, decoder: decoder)
     await producer.start(maxLongSide: 1280, maxFps: 15)
     let frame: Data
     do { frame = try await read.value } catch {
@@ -57,13 +44,8 @@ import VideoToolbox
       connection.close()
       throw error
     }
-    try require(frame.count > 4, "Media envelope truncated")
-    let length = frame.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
-    try require(length > 0 && length < frame.count - 4, "Invalid media header")
-    let headerData = frame.subdata(in: 4..<(4 + length))
-    let header = try JSONSerialization.jsonObject(with: headerData) as! [String: Any]
+    let (headerData, header, annex) = try media(frame)
     try require(header["key"] as? Bool == true, "First task-video sample is not an IDR")
-    let annex = frame.subdata(in: (4 + length)..<frame.count)
     try annex.write(to: out.appendingPathComponent("N1-task.h264"))
     try headerData.write(to: out.appendingPathComponent("N1-video-header.json"))
     let image = try decode(annex)
@@ -84,10 +66,62 @@ import VideoToolbox
         "meanAbsoluteRGBError": error, "width": image.width, "height": image.height, "passed": true,
       ], options: [.prettyPrinted]
     ).write(to: out.appendingPathComponent("N1-video-comparison.json"))
+    if recover {
+      var generation = try (header["generation"] as? Int).unwrap("Initial video generation")
+      for (name, message) in [
+        ("association", "This window's ownership changed; observe again."),
+        ("membership", "This app changed while it was being observed."),
+      ] {
+        producer.startFailed(HelperError(.staleObservation, message), operation: "plan")
+        try require(!producer.ended && producer.needsResume && producer.inputMap == nil,
+          "A stale \(name) plan ended the view or kept old input available")
+        let next = keyframe(from: client, decoder: decoder, after: generation)
+        await producer.resume(maxLongSide: 1280, maxFps: 15)
+        let (data, header, annex) = try media(try await next.value)
+        generation = try (header["generation"] as? Int).unwrap("Recovered video generation")
+        try require(producer.binding === binding && !producer.ended,
+          "Recovery replaced the selected window or ended its view")
+        try require(try pixelDifference(screenshot, decode(annex)) < 0.047,
+          "Recovered \(name) video differs from the selected window")
+        try data.write(to: out.appendingPathComponent("N1-recovered-\(name)-header.json"))
+        try annex.write(to: out.appendingPathComponent("N1-recovered-\(name).h264"))
+      }
+    }
     producer.stop()
     let end = Date().addingTimeInterval(10)
     while !producer.resourcesSettled, Date() < end { try await Task.sleep(nanoseconds: 20_000_000) }
     try require(producer.resourcesSettled, "Video resources did not settle after stop")
+  }
+
+  private static func keyframe(from client: Int32, decoder: Locked<FrameDecoder>, after generation: Int = 0) -> Task<Data, Error> {
+    Task.detached {
+      var bytes = [UInt8](repeating: 0, count: 65_536)
+      let end = Date().addingTimeInterval(12)
+      while Date() < end {
+        while let frame = try decoder.withLock({ try $0.next() }) {
+          let (_, header, _) = try media(frame)
+          if (header["generation"] as? Int ?? 0) > generation {
+            try require(header["key"] as? Bool == true,
+              "First task-video sample after generation \(generation) is not an IDR")
+            return frame
+          }
+        }
+        let count = Darwin.read(client, &bytes, bytes.count)
+        if count > 0 {
+          decoder.withLock { $0.append(Data(bytes.prefix(count))) }
+        } else if count == 0 { break }
+      }
+      throw JourneyFailure.failed("No H.264 key frame after generation \(generation) from production producer")
+    }
+  }
+
+  nonisolated private static func media(_ frame: Data) throws -> (Data, [String: Any], Data) {
+    try require(frame.count > 4, "Media envelope truncated")
+    let length = frame.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+    try require(length > 0 && length < frame.count - 4, "Invalid media header")
+    let data = frame.subdata(in: 4..<(4 + length))
+    let header = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    return (data, header, frame.subdata(in: (4 + length)..<frame.count))
   }
 
   static func decode(_ annex: Data) throws -> CGImage {
