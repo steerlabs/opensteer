@@ -2866,6 +2866,164 @@ button.computer-row:focus-visible {
   margin-bottom: var(--space-12);
 }
 
+/* ---- Setting up a phone ----
+   One thing at a time: what is happening now, and the one way to answer it
+   when it is the person's turn. Working is a spinner with nothing to press;
+   the person's turn is an ember plate with words saying where to act. The
+   rail counts setup's own stages and nothing finer, so it never invents
+   progress. */
+
+.phone-setup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-14);
+  padding: var(--space-20) var(--space-4) var(--space-8);
+  text-align: center;
+}
+
+.phone-setup:focus {
+  outline: none;
+}
+
+.phone-setup__glyph {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  flex: none;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-full);
+  color: var(--text-soft);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
+}
+
+.phone-setup__glyph .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.phone-setup__glyph .spinner {
+  width: 20px;
+  height: 20px;
+}
+
+.phone-setup--you .phone-setup__glyph {
+  color: var(--ember-bright);
+  border-color: var(--rim-attention);
+  box-shadow: var(--edge-attention);
+}
+
+.phone-setup--done .phone-setup__glyph {
+  color: var(--green);
+  border-color: var(--green-line);
+  background-color: var(--green-wash);
+}
+
+.phone-setup--problem .phone-setup__glyph {
+  color: var(--red-text);
+  border-color: var(--red-line);
+  background-color: var(--red-wash);
+}
+
+.phone-setup__words {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-6);
+  max-width: 26rem;
+}
+
+.phone-setup__cue {
+  margin: 0;
+  color: var(--ember-bright);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-strong);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.phone-setup__title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+  text-wrap: balance;
+}
+
+.phone-setup__detail {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.phone-setup--problem .phone-setup__detail {
+  color: var(--text-soft);
+}
+
+.phone-setup__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-8);
+}
+
+.phone-setup__choices {
+  width: 100%;
+  text-align: left;
+}
+
+.phone-setup__more {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: 26rem;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.phone-setup__more p {
+  margin: 0;
+}
+
+.phone-setup__more summary {
+  cursor: pointer;
+}
+
+.phone-setup__more details[open] > summary {
+  margin-bottom: var(--space-4);
+  color: var(--text-soft);
+}
+
+.phone-setup__rail {
+  display: flex;
+  gap: var(--space-4);
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.phone-setup__rail li {
+  width: 18px;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--line-strong);
+  transition: width var(--duration-med) var(--ease-out);
+}
+
+.phone-setup__rail li.is-done {
+  background: var(--muted);
+}
+
+/* Longer as well as brighter, so the current stage is not color alone. */
+.phone-setup__rail li.is-current {
+  width: 30px;
+  background: var(--ember);
+}
+
 @media (max-width: 640px) {
   .computer-apps__head {
     flex-wrap: wrap;
