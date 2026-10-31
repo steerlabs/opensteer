@@ -1388,15 +1388,20 @@ describe("a page beside its conversation", () => {
 
   it("gives the stacked page definite space and sizes the dock and its Pane by content", () => {
     const { container } = openPage();
-    expect(slot(container, "page").style).toMatchObject({ flex: 1 });
-    expect(slot(container, "conversation").style).toMatchObject({ flexShrink: 0 });
+    // The page has what the dock leaves, and never so little that it is gone.
+    expect(slot(container, "page").style).toMatchObject({ flex: 1, minHeight: 160 });
+    // The dock is its content's height, and gives way (its content scrolls) before the page does.
+    expect(slot(container, "conversation").style).toMatchObject({ flexShrink: 1 });
     for (const name of ["page", "conversation"] as const) {
       expect(slot(container, name).style["position"]).not.toBe("absolute");
     }
     const pane = container.querySelector<HTMLElement>(
       '[data-testid="conversation-slot"] > [data-pane-style]',
     );
-    expect(JSON.parse(pane?.dataset["paneStyle"] ?? "null")).toMatchObject({ flex: 0 });
+    expect(JSON.parse(pane?.dataset["paneStyle"] ?? "null")).toMatchObject({
+      flex: 0,
+      flexShrink: 1,
+    });
   });
 
   it("opens the conversation past its intervening page and grid", () => {

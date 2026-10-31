@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   conversationSurfaces,
+  conversationThreadIds,
   placeHasAgents,
   surfaceDestination,
   placeList,
@@ -1528,6 +1529,7 @@ describe("J4: a conversation's surface glyph", () => {
     });
     const chosen = agentSurface(
       conversationSurfaces(w.host.getSnapshot(), threadId),
+      conversationThreadIds(w.host.getSnapshot(), threadId),
       w.host.latestPlaceOfThread(threadId),
     )!;
     const label = surfaceGlyph(chosen) === "laptopcomputer" ? "Mac app" : "Page";
@@ -1577,9 +1579,11 @@ describe("J4: a conversation's surface glyph", () => {
     });
     expect(w.calls.viewers).toEqual([]);
     expect(w.calls.watches).toEqual([]);
+    const home = w.host.getSnapshot().homeThreadId!;
     const chosen = agentSurface(
-      conversationSurfaces(w.host.getSnapshot(), w.host.getSnapshot().homeThreadId!),
-      w.host.latestPlaceOfThread(w.host.getSnapshot().homeThreadId!),
+      conversationSurfaces(w.host.getSnapshot(), home),
+      conversationThreadIds(w.host.getSnapshot(), home),
+      w.host.latestPlaceOfThread(home),
     )!;
     expect(chosen).toMatchObject({ kind: "browser", title: "Weekend ideas", acting: true });
     await press(control(front(w).querySelector("header")!, "Page, agent working"));

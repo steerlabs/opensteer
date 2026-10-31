@@ -2,6 +2,7 @@ import {
   browserPlaceUnavailableReason,
   canRespondToRequests,
   conversationSurfaces,
+  conversationThreadIds,
   describeHostConnection,
   placeDestinationEnded,
   surfaceDestination,
@@ -50,7 +51,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BrowserPage } from "../browser/browser-page.js";
 import { SurfaceGrid } from "../browser/surface-grid.js";
-import { surfaceGlyph } from "../browser/agent-surface.js";
+import { actingFor, surfaceGlyph } from "../browser/agent-surface.js";
 import { SurfaceSwitcherContext, useSurfaceHeader } from "../browser/surface-header.js";
 import {
   routeDestination,
@@ -432,35 +433,33 @@ function Focused(props: {
     if (workspace || props.remaining()) showGrid();
     else showConversation();
   }, [props, showConversation, showGrid, workspace]);
-  const switcher = useMemo(
-    () =>
-      threadId === null || surfaces.length < 2
-        ? null
-        : {
-            choices: surfaces.map((item) => {
-              const tile = surfaceTile(item);
-              const target = surfaceDestination(item);
-              return {
-                acting: item.acting,
-                current: sameDestination(target, destination),
-                glyph: surfaceGlyph(item),
-                key: item.key,
-                // In place of this one: Back still returns to the conversation.
-                onPress: () =>
-                  navigation.dispatch(
-                    StackActions.replace(
-                      "WorkspaceBrowser",
-                      surfaceRoute(route.deploymentId, threadId, target),
-                    ),
-                  ),
-                site: tile.site,
-                title: tile.title,
-              };
-            }),
-            onShowAll: showGrid,
-          },
-    [destination, navigation, route.deploymentId, showGrid, surfaces, threadId],
-  );
+  const switcher = useMemo(() => {
+    if (threadId === null || surfaces.length < 2) return null;
+    const threads = conversationThreadIds(snapshot, threadId);
+    return {
+      choices: surfaces.map((item) => {
+        const tile = surfaceTile(item);
+        const target = surfaceDestination(item);
+        return {
+          acting: actingFor(item, threads),
+          current: sameDestination(target, destination),
+          glyph: surfaceGlyph(item),
+          key: item.key,
+          // In place of this one: Back still returns to the conversation.
+          onPress: () =>
+            navigation.dispatch(
+              StackActions.replace(
+                "WorkspaceBrowser",
+                surfaceRoute(route.deploymentId, threadId, target),
+              ),
+            ),
+          site: tile.site,
+          title: tile.title,
+        };
+      }),
+      onShowAll: showGrid,
+    };
+  }, [destination, navigation, route.deploymentId, showGrid, snapshot, surfaces, threadId]);
   const onOpenTab = useCallback(
     (sessionId: string, tabId: string) => {
       if (!navigation.isFocused()) return;
@@ -1000,7 +999,7 @@ function PagePair(
         ? yielding
           ? { flexShrink: 1, maxHeight: pair.pageHeight, minHeight: 0 }
           : { height: pair.pageHeight }
-        : styles.fill;
+        : styles.pageAboveDock;
   const gapStyle =
     pair.mode === "side"
       ? { width: pair.gap }
@@ -1175,8 +1174,10 @@ const styles = StyleSheet.create({
   centred: { textAlign: "center" },
   conversationName: { alignItems: "center", paddingHorizontal: space[16] },
   // Under the page, the conversation is as tall as its latest reply, what
-  // needs the reader and the composer; the page has everything else.
-  docked: { backgroundColor: color.background, flexShrink: 0 },
+  // needs the reader and the composer, and the page has everything else. When
+  // that is more than the page leaves — large text, a short screen, the
+  // keyboard — it shrinks and its own content scrolls.
+  docked: { backgroundColor: color.background, flexShrink: 1 },
   ended: {
     alignItems: "center",
     flex: 1,
@@ -1188,10 +1189,13 @@ const styles = StyleSheet.create({
   gridTitle: { alignItems: "center", maxWidth: 240 },
   hidden: { display: "none" },
   notices: { gap: space[8] },
-  // As tall as what it holds. A pane fills by default, and filling a pane that
-  // its content sizes is zero.
-  ownHeight: { flex: 0 },
+  // As tall as what it holds, and no taller than its slot. A pane fills by
+  // default, and filling a pane that its content sizes is zero.
+  ownHeight: { flex: 0, flexShrink: 1 },
   page: { flexShrink: 1, minHeight: 0 },
+  // Stacked, the page has the room the dock leaves, and never less than enough
+  // to see what the agent is doing.
+  pageAboveDock: { flex: 1, minHeight: 160 },
   // The page at its own shape, centred in the room it is given, as a picture
   // is: the bands above and below are even, and the page never jumps when the
   // dock under it grows by a line.

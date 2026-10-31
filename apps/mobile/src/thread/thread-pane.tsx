@@ -6,6 +6,7 @@ import {
   conversationActivities,
   conversationSurfaces,
   conversationRows,
+  conversationThreadIds,
   conversationTurnRevealing,
   groupTranscriptEntries,
   incomingTranscriptMessages,
@@ -52,6 +53,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   View,
   type ListRenderItemInfo,
@@ -62,7 +64,12 @@ import Animated from "react-native-reanimated";
 import { canRespondToRequests, describeHostConnection } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart } from "@opensteer/core";
-import { agentSurface, surfaceGlyph, type SurfaceGlyph } from "../browser/agent-surface.js";
+import {
+  actingFor,
+  agentSurface,
+  surfaceGlyph,
+  type SurfaceGlyph,
+} from "../browser/agent-surface.js";
 import { paramsDestination, sameDestination, surfaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
@@ -701,9 +708,10 @@ function ThreadPaneForUser(
     [snapshot, threadId],
   );
   const latestPlace = useThreadPlace(hostClient, threadId);
-  const usedSurface = agentSurface(conversationPages, latestPlace);
+  const ownThreads = useMemo(() => conversationThreadIds(snapshot, threadId), [snapshot, threadId]);
+  const usedSurface = agentSurface(conversationPages, ownThreads, latestPlace);
   const surface = usedSurface === null ? null : surfaceGlyph(usedSurface);
-  const surfacesActing = conversationPages.some((item) => item.acting);
+  const surfacesActing = conversationPages.some((item) => actingFor(item, ownThreads));
   // The split heading's own width, which the title's menu is sized to.
   // Held while it reads the same, so the bar rebuilds only when the task moves.
   const heldTask = useRef<TaskHeading | null>(null);
@@ -1508,8 +1516,19 @@ function ThreadPaneForUser(
   // second avoiding view would lift the composer twice. Docked, the pane is as
   // tall as what it holds, and the page has the rest.
   const pane =
-    companion !== null ? (
-      <View style={docked === null ? styles.pane : null}>{content}</View>
+    docked !== null ? (
+      // As tall as what it holds, until the page leaves less: then it scrolls,
+      // so a long request or large text never pushes the composer off screen.
+      <ScrollView
+        alwaysBounceVertical={false}
+        keyboardShouldPersistTaps="handled"
+        style={styles.docked}
+        testID="docked-conversation"
+      >
+        {content}
+      </ScrollView>
+    ) : companion !== null ? (
+      <View style={styles.pane}>{content}</View>
     ) : (
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -1785,5 +1804,6 @@ const styles = StyleSheet.create({
   latestPressed: { ...material.quiet },
   latestText: { flex: 1 },
   pane: { flex: 1 },
+  docked: { flexGrow: 0, flexShrink: 1 },
   besideEmpty: { paddingVertical: space[8], textAlign: "center" },
 });

@@ -1,6 +1,7 @@
 import { useHostSelector } from "@opensteer/client/react";
 import {
   conversationSurfaces,
+  conversationThreadIds,
   sameTaskFamilyGlance,
   surfaceDestination,
   taskFamilyGlance,
@@ -219,8 +220,10 @@ function ThreadTitle(
     const watch = () => {
       if (threadId === null) return;
       const host = props.hostClient;
+      const snapshot = host.getSnapshot();
       const item = agentSurface(
-        conversationSurfaces(host.getSnapshot(), threadId),
+        conversationSurfaces(snapshot, threadId),
+        conversationThreadIds(snapshot, threadId),
         host.latestPlaceOfThread(threadId),
       );
       navigation.dispatch(
