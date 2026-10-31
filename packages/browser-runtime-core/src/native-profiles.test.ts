@@ -17,6 +17,7 @@ import {
   validClaims,
 } from "./test-support/fakes.js";
 import type { LocalProfileEngine } from "./browser/backend.js";
+import type { ProfileInitializationClient } from "./profile-initialization-client.js";
 
 const runtimes: BrowserRuntime[] = [];
 const roots: string[] = [];
@@ -37,7 +38,7 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
   });
   const state = new FakeProfileStateClient();
   const initializationClient = {
-    load: vi.fn(async () => state.snapshot),
+    load: vi.fn<ProfileInitializationClient["load"]>(async () => state.snapshot),
     complete: vi.fn(async () => {}),
   };
   const verifier = new FakeTicketVerifier();
@@ -93,7 +94,7 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
     return runtime.attach(String(session), new FakeSink(), {
       localProfiles: true,
       initialNavigation: true,
-      signal,
+      ...(signal ? { signal } : {}),
     });
   };
   return {
