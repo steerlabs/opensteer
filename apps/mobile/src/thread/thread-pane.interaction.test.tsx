@@ -511,8 +511,7 @@ vi.mock("./composer-bar.js", () => ({
       {props.accessory}
     </div>
   ),
-  ComposerCircleFace: () => null,
-  composerControlStyle: {},
+  ComposerGlyph: () => null,
   composerLaneHeight: 36,
 }));
 vi.mock("./composer-menu.js", () => ({

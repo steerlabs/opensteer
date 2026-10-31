@@ -72,6 +72,7 @@ const idleComposer: ComposerState = {
   sending: false,
   text: "",
   textHidden: false,
+  voice: false,
 };
 
 describe("a Thread's activity on the phone", () => {
