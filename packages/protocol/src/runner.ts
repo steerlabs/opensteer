@@ -17,7 +17,6 @@ import {
   MessageQuoteSchema,
   MessageContentSchema,
   MessageIdSchema,
-  ScreenPresentationContextSchema,
   MessageKindSchema,
   ModelIdSchema,
   ModelProviderIdSchema,
@@ -292,8 +291,6 @@ export const HarnessInputSchema = z
     createdAt: IsoDateTimeSchema,
     kind: MessageKindSchema.exclude(["assistant"]),
     messageId: MessageIdSchema,
-    /** Emitted only to Runners advertising screen-show-v1; never contains a client endpoint. */
-    presentationContext: ScreenPresentationContextSchema.optional(),
     quote: MessageQuoteSchema.optional(),
   })
   .superRefine((input, context) => {

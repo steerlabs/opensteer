@@ -1079,32 +1079,15 @@ describe("Pi sessions", () => {
     const fixture = await setup({ scenario: "long-tool" });
     const session = await fixture.adapter.startSession(fixture.context);
     const observer = observe(session.events);
-    const turn = fixture.turn("Take your time");
-    const initial = turn.inputs[0]!;
-    const currentThreadId = createId("thread");
-    initial.presentationContext = { currentThreadId };
-    const running = session.execute(turn);
+    const running = session.execute(fixture.turn("Take your time"));
     await observer.waitFor("run.started");
     const steer = session.steer?.bind(session);
     if (!steer) throw new Error("Pi sessions must advertise steering");
-    const input = {
-      ...humanInput("actually, do this instead"),
-      presentationContext: { currentThreadId },
-    };
-    await steer({ input });
+    await steer({ input: humanInput("actually, do this instead") });
     await session.interrupt();
     await running;
     await expect(steer({ input: humanInput("too late") })).rejects.toThrow(/no steerable/);
     await session.stop();
-    const captured = await fixture.capture();
-    const prompt = captured.find((entry) => entry.type === "prompt")?.message as string;
-    const steered = captured.find(
-      (entry) => entry.type === "prompt" && entry.streamingBehavior === "steer",
-    )?.message as string;
-    expect(prompt).toContain(`Message ID: ${initial.messageId}\n`);
-    expect(steered).toContain(`Message ID: ${input.messageId}\n`);
-    expect(prompt).toContain(`Viewed conversation at input: ${currentThreadId}`);
-    expect(steered).toContain(`Viewed conversation at input: ${currentThreadId}`);
     await fixture.adapter.close();
   });
 

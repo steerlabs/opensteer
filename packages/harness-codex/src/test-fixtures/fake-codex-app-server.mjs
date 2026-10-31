@@ -584,12 +584,10 @@ function handleClientMethod(message) {
                 [
                   ...(threadConfig[`mcp_servers.${name}.enabled_tools`] ?? []).filter(
                     (tool) =>
-                      ((scenario !== "previous-host" && scenario !== "screen-unavailable") ||
-                        tool !== "screen_show") &&
-                      (name !== "opensteer_integrations" ||
-                        ((scenario !== "previous-host" || tool !== "computer") &&
-                          (scenario !== "mcp-missing-required-tool" ||
-                            tool !== "integration_search"))),
+                      name !== "opensteer_integrations" ||
+                      ((scenario !== "previous-host" || tool !== "computer") &&
+                        (scenario !== "mcp-missing-required-tool" ||
+                          tool !== "integration_search")),
                   ),
                   ...(scenario === "mcp-extra-tool" && name === "opensteer_integrations"
                     ? ["unexpected_tool"]

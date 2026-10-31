@@ -624,10 +624,7 @@ describe("Cursor turns", () => {
     });
     await seedTranscript(fixture);
     const session = await fixture.adapter.resumeSession(fixture.reference, fixture.context);
-    const turn = fixture.turn("Check the other computer");
-    const input = turn.inputs[0]!;
-    input.presentationContext = { currentThreadId: createId("thread") };
-    await session.execute(turn);
+    await session.execute(fixture.turn("Check the other computer"));
     await session.stop();
 
     const prompt = (await fixture.prompts())[0] ?? "";
@@ -643,10 +640,6 @@ describe("Cursor turns", () => {
     expect(prompt).toContain("- inspect-logs: Inspect production logs");
     expect(prompt).not.toContain("PRIVATE release-notes BODY");
     expect(prompt).toContain("[Opensteer input]");
-    expect(prompt).toContain(`Message ID: ${input.messageId}\n`);
-    expect(prompt).toContain(
-      `Viewed conversation at input: ${input.presentationContext.currentThreadId}`,
-    );
     expect(prompt).toContain("Check the other computer");
     await fixture.adapter.close();
   });

@@ -60,14 +60,13 @@ export function useVoice(): { controller: VoiceControls | null; snapshot: VoiceS
   return { controller, snapshot };
 }
 
-/** Chat is whom a call talks to, whatever is on screen; each phase says it once. */
 const labels: Record<VoicePhase, string> = {
   idle: "",
   connecting: "Connecting…",
-  listening: "Talking to Chat",
+  listening: "Listening",
   hearing: "Listening",
-  thinking: "Chat is working",
-  speaking: "Chat",
+  thinking: "Working on it",
+  speaking: "Speaking",
 };
 
 /** Chat composer's way in: starts voice, or ends the call. */
@@ -77,7 +76,7 @@ export function VoiceMic(props: { readonly disabled: boolean }): ReactNode {
   const on = snapshot.phase !== "idle";
   return (
     <Pressable
-      accessibilityLabel={on ? "End voice" : "Talk to Chat"}
+      accessibilityLabel={on ? "End voice" : "Talk to Opensteer"}
       accessibilityRole="button"
       accessibilityState={{ disabled: props.disabled, selected: on }}
       disabled={props.disabled && !on}

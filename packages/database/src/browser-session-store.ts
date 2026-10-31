@@ -2298,20 +2298,3 @@ export async function browserSessionOpenerForBinding(
     ? { kind: "opensteer", threadId: row.threadId }
     : { kind: "task", threadId: row.threadId, runId };
 }
-
-export async function browserSurfaceBelongsToThread(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly sessionId: BrowserSessionId;
-    readonly tabId: import("@opensteer/core").BrowserSurfaceId;
-    readonly threadId: ThreadId;
-  },
-): Promise<boolean> {
-  return !!(await database
-    .selectFrom("browserSessionUses")
-    .select("id")
-    .where("sessionId", "=", input.sessionId)
-    .where("tabId", "=", input.tabId)
-    .where("threadId", "=", input.threadId)
-    .executeTakeFirst());
-}

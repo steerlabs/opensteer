@@ -241,7 +241,6 @@ export const hostApiVersion = 48;
  * advertise capabilities an older client has never heard of.
  */
 export const HostCapabilitySchema = z.enum([
-  "screen-show-v1",
   "workspace-tab-reopen-v1",
   "iphone-apps-v1",
   "ownerViewWindows",

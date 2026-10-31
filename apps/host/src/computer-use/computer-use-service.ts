@@ -1,4 +1,3 @@
-import type { ScreenSurface } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import {
   createId,
@@ -1833,49 +1832,6 @@ export class ComputerUseService {
   }
 
   // ---- projection ------------------------------------------------------
-
-  async presentableSurfaces(owner: UserId, threadId: ThreadId): Promise<ScreenSurface[]> {
-    const candidates = this.#snapshot().filter(
-      (session) =>
-        session.threadId === threadId &&
-        session.ownerUserId === owner &&
-        session.confirmed &&
-        this.#holds(session),
-    );
-    const result: ScreenSurface[] = [];
-    for (const session of candidates) {
-      const surfaces: ScreenSurface[] =
-        session.display !== null
-          ? [
-              {
-                kind: "phone",
-                machineId: session.runnerId,
-                display: "main",
-                source: { kind: "task-session", sessionId: session.sessionId },
-              },
-            ]
-          : session.apps.map((app) => ({
-              kind: "app",
-              machineId: session.runnerId,
-              appKey: computerAppIdentityKey(app),
-              source: { kind: "task-session", sessionId: session.sessionId },
-            }));
-      for (const surface of surfaces) {
-        if (result.length === 64) return result;
-        try {
-          await this.authorizeDisplay(
-            session.sessionId,
-            owner,
-            surface.kind === "app" ? surface.appKey : undefined,
-          );
-          result.push(surface);
-        } catch {
-          /* Ended or revoked sources are no longer presentable. */
-        }
-      }
-    }
-    return result;
-  }
 
   /** Every live session on one computer. */
   sessionsForRunner(runnerId: RunnerId): ComputerUseSessionSummary[] {

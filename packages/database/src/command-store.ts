@@ -1446,7 +1446,6 @@ export async function loadSteerDispatchInput(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
 ): Promise<{
-  readonly bindingGeneration: number;
   readonly message: Message;
   readonly run: Run;
   readonly runId: RunId;
@@ -1469,10 +1468,7 @@ export async function loadSteerDispatchInput(
     .selectAll()
     .where("id", "=", row.targetRunId)
     .executeTakeFirstOrThrow();
-  if (runRow.bindingGeneration === null)
-    throw new OpensteerError({ code: "forbidden", message: "The Run has no active binding" });
   return {
-    bindingGeneration: runRow.bindingGeneration,
     message: messageFromRow(row),
     run: runFromRow(runRow),
     runId: row.targetRunId,

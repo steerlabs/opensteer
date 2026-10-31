@@ -29,7 +29,6 @@ import {
 } from "react-native";
 import { color, material, radius, space, type as textType } from "../theme.js";
 import { usePaneGeometry } from "../ui/pane.js";
-import { interact } from "../voice/interaction.js";
 import {
   browserFrameContentRect,
   browserCropCue,
@@ -384,10 +383,7 @@ export function BrowserStream({
           x: event.nativeEvent.locationX,
           y: event.nativeEvent.locationY,
         });
-        if (point && source) {
-          interact();
-          current.onPointerDown?.();
-        }
+        if (point && source) current.onPointerDown?.();
         held.current =
           point && source
             ? {

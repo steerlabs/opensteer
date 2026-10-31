@@ -50,7 +50,6 @@ import {
   SidebarVisibleContext,
   type SidebarControl,
 } from "./sidebar-context.js";
-import { interact, setDrawerOpen } from "../voice/interaction.js";
 import { SidebarPanel, type SidebarActions, type SidebarDestination } from "./sidebar-panel.js";
 
 /**
@@ -241,7 +240,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     if (visibleRef.current === next) return;
     visibleRef.current = next;
     setVisible(next);
-    setDrawerOpen(next);
     if (next) return;
     const from = trigger.current;
     trigger.current = null;
@@ -260,8 +258,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   useEffect(() => {
     if (visibleRef.current) drawer.current?.closeDrawer();
   }, [deploymentId, docked, focusedKey, hostClient, readerId]);
-  // A shell taken away with its drawer open reports no closing settle.
-  useEffect(() => () => setDrawerOpen(false), []);
   // Another Deployment's list starts at its top.
   useEffect(() => {
     scrollMemory.offset = 0;
@@ -277,7 +273,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   }, [visible]);
 
   const leave = useCallback(() => {
-    interact();
     restoreFocus.current = false;
     drawer.current?.closeDrawer();
   }, []);

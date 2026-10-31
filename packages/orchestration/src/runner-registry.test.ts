@@ -309,48 +309,6 @@ describe("Runner connection registry", () => {
     expect(onCommandAccepted).not.toHaveBeenCalled();
   });
 
-  it("records a send synchronously before the peer can use its command, but never for a refused send", async () => {
-    const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
-    });
-    const environmentId = createId("environment");
-    const peer = new MemoryRunnerPeer("screen-runner");
-    await registerAttached(registry, hello(createId("runner"), environmentId, "boot-screen"), peer);
-    const command = executeCommand(environmentId);
-    let recorded = false;
-    const send = peer.send.bind(peer);
-    vi.spyOn(peer, "send").mockImplementation(async (message) => {
-      if (message.type === "host.command") expect(recorded).toBe(true);
-      await send(message);
-    });
-    const dispatched = registry.dispatch(command, new AbortController().signal, {
-      onSending: () => {
-        recorded = true;
-      },
-    });
-    await vi.waitFor(() =>
-      expect(peer.messages.some((message) => message.type === "host.command")).toBe(true),
-    );
-    await registry.handle(peer, {
-      ...fenceOf(peer),
-      type: "runner.command-accepted",
-      commandId: command.commandId,
-      correlationId: command.correlationId,
-    });
-    await dispatched;
-    const neverSent = vi.fn();
-    await expect(
-      registry.dispatch(executeCommand(environmentId), new AbortController().signal, {
-        beforeSend: async () => {
-          throw new Error("revoked");
-        },
-        onSending: neverSent,
-      }),
-    ).rejects.toThrow("revoked");
-    expect(neverSent).not.toHaveBeenCalled();
-    await registry.close();
-  });
-
   it("survives its Runner disconnecting during an execute's last authority check", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),

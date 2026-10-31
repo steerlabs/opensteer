@@ -1,5 +1,4 @@
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
-import { SocketScreenPresentationTransport } from "../screen/transport.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
 import { BrowserPreferences } from "./browser-preferences.js";
@@ -264,10 +263,7 @@ const realtimeResyncSchema = z.object({
   reason: z.string().min(1),
 });
 type RealtimeMessage =
-  | Exclude<
-      HostToClientMessage,
-      { type: "host.events" | "host.resync-required" | "host.screen.ready" | "host.screen.show" }
-    >
+  | Exclude<HostToClientMessage, { type: "host.events" | "host.resync-required" }>
   | { type: "host.events"; events: RealtimeEvent[] }
   | z.infer<typeof realtimeResyncSchema>;
 
@@ -549,10 +545,6 @@ export interface HttpHostClientOptions {
 }
 
 export class HttpHostClient {
-  readonly screenPresentation = new SocketScreenPresentationTransport(undefined, (socket) => {
-    const channel = [...this.#channels.values()].find((candidate) => candidate.socket === socket);
-    if (channel) this.#replaceChannel(channel, "Presentation clock refreshed");
-  });
   readonly browserPasskeys: BrowserPasskeys;
   readonly recentSites: RecentSitesStore;
   readonly browserPreferences: BrowserPreferences;
@@ -3969,7 +3961,6 @@ export class HttpHostClient {
    */
   #enterBackground(): void {
     if (this.#disposed || this.#visibility === "background") return;
-    this.screenPresentation.clear();
     this.#visibility = "background";
     this.#targetedControl.suspend(true, this.#network !== "offline");
     this.#targetedWatch.suspend(true);
@@ -4011,13 +4002,6 @@ export class HttpHostClient {
     this.#backgroundedAt = null;
     const trusted = backgroundedForMs < this.#socketTrustWindowMs && this.#network !== "offline";
     for (const channel of this.#channels.values()) {
-      if (
-        channel.workspaceId === this.#snapshot.homeWorkspaceId &&
-        this.#capabilities?.includes("screen-show-v1")
-      ) {
-        this.#replaceChannel(channel, "Presentation resumed");
-        continue;
-      }
       if (trusted && channel.socket?.readyState === 1) {
         this.#probeChannel(channel);
         continue;
@@ -4269,11 +4253,6 @@ export class HttpHostClient {
       if (channel.socket !== socket) return;
       channel.progressAt = Date.now();
       try {
-        const screenShow =
-          this.#capabilities?.includes("screen-show-v1") === true &&
-          channel.workspaceId === this.#snapshot.homeWorkspaceId &&
-          this.#visibility === "foreground";
-        if (screenShow) this.screenPresentation.begin(socket);
         socket.send(
           JSON.stringify({
             afterSequence: channel.cursor,
@@ -4281,7 +4260,6 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
-            ...(screenShow ? { screenShow: true } : {}),
             ...(this.#capabilities?.includes("snapshot-messages-omit-v1")
               ? { snapshotMessages: "omit" }
               : {}),
@@ -4325,7 +4303,6 @@ export class HttpHostClient {
     });
     socket.addEventListener("close", () => {
       if (channel.socket !== socket) return;
-      this.screenPresentation.clear(socket);
       channel.socket = null;
       channel.synchronized = false;
       this.#scheduleReconnect(channel);
@@ -4430,10 +4407,6 @@ export class HttpHostClient {
       return { ...live, type: "host.live", progress: { ...live.progress, items } };
     }
     const message = HostToClientMessageSchema.parse(value);
-    if (message.type === "host.screen.ready" || message.type === "host.screen.show") {
-      if (channel.socket) this.screenPresentation.receive(channel.socket, message);
-      return null;
-    }
     if (
       (message.type === "host.read-states" ||
         message.type === "host.read-markers" ||
@@ -5014,7 +4987,6 @@ export class HttpHostClient {
     const socket = channel.socket;
     channel.socket = null;
     channel.synchronized = false;
-    if (socket) this.screenPresentation.clear(socket);
     if (reconnect) this.#scheduleReconnect(channel);
     try {
       socket?.close(code, reason);

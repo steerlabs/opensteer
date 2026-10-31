@@ -391,42 +391,6 @@ export async function autoPlacePart(
   return browserPagePart({ auto: true, ...candidate });
 }
 
-const nothing = () => Promise.resolve([]);
-
-/**
- * What a spoken message carries about the place that was on screen when it
- * was heard, fixed then: that tab only while it still shows the same
- * document, or a task's app or phone. The person's own Mac view is never
- * sent by itself, and a later screen never stands in for it.
- */
-export function heardPlaceParts(
-  hostClient: HostClient,
-  place: PlaceItem | null,
-): () => Promise<readonly PlacePart[]> {
-  if (place?.availability !== "ready" || place.ownerView) return nothing;
-  const { destination } = place;
-  if (destination.kind !== "browser") {
-    let part: PlacePart;
-    try {
-      part = nativePart(place);
-    } catch {
-      return nothing;
-    }
-    return () => Promise.resolve([part]);
-  }
-  const documentId = place.browser?.documentId;
-  if (!documentId) return nothing;
-  return async () => {
-    const candidate = await hostClient.readBrowserContextCandidate(
-      destination.sessionId,
-      destination.tabId,
-    );
-    return candidate.documentId === documentId && /^https?:\/\//iu.test(candidate.url)
-      ? [browserPagePart({ auto: true, ...candidate })]
-      : [];
-  };
-}
-
 /** A part built here is still parsed by the one place schema the Host reads. */
 function parsePlacePart(value: unknown): PlacePart {
   return PlaceContentPartSchema.parse(value);

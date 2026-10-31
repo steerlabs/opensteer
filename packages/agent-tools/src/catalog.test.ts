@@ -34,7 +34,6 @@ const expectedTools = {
     "trigger_write",
   ],
   main: [
-    "screen_show",
     "request_list",
     "request_withdraw",
     "environment_list",

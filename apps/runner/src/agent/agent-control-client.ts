@@ -126,8 +126,6 @@ function expectedResponseType(type: AgentControlRequest["type"]): AgentControlRe
       return "thread.message.result";
     case "thread.write":
       return "thread.write.result";
-    case "screen.show":
-      return "screen.show.result";
     case "request.list":
       return "request.list.result";
     case "request.withdraw":

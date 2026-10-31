@@ -32,6 +32,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
 } from "react-native";
 import { canRespondToRequests } from "@opensteer/client/host";
@@ -65,7 +66,6 @@ import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../u
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
 import { Symbol } from "../ui/symbol.js";
-import { TextInput } from "../ui/text-input.js";
 
 export type ThreadSettingsScreenProps = StaticScreenProps<{
   readonly deploymentId: string;

@@ -7,8 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./test-support/lock-order": "./src/lock-order-checker.test-support.ts",
-    "./test-support/database": "./src/test-database.test-support.ts",
-    "./test-support/store": "./src/store.integration.test-support.ts"
+    "./test-support/database": "./src/test-database.test-support.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
