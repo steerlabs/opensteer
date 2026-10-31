@@ -66,7 +66,6 @@ func require(_ condition: Bool, _ message: String) throws {
         let electron = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_ELECTRON_APP"]
         let fixture = URL(fileURLWithPath: electron ?? CommandLine.arguments[2])
         let process = try await launchFixture(fixture, arguments: [out.path])
-        defer { process.terminate() }
         if electron != nil {
           let readyBy = Date().addingTimeInterval(10)
           while !FileManager.default.fileExists(atPath: out.appendingPathComponent("electron-ready.json").path), Date() < readyBy {
@@ -113,6 +112,7 @@ func require(_ condition: Bool, _ message: String) throws {
         sampler.arguments = [String(getpid()), "2", "-mayDie", "-file", out.appendingPathComponent("failure-stack.txt").path]
         if (try? sampler.run()) != nil { sampler.waitUntilExit() }
       }
+      await OwnedApps.stop(out: out)
       try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
         .write(to: out.appendingPathComponent("result.json"))
       exit(result["passed"] as? Bool == true ? 0 : 1)
@@ -138,6 +138,7 @@ func require(_ condition: Bool, _ message: String) throws {
   config.createsNewApplicationInstance = ProcessInfo.processInfo.environment["OPENSTEER_JOURNEY_APPS"] != nil
   config.arguments = arguments
   let running = try await NSWorkspace.shared.openApplication(at: app, configuration: config)
+  OwnedApps.launched.append((running, app.path))
   guard ProcessInfo.processInfo.environment["OPENSTEER_JOURNEY_APPS"] != nil else { return running }
   let stamp = try ProcessStamp.of(running.processIdentifier).unwrap("launched app identity")
   let claim: [String: Any] = ["pid": running.processIdentifier, "bundle": app.path,
@@ -160,4 +161,52 @@ func require(_ condition: Bool, _ message: String) throws {
   let result = try JSONSerialization.jsonObject(with: reply) as! [String: Any]
   try require(result["ok"] as? Bool == true, "App registration refused: " + (result["error"] as? String ?? "invalid acknowledgment"))
   return running
+}
+
+/// Apps this journey launched, stopped by their own handles before it exits.
+/// An Electron app's helpers end with its main process.
+@MainActor enum OwnedApps {
+  static var launched: [(app: NSRunningApplication, bundle: String)] = []
+
+  static func stop(out: URL) async {
+    var rows: [[String: Any]] = []
+    for (app, bundle) in launched {
+      var outcome = "exited"
+      if !app.isTerminated {
+        app.terminate()
+        outcome = "quit"
+        if !(await terminated(app, within: 5)) {
+          app.forceTerminate()
+          outcome = await terminated(app, within: 2) ? "force-terminated" : "still-running"
+        }
+      }
+      rows.append(["pid": app.processIdentifier, "bundle": bundle, "outcome": outcome])
+    }
+    try? JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+      .write(to: out.appendingPathComponent("owned-apps.json"))
+  }
+
+  /// Waits on the app's own termination notice, never longer than `seconds`.
+  private static func terminated(_ app: NSRunningApplication, within seconds: Double) async -> Bool {
+    let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)
+    let notices = NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didTerminateApplicationNotification)
+    return await withTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        for await notice in notices where
+          (notice.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
+            == app.processIdentifier { return true }
+        return false
+      }
+      group.addTask {
+        let now = DispatchTime.now().uptimeNanoseconds
+        if deadline > now { try? await Task.sleep(nanoseconds: deadline - now) }
+        return false
+      }
+      // Checked after subscribing, so a termination already done is not missed.
+      if app.isTerminated { group.cancelAll(); return true }
+      let first = await group.next() ?? false
+      group.cancelAll()
+      return first || app.isTerminated
+    }
+  }
 }
