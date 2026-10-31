@@ -321,6 +321,14 @@ export function AppShell({
       );
       return part ? [part] : [];
     },
+    () => {
+      const selection = placeSelection(new URLSearchParams(location.search));
+      const match = /\/threads\/([^/]+)/.exec(location.pathname);
+      return {
+        threadId: match ? decodeURIComponent(match[1]!) : (snapshot.homeThreadId ?? undefined),
+        ...(selection.kind === "place" ? { destination: selection.destination } : {}),
+      };
+    },
   );
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;

@@ -46,9 +46,10 @@ export function useVoiceRuntime(
   navigate: (target: VoiceTarget) => void,
   dictation: DictationController | null,
   places?: VoiceControllerInput["places"],
+  currentView?: VoiceControllerInput["currentView"],
 ): VoiceController | null {
-  const latest = useRef({ navigate, dictation, places });
-  latest.current = { navigate, dictation, places };
+  const latest = useRef({ navigate, dictation, places, currentView });
+  latest.current = { navigate, dictation, places, currentView };
   const [controller, setController] = useState<VoiceController | null>(null);
   useEffect(() => {
     const created = new VoiceController({
@@ -56,6 +57,7 @@ export function useVoiceRuntime(
       media: createBrowserVoiceMediaPort(),
       navigate: (target) => latest.current.navigate(target),
       createId: () => crypto.randomUUID(),
+      currentView: () => latest.current.currentView?.() ?? {},
       places: () => latest.current.places?.() ?? Promise.resolve([]),
       onStart: async () => {
         const dictating = latest.current.dictation;
@@ -69,6 +71,9 @@ export function useVoiceRuntime(
       setController(null);
     };
   }, [hostClient]);
+  useEffect(() => {
+    controller?.refreshContext();
+  }, [controller, currentView]);
   return controller;
 }
 

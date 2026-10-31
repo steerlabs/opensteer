@@ -8,8 +8,8 @@ call is durable, and no voice state carries authority.
 ## Ownership
 
 - **Client** ([`packages/client/src/voice`](../packages/client/src/voice)) owns
-  the call: microphone, WebRTC, routing what was heard, and choosing what to
-  say. Audio flows between the device and the vendor only; it never reaches a
+  the call: microphone, WebRTC, navigation, and forwarding only the person’s words
+  to Chat. Audio flows between the device and the vendor only; it never reaches a
   Host or Runner.
 - **Host** relays `voice.*` without keeping state. Every call, not just start,
   re-resolves the authorized profile for (user, environment, account), so
@@ -27,7 +27,7 @@ implements the same provider without the Runner.
 
 ## Codex realtime
 
-Stage 1 uses Codex's realtime voice on a ChatGPT plan. It is an experimental,
+Voice uses Codex's realtime voice on a ChatGPT plan. It is an experimental,
 undocumented Codex API; every engine pin bump must re-qualify a live call.
 
 - Only V3 over WebRTC works on a plan, and the app-server defaults WebRTC to
@@ -35,31 +35,31 @@ undocumented Codex API; every engine pin bump must re-qualify a live call.
 - The browser's `oai-events` data channel delivers the voice events (the
   person's finished utterance is a user `turn.done`). Never write to that
   channel: an event the backend does not accept closes the call.
-- Every voice handoff starts or steers a Codex turn on the attached thread,
-  and nothing turns that off. The call therefore runs on its own app-server
-  and ephemeral thread with the title-generation lockdown (no tools, MCP,
-  skills or project instructions; read-only; interactions refused), and any
-  turn that starts is interrupted at once.
+- The call runs on its own app-server and ephemeral thread, isolated from
+  Chat and project instructions. Legacy calls interrupt delegated turns; agent
+  calls let a delegated turn decide what to say, show, or hand off. Navigation
+  and Chat handoff execute on the client through the voice wire contract.
 - Codex keeps a TRACE SQLite log, including realtime events, in the account's
   state home with its own 10-day retention, exactly as Codex's own voice does;
   no setting disables it. The call cannot move that home: a fresh one blocks
   app-server startup until it has backfilled every session in the Codex home.
   Only the call's text `log_dir` lives in its private temporary directory.
-- The voice model is generative. Instructions do not stop it answering simple
-  questions itself or claiming it will act, and it does not follow structured
-  formats. So it is never the router: every finished utterance goes to Chat
-  unless the client's own navigation grammar takes it, and Chat stays the
-  source of truth. Text sent with `appendSpeech` is spoken as a faithful
-  paraphrase, shortened when long.
+- A Host advertising `voice-agent-v1` can negotiate the call’s own delegated
+  agent. The client executes its navigation and Chat handoff tools, with
+  session-scoped links bound to exact current destinations. A navigation
+  acknowledgement means the destination was selected, not that pixels rendered.
+  Older Hosts and Runners retain the legacy call.
 
-## Routing and speaking
+## Handoff and speaking
 
-- Navigation takes only whole utterances that start with a navigation verb
-  and name exactly one Chat, task or place; "open" is not one ("open a PR" is
-  work). Everything else is sent to Chat verbatim, as the person's message.
-- While a call is on, the client speaks Chat's new durable replies and
-  announces new "needs you" Requests by Thread title only, never their
-  contents. Approvals still need a tap or Face ID.
+In an agent call, finished utterances remain in a bounded client buffer until
+the call asks to send them to Chat. Only those verbatim user utterances become
+the person’s message; agent text and screen titles never do. Legacy calls send
+every non-empty finished utterance verbatim, including navigation requests.
+
+While either call is on, the client speaks Chat’s new durable replies and
+announces new "needs you" Requests by Thread title only, never their contents.
+Approvals still need a tap or Face ID.
 
 ## Privacy
 

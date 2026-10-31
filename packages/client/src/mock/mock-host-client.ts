@@ -2021,6 +2021,9 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.next": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.answer": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.stop": async () => rpcSuccess({}),
     "integration.authorization.get": async (input) =>
       rpcSuccess(await client.getIntegrationAuthorization(input.attemptId)),

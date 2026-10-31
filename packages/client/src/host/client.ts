@@ -834,6 +834,7 @@ export interface HostSnapshot {
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-v1; absent on older Hosts. */
   voiceAvailable?: boolean;
+  voiceAgentAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
