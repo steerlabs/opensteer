@@ -140,3 +140,52 @@ describe("the iOS push entitlement", () => {
     },
   );
 });
+
+describe("preview notification response identity", () => {
+  it("opens successive notifications in one Thread even when the drawer tag is shared", () => {
+    const expo = expoNotifications();
+    let opened!: Parameters<ExpoNotificationsLike["addNotificationResponseReceivedListener"]>[0];
+    expo.notifications.addNotificationResponseReceivedListener = (listener) => {
+      opened = listener;
+      return { remove() {} };
+    };
+    const instance = createExpoNotificationPort({
+      application: {
+        ApplicationReleaseType: { APP_STORE: 5 },
+        getIosPushNotificationServiceEnvironmentAsync: async () => "production",
+        getIosApplicationReleaseTypeAsync: async () => 5,
+      },
+      androidPushConfigured: true,
+      brandColor: "#e6beb0",
+      channelName: "Opensteer",
+      notifications: expo.notifications,
+      platform: "android",
+      registry: { register: async () => {}, unregister: async () => {} },
+      signedInSubject: async () => "subject",
+    });
+    const destinations: string[] = [];
+    instance.onOpened((destination) => {
+      destinations.push(destination.deepLink);
+    });
+    const dep = "dep_00000000-0000-4000-8000-000000000001";
+    const thread = "thr_00000000-0000-4000-8000-000000000003";
+    for (const suffix of ["004", "005"]) {
+      opened({
+        actionIdentifier: expo.notifications.DEFAULT_ACTION_IDENTIFIER,
+        notification: {
+          request: {
+            identifier: `${dep}:ntf_00000000-0000-4000-8000-000000000${suffix}`,
+            content: {
+              data: {
+                opensteerDrawerTag: "same-drawer-tag",
+                deepLink: `com.opensteer.mobile:/deployments/${dep}/threads/${thread}?messageId=msg_00000000-0000-4000-8000-000000000${suffix}`,
+              },
+            },
+          },
+        },
+      });
+    }
+    expect(destinations).toHaveLength(2);
+    expect(destinations[0]).not.toBe(destinations[1]);
+  });
+});

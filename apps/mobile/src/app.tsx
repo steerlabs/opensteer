@@ -1,3 +1,5 @@
+import { notificationPreviewNative } from "../modules/notification-preview/index.js";
+import { NotificationPreviews } from "./notifications/notification-preview.js";
 import { createExpoSavedViews } from "./platform/expo-saved-views.js";
 import { VoiceOverlay } from "./voice/controls.js";
 import { VoiceProvider } from "./voice/context.js";
@@ -244,6 +246,19 @@ function mobileClient(): MobileRoot {
       tokens: port.tokens,
     }),
   });
+  if (!configuration.mock) {
+    const previews = new NotificationPreviews(
+      notificationPreviewNative,
+      notifications.registration,
+      port.signedInSubject,
+    );
+    previews.unregister = (id, command) => client.unregisterNotificationPreview(id, command);
+    client.notificationPreviews = previews;
+    void previews.start().catch(() => {});
+    notifications.registration.subscribe(() => {
+      void previews.reconcile().catch(() => {});
+    });
+  }
   singleton = { broker, client, iphone, notifications };
   return singleton;
 }

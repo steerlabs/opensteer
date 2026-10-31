@@ -71,5 +71,14 @@
     "react-refresh": "0.14.2",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-notifications"
+        ]
+      }
+    }
   }
 }

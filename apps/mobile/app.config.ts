@@ -147,6 +147,7 @@ const config: ExpoConfig = {
     "@config-plugins/react-native-webrtc",
     "./plugins/with-apple-data.cjs",
     "./plugins/with-dictation.cjs",
+    "./plugins/with-notification-preview.cjs",
     "expo-web-browser",
     [
       "expo-image-picker",

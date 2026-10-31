@@ -1,0 +1,15 @@
+package com.opensteer.notificationpreview
+import expo.modules.kotlin.modules.Module
+import expo.modules.kotlin.modules.ModuleDefinition
+class NotificationPreviewModule : Module() {
+  private fun store() = PreviewStore(requireNotNull(appContext.reactContext))
+  override fun definition() = ModuleDefinition {
+    Name("OpensteerNotificationPreview")
+    Constants("notificationPreviewVersion" to 1)
+    AsyncFunction("deployments") { store().deployments() }
+    AsyncFunction("prepare") { store().prepare() }
+    AsyncFunction("existing") { dep: String -> store().read(dep)?.let { mapOf("keyId" to it.getString("keyId"), "key" to it.getString("key")) } }
+    AsyncFunction("key") { dep: String -> store().key(dep) }
+    AsyncFunction("erase") { dep: String? -> store().erase(dep) }
+  }
+}
