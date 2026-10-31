@@ -129,3 +129,30 @@ it("shares bandwidth across sockets, pipelines propagation, stalls deterministic
     vi.useRealTimers();
   }
 });
+
+it("preserves TCP order when propagation timers become ready out of order", () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  // performance.now can advance within one poll batch while libuv's timer base
+  // stays fixed: the later chunk then has a shorter relative propagation wait.
+  vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(2);
+  const direction = new Direction(8_000, 100, undefined);
+  try {
+    const received: string[] = [];
+    const source = { destroyed: false, pause: vi.fn(), resume: vi.fn() } as unknown as net.Socket;
+    const target = {
+      destroyed: false,
+      write: (chunk: Buffer) => {
+        received.push(chunk.toString()[0]!);
+        return true;
+      },
+    } as unknown as net.Socket;
+    direction.send(source, target, Buffer.alloc(1_000, "a"), () => undefined);
+    direction.send(source, target, Buffer.from("b"), () => undefined);
+    vi.advanceTimersByTime(1_100);
+    expect(received).toEqual(["a", "b"]);
+  } finally {
+    direction.close();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  }
+});
