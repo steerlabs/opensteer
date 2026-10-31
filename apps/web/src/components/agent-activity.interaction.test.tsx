@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   MessageEntry,
   ReasoningEntry,
@@ -18,7 +18,7 @@ import {
 } from "@opensteer/client/mock";
 import { createId, ThreadIdSchema, WorkspaceIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
-import { AgentTranscript } from "./agent-activity.js";
+import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
 import { useWorkspaceNavigation } from "./workspace/navigation.js";
 import { WorkspaceProvider } from "./workspace/workspace-context.js";
 
@@ -297,7 +297,13 @@ describe("AgentTranscript work", () => {
   });
 
   it("opens a folded turn for a linked intermediate message", () => {
-    const entries = [run, note, tool(), { ...note, id: "answer", body: "Done." }];
+    const entries = [
+      run,
+      note,
+      tool(),
+      ...Array.from({ length: 35 }, (_, i) => ({ ...note, id: `later-${i}`, body: `Later ${i}` })),
+      { ...note, id: "answer", body: "Done." },
+    ];
     const container = mount(entries);
     expect(container.textContent).not.toContain(note.body);
     act(() =>
@@ -309,6 +315,46 @@ describe("AgentTranscript work", () => {
     );
     expect(status(container).getAttribute("aria-expanded")).toBe("true");
     expect(container.querySelector(`[data-message-id="${note.id}"]`)?.textContent).toBe(note.body);
+  });
+
+  it("mounts and scrolls to an early linked message in Run details", () => {
+    const entries = [
+      run,
+      note,
+      ...Array.from({ length: 35 }, (_, i) => ({ ...note, id: `later-${i}`, body: `Later ${i}` })),
+      { ...note, id: "answer", body: "Done." },
+    ];
+    const container = mount(entries);
+    const scroll = vi.fn();
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scroll,
+    });
+    try {
+      act(() =>
+        roots.at(-1)!.render(
+          <MemoryRouter>
+            <ConversationActivity
+              anchor={container}
+              entries={entries}
+              live={false}
+              onClose={() => undefined}
+              reveal={note.id}
+              selection={{ kind: "turn", key: "turn:run:run-a" }}
+            />
+          </MemoryRouter>,
+        ),
+      );
+      const target = document.querySelector(`[data-message-id="${note.id}"]`);
+      expect(target?.textContent).toBe(note.body);
+      expect(target?.classList.contains("transcript__found")).toBe(true);
+      expect(scroll).toHaveBeenCalledWith({ block: "center" });
+      expect(scroll.mock.instances).toContain(target);
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original);
+      else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+    }
   });
 
   it("does not reapply a visible reveal when the named reply loads later", () => {

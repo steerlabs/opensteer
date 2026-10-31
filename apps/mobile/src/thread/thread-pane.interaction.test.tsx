@@ -1503,6 +1503,7 @@ describe("a link into Chat", () => {
     expect(host.loadTranscriptAround).toHaveBeenCalledWith(chatId, chat.noteA.id);
     expect(harness.navigate).toHaveBeenCalledTimes(1);
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: chat.noteA.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${chat.runA}`,
@@ -1644,6 +1645,7 @@ describe("a message that joins the reply under way", () => {
 
     // Named by the turn it was said in, which the reply going on never renames.
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: reply.note.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${reply.runId}`,
@@ -1703,6 +1705,7 @@ describe("a link to an approval", () => {
     ]);
     expect(harness.navigate).toHaveBeenCalledTimes(1);
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: second.receipt.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${second.runId}`,
@@ -1718,6 +1721,7 @@ describe("a link to an approval", () => {
 
     // Named by the stretch that holds the answer, which the reply going on never renames.
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: joined.receipt.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${joined.runId}`,
@@ -1748,6 +1752,7 @@ describe("a link to an approval", () => {
     );
     expect(harness.navigate).toHaveBeenCalledTimes(1);
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: receipt.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${runId}`,
@@ -1774,6 +1779,7 @@ describe("a link to an approval", () => {
 
     expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(1);
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
+      messageId: first.receipt.id,
       deploymentId,
       threadId: chatId,
       turnKey: `turn:run:${first.runId}`,
@@ -2425,7 +2431,15 @@ describe("a task", () => {
           : entry,
     );
     const host = fakeHost(
-      snapshotFor({ entries: [...entries, answer], run: null, threadId: workId }),
+      snapshotFor({
+        entries: [
+          ...entries,
+          ...Array.from({ length: 35 }, (_, i) => wrote(`Later ${i}`, task.runId, workId)),
+          answer,
+        ],
+        run: null,
+        threadId: workId,
+      }),
     );
     const { container } = await mount(host, workId, { messageId: task.note.id });
     expect(text(container)).toContain(task.note.body);

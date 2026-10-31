@@ -1042,13 +1042,20 @@ export const traceWindowRows = 30;
 
 /**
  * The rows an open trace draws: its latest, where the story is, with how many
- * earlier ones wait behind one control. The last word is always among them.
+ * earlier ones wait behind one control. A kept entry extends the window back
+ * to its row, including when it belongs to a digest. The last word stays drawn.
  */
 export function traceWindow(
   rows: readonly WorkRow[],
-  showAll: boolean,
+  { showAll, keep }: { readonly showAll: boolean; readonly keep: string | null },
 ): { rows: readonly WorkRow[]; hidden: number } {
-  const hidden = showAll ? 0 : Math.max(0, rows.length - traceWindowRows);
+  let hidden = showAll ? 0 : Math.max(0, rows.length - traceWindowRows);
+  if (keep !== null && hidden > 0) {
+    const index = rows.findIndex((row) =>
+      row.kind === "steps" ? row.entries.some((entry) => entry.id === keep) : row.entry.id === keep,
+    );
+    if (index >= 0) hidden = Math.min(hidden, index);
+  }
   return { rows: hidden === 0 ? rows : rows.slice(hidden), hidden };
 }
 

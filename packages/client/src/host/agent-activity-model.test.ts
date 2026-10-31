@@ -2136,15 +2136,40 @@ it("automatic background work has no Chat indicator, while a new human input sti
 });
 
 describe("traceWindow", () => {
+  it.each(["note-35", "note-5", "unknown"])("keeps %s mounted", (keep) => {
+    const rows = workRows(Array.from({ length: 40 }, (_, i) => message({ id: `note-${i}` })));
+    const hidden = keep === "note-5" ? 5 : 10;
+    expect(traceWindow(rows, { showAll: false, keep })).toEqual({
+      rows: rows.slice(hidden),
+      hidden,
+    });
+  });
+
+  it("keeps a target inside a digest, including entries after its first", () => {
+    const first = tool();
+    const target = tool();
+    const rows = workRows([
+      message({ id: "before" }),
+      first,
+      target,
+      ...Array.from({ length: 40 }, (_, i) => message({ id: `note-${i}` })),
+    ]);
+    expect(rows[1]?.kind).toBe("steps");
+    expect(traceWindow(rows, { showAll: false, keep: target.id })).toEqual({
+      rows: rows.slice(1),
+      hidden: 1,
+    });
+  });
+
   it.each([0, traceWindowRows - 1, traceWindowRows, traceWindowRows + 1, 1001])(
     "bounds %i rows while keeping the last word",
     (count) => {
       const rows = workRows(Array.from({ length: count }, (_, i) => message({ id: `note-${i}` })));
-      const window = traceWindow(rows, false);
+      const window = traceWindow(rows, { showAll: false, keep: null });
       expect(window.hidden).toBe(Math.max(0, count - traceWindowRows));
       expect(window.rows).toEqual(rows.slice(-traceWindowRows));
       expect(window.rows.at(-1)).toBe(rows.at(-1));
-      expect(traceWindow(rows, true)).toEqual({ rows, hidden: 0 });
+      expect(traceWindow(rows, { showAll: true, keep: null })).toEqual({ rows, hidden: 0 });
     },
   );
 });

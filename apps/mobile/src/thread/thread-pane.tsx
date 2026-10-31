@@ -762,8 +762,13 @@ function ThreadPaneForUser(
     [deploymentId, navigation, threadId],
   );
   const openActivity = useCallback(
-    (turnKey: string) =>
-      navigation.navigate("ConversationActivity", { deploymentId, threadId, turnKey }),
+    (turnKey: string, messageId?: string) =>
+      navigation.navigate("ConversationActivity", {
+        deploymentId,
+        threadId,
+        turnKey,
+        ...(messageId === undefined ? {} : { messageId }),
+      }),
     [deploymentId, navigation, threadId],
   );
   // The reply under way opens the latest Activity: that reply's, and still
@@ -774,7 +779,7 @@ function ThreadPaneForUser(
   );
   // Puts the reader where a link points, and opens the Activity holding it.
   const reveal = useCallback(
-    (place: LinkedPlace): void => {
+    (place: LinkedPlace, entryId: string): void => {
       if (place.index >= 0) {
         scrollAttempts.current = 0;
         pinned.current = false;
@@ -787,7 +792,7 @@ function ThreadPaneForUser(
           open.get(openKey) === true ? open : new Map(open).set(openKey, true),
         );
       }
-      if (place.activityKey !== null) openActivity(place.activityKey);
+      if (place.activityKey !== null) openActivity(place.activityKey, entryId);
     },
     [openActivity],
   );
@@ -798,7 +803,7 @@ function ThreadPaneForUser(
     // A sheet opens over the screen in front of the reader, never under it.
     if (anchor.activityKey !== null && !focused) return;
     anchorShown.current = anchorMessageId;
-    reveal(anchor);
+    reveal(anchor, anchorMessageId);
   }, [anchor, anchorMessageId, focused, reveal]);
   useEffect(() => {
     if (requestId === null || revealed.current === requestId) return;
@@ -808,10 +813,11 @@ function ThreadPaneForUser(
       revealed.current = requestId;
       return;
     }
-    if (receipt === null || (receipt.activityKey !== null && !focused)) return;
+    if (receipt === null || receiptId === null || (receipt.activityKey !== null && !focused))
+      return;
     revealed.current = requestId;
-    reveal(receipt);
-  }, [focused, pendingRequest, receipt, requestId, reveal]);
+    reveal(receipt, receiptId);
+  }, [focused, pendingRequest, receipt, receiptId, requestId, reveal]);
   // A chip opens exactly the page or app it names, pushed so Back returns to
   // where it was opened; one already in front is left as it is.
   const surfaceTurns = useMemo(
@@ -965,6 +971,7 @@ function ThreadPaneForUser(
               group={item.group}
               open={openRows.get(item.group.key) ?? null}
               onToggleOpen={toggleRow}
+              reveal={anchorMessageId ?? receiptId}
               highlightRequestId={requestId}
               askAbout={askAbout}
               onOpenStep={openStep}
@@ -994,6 +1001,7 @@ function ThreadPaneForUser(
       openRows,
       replyWith,
       requestId,
+      receiptId,
       snapshot.homeThreadId,
       viewerUserId,
       workspaces,

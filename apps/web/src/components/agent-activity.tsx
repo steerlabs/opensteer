@@ -435,6 +435,7 @@ function TurnView({
       <TurnContent
         fold={turnFolds(turn) ? { open, onToggle: () => setChosen(!open) } : undefined}
         turn={turn}
+        reveal={reveal?.id ?? null}
         live={live}
       />
       {turn.continued || placesUnderOutcome ? null : (
@@ -1215,6 +1216,7 @@ export function ConversationActivity({
           <div className="activity__body" ref={bodyRef}>
             {activity !== null && activity.steps.length > 0 ? (
               <TurnContent
+                reveal={reveal}
                 entries={activity.steps}
                 live={live}
                 status={false}
@@ -1271,12 +1273,14 @@ export function ConversationActivity({
 }
 
 function TurnContent({
+  reveal = null,
   entries,
   fold,
   live,
   status = true,
   turn,
 }: {
+  reveal?: string | null;
   /** What of the turn to draw; all of its work unless a conversation keeps its reply apart. */
   entries?: readonly WorkEntry[];
   /**
@@ -1302,7 +1306,7 @@ function TurnContent({
     () => workRows(folded ? turnWords(turn) : (entries ?? turn.work)),
     [entries, folded, turn],
   );
-  const trace = traceWindow(rows, folded || showAll);
+  const trace = traceWindow(rows, { showAll: folded || showAll, keep: reveal });
   return (
     <div className="turn__content">
       {summary === null ? null : (

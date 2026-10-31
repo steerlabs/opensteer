@@ -305,8 +305,13 @@ function render(node: ReactNode): HTMLElement {
   return container;
 }
 
-function activity(turnKey?: string): HTMLElement {
-  const params = { deploymentId, threadId: chatId, ...(turnKey === undefined ? {} : { turnKey }) };
+function activity(turnKey?: string, messageId?: string): HTMLElement {
+  const params = {
+    messageId,
+    deploymentId,
+    threadId: chatId,
+    ...(turnKey === undefined ? {} : { turnKey }),
+  };
   return render(<ConversationActivityScreen route={{ params }} />);
 }
 
@@ -320,6 +325,19 @@ function press(container: HTMLElement, words: string): void {
 }
 
 describe("Run details", () => {
+  it("mounts an early linked message in a long trace", () => {
+    fakeHost(
+      snapshotWith([
+        ...answered.slice(0, -1),
+        ...Array.from({ length: 35 }, (_, i) => wrote(`Later ${i}`, runA)),
+        replyA,
+      ]),
+    );
+    const container = activity(`turn:run:${runA}`, noteA.id);
+    expect(container.textContent).toContain(noteA.body);
+    expect(container.textContent).toContain("Later 34");
+  });
+
   it("opens the exact browser tab used by this reply even when another tab is viewed", () => {
     const browser = {
       access: "full-control",

@@ -82,6 +82,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
    */
   readonly open: boolean | null;
   readonly onToggleOpen: (rowKey: string, open: boolean) => void;
+  readonly reveal?: string | null;
   readonly highlightRequestId: string | null;
   /** Opens one step's detail. */
   readonly onOpenStep: (entryId: string) => void;
@@ -118,6 +119,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           />
         ) : (
           <TurnView
+            reveal={props.reveal ?? null}
             highlightRequestId={props.highlightRequestId}
             onOpenStep={props.onOpenStep}
             onToggle={props.onToggleOpen}
@@ -180,6 +182,7 @@ export function transcriptSpacing(previous: TranscriptVoice | null, next: Transc
 /* ---- A turn ---- */
 
 function TurnView(props: {
+  readonly reveal?: string | null;
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
   readonly onToggle: (turnKey: string, open: boolean) => void;
@@ -195,6 +198,7 @@ function TurnView(props: {
     <View style={styles.turn}>
       <TurnContent
         {...(folds ? { fold: { onToggle: () => onToggle(turnKey, open), open } } : {})}
+        reveal={props.reveal ?? null}
         highlightRequestId={props.highlightRequestId}
         onOpenStep={props.onOpenStep}
         turn={turn}
@@ -471,6 +475,7 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
  */
 export function ConversationSteps(props: {
   readonly entries: readonly WorkEntry[];
+  readonly reveal?: string | null;
   readonly highlightRequestId: string | null;
   readonly live: boolean;
   readonly onOpenStep: (entryId: string) => void;
@@ -480,6 +485,7 @@ export function ConversationSteps(props: {
     <View style={styles.steps}>
       <TurnContent
         entries={props.entries}
+        reveal={props.reveal ?? null}
         highlightRequestId={props.highlightRequestId}
         live={props.live}
         onOpenStep={props.onOpenStep}
@@ -495,6 +501,7 @@ function TurnContent(props: {
   readonly entries?: readonly WorkEntry[];
   /** Given, the turn's steps fold behind its status line, which opens and closes them (`turnFolds`). */
   readonly fold?: { readonly onToggle: () => void; readonly open: boolean };
+  readonly reveal?: string | null;
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
   /**
@@ -516,7 +523,7 @@ function TurnContent(props: {
     () => workRows(closed ? turnWords(turn) : (props.entries ?? turn.work)),
     [closed, props.entries, turn],
   );
-  const trace = traceWindow(rows, closed || showAll);
+  const trace = traceWindow(rows, { showAll: closed || showAll, keep: props.reveal ?? null });
   return (
     <>
       {summary === null ? null : (
