@@ -13,8 +13,8 @@ import {
 import {
   BrowserCapabilityLeaseIdSchema,
   BrowserCapabilityReferenceSchema,
-  BrowserRelayToHostMessageSchema,
-  HostToBrowserRelayMessageSchema,
+  createBrowserRelayToHostMessageSchema,
+  createHostToBrowserRelayMessageSchema,
   BrowserChannelIdSchema,
   sameBrowserCapability,
   type BrowserCapabilityLease,
@@ -22,6 +22,9 @@ import {
   type BrowserChannelId,
   type BrowserRelayFrameHeader,
 } from "@opensteer/protocol/browser-relay";
+import { sameProfileBinding } from "@opensteer/database";
+import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
+import { BrowserAttachTicketClaimsSchema, type InitialPageReady } from "@opensteer/protocol";
 import { readBrowserFrameHeader } from "@opensteer/protocol/browser";
 import WebSocket, { type RawData } from "ws";
 import { z } from "zod";
@@ -48,11 +51,11 @@ const browserChannelEnvelope = {
 };
 export const HostToBrowserRuntimeRelayMessageSchema = z.union([
   z.strictObject({ ...browserChannelEnvelope, type: z.literal("browser.client-message") }),
-  HostToBrowserRelayMessageSchema,
+  createHostToBrowserRelayMessageSchema({ localProfiles: 1, initialNavigationVersion: 1 }),
 ]);
 export const BrowserRuntimeRelayToHostMessageSchema = z.union([
   z.strictObject({ ...browserChannelEnvelope, type: z.literal("browser.server-message") }),
-  BrowserRelayToHostMessageSchema,
+  createBrowserRelayToHostMessageSchema({ localProfiles: 1, initialNavigationVersion: 1 }),
 ]);
 export type BrowserRuntimeRelayRequest = Extract<
   z.infer<typeof HostToBrowserRuntimeRelayMessageSchema>,
@@ -74,10 +77,14 @@ const maxQueuedFrameSurfaces = 128;
 interface PendingRequest {
   readonly capability: BrowserCapabilityReference | undefined;
   readonly channelId: BrowserChannelId | undefined;
-  readonly connectionId: string;
+  readonly fence: RunnerAuxiliaryFrameFence;
   readonly runnerId: RunnerId;
   readonly expectedType:
-    "browser.attached" | "browser.closed" | "capability.accepted" | "capability.revoked";
+    | "browser.attached"
+    | "browser.closed"
+    | "capability.accepted"
+    | "capability.revoked"
+    | "browser.profile.delete.result";
   readonly reject: (error: unknown) => void;
   readonly resolve: (message: BrowserRelayEvent) => void;
   readonly timer: NodeJS.Timeout;
@@ -86,6 +93,7 @@ interface PendingRequest {
 interface PlacementCapabilityLease {
   capability: BrowserCapabilityReference;
   readonly channels: Set<BrowserChannelId>;
+  maintenanceCount: number;
   readonly runnerId: RunnerId;
   expiresAt: string;
   readonly fence: RunnerAuxiliaryFrameFence;
@@ -108,6 +116,11 @@ interface RunnerBrowserRuntimeRouterOptions {
   readonly now?: () => number;
   readonly registry: RunnerBrowserRegistry;
   readonly requestTimeoutMs?: number;
+  readonly localProfiles?: Pick<
+    BrowserLocalProfiles,
+    "reconcileInventory" | "jobs" | "acknowledgeDeletion"
+  >;
+  readonly onDeletionsChanged?: (runnerId: RunnerId) => Promise<void>;
 }
 
 /**
@@ -122,14 +135,24 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   readonly #channels = new Map<BrowserChannelId, RoutedChannel>();
   readonly #generationByPlacement = new Map<string, number>();
   readonly #leaseByPlacement = new Map<string, PlacementCapabilityLease>();
+  readonly #leaseAcquisitions = new Map<string, Promise<PlacementCapabilityLease>>();
+  readonly #erasures = new Map<RunnerId, Promise<void>>();
   readonly #now: () => number;
   readonly #pending = new Map<RunnerAuxiliaryRequestId, PendingRequest>();
   readonly #registry: RunnerBrowserRegistry;
   readonly #requestTimeoutMs: number;
   readonly #unsubscribe: () => void;
   #closed = false;
+  readonly #inventory = new Map<
+    RunnerId,
+    { fence: RunnerAuxiliaryFrameFence; complete: boolean; failed: boolean; profiles: Set<string> }
+  >();
+  readonly #localProfiles: RunnerBrowserRuntimeRouterOptions["localProfiles"];
+  readonly #onDeletionsChanged: RunnerBrowserRuntimeRouterOptions["onDeletionsChanged"];
 
   constructor(options: RunnerBrowserRuntimeRouterOptions) {
+    this.#localProfiles = options.localProfiles;
+    this.#onDeletionsChanged = options.onDeletionsChanged;
     this.#now = options.now ?? Date.now;
     this.#registry = options.registry;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? requestTimeoutMs;
@@ -146,7 +169,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     return this.#registry.browserStreams().flatMap((stream): BrowserRuntimePlacement[] => {
       const browser = stream.identity.modules.browser;
       if (!browser) return [];
-      const incompatibility = browserSnapshotCompatibilityReason(browser.profileSnapshotVersion);
+      const incompatibility = this.#admissionReason(stream);
       return [
         {
           available: incompatibility === null,
@@ -166,7 +189,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     const stream = this.#registry.stream(placement.runnerId);
     const browser = stream?.identity.modules.browser;
     if (!stream || !browser) return undefined;
-    const incompatibility = browserSnapshotCompatibilityReason(browser.profileSnapshotVersion);
+    const incompatibility = this.#admissionReason(stream);
     if (incompatibility !== null) {
       throw new OpensteerError({
         code: "workspace_unavailable",
@@ -177,6 +200,10 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     const placementKey = runnerPlacementKey(placement.runnerId, browser.runtimeId);
     return {
       placementKey,
+      ...(browser.localProfiles === 1 && browser.localProfileStorage
+        ? { localProfileStorage: browser.localProfileStorage }
+        : {}),
+      initialNavigationVersion: browser.initialNavigationVersion === 1,
       runtimeId: browser.runtimeId,
       stateImport: browser.stateImport === true,
       fileStaging: browser.fileStaging === true,
@@ -264,42 +291,11 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     try {
       if (this.#closed) throw new Error("The browser relay router is closed.");
       const stream = this.#requireExpectedStream(runnerId, expectedFence);
-      const placementKey = runnerPlacementKey(runnerId, runtimeId);
-      placementLease = this.#leaseByPlacement.get(placementKey);
-      if (placementLease) {
-        if (!sameRunnerAuxiliaryFence(placementLease.fence, expectedFence)) {
-          throw relayError("That computer's browser stream was replaced.");
-        }
-        if (placementLease.channels.size >= maxChannelsPerRunnerRuntime) {
-          throw relayError("That computer's Browser Runtime session limit is full.");
-        }
-      } else {
-        const lease = this.#newCapabilityLease(stream, runtimeId);
-        const capability = capabilityReference(lease);
-        await this.#request(runnerId, stream.fence, {
-          capability,
-          expectedType: "capability.accepted",
-          message: {
-            ...stream.fence,
-            lease,
-            type: "capability.grant",
-          },
-        });
-        placementLease = {
-          capability,
-          channels: new Set(),
-          runnerId,
-          expiresAt: lease.expiresAt,
-          fence: stream.fence,
-          pendingCapability: undefined,
-          placementKey,
-          released: false,
-          renewal: undefined,
-          renewalTimer: undefined,
-          runtimeId,
-        };
-        this.#leaseByPlacement.set(placementKey, placementLease);
-      }
+      const reason = this.#admissionReason(stream);
+      if (reason) throw relayError(reason);
+      placementLease = await this.#acquirePlacementLease(stream, runtimeId);
+      if (placementLease.channels.size >= maxChannelsPerRunnerRuntime)
+        throw relayError("That computer's Browser Runtime session limit is full.");
       const activePlacementLease = placementLease;
       if (!activePlacementLease) {
         throw relayError("The browser capability lease is unavailable.");
@@ -319,7 +315,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       channel = routedChannel;
       this.#channels.set(channelId, routedChannel);
       activePlacementLease.channels.add(channelId);
-      await this.#request(runnerId, stream.fence, {
+      const attached = await this.#request(runnerId, stream.fence, {
         capability: activePlacementLease.capability,
         channelId,
         expectedType: "browser.attached",
@@ -336,6 +332,26 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         this.#dropChannel(routedChannel, 1000, "Browser attach cancelled");
         return;
       }
+      const browser = stream.identity.modules.browser;
+      const claims =
+        browser?.initialNavigationVersion === 1
+          ? BrowserAttachTicketClaimsSchema.parse(
+              JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString("utf8")),
+            )
+          : undefined;
+      if (attached.type !== "browser.attached")
+        throw relayError("The browser did not acknowledge attachment.");
+      if (claims?.initialNavigationVersion === 1) {
+        if (
+          !attached.initialPage ||
+          attached.initialPage.operationKey !== claims.initialNavigation?.operationKey ||
+          attached.initialPage.navigation !==
+            (claims.initialNavigation?.url ? "submitted" : "blank")
+        )
+          throw relayError("The browser returned mismatched initial page readiness.");
+      } else if (attached.initialPage)
+        throw relayError("The browser sent unnegotiated initial page readiness.");
+      connection.initialPage = attached.initialPage;
       connection.acceptOpen();
       if (!activePlacementLease.renewalTimer && !activePlacementLease.renewal) {
         this.#scheduleRenewal(activePlacementLease, activePlacementLease.expiresAt);
@@ -345,10 +361,196 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       if (placementLease) await this.#releasePlacementLease(placementLease).catch(() => undefined);
       connection.acceptError(normalizeError(error));
       connection.acceptClose(1011, "Browser Runtime attach failed");
+    } finally {
+      if (placementLease) {
+        placementLease.maintenanceCount--;
+        await this.#releasePlacementLease(placementLease).catch(() => undefined);
+      }
+    }
+  }
+
+  async #acquirePlacementLease(
+    stream: RunnerAuxiliaryStream,
+    runtimeId: string,
+  ): Promise<PlacementCapabilityLease> {
+    const placementKey = runnerPlacementKey(stream.identity.runnerId, runtimeId);
+    const current = this.#leaseByPlacement.get(placementKey);
+    if (current && !current.released) {
+      this.#assertCurrentPlacementLease(current);
+      current.maintenanceCount++;
+      return current;
+    }
+    const acquiring = this.#leaseAcquisitions.get(placementKey);
+    if (acquiring) {
+      const acquired = await acquiring;
+      this.#assertCurrentPlacementLease(acquired);
+      acquired.maintenanceCount++;
+      return acquired;
+    }
+    const operation = (async () => {
+      const lease = this.#newCapabilityLease(stream, runtimeId);
+      const capability = capabilityReference(lease);
+      await this.#request(stream.identity.runnerId, stream.fence, {
+        capability,
+        expectedType: "capability.accepted",
+        message: { ...stream.fence, lease, type: "capability.grant" },
+      });
+      const placementLease: PlacementCapabilityLease = {
+        capability,
+        channels: new Set(),
+        maintenanceCount: 0,
+        runnerId: stream.identity.runnerId,
+        expiresAt: lease.expiresAt,
+        fence: stream.fence,
+        pendingCapability: undefined,
+        placementKey,
+        released: false,
+        renewal: undefined,
+        renewalTimer: undefined,
+        runtimeId,
+      };
+      this.#assertCurrentPlacementLease(placementLease);
+      this.#leaseByPlacement.set(placementKey, placementLease);
+      return placementLease;
+    })();
+    this.#leaseAcquisitions.set(placementKey, operation);
+    try {
+      const acquired = await operation;
+      acquired.maintenanceCount++;
+      return acquired;
+    } finally {
+      if (this.#leaseAcquisitions.get(placementKey) === operation)
+        this.#leaseAcquisitions.delete(placementKey);
+    }
+  }
+
+  #admissionReason(stream: RunnerAuxiliaryStream): string | null {
+    const browser = stream.identity.modules.browser;
+    if (browser?.localProfiles === 1) {
+      const inventory = this.#inventory.get(stream.identity.runnerId);
+      if (
+        !this.#localProfiles ||
+        !inventory ||
+        !sameRunnerAuxiliaryFence(inventory.fence, stream.fence) ||
+        !inventory.complete ||
+        inventory.failed
+      )
+        return "Waiting for this computer to reconcile its browser profile storage.";
+    }
+    return browserSnapshotCompatibilityReason(browser?.profileSnapshotVersion);
+  }
+
+  requirePersonalProfileInventory(): void {
+    const main = this.#registry
+      .browserStreams()
+      .find((stream) => stream.identity.runnerKind === "main");
+    if (
+      !main ||
+      (main.identity.modules.browser?.localProfiles === 1 && this.#admissionReason(main))
+    )
+      throw relayError(
+        "Waiting for this Main computer to reconcile its browser profile storage.",
+        true,
+      );
+  }
+
+  resumeDeletions(runnerId: RunnerId): Promise<void> {
+    const pending = this.#erasures.get(runnerId);
+    if (pending) return pending;
+    const operation = this.#eraseProfiles(runnerId);
+    this.#erasures.set(runnerId, operation);
+    void operation
+      .finally(() => {
+        if (this.#erasures.get(runnerId) === operation) this.#erasures.delete(runnerId);
+      })
+      .catch(() => undefined);
+    return operation;
+  }
+
+  async #eraseProfiles(runnerId: RunnerId): Promise<void> {
+    const stream = this.#registry.stream(runnerId);
+    if (!stream || !this.#localProfiles || this.#admissionReason(stream)) return;
+    const browser = stream.identity.modules.browser;
+    if (browser?.localProfiles !== 1 || !browser.localProfileStorage) return;
+    for (const job of await this.#localProfiles.jobs(runnerId)) {
+      if (
+        job.binding.storageInstanceId !== browser.localProfileStorage.storageInstanceId ||
+        job.binding.engine !== browser.localProfileStorage.engine
+      )
+        continue;
+      const placementLease = await this.#acquirePlacementLease(stream, browser.runtimeId);
+      if (placementLease.renewal) await placementLease.renewal;
+      const capability = placementLease.capability;
+      try {
+        const result = await this.#request(runnerId, stream.fence, {
+          capability,
+          expectedType: "browser.profile.delete.result",
+          message: {
+            ...stream.fence,
+            capability,
+            binding: job.binding,
+            deletionId: job.deletionId,
+            type: "browser.profile.delete",
+          },
+        });
+        if (
+          result.type !== "browser.profile.delete.result" ||
+          result.deletionId !== job.deletionId ||
+          !sameProfileBinding(result.binding, job.binding)
+        )
+          throw relayError("The browser returned mismatched profile erasure readiness.");
+        await this.#localProfiles.acknowledgeDeletion({
+          binding: job.binding,
+          deletionId: job.deletionId,
+          state: result.state,
+        });
+        await this.#onDeletionsChanged?.(runnerId);
+      } finally {
+        placementLease.maintenanceCount--;
+        await this.#releasePlacementLease(placementLease).catch(() => undefined);
+      }
     }
   }
 
   async #handleMessage(stream: RunnerAuxiliaryStream, message: BrowserRelayEvent): Promise<void> {
+    if (message.type === "browser.profile.inventory") {
+      if (!this.#localProfiles || stream.identity.modules.browser?.localProfiles !== 1)
+        throw relayError("Browser profile inventory was not negotiated.");
+      let inventory = this.#inventory.get(stream.identity.runnerId);
+      if (!inventory || !sameRunnerAuxiliaryFence(inventory.fence, stream.fence)) {
+        inventory = {
+          fence: stream.fence,
+          complete: false,
+          failed: false,
+          profiles: new Set(),
+        };
+        this.#inventory.set(stream.identity.runnerId, inventory);
+      }
+      if (
+        inventory.failed ||
+        inventory.complete ||
+        message.profiles.some((claim) => inventory.profiles.has(claim.binding.profileId))
+      ) {
+        inventory.failed = true;
+        throw relayError("Browser profile inventory is duplicated or already complete.");
+      }
+      try {
+        await this.#localProfiles.reconcileInventory(stream, message);
+      } catch (error) {
+        inventory.failed = true;
+        throw error;
+      }
+      for (const claim of message.profiles) inventory.profiles.add(claim.binding.profileId);
+      inventory.complete = message.complete;
+      if (message.complete)
+        void this.resumeDeletions(stream.identity.runnerId).catch(() => undefined);
+      return;
+    }
+    if (
+      message.type === "browser.profile.delete.result" &&
+      stream.identity.modules.browser?.localProfiles !== 1
+    )
+      throw relayError("Browser profile erasure was not negotiated.");
     if (message.type === "browser.command-error") {
       const pending = this.#takePending(message.requestId);
       if (pending) {
@@ -369,6 +571,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     }
 
     if (
+      message.type === "browser.profile.delete.result" ||
       message.type === "browser.attached" ||
       message.type === "capability.accepted" ||
       message.type === "capability.revoked"
@@ -430,11 +633,16 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   #handleDisconnect(stream: RunnerAuxiliaryStream): void {
+    if (
+      this.#inventory.get(stream.identity.runnerId) &&
+      sameRunnerAuxiliaryFence(this.#inventory.get(stream.identity.runnerId)!.fence, stream.fence)
+    )
+      this.#inventory.delete(stream.identity.runnerId);
     const error = relayError("The computer's browser stream went away.", true);
     for (const [requestId, pending] of this.#pending) {
       if (
         pending.runnerId !== stream.fence.runnerId ||
-        pending.connectionId !== stream.fence.connectionId
+        !sameRunnerAuxiliaryFence(pending.fence, stream.fence)
       ) {
         continue;
       }
@@ -505,7 +713,11 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   #scheduleRenewal(placementLease: PlacementCapabilityLease, expiresAt: string): void {
-    if (placementLease.released || placementLease.channels.size === 0) return;
+    if (
+      placementLease.released ||
+      (placementLease.channels.size === 0 && placementLease.maintenanceCount === 0)
+    )
+      return;
     if (placementLease.renewalTimer) clearTimeout(placementLease.renewalTimer);
     const remaining = Date.parse(expiresAt) - this.#now();
     const delay = Math.max(250, Math.floor(remaining / 2));
@@ -599,7 +811,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       this.#pending.set(id, {
         capability: options.capability,
         channelId: options.channelId,
-        connectionId: fence.connectionId,
+        fence,
         runnerId,
         expectedType: options.expectedType,
         reject,
@@ -623,7 +835,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   ): void {
     if (
       pending.runnerId !== stream.fence.runnerId ||
-      pending.connectionId !== stream.fence.connectionId ||
+      !sameRunnerAuxiliaryFence(pending.fence, stream.fence) ||
       pending.channelId !== channelId ||
       (pending.capability &&
         (!capability || !sameBrowserCapability(pending.capability, capability)))
@@ -672,6 +884,8 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   #assertCurrentPlacementLease(placementLease: PlacementCapabilityLease): void {
+    if (this.#closed || placementLease.released)
+      throw relayError("The browser capability is no longer active.");
     const current = this.#registry.stream(placementLease.runnerId);
     if (!current || !sameRunnerAuxiliaryFence(current.fence, placementLease.fence)) {
       throw relayError("That computer's browser stream was replaced.");
@@ -695,7 +909,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     this.#channels.delete(channel.channelId);
     const placementLease = channel.placementLease;
     placementLease.channels.delete(channel.channelId);
-    if (placementLease.channels.size === 0) {
+    if (placementLease.channels.size === 0 && placementLease.maintenanceCount === 0) {
       if (placementLease.renewalTimer) clearTimeout(placementLease.renewalTimer);
       placementLease.renewalTimer = undefined;
       this.#leaseByPlacement.delete(placementLease.placementKey);
@@ -704,7 +918,12 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   async #releasePlacementLease(placementLease: PlacementCapabilityLease): Promise<void> {
-    if (placementLease.channels.size > 0 || placementLease.released) return;
+    if (
+      placementLease.channels.size > 0 ||
+      placementLease.maintenanceCount > 0 ||
+      placementLease.released
+    )
+      return;
     placementLease.released = true;
     if (placementLease.renewalTimer) clearTimeout(placementLease.renewalTimer);
     placementLease.renewalTimer = undefined;
@@ -723,6 +942,7 @@ class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConn
   #frameBytes = 0;
   #pumpScheduled = false;
   readonly #router: RunnerBrowserRuntimeRouter;
+  initialPage: InitialPageReady | undefined;
   readyState: number = WebSocket.CONNECTING;
 
   constructor(router: RunnerBrowserRuntimeRouter) {

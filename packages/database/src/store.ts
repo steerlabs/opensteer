@@ -1,3 +1,4 @@
+import * as browserProfileStorageStore from "./browser-profile-storage-store.js";
 import { screenPresentationInput } from "./screen-presentation.js";
 import * as taskDone from "./task-done.js";
 import { drainPendingThreadStates } from "./thread-status.js";
@@ -697,8 +698,56 @@ export class OpensteerStore {
   async deleteBrowserProfile(input: {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
-  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }> {
+  }) {
     return browserSessionStore.deleteBrowserProfile(this.#database, input);
+  }
+
+  getBrowserProfileStorage(
+    input: Parameters<typeof browserProfileStorageStore.getBrowserProfileStorage>[1],
+  ) {
+    return browserProfileStorageStore.getBrowserProfileStorage(this.#database, input);
+  }
+
+  reserveBrowserProfileInitialization(
+    input: Parameters<typeof browserProfileStorageStore.reserveBrowserProfileInitialization>[1],
+  ) {
+    return browserProfileStorageStore.reserveBrowserProfileInitialization(this.#database, input);
+  }
+
+  readBrowserProfileInitialization(
+    input: Parameters<typeof browserProfileStorageStore.readBrowserProfileInitialization>[1],
+  ) {
+    return browserProfileStorageStore.readBrowserProfileInitialization(this.#database, input);
+  }
+
+  completeBrowserProfileInitialization(
+    input: Parameters<typeof browserProfileStorageStore.completeBrowserProfileInitialization>[1],
+  ) {
+    return browserProfileStorageStore.completeBrowserProfileInitialization(this.#database, input);
+  }
+
+  listBrowserProfileErasureJobs(
+    input: Parameters<typeof browserProfileStorageStore.listBrowserProfileErasureJobs>[1],
+  ) {
+    return browserProfileStorageStore.listBrowserProfileErasureJobs(this.#database, input);
+  }
+
+  listPendingBrowserProfileDeletions(
+    input: Parameters<typeof browserProfileStorageStore.listPendingBrowserProfileDeletions>[1],
+  ) {
+    return browserProfileStorageStore.listPendingBrowserProfileDeletions(this.#database, input);
+  }
+
+  acknowledgeBrowserProfileDeletion(
+    input: Parameters<typeof browserProfileStorageStore.acknowledgeBrowserProfileDeletion>[1],
+  ) {
+    return browserProfileStorageStore.acknowledgeBrowserProfileDeletion(this.#database, input);
+  }
+
+  reconcileBrowserProfileInventory(
+    input: Parameters<typeof browserProfileStorageStore.reconcileBrowserProfileInventory>[1],
+  ) {
+    return browserProfileStorageStore.reconcileBrowserProfileInventory(this.#database, input);
   }
 
   async readBrowserProfileRevision(

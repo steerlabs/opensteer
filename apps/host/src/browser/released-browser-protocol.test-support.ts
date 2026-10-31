@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  BrowserAttachTicketIdentitySchema,
   BrowserCdpCommandSchema,
   BrowserProfileAccessSchema,
   BrowserSessionIdSchema,
@@ -8,6 +7,7 @@ import {
 } from "@opensteer/protocol/browser";
 import {
   RunnerAuxiliaryFrameFenceSchema,
+  RunnerAuxiliaryWelcomeSchema,
   PasswordSignInRequesterSchema,
   PasswordSignInCodeSchema,
   PasswordSignInCancelReasonSchema,
@@ -17,7 +17,12 @@ import {
   BrowserChannelIdSchema,
   HostToBrowserRelayMessageSchema,
 } from "@opensteer/protocol/browser-relay";
-import { BrowserSiteSchema, IsoDateTimeSchema, WorkspaceIdSchema } from "@opensteer/core";
+import {
+  BrowserProfileIdSchema,
+  BrowserSiteSchema,
+  IsoDateTimeSchema,
+  WorkspaceIdSchema,
+} from "@opensteer/core";
 import { BrowserCookieSchema } from "@opensteer/browser-profile/snapshot";
 import { maxBrowserSourceCookies } from "@opensteer/browser-profile/source-state";
 
@@ -35,7 +40,15 @@ export const ReleasedBrowserAttachTicketClaimsSchema = z.strictObject({
   access: BrowserProfileAccessSchema,
   audience: z.literal("opensteer-browser-runtime"),
   expiresAt: IsoDateTimeSchema,
-  identity: BrowserAttachTicketIdentitySchema,
+  identity: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("fresh") }),
+    z.strictObject({
+      kind: z.literal("profile"),
+      profileId: BrowserProfileIdSchema,
+      profileLeaseToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+      profileStateUrl: z.url().max(8_192),
+    }),
+  ]),
   issuedAt: IsoDateTimeSchema,
   nonce: z.string().min(16).max(255),
   runtimeId: z.string().min(1).max(255),
@@ -192,9 +205,13 @@ export const ReleasedHostToBrowserRelayMessageSchema = z.union([
     message: ReleasedBrowserClientMessageSchema,
     type: z.literal("browser.client-message"),
   }),
+  RunnerAuxiliaryWelcomeSchema.omit({ localProfiles: true, initialNavigationVersion: true }),
   z.union(
     HostToBrowserRelayMessageSchema.options.filter(
-      (variant) => variant.shape.type.value !== "browser.client-message",
+      (variant) =>
+        !["browser.client-message", "browser.profile.delete", "host.auxiliary.welcome"].includes(
+          variant.shape.type.value,
+        ),
     ),
   ),
 ]);
