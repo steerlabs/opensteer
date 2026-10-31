@@ -1277,22 +1277,6 @@ button.computer-now__where:focus-visible .work__chevron {
   }
 }
 
-/* A recorded change of the AI running this conversation. A platform event:
-   quiet, undated by anything it cannot know, and never a spoken message. */
-.selection-marker {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-8);
-  margin: var(--space-12) 0;
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
-.selection-marker__text {
-  overflow-wrap: anywhere;
-}
-
 /* The silent turn's line opens its Activity, so it is a button drawn as text. */
 .run-note--worked {
   gap: var(--space-2);

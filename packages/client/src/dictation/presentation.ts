@@ -3,6 +3,17 @@ import type { DictationError } from "@opensteer/protocol/dictation";
 export type DictationNoticeKind =
   DictationError | "interrupted" | "device-changed" | "limit" | "empty" | "downloaded";
 
+/** Linear microphone RMS is tiny at speech levels; show its audible range above room noise. */
+export function dictationDisplayLevel(level: number): number {
+  if (!Number.isFinite(level) || level <= 0) return 0;
+  const noiseFloor = -55;
+  const speechPeak = -12;
+  return Math.max(
+    0,
+    Math.min(1, (20 * Math.log10(level) - noiseFloor) / (speechPeak - noiseFloor)),
+  );
+}
+
 export const dictationLabels = {
   dictate: "Dictate",
   stopButton: "Stop",

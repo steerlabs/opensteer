@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createId, createToolArguments, type IntegrationCallSubject } from "@opensteer/core";
+import {
+  createId,
+  createToolArguments,
+  ModelSelectionSchema,
+  type IntegrationCallSubject,
+} from "@opensteer/core";
 import { computerUseActHeadline, formatComputerUseResultHead } from "@opensteer/protocol";
 import type {
   DelegationEntry,
@@ -7,6 +12,7 @@ import type {
   ReasoningEntry,
   RequestReceiptEntry,
   RunEntry,
+  SelectionEntry,
   ToolEntry,
   TranscriptEntry,
 } from "./client.js";
@@ -34,6 +40,7 @@ import {
   type Turn,
 } from "./agent-activity-model.js";
 import { threadActivityIndicator } from "./thread-activity.js";
+import { visibleTranscript } from "./transcript.js";
 import {
   mockComputerUseSlack,
   mockComputerUseSubject,
@@ -174,6 +181,49 @@ function shape(groups: readonly TranscriptGroup[]): unknown[] {
 }
 
 describe("groupTranscriptEntries", () => {
+  it("keeps model, reasoning and account changes out of the conversation, including saved history", () => {
+    const selected: SelectionEntry = {
+      createdAt: at(0),
+      harnessInstanceId: "codex-personal",
+      id: "selection-1",
+      kind: "selection",
+      modelSelection: ModelSelectionSchema.parse({
+        modelId: "gpt-6.1-sol",
+        options: { effort: "high" },
+        providerId: "openai",
+      }),
+      providerSessionId: "session-1",
+      runId: null,
+    };
+    const changes: SelectionEntry[] = [
+      selected,
+      {
+        ...selected,
+        id: "selection-2",
+        modelSelection: { ...selected.modelSelection, options: { effort: "xhigh" } },
+      },
+      { ...selected, harnessInstanceId: "codex-work", id: "selection-3" },
+      {
+        ...selected,
+        id: "selection-4",
+        modelSelection: ModelSelectionSchema.parse({
+          ...selected.modelSelection,
+          modelId: "gpt-mini",
+        }),
+      },
+    ];
+    expect(groupTranscriptEntries(changes)).toEqual([]);
+    expect(visibleTranscript(changes, null)).toEqual([]);
+    expect(visibleTranscript(changes, null, { conversation: true })).toEqual([]);
+
+    const ask = input({ runId: null });
+    const answer = message({ runId: null });
+    expect(shape(groupTranscriptEntries([ask, ...changes, answer]))).toEqual([
+      `message:${ask.id}`,
+      `message:${answer.id}`,
+    ]);
+  });
+
   it("makes one turn of a Run: all it did and wrote in order, and the reply the Host named", () => {
     const ask = input();
     const thought = reasoning();

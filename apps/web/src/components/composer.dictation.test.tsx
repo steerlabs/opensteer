@@ -305,20 +305,34 @@ it.each(["stop", "cancel"])(
   },
 );
 
-it("level and elapsed ticks never render the composer or change its announcement", async () => {
+it("shows quiet and loud speech without dropping levels or rendering the composer", async () => {
   const render = vi.spyOn(dictationHooks, "useDictation");
   const t = await setup();
   vi.useFakeTimers();
   await t.start();
   const before = render.mock.calls.length;
+  const scales = () =>
+    [...t.node.querySelectorAll<HTMLElement>(".dictation-level i")].map((bar) =>
+      Number(bar.style.transform.match(/scaleY\(([^)]+)\)/)?.[1] ?? 0),
+    );
   try {
-    await t.emit({ type: "level", level: 0.8 });
+    await t.emit({ type: "level", level: 0.03 });
+    const speech = scales().at(-1)!;
+    expect(speech).toBeGreaterThan(0.5);
+    // IPC delivery can bunch events together; capture already limits their rate.
+    await t.emit({ type: "level", level: 0.15 });
+    expect(scales().at(-1)).toBeGreaterThan(speech);
+    expect(scales().at(-2)).toBe(speech);
+    await t.emit({ type: "level", level: 0 });
+    expect(scales().at(-1)).toBeCloseTo(3 / 22);
     await act(async () => {
       vi.advanceTimersByTime(3000);
     });
     expect(t.node.querySelector('[aria-label="Dictation duration"]')!.textContent).toBe("0:03");
     expect(render.mock.calls.length).toBe(before);
     expect(t.node.querySelector('[aria-live="polite"]')!.textContent).toBe("Listening");
+    await t.click("Stop dictation");
+    expect(scales().every((scale) => Math.abs(scale - 3 / 22) < 0.001)).toBe(true);
   } finally {
     vi.useRealTimers();
     render.mockRestore();

@@ -65,7 +65,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: touchTarget,
   },
-  // Level with the bar's own text, and no taller than its one control.
-  line: { alignItems: "center", flexDirection: "row", paddingLeft: space[12] },
+  // The dock's row gap is for other controls; this caption sits directly below its bar.
+  line: {
+    alignItems: "center",
+    flexDirection: "row",
+    marginTop: -space[8],
+    paddingLeft: space[12],
+  },
   words: { flex: 1, justifyContent: "center", minHeight: touchTarget },
 });

@@ -1,5 +1,6 @@
 import {
   dictationView,
+  dictationDisplayLevel,
   dictationDownloadStatus,
   dictationElapsed,
   dictationLabels,
@@ -7,9 +8,16 @@ import {
   type DictationSnapshot,
   type DictationController,
 } from "@opensteer/client/dictation";
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import { useReducedMotion } from "react-native-reanimated";
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+  withTiming,
+  type SharedValue,
+} from "react-native-reanimated";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
@@ -178,10 +186,10 @@ const bars = 40;
 
 /**
  * The newest level enters at the right and older ones drift left. Levels
- * arrive about ten times a second and only this view re-renders for them.
+ * arrive about ten times a second and animate on the UI thread without React renders.
  * Until capture is listening it is a flat line; Reduce Motion keeps it still.
  */
-function Waveform({
+const Waveform = memo(function Waveform({
   controller,
   live,
 }: {
@@ -189,16 +197,14 @@ function Waveform({
   live: boolean;
 }): ReactNode {
   const reduced = useReducedMotion();
-  const [levels, setLevels] = useState<readonly number[]>(() => Array<number>(bars).fill(0));
-  useEffect(
-    () =>
-      reduced || !live
-        ? undefined
-        : controller.subscribeLevel((level) =>
-            setLevels((previous) => [...previous.slice(1), level]),
-          ),
-    [controller, reduced, live],
-  );
+  const levels = useSharedValue(Array<number>(bars).fill(0));
+  useEffect(() => {
+    levels.value = Array<number>(bars).fill(0);
+    if (reduced || !live) return;
+    return controller.subscribeLevel((level) => {
+      levels.value = [...levels.value.slice(1), dictationDisplayLevel(level)];
+    });
+  }, [controller, levels, reduced, live]);
   return (
     <View
       accessible={false}
@@ -206,17 +212,32 @@ function Waveform({
       importantForAccessibility="no-hide-descendants"
       style={styles.wave}
     >
-      {levels.map((level, index) => (
-        <View
-          key={index}
-          style={[
-            styles.waveBar,
-            { height: reduced || !live ? 3 : 3 + Math.min(1, level) * 19 },
-            index < bars / 4 && { opacity: 0.35 + (0.65 * index) / (bars / 4) },
-          ]}
-        />
+      {Array.from({ length: bars }, (_, index) => (
+        <WaveBar key={index} index={index} levels={levels} />
       ))}
     </View>
+  );
+});
+
+function WaveBar({ index, levels }: { index: number; levels: SharedValue<number[]> }): ReactNode {
+  const animated = useAnimatedStyle(() => ({
+    transform: [
+      {
+        scaleY: withTiming((3 + (levels.value[index] ?? 0) * 19) / 22, {
+          duration: 100,
+          easing: Easing.linear,
+        }),
+      },
+    ],
+  }));
+  return (
+    <Animated.View
+      style={[
+        styles.waveBar,
+        index < bars / 4 && { opacity: 0.35 + (0.65 * index) / (bars / 4) },
+        animated,
+      ]}
+    />
   );
 }
 
@@ -256,6 +277,6 @@ const styles = StyleSheet.create({
     minWidth: 0,
     overflow: "hidden",
   },
-  waveBar: { backgroundColor: color.textSoft, borderRadius: 1.5, width: 2.5 },
+  waveBar: { backgroundColor: color.textSoft, borderRadius: 1.5, height: 22, width: 2.5 },
   words: { flex: 1 },
 });

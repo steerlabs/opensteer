@@ -21,7 +21,6 @@ import {
   type MessageEntry,
   type ReasoningEntry,
   type RunEntry,
-  type SelectionEntry,
   type ThreadActivityIndicator,
   type TranscriptGroup,
   type Turn,
@@ -89,8 +88,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly onOpenThread: (threadId: string) => void;
   /** Given, every update another agent published offers it. */
   readonly askAbout?: AskAbout | undefined;
-  /** Names the engine behind a recorded selection; without it the model alone. */
-  readonly engineName?: ((harnessInstanceId: string) => string | null) | undefined;
   /** The air above this row: a turn's own rows sit closer than two turns do. */
   readonly spacingTop: number;
   /** True for the first row holding something published since the reader's last visit. */
@@ -133,11 +130,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
         <AssignmentLines entries={[group.entry]} />
       ) : group.kind === "delegation" ? (
         <DelegationLine delegation={group.entry} onOpenThread={props.onOpenThread} />
-      ) : group.kind === "selection" ? (
-        <SelectionMarker
-          engineName={props.engineName?.(group.entry.harnessInstanceId) ?? null}
-          entry={group.entry}
-        />
       ) : (
         <Message
           conversation={props.conversation === true}
@@ -911,31 +903,6 @@ export function firstUnreadGroupKey(
   return null;
 }
 
-/**
- * A recorded change of the AI running this conversation.
- *
- * A platform event, not a message: it claims no startup, no catching up and
- * nothing carried over, and it never rewrites what came before it.
- */
-function SelectionMarker(props: {
-  readonly engineName: string | null;
-  readonly entry: SelectionEntry;
-}): ReactNode {
-  const { entry } = props;
-  return (
-    <View accessibilityRole="text" style={styles.selectionMarker}>
-      <AppText role="caption" tone="muted">
-        {props.engineName === null
-          ? `Switched to ${entry.modelSelection.modelId}`
-          : `Switched to ${entry.modelSelection.modelId} on ${props.engineName}`}
-      </AppText>
-      <AppText role="caption" tone="muted">
-        {formatClockTime(entry.createdAt)}
-      </AppText>
-    </View>
-  );
-}
-
 function Message(props: {
   readonly conversation: boolean;
   readonly homeThreadId: string | null;
@@ -1386,13 +1353,6 @@ const styles = StyleSheet.create({
     paddingTop: space[4],
   },
   unreadRule: { backgroundColor: color.emberLine, flex: 1, height: 1 },
-  selectionMarker: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: space[8],
-    justifyContent: "center",
-    paddingVertical: space[8],
-  },
   assistant: { gap: space[2] },
   /** Opensteer's side of a conversation: the same bubble as the reader's, from the other side. */
   reply: {

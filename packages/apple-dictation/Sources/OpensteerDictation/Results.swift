@@ -86,12 +86,16 @@ final class AudioQueue: @unchecked Sendable {
     }
     buffers.append(buffer)
     seconds += duration
-    level = Self.meter(buffer)
+    level = max(level, Self.meter(buffer))
     wake.yield(())
   }
-  var latestLevel: Double {
+  /// Keep short syllables between UI ticks; each read starts a fresh window.
+  func takeLevel() -> Double {
     lock.lock()
-    defer { lock.unlock() }
+    defer {
+      level = 0
+      lock.unlock()
+    }
     return level
   }
   func next() -> (buffer: AVAudioPCMBuffer?, level: Double, overflow: Bool) {

@@ -9152,7 +9152,7 @@ describe("HttpHostClient Run activity and live streams", () => {
     }
   });
 
-  it("draws a model switch live exactly as the reloaded history does", async () => {
+  it("retains selection state live and after reload without adding conversation rows", async () => {
     const workspace = makeWorkspace();
     const thread = makeThread(workspace.id);
     const switched = {
@@ -9201,10 +9201,19 @@ describe("HttpHostClient Run activity and live streams", () => {
           modelSelection: switched.modelSelection,
         }),
       ]);
+      expect(
+        client.getSnapshot().threads.find(({ id }) => id === thread.id)?.modelSelection,
+      ).toEqual(switched.modelSelection);
+      expect(visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null)).toEqual(
+        [],
+      );
 
       history = [event];
       await client.loadLatestTranscript(thread.id);
       expect(markers()).toEqual(live);
+      expect(visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null)).toEqual(
+        [],
+      );
     } finally {
       client.dispose();
     }

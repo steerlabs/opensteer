@@ -16,7 +16,6 @@ import type {
   ReasoningEntry,
   RequestReceiptEntry,
   RunEntry,
-  SelectionEntry,
   NodeEntry,
   ToolEntry,
   TranscriptEntry,
@@ -137,7 +136,6 @@ export interface Turn {
 }
 
 export type TranscriptGroup =
-  | { readonly key: string; readonly kind: "selection"; readonly entry: SelectionEntry }
   | { readonly key: string; readonly kind: "assignment"; readonly entry: AssignmentEntry }
   | { readonly key: string; readonly kind: "delegation"; readonly entry: DelegationEntry }
   | { readonly key: string; readonly kind: "message"; readonly entry: MessageEntry }
@@ -181,11 +179,8 @@ export function groupTranscriptEntries(
   // Run's own agent has got to since.
   const nodeStretch = new Map<string, Extract<Slot, { kind: "stretch" }>>();
   for (const entry of entries) {
-    if (entry.kind === "selection") {
-      open = null;
-      slots.push({ group: { entry, key: entry.id, kind: "selection" }, kind: "group" });
-      continue;
-    }
+    // The composer shows the current AI choice; its retained history is state, not conversation.
+    if (entry.kind === "selection") continue;
     if (entry.kind === "delegation") {
       // Another Thread's result arriving is news, not this Run's work: it can
       // land long after the Run that asked for it has replied.

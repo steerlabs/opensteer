@@ -177,7 +177,6 @@ function ThreadView({
     hostClient,
     openHarnessAuthentication,
     refreshHarnessCatalog,
-    placements,
     reportActionError,
     snapshot,
   } = useShell();
@@ -920,14 +919,7 @@ function ThreadView({
                 // turn's steps behind its reply; work keeps its whole trace in view.
                 conversation={conversational}
                 live={live}
-                // A recorded change names the engine it recorded, which is not
-                // always one this conversation could run on now: searched across
-                // every work location, so history keeps its own names.
                 computers={computers}
-                engineName={(harnessInstanceId) =>
-                  placements.find((placement) => placement.harnessInstanceId === harnessInstanceId)
-                    ?.engineName ?? null
-                }
                 entries={conversation}
                 waitingRequests={snapshot.waitingRequests}
                 assignments={snapshot.assignments}

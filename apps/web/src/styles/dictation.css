@@ -35,16 +35,6 @@
   border-radius: var(--radius-full);
   background: currentColor;
 }
-@media (prefers-reduced-motion: reduce) {
-  .dictation-status .spinner,
-  .composer__attach .spinner {
-    animation: none;
-  }
-  .dictation-level i {
-    height: 8px !important;
-  }
-}
-
 .dictation-live {
   display: flex;
   align-items: center;
@@ -103,7 +93,10 @@
 }
 .dictation-live .dictation-level i {
   flex: 0 0 2.5px;
-  height: 3px;
+  height: 22px;
+  transform: scaleY(0.136364);
+  transform-origin: center;
+  transition: transform 100ms linear;
 }
 .dictation-recording-dot {
   flex: none;
@@ -132,8 +125,13 @@
   height: 15px;
 }
 @media (prefers-reduced-motion: reduce) {
+  .dictation-status .spinner,
+  .composer__attach .spinner {
+    animation: none;
+  }
   .dictation-level i {
-    height: 9px !important;
+    height: 3px !important;
+    transform: none !important;
     transition: none;
   }
 }

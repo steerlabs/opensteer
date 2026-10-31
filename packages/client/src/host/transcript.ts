@@ -844,7 +844,12 @@ export function visibleTranscript(
   const shown: TranscriptEntry[] = [];
   const waiting: MessageEntry[] = [];
   for (const entry of entries) {
-    if (entry.kind === "withdrawn" || entry.kind === "delivery" || entry.kind === "request-wait")
+    if (
+      entry.kind === "selection" ||
+      entry.kind === "withdrawn" ||
+      entry.kind === "delivery" ||
+      entry.kind === "request-wait"
+    )
       continue;
     if (entry.kind !== "message" || !order.has(entry.id)) {
       shown.push(entry);
