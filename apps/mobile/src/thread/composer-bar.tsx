@@ -56,7 +56,9 @@ export function ComposerBar(props: {
   readonly shape: ComposerShape;
 }): ReactNode {
   const reduceMotion = useReducedMotion();
-  const open = props.shape === "rounded";
+  // Anything in the toolbar's middle — the settings, or dictation's live bar —
+  // needs the toolbar on its own line, or it would sit over the words.
+  const open = props.shape === "rounded" || props.accessory !== undefined;
   // At rest the field's line keeps clear of what the toolbar holds at each end;
   // their widths change with the controls present (a microphone, stop or send).
   const [leadingWidth, setLeadingWidth] = useState(0);
