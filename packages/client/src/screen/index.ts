@@ -6,3 +6,4 @@ export type {
   ScreenPresentationReceipt,
   ScreenPresentationOutcome,
 } from "@opensteer/core";
+export * from "./platform.js";
