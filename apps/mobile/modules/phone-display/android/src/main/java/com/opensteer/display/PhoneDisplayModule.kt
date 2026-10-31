@@ -9,8 +9,10 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -170,7 +172,12 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
           // The first AVC decoder may not take this size (the emulator's starts at 96 × 96) and then never outputs.
           val decoder = MediaCodec.createByCodecName(requireNotNull(decoders.findDecoderForFormat(format)))
           try {
-            decoder.configure(format.apply { setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1_048_576) }, surface.holder.surface, null, 0)
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1_048_576)
+            // A decoder that advertises low latency outputs each picture as soon as it is decoded.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+              decoder.codecInfo.getCapabilitiesForType("video/avc").isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency))
+              format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            decoder.configure(format, surface.holder.surface, null, 0)
             decoder.setOnFrameRenderedListener({ _, _, _ -> post {
               if (wanted == epoch && stamp == revision && available && visible && attached && cover.visibility != View.GONE) { cover.visibility = View.GONE; onReady(mapOf("epoch" to wanted, "width" to width, "height" to height)) }
             } }, worker)
