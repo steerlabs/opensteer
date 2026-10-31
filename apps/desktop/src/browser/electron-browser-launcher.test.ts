@@ -2056,6 +2056,9 @@ describe("native Electron profiles", () => {
       const page = await creating;
       const view = electron.views.at(-1)!;
       expect(view.webContents.loadURL).toHaveBeenCalledExactlyOnceWith("about:blank");
+      expect(view.webContents.loadURL.mock.invocationCallOrder[0]).toBeLessThan(
+        electron.hosts.at(-1)!.setIgnoreMouseEvents.mock.invocationCallOrder[0]!,
+      );
       view.webContents.getURL.mockReturnValue("");
       expect(page.url()).toBe("about:blank");
       const ledger = new SurfaceLedger(browser.context, { rootPages: [page] });
@@ -2347,9 +2350,9 @@ describe("native Electron profiles", () => {
         "admitted",
         "page-create-started",
         "web-contents-view-created",
+        "blank-navigation-submitted",
         "resting-host-created",
         "page-policy-dispatched",
-        "blank-navigation-submitted",
         "page-policy-ready",
         "blank-loaded",
         "renderer-ready",

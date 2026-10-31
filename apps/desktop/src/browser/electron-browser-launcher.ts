@@ -354,8 +354,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     onPageTiming?: PageOpenTiming,
   ): ElectronBrowserContext {
     return new ElectronBrowserContext({
-      createView: (options, opener, timing) =>
-        this.#views.create(options, opener, viewport, timing),
+      createView: (options, opener, timing, startRenderer) =>
+        this.#views.create(options, opener, viewport, timing, startRenderer),
       createHelper: (options) => this.#views.createHelper(options),
       profileSession,
       ...(authenticator ? { authenticator } : {}),
@@ -392,6 +392,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
  * demand stay hidden and background-throttled. Linux hosts remain hidden.
  */
 interface ElectronBrowserView {
+  readonly initialLoad?: Promise<void>;
   readonly view: WebContentsView;
   readonly host: BaseWindow;
 }
@@ -507,6 +508,7 @@ class ElectronBrowserViewPool {
     opener: WebContentsView | null,
     restingBounds: { readonly height: number; readonly width: number },
     timing?: PageOpenTiming,
+    startRenderer = false,
   ): ElectronBrowserView {
     if (this.#closed) throw new Error("The Electron browser is stopping.");
     if (this.#views.size >= this.#maxWebContents) {
@@ -517,7 +519,14 @@ class ElectronBrowserViewPool {
     const size = opener?.getBounds() ?? restingBounds;
     const bounds = { height: Math.round(size.height), width: Math.round(size.width) };
     let host: BaseWindow | null = null;
+    let initialLoad: Promise<void> | undefined;
     try {
+      if (startRenderer) {
+        // The Session preload guards this blank before the page debugger attaches.
+        initialLoad = view.webContents.loadURL("about:blank");
+        timing?.("blank-navigation-submitted");
+        void initialLoad.catch(() => undefined);
+      }
       const transparentRestingHost = process.platform !== "linux";
       host = new BaseWindow({
         enableLargerThanScreen: true,
@@ -553,7 +562,7 @@ class ElectronBrowserViewPool {
       if (!restingHost.isDestroyed()) restingHost.destroy();
     });
     timing?.("resting-host-created");
-    return { view, host: restingHost };
+    return { view, host: restingHost, ...(initialLoad ? { initialLoad } : {}) };
   }
 }
 
@@ -662,6 +671,7 @@ interface ElectronBrowserContextOptions {
     options: ElectronBrowserViewOptions,
     opener: WebContentsView | null,
     timing?: PageOpenTiming,
+    startRenderer?: boolean,
   ) => ElectronBrowserView;
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
   readonly profileSession: Session;
@@ -726,14 +736,14 @@ class ElectronBrowserContext implements BrowserContext {
         webPreferences: this.#securePreferences(),
       },
       timing,
+      this.#localProfile !== undefined,
     );
     try {
       // Electron needs a renderer to answer Page.enable. Start it while target
       // identity and ledger ownership are established; the real navigation may
       // supersede this blank load before it finishes.
-      const loading = page.loadInitialUrl("about:blank");
+      const loading = page.initialLoad ?? page.loadInitialUrl("about:blank");
       if (this.#localProfile) {
-        timing?.("blank-navigation-submitted");
         void loading.then(() => timing?.("blank-loaded")).catch(() => undefined);
       } else await loading;
       await this.#announcePage(page);
@@ -918,10 +928,11 @@ class ElectronBrowserContext implements BrowserContext {
     opener: ElectronBrowserPage | null,
     options: ElectronBrowserViewOptions,
     timing?: PageOpenTiming,
+    startRenderer = false,
   ): ElectronBrowserPage {
     this.#assertOpen();
     const page = new ElectronBrowserPage(
-      this.#createView(options, opener?.view ?? null, timing),
+      this.#createView(options, opener?.view ?? null, timing, startRenderer),
       opener,
       this.#authenticator,
       this.#providerConfig,
@@ -1094,6 +1105,7 @@ class ElectronBrowserContext implements BrowserContext {
 }
 
 class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
+  readonly initialLoad: Promise<void> | undefined;
   readonly view: WebContentsView;
   /**
    * Kept from creation: a destroyed view no longer exposes its WebContents,
@@ -1154,13 +1166,14 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   } | null = null;
 
   constructor(
-    { view, host }: ElectronBrowserView,
+    { view, host, initialLoad }: ElectronBrowserView,
     opener: ElectronBrowserPage | null,
     authenticator?: PasskeyAuthenticator,
     providerConfig?: BrowserPagePolicyConfig,
     timing?: PageOpenTiming,
   ) {
     this.view = view;
+    this.initialLoad = initialLoad;
     this.#restingHost = host;
     this.#webContents = view.webContents;
     // Electron installs a native message-box listener even with Page enabled.
