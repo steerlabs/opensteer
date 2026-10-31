@@ -819,6 +819,12 @@ html.native-browser-live *::after {
   backdrop-filter: none !important;
 }
 
+/* Glass without its blur would show the page through a menu, so here every
+   float is the opaque one. */
+html.native-browser-live {
+  --fill-glass: var(--fill-float);
+}
+
 /* ---- Setup panel for an app the helper serves ----
    A small transparent window the main process floats in the bottom-right
    corner, beside System Settings. Pictures explain the step: the helper's row

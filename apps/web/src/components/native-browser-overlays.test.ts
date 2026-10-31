@@ -11,9 +11,10 @@ it("stops the document sampling its backdrop while a native page shows through i
     .map((file) => readFileSync(`apps/web/src/styles/${file}`, "utf8"))
     .join("\n");
   document.head.append(style);
-  // happy-dom cannot evaluate prefers-reduced-transparency; exercise the translucent material.
+  // happy-dom cannot evaluate prefers-reduced-transparency; exercise the glass material,
+  // which only leaf floats carry (the voice island can hold a menu, so it is opaque).
   const blur = "blur(20px)";
-  document.documentElement.style.setProperty("--blur-float", blur);
+  document.documentElement.style.setProperty("--blur-glass", blur);
   // happy-dom caches computed style across ancestor class changes: read fresh elements.
   const backdrop = (className: string) => {
     const element = document.createElement("div");
@@ -25,7 +26,6 @@ it("stops the document sampling its backdrop while a native page shows through i
   };
 
   try {
-    expect(backdrop("voice-island")).toBe(blur);
     expect(backdrop("computer-watch__status--over")).toBe(blur);
 
     nativeBrowserPresented(
@@ -34,15 +34,13 @@ it("stops the document sampling its backdrop while a native page shows through i
         revision: 1,
       }),
     );
-    expect(backdrop("voice-island")).toBe("none");
     expect(backdrop("computer-watch__status--over")).toBe("none");
 
     nativeBrowserPresented(null);
-    expect(backdrop("voice-island")).toBe(blur);
     expect(backdrop("computer-watch__status--over")).toBe(blur);
   } finally {
     nativeBrowserPresented(null);
-    document.documentElement.style.removeProperty("--blur-float");
+    document.documentElement.style.removeProperty("--blur-glass");
     style.remove();
   }
 });

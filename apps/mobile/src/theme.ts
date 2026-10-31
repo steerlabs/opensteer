@@ -215,6 +215,33 @@ export const material = {
     boxShadow: [...topLight(alpha(light, 0.07)), ...floatLift],
   },
   accent: surface(color.ember, accentRim, alpha(light, 0.5), alpha(light, 0.16)),
+  /**
+   * A mark in its own colour — a profile's disc, the Chat orb — lit like the
+   * accent. Its colour is the person's, so the rim deepens whatever hue is
+   * there; the caller supplies the fill and the shape.
+   */
+  mark: {
+    backgroundImage: `linear-gradient(${alpha(light, 0.18)}, ${alpha(light, 0)} 70%)`,
+    ...(insetLight
+      ? {
+          boxShadow: [
+            ...topLight(alpha(light, 0.24)),
+            {
+              offsetX: 0,
+              offsetY: 0,
+              blurRadius: 0,
+              spreadDistance: 1,
+              color: alpha(shade, 0.22),
+              inset: true,
+            },
+          ],
+        }
+      : {
+          borderColor: alpha(shade, 0.22),
+          borderTopColor: alpha(light, 0.24),
+          borderWidth: controlBorderWidth,
+        }),
+  },
   destructive: surface(
     color.red,
     mix(color.red, color.inkOnEmber, 0.24),

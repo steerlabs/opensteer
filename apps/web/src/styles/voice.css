@@ -45,9 +45,7 @@
   border-radius: var(--radius-full);
   background: var(--sheen) var(--fill-float);
   box-shadow: var(--edge-plate), var(--lift-float);
-  backdrop-filter: var(--blur-float);
   animation: voice-island-in var(--duration-med) var(--ease-spring) both;
-  -webkit-backdrop-filter: var(--blur-float);
 }
 .voice-island--docked {
   box-shadow: var(--edge-plate);

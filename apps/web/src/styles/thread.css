@@ -918,13 +918,13 @@ label.action-row input {
 }
 
 .composer {
+  /* What a chip set into it follows to keep its corners concentric. */
+  --composer-radius: var(--radius-lg);
   max-width: var(--composer-max-width);
   margin: 0 auto;
   border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-lg);
+  border-radius: var(--composer-radius);
   background: var(--sheen) var(--fill-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
   box-shadow: var(--edge-plate), var(--lift-float);
   transition:
     border-color var(--duration-fast) var(--ease-out),
@@ -1982,22 +1982,20 @@ fieldset.action-panel {
   padding: var(--space-6) var(--space-10);
   border: 1px solid transparent;
   border-radius: var(--radius-xs);
-  background: var(--sheen) var(--fill-plate);
+  background-color: transparent;
   color: var(--text-soft);
   font-size: var(--text-lg);
   font-weight: var(--weight-medium);
   text-align: left;
-  box-shadow: var(--edge-plate);
 }
 .execution-menu__engine > span {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
-.execution-menu__engine:hover,
-.execution-menu__engine[aria-selected="true"] {
+.execution-menu__engine:hover {
   color: var(--text);
-  background-color: var(--fill-plate-hover);
+  background-color: var(--fill-quiet);
 }
 .execution-menu__engine > svg,
 .execution-menu__engine .provider-logo {
