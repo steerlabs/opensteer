@@ -9,6 +9,7 @@ import {
   type BrowserPlacementSelector,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryRequestId,
+  type LocalProfileBinding,
 } from "@opensteer/protocol";
 import {
   BrowserCapabilityLeaseIdSchema,
@@ -75,6 +76,7 @@ export type BrowserRuntimeRelayEvent = Exclude<
 >;
 
 const requestTimeoutMs = 5_000;
+const erasureTimeoutMs = 120_000;
 const maxPendingRequests = 64;
 const maxQueuedControlBytes = 2 * 1_024 * 1_024;
 const maxQueuedControlItems = 256;
@@ -83,6 +85,7 @@ const maxQueuedFrameBytes = 32 * 1_024 * 1_024;
 const maxQueuedFrameSurfaces = 128;
 
 interface PendingRequest {
+  readonly erasure?: { binding: LocalProfileBinding; deletionId: string };
   readonly capability: BrowserCapabilityReference | undefined;
   readonly channelId: BrowserChannelId | undefined;
   readonly fence: RunnerAuxiliaryFrameFence;
@@ -149,6 +152,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   readonly #erasures = new Map<RunnerId, { pending: boolean; operation: Promise<void> }>();
   readonly #now: () => number;
   readonly #pending = new Map<RunnerAuxiliaryRequestId, PendingRequest>();
+  readonly #lateErasures = new Map<RunnerAuxiliaryRequestId, PendingRequest>();
   readonly #registry: RunnerBrowserRegistry;
   readonly #requestTimeoutMs: number;
   readonly #unsubscribe: () => void;
@@ -273,6 +277,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       pending.reject(error);
     }
     this.#pending.clear();
+    this.#lateErasures.clear();
     for (const channel of this.#channels.values()) {
       this.#dropChannel(channel, 1001, "Host browser router shutting down");
     }
@@ -335,6 +340,9 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       const reason = this.#admissionReason(stream);
       if (reason) throw relayError(reason);
       placementLease = await this.#acquirePlacementLease(stream, runtimeId);
+      if (placementLease.renewal) await placementLease.renewal;
+      this.#assertCurrentPlacementLease(placementLease);
+      this.#requireExpectedStream(runnerId, expectedFence);
       if (placementLease.channels.size >= maxChannelsPerRunnerRuntime)
         throw relayError("That computer's Browser Runtime session limit is full.");
       const activePlacementLease = placementLease;
@@ -550,6 +558,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     if (!this.#localProfiles || this.#admissionReason(stream)) return;
     const browser = stream.identity.modules.browser;
     if (browser?.localProfiles !== 1 || !browser.localProfileStorage) return;
+    let failure: { error: unknown } | undefined;
     for (const job of await this.#localProfiles.jobs(runnerId)) {
       if (
         attempted.has(job.deletionId) ||
@@ -560,12 +569,15 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       // A rerun picks up new jobs without retrying pending-restart acknowledgements.
       attempted.add(job.deletionId);
       const placementLease = await this.#acquirePlacementLease(stream, browser.runtimeId);
-      if (placementLease.renewal) await placementLease.renewal;
-      const capability = placementLease.capability;
       try {
+        if (placementLease.renewal) await placementLease.renewal;
+        this.#assertCurrentPlacementLease(placementLease);
+        const capability = placementLease.capability;
         const result = await this.#request(runnerId, stream.fence, {
           capability,
           expectedType: "browser.profile.delete.result",
+          timeoutMs: erasureTimeoutMs,
+          erasure: { binding: job.binding, deletionId: job.deletionId },
           message: {
             ...stream.fence,
             capability,
@@ -586,11 +598,14 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
           state: result.state,
         });
         await this.#onDeletionsChanged?.(runnerId);
+      } catch (error) {
+        failure = { error };
       } finally {
         placementLease.maintenanceCount--;
         await this.#releasePlacementLease(placementLease).catch(() => undefined);
       }
     }
+    if (failure) throw failure.error;
   }
 
   async #handleMessage(stream: RunnerAuxiliaryStream, message: BrowserRelayEvent): Promise<void> {
@@ -646,6 +661,12 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         pending.reject(protocolFailure(message.error));
         return;
       }
+      const late = this.#lateErasures.get(message.requestId);
+      if (late) {
+        this.#assertPendingResponse(late, stream, message.channelId ?? undefined, late.capability);
+        this.#lateErasures.delete(message.requestId);
+        return;
+      }
       if (message.channelId && !this.#channels.has(message.channelId)) return;
       throw relayError("The browser relay returned an unknown request error.");
     }
@@ -668,6 +689,26 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     ) {
       const pending = this.#takePending(message.requestId);
       if (!pending) {
+        if (message.type === "browser.profile.delete.result") {
+          const late = this.#lateErasures.get(message.requestId);
+          if (late) {
+            this.#assertPendingResponse(late, stream, undefined, message.capability);
+            if (
+              !late.erasure ||
+              late.erasure.deletionId !== message.deletionId ||
+              !sameProfileBinding(late.erasure.binding, message.binding)
+            )
+              throw relayError("The browser returned mismatched late profile erasure readiness.");
+            this.#lateErasures.delete(message.requestId);
+            await this.#localProfiles!.acknowledgeDeletion({
+              binding: message.binding,
+              deletionId: message.deletionId,
+              state: message.state,
+            });
+            await this.#onDeletionsChanged?.(stream.identity.runnerId);
+            return;
+          }
+        }
         if (
           (message.type === "browser.attached" || message.type === "browser.profile.prepared") &&
           !this.#channels.has(message.channelId)
@@ -732,6 +773,8 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   #handleDisconnect(stream: RunnerAuxiliaryStream): void {
+    for (const [id, late] of this.#lateErasures)
+      if (sameRunnerAuxiliaryFence(late.fence, stream.fence)) this.#lateErasures.delete(id);
     if (
       this.#inventory.get(stream.identity.runnerId) &&
       sameRunnerAuxiliaryFence(this.#inventory.get(stream.identity.runnerId)!.fence, stream.fence)
@@ -895,21 +938,36 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       readonly expectedType: PendingRequest["expectedType"];
       readonly message: Record<string, unknown>;
       readonly timeoutMs?: number | undefined;
+      readonly erasure?: { binding: LocalProfileBinding; deletionId: string };
     },
   ): Promise<BrowserRelayEvent> {
     if (this.#pending.size >= maxPendingRequests) {
       return Promise.reject(relayError("Too many browser relay requests are pending.", true));
     }
+    // Never forget an admitted erasure while its stream can still reply. Bound
+    // outstanding maintenance with backpressure, rather than expiring correlation
+    // and letting a slow valid result disconnect unrelated channels.
+    if (
+      options.erasure &&
+      this.#lateErasures.size +
+        [...this.#pending.values()].filter((pending) => pending.erasure).length >=
+        maxPendingRequests
+    )
+      return Promise.reject(
+        relayError("Too many browser profile erasures are awaiting completion.", true),
+      );
     const id = requestId(options.expectedType);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const pending = this.#pending.get(id);
         if (!pending) return;
         this.#pending.delete(id);
+        if (pending.erasure) this.#lateErasures.set(id, pending);
         reject(relayError("The browser relay request timed out.", true));
       }, options.timeoutMs ?? this.#requestTimeoutMs);
       timer.unref();
       this.#pending.set(id, {
+        ...(options.erasure ? { erasure: options.erasure } : {}),
         capability: options.capability,
         channelId: options.channelId,
         fence,

@@ -9,6 +9,7 @@ import { BrowserRuntime, type BrowserOpenTiming } from "./runtime.js";
 import {
   FakeIsolatingLauncher,
   FakeContext,
+  FakePage,
   FakeLaunchedBrowser,
   FakeProfileStateClient,
   FakeSink,
@@ -87,11 +88,12 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
           }
         : {}),
     });
-  const open = (profile: number, session: number, initial = false) => {
+  const open = (profile: number, session: number, initial = false, signal?: AbortSignal) => {
     verifier.setClaims(String(session), claims(profile, session, initial));
     return runtime.attach(String(session), new FakeSink(), {
       localProfiles: true,
       initialNavigation: true,
+      signal,
     });
   };
   return {
@@ -128,6 +130,82 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
   };
 }
 describe("native profile runtime", () => {
+  it("does not submit a second blank navigation to an already-created initial page", async () => {
+    const f = await fixture();
+    const navigation = vi.spyOn(FakePage.prototype, "submitNavigation");
+    const claims = f.claims(1, 1);
+    f.verifier.setClaims("blank", {
+      ...claims,
+      initialNavigationVersion: 1,
+      initialNavigation: { operationKey: "blank" },
+    });
+    try {
+      const attachment = await f.runtime.attach("blank", new FakeSink(), {
+        localProfiles: true,
+        initialNavigation: true,
+      });
+      expect(attachment.initialPage).toMatchObject({ navigation: "blank" });
+      expect(navigation).not.toHaveBeenCalled();
+      await attachment.close();
+    } finally {
+      navigation.mockRestore();
+    }
+  });
+  it.each(["load", "import"])(
+    "cancels a normal open during %s before promotion or completion",
+    async (stage) => {
+      const f = await fixture();
+      const held = gate({ label: `attach ${stage}`, deadlineMs: 2000 });
+      if (stage === "load")
+        f.initializationClient.load.mockImplementationOnce(async () => {
+          await held.enter();
+          return f.state.snapshot;
+        });
+      else f.launcher.localProfiles.importAndFlush.mockImplementationOnce(() => held.enter());
+      const cancellation = new AbortController();
+      const opening = f.open(1, 1, false, cancellation.signal);
+      const refused = expect(opening).rejects.toThrow();
+      await held.entered;
+      cancellation.abort();
+      held.release();
+      await refused;
+      expect(f.initializationClient.load.mock.calls[0]?.[1]).toBe(cancellation.signal);
+      expect(f.initializationClient.complete).not.toHaveBeenCalled();
+      expect(f.launcher.launchCount).toBe(0);
+      const marker = JSON.parse(
+        await readFile(
+          path.join(f.root, "profiles", f.binding(1).profileId, "binding.v1.json"),
+          "utf8",
+        ),
+      );
+      expect(marker.phase).toBe("initializing");
+      if (stage === "load") expect(f.launcher.localProfiles.importAndFlush).not.toHaveBeenCalled();
+    },
+  );
+  it("prepares Chromium conversion without retaining a browser, and ready preparation does no work", async () => {
+    const f = await fixture();
+    Object.assign(f.launcher.localProfiles, { preparation: "conversion" });
+    const held = gate({ label: "conversion-only prepare", deadlineMs: 2000 });
+    f.launcher.localProfiles.importAndFlush.mockImplementationOnce(() => held.enter());
+    const preparing = f.prepare(1);
+    await held.entered;
+    const opening = f.open(1, 2);
+    held.release();
+    expect((await preparing).retained).toBe(false);
+    const tab = await opening;
+    expect(f.initializationClient.load).toHaveBeenCalledTimes(1);
+    expect(f.initializationClient.complete).toHaveBeenCalledTimes(2);
+    expect(f.launcher.localProfiles.importAndFlush).toHaveBeenCalledTimes(1);
+    expect(f.launcher.launchCount).toBe(1);
+    await tab.close();
+    await f.runtime.shutdown();
+    const next = await fixture(8, f.root);
+    Object.assign(next.launcher.localProfiles, { preparation: "conversion" });
+    expect((await next.prepare(1)).retained).toBe(false);
+    expect(next.launcher.launchCount).toBe(0);
+    expect(next.initializationClient.load).not.toHaveBeenCalled();
+    expect(next.launcher.localProfiles.importAndFlush).not.toHaveBeenCalled();
+  });
   it("prepares without pages or sessions and the first open shares acquisition", async () => {
     const f = await fixture();
     const held = gate({ label: "prepared import", deadlineMs: 2000 });

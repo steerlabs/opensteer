@@ -184,7 +184,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
   private readonly nativeCloseFailures = new Set<string>();
   readonly localProfiles: LocalProfileEngine = {
     engine: "chromium",
-    preparation: 1,
+    preparation: "conversion",
     importAndFlush: async (input) => {
       const snapshot = BrowserProfileSnapshotSchema.parse(input.snapshot);
       const browser = await this.acquireNative(
@@ -397,6 +397,9 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       // them. The relay listens before discovery starts.
       await browserCdp.send("Target.setDiscoverTargets", { discover: true });
       signal?.throwIfAborted();
+      // The runtime now owns the host; ending its first attachment must not
+      // tear down sibling sessions or the native warm host.
+      signal?.removeEventListener("abort", abort);
       return launched;
     } catch (error) {
       await owner.close();
@@ -600,6 +603,9 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       await browserCdp.send("Target.setDiscoverTargets", { discover: true });
       timing("target-discovery");
       signal?.throwIfAborted();
+      // The runtime now owns the host; ending its first attachment must not
+      // tear down sibling sessions or the native warm host.
+      signal?.removeEventListener("abort", abort);
       return launched;
     } catch (error) {
       await owner.close();
@@ -610,7 +616,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
 
 class PlaywrightLaunchedBrowser implements LaunchedBrowser {
   clipboard?: ReturnType<typeof ChromiumClipboard.lazy>;
-  readonly profile = { ready: async () => {}, admit: async () => {} };
   private readonly owner: { close(): Promise<void> };
   private readonly browserCdp: PlaywrightCdpSession;
   private readonly browserContextId: string | undefined;

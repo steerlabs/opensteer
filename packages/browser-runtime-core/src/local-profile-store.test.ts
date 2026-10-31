@@ -285,4 +285,33 @@ describe("LocalProfileStore", () => {
       },
     ]);
   });
+  it.each(["empty", "replaced"])(
+    "refuses %s ready native storage without repairing it",
+    async (damage) => {
+      const { store, binding } = await setup();
+      const directory = await store.initialize(binding, seed);
+      await store.ready(binding, seed);
+      const sentinel = path.join(directory, "opensteer.v1.json");
+      if (damage === "empty") {
+        for (const entry of await readdir(directory))
+          await rm(path.join(directory, entry), { recursive: true });
+      } else {
+        await writeFile(
+          sentinel,
+          JSON.stringify({
+            version: 1,
+            binding: { ...binding, bindingId: "00000000-0000-4000-8000-000000000002" },
+          }),
+        );
+      }
+      const before = await readdir(directory);
+      await expect(store.requireReady(binding)).rejects.toThrow(
+        /native browser profile.*missing|native browser profile.*match/i,
+      );
+      await expect(store.inventory()).rejects.toThrow();
+      await expect(store.ready(binding, seed)).rejects.toThrow();
+      await expect(store.initialize(binding, seed)).rejects.toThrow(/ready/);
+      expect(await readdir(directory)).toEqual(before);
+    },
+  );
 });

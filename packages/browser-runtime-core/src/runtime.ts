@@ -351,7 +351,7 @@ export class BrowserRuntime implements NativePresentationSource {
         ? {
             localProfiles: 1,
             localProfileStorage: this.localProfileStorage,
-            ...(this.launcher.localProfiles?.preparation === 1
+            ...(this.launcher.localProfiles?.preparation
               ? {
                   profilePrepare: 1 as const,
                   profilePrepareInstanceId: this.profilePrepareInstanceId,
@@ -672,7 +672,8 @@ export class BrowserRuntime implements NativePresentationSource {
         const sessionGeneration = ++this.generation;
         let stage = "profile-state";
         try {
-          const acquired = await this.acquireHost(claims, hostKey);
+          const acquired = await this.acquireHost(claims, hostKey, false, options.signal);
+          if (!acquired.host) throw new Error("Browser acquisition returned no host.");
           host = acquired.host;
           createdHost = acquired.createdHost || this.speculative?.host === host;
           options.signal?.throwIfAborted();
@@ -681,7 +682,7 @@ export class BrowserRuntime implements NativePresentationSource {
           timing("profile-acquire", acquiring, acquisition);
           pageStarting = performance.now();
           stage = "profile-admission";
-          await host.browser.profile?.admit();
+          await host.browser.profile?.admit(options.signal);
           if (
             options.signal?.aborted ||
             this.shuttingDown ||
@@ -830,7 +831,7 @@ export class BrowserRuntime implements NativePresentationSource {
     preparation = false,
     signal: AbortSignal = new AbortController().signal,
   ): Promise<{
-    host: BrowserHost;
+    host: BrowserHost | undefined;
     createdHost: boolean;
     acquisition: BrowserOpenTiming["acquisition"];
   }> {
@@ -901,6 +902,7 @@ export class BrowserRuntime implements NativePresentationSource {
                 identity.initialization.seed,
               );
               const snapshot = await this.initializationClient.load(identity, signal);
+              assertCurrent();
               store.engineOwnsDirectory(identity.binding);
               await this.launcher.localProfiles!.importAndFlush({
                 directory: localDirectory,
@@ -917,6 +919,11 @@ export class BrowserRuntime implements NativePresentationSource {
           localDirectory = await store.requireReady(identity.binding);
         }
         assertCurrent();
+        if (preparation && this.launcher.localProfiles?.preparation === "conversion") {
+          this.reservations--;
+          reserved = false;
+          return { host: undefined, createdHost: false, acquisition };
+        }
         stage = "context-launch";
         const passkeys =
           claims.passkeys === 1
@@ -1089,7 +1096,7 @@ export class BrowserRuntime implements NativePresentationSource {
     if (
       !options.localProfiles ||
       !options.profilePrepare ||
-      this.launcher.localProfiles?.preparation !== 1 ||
+      !this.launcher.localProfiles?.preparation ||
       !this.ticketVerifier.verifyPreparation
     )
       throw new BrowserRuntimeError("conflict", "Profile preparation was not negotiated.");
@@ -1143,6 +1150,7 @@ export class BrowserRuntime implements NativePresentationSource {
         if (this.hosts.has(hostKey) || this.hosts.size + this.reservations >= this.maxProfileHosts)
           return;
         const acquired = await this.acquireHost(claims, hostKey, true, operation.controller.signal);
+        if (!acquired.host) return;
         operation.host = acquired.host;
         acquired.host.browser.onClose(() => {
           ended.resolve();

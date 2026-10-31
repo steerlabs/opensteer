@@ -363,7 +363,9 @@ export class BrowserController {
     };
     if (!previous) {
       this.openedTabs.set(navigation.operationKey, { fingerprint, tabId: result.surfaceId });
-      const url = navigation.url === undefined ? "about:blank" : safeNavigationUrl(navigation.url);
+      // The engine already starts the initial blank document to create its renderer.
+      if (navigation.url === undefined) return result;
+      const url = safeNavigationUrl(navigation.url);
       if (navigation.navigationId && this.claims.navigationAttributionVersion === 1)
         void this.ledger
           .navigate(result.surfaceId, url, navigation.navigationId)

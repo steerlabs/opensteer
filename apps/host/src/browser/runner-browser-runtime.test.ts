@@ -10,6 +10,271 @@ import {
 
 afterEach(() => vi.useRealTimers());
 
+async function maintenanceFixture() {
+  const runnerId = createId("runner");
+  const storageInstanceId = crypto.randomUUID();
+  const stream = {
+    fence: { runnerId, connectionId: "maintenance", connectionGeneration: 1 },
+    identity: {
+      runnerId,
+      modules: {
+        browser: {
+          runtimeId: "browser",
+          profileSnapshotVersion: 2,
+          localProfiles: 1,
+          profilePrepare: 1,
+          profilePrepareInstanceId: crypto.randomUUID(),
+          localProfileStorage: { storageInstanceId, engine: "chromium" },
+        },
+      },
+    },
+    streamLeaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+  } as unknown as RunnerAuxiliaryStream;
+  const binding = {
+    version: 1 as const,
+    deploymentId: createId("deployment"),
+    runnerId,
+    storageInstanceId,
+    engine: "chromium" as const,
+    profileId: createId("browserProfile"),
+    bindingId: crypto.randomUUID(),
+  };
+  const jobs = [] as Array<{
+    binding: typeof binding;
+    deletionId: string;
+    state: "pending-computer";
+  }>;
+  let hooks: RunnerBrowserHooks = {};
+  const sent: BrowserRuntimeRelayRequest[] = [];
+  const acknowledgeDeletion = vi.fn(async () => {});
+  const fixture = {
+    intercept: undefined as undefined | ((message: BrowserRuntimeRelayRequest) => boolean),
+    binding,
+    jobs,
+    stream,
+    sent,
+    acknowledgeDeletion,
+  };
+  const reply = async (message: Parameters<NonNullable<RunnerBrowserHooks["onMessage"]>>[1]) =>
+    hooks.onMessage?.(stream, message);
+  const router = new RunnerBrowserRuntimeRouter({
+    localProfiles: {
+      reconcileInventory: async () => {},
+      jobs: async () => [...jobs],
+      acknowledgeDeletion,
+    },
+    registry: {
+      browserStreams: () => [stream],
+      stream: () => stream,
+      subscribe: (value) => {
+        hooks = value;
+        return () => {};
+      },
+      send: async (_id, message) => {
+        sent.push(message);
+        if (fixture.intercept?.(message)) return;
+        if (message.type === "capability.grant")
+          await reply({
+            ...stream.fence,
+            type: "capability.accepted",
+            requestId: message.requestId,
+            capability: {
+              capabilityGeneration: message.lease.capabilityGeneration,
+              capabilityLeaseId: message.lease.capabilityLeaseId,
+              runtimeId: message.lease.runtimeId,
+            },
+          });
+        if (message.type === "capability.revoke")
+          await reply({ ...message, type: "capability.revoked" });
+        if (message.type === "browser.attach")
+          await reply({ ...message, type: "browser.attached" });
+        if (message.type === "browser.profile.prepare")
+          await reply({ ...message, type: "browser.profile.prepared", retained: true });
+        if (message.type === "browser.profile.delete")
+          await reply({ ...message, type: "browser.profile.delete.result", state: "deleted" });
+      },
+    },
+  });
+  await reply({
+    ...stream.fence,
+    type: "browser.profile.inventory",
+    module: "browser",
+    storageInstanceId,
+    engine: "chromium",
+    profiles: [],
+    complete: true,
+  });
+  await router.resumeDeletions(runnerId);
+  return {
+    ...fixture,
+    router,
+    reply,
+    fixture,
+    target: router.resolve({ kind: "runner", runnerId })!,
+  };
+}
+
+it.each([false, true])(
+  "waits for a pending renewal before sending an open (preparation=%s)",
+  async (preparation) => {
+    vi.useFakeTimers();
+    const f = await maintenanceFixture();
+    try {
+      const first = f.target.connect("first");
+      first.on("error", () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      f.fixture.intercept = (message) => message.type === "capability.grant";
+      await vi.advanceTimersByTimeAsync(300_000);
+      const renewal = f.sent.at(-1)!;
+      expect(renewal.type).toBe("capability.grant");
+      if (renewal.type !== "capability.grant") throw Error("expected renewal");
+      const second = preparation ? f.target.prepareProfile!("second") : f.target.connect("second");
+      second.on("error", () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.sent.at(-1)).toBe(renewal);
+      const capability = {
+        capabilityGeneration: renewal.lease.capabilityGeneration,
+        capabilityLeaseId: renewal.lease.capabilityLeaseId,
+        runtimeId: renewal.lease.runtimeId,
+      };
+      await f.reply({
+        ...f.stream.fence,
+        type: "capability.accepted",
+        requestId: renewal.requestId,
+        capability,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.sent.at(-1)).toMatchObject({
+        type: preparation ? "browser.profile.prepare" : "browser.attach",
+        capability,
+      });
+      expect(second.readyState).toBe(1);
+      expect(first.readyState).toBe(1);
+    } finally {
+      f.router.close();
+    }
+  },
+);
+
+it.each(["result", "error"] as const)(
+  "correlates a late erasure %s without disconnecting its sibling and drains the next job",
+  async (terminal) => {
+    vi.useFakeTimers();
+    const f = await maintenanceFixture();
+    try {
+      const sibling = f.target.connect("sibling");
+      const siblingError = vi.fn();
+      sibling.on("error", siblingError);
+      await vi.advanceTimersByTimeAsync(0);
+      const deletionId = crypto.randomUUID();
+      const secondId = crypto.randomUUID();
+      f.jobs.push(
+        { binding: f.binding, deletionId, state: "pending-computer" },
+        {
+          binding: {
+            ...f.binding,
+            profileId: createId("browserProfile"),
+            bindingId: crypto.randomUUID(),
+          },
+          deletionId: secondId,
+          state: "pending-computer",
+        },
+      );
+      f.fixture.intercept = (message) =>
+        message.type === "browser.profile.delete" && message.deletionId === deletionId;
+      const erasing = f.router.resumeDeletions(f.binding.runnerId);
+      const timedOut = expect(erasing).rejects.toThrow(/timed out/);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(f.acknowledgeDeletion).not.toHaveBeenCalled();
+      expect(sibling.readyState).toBe(1);
+      const deletion = f.sent.find((message) => message.type === "browser.profile.delete")!;
+      if (deletion.type !== "browser.profile.delete") throw Error("expected deletion");
+      await vi.advanceTimersByTimeAsync(114_000);
+      await timedOut;
+      await vi.advanceTimersByTimeAsync(300_001);
+      expect(f.acknowledgeDeletion).toHaveBeenCalledWith(
+        expect.objectContaining({ deletionId: secondId }),
+      );
+      if (terminal === "result") {
+        await expect(
+          f.reply({
+            ...deletion,
+            type: "browser.profile.delete.result",
+            state: "deleted",
+            deletionId: crypto.randomUUID(),
+          }),
+        ).rejects.toThrow(/correlat|mismatch/);
+        await expect(
+          f.reply({ ...deletion, type: "browser.profile.delete.result", state: "deleted" }),
+        ).resolves.toBeUndefined();
+        expect(f.acknowledgeDeletion).toHaveBeenCalledWith({
+          binding: f.binding,
+          deletionId,
+          state: "deleted",
+        });
+      } else
+        await expect(
+          f.reply({
+            ...f.stream.fence,
+            type: "browser.command-error",
+            requestId: deletion.requestId,
+            channelId: null,
+            error: { code: "conflict", message: "Capability ended", retryable: false },
+          }),
+        ).resolves.toBeUndefined();
+      expect(sibling.readyState).toBe(1);
+      expect(siblingError).not.toHaveBeenCalled();
+    } finally {
+      f.router.close();
+    }
+  },
+);
+
+it("bounds unfinished maintenance without forgetting the oldest admitted erasure", async () => {
+  vi.useFakeTimers();
+  const f = await maintenanceFixture();
+  Object.assign(f.stream, {
+    streamLeaseExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+  });
+  try {
+    const sibling = f.target.connect("sibling");
+    sibling.on("error", () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    for (let index = 0; index < 65; index++)
+      f.jobs.push({
+        binding: {
+          ...f.binding,
+          profileId: createId("browserProfile"),
+          bindingId: crypto.randomUUID(),
+        },
+        deletionId: crypto.randomUUID(),
+        state: "pending-computer",
+      });
+    f.fixture.intercept = (message) => message.type === "browser.profile.delete";
+    const refused = expect(f.router.resumeDeletions(f.binding.runnerId)).rejects.toThrow(
+      /Too many browser profile erasures/,
+    );
+    await vi.advanceTimersByTimeAsync(120_000 * 64);
+    await refused;
+    const erasures = f.sent.filter((message) => message.type === "browser.profile.delete");
+    expect(erasures).toHaveLength(64);
+    const first = erasures[0]!;
+    await f.reply({ ...first, type: "browser.profile.delete.result", state: "deleted" });
+    expect(f.acknowledgeDeletion).toHaveBeenCalledWith({
+      binding: first.binding,
+      deletionId: first.deletionId,
+      state: "deleted",
+    });
+    f.jobs.splice(0, 64);
+    f.fixture.intercept = undefined;
+    await f.router.resumeDeletions(f.binding.runnerId);
+    expect(f.sent.filter((message) => message.type === "browser.profile.delete")).toHaveLength(65);
+    expect(sibling.readyState).toBe(1);
+  } finally {
+    f.router.close();
+  }
+});
+
 it.each(
   (["targetControl", "navigationAttributionVersion"] as const).flatMap((capability) =>
     ([undefined, 1] as const).map((version) => ({ capability, version })),
@@ -570,12 +835,13 @@ it("retries the same erasure after a lost acknowledgement on a replacement auxil
   try {
     await hooks.onMessage!(stream, inventory());
     const lostAck = expect(router.resumeDeletions(runnerId)).rejects.toThrow("timed out");
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(120_000);
     await lostAck;
     expect(acknowledgeDeletion).not.toHaveBeenCalled();
     hooks.onLost?.(stream, "host-shutdown");
     stream = {
       ...stream,
+      streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       fence: {
         ...stream.fence,
         auxiliaryStreamId: "second-stream" as RunnerAuxiliaryStream["fence"]["auxiliaryStreamId"],

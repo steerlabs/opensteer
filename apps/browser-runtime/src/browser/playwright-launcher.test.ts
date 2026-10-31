@@ -375,7 +375,13 @@ describe("native Chromium profiles", () => {
       proxyUrl: "http://127.0.0.1:8123",
     });
     try {
-      const launched = await launcher.launch(nativeProfileRequest(directory));
+      const cancellation = new AbortController();
+      const launched = await launcher.launch(nativeProfileRequest(directory), cancellation.signal);
+      cancellation.abort();
+      expect(
+        context.close,
+        "Ending the originating attachment must preserve the warm native host",
+      ).not.toHaveBeenCalled();
       expect(launcher.localProfiles.engine).toBe("chromium");
       expect(await readdir(sessions)).toEqual(["retained"]);
       expect(await readFile(join(directory, "Default", "Cookies"), "utf8")).toBe("untouched");
@@ -410,9 +416,9 @@ describe("native Chromium profiles", () => {
         { session: { restore_on_startup: 1 } },
       );
       expect(context.newPage).toHaveBeenCalledOnce();
-      await launched.profile?.ready();
+      expect(launcher.localProfiles.preparation).toBe("conversion");
+      expect(launched).not.toHaveProperty("profile");
       expect(context.newPage).toHaveBeenCalledOnce();
-      await launched.profile?.admit();
       expect(context.newCDPSession).not.toHaveBeenCalled();
       expect(launched.context.pages()).toEqual([]);
       await expect(launched.cdp.send("Target.getBrowserContexts")).resolves.toEqual({

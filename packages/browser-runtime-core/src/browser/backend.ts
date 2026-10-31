@@ -104,6 +104,7 @@ export interface BrowserPage extends BrowserPageNavigation {
 export interface BrowserContext {
   /** False after whole-context/browser teardown; page closes alone keep it connected. */
   isConnected?(): boolean;
+  /** New user pages, including eager launch pages, have their initial blank document submitted. */
   createPage(): Promise<BrowserPage>;
   offPage(listener: (page: BrowserPage) => void): void;
   onPage(listener: (page: BrowserPage) => void): void;
@@ -176,7 +177,7 @@ export interface EngineClipboardScope {
 
 export interface LaunchedBrowser {
   /** Restoration completed, independently of permission to serve user pages. */
-  profile?: { ready(): Promise<void>; admit(): Promise<void> };
+  profile?: { ready(): Promise<void>; admit(signal?: AbortSignal): Promise<void> };
   cdp: BrowserCdpBackend;
   /** Present on engines that implement the editing contract's clipboard. */
   clipboard?: EngineClipboard;
@@ -207,7 +208,8 @@ export interface LaunchedBrowser {
 /** Engine support for profiles stored natively on this computer. */
 export interface LocalProfileEngine extends NativeProfileConversionEngine {
   /**
-   * Advertise only with page-free launch and separate ready/admit operations.
+   * Conversion-only preparation closes its importer and never launches a host.
+   * Warm preparation requires page-free launch and separate ready/admit operations.
    * Electron must await mirror restoration in ready(), leave the Session gate
    * dormant (cancel requests, never queue them), and open it only on admit().
    * Preserve synthetic conversion helpers; Network Service recovery must restore
@@ -215,7 +217,7 @@ export interface LocalProfileEngine extends NativeProfileConversionEngine {
    * a user page. Revocation retires controllers and fences the retained Session
    * without deleting its native storage.
    */
-  readonly preparation?: 1;
+  readonly preparation?: 1 | "conversion";
   readonly engine: BrowserEngine;
   /**
    * Gives up the engine's hold on a local profile directory so it can be erased.
@@ -228,6 +230,7 @@ export interface LocalProfileEngine extends NativeProfileConversionEngine {
 export interface BrowserLauncher {
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
+  /** Cancellation covers acquisition; the shared runtime owns the admitted host's lifetime. */
   launch(request: BrowserLaunchRequest, signal?: AbortSignal): Promise<LaunchedBrowser>;
   /** Present only on engines that implement native local profiles. */
   readonly localProfiles?: LocalProfileEngine;

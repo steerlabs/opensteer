@@ -23,6 +23,10 @@ import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { BrowserRuntimeError } from "./errors.js";
 
 const identitySchema = z.strictObject({ version: z.literal(1), storageInstanceId: z.uuid() });
+const nativeSentinelSchema = z.strictObject({
+  version: z.literal(1),
+  binding: LocalProfileBindingSchema,
+});
 const markerSchema = z.strictObject({
   version: z.literal(1),
   phase: z.enum(["initializing", "ready"]),
@@ -174,6 +178,14 @@ export class LocalProfileStore {
     const directory = this.directory(binding);
     if (!(await realDirectoryIfPresent(directory)))
       throw invalid("The native browser profile data is missing.");
+    const sentinel = await readJson(
+      path.join(directory, "opensteer.v1.json"),
+      nativeSentinelSchema,
+    );
+    if (!sentinel || !sameLocalBinding(sentinel.binding, binding))
+      throw invalid(
+        "The native browser profile storage sentinel is missing or does not match. The profile was preserved.",
+      );
     return directory;
   }
   async initialize(binding: LocalProfileBinding, seed: FrozenProfileSeed): Promise<string> {
@@ -202,7 +214,16 @@ export class LocalProfileStore {
     const marker = await this.inspect(binding, seed);
     if (!marker) throw invalid();
     if (!(await realDirectoryIfPresent(this.directory(binding)))) throw invalid();
-    if (marker.phase === "ready") return;
+    if (marker.phase === "ready") {
+      await this.requireReady(binding);
+      return;
+    }
+    // Publish inside the engine's store before promoting its parent marker.
+    // Missing sentinels on this unreleased format are damage, never a migration.
+    await replacePrivateFileAtomically(
+      path.join(this.directory(binding), "opensteer.v1.json"),
+      JSON.stringify({ version: 1, binding }),
+    );
     await replacePrivateFileAtomically(
       path.join(this.profile(binding), "binding.v1.json"),
       JSON.stringify({ ...marker, phase: "ready" }),
@@ -266,11 +287,7 @@ export class LocalProfileStore {
       }
       this.validate(marker.binding);
       if (marker.binding.profileId !== name) throw invalid();
-      if (
-        marker.phase === "ready" &&
-        !(await realDirectoryIfPresent(this.directory(marker.binding)))
-      )
-        throw invalid("The native browser profile data is missing.");
+      if (marker.phase === "ready") await this.requireReady(marker.binding);
       claims.set(name, { phase: marker.phase, binding: marker.binding, seed: marker.seed });
     }
     return [...claims.values()];

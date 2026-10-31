@@ -99,6 +99,7 @@ export async function deployment(
     readonly scenario?: string;
     readonly maxConcurrentRuns?: number;
     readonly activityClock?: import("@opensteer/shared/clock").Clock;
+    readonly personal?: boolean;
   } = {},
 ): Promise<VerticalStack> {
   const harnesses = () => {
@@ -118,6 +119,7 @@ export async function deployment(
     return registry;
   };
   const stack = await startVerticalStack({
+    ...(options.personal ? { personal: {} } : {}),
     ...(browser ? { browser, beforeHostClose: () => browser.close() } : {}),
     ...(options.activityClock ? { browserActivityClock: options.activityClock } : {}),
     browserHarnessExecutable: browserHarness,

@@ -3689,6 +3689,51 @@ describeStore("PostgreSQL store", (it) => {
     });
   });
 
+  it("counts unfinished erasures against profile creation capacity until disk deletion completes", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const { ownerId, binding, profile, seed } = await nativeProfileFixture(
+      storeFixture,
+      "capacity",
+    );
+    await store.reconcileBrowserProfileInventory({ phase: "ready", binding, seed });
+    await store.deleteBrowserProfile({ ownerId, profileId: profile.id });
+    for (let index = 0; index < 127; index++)
+      await store.createBrowserProfile({
+        ownerId,
+        name: `Profile ${index}`,
+        idempotencyKey: `capacity-${index}`,
+      });
+    const create = { ownerId, name: "Overflow", idempotencyKey: "capacity-overflow" };
+    await expect(store.createBrowserProfile(create)).rejects.toMatchObject({ code: "conflict" });
+    const revision = {
+      ownerId,
+      name: "Imported overflow",
+      id: createId("browserProfile"),
+      revision: 1 as const,
+      ciphertext: new Uint8Array([1]),
+      ciphertextSha256: "a".repeat(64),
+    };
+    await expect(store.createBrowserProfileWithRevision(revision)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    const [job] = await store.listBrowserProfileErasureJobs(binding.runnerId);
+    expect(job).toBeDefined();
+    await store.acknowledgeBrowserProfileDeletion({
+      binding,
+      deletionId: job!.deletionId,
+      state: "pending-restart",
+    });
+    await expect(store.createBrowserProfile(create)).rejects.toMatchObject({ code: "conflict" });
+    expect(await store.listPendingBrowserProfileDeletions(ownerId)).toHaveLength(1);
+    await store.acknowledgeBrowserProfileDeletion({
+      binding,
+      deletionId: job!.deletionId,
+      state: "deleted",
+    });
+    await expect(store.createBrowserProfile(create)).resolves.toMatchObject({ name: "Overflow" });
+  });
   it("freezes conversion under the legacy revision lock and fences snapshot access", async ({
     storeFixture,
   }) => {

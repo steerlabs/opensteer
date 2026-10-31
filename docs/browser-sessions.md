@@ -462,6 +462,9 @@ persistent Session, so a profile whose Session existed in this process stays
 Never remove a live engine's directory or force an app restart for erasure.
 Deletion preserves completed downloads outside the profile tree and retains a
 nonsecret tombstone to refuse stale tickets and reconcile Host DB rollback.
+An unfinished deletion still occupies one of the owner's 128 profile slots until
+disk erasure completes, so bootstrap can report every pending deletion without
+truncation, including after repeated create/delete cycles.
 
 ## Profile state
 
@@ -542,7 +545,10 @@ process crashes, not website mutations or logouts not yet captured and published
 Lifecycle serialization is per profile, so slow conversion cannot block unrelated
 profiles. Closing the last tab keeps a native host warm without an idle timer;
 capacity pressure evicts the least recently used idle host, never an active one.
-Close, eviction, failure cleanup and relaunch never clear native storage. Electron
+Close, eviction, failure cleanup and relaunch never clear native storage. A ready
+profile requires a binding-matched sentinel inside its native directory before
+any engine opens it. Missing or mismatched sentinels preserve the store and
+refuse opening; this unreleased format has no sentinel-free migration. Electron
 eviction releases views/controllers but retains its Session and mirror until
 process exit, so it does not bound all Session memory. See the
 [runtime](../packages/browser-runtime-core/src/runtime.ts).
@@ -555,8 +561,11 @@ Main computer may proactively convert an unbound profile; server Deployments
 prepare already-bound profiles on their owner. Reconnect preserves the attempt
 limit for that runtime incarnation. Revocation or deletion cancels preparation;
 an actual open joins the same profile lane and takes over its capability hold.
-Launchers advertise preparation only when they implement page-free launch and
-separate readiness from network admission; see the
+Chromium preparation performs only one-time conversion and closes its importer;
+preparing a ready profile does no engine work. It retains no browser that could
+run restored background workers before a real open. Electron retains a page-free
+host with its Session-wide request gate dormant until attachment; recovery also
+preserves that dormant state. See the
 [launcher contract](../packages/browser-runtime-core/src/browser/backend.ts).
 
 The [legacy snapshot adapter](../packages/browser-runtime-core/src/legacy-snapshot-adapter.ts)

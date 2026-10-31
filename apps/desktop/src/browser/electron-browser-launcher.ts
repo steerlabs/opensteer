@@ -305,10 +305,6 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
             closed: removeCancellation,
           },
         );
-        if (!request.preparation) {
-          await browser.profile!.admit();
-          await context.createPage();
-        }
         signal?.throwIfAborted();
         return browser;
       } catch (error) {
@@ -603,9 +599,9 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
     if (localProfile)
       this.profile = {
         ready: () => localProfile.ready(),
-        admit: async () => {
+        admit: async (signal) => {
           if (this.#closePromise) throw new Error("Electron browser profile is closed.");
-          await localProfile.admit();
+          await localProfile.admit(signal);
           if (!this.#admitted) {
             lifecycle?.admitted();
             this.#admitted = true;

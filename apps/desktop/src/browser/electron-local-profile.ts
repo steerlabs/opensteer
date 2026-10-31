@@ -187,8 +187,9 @@ export class ElectronLocalProfile {
     this.assertUsable();
   }
 
-  async admit(): Promise<void> {
+  async admit(signal?: AbortSignal): Promise<void> {
     await this.ready();
+    signal?.throwIfAborted();
     this.assertReady();
     if (!this.#admitted) {
       this.#admitted = true;

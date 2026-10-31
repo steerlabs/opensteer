@@ -233,7 +233,19 @@ export async function createBrowserProfile(
       .selectFrom("browserProfiles")
       .select("id")
       .where("ownerId", "=", input.ownerId)
-      .where("archivedAt", "is", null)
+      // Deletion transfers a slot until the owning computer confirms erasure.
+      .where((eb) =>
+        eb.or([
+          eb("archivedAt", "is", null),
+          eb.exists(
+            eb
+              .selectFrom("browserProfileDeletions")
+              .select("profileId")
+              .whereRef("profileId", "=", "browserProfiles.id")
+              .where("state", "!=", "deleted"),
+          ),
+        ]),
+      )
       .limit(128)
       .execute();
     if (existing.length >= 128) {
@@ -297,7 +309,19 @@ export async function createBrowserProfileWithRevision(
       .selectFrom("browserProfiles")
       .select("id")
       .where("ownerId", "=", input.ownerId)
-      .where("archivedAt", "is", null)
+      // Deletion transfers a slot until the owning computer confirms erasure.
+      .where((eb) =>
+        eb.or([
+          eb("archivedAt", "is", null),
+          eb.exists(
+            eb
+              .selectFrom("browserProfileDeletions")
+              .select("profileId")
+              .whereRef("profileId", "=", "browserProfiles.id")
+              .where("state", "!=", "deleted"),
+          ),
+        ]),
+      )
       .limit(128)
       .execute();
     if (active.length >= 128) {

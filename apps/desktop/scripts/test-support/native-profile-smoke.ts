@@ -170,7 +170,8 @@ export async function runNativeProfileSmokePhase(input: {
   let crash = false;
   let cookieCount = expected.length;
   try {
-    const page = browser.context.pages()[0]!;
+    await browser.profile!.admit();
+    const page = await browser.context.createPage();
     await load(page, `${origin(0)}/native-page?phase=${encodeURIComponent(phase)}`);
     const first = input.firstRequest(phase);
     assert.ok(first !== undefined, "first outgoing navigation was not observed");

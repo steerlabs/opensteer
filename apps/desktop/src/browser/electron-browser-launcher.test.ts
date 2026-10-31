@@ -1,3 +1,4 @@
+import { gate } from "@opensteer/shared/test-support/observation";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1785,8 +1786,8 @@ describe("native Electron profiles", () => {
       directory,
       launcher,
       onLocalProfileOpenTiming,
-      launch: (preparation = false, signal?: AbortSignal) =>
-        launcher.launch(
+      launch: async (preparation = false, signal?: AbortSignal) => {
+        const browser = await launcher.launch(
           {
             ...(preparation ? { preparation: true } : {}),
             sessionId,
@@ -1795,7 +1796,13 @@ describe("native Electron profiles", () => {
             storage: { kind: "local", binding, directory },
           },
           signal,
-        ),
+        );
+        if (!preparation) {
+          await browser.profile!.admit(signal);
+          await browser.context.createPage();
+        }
+        return browser;
+      },
     };
   }
   it("verifies safeStorage during engine startup without unwrapping a profile key", async () => {
@@ -1863,6 +1870,66 @@ describe("native Electron profiles", () => {
     } finally {
       finish();
       electron.storage = undefined;
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("leaves normal native admission and page creation to the shared runtime", async () => {
+    const f = await fixture();
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const browser = await f.launcher.launch({
+        partitionKey: `profile:${f.binding.profileId}`,
+        initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+        storage: { kind: "local", binding: f.binding, directory: f.directory },
+      });
+      expect(browser.context.pages()).toEqual([]);
+      await expect(browser.context.createPage()).rejects.toThrow(/admitted/);
+      await browser.close();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("does not admit a prepared profile when attachment is cancelled during readiness recovery", async () => {
+    const f = await fixture();
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    const held = gate({ label: "prepared profile recovery", deadlineMs: 1000 });
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const browser = await f.launch(true);
+      const owner = acquireElectronLocalProfile({
+        root: f.root,
+        directory: f.directory,
+        binding: f.binding,
+        configure: () => {},
+      });
+      vi.spyOn(owner, "ready").mockImplementationOnce(() => held.enter());
+      const opened = vi.spyOn(owner.gate, "open");
+      const cancellation = new AbortController();
+      const admission = browser.profile!.admit(cancellation.signal);
+      const refused = expect(admission).rejects.toThrow();
+      await held.entered;
+      cancellation.abort();
+      held.release();
+      await refused;
+      expect(opened).not.toHaveBeenCalled();
+      expect(browser.context.pages()).toEqual([]);
+      await browser.close();
+    } finally {
+      held.release();
       await f.launcher.localProfiles.release(f.directory);
       f.launcher.close();
       await rm(f.root, { recursive: true, force: true });

@@ -224,12 +224,16 @@ async function run(): Promise<void> {
     ...request,
     storage: { kind: "local", binding, directory },
   });
+  await native.profile!.admit();
+  await native.context.createPage();
   await assertCookies(native, nativeCookies);
   await native.close();
   const nativeReopened = await launcher.launch({
     ...request,
     storage: { kind: "local", binding, directory },
   });
+  await nativeReopened.profile!.admit();
+  await nativeReopened.context.createPage();
   await assertCookies(nativeReopened, nativeCookies);
   await nativeReopened.replaceSiteCookies("https://example.test", [], new AbortController().signal);
   // Replacing a first-party sign-in preserves CHIPS owned by other top-level sites.
