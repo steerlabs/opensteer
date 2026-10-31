@@ -112,8 +112,8 @@ export function OwnerView({
   }, [alive, generation, hostClient, owned, viewId, visible]);
 
   const shown = live ? display.picture : null;
-  const canControl = !phone && display.snapshot.input === "available";
-  const inputAvailable = canControl && display.snapshot.input === "available";
+  const canControl = display.snapshot.input === "available";
+  const inputAvailable = canControl;
   useEffect(() => {
     if (!visible) display.lease?.resetInput();
   }, [visible, display.lease]);
@@ -241,12 +241,15 @@ export function OwnerView({
       : display.reason
         ? {
             busy: display.retrying,
-            reopen: !phone && display.snapshot.connection === "closed",
-            words: computerReasonWords(display.reason, {
-              machine: machineName,
-              phone,
-              target: targetName,
-            }),
+            reopen: display.snapshot.connection === "closed",
+            words:
+              phone && display.snapshot.display?.reason === "locked-screen"
+                ? "Unlock on the phone"
+                : computerReasonWords(display.reason, {
+                    machine: machineName,
+                    phone,
+                    target: targetName,
+                  }),
           }
         : shown
           ? null
@@ -319,6 +322,17 @@ export function OwnerView({
           >
             {state.busy ? <span aria-hidden className="browser-waiting__spinner" /> : null}
             <span>{state.words}</span>
+            {phone &&
+            display.snapshot.power === "available" &&
+            display.snapshot.display?.state === "screen-off" ? (
+              <button
+                className="btn btn--small"
+                onClick={() => display.lease?.power("wake")}
+                type="button"
+              >
+                Wake phone
+              </button>
+            ) : null}
             {state.reopen ? (
               <button
                 className="btn btn--small"
@@ -332,7 +346,9 @@ export function OwnerView({
           </div>
         ) : null}
       </div>
-      {canControl ? <PhoneControlBar display={display} /> : null}
+      {canControl || (phone && display.snapshot.power === "available") ? (
+        <PhoneControlBar display={display} />
+      ) : null}
     </section>
   );
 }

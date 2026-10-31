@@ -171,8 +171,26 @@ export function ComputerWatchView({
           ) : null
         }
         over={showing}
-        status={source ? status : idle}
+        status={
+          source
+            ? phone && display.snapshot.display?.reason === "locked-screen" && status
+              ? { ...status, words: "Unlock on the phone" }
+              : status
+            : idle
+        }
       />
+      {phone &&
+      !compact &&
+      display.snapshot.power === "available" &&
+      display.snapshot.display?.state === "screen-off" ? (
+        <button
+          className="btn btn--small"
+          onClick={() => display.lease?.power("wake")}
+          type="button"
+        >
+          Wake phone
+        </button>
+      ) : null}
       {reopen ? (
         <button className="btn btn--small" onClick={() => display.reopen()} type="button">
           Open again
@@ -238,7 +256,16 @@ export function ComputerWatchView({
           title={label}
         >
           {screen(null)}
-          <WatchStatusLine over={showing} status={source ? status : idle} />
+          <WatchStatusLine
+            over={showing}
+            status={
+              source
+                ? phone && display.snapshot.display?.reason === "locked-screen" && status
+                  ? { ...status, words: "Unlock on the phone" }
+                  : status
+                : idle
+            }
+          />
         </WatchTheater>
       ) : null}
     </section>

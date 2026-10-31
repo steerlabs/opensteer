@@ -57,6 +57,7 @@ const idleSnapshot: DisplaySnapshot = {
   closeCode: null,
   display: null,
   input: "unavailable",
+  power: "unavailable",
   keyframeFailed: false,
 };
 const idlePicture: PhoneDisplayPictureState = {
@@ -785,13 +786,26 @@ const navigation = [
 export function PhoneControlBar({ display }: { readonly display: ComputerDisplayView }) {
   const input =
     display.snapshot.input === "available" && display.geometry !== null ? display.input : null;
-  if ((!input || display.viewportEnabled) && !display.receipt) return null;
+  const powerAvailable =
+    !display.viewportEnabled &&
+    display.snapshot.power === "available" &&
+    display.snapshot.display?.state === "live";
+  if ((!input || display.viewportEnabled) && !display.receipt && !powerAvailable) return null;
   return (
     <div className="phone-display__control surface-row">
       {display.receipt ? (
         <span className="phone-display__note" role="status">
           {display.receipt}
         </span>
+      ) : null}
+      {powerAvailable ? (
+        <button
+          className="btn btn--small"
+          type="button"
+          onClick={() => display.lease?.power("lock")}
+        >
+          Lock phone
+        </button>
       ) : null}
       {input && !display.viewportEnabled ? (
         <span className="phone-display__nav">
