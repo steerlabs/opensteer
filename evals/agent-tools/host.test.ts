@@ -23,7 +23,7 @@ it("validates screen presentation mocks with the production tool contract", asyn
     expect((await client.listTools()).tools.some(({ name }) => name === "screen_show")).toBe(true);
     const args = testCase.expect.calls[0]!.args;
     expect(await client.callTool({ name: "screen_show", arguments: args })).toMatchObject({
-      structuredContent: { receipt: { outcome: "applied" } },
+      structuredContent: { outcome: "applied" },
     });
     const invalid = await client.callTool({
       name: "screen_show",

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { ScreenShowInputSchema } from "@opensteer/core";
+import { ScreenShowInputSchema, ScreenPresentationReceiptSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { parseCases } from "./cases.js";
 import { grade } from "./grader.js";
@@ -11,6 +11,9 @@ const cases = parseCases(
 describe("screen presentation corpus", () => {
   it("binds expected presentations to real input metadata rather than prompt text", () => {
     for (const testCase of cases) {
+      const receipt = testCase.mocks.screen_show;
+      if (receipt !== undefined)
+        expect(ScreenPresentationReceiptSchema.safeParse(receipt).success, testCase.id).toBe(true);
       const turn = testCase.turns.at(-1)!;
       if (typeof turn === "string") throw new Error("Expected an identified screen input");
       expect(turn.text).not.toContain("[Opensteer input]");
