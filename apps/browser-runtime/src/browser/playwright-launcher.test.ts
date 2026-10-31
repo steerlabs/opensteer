@@ -1,3 +1,9 @@
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { nativeProfileRequest } from "./native-profile.test-support.js";
+import { assertImportedCookies } from "./native-profile-storage.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { EventEmitter } from "node:events";
 import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
 import { chromium, type Browser, type BrowserContext, type BrowserServer } from "playwright-core";
@@ -39,6 +45,8 @@ describe("Chromium child environment", () => {
       LANG: "en_US.UTF-8",
       LANGUAGE: "en_US:en",
       TMPDIR: "/runtime-tmp",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+      XDG_RUNTIME_DIR: "/run/user/1000",
     });
   });
 
@@ -55,12 +63,13 @@ describe("Chromium child environment", () => {
     );
 
     expect(environment).toEqual({
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
       DISPLAY: ":9",
       HOME: "/home/runtime",
       WAYLAND_DISPLAY: "wayland-1",
       XDG_RUNTIME_DIR: "/run/user/1000",
     });
-    expect(environment).not.toHaveProperty("DBUS_SESSION_BUS_ADDRESS");
+    expect(environment).not.toHaveProperty("SSH_AUTH_SOCK");
     expect(environment).not.toHaveProperty("XAUTHORITY");
   });
 
@@ -292,3 +301,187 @@ function hostileEnvironment(
     ...safeValues,
   };
 }
+
+describe("native Chromium profiles", () => {
+  it("launches the default context with explicit contained arguments and releases only after orderly close", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os-native-options-"));
+    const sessions = join(directory, "Default", "Sessions");
+    await mkdir(sessions, { recursive: true });
+    for (const name of [
+      "Session_151",
+      "Tabs_151",
+      "Current Session",
+      "Last Session",
+      "Current Tabs",
+      "Last Tabs",
+      "retained",
+    ])
+      await writeFile(join(sessions, name), "sentinel");
+    await writeFile(join(directory, "Default", "Cookies"), "untouched");
+    const close = Promise.withResolvers<void>();
+    const closing = Promise.withResolvers<void>();
+    const cdp = {
+      send: vi
+        .fn()
+        .mockImplementation((method: string) =>
+          Promise.resolve(
+            method === "Target.createTarget" ? { targetId: "private-helper" } : { cookies: [] },
+          ),
+        ),
+      on: vi.fn(),
+      off: vi.fn(),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const helper = { on: vi.fn() };
+    const browser = {
+      newBrowserCDPSession: vi.fn().mockResolvedValue(cdp),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = {
+      browser: () => browser,
+      pages: () => [],
+      newPage: vi.fn().mockResolvedValue(helper),
+      newCDPSession: vi.fn().mockResolvedValue(cdp),
+      addInitScript: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      close: vi.fn().mockImplementation(() => {
+        closing.resolve();
+        return close.promise;
+      }),
+    };
+    const persistent = vi
+      .spyOn(chromium, "launchPersistentContext")
+      .mockResolvedValue(context as unknown as BrowserContext);
+    const disposable = vi.spyOn(chromium, "launchServer");
+    const launcher = new PlaywrightChromiumLauncher({
+      executablePath: process.execPath,
+      headless: true,
+      chromiumSandbox: true,
+      proxyUrl: "http://127.0.0.1:8123",
+    });
+    try {
+      const launched = await launcher.launch(nativeProfileRequest(directory));
+      expect(launcher.localProfiles.engine).toBe("chromium");
+      expect(await readdir(sessions)).toEqual(["retained"]);
+      expect(await readFile(join(directory, "Default", "Cookies"), "utf8")).toBe("untouched");
+      expect(disposable).not.toHaveBeenCalled();
+      const options = persistent.mock.calls[0]![1]!;
+      expect(persistent.mock.calls[0]![0]).toBe(directory);
+      expect(options).toMatchObject({
+        ignoreDefaultArgs: true,
+        executablePath: process.execPath,
+        viewport: null,
+        chromiumSandbox: true,
+      });
+      expect(options.args).toEqual(
+        expect.arrayContaining([
+          `--user-data-dir=${directory}`,
+          "--remote-debugging-pipe",
+          "--restore-last-session",
+          "--no-startup-window",
+          "--headless=new",
+          "--proxy-server=http://127.0.0.1:8123",
+          "--proxy-bypass-list=<-loopback>",
+          "--disable-quic",
+          "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ]),
+      );
+      expect(options.args).not.toEqual(expect.arrayContaining(["--password-store=basic"]));
+      expect(options.args).not.toEqual(expect.arrayContaining(["--use-mock-keychain"]));
+      expect(options.args).not.toContain("--no-sandbox");
+      expect(JSON.parse(await readFile(join(directory, "Default", "Preferences"), "utf8"))).toEqual(
+        { session: { restore_on_startup: 1 } },
+      );
+      expect(context.addInitScript.mock.invocationCallOrder[0]).toBeLessThan(
+        context.newPage.mock.invocationCallOrder[0]!,
+      );
+      expect(context.on.mock.invocationCallOrder[0]).toBeLessThan(
+        context.newPage.mock.invocationCallOrder[0]!,
+      );
+      await expect(launched.cdp.send("Target.getBrowserContexts")).resolves.toEqual({
+        browserContextIds: [],
+      });
+      await launched.cdp.send("Storage.getCookies");
+      expect(cdp.send).toHaveBeenCalledWith("Storage.getCookies", {});
+      await expect(
+        launched.cdp.send("Storage.clearCookies", { browserContextId: "other" }),
+      ).rejects.toThrow(/another browser context/);
+      let released = false;
+      const releasing = launcher.localProfiles.release(directory).then(() => {
+        released = true;
+      });
+      await withTimeout(closing.promise, 1000, {
+        timeoutError: () => new Error("Native context never began orderly close"),
+      });
+      expect(released).toBe(false);
+      expect(context.close).toHaveBeenCalledOnce();
+      close.resolve();
+      await releasing;
+      expect(browser.close).toHaveBeenCalledOnce();
+      await launched.close();
+      expect(context.close).toHaveBeenCalledOnce();
+      // Existing preferences belong to Chromium and cannot be replaced on reopen.
+      await writeFile(join(directory, "Default", "Preferences"), '{"retained":true}');
+      const reopened = await launcher.launch(nativeProfileRequest(directory));
+      expect(await readFile(join(directory, "Default", "Preferences"), "utf8")).toBe(
+        '{"retained":true}',
+      );
+      await reopened.close();
+    } finally {
+      close.resolve();
+      await launcher.localProfiles.release(directory);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["--password-store=basic", "--use-mock-keychain", "--profile-directory=Other"])(
+    "refuses native launches with %s",
+    async (arg) => {
+      const launch = vi.spyOn(chromium, "launchPersistentContext");
+      const launcher = new PlaywrightChromiumLauncher({
+        executablePath: process.execPath,
+        chromiumSandbox: true,
+        headless: true,
+        args: [arg],
+      });
+      await expect(launcher.launch(nativeProfileRequest("/unused-native-profile"))).rejects.toThrow(
+        /full Chromium/,
+      );
+      expect(launch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("detects silently rejected imports, preserving partition identities and ignoring legitimate expiry", () => {
+    const cookie = {
+      name: "session",
+      value: "secret",
+      domain: "example.com",
+      path: "/",
+      secure: true,
+      httpOnly: true,
+      expires: -1,
+      partitionKey: "https://top.example",
+      partitionKeyHasCrossSiteAncestor: false,
+    };
+    const live = {
+      ...cookie,
+      partitionKey: { topLevelSite: "https://top.example", hasCrossSiteAncestor: false },
+    };
+    expect(() => assertImportedCookies([cookie], [live])).not.toThrow();
+    expect(() => assertImportedCookies([cookie], [{ ...live, value: "rejected" }])).toThrow(
+      /rejected an imported profile cookie/,
+    );
+    expect(() =>
+      assertImportedCookies(
+        [cookie],
+        [
+          {
+            ...live,
+            partitionKey: { topLevelSite: "https://other.example", hasCrossSiteAncestor: false },
+          },
+        ],
+      ),
+    ).toThrow(/rejected/);
+    expect(() => assertImportedCookies([{ ...cookie, expires: 1 }], [])).not.toThrow();
+  });
+});

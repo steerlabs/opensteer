@@ -27,7 +27,8 @@ import { loadingSite, startBrowserService } from "./browser-sessions.test-suppor
 
 run("Browser Sessions through a whole deployment", () => {
   it("opens personal identities atomically and replays durable page outcomes without spare tabs", async () => {
-    const browser = await startBrowser();
+    const legacyBrowsers: LaunchedBrowser[] = [];
+    const browser = await startBrowser({ onLaunch: (browser) => legacyBrowsers.push(browser) });
     addCleanup("local Browser Runtime", () => browser.close());
     const stack = await deployment(browser);
     await browserAvailable(stack);
@@ -130,6 +131,16 @@ run("Browser Sessions through a whole deployment", () => {
       ok: true,
       data: { browserStarted: true, catalog: { tabs: [expect.any(Object)] } },
     });
+    // Unnegotiated profiles and Guest still use isolated incognito contexts;
+    // adding native default-context support must not change this compatibility path.
+    for (const launched of legacyBrowsers) {
+      const contexts = (await launched.cdp.send("Target.getBrowserContexts")) as {
+        browserContextIds: string[];
+      };
+      expect(contexts.browserContextIds).toHaveLength(1);
+      expect(contexts.browserContextIds[0]).toEqual(expect.any(String));
+      expect(contexts.browserContextIds[0]!.length).toBeGreaterThan(0);
+    }
     const after = await stack.host.browser.bootstrap(owner);
     expect(after.sessions.find((session) => session.id === legacy.session.id)?.opener).toEqual({
       kind: "unknown",

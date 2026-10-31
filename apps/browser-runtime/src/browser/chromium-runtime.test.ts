@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,7 @@ import {
   encodeBrowserProfileSnapshot,
   decodeBrowserProfileSnapshot,
   type BrowserOriginCaptureFailure,
+  type BrowserProfileSnapshot,
   type BrowserCookie,
 } from "@opensteer/browser-profile/snapshot";
 import {
@@ -71,6 +72,288 @@ import {
   waitForAsync,
   waitFor,
 } from "./chromium.test-support.js";
+async function verifyNativeProfilePersistence(): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "os-native-chromium-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const site = createServer((request, response) => {
+    if (request.url === "/worker.js") {
+      response.writeHead(200, { "content-type": "application/javascript" });
+      response.end(
+        "self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));",
+      );
+    } else {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end("<!doctype html><title>Native storage</title>");
+    }
+  });
+  cleanup.push(async () => {
+    await new Promise<void>((resolve, reject) =>
+      site.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const address = site.address();
+  if (!address || typeof address === "string") throw new Error("Missing test site");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  const { nativeProfileRequest } = await import("./native-profile.test-support.js");
+  const request = nativeProfileRequest(directory);
+  const open = () => launcher.launch(request);
+  let browser = await open();
+  cleanup.push(() => browser.close());
+  const firstProcesses = asRecord(await browser.cdp.send("SystemInfo.getProcessInfo"))
+    .processInfo as Array<{ type: string; id: number }>;
+  const firstPid = firstProcesses.find((p) => p.type === "browser")!.id;
+  expect(browser.context.pages()).toHaveLength(0);
+  const targets = (await browser.cdp.send("Target.getTargets")) as {
+    targetInfos: Array<{ targetId: string; type: string }>;
+  };
+  for (const target of targets.targetInfos.filter((target) => target.type === "page")) {
+    await expect(browser.cdp.attach(target.targetId)).rejects.toThrow(/not an attachable page/);
+  }
+  const page = await browser.context.createPage();
+  const cdp = await page.cdp();
+  await cdp.send("Page.enable");
+  const loaded = Promise.withResolvers<void>();
+  cdp.on("Page.loadEventFired", () => loaded.resolve());
+  await cdp.send("Page.navigate", { url: origin });
+  await withTimeout(loaded.promise, 5000, {
+    timeoutError: () => new Error("Native profile fixture never loaded"),
+  });
+  await cdp.send("Runtime.evaluate", {
+    awaitPromise: true,
+    expression: `(async () => {
+      localStorage.setItem("native", "retained");
+      const db = await new Promise((resolve, reject) => {
+        const open = indexedDB.open("native", 1);
+        open.onupgradeneeded = () => open.result.createObjectStore("values");
+        open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error);
+      });
+      const tx = db.transaction("values", "readwrite", { durability: "strict" });
+      tx.objectStore("values").put("retained", "native");
+      await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onabort = () => reject(tx.error); });
+      db.close();
+      await (await caches.open("native")).put("/cached", new Response("retained"));
+      await navigator.serviceWorker.register("/worker.js");
+      await navigator.serviceWorker.ready;
+    })()`,
+  });
+  const cookie = (name: string, expires: number, value = "retained"): BrowserCookie => ({
+    name,
+    value,
+    domain: "127.0.0.1",
+    path: "/",
+    expires,
+    httpOnly: true,
+    secure: false,
+    sameSite: "Lax",
+  });
+  await browser.replaceSiteCookies(
+    "http://127.0.0.1",
+    [cookie("session", -1), cookie("persistent", Math.floor(Date.now() / 1000) + 3600)],
+    browserTestSignal(),
+  );
+  await browser.close();
+  expect(() => process.kill(firstPid, 0)).toThrow();
+  browser = await open();
+  expect(browser.context.pages()).toHaveLength(0);
+  const assertState = async (sessionValue = "retained") => {
+    const cookies = asRecord(await browser.cdp.send("Storage.getCookies")).cookies as Array<{
+      name: string;
+      value: string;
+      session: boolean;
+    }>;
+    expect(cookies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "session", value: sessionValue, session: true }),
+        expect.objectContaining({ name: "persistent", value: "retained", session: false }),
+      ]),
+    );
+    const page = await browser.context.createPage();
+    const cdp = await page.cdp();
+    await cdp.send("Page.enable");
+    const loaded = Promise.withResolvers<void>();
+    cdp.on("Page.loadEventFired", () => loaded.resolve());
+    await cdp.send("Page.navigate", { url: origin });
+    await withTimeout(loaded.promise, 5000, {
+      timeoutError: () => new Error("Reopened profile fixture never loaded"),
+    });
+    const state = await cdp.send<{ result: { value: unknown }; exceptionDetails?: unknown }>(
+      "Runtime.evaluate",
+      {
+        awaitPromise: true,
+        returnByValue: true,
+        expression: `(async () => {
+        const db = await new Promise((resolve, reject) => { const open = indexedDB.open("native"); open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error); });
+        const value = await new Promise((resolve, reject) => { const r = db.transaction("values").objectStore("values").get("native"); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); db.close();
+        return { local: localStorage.getItem("native"), indexedDB: value, cache: await (await caches.match("/cached")).text(), worker: (await navigator.serviceWorker.getRegistration()).active.state };
+      })()`,
+      },
+    );
+    expect(state.exceptionDetails).toBeUndefined();
+    expect(state.result.value).toEqual({
+      local: "retained",
+      indexedDB: "retained",
+      cache: "retained",
+      worker: "activated",
+    });
+  };
+  await assertState();
+  // The replacement must flush while the browser remains open; kill that exact owner immediately.
+  await browser.replaceSiteCookies(
+    "http://127.0.0.1",
+    [
+      cookie("session", -1, "committed-before-crash"),
+      cookie("persistent", Math.floor(Date.now() / 1000) + 3600),
+    ],
+    browserTestSignal(),
+  );
+  const processes = asRecord(await browser.cdp.send("SystemInfo.getProcessInfo"))
+    .processInfo as Array<{ type: string; id: number }>;
+  const pid = processes.find((p) => p.type === "browser")!.id;
+  const closed = Promise.withResolvers<void>();
+  browser.onClose(() => closed.resolve());
+  process.kill(pid, "SIGKILL");
+  await withTimeout(closed.promise, 5000, {
+    timeoutError: () => new Error("Crashed Chromium never disconnected"),
+  });
+  await browser.close();
+  browser = await open();
+  expect(browser.context.pages()).toHaveLength(0);
+  await assertState("committed-before-crash");
+  const guest = await launcher.launch({
+    ...request,
+    storage: { kind: "guest" },
+    partitionKey: `session:${request.sessionId}`,
+  });
+  expect(asRecord(await guest.cdp.send("Storage.getCookies")).cookies).toEqual([]);
+  await guest.close();
+  await launcher.localProfiles!.release(directory);
+  expect(browser.context.isConnected?.()).toBe(false);
+}
+
+async function verifyNativeProfileConversion(): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "os-native-convert-"));
+  const rejectedDirectory = await mkdtemp(join(tmpdir(), "os-native-reject-"));
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  cleanup.push(async () => {
+    await launcher.localProfiles.release(directory);
+    await launcher.localProfiles.release(rejectedDirectory);
+    await rm(directory, { recursive: true, force: true });
+    await rm(rejectedDirectory, { recursive: true, force: true });
+  });
+  const { nativeProfileRequest } = await import("./native-profile.test-support.js");
+  const request = nativeProfileRequest(directory);
+  const cookie = {
+    domain: "native-import.invalid",
+    path: "/",
+    name: "session",
+    value: "converted",
+    httpOnly: true,
+    secure: true,
+    expires: -1,
+    sameSite: "None" as const,
+  };
+  const seed: BrowserProfileSnapshot = {
+    cookies: [
+      cookie,
+      ...["https://one.example", "https://two.example"].map((partitionKey) => ({
+        ...cookie,
+        name: "chips",
+        partitionKey,
+        partitionKeyHasCrossSiteAncestor: false,
+        value: partitionKey,
+      })),
+    ],
+    origins: ["https://native-import.invalid", "https://second-import.invalid"].map((origin) => ({
+      origin,
+      localStorage: [{ name: "converted", value: origin }],
+      indexedDB: [
+        {
+          name: "converted",
+          version: 1,
+          stores: [
+            {
+              name: "values",
+              autoIncrement: false,
+              indexes: [],
+              records: [{ key: "record", value: { converted: true } }],
+            },
+          ],
+        },
+      ],
+    })),
+  };
+  await launcher.localProfiles.importAndFlush({
+    directory,
+    binding: request.storage.binding,
+    snapshot: seed,
+    signal: browserTestSignal(),
+  });
+  const browser = await launcher.launch(request);
+  cleanup.push(() => browser.close());
+  expect(browser.context.pages()).toHaveLength(0);
+  const snapshot = await browser.exportSnapshot();
+  const page = await browser.context.createPage();
+  const cdp = await page.cdp();
+  await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
+  cdp.on("Fetch.requestPaused", (value) => {
+    const event = asRecord(value);
+    void cdp.send("Fetch.fulfillRequest", {
+      requestId: event.requestId,
+      responseCode: 200,
+      responseHeaders: [{ name: "content-type", value: "text/html" }],
+      body: Buffer.from("<!doctype html><html></html>").toString("base64"),
+    });
+  });
+  await cdp.send("Page.enable");
+  for (const state of seed.origins) {
+    const loaded = Promise.withResolvers<void>();
+    const listener = () => loaded.resolve();
+    cdp.on("Page.loadEventFired", listener);
+    await cdp.send("Page.navigate", { url: state.origin });
+    await withTimeout(loaded.promise, 5000, {
+      timeoutError: () => new Error("Converted origin helper did not load"),
+    });
+    cdp.off("Page.loadEventFired", listener);
+    const result = await cdp.send<{ result: { value: unknown }; exceptionDetails?: unknown }>(
+      "Runtime.evaluate",
+      {
+        awaitPromise: true,
+        returnByValue: true,
+        expression: `(async () => {
+        const db = await new Promise((resolve, reject) => { const open = indexedDB.open("converted"); open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error); });
+        const record = await new Promise((resolve, reject) => { const read = db.transaction("values").objectStore("values").get("record"); read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); }); db.close();
+        return { local: localStorage.getItem("converted"), record };
+      })()`,
+      },
+    );
+    expect(result.exceptionDetails).toBeUndefined();
+    expect(result.result.value).toEqual({ local: state.origin, record: { converted: true } });
+  }
+  expect(snapshot.cookies).toEqual(
+    expect.arrayContaining(seed.cookies.map((cookie) => expect.objectContaining(cookie))),
+  );
+  await browser.close();
+  await expect(
+    launcher.localProfiles.importAndFlush({
+      directory: rejectedDirectory,
+      binding: nativeProfileRequest(rejectedDirectory).storage.binding,
+      snapshot: { cookies: [{ ...cookie, secure: false }], origins: [] },
+      signal: browserTestSignal(),
+    }),
+  ).rejects.toThrow(/rejected an imported profile cookie/);
+}
+
 describe("real Chromium runtime", () => {
   it("persists full-navigation fragments and detects durable URL overflow in the real engine", async () => {
     const site = await serveFollowFixture();
@@ -1649,7 +1932,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     expect(exported.cookies.find((cookie) => cookie.name === "__Host-session")).not.toHaveProperty(
       "sameSite",
     );
-  }, 30_000);
+  });
 
   it("checkpoints and restores cookies, local storage, and IndexedDB across placements", async () => {
     const site = createServer((_request, response) => {
@@ -1821,9 +2104,9 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       join(artifactDirectory, "chromium-profile.json"),
       `${JSON.stringify({ engine: "Playwright Chromium", executablePath, failures, restored: state.result?.value, normal: normal.result?.value, encodedBytes: encodeBrowserProfileSnapshot(snapshot).byteLength }, null, 2)}\n`,
     );
-  }, 30_000);
+  });
 
-  it("replaces exactly one site's cookies in a live profile context through state.import", async () => {
+  it("replaces site cookies in legacy and native profiles and preserves native state across restarts", async () => {
     // The egress proxy is how this engine reaches the fixture as *.example.test.
     const proxy = new PublicBrowserEgressProxy({
       port: 0,
@@ -1854,6 +2137,8 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       `${JSON.stringify(report, null, 2)}\n`,
     );
     expect(report.fixtureCookieHeader).not.toMatch(/anon|tracker/u);
+    await verifyNativeProfilePersistence();
+    await verifyNativeProfileConversion();
   }, 60_000);
 
   it("shows every page a browser without WebAuthn, directly and as a hosted runtime launches it", async () => {
@@ -1978,7 +2263,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       .catch(() => ({}));
     await delay(250, browserTestSignal());
     expect(seen).not.toContain("/direct-private");
-  }, 30_000);
+  });
 
   it("navigates, streams, inputs, handles dialogs, tracks popups, and closes cleanly", async () => {
     const site = createServer((request, response) => {
@@ -2279,7 +2564,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     await controller.close();
     await ledger.close();
     await browser.close();
-  }, 30_000);
+  });
 
   it("gives an agent page-level power and none of a signed-in session's cookies, headers, or storage", async () => {
     const secrets = boundarySecrets();
