@@ -2,6 +2,7 @@ import type { PlaceContentPart } from "@opensteer/core";
 import { lastExecutionSelection } from "../host/execution-preferences.js";
 import { composerExecutionSelection } from "../host/model-catalog.js";
 import { VoiceSessionIdSchema } from "@opensteer/protocol/voice";
+import type { ScreenPresentationInput } from "@opensteer/protocol";
 import { classifyClientFailure } from "../connections/operation-error.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import type { PendingSendCommand } from "../host/pending-send.js";
@@ -24,6 +25,7 @@ import { routeUtterance, voiceTargets } from "./router.js";
 import { VoiceSpeaker } from "./speaker.js";
 import { voiceTimers, type VoiceTimer, type VoiceTimers } from "./timers.js";
 import type { ScreenPresentationPort } from "../screen/contract.js";
+import { ScreenPresentationController } from "../screen/controller.js";
 
 export interface VoiceAccount {
   readonly environmentId: string;
@@ -124,6 +126,7 @@ interface VoiceSession {
   speaker: VoiceSpeaker | null;
   idleTimer: VoiceTimer | null;
   sends: Promise<void>;
+  readonly presentation: ScreenPresentationController | null;
 }
 
 /** One per app runtime; meters bypass the React snapshot subscription. */
@@ -193,7 +196,16 @@ export class VoiceController {
       speaker: null,
       idleTimer: null,
       sends: Promise.resolve(),
+      presentation:
+        this.#input.presentation && this.#input.hostClient.screenPresentation
+          ? new ScreenPresentationController({
+              ...this.#input,
+              transport: this.#input.hostClient.screenPresentation,
+              port: this.#input.presentation,
+            })
+          : null,
     };
+    session.presentation?.start(session.id);
     this.#session = session;
     this.#publish({ phase: "connecting", muted: false, heard: null, spoken: null, since: null });
     try {
@@ -363,18 +375,21 @@ export class VoiceController {
         this.#publish({ heard: event.text });
         this.#settlePhase(session);
         if (!event.text.trim()) return;
+        const presentation = session.presentation?.captureUtterance();
         const target = routeUtterance(
           event.text,
           voiceTargets(this.#input.hostClient.getSnapshot()),
         );
         if (target) this.#input.navigate(target);
         else {
-          const captured = this.#input.presentation?.capture();
+          const captured = presentation?.view ?? this.#input.presentation?.capture();
           const places = this.#places(captured?.places ?? this.#input.places);
           session.pending.set(event.turnId, { messageId: null, runId: null });
           this.#settlePhase(session);
           session.sends = session.sends
-            .then(() => this.#send(session, event.turnId, event.text, places))
+            .then(() =>
+              this.#send(session, event.turnId, event.text, places, presentation?.context),
+            )
             .catch(() => {
               if (this.#session !== session) return;
               session.pending.delete(event.turnId);
@@ -412,6 +427,7 @@ export class VoiceController {
     turnId: string,
     text: string,
     capturedPlaces: Promise<readonly PlaceContentPart[]>,
+    screenPresentation: ScreenPresentationInput | undefined,
   ): Promise<void> {
     if (this.#session !== session) return;
     const host = this.#input.hostClient;
@@ -440,13 +456,15 @@ export class VoiceController {
     if (this.#session !== session) return;
     const places = await capturedPlaces;
     if (this.#session !== session) return;
-    const command: PendingSendCommand = {
-      type: "thread.sendMessage",
-      threadId,
-      delivery: "queue",
-      content: [{ type: "text", text }, ...places],
-      idempotencyKey: `voice:${session.id}:${turnId}`,
-    };
+    const command: PendingSendCommand & { readonly screenPresentation?: ScreenPresentationInput } =
+      {
+        type: "thread.sendMessage",
+        threadId,
+        delivery: "queue",
+        content: [{ type: "text", text }, ...places],
+        idempotencyKey: `voice:${session.id}:${turnId}`,
+        ...(screenPresentation ? { screenPresentation } : {}),
+      };
     const result = await this.#attempt(session, () => host.dispatch(command));
     if (this.#session !== session || result.type !== "thread.sendMessage") return;
     const pending = session.pending.get(turnId);
@@ -487,6 +505,7 @@ export class VoiceController {
     this.#session = null;
     session.abort.abort();
     session.speaker?.dispose();
+    session.presentation?.dispose();
     this.#timers.clear(session.idleTimer);
     this.#input.media?.keepAwake?.(false);
     this.#publish({ phase: "idle", since: null, muted: false, notice: kind ? notice(kind) : null });

@@ -412,7 +412,11 @@ describe("VoiceController", () => {
     selected = "https://example.com/later";
     release();
     await vi.waitFor(
-      () => expect(dispatch, "voice did not send its captured page").toHaveBeenCalled(),
+      () =>
+        expect(
+          dispatch.mock.calls.some(([command]) => command.type === "thread.sendMessage"),
+          "voice did not send its captured page",
+        ).toBe(true),
       { timeout: 100 },
     );
     expect(dispatch).toHaveBeenCalledWith(

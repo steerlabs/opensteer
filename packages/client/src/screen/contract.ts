@@ -7,7 +7,7 @@ import type { ScreenShowMessage } from "@opensteer/protocol";
 
 export interface ScreenPresentationEndpoint {
   readonly endpointRef: string;
-  /** A conservative bound from the socket setup round trip, unaffected by wall-clock skew. */
+  /** Setup-round-trip clock estimate; suspension retires the endpoint and its sample. */
   serverTimeUpperBound(): number;
 }
 
