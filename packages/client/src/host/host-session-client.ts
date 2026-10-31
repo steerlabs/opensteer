@@ -1211,6 +1211,9 @@ export class HttpHostClient {
   readonly browserFrames: BrowserFrameStore = {
     editing: this.#browserEditing,
     scope: this.#browserPresentationScope,
+    claim: (sessionId, surfaceId, token) => {
+      if (surfaceId) this.#targetedControl.claim(sessionId, surfaceId, token);
+    },
     accept: (sessionId, surfaceId, token) => {
       if (surfaceId) this.#targetedControl.accept(sessionId, surfaceId, token);
       else {
@@ -1238,6 +1241,9 @@ export class HttpHostClient {
   };
   readonly browserWatchFrames: BrowserFrameStore = {
     scope: this.#browserPresentationScope,
+    claim: (sessionId, surfaceId, token) => {
+      if (surfaceId) this.#targetedWatch.claim(sessionId, surfaceId, token);
+    },
     accept: (sessionId, surfaceId, token) =>
       this.acceptBrowserWatchFrame(sessionId, token, surfaceId),
     get: (sessionId, surfaceId) =>

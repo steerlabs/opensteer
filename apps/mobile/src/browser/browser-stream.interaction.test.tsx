@@ -175,6 +175,7 @@ function setup(interactive = true) {
   const rasterDemand = vi.fn(() => demand);
   const frames: BrowserFrameStore = {
     rasterDemand,
+    claim: vi.fn(),
     get: vi.fn(() => picture),
     subscribe: vi.fn((_sessionId, listener) => {
       listeners.add(listener);
@@ -602,6 +603,8 @@ describe("native browser picture presenter", () => {
     const { emit, decode, hostClient, render, send } = setup();
     render("synchronized");
     emit();
+    expect(hostClient.browserFrames.claim).toHaveBeenCalledWith(sessionId, surfaceId, tokenA);
+    expect(hostClient.acceptBrowserWatchFrame).not.toHaveBeenCalled();
     await decode();
     emit(surfaceId, { frameId: 2, geometryRevision: 8, watchToken: tokenB });
     expect(

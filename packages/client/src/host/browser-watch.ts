@@ -31,7 +31,7 @@ interface Watch {
   synchronized: boolean;
   socket: WebSocketClient | null;
   state: BrowserWatchState;
-  readonly awaiting: Map<string, number>;
+  readonly awaiting: Map<string, { readonly receivedAt: number; claimed: boolean }>;
   timer: ReturnType<typeof setTimeout> | null;
   attempt: number;
   terminal: boolean;
@@ -313,11 +313,15 @@ export class BrowserWatchStore {
       ),
     );
   }
+  claim(sessionId: string, surfaceId: string, token: string): void {
+    const receipt = this.#targets.get(this.#key(sessionId, surfaceId))?.awaiting.get(token);
+    if (receipt) receipt.claimed = true;
+  }
   accept(sessionId: string, surfaceId: string, token: string): void {
     const target = this.#targets.get(this.#key(sessionId, surfaceId));
-    const receivedAt = target?.awaiting.get(token);
-    if (!target || receivedAt === undefined) return;
-    this.#diagnose({ stage: "credit", durationMs: performance.now() - receivedAt });
+    const receipt = target?.awaiting.get(token);
+    if (!target || !receipt) return;
+    this.#diagnose({ stage: "credit", durationMs: performance.now() - receipt.receivedAt });
     target.awaiting.delete(token);
     if (target.socket?.readyState === 1)
       target.socket.send(
@@ -510,7 +514,10 @@ export class BrowserWatchStore {
           throw new Error("The browser frame does not match the subscribed target and geometry.");
         if (target.awaiting.has(frame.header.watchToken) || target.awaiting.size >= 8)
           throw new Error("Browser frame receipts exceeded the negotiated window.");
-        target.awaiting.set(frame.header.watchToken, performance.now());
+        target.awaiting.set(frame.header.watchToken, {
+          receivedAt: performance.now(),
+          claimed: false,
+        });
         this.#diagnose({
           stage: "receipt",
           frameId: frame.header.frameId,
@@ -609,8 +616,19 @@ export class BrowserWatchStore {
   #set(target: Watch, state: BrowserWatchState): void {
     const before = target.state;
     target.state = state;
-    if (before.frame !== state.frame && before.frame?.header.watchToken)
-      this.accept(target.sessionId, target.surfaceId, before.frame.header.watchToken);
+    if (before.frame !== state.frame) {
+      // An imperative presenter may still be decoding the previous delivery.
+      // A batched subscriber may never see it: only unclaimed replacements
+      // are the store's to discard. Clearing retires all deliveries.
+      if (state.frame === null)
+        for (const token of target.awaiting.keys())
+          this.accept(target.sessionId, target.surfaceId, token);
+      else if (before.frame?.header.watchToken) {
+        const token = before.frame.header.watchToken;
+        if (!target.awaiting.get(token)?.claimed)
+          this.accept(target.sessionId, target.surfaceId, token);
+      }
+    }
     if (
       before.admitted !== state.admitted ||
       before.admissionId !== state.admissionId ||

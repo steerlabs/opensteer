@@ -98,6 +98,7 @@ export function useNativeBrowserPicture(input: {
       if (latest === null || latest === handled.current) return;
       handled.current = latest;
       owned.add(latest);
+      if (latest.header.watchToken) frames.claim?.(sessionId, tabId, latest.header.watchToken);
       const native = view.current;
       const size = latest.data.byteLength;
       if (

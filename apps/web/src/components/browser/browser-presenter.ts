@@ -139,6 +139,7 @@ class BrowserPicturePresenter {
     const read = () => {
       const frame = source.get(sessionId, targeted ? this.#surfaceId : undefined);
       const token = frame?.header.watchToken;
+      if (token) source.claim?.(sessionId, targeted ? this.#surfaceId : undefined, token);
       let settled = false;
       const settle = () => {
         if (settled) return;

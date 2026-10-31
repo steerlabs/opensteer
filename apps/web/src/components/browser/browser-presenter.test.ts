@@ -50,10 +50,13 @@ it("reports a reconnected socket's replay of the already drawn picture as presen
       return () => listeners.delete(listener);
     },
     accept: vi.fn(),
+    claim: vi.fn(),
   };
   const presented = vi.fn();
   const detach = attachBrowserCanvas(source, "browser-a", surfaceId, true, canvas, presented);
   try {
+    expect(source.claim).toHaveBeenCalledWith("browser-a", surfaceId, "first-socket");
+    expect(source.accept).not.toHaveBeenCalled();
     for (let step = 0; step < 6; step++) await Promise.resolve();
     const due = [...paints.values()];
     paints.clear();
@@ -62,6 +65,7 @@ it("reports a reconnected socket's replay of the already drawn picture as presen
     const replay = { ...frame, header: { ...frame.header, watchToken: "reconnected-socket" } };
     frame = replay;
     listeners.forEach((listener) => listener());
+    expect(source.claim).toHaveBeenLastCalledWith("browser-a", surfaceId, "reconnected-socket");
     expect(presented).toHaveBeenCalledTimes(2);
     expect(presented).toHaveBeenLastCalledWith(replay);
     expect(decode).toHaveBeenCalledTimes(1);

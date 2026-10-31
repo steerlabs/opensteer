@@ -620,6 +620,8 @@ export interface BrowserFrameStore {
   readonly editing?: BrowserEditingStore;
   /** Application/auth scope shared by Control and Watch picture presenters. */
   readonly scope?: object;
+  /** Hold this delivery until accept; unclaimed replacements can be discarded by the store. */
+  claim?: (sessionId: string, surfaceId: string | undefined, token: string) => void;
   accept?: (sessionId: string, surfaceId: string | undefined, token: string) => void;
   get: (sessionId: string, surfaceId?: string) => BrowserFrameView | null;
   subscribe: (sessionId: string, listener: () => void, surfaceId?: string) => () => void;

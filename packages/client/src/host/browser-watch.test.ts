@@ -254,7 +254,7 @@ describe("BrowserWatchStore", () => {
     },
   );
 
-  it("requires every picture holder to support pipelining and returns replaced receipts once", () => {
+  it("requires every picture holder to support pipelining and settles receipts only on presentation or retirement", () => {
     const socket = new TargetSocket();
     const store = new BrowserWatchStore(
       () => socket,
@@ -269,15 +269,19 @@ describe("BrowserWatchStore", () => {
     socket.open();
     socket.admit();
     socket.picture(1);
+    store.claim(sessionId, surfaceId, "00000000-0000-4000-8000-000000000001");
     socket.picture(2);
     const acknowledgements = () =>
       socket.sent
         .map((message) => JSON.parse(message))
         .filter((message) => message.type === "stream.ack");
+    // The presenter can still be decoding picture 1 while picture 2 waits.
+    // Replacing the store's newest frame is not a presentation or a discard.
+    expect(acknowledgements()).toEqual([]);
+    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000001");
     expect(acknowledgements().map((message) => message.token)).toEqual([
       "00000000-0000-4000-8000-000000000001",
     ]);
-    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000001");
     const legacy = store.retain(sessionId, surfaceId);
     expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ type: "stream.subscribe", surfaceId });
     expect(acknowledgements()).toHaveLength(2);
@@ -286,9 +290,23 @@ describe("BrowserWatchStore", () => {
     socket.picture(3);
     store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000002");
     store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000003");
+    socket.picture(4);
+    store.claim(sessionId, surfaceId, "00000000-0000-4000-8000-000000000004");
+    socket.picture(5);
+    store.claim(sessionId, surfaceId, "00000000-0000-4000-8000-000000000005");
+    expect(acknowledgements()).toHaveLength(3);
+    socket.receive({ type: "browser.stream.state", surfaceId, state: "capacity" });
+    expect(socket.closes).toEqual([]);
+    expect(store.get(sessionId, surfaceId).frame).toBeNull();
+    store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000004");
+    socket.picture(6);
+    socket.picture(7);
+    expect(acknowledgements()).toHaveLength(6);
     release();
     expect(acknowledgements().map((message) => message.token)).toEqual(
-      [1, 2, 3].map((sequence) => `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`),
+      [1, 2, 3, 4, 5, 6, 7].map(
+        (sequence) => `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`,
+      ),
     );
     store.dispose();
   });
