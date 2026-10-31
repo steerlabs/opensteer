@@ -10,6 +10,14 @@ runs:
       with:
         path: ~/.cache/ms-playwright
         key: chromium-${{ runner.os }}-${{ runner.arch }}-${{ steps.revision.outputs.key }}
+    - name: Use Ubuntu's primary package mirror
+      if: runner.os == 'Linux' && runner.arch == 'X64'
+      shell: bash
+      run: |
+        # The Azure mirror can spend most of a shard's budget downloading fonts.
+        if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+          sudo sed -E -i 's|https?://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+        fi
     - shell: bash
       run: pnpm exec playwright-core install --with-deps chromium
     # Otherwise tests fall back to the runner image's Chrome or Chromium. Nothing has
