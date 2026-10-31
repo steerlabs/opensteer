@@ -18,9 +18,9 @@
   padding: var(--space-6);
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  background: var(--sheen) var(--fill-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
   box-shadow: var(--edge-plate), var(--lift-float);
   animation: rise-in var(--duration-fast) var(--ease-out);
 }
@@ -276,9 +276,9 @@
   padding: var(--space-8) var(--space-8) var(--space-8) var(--space-14);
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  background: var(--sheen) var(--fill-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
   box-shadow: var(--edge-plate), var(--lift-float);
   color: var(--text-soft);
   font-size: var(--text-lg);

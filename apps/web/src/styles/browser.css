@@ -249,6 +249,8 @@
 }
 
 /* The omnibox: a rounded field, the site's icon at its start. */
+/* Its rim is the plate's, not a bare field's: the address it always shows is
+   what makes it findable. */
 .browser-address {
   display: flex;
   align-items: center;
@@ -256,7 +258,7 @@
   height: var(--control-height);
   padding: 0 var(--space-4) 0 var(--space-12);
   overflow: hidden;
-  border: 1px solid var(--rim-control);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
   color: var(--text-soft);
   background: var(--sheen) var(--fill-plate);
@@ -456,15 +458,15 @@
   overflow: hidden;
   border: 1px solid var(--rim-plate);
   border-radius: 0 var(--radius-sm) 0 0;
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   color: var(--text-soft);
   font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;
   box-shadow: var(--edge-plate), var(--lift-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 /* The profile sheets ride the shared Dialog. A page's own dialog (alert,
@@ -672,7 +674,8 @@
   height: 18px;
   border-radius: 5px;
   color: hsl(var(--site-hue, 30) 28% 86%);
-  background: hsl(var(--site-hue, 30) 22% 26%);
+  background: var(--sheen-mark) hsl(var(--site-hue, 30) 22% 26%);
+  box-shadow: var(--edge-mark);
   font-size: var(--text-3xs);
   font-weight: var(--weight-heavy);
   line-height: 1;
@@ -686,6 +689,7 @@
 .site-mark--icon {
   border-radius: 3px;
   background: none;
+  box-shadow: none;
   object-fit: contain;
 }
 
@@ -737,11 +741,11 @@
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
   color: var(--text);
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   box-shadow: var(--edge-plate), var(--lift-float);
   font-size: var(--text-md);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .browser-keyboard-offer svg {
@@ -1203,10 +1207,10 @@ button.surface-chip:hover {
   padding: 6px;
   border: 1px solid var(--rim-plate);
   border-radius: 12px;
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   box-shadow: var(--edge-plate), var(--lift-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .browser-downloads {

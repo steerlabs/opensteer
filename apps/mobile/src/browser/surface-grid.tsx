@@ -11,7 +11,7 @@ import {
 import { useSafeAreaFrame } from "react-native-safe-area-context";
 import { AppMark } from "../computers/app-mark.js";
 import { MacAppPreview } from "../computers/mac-app-view.js";
-import { color, radius, space } from "../theme.js";
+import { color, material, radius, space } from "../theme.js";
 import { useContentInsets } from "../ui/pane.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -236,7 +236,7 @@ const Tile = memo(function Tile(props: {
                   styles.profile,
                   tile.identity.kind === "guest"
                     ? styles.guest
-                    : { backgroundColor: tile.identity.tint },
+                    : [material.mark, { backgroundColor: tile.identity.tint }],
                 ]}
               >
                 {tile.identity.kind === "profile" ? (

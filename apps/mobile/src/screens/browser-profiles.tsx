@@ -14,7 +14,7 @@ import type { StaticScreenProps } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { space, touchTarget } from "../theme.js";
+import { material, space, touchTarget } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Field, Notice, RowGroup, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
@@ -256,7 +256,7 @@ function ProfileRow({
         style={styles.rowHead}
       >
         {row.identity.kind === "profile" ? (
-          <View style={[styles.identity, { backgroundColor: row.identity.tint }]}>
+          <View style={[styles.identity, material.mark, { backgroundColor: row.identity.tint }]}>
             <AppText role="bodyMedium">{row.identity.initial}</AppText>
           </View>
         ) : null}
