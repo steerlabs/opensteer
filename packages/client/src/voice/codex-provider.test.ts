@@ -3,7 +3,7 @@ import type { HostApiClient } from "@opensteer/protocol";
 import { voiceRenewIntervalMs } from "@opensteer/protocol/voice";
 import type { VoiceCallEvent, VoiceMediaPort } from "./contract.js";
 import { createCodexVoiceProvider } from "./codex-provider.js";
-import { voiceTestId } from "./voice.test-support.js";
+import { settle, voiceTestId } from "./voice.test-support.js";
 
 class FakePeer extends EventTarget {
   iceGatheringState = "complete";
@@ -191,10 +191,8 @@ describe("Codex voice provider", () => {
     const f = setup();
     f.peer.iceGatheringState = "gathering";
     const opening = f.open();
-    await vi.waitFor(
-      () => expect(f.peer.setLocalDescription, "local offer was never set").toHaveBeenCalled(),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(f.peer.setLocalDescription, "local offer was never set").toHaveBeenCalled();
     expect(f.rpc["voice.start"]).not.toHaveBeenCalled();
     f.peer.localDescription = { type: "offer", sdp: "with candidates" };
     await vi.advanceTimersByTimeAsync(3_000);
@@ -205,10 +203,8 @@ describe("Codex voice provider", () => {
     const g = setup();
     g.peer.iceGatheringState = "gathering";
     const second = g.open();
-    await vi.waitFor(
-      () => expect(g.peer.setLocalDescription, "second offer was never set").toHaveBeenCalled(),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(g.peer.setLocalDescription, "second offer was never set").toHaveBeenCalled();
     g.peer.iceGatheringState = "complete";
     g.peer.dispatchEvent(new Event("icegatheringstatechange"));
     await (await second).close();
@@ -259,10 +255,8 @@ describe("Codex voice provider", () => {
     );
     const opening = f.open();
     const rejected = expect(opening).rejects.toMatchObject({ failure: "connection-failed" });
-    await vi.waitFor(
-      () => expect(f.rpc["voice.start"], "start was never submitted").toHaveBeenCalled(),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(f.rpc["voice.start"], "start was never submitted").toHaveBeenCalled();
     f.abort.abort();
     await rejected;
     expect(f.track.stop).toHaveBeenCalledTimes(1);
@@ -371,10 +365,8 @@ describe("Codex voice provider", () => {
     f.peer.iceGatheringState = "gathering";
     const opening = f.open();
     const rejected = expect(opening).rejects.toMatchObject({ failure: "connection-failed" });
-    await vi.waitFor(
-      () => expect(f.peer.setLocalDescription, "offer was never set").toHaveBeenCalled(),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(f.peer.setLocalDescription, "offer was never set").toHaveBeenCalled();
     f.abort.abort();
     await rejected;
     expect(f.rpc["voice.stop"]).toHaveBeenCalledWith({

@@ -7,6 +7,7 @@ import type { RunEntry } from "../host/client.js";
 import { VoiceStartError, type VoiceCall, type VoiceSnapshot as Snapshot } from "./contract.js";
 import { VoiceController, voiceAccount, type VoiceControllerInput } from "./controller.js";
 import {
+  settle,
   semanticVoice,
   voiceHost,
   voiceReply,
@@ -122,10 +123,8 @@ describe("VoiceController", () => {
     expect(f.controller.getSnapshot()).toMatchObject({ phase: "hearing", heard: "Help" });
     f.emit({ type: "heard", turnId: "one", text: "  Help me plan.  " });
     expect(f.controller.getSnapshot().phase).toBe("thinking");
-    await vi.waitFor(
-      () => expect(dispatch, "voice utterance never reached Chat").toHaveBeenCalled(),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(dispatch, "voice utterance never reached Chat").toHaveBeenCalled();
     expect(dispatch).toHaveBeenCalledExactlyOnceWith({
       type: "thread.sendMessage",
       threadId: id,
@@ -133,11 +132,8 @@ describe("VoiceController", () => {
       content: [{ type: "text", text: "  Help me plan.  " }],
       idempotencyKey: `voice:${voiceTestId}:one`,
     });
-    await vi.waitFor(
-      () =>
-        expect(dispatch.mock.settledResults[0]?.type, "Chat send never settled").toBe("fulfilled"),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(dispatch.mock.settledResults[0]?.type, "Chat send never settled").toBe("fulfilled");
     const receipt = await dispatch.mock.results[0]!.value;
     expect(receipt.type).toBe("thread.sendMessage");
     if (receipt.type !== "thread.sendMessage") throw new Error("Wrong send receipt");
@@ -182,10 +178,8 @@ describe("VoiceController", () => {
     await f.controller.start();
     f.emit({ type: "heard", turnId: "one", text: "open a PR" });
     f.emit({ type: "heard", turnId: "one", text: "open a PR" });
-    await vi.waitFor(
-      () => expect(dispatch, "unknown send was not retried").toHaveBeenCalledTimes(2),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(dispatch, "unknown send was not retried").toHaveBeenCalledTimes(2);
     expect(dispatch.mock.calls[0]).toEqual(dispatch.mock.calls[1]);
     const result = await dispatch.mock.results[1]!.value;
     expect(result.type === "thread.sendMessage" && result.wasDuplicate).toBe(true);
@@ -205,10 +199,8 @@ describe("VoiceController", () => {
     await f.controller.start();
     f.emit({ type: "heard", turnId: "nav", text: "show me chat" });
     expect(f.navigate).not.toHaveBeenCalled();
-    await vi.waitFor(
-      () => expect(createHome, "first utterance never created Chat").toHaveBeenCalledTimes(1),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(createHome, "first utterance never created Chat").toHaveBeenCalledTimes(1);
     expect(createHome).toHaveBeenCalledWith(
       expect.objectContaining({
         ...voiceAccount(f.host.getSnapshot()),
@@ -216,14 +208,11 @@ describe("VoiceController", () => {
         idempotencyKey: `voice:${voiceTestId}:home`,
       }),
     );
-    await vi.waitFor(
-      () =>
-        expect(
-          dispatch.mock.calls.filter(([command]) => command.type === "thread.sendMessage"),
-          "first utterance was not sent to the created Chat",
-        ).toHaveLength(1),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(
+      dispatch.mock.calls.filter(([command]) => command.type === "thread.sendMessage"),
+      "first utterance was not sent to the created Chat",
+    ).toHaveLength(1);
     const home = await createHome.mock.results[0]!.value;
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -259,17 +248,14 @@ describe("VoiceController", () => {
       .mockRejectedValue(new Error("stop before send"));
     await f.controller.start();
     f.emit({ type: "heard", turnId: "ask", text: "Help me" });
-    await vi.waitFor(
-      () =>
-        expect(createHome).toHaveBeenCalledWith(
-          expect.objectContaining({
-            environmentId: placement.environmentId,
-            harnessInstanceId: placement.harnessInstanceId,
-            modelSelection: placement.modelSelection,
-            accessMode: "approval-required",
-          }),
-        ),
-      { timeout: 100 },
+    await settle();
+    expect(createHome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environmentId: placement.environmentId,
+        harnessInstanceId: placement.harnessInstanceId,
+        modelSelection: placement.modelSelection,
+        accessMode: "approval-required",
+      }),
     );
     f.dispose();
   });
@@ -326,9 +312,8 @@ describe("VoiceController", () => {
     f.publish({ harnesses: snapshot.harnesses });
     const createHome = vi.spyOn(f.host, "createHome");
     f.emit({ type: "heard", turnId: "ask", text: "Help me" });
-    await vi.waitFor(() => expect(f.controller.getSnapshot().notice?.kind).toBe("choose-ai"), {
-      timeout: 100,
-    });
+    await settle();
+    expect(f.controller.getSnapshot().notice?.kind).toBe("choose-ai");
     expect(createHome).not.toHaveBeenCalled();
     expect(f.call.close).toHaveBeenCalledTimes(1);
     f.dispose();
@@ -359,17 +344,11 @@ describe("VoiceController", () => {
       expect(places).toHaveBeenCalledTimes(1);
       if (mode === "timeout") expect(dispatch).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(mode === "timeout" ? 1500 : 0);
-      await vi.waitFor(
-        () =>
-          expect(dispatch).toHaveBeenCalledWith(
-            expect.objectContaining({
-              content: [
-                { type: "text", text: "Explain this" },
-                ...(mode === "ready" ? [page] : []),
-              ],
-            }),
-          ),
-        { timeout: 100 },
+      await settle();
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: [{ type: "text", text: "Explain this" }, ...(mode === "ready" ? [page] : [])],
+        }),
       );
       f.dispose();
     },
@@ -380,11 +359,8 @@ describe("VoiceController", () => {
     const dispatch = vi.spyOn(f.host, "dispatch");
     await f.controller.start();
     f.emit({ type: "heard", turnId: "one", text: "Help" });
-    await vi.waitFor(
-      () =>
-        expect(dispatch.mock.settledResults[0]?.type, "Chat send never settled").toBe("fulfilled"),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(dispatch.mock.settledResults[0]?.type, "Chat send never settled").toBe("fulfilled");
     const receipt = await dispatch.mock.results[0]!.value;
     if (receipt.type !== "thread.sendMessage") throw new Error("Wrong send receipt");
     const run: RunEntry = {
@@ -446,10 +422,8 @@ describe("VoiceController", () => {
         }),
     );
     const starting = f.controller.start();
-    await vi.waitFor(
-      () => expect(f.provider.open, "provider never started").toHaveBeenCalledTimes(1),
-      { timeout: 100 },
-    );
+    await settle();
+    expect(f.provider.open, "provider never started").toHaveBeenCalledTimes(1);
     await f.controller.stop();
     connected(f.call);
     await starting;
@@ -551,12 +525,15 @@ it("agent captions never auto-send; redelivered back executes once and unknown t
   expect(f.dispatch).not.toHaveBeenCalled();
   expect(f.controller.getSnapshot()).toMatchObject({ heard: "go back", phase: "thinking" });
   f.tool({ id: "back", tool: "show", input: { link: "opensteer://back" }, heard: ["go back"] });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(1), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(1);
   f.tool({ id: "back", tool: "show", input: { link: "opensteer://back" }, heard: ["go back"] });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(2), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(2);
   expect(f.navigate).toHaveBeenCalledExactlyOnceWith({ kind: "back" });
   f.tool({ id: "unknown", tool: "future", input: {}, heard: [] });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(3), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(3);
   expect(f.answer.mock.calls[2]![0]).toMatchObject({
     ok: false,
     text: "This device can't do that yet.",
@@ -579,7 +556,8 @@ it("hands off the person's words anchored on the turn that asked, keeping unsent
     input: { messages: 2, text: "injected agent words" },
     heard: ["Words 4."],
   });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(1), { timeout: 200 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(1);
   expect(f.dispatch).toHaveBeenCalledWith(
     expect.objectContaining({
       idempotencyKey: `voice:${voiceTestId}:send`,
@@ -593,12 +571,14 @@ it("hands off the person's words anchored on the turn that asked, keeping unsent
   expect(f.controller.getSnapshot().phase).toBe("thinking");
   // Only what was sent leaves the buffer; Words 5 stays unsent.
   f.tool({ id: "again", tool: "send_to_chat", input: { messages: 1 }, heard: ["words 6"] });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(2), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(2);
   expect(f.dispatch).toHaveBeenLastCalledWith(
     expect.objectContaining({ content: [{ type: "text", text: "  Words 6!  " }] }),
   );
   f.tool({ id: "older", tool: "send_to_chat", input: { messages: 1 }, heard: ["Words 5"] });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(3), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(3);
   expect(f.dispatch).toHaveBeenLastCalledWith(
     expect.objectContaining({ content: [{ type: "text", text: "  Words 5!  " }] }),
   );
@@ -613,13 +593,15 @@ it("waits briefly for a hand-off's transcript and never substitutes other words"
   await vi.advanceTimersByTimeAsync(1_000);
   expect(f.dispatch).not.toHaveBeenCalled();
   f.emit({ type: "heard", turnId: "late", text: "Book a flight." });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(1), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(1);
   expect(f.dispatch).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({ content: [{ type: "text", text: "Book a flight." }] }),
   );
   f.tool({ id: "missing", tool: "send_to_chat", input: { messages: 1 }, heard: ["Never said"] });
   await vi.advanceTimersByTimeAsync(3_000);
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(2), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(2);
   expect(f.answer.mock.calls[1]![0]).toMatchObject({ ok: false });
   expect(f.dispatch).toHaveBeenCalledTimes(1);
   f.dispose();
@@ -631,7 +613,8 @@ it("reports a hand-off whose delivery is unknown without inviting a resend", asy
   f.dispatch.mockRejectedValue(new TypeError("connection lost"));
   f.emit({ type: "heard", turnId: "one", text: "Book a flight." });
   f.tool({ id: "send", tool: "send_to_chat", input: { messages: 1 }, heard: ["Book a flight."] });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(1), { timeout: 200 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(1);
   expect(f.dispatch).toHaveBeenCalledTimes(2);
   expect(new Set(f.dispatch.mock.calls.map(([command]) => command.idempotencyKey))).toEqual(
     new Set([`voice:${voiceTestId}:send`]),
@@ -647,7 +630,8 @@ it("deduplicates context, debounces changes, and pushes changed context on heari
   let title = "First";
   const f = agentSetup({ currentView: () => ({ title }) });
   await f.controller.start();
-  await vi.waitFor(() => expect(f.context).toHaveBeenCalledTimes(1), { timeout: 100 });
+  await settle();
+  expect(f.context).toHaveBeenCalledTimes(1);
   f.controller.refreshContext();
   await vi.advanceTimersByTimeAsync(250);
   expect(f.context).toHaveBeenCalledTimes(1);
@@ -672,12 +656,14 @@ it("backs off transient polls, retries the same answer body, and cancels a pendi
   await vi.advanceTimersByTimeAsync(1);
   expect(f.next).toHaveBeenCalledTimes(2);
   f.tool({ id: "one", tool: "show", input: { link: "opensteer://back" }, heard: [] });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(2), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(2);
   expect(f.answer.mock.calls[0]![0]).toEqual(f.answer.mock.calls[1]![0]);
   expect(f.navigate).toHaveBeenCalledTimes(1);
   f.next.mockRejectedValue(new TypeError("offline"));
   f.tool({ id: "two", tool: "future", input: {}, heard: [] });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(3), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(3);
   await f.controller.stop();
   const polls = f.next.mock.calls.length;
   await vi.advanceTimersByTimeAsync(20_000);
@@ -696,7 +682,8 @@ it("waits for negotiation before handling an utterance received while opening", 
   await opening;
   expect(f.dispatch).not.toHaveBeenCalled();
   f.tool({ id: "handoff", tool: "send_to_chat", input: { messages: 1 }, heard: ["Do this."] });
-  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledTimes(1), { timeout: 100 });
+  await settle();
+  expect(f.answer).toHaveBeenCalledTimes(1);
   expect(f.dispatch).toHaveBeenCalledWith(
     expect.objectContaining({ content: [{ type: "text", text: "do this" }] }),
   );
