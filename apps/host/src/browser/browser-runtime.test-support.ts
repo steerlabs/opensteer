@@ -249,6 +249,7 @@ export async function startBrowserRuntime(
           capability: message.capability,
           channelId: message.channelId,
           message: {
+            navigationAttributionVersion: 1,
             ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
             access: latestClaims.access,
             dialog: options.initialDialog ?? null,

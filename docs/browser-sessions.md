@@ -62,8 +62,13 @@ window; later user actions need new keys.
 Automatic personal reuse requires positive personal creation provenance and a
 ready browser at the resolved placement. Unknown provenance is ineligible.
 Opener/occupant projections recheck reader visibility and must not expose other
-people or inaccessible conversation IDs. Browsing history is local to the signed-in
-person, Deployment and profile; Guest and agent activity create none. Search
+people or inaccessible conversation IDs. The Host keeps browsing history and site
+icons in each profile, readable and clearable only by its owner. It records a
+person's explicit tab opens and address-bar navigations only when the browser
+matches the navigation reply to its committed document (including HTTP redirects).
+The runtime sends each attribution once with the URL frozen at that commit, so
+later page scripts cannot change the visit while its reply is pending. Agent navigations
+and Guest browsing create no visits; runtimes without attribution record none. Search
 suggestions send search words to Google only under the negotiated feature and
 local preference.
 
@@ -83,9 +88,11 @@ launch and navigation are not blindly replayed. An initial website navigation
 error opens the existing browser on its error page; transport/CDP failure fails
 start. See `packages/browser-runtime-core/src/runtime.ts` and the Host service.
 
-History has bounded retention. Clearing it removes retained icons and fences
-pending navigation/icon writes; a later asynchronous result must not resurrect
-deleted history. See `packages/client/src/host/recent-sites.ts`.
+History retains at most 300 addresses for 90 days. Removing the last address of a
+site removes its retained icon; clearing history or deleting the profile removes
+all of both. Erasure is ordered after already-recorded visits; a navigation that
+commits afterward is a new visit. Replayed tab opens create no visits. Device-local
+history is not imported.
 
 The private cursor observer sends element centre and page scale only, never
 values, text, selectors or attributes. See

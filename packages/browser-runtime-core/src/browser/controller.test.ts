@@ -2251,6 +2251,108 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  it.each(
+    (["address", "initial", "tab-open"] as const).flatMap((path) =>
+      (["reply-first", "commit-first", "push-state", "redirect"] as const).map((ordering) => ({
+        path,
+        ordering,
+      })),
+    ),
+  )("uses browser attribution for $path navigation ($ordering)", async ({ path, ordering }) => {
+    const controller = createController();
+    await controller.start();
+    const navigationId = globalThis.crypto.randomUUID();
+    const url = "https://person.test/";
+    let navigatedPage = page;
+    if (path === "tab-open") {
+      const nextPage = new FakePage();
+      vi.spyOn(context, "createPage").mockImplementation(async () => {
+        context.addPage(nextPage);
+        return nextPage;
+      });
+      navigatedPage = nextPage;
+    }
+    const frameId = await navigatedPage.targetId();
+    const commit = () =>
+      navigatedPage.cdpSession.emit("Page.frameNavigated", {
+        frame: { id: "main", loaderId: "person-loader", url: "https://redirect.test/" },
+      });
+    navigatedPage.cdpSession.responses.set("Page.navigate", () => {
+      if (ordering !== "reply-first") {
+        commit();
+        if (ordering === "push-state")
+          navigatedPage.cdpSession.emit("Page.navigatedWithinDocument", {
+            frameId,
+            url: "https://redirect.test/agent-route",
+            navigationType: "historyApi",
+          });
+        if (ordering === "redirect") navigatedPage.navigate("https://agent.test/", "Agent");
+      }
+      return { loaderId: "person-loader" };
+    });
+    try {
+      if (path === "address") await controller.handle({ type: "navigation.go", url, navigationId });
+      else if (path === "tab-open")
+        await controller.handle({
+          type: "cdp.command",
+          requestId: globalThis.crypto.randomUUID(),
+          navigationId,
+          command: {
+            method: browserHostMethods.openTab,
+            parameters: { idempotencyKey: "attributed-open", url },
+          },
+        });
+      else {
+        const attached = await cdpRouter.send(validClaims().sessionId, {
+          method: "Target.attachToTarget",
+          parameters: { targetId: await page.targetId(), flatten: true },
+        });
+        const { sessionId } = attached as { sessionId: string };
+        await controller.handle({
+          type: "cdp.command",
+          requestId: globalThis.crypto.randomUUID(),
+          navigationId,
+          command: { method: "Page.navigate", sessionId, parameters: { url } },
+        });
+      }
+      if (ordering === "reply-first") commit();
+      // No microtask gap: snapshot coalescing may omit the committed document.
+      navigatedPage.navigate("https://agent.test/", "Agent");
+      await flushMicrotasks();
+      expect(sink.messages.filter((message) => message.type === "navigation.committed")).toEqual([
+        expect.objectContaining({
+          navigationId,
+          url: "https://redirect.test/",
+          documentId: expect.any(String),
+          surfaceId: expect.any(String),
+        }),
+      ]);
+      expect(
+        ledger.snapshot().find((surface) => surface.url === "https://agent.test/"),
+      ).not.toHaveProperty("navigationId");
+      if (path === "tab-open") {
+        const before = navigatedPage.cdpSession.sent.filter(
+          (command) => command.method === "Page.navigate",
+        ).length;
+        await controller.handle({
+          type: "cdp.command",
+          requestId: globalThis.crypto.randomUUID(),
+          navigationId: globalThis.crypto.randomUUID(),
+          command: {
+            method: browserHostMethods.openTab,
+            parameters: { idempotencyKey: "attributed-open", url },
+          },
+        });
+        expect(
+          navigatedPage.cdpSession.sent.filter((command) => command.method === "Page.navigate"),
+        ).toHaveLength(before);
+      }
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("coalesces surface churn to the latest state while the output sink is slow", async () => {
     const controller = createController();
     await controller.start();

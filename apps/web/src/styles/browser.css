@@ -674,11 +674,10 @@
   width: 18px;
   height: 18px;
   border-radius: 5px;
-  color: hsl(var(--site-hue, 30) 28% 86%);
-  background: var(--sheen-mark) hsl(var(--site-hue, 30) 22% 26%);
+  position: relative;
+  color: var(--muted);
+  background: var(--sheen-mark) var(--surface-raised);
   box-shadow: var(--edge-mark);
-  font-size: var(--text-3xs);
-  font-weight: var(--weight-heavy);
   line-height: 1;
 }
 
@@ -687,11 +686,35 @@
   height: 11px;
 }
 
-.site-mark--icon {
-  border-radius: 3px;
+/* A decoded icon stands on its own, without the neutral tile beneath it. */
+.site-mark:has(.site-mark__image.is-ready) {
   background: none;
   box-shadow: none;
+}
+
+.site-mark:has(.site-mark__image.is-ready) > svg {
+  opacity: 0;
+}
+
+.site-mark__image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
   object-fit: contain;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.site-mark__image.is-ready {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-mark__image {
+    transition: none;
+  }
 }
 
 /* An app without its own icon reads like a site's mark beside it, not a framed tile. */

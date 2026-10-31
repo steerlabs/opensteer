@@ -1011,13 +1011,6 @@ button.side-needs:hover {
   padding-right: var(--space-2);
 }
 
-/* A loading page spins where its icon sits, as a browser's tab does. */
-.place-mark--loading .spinner {
-  width: 13px;
-  height: 13px;
-  border-width: 1.75px;
-}
-
 /* Between a browser's tabs and the Mac apps and phones: a hairline in the
    rows' own 1px gap, so every tab row stays one pitch from the next and a
    window of whole rows stays whole as the list scrolls. */

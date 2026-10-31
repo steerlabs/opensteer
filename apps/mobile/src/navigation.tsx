@@ -14,6 +14,7 @@ import {
   BrowserProfilesScreen,
   type BrowserProfilesDestination,
 } from "./screens/browser-profiles.js";
+import { BrowserHistoryScreen, type BrowserHistoryDestination } from "./screens/browser-history.js";
 import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
 import { ConnectedAppsScreen, type ConnectedAppsDestination } from "./screens/connected-apps.js";
 import type { SurfacesRoute } from "./browser/surface-route.js";
@@ -250,6 +251,10 @@ const RootStack = createNativeStackNavigator({
         title: "Chrome",
       }),
     },
+    BrowserHistory: {
+      screen: BrowserHistoryScreen,
+      options: { title: "Browsing history" },
+    },
     BrowserProfiles: {
       screen: BrowserProfilesScreen,
       options: ({ navigation }) => ({
@@ -365,6 +370,7 @@ type OpensteerRootParamList = {
   readonly AddServer: undefined;
   readonly Chrome: ChromeDestination;
   readonly BrowserProfiles: BrowserProfilesDestination;
+  readonly BrowserHistory: BrowserHistoryDestination;
   readonly ConnectedApps: ConnectedAppsDestination;
   readonly Computer: { readonly deploymentId: string; readonly machineId: string };
   readonly ConversationActivity: {

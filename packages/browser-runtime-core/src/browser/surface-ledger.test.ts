@@ -28,6 +28,224 @@ const scriptTargetSetup = [
 ];
 
 describe("SurfaceLedger", () => {
+  it.each(["reply-first", "commit-first", "push-state", "redirect"] as const)(
+    "emits the frozen main-frame commit exactly once (%s)",
+    async (ordering) => {
+      const page = new FakePage();
+      const ledger = new SurfaceLedger(new FakeContext([page]));
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((event) => events.push(event));
+      await ledger.start();
+      try {
+        const id = ledger.snapshot()[0]!.id;
+        const reply = Promise.withResolvers<{ loaderId: string }>();
+        page.cdpSession.responses.set("Page.navigate", () => reply.promise);
+        const navigation = ledger.navigate(id, "https://start.test/", "person-navigation");
+        const commit = () =>
+          page.cdpSession.emit("Page.frameNavigated", {
+            frame: {
+              id: "main",
+              loaderId: "person",
+              url: "https://redirect.test/",
+              urlFragment: "#kept",
+            },
+          });
+        if (ordering === "reply-first") {
+          reply.resolve({ loaderId: "person" });
+          await navigation;
+        }
+        // Child frames cannot satisfy the person's navigation.
+        page.cdpSession.emit("Page.frameNavigated", {
+          frame: { id: "child", parentId: "main", loaderId: "person", url: "https://child.test/" },
+        });
+        commit();
+        const documentId = ledger.snapshot()[0]!.documentId;
+        if (ordering === "push-state")
+          page.cdpSession.emit("Page.navigatedWithinDocument", {
+            frameId: ledger.binding(id)!.targetId,
+            url: "https://redirect.test/agent-route",
+            navigationType: "historyApi",
+          });
+        if (ordering === "redirect") page.navigate("https://agent.test/", "Agent");
+        reply.resolve({ loaderId: "person" });
+        await navigation;
+        const committed = events.filter((event) => event.type === "navigation.committed");
+        expect(committed).toEqual([
+          {
+            type: "navigation.committed",
+            navigationId: "person-navigation",
+            surfaceId: id,
+            documentId,
+            url: "https://redirect.test/#kept",
+          },
+        ]);
+        expect(ledger.snapshot()[0]).not.toHaveProperty("navigationId");
+        page.navigate("https://later.test/", "Later");
+        expect(events.filter((event) => event.type === "navigation.committed")).toEqual(committed);
+      } finally {
+        await ledger.close();
+      }
+    },
+  );
+
+  it.each(["reply-first", "event-first"] as const)(
+    "matches only same-document fragment events (%s)",
+    async (ordering) => {
+      const page = new FakePage({ url: "https://page.test/" });
+      const ledger = new SurfaceLedger(new FakeContext([page]));
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((event) => events.push(event));
+      await ledger.start();
+      try {
+        const id = ledger.snapshot()[0]!.id;
+        const documentId = ledger.snapshot()[0]!.documentId;
+        const frameId = ledger.binding(id)!.targetId;
+        const reply = Promise.withResolvers<{ frameId: string }>();
+        page.cdpSession.responses.set("Page.navigate", () => reply.promise);
+        const navigation = ledger.navigate(
+          id,
+          "https://page.test/#fragment",
+          "fragment-navigation",
+        );
+        if (ordering === "reply-first") {
+          reply.resolve({ frameId });
+          await navigation;
+        }
+        for (const parameters of [
+          { frameId: "child", url: "https://page.test/#fragment", navigationType: "fragment" },
+          { frameId, url: "https://page.test/#fragment", navigationType: "historyApi" },
+        ])
+          page.cdpSession.emit("Page.navigatedWithinDocument", parameters);
+        expect(events.filter((event) => event.type === "navigation.committed")).toEqual([]);
+        page.cdpSession.emit("Page.navigatedWithinDocument", {
+          frameId,
+          url: "https://page.test/#fragment",
+          navigationType: "fragment",
+        });
+        page.cdpSession.emit("Page.navigatedWithinDocument", {
+          frameId,
+          url: "https://page.test/#agent",
+          navigationType: "historyApi",
+        });
+        reply.resolve({ frameId });
+        await navigation;
+        expect(events.filter((event) => event.type === "navigation.committed")).toEqual([
+          {
+            type: "navigation.committed",
+            navigationId: "fragment-navigation",
+            surfaceId: id,
+            documentId,
+            url: "https://page.test/#fragment",
+          },
+        ]);
+      } finally {
+        await ledger.close();
+      }
+    },
+  );
+
+  it("matches overlapping bindings independently when A commits before its reply and B's commit", async () => {
+    const page = new FakePage();
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    const events: SurfaceLedgerEvent[] = [];
+    ledger.subscribe((event) => events.push(event));
+    await ledger.start();
+    try {
+      const id = ledger.snapshot()[0]!.id;
+      const replyA = Promise.withResolvers<{ loaderId: string }>();
+      page.cdpSession.responses.set("Page.navigate", () => replyA.promise);
+      const a = ledger.navigate(id, "https://a.test/", "a");
+      page.cdpSession.responses.set("Page.navigate", { loaderId: "loader-b" });
+      await ledger.navigate(id, "https://b.test/", "b");
+      const commit = (loaderId: string, url: string) =>
+        page.cdpSession.emit("Page.frameNavigated", {
+          frame: { id: "main", loaderId, url },
+        });
+      commit("loader-a", "https://a.test/");
+      replyA.resolve({ loaderId: "loader-a" });
+      await a;
+      commit("unrelated", "https://agent.test/");
+      commit("loader-b", "https://b.test/");
+      expect(events.filter((event) => event.type === "navigation.committed")).toMatchObject([
+        { navigationId: "a", url: "https://a.test/" },
+        { navigationId: "b", url: "https://b.test/" },
+      ]);
+      for (let index = 0; index < 40; index++) {
+        page.cdpSession.responses.set("Page.navigate", { loaderId: `loader-${index}` });
+        await ledger.navigate(id, "https://page.test/", `navigation-${index}`);
+      }
+      commit("loader-0", "https://page.test/");
+      expect(events.filter((event) => event.type === "navigation.committed")).toHaveLength(2);
+    } finally {
+      await ledger.close();
+    }
+  });
+
+  it("bounds commits retained while a navigation reply is pending", async () => {
+    const page = new FakePage();
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    const events: SurfaceLedgerEvent[] = [];
+    ledger.subscribe((event) => events.push(event));
+    await ledger.start();
+    try {
+      const reply = Promise.withResolvers<{ loaderId: string }>();
+      page.cdpSession.responses.set("Page.navigate", () => reply.promise);
+      const navigation = ledger.navigate(ledger.snapshot()[0]!.id, "https://page.test/", "evicted");
+      for (let index = 0; index < 40; index++)
+        page.cdpSession.emit("Page.frameNavigated", {
+          frame: { id: "main", loaderId: `loader-${index}`, url: "https://page.test/" },
+        });
+      reply.resolve({ loaderId: "loader-0" });
+      await navigation;
+      expect(events.filter((event) => event.type === "navigation.committed")).toEqual([]);
+    } finally {
+      await ledger.close();
+    }
+  });
+
+  it("drops downloads, missing loaders, errors and closed-surface bindings", async () => {
+    const page = new FakePage();
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    const events: SurfaceLedgerEvent[] = [];
+    ledger.subscribe((event) => events.push(event));
+    await ledger.start();
+    try {
+      const id = ledger.snapshot()[0]!.id;
+      for (const result of [
+        {},
+        { frameId: "main" },
+        { loaderId: "download", isDownload: true },
+        { loaderId: "error", errorText: "net::ERR_FAILED" },
+      ]) {
+        page.cdpSession.responses.set("Page.navigate", result);
+        await ledger.navigate(id, "https://download.test/", "no-visit");
+        page.cdpSession.emit("Page.frameNavigated", {
+          frame: {
+            id: "main",
+            loaderId: "loaderId" in result ? result.loaderId : "missing",
+            url: "https://page.test/",
+          },
+        });
+      }
+      page.cdpSession.responses.set("Page.navigate", () => {
+        throw new Error("Navigation refused");
+      });
+      await expect(ledger.navigate(id, "https://page.test/", "failed")).rejects.toThrow(
+        "Navigation refused",
+      );
+      const reply = Promise.withResolvers<{ loaderId: string }>();
+      page.cdpSession.responses.set("Page.navigate", () => reply.promise);
+      const closed = ledger.navigate(id, "https://page.test/", "closed");
+      page.navigate("https://page.test/", "Closed");
+      await page.close();
+      reply.resolve({ loaderId: page.loaderId });
+      await closed;
+      expect(events.filter((event) => event.type === "navigation.committed")).toEqual([]);
+    } finally {
+      await ledger.close();
+    }
+  });
+
   it("retains validated fragments on committed full navigations", async () => {
     const page = new FakePage();
     const ledger = new SurfaceLedger(new FakeContext([page]));

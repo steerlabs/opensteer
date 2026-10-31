@@ -10,7 +10,7 @@ import {
   type ComputerNotReady,
 } from "../integrations/computer-reasons.js";
 import type { HostSnapshot } from "./client.js";
-import type { BrowsingHistoryEntry } from "./recent-sites.js";
+import type { BrowserHistoryEntry } from "@opensteer/protocol";
 import { placeList, placeSearchFields, type PlaceItem } from "./places.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
 import { matchSearch, rankSearch, searchQuery, searchText, type SearchField } from "./search.js";
@@ -139,7 +139,7 @@ export interface StartPageModelInput {
   readonly lastChoice?: BrowserIdentityChoice | null;
   readonly localMachineId?: string | null;
   readonly approvedApps?: readonly ApprovedComputerApp[];
-  readonly history?: readonly BrowsingHistoryEntry[];
+  readonly history?: readonly BrowserHistoryEntry[];
 }
 /** Includes the default action. */
 export const startPageResultLimit = 8;
@@ -327,10 +327,10 @@ export function startPageIndex(input: {
   return { profiles, groups, places, apps, connected };
 }
 
-/** A completion is drawn only from URLs the person explicitly typed, never migrated visits. */
+/** A completion is drawn only from URLs the person explicitly typed, never untyped visits. */
 export function inlineAutocomplete(
   query: string,
-  history: readonly BrowsingHistoryEntry[],
+  history: readonly BrowserHistoryEntry[],
 ): string | null {
   if (!query || query.trim() !== query || /\s/u.test(query)) return null;
   const lower = query.toLocaleLowerCase();
@@ -340,7 +340,7 @@ export function inlineAutocomplete(
       displayAddress(entry.url).toLocaleLowerCase().startsWith(lower) &&
       displayAddress(entry.url).length > query.length,
   );
-  matches.sort((a, b) => b.typedCount - a.typedCount || b.lastVisit - a.lastVisit);
+  matches.sort((a, b) => b.typedCount - a.typedCount || b.lastVisitAt.localeCompare(a.lastVisitAt));
   const match = matches[0];
   return match ? query + displayAddress(match.url).slice(query.length) : null;
 }
@@ -351,7 +351,7 @@ export function startPageResults(
   input: {
     readonly query: string;
     readonly choice: BrowserIdentityChoice;
-    readonly history?: readonly BrowsingHistoryEntry[];
+    readonly history?: readonly BrowserHistoryEntry[];
     readonly suggestions?: readonly string[];
     readonly completion?: string | null;
     readonly includeApps?: boolean;

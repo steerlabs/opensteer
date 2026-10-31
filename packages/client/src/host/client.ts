@@ -20,7 +20,7 @@ import type {
   ApprovedComputerApp,
   OwnerWindowInfo,
 } from "@opensteer/protocol";
-import type { RecentSitesStore } from "./recent-sites.js";
+import type { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserIdentityChoice } from "./start-page-model.js";
 import type {
   ChannelAccessPolicy,
@@ -127,6 +127,7 @@ export type BrowserTabOpenInput =
     };
 export interface BrowserTabOpenOptions {
   readonly url?: string;
+  readonly typed?: boolean;
   readonly viewport?: { readonly width: number; readonly height: number };
   readonly idempotencyKey?: string;
 }
@@ -1000,7 +1001,7 @@ export type MachineAccessUpdateOutcome =
 
 export interface HostClient {
   readonly browserPasskeys?: BrowserPasskeys;
-  readonly recentSites: RecentSitesStore;
+  readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   retainComputerView(
     viewId: string,

@@ -8,7 +8,8 @@ import { BrowserTabGroupClient } from "./browser-tab-groups.js";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "./surfaces.js";
 import { DisplaySourceSchema } from "@opensteer/protocol";
-import { RecentSitesStore, type RecentSitesStorage } from "./recent-sites.js";
+import { BrowserHistoryClient } from "./browser-history.js";
+import type { BrowserPreferencesStorage } from "./browser-preferences.js";
 import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
@@ -521,7 +522,7 @@ export interface HttpHostClientOptions {
   readonly viewerPlatform?: "mac" | "pc";
   /** Verified by the connection owner for this client’s attachment. Null is unknown. */
   readonly capabilities?: readonly HostCapability[] | null | HostCapabilityReader;
-  readonly recentSitesStorage?: RecentSitesStorage;
+  readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   /** The Host's origin. There is no ambient default: a React Native bundle has
    * no document to read one from, and a renderer may address another Host. */
   readonly baseUrl: string | URL;
@@ -555,7 +556,7 @@ type AttachmentRead = {
 
 export class HttpHostClient {
   readonly browserPasskeys: BrowserPasskeys;
-  readonly recentSites: RecentSitesStore;
+  readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: OwnerViewHostClient["retainComputerView"];
   readonly #viewer = new ViewerScope();
@@ -752,6 +753,7 @@ export class HttpHostClient {
         type: "browser.tab.open",
         ...(typeof target === "string" ? { sessionId: target } : target),
         ...(options.url === undefined ? {} : { url: options.url }),
+        ...(options.typed === undefined ? {} : { typed: options.typed }),
         ...(options.viewport ? { viewport: options.viewport } : {}),
         idempotencyKey: options.idempotencyKey ?? mutationIdempotencyKey("open-tab"),
       }),
@@ -1106,10 +1108,27 @@ export class HttpHostClient {
     this.#readCapabilities =
       typeof options.capabilities === "function" ? options.capabilities : null;
     this.#capabilities = Array.isArray(options.capabilities) ? [...options.capabilities] : null;
-    this.browserPreferences = new BrowserPreferences(options.recentSitesStorage);
-    this.recentSites = new RecentSitesStore({
-      ...(options.recentSitesStorage ? { storage: options.recentSitesStorage } : {}),
-      readIcon: (sessionId, iconRef) => this.readBrowserTabIcon(sessionId, iconRef),
+    this.browserPreferences = new BrowserPreferences(options.browserPreferencesStorage);
+    this.browserHistory = new BrowserHistoryClient({
+      get: async (profileId) =>
+        unwrapRpcResult(await this.rpc["browser.history.get"]({ profileId })),
+      icons: async (profileId, iconRefs) =>
+        unwrapRpcResult(await this.rpc["browser.history.icons.get"]({ profileId, iconRefs })),
+      remove: async (profileId, url) => {
+        await this.dispatch({
+          type: "browser.history.remove",
+          profileId,
+          url,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
+      clear: async (profileId) => {
+        await this.dispatch({
+          type: "browser.history.clear",
+          profileId,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
     });
     this.#baseUrl = new URL(options.baseUrl);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -1373,8 +1392,7 @@ export class HttpHostClient {
         break;
       case "browser.profile.delete":
         if (commandIs(parsedCommand, result.type)) {
-          // Its history on this device goes with it.
-          this.recentSites.clear({ kind: "profile", profileId: parsedCommand.profileId });
+          this.browserHistory.drop(parsedCommand.profileId);
           this.#update(
             applyOptimisticCommandPatch(this.#snapshot, {
               profileId: parsedCommand.profileId,
@@ -3299,7 +3317,7 @@ export class HttpHostClient {
   dispose(): void {
     if (this.#disposed) return;
     this.#clearAttachmentReads();
-    this.recentSites.dispose();
+    this.browserHistory.dispose();
     this.#workspaceTabActivations.dispose();
     this.#snapshot = { ...this.#snapshot, activatingWorkspaceTabs: [] };
     this.#disposed = true;
@@ -4584,6 +4602,10 @@ export class HttpHostClient {
       });
       return;
     }
+    if (message.type === "host.browser-history-changed") {
+      this.browserHistory.changed(message.profileId);
+      return;
+    }
     if (message.type === "host.browser-sessions-changed") {
       // The catalog is viewer-wide, whichever Workspace this socket follows.
       // A session opened, ended or changed hands. Browser Sessions arrive on
@@ -5696,7 +5718,10 @@ export class HttpHostClient {
     snapshot = { ...snapshot, activatingWorkspaceTabs: this.#workspaceTabActivations.ids };
     // A dropped connection pauses the views being watched; it does not end them.
     this.#computerViews.setConnected(scope !== null && snapshot.connection === "connected");
-    this.recentSites.setScope(scope);
+    this.browserHistory.setScope(scope);
+    for (const profile of this.#snapshot.browserProfiles)
+      if (!snapshot.browserProfiles.some((value) => value.id === profile.id))
+        this.browserHistory.drop(profile.id);
     this.browserPreferences.setScope(scope);
     let reconcileBrowserTargets: (() => void) | undefined;
     if (snapshot.session !== "authenticated") {
@@ -5857,10 +5882,7 @@ export class HttpHostClient {
     if (workspaceTabsChanged)
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     reconcileBrowserTargets?.();
-    this.recentSites.observeTabs(
-      this.#snapshot.browserSessions,
-      this.#snapshot.connection === "connected",
-    );
+    this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
   }

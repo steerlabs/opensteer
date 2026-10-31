@@ -1402,6 +1402,27 @@ describe("HttpHostClient harness authentication", () => {
 });
 
 describe("HttpHostClient durable realtime", () => {
+  it("routes viewer-wide history notices to the history cache", async () => {
+    const workspace = makeWorkspace();
+    const socket = new FakeSocket();
+    const client = createHttpHostClient({
+      fetch: async () => json(bootstrap([workspace])),
+      refreshIntervalMs: 0,
+      webSocketFactory: () => socket,
+    });
+    try {
+      await client.load();
+      socket.open();
+      socket.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
+      const changed = vi.spyOn(client.browserHistory, "changed");
+      const profileId = createId("browserProfile");
+      socket.receive({ type: "host.browser-history-changed", profileId });
+      expect(changed).toHaveBeenCalledExactlyOnceWith(profileId);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("invalidates Trigger reads when a program-only occurrence changes", async () => {
     const workspace = makeWorkspace();
     const sockets: FakeSocket[] = [];
@@ -10405,6 +10426,8 @@ describe("HttpHostClient owner views", () => {
         const url = new URL(input instanceof Request ? input.url : input.toString());
         if (url.pathname.endsWith("/commands.dispatch")) {
           const payload = rpcPayload(url, init);
+          if (payload.type === "browser.history.clear" || payload.type === "browser.history.remove")
+            return json({ type: payload.type });
           if (
             typeof payload.type === "string" &&
             /^(computer\.view|browser\.tab)\./u.test(payload.type)
@@ -10685,7 +10708,7 @@ describe("HttpHostClient owner views", () => {
     host.client.dispose();
   });
 
-  it("finishes an open the Host granted although recent sites were cleared meanwhile, and refuses one for a viewer who left", async () => {
+  it("finishes an open the Host granted although history was cleared meanwhile, and refuses one for a viewer who left", async () => {
     const { machine, view } = await ownerViewWorld();
     const sessionId = createBrowserSessionId();
     const workspaceId = WorkspaceIdSchema.parse(createId("workspace"));
@@ -10730,19 +10753,20 @@ describe("HttpHostClient owner views", () => {
     const viewOpen = host.client.openComputerView(view.machineId, view.target);
     const tabOpen = host.client.openBrowserTab(
       { identity: { kind: "guest" } },
-      { url: "https://example.com/" },
+      { url: "https://example.com/", typed: true },
     );
-    // A recent site recorded before the clear is fenced; the domain answers are not.
-    const epoch = host.client.recentSites.epoch;
-    host.client.recentSites.clear(personal);
-    host.client.recentSites.record(personal, "https://late.example/", epoch);
+    expect(host.commands.find((command) => command.type === "browser.tab.open")).toMatchObject({
+      typed: true,
+    });
+    // Clearing history has no effect on unrelated domain answers.
+    await host.client.browserHistory.clear(personal.profileId);
     gate.resolve();
     await expect(viewOpen).resolves.toMatchObject({ viewId: view.viewId });
     await expect(tabOpen).resolves.toMatchObject({ sessionId, tabId: "page-1" });
     expect(
       host.client.getSnapshot().browserSessions.some((session) => session.id === sessionId),
     ).toBe(true);
-    expect(host.client.recentSites.list(personal)).toEqual([]);
+    expect(host.client.browserHistory.entries(personal.profileId)).toEqual([]);
 
     // The person who asked is no longer the one signed in: the answer is not adopted.
     gate = deferred<void>();

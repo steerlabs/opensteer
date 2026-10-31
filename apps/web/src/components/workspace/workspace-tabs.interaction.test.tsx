@@ -584,12 +584,12 @@ describe("tabs that read like a browser's", () => {
     expect(history.length).toBe(before);
   });
 
-  it("a loading tab shows a spinner in place of its icon; the toolbar's Reload becomes Stop and stops it", async () => {
+  it("a loading tab keeps a neutral mark; the toolbar's Reload becomes Stop and stops it", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const { sessionId, tabId } = browserOf(place);
-    const spinning = () => row(place.key).querySelector(".place-mark--loading") !== null;
-    expect(spinning()).toBe(false);
+    const loading = () => main(place.key).getAttribute("aria-label")?.includes("loading") ?? false;
+    expect(loading()).toBe(false);
     expect(element(".browser-controls [aria-label='Reload page']")).toBeTruthy();
     await act(async () => {
       client.sendBrowserCommand(sessionId, {
@@ -598,15 +598,17 @@ describe("tabs that read like a browser's", () => {
       });
     });
     await settle(60);
-    expect(spinning()).toBe(true);
+    expect(loading()).toBe(true);
+    expect(row(place.key).querySelector(".site-mark")?.textContent).toBe("");
+    expect(row(place.key).querySelector(".place-mark .spinner")).toBeNull();
     expect(main(place.key).getAttribute("aria-label")).toContain("loading");
     const send = vi.spyOn(client, "sendBrowserCommand");
     await click(element(".browser-controls [aria-label='Stop loading']"));
     expect(send).toHaveBeenCalledWith(sessionId, { surfaceId: tabId, type: "navigation.stop" });
     await settle(60);
-    expect(spinning()).toBe(false);
+    expect(loading()).toBe(false);
     expect(element(".browser-controls [aria-label='Reload page']")).toBeTruthy();
-    // A load that finishes by itself takes its spinner with it.
+    // A completed load no longer marks the tab as loading.
     await act(async () => {
       client.sendBrowserCommand(sessionId, {
         surfaceId: BrowserSurfaceIdSchema.parse(tabId),
@@ -614,9 +616,9 @@ describe("tabs that read like a browser's", () => {
       });
     });
     await settle(60);
-    expect(spinning()).toBe(true);
+    expect(loading()).toBe(true);
     await settle(1_200);
-    expect(spinning()).toBe(false);
+    expect(loading()).toBe(false);
   });
 
   it("the address: a click selects the whole address; Esc restores it and keeps the field; Enter navigates and hands the keyboard on", async () => {
@@ -658,6 +660,7 @@ describe("tabs that read like a browser's", () => {
       surfaceId: tabId,
       type: "navigation.go",
       url: "https://example.org/",
+      typed: true,
     });
     // The edit is done: the keyboard goes to the page where it can take it, never to the body.
     expect(document.querySelector(".browser-address__go")).toBeNull();

@@ -1,3 +1,4 @@
+import { BrowserHistoryStore } from "./browser-history-store.js";
 import * as taskDone from "./task-done.js";
 import { drainPendingThreadStates } from "./thread-status.js";
 import * as runnerStore from "./runner-store.js";
@@ -206,6 +207,7 @@ export class OpensteerStore {
   readonly requests: RequestStore;
 
   readonly notificationState: NotificationStateStore;
+  readonly browserHistory: BrowserHistoryStore;
 
   constructor(
     database: Kysely<DatabaseSchema>,
@@ -216,6 +218,7 @@ export class OpensteerStore {
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.requests = new RequestStore(database);
     this.notificationState = new NotificationStateStore(database);
+    this.browserHistory = new BrowserHistoryStore(database);
   }
 
   get database(): Kysely<DatabaseSchema> {
@@ -696,7 +699,7 @@ export class OpensteerStore {
   async deleteBrowserProfile(input: {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
-  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }> {
+  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[]; readonly changed: boolean }> {
     return browserSessionStore.deleteBrowserProfile(this.#database, input);
   }
 

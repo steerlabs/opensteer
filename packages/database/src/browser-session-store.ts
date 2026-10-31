@@ -1,3 +1,4 @@
+import { lockBrowserHistory } from "./browser-history-store.js";
 import { z } from "zod";
 import {
   lockCommandIdempotency,
@@ -383,7 +384,7 @@ export async function renameBrowserProfile(
 export async function deleteBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
-): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }> {
+): Promise<{ readonly sessionIds: readonly BrowserSessionId[]; readonly changed: boolean }> {
   return withDatabaseTransaction(database, async (transaction) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${input.profileId}`}, 0))`.execute(
       transaction,
@@ -452,11 +453,20 @@ export async function deleteBrowserProfile(
         .where("id", "in", groupIds)
         .execute();
     }
-    await transaction
+    const archived = await transaction
       .updateTable("browserProfiles")
       .set({ archivedAt: now, updatedAt: now })
       .where("id", "=", input.profileId)
       .where("archivedAt", "is", null)
+      .executeTakeFirst();
+    await lockBrowserHistory(transaction, input.profileId);
+    await transaction
+      .deleteFrom("browserHistoryEntries")
+      .where("profileId", "=", input.profileId)
+      .execute();
+    await transaction
+      .deleteFrom("browserHistoryIcons")
+      .where("profileId", "=", input.profileId)
       .execute();
     await transaction
       .deleteFrom("browserProfileRevisions")
@@ -478,7 +488,7 @@ export async function deleteBrowserProfile(
       .where("state", "not in", ["closed", "failed"])
       .orderBy("id")
       .execute();
-    return { sessionIds: live.map((session) => session.id) };
+    return { sessionIds: live.map((session) => session.id), changed: archived.numUpdatedRows > 0n };
   });
 }
 

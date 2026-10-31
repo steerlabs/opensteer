@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { zeroSequence } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import WebSocket from "ws";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   closed,
   createMachineAccessDatabase,
@@ -62,9 +62,9 @@ async function until<Value>(
 }
 
 /** The owner's realtime socket, following the Workspace so catalog notices arrive. */
-async function listen(host: MachineAccessHost, workspaceId: string) {
+async function listen(host: MachineAccessHost, workspaceId: string, headers = host.ownerHeaders) {
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/v1/realtime`, {
-    headers: host.ownerHeaders,
+    headers,
   });
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);
@@ -105,6 +105,506 @@ integration("Durable tab icons", () => {
   afterEach(async () => {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
   });
+
+  it("records committed person visits per profile and keeps their icons after tab closure", async () => {
+    const database = await createMachineAccessDatabase(databaseUrl!);
+    cleanups.push(() => database.drop());
+    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    cleanups.push(() => host.close());
+    const runtime = await startBrowserRuntime(
+      host.hostPort,
+      await enrollmentToken(host, {
+        allowedModules: ["browser"],
+        idempotencyKey: "history-browser",
+        name: "History browser",
+      }),
+      { agentReady: true, targetedStreaming: true, navigation: true, workspaceTabs: true },
+    );
+    cleanups.push(() => runtime.close());
+    await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 5_000 });
+    await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders });
+    const profile = await host.store.createBrowserProfile({
+      ownerId: host.ownerId,
+      name: "History",
+      idempotencyKey: "history-profile",
+    });
+    const profileId = profile.id;
+    const workspace = await host.store.findMainWorkspaceForOwner(host.ownerId);
+    if (!workspace) throw new Error("Main Workspace missing");
+    const stranger = await signUpUser(host, {
+      email: "history-stranger@example.com",
+      password: "history-stranger-password",
+    });
+    await testRpcData(host.origin, "bootstrap.get", {}, { headers: stranger.headers });
+    const strangerWorkspace = await host.store.findMainWorkspaceForOwner(stranger.userId);
+    if (!strangerWorkspace) throw new Error("Stranger Workspace missing");
+    const devices = await Promise.all([
+      listen(host, workspace.id),
+      listen(host, workspace.id),
+      listen(host, strangerWorkspace.id, stranger.headers),
+    ]);
+    for (const device of devices) cleanups.push(() => device.close());
+    const notices = (device: (typeof devices)[number]) =>
+      device.messages.filter((message) => message.type === "host.browser-history-changed");
+    let noticeCount = 0;
+    const changed = async () => {
+      noticeCount++;
+      await vi.waitFor(
+        () => {
+          for (const device of devices.slice(0, 2)) {
+            expect(notices(device)).toHaveLength(noticeCount);
+            expect(notices(device).at(-1)).toEqual({
+              type: "host.browser-history-changed",
+              profileId,
+            });
+          }
+        },
+        { timeout: 5_000 },
+      );
+      expect(notices(devices[2]!)).toEqual([]);
+    };
+    const read = () =>
+      testRpcData(
+        host.origin,
+        "browser.history.get",
+        { profileId },
+        { headers: host.ownerHeaders },
+      );
+    const mutate = (
+      type: "browser.history.clear" | "browser.history.remove",
+      key: string,
+      url?: string,
+    ) =>
+      type === "browser.history.clear"
+        ? testRpcData(
+            host.origin,
+            "commands.dispatch",
+            { type, profileId, idempotencyKey: key },
+            { headers: host.ownerHeaders },
+          )
+        : testRpcData(
+            host.origin,
+            "commands.dispatch",
+            { type, profileId, idempotencyKey: key, url: url! },
+            { headers: host.ownerHeaders },
+          );
+    const request = async (method: string, after = 0) =>
+      vi.waitFor(
+        () => {
+          const command = runtime
+            .receivedCommands()
+            .slice(after)
+            .find(
+              (command) =>
+                command.type === "cdp.command" &&
+                (command.command as { method?: string })?.method === method,
+            );
+          expect(command, `Runtime never received ${method}`).toBeDefined();
+          return command!;
+        },
+        { timeout: 5_000 },
+      );
+    const answer = (command: Record<string, unknown>, result: unknown) =>
+      runtime.sendServer({
+        type: "cdp.result",
+        requestId: command.requestId,
+        result,
+      });
+    const surface = (
+      id: string,
+      url: string,
+      documentId: string,
+      extra: Record<string, unknown> = {},
+    ) => ({
+      id,
+      url,
+      documentId,
+      title: "Amazon",
+      active: true,
+      order: 0,
+      openerId: null,
+      ...extra,
+    });
+    // Initial navigation carries the same browser attribution as later address-bar actions.
+    const opening = testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "browser.tab.open",
+        identity: { kind: "profile", profileId },
+        url: "https://amazon.com/",
+        typed: true,
+        idempotencyKey: "history-first",
+      },
+      { headers: host.ownerHeaders },
+    );
+    void opening.catch(() => undefined);
+    answer(await request("Target.getTargets"), {
+      targetInfos: [{ targetId: "target-first", type: "page", surfaceId: "page-integration" }],
+    });
+    answer(await request("Target.attachToTarget"), { sessionId: "cdp-first" });
+    const navigate = await request("Page.navigate");
+    runtime.sendServer({
+      type: "browser.surfaces.changed",
+      surfaces: [
+        surface("page-integration", "https://www.amazon.com/", "amazon-1", {
+          favicon: iconA,
+        }),
+      ],
+    });
+    runtime.sendServer({
+      type: "navigation.committed",
+      navigationId: navigate.navigationId,
+      surfaceId: "page-integration",
+      documentId: "amazon-1",
+      url: "https://www.amazon.com/",
+    });
+    answer(navigate, {});
+    answer(await request("Target.detachFromTarget"), {});
+    const opened = await opening;
+    if (opened.type !== "browser.tab.open") throw new Error("Unexpected command");
+    const sessionId = opened.sessionId;
+    expect((await read()).entries).toMatchObject([
+      { url: "https://www.amazon.com/", typedCount: 1, visitCount: 1 },
+    ]);
+    expect((await read()).entries.some((entry) => entry.url === "https://amazon.com/")).toBe(false);
+    await changed();
+    const viewer = new WebSocket(
+      `ws://127.0.0.1:${host.hostPort}/v1/browser-sessions/${sessionId}/connect`,
+      {
+        headers: host.ownerHeaders,
+      },
+    );
+    cleanups.push(async () => {
+      viewer.close();
+      await closed(viewer);
+    });
+    await waitForMessage(viewer, (message) => message.type === "browser.snapshot");
+    const sendSurfaces = async (surfaces: Record<string, unknown>[]) => {
+      const received = waitForMessage(
+        viewer,
+        (message) => message.type === "browser.surfaces.changed",
+      );
+      runtime.sendServer(
+        {
+          type: "browser.surfaces.changed",
+          surfaces: surfaces.map(({ navigationId: _navigationId, ...surface }) => surface),
+        },
+        sessionId,
+      );
+      for (const surface of surfaces)
+        if (surface.navigationId)
+          runtime.sendServer(
+            {
+              type: "navigation.committed",
+              navigationId: surface.navigationId,
+              surfaceId: surface.id,
+              documentId: surface.documentId,
+              url: surface.url,
+            },
+            sessionId,
+          );
+      await received;
+    };
+    const go = async (url: string, typed = false) => {
+      const count = runtime.receivedCommands().length;
+      viewer.send(
+        JSON.stringify({ type: "navigation.go", surfaceId: "page-integration", url, typed }),
+      );
+      await vi.waitFor(
+        () =>
+          expect(
+            runtime
+              .receivedCommands()
+              .slice(count)
+              .some((command) => command.type === "navigation.go"),
+          ).toBe(true),
+        { timeout: 5_000 },
+      );
+      return runtime
+        .receivedCommands()
+        .slice(count)
+        .find((command) => command.type === "navigation.go")!.navigationId;
+    };
+    await sendSurfaces([
+      surface("page-integration", "https://www.amazon.com/", "amazon-1", {
+        favicon: iconA,
+        title: "Amazon shopping",
+      }),
+    ]);
+    expect((await read()).entries[0]).toMatchObject({
+      title: "Amazon shopping",
+      typedCount: 1,
+      visitCount: 1,
+    });
+    await changed();
+    // Agent snapshots can refresh a visited site's icon, but cannot create visits.
+    await sendSurfaces([
+      surface("page-integration", "https://agent.example/", "agent-1", { favicon: iconB }),
+    ]);
+    expect((await read()).entries).toHaveLength(1);
+    await sendSurfaces([
+      surface("page-integration", "https://www.amazon.com/agent", "agent-2", { favicon: iconB }),
+    ]);
+    expect((await read()).entries).toHaveLength(1);
+    let iconRef = (await read()).icons[0]!.iconRef;
+    expect(
+      await testRpcData(
+        host.origin,
+        "browser.history.icons.get",
+        { profileId, iconRefs: [iconRef] },
+        { headers: host.ownerHeaders },
+      ),
+    ).toEqual({ icons: [{ iconRef, favicon: iconB }] });
+
+    await changed();
+    // The icon was already shown for an agent-only origin; that no-op write must not suppress it after a person visits.
+    await sendSurfaces([
+      surface("page-integration", "https://committed.example/agent", "agent-only", {
+        favicon: iconC,
+      }),
+    ]);
+    const personNavigation = await go("https://requested.example/", true);
+    // Only a browser-attributed commit satisfies the navigation, even while loading.
+    await sendSurfaces([surface("page-integration", "https://www.amazon.com/agent", "agent-2")]);
+    expect((await read()).entries).toHaveLength(1);
+    await sendSurfaces([
+      surface("page-integration", "https://committed.example/", "person-2", {
+        loading: true,
+        navigationId: personNavigation,
+      }),
+    ]);
+    expect((await read()).entries).toHaveLength(2);
+    await changed();
+    await sendSurfaces([
+      surface("page-integration", "https://committed.example/", "person-2", { favicon: iconC }),
+    ]);
+    expect((await read()).entries[0]).toMatchObject({
+      url: "https://committed.example/",
+      typedCount: 1,
+      visitCount: 1,
+    });
+    await changed();
+    expect((await read()).icons).toContainEqual({
+      origin: "https://committed.example",
+      iconRef: expect.any(String),
+    });
+    await go("https://stopped.example/", true);
+    const stoppedAt = runtime.receivedCommands().length;
+    viewer.send(JSON.stringify({ type: "navigation.stop", surfaceId: "page-integration" }));
+    await vi.waitFor(
+      () =>
+        expect(
+          runtime
+            .receivedCommands()
+            .slice(stoppedAt)
+            .some((command) => command.type === "navigation.stop"),
+        ).toBe(true),
+      { timeout: 5_000 },
+    );
+    await sendSurfaces([surface("page-integration", "https://stopped.example/", "stopped")]);
+    expect((await read()).entries).toHaveLength(2);
+    await go("https://superseded.example/", true);
+    const latestNavigation = await go("https://latest.example/", false);
+    await sendSurfaces([
+      surface("page-integration", "https://latest.example/", "latest", {
+        navigationId: latestNavigation,
+      }),
+    ]);
+    expect((await read()).entries[0]).toMatchObject({
+      url: "https://latest.example/",
+      typedCount: 0,
+    });
+
+    await changed();
+    // A reused browser may publish the opened tab before its correlated CDP result.
+    const beforeOpen = runtime.receivedCommands().length;
+    const secondOpen = testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "browser.tab.open",
+        sessionId,
+        url: "https://second.example/",
+        typed: false,
+        idempotencyKey: "history-second",
+      },
+      { headers: host.ownerHeaders },
+    );
+    void secondOpen.catch(() => undefined);
+    const openCommand = await request("Opensteer.openTab", beforeOpen);
+    await sendSurfaces([
+      surface("page-integration", "https://latest.example/", "latest", { active: false }),
+      surface("second-page", "https://www.second.example/", "second", {
+        favicon: iconA,
+        order: 1,
+        navigationId: openCommand.navigationId,
+      }),
+    ]);
+    answer(openCommand, { tabId: "second-page" });
+    await secondOpen;
+    expect((await read()).entries[0]).toMatchObject({
+      url: "https://www.second.example/",
+      visitCount: 1,
+      typedCount: 0,
+    });
+    await changed();
+    await sendSurfaces([]);
+    iconRef = (await read()).icons.find(
+      (icon) => icon.origin === "https://www.second.example",
+    )!.iconRef;
+    expect(
+      await testRpcData(
+        host.origin,
+        "browser.history.icons.get",
+        { profileId, iconRefs: [iconRef] },
+        { headers: host.ownerHeaders },
+      ),
+    ).toEqual({ icons: [{ iconRef, favicon: iconA }] });
+
+    for (const method of ["browser.history.get", "browser.history.icons.get"] as const) {
+      const response =
+        method === "browser.history.get"
+          ? await testRpcRequest(host.origin, method, { profileId }, { headers: stranger.headers })
+          : await testRpcRequest(
+              host.origin,
+              method,
+              { profileId, iconRefs: [iconRef] },
+              { headers: stranger.headers },
+            );
+      expect(response.status).toBe(404);
+    }
+    for (const command of [
+      {
+        type: "browser.history.remove" as const,
+        profileId,
+        url: "https://www.second.example/",
+        idempotencyKey: "unauthorized-remove",
+      },
+      { type: "browser.history.clear" as const, profileId, idempotencyKey: "unauthorized-clear" },
+    ]) {
+      const response = await testRpcRequest(host.origin, "commands.dispatch", command, {
+        headers: stranger.headers,
+      });
+      expect(response.status).toBe(404);
+    }
+    await mutate("browser.history.remove", "history-remove", "https://www.second.example/");
+    expect((await read()).icons.some((icon) => icon.origin === "https://www.second.example")).toBe(
+      false,
+    );
+    await changed();
+    await sendSurfaces([surface("page-integration", "https://latest.example/", "latest")]);
+    const clearedNavigation = await go("https://pending-clear.example/");
+    await mutate("browser.history.clear", "history-clear");
+    await changed();
+    await sendSurfaces([
+      surface("page-integration", "https://pending-clear.example/", "cleared", {
+        favicon: iconA,
+        navigationId: clearedNavigation,
+      }),
+    ]);
+    expect((await read()).entries).toMatchObject([{ url: "https://pending-clear.example/" }]);
+    await changed();
+    // A replay neither erases the new visit nor publishes another invalidation.
+    await mutate("browser.history.clear", "history-clear");
+    expect((await read()).entries).toHaveLength(1);
+    await mutate("browser.history.clear", "clear-before-revisit");
+    await changed();
+    const revisitNavigation = await go("https://pending-clear.example/");
+    await sendSurfaces([
+      surface("page-integration", "https://pending-clear.example/", "revisited", {
+        navigationId: revisitNavigation,
+      }),
+    ]);
+    await changed();
+    expect((await read()).icons).toContainEqual({
+      origin: "https://pending-clear.example",
+      iconRef: expect.any(String),
+    });
+    await mutate("browser.history.remove", "remove-new", "https://pending-clear.example/");
+    await changed();
+    await host.store.browserHistory.recordVisit({
+      profileId,
+      ownerId: host.ownerId,
+      url: "https://expired.example/",
+      title: "Expired",
+      typed: false,
+    });
+    await host.store.database
+      .updateTable("browserHistoryEntries")
+      .set({ lastVisitAt: new Date(0) })
+      .where("profileId", "=", profileId)
+      .execute();
+    await host.runtime.browser.pruneHistory();
+    await changed();
+    expect(await read()).toEqual({ entries: [], icons: [] });
+    // Guest navigation never writes a profile's history or icon rows.
+    const guest = await host.runtime.browser.start({
+      ownerId: host.ownerId,
+      workspaceId: workspace.id,
+      fresh: true,
+    });
+    const guestViewer = new WebSocket(
+      `ws://127.0.0.1:${host.hostPort}/v1/browser-sessions/${guest.session.id}/connect`,
+      { headers: host.ownerHeaders },
+    );
+    cleanups.push(async () => {
+      guestViewer.close();
+      await closed(guestViewer);
+    });
+    await waitForMessage(guestViewer, (message) => message.type === "browser.snapshot");
+    guestViewer.send(
+      JSON.stringify({
+        type: "navigation.go",
+        surfaceId: "page-integration",
+        url: "https://guest.example/",
+        typed: true,
+      }),
+    );
+    const guestCommitted = waitForMessage(
+      guestViewer,
+      (message) => message.type === "browser.surfaces.changed",
+    );
+    runtime.sendServer(
+      {
+        type: "browser.surfaces.changed",
+        surfaces: [
+          surface("page-integration", "https://guest.example/", "guest", { favicon: iconA }),
+        ],
+      },
+      guest.session.id,
+    );
+    await guestCommitted;
+    expect(await read()).toEqual({ entries: [], icons: [] });
+    expect(
+      await host.store.database.selectFrom("browserHistoryEntries").selectAll().execute(),
+    ).toEqual([]);
+    await host.runtime.browser.deleteProfile({ ownerId: host.ownerId, profileId });
+    await changed();
+    await host.runtime.browser.deleteProfile({ ownerId: host.ownerId, profileId });
+    // A final real write is a delivery barrier for the preceding no-op deletion.
+    const otherProfile = await host.store.createBrowserProfile({
+      ownerId: host.ownerId,
+      name: "Other",
+      idempotencyKey: "other-history-profile",
+    });
+    const otherChanged = devices.slice(0, 2).map((device) => device.messages.length);
+    await host.runtime.browser.deleteProfile({ ownerId: host.ownerId, profileId: otherProfile.id });
+    await vi.waitFor(
+      () => {
+        for (const [index, device] of devices.slice(0, 2).entries()) {
+          expect(device.messages.length).toBeGreaterThan(otherChanged[index]!);
+          expect(notices(device)).toHaveLength(noticeCount + 1);
+          expect(notices(device).at(-1)).toEqual({
+            type: "host.browser-history-changed",
+            profileId: otherProfile.id,
+          });
+        }
+      },
+      { timeout: 5_000 },
+    );
+    expect(notices(devices[2]!)).toEqual([]);
+  }, 60_000);
 
   it("stores live icons, survives Runtime end and Host restart, and serves them lazily to the owner", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
