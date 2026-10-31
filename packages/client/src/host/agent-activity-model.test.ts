@@ -2121,3 +2121,14 @@ describe("traceWindow", () => {
     },
   );
 });
+
+it("places an addressed message between Run stretches and reveals its exact anchor", () => {
+  const before = reasoning({ id: "before" });
+  const addressed = message({ id: "addressed", addressedToUserId: "person" });
+  const after = reasoning({ id: "after" });
+  const groups = groupTranscriptEntries([before, addressed, after]);
+  expect(groups.map((group) => group.kind)).toEqual(["turn", "message", "turn"]);
+  expect(groups[1]).toMatchObject({ key: "addressed", entry: addressed });
+  expect(groups[2]).toMatchObject({ turn: { work: [after] } });
+  expect(conversationTurnRevealing(groups, addressed.id)).toBeNull();
+});

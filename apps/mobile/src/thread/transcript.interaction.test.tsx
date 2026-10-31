@@ -705,3 +705,9 @@ it("quiet Chat keeps automatic replies and lets silent human work open Activity"
   ]);
   expect(task.container.textContent).toContain("Worked for 2m");
 });
+
+it("renders an addressed message as an assistant message in its own row", () => {
+  const view = setup();
+  view.render([{ ...note, id: "notice", addressedToUserId: "person", body: "Milestone passed." }]);
+  expect(view.container.textContent).toContain("Milestone passed.");
+});

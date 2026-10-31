@@ -4665,6 +4665,7 @@ export function migrationProvider() {
         "0115_better_auth_17": betterAuth17Migration,
         "0116_screen_show": screenShowMigration,
         "0117_remove_screen_show": removeScreenShowMigration,
+        "0118_person_notifications": personNotificationsMigration,
       };
     },
   };
@@ -6318,5 +6319,42 @@ export const removeScreenShowMigration: Migration = {
         )
         .execute(database);
     }
+  },
+};
+
+const personNotificationsMigration: Migration = {
+  async up(database) {
+    await database.schema
+      .alterTable("messages")
+      .addColumn("addressed_to_user_id", "text")
+      .execute();
+    await database.schema
+      .alterTable("agent_control_requests")
+      .addColumn("result_message_id", "text")
+      .execute();
+    await sql`alter table agent_control_requests
+      drop constraint agent_control_requests_action_mapping_check,
+      add constraint agent_control_requests_action_mapping_check check (
+        action_class = case
+          when action = 'workspace.list' then 'workspace.inspect'
+          when action = 'person.notify' then 'thread.message'
+          else action end
+      )`.execute(database);
+    const result = await sql<{
+      definition: string;
+    }>`select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = 'public.agent_control_requests'::regclass and conname = 'agent_control_requests_action_check'`.execute(
+      database,
+    );
+    const definition = result.rows[0]?.definition;
+    if (!definition?.includes("'thread.message'::text"))
+      throw new Error("Cannot extend agent-control actions for person notifications");
+    await sql`alter table agent_control_requests drop constraint agent_control_requests_action_check`.execute(
+      database,
+    );
+    await sql
+      .raw(
+        `alter table agent_control_requests add constraint agent_control_requests_action_check ${definition.replace("'thread.message'::text", "'thread.message'::text, 'person.notify'::text")}`,
+      )
+      .execute(database);
   },
 };

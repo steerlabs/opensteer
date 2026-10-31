@@ -789,6 +789,7 @@ export interface ThreadTable {
 }
 
 export interface MessageTable {
+  addressedToUserId: Generated<UserId | null>;
   quote: Generated<import("@opensteer/core").MessageQuote | null>;
   author: JsonColumn<MessageAuthor>;
   id: MessageId;
@@ -1251,6 +1252,7 @@ export interface CommandTable {
 }
 
 export interface AgentControlRequestTable {
+  resultMessageId: Generated<MessageId | null>;
   runId: RunId;
   requestId: string;
   sourceThreadId: ThreadId;
@@ -1272,6 +1274,7 @@ export interface AgentControlRequestTable {
     | "thread.delegate"
     | "thread.list"
     | "thread.message"
+    | "person.notify"
     | "thread.read"
     | "thread.write"
     | "trigger.read"

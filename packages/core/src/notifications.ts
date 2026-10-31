@@ -9,6 +9,14 @@ import {
 } from "./ids.js";
 import { IsoDateTimeSchema } from "./models.js";
 
+export const PersonNotifyMessageSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((s) => s.isWellFormed(), "Message must be valid Unicode")
+  .refine((s) => s.trim().length > 0, "Message must contain visible text")
+  .refine((s) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(s), "Message must be one line");
+
 /**
  * What a person is told about: Opensteer replied to them, Opensteer needs their
  * answer, or work they were waiting on failed. A reply is a Run's final

@@ -239,6 +239,20 @@ export class AgentControlService {
 
     assertToolAllowed(claims.capabilityProfileId, request);
 
+    if (request.type === "person.notify") {
+      if (!(await this.#store.runnerCapabilities(claims.runnerId))?.includes("person-notify-v1"))
+        throw forbidden("Runner does not support person notifications");
+      const result = await this.#commands.publishPersonNotification({
+        admission: this.#admissionRequest(claims, request),
+        message: request.message,
+      });
+      return AgentControlResponseSchema.parse({
+        type: "person.notify.result",
+        requestId: request.requestId,
+        messageId: result.message.id,
+      });
+    }
+
     if (request.type === "trigger.control") {
       await this.#admit(claims, request);
       if (!this.#triggers) throw new Error("Trigger management is not configured");
@@ -490,7 +504,10 @@ export class AgentControlService {
       return AgentControlResponseSchema.parse({
         assignments: assignments.assignments,
         assignmentWindow: assignments.window,
-        messages: await this.#readableMessages(claims.runId, page.messages),
+        messages: await this.#readableMessages(
+          claims.runId,
+          page.messages.map(({ addressedToUserId: _addressedToUserId, ...message }) => message),
+        ),
         requestId: request.requestId,
         thread,
         type: "thread.read.result",
@@ -1054,6 +1071,7 @@ const toolForAction: Readonly<
   "thread.delegate": "thread.delegate",
   "thread.list": "thread.list",
   "thread.message": "thread.message",
+  "person.notify": "person.notify",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
   "workspace.create": "workspace.create",

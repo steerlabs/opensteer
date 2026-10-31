@@ -360,7 +360,12 @@ export class AgentToolsMcpService {
       ...(lacks("browser-profile-create-v1")
         ? previousReleaseToolsForCapabilityProfile(input.profileId)
         : []),
-    ].filter((definition) => definition.name !== "thread_write" || !lacks("task-done-v1"));
+    ].filter(
+      (definition) =>
+        (definition.name !== "thread_write" || !lacks("task-done-v1")) &&
+        (definition.name !== "person_notify" ||
+          (input.scope === "run" && capabilities?.includes("person-notify-v1") === true)),
+    );
     const advertisedTools: Tool[] = [];
     for (const definition of definitions) {
       if (
@@ -593,6 +598,15 @@ export class AgentToolsMcpService {
         });
         if (response.type !== "thread.write.result") throw unexpectedToolResponse();
         return { thread: response.thread, doneWhenRunEnds: response.doneWhenRunEnds };
+      }
+      case "person_notify": {
+        const response = await control.handle(token, {
+          type: "person.notify",
+          requestId,
+          message: input.message,
+        });
+        if (response.type !== "person.notify.result") throw unexpectedToolResponse();
+        return { messageId: response.messageId };
       }
       case "thread_message": {
         const response = await control.handle(token, {

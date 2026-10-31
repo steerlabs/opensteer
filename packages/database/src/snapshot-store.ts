@@ -276,6 +276,7 @@ export async function workspaceSnapshot(
       let messagesDesc = boundedSerializedPrefix(
         messageRows.slice(0, maxMessages).map(({ policy, published, ...row }): MessageView => ({
           ...messageFromRow(row),
+          ...(row.addressedToUserId ? { addressedToUserId: row.addressedToUserId } : {}),
           published,
           ...(policy ? { policy } : {}),
         })),

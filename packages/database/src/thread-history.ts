@@ -12,7 +12,7 @@ import type { ThreadMessagePage } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
-import { messagesFromRows } from "./thread-row-mappers.js";
+import { messageFromRow } from "./thread-row-mappers.js";
 import { boundedSerializedPrefix, serializedArrayBytes } from "./message-window.js";
 
 const historyCursorSchema = z.strictObject({
@@ -127,7 +127,14 @@ export async function readThreadHistory(
           .limit(limit)
           .execute();
       }
-      const window = boundedSerializedPrefix(messagesFromRows(rows), limit, maxBytes);
+      const window = boundedSerializedPrefix(
+        rows.map((row) => ({
+          ...messageFromRow(row),
+          ...(row.addressedToUserId ? { addressedToUserId: row.addressedToUserId } : {}),
+        })),
+        limit,
+        maxBytes,
+      );
       if (rows.length && !window.items.length)
         throw new OpensteerError({
           code: "bad_request",

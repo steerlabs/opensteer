@@ -117,6 +117,8 @@ export function requestNotificationAudience(input: {
  */
 export function mayNotify(event: AgentEvent): boolean {
   switch (event.type) {
+    case "message.created":
+      return event.data.addressedToUserId !== undefined;
     case "request.opened":
     case "run.failed":
     case "run.interrupted":
@@ -273,6 +275,10 @@ async function candidatesFor(
   event: AgentEvent,
 ): Promise<readonly NotificationCandidate[]> {
   switch (event.type) {
+    case "message.created":
+      return event.data.addressedToUserId
+        ? replyCandidates(transaction, event, event.data.message.id)
+        : [];
     case "request.opened":
       return requestCandidates(transaction, event);
     case "run.completed":
@@ -343,7 +349,8 @@ async function replyCandidates(
   event: AgentEvent,
   replyMessageId: MessageId,
 ): Promise<readonly NotificationCandidate[]> {
-  const recipient = await personAnswered(transaction, event);
+  const addressed = event.type === "message.created" ? event.data.addressedToUserId : undefined;
+  const recipient = await personAnswered(transaction, event, addressed);
   if (!recipient || recipient.muted) return [];
   const reply = await transaction
     .selectFrom("messages")
@@ -352,11 +359,23 @@ async function replyCandidates(
         .onRef("threadReadMarkers.threadId", "=", "messages.threadId")
         .on("threadReadMarkers.userId", "=", recipient.userId),
     )
-    .select(["messages.content", "messages.sequence", "threadReadMarkers.sequence as readSequence"])
+    .select([
+      "messages.content",
+      "messages.sequence",
+      "messages.addressedToUserId",
+      "messages.runId",
+      "threadReadMarkers.sequence as readSequence",
+    ])
+    .where("messages.kind", "=", "assistant")
     .where("messages.id", "=", replyMessageId)
     .where("messages.threadId", "=", event.threadId)
     .executeTakeFirst();
-  if (!reply) return [];
+  if (
+    !reply ||
+    (addressed !== undefined &&
+      (reply.addressedToUserId !== addressed || reply.runId !== event.runId))
+  )
+    return [];
   if (reply.readSequence !== null && BigInt(reply.readSequence) >= BigInt(reply.sequence)) {
     return [];
   }
@@ -428,6 +447,7 @@ async function interruptionCandidates(
 async function personAnswered(
   transaction: Transaction<DatabaseSchema>,
   event: AgentEvent,
+  addressedToUserId?: UserId,
 ): Promise<{ readonly muted: boolean; readonly title: string; readonly userId: UserId } | null> {
   if (!event.runId) return null;
   const run = await transaction
@@ -456,7 +476,13 @@ async function personAnswered(
     .where("workspaceMemberships.state", "=", "active")
     .where("users.disabledAt", "is", null)
     .executeTakeFirst();
-  if (!run || run.assignmentId !== null || run.replyTarget !== null) return null;
+  if (
+    !run ||
+    (addressedToUserId
+      ? run.requestedBy !== addressedToUserId
+      : run.assignmentId !== null || run.replyTarget !== null)
+  )
+    return null;
   const title = await threadTitle(transaction, event.threadId);
   if (!title) return null;
   return { muted: run.muted === true, title, userId: run.requestedBy };

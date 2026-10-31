@@ -220,3 +220,23 @@ function reply(overrides: Partial<MessageEntry> = {}): MessageEntry {
     ...overrides,
   };
 }
+
+it("renders an addressed message with the normal assistant renderer", () => {
+  const addressed: MessageEntry = {
+    id: "notice",
+    kind: "message",
+    messageKind: "assistant",
+    runId: "run-a",
+    createdAt: "2026-08-16T10:00:00.000Z",
+    author: { kind: "platform", cause: "test" },
+    body: "Milestone passed.",
+    addressedToUserId: "person",
+  };
+  const html = renderToStaticMarkup(
+    <MemoryRouter>
+      <AgentTranscript entries={[addressed]} />
+    </MemoryRouter>,
+  );
+  expect(html).toContain("Milestone passed.");
+  expect(html).toContain('data-message-id="notice"');
+});

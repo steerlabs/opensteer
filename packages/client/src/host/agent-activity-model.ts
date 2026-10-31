@@ -208,6 +208,13 @@ export function groupTranscriptEntries(
       open = null;
       continue;
     }
+    if (entry.kind === "message" && entry.addressedToUserId) {
+      slots.push({ group: { entry, key: entry.id, kind: "message" }, kind: "group" });
+      open = { after: entry.id, entries: [], kind: "stretch", runId: entry.runId };
+      slots.push(open);
+      nodeStretch.clear();
+      continue;
+    }
     if (entry.kind === "message" && (entry.messageKind === "input" || entry.runId === null)) {
       open = null;
       // A Run's first entry follows the message that seeds it, so a Run already

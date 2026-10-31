@@ -1685,3 +1685,41 @@ it("ORs engagement and keeps the authoritative start when history pages merge", 
     personWaiting: true,
   });
 });
+
+it("keeps addressed publication separate from a live final reply across page merges", () => {
+  const addressed = event("message.created", {
+    input: null,
+    addressedToUserId: createId("user"),
+    message: {
+      id: createId("message"),
+      threadId,
+      runId,
+      sequence: SequenceSchema.parse("2"),
+      kind: "assistant",
+      author: {
+        kind: "agent",
+        displayName: "Opensteer",
+        runId,
+        threadId,
+        workspaceId,
+        workspaceName: "Main",
+      },
+      content: [{ type: "text", text: "Milestone." }],
+      createdAt: now,
+    },
+  });
+  const entries = fold([addressed]);
+  expect(entries[0]).toMatchObject({ addressedToUserId: addressed.data.addressedToUserId });
+  const entry = entries[0]!;
+  if (entry.kind !== "message") throw new Error("Missing message entry");
+  const stream = {
+    ...entry,
+    id: `stream:${runId}`,
+    streaming: true,
+  };
+  delete stream.addressedToUserId;
+  expect(mergeTranscriptSegments([stream], entries).map((entry) => entry.id)).toEqual([
+    stream.id,
+    addressed.data.message.id,
+  ]);
+});

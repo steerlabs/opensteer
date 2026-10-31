@@ -20,3 +20,8 @@ export * from "./trigger-store.js";
 
 export * from "./workspace-tab-store.js";
 export * from "./browser-tab-group-store.js";
+
+export type {
+  PersonNotificationInput,
+  PersonNotificationResult,
+} from "./person-notification-store.js";
