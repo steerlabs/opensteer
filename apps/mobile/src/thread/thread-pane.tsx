@@ -19,6 +19,7 @@ import {
   threadStopTarget,
   turnFolds,
   turnWords,
+  usageLimitNotice,
   visibleTranscript,
   withoutOwnAssignment,
   type HostClient,
@@ -1153,10 +1154,18 @@ function ThreadPaneForUser(
   }
 
   // Access capabilities follow the engine that will enforce them.
+  const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
   const placement =
-    threadPlacementOptions(snapshot.environments, snapshot.harnesses).find(
-      (option) => option.harnessInstanceId === thread.harnessInstanceId,
-    ) ?? null;
+    placements.find((option) => option.harnessInstanceId === thread.harnessInstanceId) ?? null;
+  const usageNotice =
+    snapshot.user === null
+      ? null
+      : usageLimitNotice({
+          entries,
+          placements,
+          scope: { deploymentId: props.deploymentId, userId: snapshot.user.id },
+          selection: thread,
+        });
   const disabledReason =
     thread.status === "archived"
       ? "This thread is archived and cannot take new messages."
@@ -1449,6 +1458,7 @@ function ThreadPaneForUser(
                       : null
                 }
                 engineName={placement?.engineName ?? thread.harnessLabel}
+                usageNotice={usageNotice}
                 highlightRequestId={props.requestId}
                 hostClient={props.hostClient}
                 machines={snapshot.machines}

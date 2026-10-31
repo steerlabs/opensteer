@@ -1,6 +1,6 @@
 import "@fontsource-variable/inter/wght.css";
 import "./styles/index.css";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import {
@@ -12,6 +12,7 @@ import {
 import { HarnessModelDescriptorSchema, type HarnessModelDescriptor } from "@opensteer/protocol";
 import {
   selectionForModel,
+  usageLimitNotice,
   type ExecutionSelection,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
@@ -20,6 +21,8 @@ import { DictationController } from "@opensteer/client/dictation";
 import { DictationContext } from "./components/dictation.js";
 import { Composer } from "./components/composer.js";
 import { ExecutionControls } from "./components/execution-controls.js";
+import { UsageNoticeLine } from "./components/usage-notice.js";
+import { Icon } from "./components/icon.js";
 import { ToastProvider } from "./components/toast.js";
 const client = new MockHostClient({ latencyMs: 0 });
 const dictation = new DictationController({
@@ -113,14 +116,34 @@ const fixturePlacements = new URLSearchParams(location.search).has("usage")
           },
     )
   : placements;
+const query = new URLSearchParams(location.search);
 function App() {
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const variant = query.get("variant") === "conversation" ? "conversation" : "work";
   const [selection, setSelection] = useState(select(codex, gpt, { effort: "xhigh" }));
   const [mode, setMode] = useState<ThreadAccessMode>("full-access");
   return (
-    <main style={{ width: "min(760px, 100%)", margin: "100px auto", padding: 16 }}>
+    <main
+      style={{
+        width: query.has("pane") ? 340 : "min(760px, 100%)",
+        margin: "100px auto",
+        padding: 16,
+      }}
+    >
       <h1 style={{ fontSize: 24, marginBottom: 32 }}>What should Opensteer do?</h1>
       <DictationContext value={dictation}>
         <Composer
+          inputRef={inputRef}
+          variant={variant}
+          running={query.has("running")}
+          onStop={async () => {}}
+          voice={
+            query.has("voice") ? (
+              <button className="composer__attach" aria-label="Talk to Opensteer" type="button">
+                <Icon name="waveform" />
+              </button>
+            ) : undefined
+          }
           placeholder="What should Opensteer do?"
           onSend={async () => {}}
           attachments={{
@@ -146,6 +169,14 @@ function App() {
           }
         />
       </DictationContext>
+      <UsageNoticeLine
+        notice={usageLimitNotice({
+          scope: { deploymentId: "visual", userId: "visual" },
+          placements: fixturePlacements,
+          selection,
+        })}
+        returnFocusTo={inputRef}
+      />
     </main>
   );
 }

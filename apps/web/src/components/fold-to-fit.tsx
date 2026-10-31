@@ -2,32 +2,14 @@ import { observeResize } from "@opensteer/shared/resizeObserver";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { textWidth } from "./text-width.js";
 
-/**
- * The order in which the composer's line gives up what it says when it is
- * too narrow, first to last. A folded part leaves the line entirely — every
- * setting stays in its control's menu — so no name is ever cut to a fragment.
- * The model's name is the last thing given up.
- */
+/** The field moves above the toolbar before its controls give up their labels. */
 export const composerFold = {
-  /**
-   * Who does the task, down to their mark: the placeholder already names
-   * them, and the model's name matters more.
-   */
+  field: 0,
   assignee: 1,
-  /** The whole access pill, shown only for a mode worth seeing at a glance. */
   access: 2,
-  /** The effort's words after the model's name; its bars still say it. */
   reasoning: 3,
-  /** The effort's bars too: the menu still says it, and the name matters more. */
   reasoningMeter: 4,
-  /** Last to go, and first shortened as far as its `data-fold-floor` allows. */
   model: 5,
-  /**
-   * Beside a conversation's controls, the field's room for its whole
-   * placeholder (its `data-fold-text`): given up only when Attach, the
-   * control's mark, Stop and Send would not otherwise all keep their place.
-   */
-  field: 6,
 } as const;
 
 /**
@@ -40,12 +22,13 @@ export const composerFold = {
  * CSS decides what folding means for it. A part that also declares
  * `data-fold-floor="px"` is first shortened, to no less than that width, and
  * folded only when shortening is not enough. A part that declares
- * `data-fold-text` keeps room for that text whole, in its own font, until its
- * stage folds; that room is measured in the same pass as the row, so the row
- * is never fitted against a room that has since changed. Nothing in the row
- * may shrink on its own: overflow has to show at the row's edge, where it is
- * measured, not as one control sliding under the next. The row is one line,
- * always; it never wraps or stacks.
+ * `data-fold-text` keeps room for that text whole on one line, in its own
+ * font, until its stage folds; text of more than one line needs the whole
+ * line, so it always folds. That room is measured in the same pass as the
+ * row, so the row is never fitted against a room that has since changed.
+ * Nothing in the row may shrink on its own: overflow has to show at the row's
+ * edge, where it is measured, not as one control sliding under the next. The
+ * row is one line, always; it never wraps or stacks.
  *
  * The line's width is measured, never the viewport's: the same composer sits
  * in a full window, a split pane and a phone, and only its own width says what
@@ -123,7 +106,7 @@ function fitLine(line: HTMLElement): void {
     part.style.removeProperty("max-width");
     const room = textRoom(part);
     if (room === null) part.style.removeProperty("min-width");
-    else part.style.minWidth = `${room}px`;
+    else part.style.minWidth = room === wholeLine ? "100%" : `${room}px`;
   }
   for (const stage of stages) {
     if (fits()) return;
@@ -152,13 +135,18 @@ function shorten(row: HTMLElement, part: HTMLElement): void {
   part.style.maxWidth = `${Math.max(target, floor)}px`;
 }
 
+/** The room asked for by text that cannot be one line. */
+const wholeLine = Number.POSITIVE_INFINITY;
+
 /**
- * The border-box width that shows a part's `data-fold-text` whole in its own
- * font, or null when it declares none or nothing can measure it.
+ * The border-box width that shows a part's `data-fold-text` whole on one line
+ * in its own font, `wholeLine` for text of several lines, or null when it
+ * declares none or nothing can measure it.
  */
 function textRoom(part: HTMLElement): number | null {
   const text = part.dataset.foldText;
   if (!text) return null;
+  if (text.includes("\n")) return wholeLine;
   const style = getComputedStyle(part);
   const width = textWidth(style.font, text);
   if (width === null) return null;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useParams } from "react-router";
 import { CHAT_THREAD_TITLE, type ThreadAccessMode } from "@opensteer/core";
 import {
@@ -27,6 +27,7 @@ import { AssigneePicker } from "./assignee-picker.js";
 import { Composer, type ComposerSubmission } from "./composer.js";
 import { HomeIntro } from "./home-intro.js";
 import { ThreadSurface } from "./thread-view.js";
+import { UsageNotice } from "./usage-notice.js";
 import { WorkspaceNotificationMute } from "./workspace-notification-mute.js";
 import {
   discardStagedHomeMessage,
@@ -379,6 +380,7 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
     [placements, selection],
   );
   const canCreateThread = workspace.status === "ready" && selection !== null;
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // Files are staged in the Workspace the Thread will start in, before the
   // Thread exists; the first message is kept before anything sends it.
   const { deploymentId } = snapshot;
@@ -468,6 +470,7 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
             <>
               <Composer
                 dictationScope={`${deploymentId}/${userId}/new-thread/${workspace.id}`}
+                inputRef={inputRef}
                 placeContext={placeContext}
                 attachments={attachmentTarget}
                 autoFocus
@@ -507,6 +510,7 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
                   </>
                 }
               />
+              <UsageNotice placements={placements} returnFocusTo={inputRef} selection={selection} />
               <div className="hero__suggestions">
                 {suggestions.map((suggestion) => (
                   <button

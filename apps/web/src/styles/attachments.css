@@ -4,17 +4,9 @@
 
 /* ---- In the composer ---- */
 
+/* Quiet at rest: only its face's hover says it is there (sizes in thread.css). */
 .composer__attach {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-full);
   color: var(--muted);
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
 }
 
 .composer__attach:hover:not(:disabled) {
@@ -29,13 +21,6 @@
 .composer__attach svg {
   width: 16px;
   height: 16px;
-}
-
-@media (hover: none) {
-  .composer__attach {
-    width: var(--touch-target);
-    height: var(--touch-target);
-  }
 }
 
 .composer--dropping,

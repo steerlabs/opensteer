@@ -1,13 +1,12 @@
 import {
-  harnessUsageLimitFailureCode,
   ModelSelectionSchema,
   ProviderContinuationIdentitySchema,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { HarnessModelDescriptorSchema, type HarnessObservedConnection } from "@opensteer/protocol";
-import type { ThreadPlacementOption, ThreadSummary, TranscriptEntry } from "@opensteer/client/host";
-import { usageLimitRecovery } from "./thread-view.js";
+import type { ThreadPlacementOption, ThreadSummary } from "@opensteer/client/host";
+import { usageLimitAlternative } from "./thread-view.js";
 
 const codexContinuation = ProviderContinuationIdentitySchema.parse({
   continuationKey: `runner:v1:${"a".repeat(43)}`,
@@ -107,21 +106,9 @@ function connection(
   };
 }
 
-function failedRun(code: string): Extract<TranscriptEntry, { kind: "run" }> {
-  return {
-    createdAt: "2026-09-05T00:00:00.000Z",
-    error: { code, message: "You've hit your usage limit.", retryable: false },
-    id: "run:run-1",
-    kind: "run",
-    replyMessageId: null,
-    runId: "run-1",
-    status: "failed",
-  };
-}
-
 const now = new Date("2026-09-05T00:00:00.000Z").getTime();
 
-describe("usageLimitRecovery", () => {
+describe("usageLimitAlternative", () => {
   const spent = placement({
     observedConnections: [
       connection("work@example.test", {
@@ -146,31 +133,9 @@ describe("usageLimitRecovery", () => {
   });
 
   it("offers a compatible account on the same work location", () => {
-    const recovery = usageLimitRecovery(
-      [failedRun(harnessUsageLimitFailureCode)],
-      [spent, spare],
-      thread(),
-      now,
+    expect(usageLimitAlternative([spent, spare], thread(), now)?.harnessInstanceId).toBe(
+      "harness-spare",
     );
-
-    expect(recovery?.accountLabel).toBe("work@example.test");
-    expect(recovery?.alternative?.harnessInstanceId).toBe("harness-spare");
-    expect(recovery?.alternativeAccountLabel).toBe("personal@example.test");
-  });
-
-  it("stays silent for any other failure code", () => {
-    expect(
-      usageLimitRecovery([failedRun("codex_harness_error")], [spent, spare], thread(), now),
-    ).toBeNull();
-    expect(
-      usageLimitRecovery(
-        [{ ...failedRun(harnessUsageLimitFailureCode), status: "completed" }],
-        [spent, spare],
-        thread(),
-        now,
-      ),
-    ).toBeNull();
-    expect(usageLimitRecovery([], [spent, spare], thread(), now)).toBeNull();
   });
 
   it("refuses an account whose provider session this Thread cannot continue", () => {
@@ -190,16 +155,9 @@ describe("usageLimitRecovery", () => {
       observedConnections: [connection("cloud@example.test")],
     });
 
-    const recovery = usageLimitRecovery(
-      [failedRun(harnessUsageLimitFailureCode)],
-      [spent, foreign, unavailable, elsewhere],
-      thread(),
-      now,
-    );
-
-    expect(recovery?.alternative).toBeNull();
-    expect(recovery?.alternativeAccountLabel).toBeNull();
-    expect(recovery?.resetsAt).toBe("Mon 2:43 AM");
+    expect(
+      usageLimitAlternative([spent, foreign, unavailable, elsewhere], thread(), now),
+    ).toBeNull();
   });
 
   it("refuses an account that is itself out of capacity", () => {
@@ -217,23 +175,15 @@ describe("usageLimitRecovery", () => {
       ],
     });
 
-    expect(
-      usageLimitRecovery(
-        [failedRun(harnessUsageLimitFailureCode)],
-        [spent, alsoSpent],
-        thread(),
-        now,
-      )?.alternative,
-    ).toBeNull();
+    expect(usageLimitAlternative([spent, alsoSpent], thread(), now)).toBeNull();
     // Once that account's own window has reset, the refusal it reported is no
     // longer knowledge and the account becomes a real way forward again.
     expect(
-      usageLimitRecovery(
-        [failedRun(harnessUsageLimitFailureCode)],
+      usageLimitAlternative(
         [spent, alsoSpent],
         thread(),
         new Date("2026-09-05T04:00:00.000Z").getTime(),
-      )?.alternative?.harnessInstanceId,
+      )?.harnessInstanceId,
     ).toBe("harness-spare");
   });
 
@@ -260,23 +210,7 @@ describe("usageLimitRecovery", () => {
     });
 
     for (const candidate of [otherSource, lacksModel]) {
-      expect(
-        usageLimitRecovery(
-          [failedRun(harnessUsageLimitFailureCode)],
-          [spent, candidate],
-          thread(),
-          now,
-        )?.alternative,
-      ).toBeNull();
+      expect(usageLimitAlternative([spent, candidate], thread(), now)).toBeNull();
     }
-  });
-
-  it("names the profile when the Runner reported no account label", () => {
-    const anonymous = placement({ observedConnections: [] });
-
-    expect(
-      usageLimitRecovery([failedRun(harnessUsageLimitFailureCode)], [anonymous], thread(), now)
-        ?.accountLabel,
-    ).toBe("Codex Work");
   });
 });

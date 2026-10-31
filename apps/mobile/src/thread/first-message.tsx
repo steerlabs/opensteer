@@ -1,4 +1,3 @@
-import { UsageNotice } from "./usage-notice.js";
 import { VoiceDock, VoiceMic } from "../voice/controls.js";
 import {
   accountGettingReady,
@@ -9,6 +8,7 @@ import {
   lastExecutionSelection,
   preparingPlacement,
   threadPlacementOptions,
+  usageLimitNotice,
   type ExecutionSelection,
   type HostSnapshot,
   type ThreadPlacementOption,
@@ -48,6 +48,7 @@ import { useContentInsets } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { ComposerPills } from "./composer-pills.js";
+import { UsageNotice } from "./usage-notice.js";
 import { AttachmentStrip } from "./attachment-views.js";
 import {
   ComposerBar,
@@ -397,6 +398,8 @@ export function FirstMessageComposer(props: {
   readonly underHeader: boolean;
   /** Chat's first message: voice can say it, and it creates Chat. */
   readonly voice?: boolean;
+  /** Whose dismissals of a usage-limit line apply here. */
+  readonly usageScope: { readonly deploymentId: string; readonly userId: string };
 }): ReactNode {
   const gutter = useGutter();
   const column = useReadingColumn();
@@ -612,11 +615,6 @@ export function FirstMessageComposer(props: {
             {blocker.reason}
           </AppText>
         )}
-        <UsageNotice
-          placements={props.execution.placements}
-          selection={selection}
-          onSwitch={() => props.onChooseAI(undefined, true)}
-        />
         <VoiceDock />
         <ComposerBar
           accessory={
@@ -693,6 +691,14 @@ export function FirstMessageComposer(props: {
             </View>
           }
           shape="rounded"
+        />
+        <UsageNotice
+          notice={usageLimitNotice({
+            placements: props.execution.placements,
+            scope: props.usageScope,
+            selection: props.execution.selection,
+          })}
+          onOpen={chooseManually}
         />
       </View>
     </KeyboardAvoidingView>

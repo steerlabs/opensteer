@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ModelSelectionSchema, ThreadAccessModeSchema } from "@opensteer/core";
 import { HarnessModelDescriptorSchema, type HarnessModelDescriptor } from "@opensteer/protocol";
 import type { ExecutionSelection } from "./execution-preferences.js";
-import { executionAccounts, executionMenu, executionUsageNotice } from "./execution-menu.js";
+import { executionAccounts, executionMenu } from "./execution-menu.js";
 import { selectionForModel, type ThreadPlacementOption } from "./thread-placement.js";
 
 const now = Date.parse("2026-10-30T12:00:00Z");
@@ -126,25 +126,11 @@ describe("conversation accounts", () => {
     ]);
   });
 
-  it("warns before sending when the account in force has run out, and says whether another can take over", () => {
+  it("marks only accounts whose current model has reached its usage limit", () => {
     const spent = { ...codexPro, observedConnections: connection(true) };
-    const onSpent = choose(spent, terra, {});
-    expect(executionUsageNotice([spent, claude], onSpent, now)).toEqual({
-      accountTitle: "tim@example.com",
-      canSwitch: false,
-      engineName: "Codex",
-      resetsAt: expect.any(String),
-    });
-    const spare = placement({
-      accountLabel: "work@example.com",
-      defaultAccount: false,
-      driverKind: "codex",
-      engineName: "Codex",
-      id: "codex-work",
-      models: [terra],
-    });
-    expect(executionUsageNotice([spent, spare], onSpent, now)?.canSwitch).toBe(true);
-    expect(executionUsageNotice([codexPro], onTerra, now)).toBeNull();
+    const choices = executionAccounts([spent, codexPro, claude], choose(spent, terra, {}), now);
+    expect(choices.map((choice) => choice.exhausted)).toEqual([true, false]);
+    expect(executionAccounts([codexPro], onTerra, now)[0]?.exhausted).toBe(false);
   });
 });
 

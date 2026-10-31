@@ -311,6 +311,7 @@ describe("Expo engine/account/model journeys", () => {
           onChooseAI={() => undefined}
           onSend={onSend}
           placeholder="Task"
+          usageScope={{ deploymentId: "deployment-1", userId: "user-1" }}
           quote={null}
           onRemoveQuote={() => undefined}
           savedAttachmentKeys={[]}
@@ -504,9 +505,10 @@ describe("Expo engine/account/model journeys", () => {
     expect(navigation.goBack).not.toHaveBeenCalled();
   });
 
-  it("opens This conversation from the usage notice's Switch account", async () => {
+  it("opens This conversation from the usage notice", async () => {
     await mount();
     const { UsageNotice } = await import("../thread/usage-notice.js");
+    const { usageLimitNotice } = await import("@opensteer/client/host");
     const exhausted = {
       ...codex,
       observedConnections: [
@@ -539,9 +541,12 @@ describe("Expo engine/account/model journeys", () => {
     await act(async () =>
       root!.render(
         <UsageNotice
-          placements={[exhausted, second]}
-          selection={selection}
-          onSwitch={() =>
+          notice={usageLimitNotice({
+            placements: [exhausted, second],
+            selection,
+            scope: { deploymentId: "test-deployment", userId: "test-user" },
+          })}
+          onOpen={() =>
             root!.render(
               <ThreadSettingsScreen
                 route={{
@@ -557,8 +562,10 @@ describe("Expo engine/account/model journeys", () => {
         />,
       ),
     );
-    expect(document.body.textContent).toContain("is out of Codex usage until");
-    await press("Switch account");
+    expect(document.body.textContent).toContain("Codex usage limit · Resets");
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label^="Codex usage limit"]')!.click(),
+    );
     expect(document.body.textContent).toContain("This conversation");
     expect(document.body.textContent).toContain("Account");
   });

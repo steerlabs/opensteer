@@ -401,46 +401,23 @@ a.update-line__source:hover {
   box-shadow: 0 4px 24px rgb(0 0 0 / 12%);
 }
 
+/* One line — Attach, the words, the controls — while what the field shows
+   fits there whole (FoldToFit keeps its room from data-fold-text) and the
+   words keep at least a third of the line. A field on one line is centred
+   with the controls. */
 .composer--conversation .composer__entry {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: var(--space-4);
   padding: var(--space-6);
 }
 
-/* The words keep room for their whole placeholder (FoldToFit sets it from
-   the field's data-fold-text): the execution control gives up words and
-   pills before the field is squeezed. The line's gap already parts the words
-   from Attach and the controls, so the field adds little of its own; that is
-   what keeps "Ask Opensteer…" whole beside 44px touch targets on a 320px
-   phone. */
 .composer--conversation .composer__input {
-  flex: 1;
+  flex: 1 0 33%;
   min-width: 0;
-  width: 0;
   padding: var(--space-10) var(--space-4);
   font-size: var(--text-root);
   min-height: 44px;
-}
-
-.composer--conversation .composer__attach {
-  flex: none;
-  width: 40px;
-  height: 44px;
-  border-radius: var(--radius-full);
-  background: var(--surface-raised);
-  color: var(--text-soft);
-}
-
-.composer--conversation .composer__attach:hover:not(:disabled) {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.composer--conversation .composer__send,
-.composer--conversation .composer__stop {
-  width: 36px;
-  height: 36px;
 }
 
 .composer--conversation .composer__footer {
@@ -448,15 +425,35 @@ a.update-line__source:hover {
   min-width: 0;
   padding: 0;
   gap: var(--space-2);
-  min-height: 44px;
 }
 
-/* The AI controls take under half the composer, so the words always lead
-   the line; past that they give up words (see FoldToFit). Send and Stop sit
-   outside this row and are never capped. */
 .composer--conversation .composer__settings {
   flex: 0 1 auto;
-  max-width: 45cqi;
+}
+
+/* Otherwise — the line too narrow, words of more than a line, dictation's
+   live bar in the controls — the field takes the whole width above a toolbar
+   that stays put as the words grow. */
+.composer--conversation .composer__entry:has(> .composer__input[data-folded]),
+.composer--conversation .composer__entry:has(.dictation-live) {
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+
+.composer--conversation .composer__input[data-folded],
+.composer--conversation .composer__entry:has(.dictation-live) > .composer__input {
+  order: -1;
+  flex: 1 0 100%;
+  padding-inline: var(--space-10);
+}
+
+.composer--conversation .composer__input[data-folded] ~ .composer__footer,
+.composer--conversation .composer__entry:has(.dictation-live) > .composer__footer {
+  flex: 1 1 0;
+}
+
+.composer--conversation .composer__input[data-folded] ~ .composer__footer .composer__settings {
+  flex: 1 1 auto;
 }
 
 .thread--home .hero__subtitle:empty {
@@ -518,15 +515,6 @@ a.update-line__source:hover {
   .composer--conversation .composer__input {
     /* Keep typing from zooming the page on mobile Safari. */
     font-size: 16px;
-  }
-}
-
-@media (hover: none) {
-  .composer--conversation .composer__attach,
-  .composer--conversation .composer__send,
-  .composer--conversation .composer__stop {
-    width: var(--touch-target);
-    height: var(--touch-target);
   }
 }
 

@@ -13,7 +13,11 @@ const { checks, check } = journeyChecks();
 const web = await openMockWeb("composer-menu");
 try {
   for (const width of [320, 390, 768, 1280]) {
-    const page = await web.browser.newPage({ viewport: { width, height: 900 } });
+    const page = await web.browser.newPage({
+      viewport: { width, height: 900 },
+      hasTouch: width < 600,
+      isMobile: width < 600,
+    });
     page.setDefaultTimeout(10000);
     await check(`${width}: menu and settings`, async () => {
       await page.goto(`${web.origin}/composer-visual.html`);
@@ -129,21 +133,107 @@ try {
     });
     await check(`${width}: usage notice`, async () => {
       await page.goto(`${web.origin}/composer-visual.html?usage`);
-      const notice = page.locator(".composer-usage");
+      const notice = page.locator(".usage-notice");
       await notice.waitFor();
       const noticeBox = await notice.boundingBox();
-      const fieldBox = await page
-        .getByRole("textbox", { name: "Message", exact: true })
-        .boundingBox();
+      const fieldBox = await page.locator(".composer").boundingBox();
       expectThat(
         { noticeBox, fieldBox },
-        !!noticeBox && !!fieldBox && noticeBox.y + noticeBox.height <= fieldBox.y + 1,
-        "Usage notice overlaps the field",
+        !!noticeBox && !!fieldBox && noticeBox.y >= fieldBox.y + fieldBox.height - 1,
+        "Usage notice is not below the composer",
       );
       await page.screenshot({ path: path.join(directory, `${width}-usage.png`) });
-      await notice.getByRole("button", { name: "Switch account", exact: true }).click();
-      await page.getByRole("button", { name: "This conversation" }).waitFor();
+      const draft = page.getByRole("textbox", { name: "Message", exact: true });
+      await draft.fill("Keep this draft");
+      await notice.getByRole("button", { name: "Dismiss usage notice", exact: true }).click();
+      expectThat({}, (await draft.inputValue()) === "Keep this draft", "Dismissal lost the draft");
+      expectThat(
+        {},
+        await draft.evaluate((element) => element === document.activeElement),
+        "Dismissal lost focus",
+      );
+      await notice.waitFor({ state: "hidden" });
+      await page.reload();
+      await page.getByRole("button", { name: /^Engine and model:/ }).waitFor();
+      expectThat({}, (await notice.count()) === 0, "Dismissal was not kept after reload");
       return { width };
+    });
+    await check(`${width}: Chat field and voice toolbar fit`, async () => {
+      await page.goto(
+        `${web.origin}/composer-visual.html?variant=conversation&voice&running${width >= 768 ? "&pane" : ""}`,
+      );
+      const field = page.getByRole("textbox", { name: "Message", exact: true });
+      await page.getByRole("button", { name: /^Engine and model:/ }).waitFor();
+      const layout = () =>
+        page.locator(".composer").evaluate((composer) => {
+          const input = composer.querySelector<HTMLTextAreaElement>("textarea")!;
+          const entry = input.parentElement!;
+          const css = getComputedStyle(input);
+          const available =
+            entry.clientWidth -
+            parseFloat(getComputedStyle(entry).paddingLeft) -
+            parseFloat(getComputedStyle(entry).paddingRight);
+          const targets = [
+            ...composer.querySelectorAll<HTMLElement>(
+              ".composer__attach,.composer__send,.composer__stop",
+            ),
+          ].map((button) => {
+            const r = button.getBoundingClientRect();
+            return { width: r.width, height: r.height };
+          });
+          return {
+            fieldWidth: input.getBoundingClientRect().width,
+            available,
+            fullWidth: input.hasAttribute("data-folded"),
+            height: input.getBoundingClientRect().height,
+            oneLine: Math.max(
+              44,
+              parseFloat(css.lineHeight) +
+                parseFloat(css.paddingTop) +
+                parseFloat(css.paddingBottom),
+            ),
+            targets,
+            touch: matchMedia("(hover: none)").matches,
+            overflow: composer.scrollWidth > composer.clientWidth,
+          };
+        });
+      const empty = await layout();
+      expectThat({ empty }, empty.height <= empty.oneLine + 1, "Empty Chat field ballooned");
+      expectThat(
+        { empty },
+        empty.fullWidth
+          ? empty.fieldWidth >= empty.available - 1
+          : empty.fieldWidth >= empty.available / 3 - 1,
+        "Chat field squeezed into a sliver",
+      );
+      expectThat(
+        { empty },
+        !empty.overflow &&
+          empty.targets.every(
+            (r) => Math.abs(r.width - r.height) < 1 && r.width >= (empty.touch ? 44 : 36),
+          ),
+        "Chat toolbar has overflowing or oval targets",
+      );
+      await field.fill(
+        "Please compare restaurant options for Friday evening.\n\nWe need a quiet table for four with vegetarian options. ".repeat(
+          8,
+        ),
+      );
+      const written = await layout();
+      expectThat(
+        { written },
+        written.fullWidth && written.fieldWidth >= written.available - 1 && written.height <= 240,
+        "Long Chat draft lost its full width or height cap",
+      );
+      await field.fill("");
+      const cleared = await layout();
+      expectThat(
+        { cleared },
+        cleared.height <= cleared.oneLine + 1,
+        "Cleared Chat field stayed expanded",
+      );
+      await page.screenshot({ path: path.join(directory, `${width}-chat-toolbar.png`) });
+      return { empty, written, cleared };
     });
     if (width < 600) {
       // Who does the task folds to its mark before the model's name goes:
