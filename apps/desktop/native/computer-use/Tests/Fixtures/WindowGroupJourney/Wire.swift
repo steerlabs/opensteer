@@ -442,9 +442,7 @@ extension WireJourney {
     start("another-app-agent-unaffected")
     do {
       let path = try ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_OTHER_APP"].unwrap("independent app fixture")
-      let config = NSWorkspace.OpenConfiguration()
-      config.activates = false
-      let running = try await NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: config)
+      let running = try await launchFixture(URL(fileURLWithPath: path))
       defer { running.terminate() }
       let otherOut = out.appendingPathComponent("other-app")
       let ready = Date().addingTimeInterval(10)
