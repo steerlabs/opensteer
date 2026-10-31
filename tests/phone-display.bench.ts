@@ -60,6 +60,9 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
   const results: unknown[] = [];
   const failures: unknown[] = [];
   try {
+    const idleDurationMs = Number(process.env.OPENSTEER_PHONE_BENCH_IDLE_MS ?? 3_000);
+    if (!Number.isSafeInteger(idleDurationMs) || idleDurationMs < 1_000 || idleDurationMs > 60_000)
+      throw new Error("Idle observation must be between 1000 and 60000 milliseconds");
     const bitrateSamples: unknown[] = [];
     const keyframeSamples: unknown[] = [];
     const controllers = new Map<DisplayViewerBitrate, number>();
@@ -380,10 +383,16 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
         await delay(5_000);
         const idleStart = performance.now();
         const bytesAtIdle = proxy.connections.reduce((sum, c) => sum + c.bytesDown + c.bytesUp, 0);
-        await delay(3_000);
+        await delay(idleDurationMs);
+        const idleEnd = performance.now();
+        const idleSeconds = (idleEnd - idleStart) / 1000;
         const idleBytesPerSecond =
           (proxy.connections.reduce((sum, c) => sum + c.bytesDown + c.bytesUp, 0) - bytesAtIdle) /
-          ((performance.now() - idleStart) / 1000);
+          idleSeconds;
+        const idlePayloadBytesPerSecond =
+          cold.received
+            .filter((frame) => frame.at >= idleStart && frame.at < idleEnd)
+            .reduce((sum, frame) => sum + frame.frame.payload.byteLength, 0) / idleSeconds;
         const joined = await viewer();
         await joined.page.screenshot({
           fullPage: true,
@@ -434,6 +443,8 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
             activeFrames.reduce((sum, p) => sum + p.frame.payload.byteLength, 0) /
             ((motionEnd - motionStart) / 1000),
           idleBytesPerSecond,
+          idlePayloadBytesPerSecond,
+          idleDurationMs: idleEnd - idleStart,
           adbSwipeToNextPaintP50Ms: percentile(
             inputTimes.flatMap((time) => {
               const p = cold.paints.find((p) => p.at >= time);
