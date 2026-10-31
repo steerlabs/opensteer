@@ -2184,8 +2184,10 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "thread.assignments.list": async ({ threadId }) => {
-      const assignments = client.listThreadAssignments(threadId);
+    "thread.assignments.list": async ({ open, threadId }) => {
+      const assignments = client
+        .listThreadAssignments(threadId)
+        .filter(({ status }) => !open || status === "open");
       return rpcSuccess(
         hostApi["thread.assignments.list"].success.parse({
           assignments,
@@ -3360,7 +3362,6 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
-  readonly capabilities = ["thread-automations-v1"] as const;
   readonly browserPasskeys = new BrowserPasskeys();
   readonly recentSites: RecentSitesStore;
   readonly browserPreferences: BrowserPreferences;

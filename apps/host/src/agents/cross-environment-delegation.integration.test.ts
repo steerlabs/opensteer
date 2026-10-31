@@ -2025,10 +2025,11 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "Research across workspaces",
       workspaceId: workerWorkspace.id,
     });
-    const list = async () => {
+    const list = async (open?: boolean) => {
       const page = await store.listThreadAssignmentsForOwner({
         ownerId: fixture.userId,
         threadId: fixture.parentThreadId,
+        ...(open ? { open } : {}),
       });
       if (!page) throw new Error("Expected task summaries");
       return page.assignments;
@@ -2053,10 +2054,14 @@ integration("cross-environment delegation reaches the Runner", () => {
     expect((await list()).find(({ id }) => id === task.assignmentId)?.modelLabel).toBe(
       alternateModel.modelId,
     );
+    expect((await list(true)).map(({ id }) => id)).toEqual([task.assignmentId]);
     const worker = await activateRun(fixture, task.run!.id);
     await reply(worker, "Research complete.");
     await end(worker, "completed");
     await drainReturns();
+    // Finished work leaves the open set and stays in the history.
+    expect(await list(true)).toEqual([]);
+    expect((await list()).map(({ id }) => id)).toContain(task.assignmentId);
     await selectModel(task.thread.id, fixture.lentHarnessInstanceId, testModelSelection);
     const followUp = await delegate(fixture.token, {
       task: "Check return shipping",

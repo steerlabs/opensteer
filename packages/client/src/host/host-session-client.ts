@@ -1751,7 +1751,7 @@ export class HttpHostClient {
     if (
       this.#disposed ||
       this.#snapshot.session !== "authenticated" ||
-      !this.#capabilities?.includes("thread-automations-v1")
+      !this.#capabilities?.includes("task-family-v1")
     )
       return;
     const pending = this.#automationReads.get(threadId);
@@ -1812,10 +1812,24 @@ export class HttpHostClient {
     }
   }
 
+  /**
+   * The newest page, which is all the history a family shows, and every open
+   * Assignment however far back it was handed out, so work under way is never
+   * missing. A Host without `task-family-v1` gives the newest page alone.
+   */
   async #readAssignments(threadId: string): Promise<void> {
+    await Promise.all([
+      this.#readAssignmentPages(threadId, false),
+      ...(this.#capabilities?.includes("task-family-v1")
+        ? [this.#readAssignmentPages(threadId, true)]
+        : []),
+    ]);
+  }
+
+  async #readAssignmentPages(threadId: string, open: boolean): Promise<void> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
-    let before: string | undefined;
+    let before: string | null = null;
     do {
       let response;
       try {
@@ -1823,7 +1837,8 @@ export class HttpHostClient {
           await this.rpc["thread.assignments.list"]({
             threadId,
             limit: 100,
-            ...(before ? { before } : {}),
+            ...(open ? { open } : {}),
+            ...(before === null ? {} : { before }),
           }),
         );
       } catch (error) {
@@ -1837,10 +1852,8 @@ export class HttpHostClient {
         ...this.#snapshot,
         assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
       });
-      // The newest page can hide old open children. Follow the existing cursor
-      // contract so old Hosts also supply the complete open set.
-      before = response.window.hasMore ? (response.window.nextBefore ?? undefined) : undefined;
-    } while (before);
+      before = open && response.window.hasMore ? response.window.nextBefore : null;
+    } while (before !== null);
   }
 
   /** Every Run whose browser use this Thread shows: its own, and its tasks' workers'. */
@@ -5561,7 +5574,7 @@ export class HttpHostClient {
     if (this.#disposed) return;
     if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
     if (
-      !this.#capabilities?.includes("thread-automations-v1") &&
+      !this.#capabilities?.includes("task-family-v1") &&
       Object.keys(snapshot.threadAutomations).length > 0
     )
       snapshot = { ...snapshot, threadAutomations: {} };

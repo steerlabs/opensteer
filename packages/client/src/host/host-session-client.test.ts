@@ -1428,52 +1428,64 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
-  it("follows assignment pages so an older open child is held beyond the newest 100", async () => {
-    const workspace = makeWorkspace();
-    const thread = makeThread(workspace.id);
-    const mock = new MockHostClient({ latencyMs: 0 });
-    const seed = Object.values(mock.getSnapshot().assignments).find((a) => a.status === "open")!;
-    const older = { ...seed, parentThreadId: thread.id };
-    const recent = Array.from({ length: 100 }, () => ({
-      ...older,
-      id: createId("delegation"),
-      status: "completed" as const,
-      finishedAt: now,
-    }));
-    const pages: unknown[] = [];
-    const client = createHttpHostClient({
-      refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-      fetch: async (input, init) => {
-        const url = new URL(input instanceof Request ? input.url : String(input));
-        if (url.pathname === "/v1/rpc/thread.assignments.list") {
-          const payload = rpcPayload(url, init);
-          pages.push(payload.before);
-          const assignments = payload.before ? [older] : recent;
-          return json({
-            assignments,
-            threadId: thread.id,
-            window: {
-              byteCount: 1,
-              hasMore: !payload.before,
-              itemCount: assignments.length,
-              nextBefore: payload.before ? null : "older",
-              totalItems: 101,
-            },
-          });
-        }
-        return json({ ...bootstrap([workspace]), threads: [thread] });
-      },
-    });
-    await client.load();
-    client.observeThread(thread.id);
-    await vi.waitFor(() => expect(client.getSnapshot().assignments[older.id]).toBeDefined(), {
-      timeout: 1000,
-    });
-    expect(pages).toEqual([undefined, "older"]);
-    client.dispose();
-    mock.dispose();
-  });
+  it.each([true, false])(
+    "holds every open child however long the history, without paging settled history (family %s)",
+    async (family) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const mock = new MockHostClient({ latencyMs: 0 });
+      const seed = Object.values(mock.getSnapshot().assignments).find((a) => a.status === "open")!;
+      const older = { ...seed, parentThreadId: thread.id };
+      const recent = Array.from({ length: 100 }, () => ({
+        ...older,
+        id: createId("delegation"),
+        status: "completed" as const,
+        finishedAt: now,
+      }));
+      const reads: { readonly open: unknown; readonly before: unknown }[] = [];
+      const client = createHttpHostClient({
+        capabilities: family ? ["task-family-v1"] : [],
+        refreshIntervalMs: 0,
+        webSocketFactory: () => new FakeSocket(),
+        fetch: async (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          if (url.pathname === "/v1/rpc/thread.assignments.list") {
+            const payload = rpcPayload(url, init);
+            reads.push({ open: payload.open, before: payload.before });
+            // The open set spans two pages; history has more than the newest page.
+            const assignments = payload.open ? (payload.before ? [older] : []) : recent;
+            const more = payload.open ? !payload.before : true;
+            return json({
+              assignments,
+              threadId: thread.id,
+              window: {
+                byteCount: 1,
+                hasMore: more,
+                itemCount: assignments.length,
+                nextBefore: more ? "older" : null,
+                totalItems: 101,
+              },
+            });
+          }
+          return json({ ...bootstrap([workspace]), threads: [thread] });
+        },
+      });
+      await client.load();
+      client.observeThread(thread.id);
+      await vi.waitFor(() => expect(reads).toHaveLength(family ? 3 : 1), { timeout: 1000 });
+      await vi.waitFor(
+        () =>
+          expect(Object.keys(client.getSnapshot().assignments)).toHaveLength(family ? 101 : 100),
+        { timeout: 1000 },
+      );
+      expect(reads.filter(({ open }) => open === undefined)).toEqual([
+        { open: undefined, before: undefined },
+      ]);
+      expect(client.getSnapshot().assignments[older.id] !== undefined).toBe(family);
+      client.dispose();
+      mock.dispose();
+    },
+  );
 
   it.each([true, false])(
     "loads task automations only with capability (%s), coalescing notices and preserving unchanged arrays",
@@ -1490,7 +1502,7 @@ describe("HttpHostClient durable realtime", () => {
       let reads = 0;
       let hold: ReturnType<typeof Promise.withResolvers<Response>> | undefined;
       const client = createHttpHostClient({
-        capabilities: enabled ? ["thread-automations-v1"] : [],
+        capabilities: enabled ? ["task-family-v1"] : [],
         refreshIntervalMs: 0,
         webSocketFactory: () => socket,
         fetch: async (input, init) => {
