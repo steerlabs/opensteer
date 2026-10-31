@@ -356,6 +356,13 @@ describe("LocalRunnerService", () => {
     running.children.forEach(connect);
     await Promise.all(starts);
 
+    expect(inputs.map(({ profileRoot }) => profileRoot).sort()).toEqual(
+      [first, second]
+        .map(({ deploymentId }) =>
+          path.join(directory, "deployments", deploymentId, "browser-profiles"),
+        )
+        .sort(),
+    );
     // Failure mode: every lent browser appends to and rotates the Personal
     // browser's log, so their lines interleave and one rotation moves the
     // file another still writes to. The log belongs to its slot and is

@@ -4,6 +4,7 @@ import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/pa
 
 export interface BrowserSessionPolicyOptions {
   readonly provider?: boolean;
+  readonly requestGate?: BrowserSessionRequestGate;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
   readonly pagePolicyPreloadPath: string;
@@ -18,6 +19,12 @@ export function applyBrowserSessionPolicy(
   session: Session,
   options: BrowserSessionPolicyOptions,
 ): void {
+  session.webRequest.onBeforeRequest((details, callback) => {
+    if (!isAllowedBrowserRequest(details.url)) callback({ cancel: true });
+    else if (options.requestGate)
+      options.requestGate.beforeRequest(details.webContentsId, callback);
+    else callback({ cancel: false });
+  });
   session.setPermissionCheckHandler((_contents, permission) => permission === "fullscreen");
   session.setPermissionRequestHandler((_contents, permission, callback) =>
     callback(permission === "fullscreen"),
@@ -30,9 +37,6 @@ export function applyBrowserSessionPolicy(
   // provider or absent policy in later documents and frames.
   session.registerPreloadScript({ filePath: options.pagePolicyPreloadPath, type: "frame" });
   updateBrowserPasskeyPolicy(session, options.provider === true);
-  session.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: !isAllowedBrowserRequest(details.url) });
-  });
   options.downloads.accept(session);
   session.setUserAgent(chromeUserAgent(session.getUserAgent()));
 }
@@ -94,5 +98,45 @@ function isAllowedBrowserRequest(value: string): boolean {
     return ["blob:", "data:", "http:", "https:", "ws:", "wss:"].includes(new URL(value).protocol);
   } catch {
     return false;
+  }
+}
+
+/** Session-wide: worker requests need the same restoration fence as page requests. */
+export class BrowserSessionRequestGate {
+  #open = false;
+  #failed = false;
+  readonly #pending = new Set<(response: { cancel: boolean }) => void>();
+  readonly #helpers = new Set<number>();
+
+  beforeRequest(
+    webContentsId: number | undefined,
+    callback: (response: { cancel: boolean }) => void,
+  ): void {
+    if (this.#failed) callback({ cancel: true });
+    else if (this.#open || (webContentsId !== undefined && this.#helpers.has(webContentsId)))
+      callback({ cancel: false });
+    else this.#pending.add(callback);
+  }
+  close(): void {
+    this.#open = false;
+  }
+  open(): void {
+    if (this.#failed) return;
+    this.#open = true;
+    for (const callback of this.#pending) callback({ cancel: false });
+    this.#pending.clear();
+  }
+  fail(): void {
+    this.#failed = true;
+    this.#open = false;
+    for (const callback of this.#pending) callback({ cancel: true });
+    this.#pending.clear();
+  }
+  /** Only synthetic Fetch-fulfilled storage helpers may cross a closed gate. */
+  allowStorageHelper(webContentsId: number): () => void {
+    this.#helpers.add(webContentsId);
+    return () => {
+      this.#helpers.delete(webContentsId);
+    };
   }
 }

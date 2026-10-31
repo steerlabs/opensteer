@@ -1,9 +1,12 @@
+import { assertCookies, nativeSmokeCookies } from "./test-support/native-profile-smoke.js";
+import { LocalProfileBindingSchema } from "@opensteer/protocol/browser";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 /**
  * Real Electron cookie round trip and live `state.import` sign-in in a
  * disposable, isolated userData directory.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,7 +19,12 @@ import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launche
 
 const smokeDownloads = smokeDesktopDownloads();
 
-const userData = mkdtempSync(path.join(tmpdir(), "opensteer-cookie-smoke-"));
+const childPhase = process.env.OPENSTEER_COOKIE_SMOKE_CHILD;
+const root =
+  process.env.OPENSTEER_COOKIE_SMOKE_ROOT ??
+  mkdtempSync(path.join(tmpdir(), "opensteer-cookie-smoke-"));
+const userData = path.join(root, childPhase ? "child" : "driver");
+mkdirSync(userData, { recursive: true, mode: 0o700 });
 app.setPath("userData", userData);
 app.commandLine.appendSwitch("headless");
 // The state.import scenario's HTTP fixture answers as *.example.test.
@@ -119,15 +127,48 @@ const snapshot: BrowserProfileSnapshot = {
   origins: [],
 };
 
-void run().then(
-  () => finish(null),
-  (error: unknown) => finish(error),
-);
+if (childPhase)
+  void run().then(
+    () => finish(null),
+    (error: unknown) => finish(error),
+  );
+else void driver();
+
+async function driver(): Promise<void> {
+  let code = 1;
+  try {
+    code = await new Promise<number>((resolve, reject) => {
+      const child = spawn(process.execPath, [import.meta.filename], {
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          OPENSTEER_COOKIE_SMOKE_CHILD: "1",
+          OPENSTEER_COOKIE_SMOKE_ROOT: root,
+        },
+      });
+      const timeout = setTimeout(() => child.kill("SIGTERM"), 180_000);
+      child.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once("exit", (exitCode) => {
+        clearTimeout(timeout);
+        resolve(exitCode ?? 1);
+      });
+    });
+  } finally {
+    clearInterval(liveness);
+    finished = true;
+    rmSync(root, { recursive: true, force: true });
+    app.exit(code);
+  }
+}
 
 async function run(): Promise<void> {
   await app.whenReady();
   const launcher = new ElectronBrowserLauncher({
     downloads: smokeDownloads,
+    localProfileRoot: path.join(userData, "native-profiles"),
     pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
   });
   const request: BrowserLaunchRequest = {
@@ -157,6 +198,39 @@ async function run(): Promise<void> {
   const restored = await reopened.exportSnapshot();
   assertRoundTrip(restored, "reopened export");
   await reopened.close();
+
+  const binding = LocalProfileBindingSchema.parse({
+    version: 1,
+    deploymentId: "dep_00000000-0000-4000-8000-000000000001",
+    profileId: "bpr_00000000-0000-4000-8000-000000000001",
+    runnerId: "rnr_00000000-0000-4000-8000-000000000001",
+    storageInstanceId: "00000000-0000-4000-8000-000000000001",
+    bindingId: "00000000-0000-4000-8000-000000000002",
+    engine: "electron",
+  });
+  const directory = path.join(userData, "native-profiles", "profiles", binding.profileId, "native");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const nativeCookies = nativeSmokeCookies("https://example.test");
+  await launcher.localProfiles.importAndFlush({
+    directory,
+    binding,
+    snapshot: { cookies: nativeCookies, origins: [] },
+    signal: new AbortController().signal,
+  });
+  const native = await launcher.launch({
+    ...request,
+    storage: { kind: "local", binding, directory },
+  });
+  await assertCookies(native, nativeCookies);
+  await native.close();
+  const nativeReopened = await launcher.launch({
+    ...request,
+    storage: { kind: "local", binding, directory },
+  });
+  await assertCookies(nativeReopened, nativeCookies);
+  await nativeReopened.replaceSiteCookies("example.test", [], new AbortController().signal);
+  await assertCookies(nativeReopened, []);
+  await nativeReopened.close();
 
   const report = await runStateImportScenario({ engine: "electron", launcher });
   const artifactDirectory =
@@ -205,7 +279,7 @@ function assertRoundTrip(actual: BrowserProfileSnapshot, stage: string): void {
 function finish(error: unknown): void {
   finished = true;
   clearInterval(liveness);
-  rmSync(userData, { recursive: true, force: true });
+  // The driver removes the profile only after this process exits.
   if (error) {
     process.stderr.write(
       `${JSON.stringify({ event: "electron-browser-cookie-smoke.failed", error: error instanceof Error ? error.stack : String(error) })}\n`,

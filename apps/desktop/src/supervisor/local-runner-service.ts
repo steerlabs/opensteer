@@ -6,6 +6,7 @@ import { setPrivateDirectoryMode, setPrivateFileMode } from "@opensteer/shared/p
 import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { desktopDeploymentPaths } from "../app/application-paths.js";
 import type { UtilityProcess } from "electron";
 import {
   DeploymentIdSchema,
@@ -741,7 +742,8 @@ export class LocalRunnerService {
       runAgents && this.#browser
         ? await this.#browser({
             logPath: path.join(runnerDataDirectory, "browser.log"),
-            profileRoot: path.join(runnerDataDirectory, "browser-profiles"),
+            profileRoot: desktopDeploymentPaths(this.#config.dataDirectory, target.deploymentId)
+              .browserProfilesDirectory,
             runtimeId: `desktop-browser:${target.deploymentId}`,
           })
         : undefined;

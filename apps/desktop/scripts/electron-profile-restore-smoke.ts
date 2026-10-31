@@ -1,3 +1,8 @@
+import {
+  nativeProfileSmokePhases,
+  nativeSmokeWorker,
+  runNativeProfileSmokePhase,
+} from "./test-support/native-profile-smoke.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 /**
  * Failure inventory written before implementation (design-v3 F1–F12):
@@ -58,6 +63,7 @@ const destroyedAt = new Map<number, number>();
 const creations: number[] = [];
 const observations = new Map<string, Record<string, unknown>>();
 const swRuns: string[] = [];
+const nativeFirstRequests = new Map<string, string>();
 const open = new Set<LaunchedBrowser>();
 const port = 18766;
 const origin = (i: number) => `https://s${i}.example.test:${port}`;
@@ -128,6 +134,23 @@ window.firstState.then(async value=>{if(new URL(location.href).searchParams.has(
 const server = createServer({ key, cert }, (req, res) => {
   const url = new URL(req.url ?? "/", `https://${req.headers.host}`);
   res.setHeader("Cache-Control", "no-store");
+  if (url.pathname === "/native-page")
+    nativeFirstRequests.set(url.searchParams.get("phase") ?? "", req.headers.cookie ?? "");
+  if (url.pathname === "/native-sw.js") {
+    res.setHeader("Content-Type", "text/javascript");
+    res.end(nativeSmokeWorker);
+    return;
+  }
+  if (url.pathname === "/native-logout") {
+    res.setHeader("Set-Cookie", "sid=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=None");
+    res.end("signed out");
+    return;
+  }
+  if (url.pathname === "/native-clear-site-data") {
+    res.setHeader("Clear-Site-Data", '"cookies", "storage", "cache"');
+    res.end("cleared");
+    return;
+  }
   if (url.pathname === "/seen") {
     let body = "";
     req.on("data", (chunk) => {
@@ -291,7 +314,10 @@ async function capture(browser: LaunchedBrowser) {
 }
 
 async function main() {
-  const userData = mkdtempSync(path.join(tmpdir(), "profile-restore-electron-"));
+  const userData = phase.startsWith("native-")
+    ? path.join(state, "native-user-data")
+    : mkdtempSync(path.join(tmpdir(), "profile-restore-electron-"));
+  mkdirSync(userData, { recursive: true });
   app.setPath("userData", userData);
   app.commandLine.appendSwitch("headless");
   app.commandLine.appendSwitch("host-resolver-rules", "MAP *.example.test 127.0.0.1");
@@ -317,9 +343,25 @@ async function main() {
     );
     launcher = new ElectronBrowserLauncher({
       downloads: smokeDownloads,
+      localProfileRoot: path.join(state, "native-profiles"),
       pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
     });
-    if (phase === "restart") {
+    if (phase.startsWith("native-")) {
+      let crash = false;
+      await scenario(phase, async (observed) => {
+        const result = await runNativeProfileSmokePhase({
+          phase,
+          state,
+          launcher,
+          origin,
+          firstRequest: (name) => nativeFirstRequests.get(name),
+        });
+        Object.assign(observed, result);
+        crash = result.crash;
+      });
+      if (crash && Object.values(results).every((result) => result.status === "pass"))
+        process.kill(process.pid, "SIGKILL");
+    } else if (phase === "restart") {
       await scenario("C6", async (observed) => {
         const prior = JSON.parse(readFileSync(path.join(state, "restart.json"), "utf8")) as {
           pid: number;
@@ -407,8 +449,10 @@ async function main() {
       );
       writeFileSync(path.join(out, "results.json"), JSON.stringify({ checks, phases }, null, 2));
     }
-    rmSync(userData, { recursive: true, force: true });
-    app.exit(Object.values(results).some((r) => r.status === "fail") ? 1 : 0);
+    if (!phase.startsWith("native-")) rmSync(userData, { recursive: true, force: true });
+    const failed = Object.values(results).some((r) => r.status === "fail");
+    if (phase.startsWith("native-") && !failed) app.quit();
+    else app.exit(failed ? 1 : 0);
   }
 }
 
@@ -880,7 +924,7 @@ async function driver() {
   const executable = process.execPath;
   let failed = false;
   try {
-    for (const name of ["main", "restart"]) {
+    for (const name of ["main", "restart", ...nativeProfileSmokePhases]) {
       const code = await new Promise<number>((resolve, reject) => {
         const child = spawn(executable, [import.meta.filename], {
           stdio: "inherit",
@@ -896,12 +940,29 @@ async function driver() {
           clearTimeout(timer);
           reject(error);
         });
-        child.once("exit", (code) => {
+        child.once("exit", (code, signal) => {
           clearTimeout(timer);
-          resolve(code ?? 1);
+          const crash = ["native-crash", "native-convert-crash"].includes(name);
+          const evidence = path.join(out, `results-${name}.json`);
+          const passed =
+            existsSync(evidence) &&
+            Object.values(
+              (JSON.parse(readFileSync(evidence, "utf8")) as { results: Record<string, Result> })
+                .results,
+            ).every((result) => result.status === "pass");
+          resolve(crash ? (signal === "SIGKILL" && passed ? 0 : 1) : (code ?? 1));
         });
       });
       failed ||= code !== 0;
+    }
+    const summary = path.join(out, "results.json");
+    if (existsSync(summary)) {
+      const result = JSON.parse(readFileSync(summary, "utf8")) as { nativePhases?: unknown[] };
+      result.nativePhases = nativeProfileSmokePhases.map(
+        (name) =>
+          JSON.parse(readFileSync(path.join(out, `results-${name}.json`), "utf8")) as unknown,
+      );
+      writeFileSync(summary, JSON.stringify(result, null, 2));
     }
   } catch (error) {
     failed = true;
