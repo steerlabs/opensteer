@@ -29,6 +29,7 @@ const placeParams = [
   "panel",
   "browser",
   "browserTab",
+  "pendingBrowserTab",
   "computerSession",
   "app",
   "mac",
@@ -43,10 +44,13 @@ const legacyParams = ["browserWorkspace", "surfaceThread", "surfaces"] as const;
 export type PlaceSelection =
   | { readonly kind: "talk" }
   | { readonly kind: "launcher" }
+  | { readonly kind: "pending"; readonly idempotencyKey: string }
   | { readonly kind: "place"; readonly destination: SurfaceDestination };
 
 export function placeSelection(params: URLSearchParams): PlaceSelection {
   if (!params.has("panel")) return { kind: "talk" };
+  const pending = params.get("pendingBrowserTab");
+  if (pending) return { kind: "pending", idempotencyKey: pending };
   const destination = placeDestination(params);
   return destination ? { kind: "place", destination } : { kind: "launcher" };
 }
@@ -166,6 +170,10 @@ function writePlace(params: URLSearchParams, selection: PlaceSelection): void {
   if (selection.kind === "talk") return;
   params.set("panel", "browser");
   if (selection.kind === "launcher") return;
+  if (selection.kind === "pending") {
+    params.set("pendingBrowserTab", selection.idempotencyKey);
+    return;
+  }
   const { destination } = selection;
   if (destination.kind === "browser") {
     params.set("browser", destination.sessionId);
@@ -397,6 +405,14 @@ export interface WorkspaceNavigation {
     path: string,
     options?: { readonly focusRequest?: string; readonly messageId?: string },
   ) => void;
+  readonly showPendingBrowserTab: (
+    idempotencyKey: string,
+    options?: { readonly replace?: boolean },
+  ) => void;
+  readonly replacePendingBrowserTab: (
+    idempotencyKey: string,
+    destination: SurfaceDestination,
+  ) => void;
   /** Tab row, viewfinder, chip: the place only (opens Work from Talk). */
   readonly showPlace: (destination: SurfaceDestination) => void;
   /** A mark on a tab: that place and that conversation, as one entry. */
@@ -571,6 +587,26 @@ export function useWorkspaceNavigation(
     },
     [search],
   );
+  const currentScope = useRef({ deploymentId, userId });
+  currentScope.current = { deploymentId, userId };
+  const showPendingBrowserTab = useCallback<WorkspaceNavigation["showPendingBrowserTab"]>(
+    (idempotencyKey, options) =>
+      choosePlace({ kind: "pending", idempotencyKey }, undefined, options),
+    [choosePlace],
+  );
+  const replacePendingBrowserTab = useCallback<WorkspaceNavigation["replacePendingBrowserTab"]>(
+    (idempotencyKey, destination) => {
+      if (
+        currentScope.current.deploymentId !== deploymentId ||
+        currentScope.current.userId !== userId
+      )
+        return;
+      const selected = placeSelection(new URLSearchParams(latest.current.search));
+      if (selected.kind === "pending" && selected.idempotencyKey === idempotencyKey)
+        choosePlace({ kind: "place", destination }, undefined, { chosen: false, replace: true });
+    },
+    [choosePlace, deploymentId, userId],
+  );
   const showPlace = useCallback(
     (destination: SurfaceDestination) => choosePlace({ kind: "place", destination }),
     [choosePlace],
@@ -686,6 +722,8 @@ export function useWorkspaceNavigation(
       present,
       showComputer,
       showLauncher,
+      showPendingBrowserTab,
+      replacePendingBrowserTab,
       showPlace,
       showPlaceWithConversation,
       succeedPlace,
@@ -705,6 +743,8 @@ export function useWorkspaceNavigation(
       present,
       showComputer,
       showLauncher,
+      showPendingBrowserTab,
+      replacePendingBrowserTab,
       showPlace,
       showPlaceWithConversation,
       succeedPlace,

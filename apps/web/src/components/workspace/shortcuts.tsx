@@ -76,7 +76,10 @@ export function useWorkspaceShortcuts({
         }
         case "close-tab": {
           if (selection.kind === "launcher") startPage.leave();
-          else {
+          else if (selection.kind === "pending") {
+            hostClient.dismissPendingBrowserTab(selection.idempotencyKey);
+            nav.showLauncher({ replace: true });
+          } else {
             const place = placeList(hostClient.getSnapshot()).find((item) => item.key === shownKey);
             if (place?.closable) requestClose(place);
           }

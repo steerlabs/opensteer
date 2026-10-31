@@ -21,6 +21,7 @@ import {
   sameIdentity,
   startPageChoice,
   startPageIndex,
+  placeList,
   webSearchUrl,
   type BrowserIdentityChoice,
   type BrowserTabOpenInput,
@@ -50,6 +51,8 @@ import { ProfileAvatar, guestDetail } from "./identity.js";
 import {
   destinationPlaceKey,
   placeSelection,
+  startPageOrigin,
+  type WorkspaceNavigation,
   type PlaceMemoryScope,
   type StartPageLink,
 } from "./navigation.js";
@@ -92,6 +95,52 @@ export function rememberBrowsingChoice(scope: PlaceMemoryScope, choice: BrowserI
   } catch {
     // A convenience only: without it the next start page begins at Guest.
   }
+}
+
+/** A reply link opens in its input turn, with the start page's same profile choice. */
+export function openWorkspaceWebLink(
+  hostClient: HostClient,
+  nav: WorkspaceNavigation,
+  url: string,
+  historyState: unknown,
+): void {
+  const snapshot = hostClient.getSnapshot();
+  const scope = { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null };
+  const search = nav.address().search;
+  let selected = placeSelection(new URLSearchParams(search));
+  if (selected.kind === "launcher")
+    selected = placeSelection(new URLSearchParams(startPageOrigin(historyState) ?? ""));
+  const key = selected.kind === "place" ? destinationPlaceKey(selected.destination) : null;
+  const choice = startPageChoice({
+    sourcePlace: key ? (placeList(snapshot).find((place) => place.key === key) ?? null) : null,
+    lastChoice: lastBrowsingChoice(scope),
+  });
+  const epoch = hostClient.recentSites.epoch;
+  const viewport = browserTargetViewport(
+    document.querySelector(".place")?.getBoundingClientRect() ?? null,
+    window.matchMedia("(max-width: 700px)").matches,
+  );
+  const opening = hostClient.beginBrowserTabOpen(
+    { identity: choice },
+    {
+      url,
+      ...(viewport ? { viewport } : {}),
+      idempotencyKey: mutationIdempotencyKey("reply-link"),
+    },
+  );
+  rememberBrowsingChoice(scope, choice);
+  nav.showPendingBrowserTab(opening.idempotencyKey);
+  void opening.result.then(
+    (opened) => {
+      hostClient.recentSites.record(choice, url, epoch, { typed: true, tab: opened });
+      nav.replacePendingBrowserTab(opening.idempotencyKey, {
+        kind: "browser",
+        sessionId: opened.sessionId,
+        tabId: opened.tabId,
+      });
+    },
+    () => undefined,
+  );
 }
 
 /* ---- New tab ---- */
@@ -379,11 +428,14 @@ export const StartPage = memo(function StartPage({
       );
       const epoch = hostClient.recentSites.epoch;
       const target: BrowserTabOpenInput = { ...action.target, ...(placement ? { placement } : {}) };
-      const opened = await hostClient.openBrowserTab(target, {
+      const opening = hostClient.beginBrowserTabOpen(target, {
         url,
         ...(viewport ? { viewport } : {}),
         idempotencyKey: mutationIdempotencyKey("start-page-open"),
       });
+      rememberBrowsingChoice(scope, choice);
+      nav.showPendingBrowserTab(opening.idempotencyKey, { replace: true });
+      const opened = await opening.result;
       hostClient.recentSites.record(choice, url, epoch, {
         title:
           hostClient
@@ -393,8 +445,11 @@ export const StartPage = memo(function StartPage({
         typed: result.kind === "address",
         tab: opened,
       });
-      rememberBrowsingChoice(scope, choice);
-      show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
+      nav.replacePendingBrowserTab(opening.idempotencyKey, {
+        kind: "browser",
+        sessionId: opened.sessionId,
+        tabId: opened.tabId,
+      });
     } catch (error) {
       fail(error, result);
     } finally {

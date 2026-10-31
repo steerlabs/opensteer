@@ -1,3 +1,4 @@
+import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
   canRespondToRequests,
   describeHostConnection,
@@ -132,24 +133,27 @@ function TabsForReader(props: {
         active={props.active && offline === null}
         emptyDetail="Tabs you and your agents open appear here."
         header={
-          offline === null && props.failure === null ? undefined : (
-            <View style={styles.notices}>
-              {props.failure === null ? null : (
-                <Notice
-                  title="Tabs could not be refreshed"
-                  detail={props.failure}
-                  action={{ label: "Try again", onPress: props.onRetry }}
-                />
-              )}
-              {offline === null ? null : (
-                <Notice
-                  title={offline}
-                  detail="Tabs reconnect when the deployment is available."
-                  tone="neutral"
-                />
-              )}
-            </View>
-          )
+          <>
+            <PendingBrowserTabRows hostClient={hostClient} deploymentId={deploymentId} />
+            {offline === null && props.failure === null ? null : (
+              <View style={styles.notices}>
+                {props.failure === null ? null : (
+                  <Notice
+                    title="Tabs could not be refreshed"
+                    detail={props.failure}
+                    action={{ label: "Try again", onPress: props.onRetry }}
+                  />
+                )}
+                {offline === null ? null : (
+                  <Notice
+                    title={offline}
+                    detail="Tabs reconnect when the deployment is available."
+                    tone="neutral"
+                  />
+                )}
+              </View>
+            )}
+          </>
         }
         hostClient={hostClient}
         loading={!loaded && tiles.length === 0}

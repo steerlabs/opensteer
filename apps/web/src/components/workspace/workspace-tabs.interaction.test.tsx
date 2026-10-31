@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
@@ -24,8 +25,59 @@ import {
   tabSearch,
   write,
   setRoot,
+  deferred,
 } from "./workspace.interaction.test-support.js";
 describe("workspace tab commands", () => {
+  it("closes a pending row immediately and never selects its exact late tab", async () => {
+    const gate = deferred<void>();
+    let completion: Promise<unknown> = Promise.resolve();
+    await mount((source) => {
+      const dispatch = source.rpc["commands.dispatch"];
+      const delayed: typeof dispatch = async (command, options) => {
+        if (command.type === "browser.tab.open")
+          await withTimeout(gate.promise, 2_000, {
+            timeoutError: () => new Error("The delayed browser command was never released."),
+          });
+        return dispatch(command, options);
+      };
+      Object.defineProperty(source, "rpc", {
+        value: new Proxy(source.rpc, {
+          get: (target, name) =>
+            name === "commands.dispatch" ? delayed : Reflect.get(target, name),
+        }),
+      });
+      const session = source
+        .getSnapshot()
+        .browserSessions.find((session) => session.profileId && session.state === "ready")!;
+      localStorage.setItem(
+        `opensteer.browse-with.v1:${encodeURIComponent(source.getSnapshot().deploymentId!)}:${encodeURIComponent(source.getSnapshot().user!.id)}`,
+        JSON.stringify({ kind: "profile", profileId: session.profileId }),
+      );
+      const begin = source.beginBrowserTabOpen;
+      vi.spyOn(source, "beginBrowserTabOpen").mockImplementation((target, options) => {
+        const opening = begin(target, options);
+        completion = opening.result;
+        return opening;
+      });
+      return {
+        pathname: "/",
+        search: "?panel=browser",
+        state: { startId: "dismiss", startAddress: "https://dismiss.example/", startOpen: true },
+      };
+    });
+    const close = vi.spyOn(client, "closeBrowserTab");
+    const key = client.getSnapshot().pendingBrowserTabs![0]!.idempotencyKey;
+    await click(element(`.side-tab[data-place-key="pending:${key}"] .side-tab__close`));
+    expect(client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    expect(new URLSearchParams(history.at(-1)!.search).has("pendingBrowserTab")).toBe(false);
+    await act(async () => {
+      gate.resolve();
+      await completion;
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(new URLSearchParams(history.at(-1)!.search).has("browserTab")).toBe(false);
+  });
+
   let receive: ((command: DesktopWorkspaceTabCommand) => void) | null = null;
   function nativeMenu() {
     const unsubscribe = vi.fn(() => {

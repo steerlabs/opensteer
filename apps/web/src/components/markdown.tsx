@@ -40,7 +40,7 @@ function TranscriptLink({ children, href }: ComponentProps<"a">) {
     // A right click raises auxclick too; it never opens a link.
     if (desktopBridge() ? event.button > 1 : gesture) return;
     event.preventDefault();
-    workspace.nav.showLauncher({ address: url.href });
+    workspace.openWebLink(url.href);
   };
   return (
     <a href={url.href} onAuxClick={open} onClick={open} rel="noreferrer" target="_blank">

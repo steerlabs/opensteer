@@ -1,3 +1,4 @@
+import { PendingBrowserTabs } from "./pending-browser-tabs.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { SocketScreenPresentationTransport } from "../screen/transport.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
@@ -739,7 +740,24 @@ export class HttpHostClient {
     }
     return catalog;
   }
+  readonly #pendingBrowserTabs = new PendingBrowserTabs({
+    admitted: () => viewerScopeOf(this.#snapshot) !== null,
+    open: (target, options) => this.#openBrowserTab(target, options),
+    close: (result) =>
+      this.closeBrowserTab(
+        result.sessionId,
+        result.tabId,
+        this.#snapshot.browserSessions.find((session) => session.id === result.sessionId)
+          ?.tabCatalog ?? result.catalog,
+      ),
+    changed: (pendingBrowserTabs) => this.#update({ ...this.#snapshot, pendingBrowserTabs }),
+  });
+  readonly beginBrowserTabOpen = this.#pendingBrowserTabs.begin;
+  readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
+    return this.beginBrowserTabOpen(target, options).result;
+  }
+  async #openBrowserTab(target: BrowserTabOpenInput, options: BrowserTabOpenOptions) {
     const started = this.#viewer.generation;
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
@@ -3122,6 +3140,7 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
     this.recentSites.dispose();
     this.#workspaceTabActivations.dispose();
@@ -5513,6 +5532,7 @@ export class HttpHostClient {
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      this.#pendingBrowserTabs.clear();
       this.#workspaceTabActivations.clear(false);
       this.#computerViews.clear();
       this.#ownerViews.clear();
@@ -5521,7 +5541,11 @@ export class HttpHostClient {
         browserTabGroups: this.#tabGroups.receive(snapshot.browserTabGroups),
       };
     }
-    snapshot = { ...snapshot, activatingWorkspaceTabs: this.#workspaceTabActivations.ids };
+    snapshot = {
+      ...snapshot,
+      activatingWorkspaceTabs: this.#workspaceTabActivations.ids,
+      pendingBrowserTabs: this.#pendingBrowserTabs.rows,
+    };
     // A dropped connection pauses the views being watched; it does not end them.
     this.#computerViews.setConnected(scope !== null && snapshot.connection === "connected");
     this.recentSites.setScope(scope);

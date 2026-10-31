@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 import { DictationController } from "@opensteer/client/dictation";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -1129,6 +1130,54 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 
 describe("J1: Tabs from the sidebar lists every tab this person may see", () => {
+  it("keeps a local pending opening reachable from Tabs and closes only its late result", async () => {
+    const w = await world({
+      routes: [
+        { name: "Home", params: { deploymentId } },
+        { name: "Tabs", params: { deploymentId } },
+      ],
+    });
+    const gate = Promise.withResolvers<void>();
+    const dispatch = w.host.rpc["commands.dispatch"];
+    const delayed: typeof dispatch = async (command, options) => {
+      if (command.type === "browser.tab.open")
+        await withTimeout(gate.promise, 2_000, {
+          timeoutError: () => new Error("The delayed browser command was never released."),
+        });
+      return dispatch(command, options);
+    };
+    Object.defineProperty(w.host, "rpc", {
+      value: new Proxy(w.host.rpc, {
+        get: (target, name) => (name === "commands.dispatch" ? delayed : Reflect.get(target, name)),
+      }),
+    });
+    const session = w.host
+      .getSnapshot()
+      .browserSessions.find((session) => session.state === "ready")!;
+    let opening!: ReturnType<typeof w.host.beginBrowserTabOpen>;
+    act(() => {
+      opening = w.host.beginBrowserTabOpen(session.id, {
+        url: "https://pending.example/",
+        idempotencyKey: "mobile-list",
+      });
+    });
+    await press(control(front(w), "https://pending.example/"));
+    expect(w.stack.top.params).toMatchObject({
+      scope: "workspace",
+      pendingBrowserTab: "mobile-list",
+    });
+    expect(front(w).textContent).toContain("Opening");
+    const close = vi.spyOn(w.host, "closeBrowserTab");
+    await press(control(front(w), "Close tab"));
+    expect(w.stack.top.name).toBe("Tabs");
+    await act(async () => {
+      gate.resolve();
+      await opening.result;
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(w.stack.top.name).toBe("Tabs");
+  });
+
   it("is a sidebar destination with the Menu, opened as the Deployment's own", async () => {
     const w = await world();
     const destinations = buttons(sidebar(w))
