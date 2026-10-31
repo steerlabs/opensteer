@@ -745,6 +745,7 @@ it.each([
         expect(lease.getSnapshot().connection).toBe("open");
         await client.closeComputerView(source.viewId, source.generation);
         lease.release();
+        const readOnlyPowerStart = frontDoor.displayPowerCommands.length;
         const readonly = await client.openComputerView(runnerId, {
           kind: "phone",
           display: "main",
@@ -767,7 +768,18 @@ it.each([
         );
         expect(readLease.getSnapshot().power).toBe("unavailable");
         expect(readLease.power("wake")).toBe(false);
-        expect((await phone.shell("dumpsys power")).includes("mWakefulness=Asleep")).toBe(true);
+        const powerDump = await phone.shell("dumpsys power");
+        const wakefulness = /\bmWakefulness=(\S+)/u.exec(powerDump)?.[1] ?? "missing";
+        const powerCommands = frontDoor.displayPowerCommands.slice(readOnlyPowerStart);
+        evidence.readOnlyPower = { wakefulness, commands: powerCommands };
+        await writeFile(join(directory, "read-only-power.txt"), redaction.apply(powerDump));
+        process.stdout.write(
+          `Read-only phone: mWakefulness=${wakefulness}, display.power=${JSON.stringify(powerCommands.map(({ action }) => action))}\n`,
+        );
+        expect(powerCommands).toEqual([]);
+        // API 33 may still be Dozing after sleep; viewing must not wake it.
+        expect(wakefulness).not.toBe("missing");
+        expect(wakefulness).not.toBe("Awake");
         await client.closeComputerView(readonly.viewId, readonly.generation);
         readLease.release();
         await setAccess("read-write");
