@@ -989,6 +989,8 @@ export async function startTlsFrontDoor(input: {
   readonly authority: TestCertificateAuthority;
   readonly hostPort: number;
   readonly port: number;
+  /** Observe complete access units without changing the relay, for display timing. */
+  readonly onDisplayMedia?: (bytes: Uint8Array) => void;
   readonly passwordsWire?: {
     readonly host: Record<string, unknown>[];
     readonly phone: Record<string, unknown>[];
@@ -1092,7 +1094,11 @@ export async function startTlsFrontDoor(input: {
           };
         }
       });
-      fromPhone.on("message", (bytes: Buffer) => {
+      fromPhone.on("message", (bytes: Buffer, binary: boolean) => {
+        if (binary) {
+          if (displaySockets.has(client)) input.onDisplayMedia?.(bytes);
+          return;
+        }
         let parsed: unknown;
         try {
           parsed = JSON.parse(bytes.toString("utf8"));

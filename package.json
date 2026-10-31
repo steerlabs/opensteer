@@ -50,7 +50,8 @@
     "eval:agent-tools": "tsx evals/agent-tools/run.ts",
     "check:changed": "tsx scripts/check-changed.ts",
     "desktop:build-release": "tsx scripts/build-desktop-macos.ts",
-    "bench:mobile-network": "tsx scripts/bench-mobile-network.ts"
+    "bench:mobile-network": "tsx scripts/bench-mobile-network.ts",
+    "bench:phone-display": "tsx scripts/bench-phone-display.ts"
   },
   "devDependencies": {
     "@opensteer/shared": "workspace:*",
