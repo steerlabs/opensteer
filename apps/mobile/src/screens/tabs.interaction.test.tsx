@@ -417,10 +417,9 @@ vi.mock("../client/deployment-rows.js", () => ({
   deploymentStatusLabel: () => "Connected",
 }));
 vi.mock("../screens/deployment-row.js", () => ({ statusTone: () => "neutral" }));
-vi.mock("../threads/deployment-switcher-model.js", () => ({
-  deploymentSwitcherModel: () => null,
-  sameDeploymentSwitcherModel: () => true,
-  switcherAccessibilityLabel: () => "",
+vi.mock("../threads/deployment-identity.js", () => ({
+  deploymentIdentity: () => null,
+  sameDeploymentIdentity: () => true,
 }));
 vi.mock("../platform/attachment-draft-files.js", () => ({
   openChatDraftFile: vi.fn(),
@@ -441,6 +440,7 @@ vi.mock("../ui/motion.js", () => ({
   duration: { enter: 0, exit: 0 },
   enter: undefined,
   exit: undefined,
+  move: undefined,
 }));
 vi.mock("../ui/screen.js", () => ({
   Screen: (props: Children) => <main>{props.children}</main>,

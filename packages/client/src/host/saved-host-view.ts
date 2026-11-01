@@ -1,4 +1,5 @@
 import type { HostSnapshot, MessageEntry } from "./client.js";
+import { compareTaskOrder } from "./task-entries.js";
 import { taskList } from "./task-list.js";
 import { visibleTranscript } from "./transcript.js";
 import {
@@ -184,8 +185,11 @@ export function projectSavedTasks(snapshot: HostSnapshot): SavedTask[] {
   const recent = new Set(
     groups
       .flatMap((group) => list[group])
-      .sort(
-        (a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.threadId.localeCompare(b.threadId),
+      .sort((a, b) =>
+        compareTaskOrder(
+          { askedAt: a.askedAt, id: a.threadId },
+          { askedAt: b.askedAt, id: b.threadId },
+        ),
       )
       .slice(0, 50)
       .map(({ threadId }) => threadId),

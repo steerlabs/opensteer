@@ -1,3 +1,5 @@
+import Animated from "react-native-reanimated";
+import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
@@ -39,7 +41,6 @@ import {
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
 import { sameDestination } from "../browser/surface-route.js";
 import { tabSiteLabel } from "../browser/tab-tiles.js";
-import { deploymentStatusLabel } from "../client/deployment-rows.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { statusTone } from "../screens/deployment-row.js";
 import {
@@ -51,14 +52,12 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
-import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { DeploymentMarkView } from "../threads/deployment-mark.js";
 import {
-  deploymentSwitcherModel,
-  sameDeploymentSwitcherModel,
-  switcherAccessibilityLabel,
-  type DeploymentSwitcherModel,
-} from "../threads/deployment-switcher-model.js";
+  deploymentIdentity,
+  sameDeploymentIdentity,
+  type DeploymentIdentity,
+} from "../threads/deployment-identity.js";
 import {
   NeedsYouTag,
   setTaskDone,
@@ -80,10 +79,7 @@ export type SidebarDestination = "Home" | "Specialists" | "Tabs";
 export interface SidebarActions {
   /** Closes the sidebar and hands focus back to whatever opened it. */
   readonly close: () => void;
-  readonly onAddDeployment: () => void;
   readonly onChat: () => void;
-  /** Closes the sidebar because the reader is going somewhere else. */
-  readonly onLeave: () => void;
   readonly onNewTask: (deploymentId: string, workspaceId: string) => void;
   /** Shows exactly this tab, app or phone, alone. */
   readonly onOpenPlace: (destination: WorkspaceSurfaceDestination) => void;
@@ -91,7 +87,6 @@ export interface SidebarActions {
   readonly onSearch: (deploymentId: string) => void;
   readonly onSettings: () => void;
   readonly onSpecialists: () => void;
-  readonly onSwitchDeployment: () => void;
   readonly onTabs: () => void;
 }
 
@@ -107,13 +102,29 @@ interface SidebarModel {
   readonly taskWorkspaceId: string | null;
 }
 
-function sidebarModel(snapshot: HostSnapshot): SidebarModel {
+function sidebarModel(
+  snapshot: HostSnapshot,
+  openThreadId: string | null,
+  previous: Pick<TaskList, "ready"> | null,
+): SidebarModel {
   const main = mainWorkspace(snapshot);
   return {
-    list: taskList(snapshot),
+    list: taskList(snapshot, {
+      openThreadId: openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId),
+      previous,
+    }),
     loaded: snapshot.tasks !== null,
     taskWorkspaceId: main?.status === "ready" ? main.id : null,
   };
+}
+
+/**
+ * The shelves the sidebar last drew, kept by the shell: the drawer and the
+ * docked column are separate panels, and a closed one reads nothing, yet a task
+ * opened from one must keep its shelf in whichever shows next.
+ */
+export interface ShelfMemory {
+  list: Pick<TaskList, "ready"> | null;
 }
 
 /**
@@ -124,10 +135,16 @@ function sidebarModel(snapshot: HostSnapshot): SidebarModel {
  * changes, so a streamed token leaves the sidebar alone; each opening starts
  * afresh, including shared Done changes and this reader’s unread state.
  */
-function useSidebarModel(hostClient: HostClient | null): SidebarModel | null {
-  const cached = useRef<{ readonly model: SidebarModel; readonly snapshot: HostSnapshot } | null>(
-    null,
-  );
+function useSidebarModel(
+  hostClient: HostClient | null,
+  openThreadId: string | null,
+  shelves: ShelfMemory,
+): SidebarModel | null {
+  const cached = useRef<{
+    readonly model: SidebarModel;
+    readonly snapshot: HostSnapshot;
+    readonly openThreadId: string | null;
+  } | null>(null);
   const subscribe = useCallback(
     (listener: () => void) => hostClient?.subscribe(listener) ?? (() => undefined),
     [hostClient],
@@ -141,28 +158,30 @@ function useSidebarModel(hostClient: HostClient | null): SidebarModel | null {
     const current = cached.current;
     if (
       current !== null &&
+      current.openThreadId === openThreadId &&
       sameTaskListSource(current.snapshot, snapshot) &&
       current.snapshot.workspaces === snapshot.workspaces &&
       current.snapshot.homeWorkspaceId === snapshot.homeWorkspaceId
     ) {
       return current.model;
     }
-    const model = sidebarModel(snapshot);
-    cached.current = { model, snapshot };
+    const model = sidebarModel(snapshot, openThreadId, shelves.list);
+    cached.current = { model, snapshot, openThreadId };
+    shelves.list = model.list;
     return model;
-  }, [hostClient]);
+  }, [hostClient, openThreadId, shelves]);
   return useSyncExternalStore(subscribe, read, read);
 }
 
-/** The switcher's projection of the catalog, held across unrelated client updates. */
-function useSwitcherModel(deploymentId: string | null): DeploymentSwitcherModel | null {
+/** The open Deployment's identity, held across unrelated client updates. */
+function useDeploymentIdentity(deploymentId: string | null): DeploymentIdentity | null {
   const client = useMobileClient();
-  const cached = useRef<DeploymentSwitcherModel | null>(null);
-  const read = useCallback((): DeploymentSwitcherModel | null => {
+  const cached = useRef<DeploymentIdentity | null>(null);
+  const read = useCallback((): DeploymentIdentity | null => {
     if (deploymentId === null) return null;
-    const next = deploymentSwitcherModel(client.getSnapshot().rows, deploymentId);
+    const next = deploymentIdentity(client.getSnapshot().rows, deploymentId);
     const current = cached.current;
-    if (current !== null && sameDeploymentSwitcherModel(current, next)) return current;
+    if (current !== null && sameDeploymentIdentity(current, next)) return current;
     cached.current = next;
     return next;
   }, [client, deploymentId]);
@@ -216,14 +235,16 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly docked: boolean;
   /** Where the reader left the list, kept by the shell across the drawer and the column. */
   readonly scroll: ScrollMemory;
+  readonly shelves: ShelfMemory;
   /** The tab, app or phone in front, marked as the one open. */
   readonly selectedPlace: WorkspaceSurfaceDestination | null;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
+  /** The task whose conversation is on screen; opening it never moves its row. */
+  readonly openThreadId: string | null;
   readonly visible: boolean;
 }): ReactNode {
   const insets = useContentInsets();
-  const client = useMobileClient();
   const { rows, selection } = useMobileState();
   const { actions, deploymentId, destination, docked, selectedThreadId, visible } = props;
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
@@ -235,8 +256,12 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   // rebuild every row on every streamed update for a list nobody can see.
   // Opening reads the current snapshot in the same render that shows it.
   const savedTasks = useSavedSurface(visible ? deploymentId : null, "tasks");
-  const model = useSidebarModel(visible && savedTasks.source !== "saved" ? hostClient : null);
-  const switcher = useSwitcherModel(deploymentId);
+  const model = useSidebarModel(
+    visible && savedTasks.source !== "saved" ? hostClient : null,
+    props.openThreadId,
+    props.shelves,
+  );
+  const identity = useDeploymentIdentity(deploymentId);
   const [doneOpen, toggleDone] = useDoneShelf();
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [earlierFailure, setEarlierFailure] = useState<string | null>(null);
@@ -276,35 +301,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       .finally(() => setLoadingEarlier(false));
   }, [hostClient, loadingEarlier]);
 
-  const switcherOptions = useMemo<readonly NativeMenuOption[]>(
-    () =>
-      switcher === null
-        ? []
-        : [
-            ...switcher.items.map((item) => ({
-              id: item.deploymentId,
-              // A state the checkmark cannot say is written beside the name.
-              label:
-                item.current || item.glyph === null ? item.name : `${item.name} — ${item.status}`,
-              onPress: () => {
-                if (item.current) return;
-                actions.onLeave();
-                void AccessibilityInfo.announceForAccessibility("Opening deployment");
-                void client.openDeployment(item.deploymentId).catch(() => {
-                  // The switcher is where a row's status and its repair are stated.
-                  actions.onSwitchDeployment();
-                });
-              },
-              selected: item.current,
-            })),
-            ...(switcher.seeAll
-              ? [{ id: "see-all", label: "See all…", onPress: actions.onSwitchDeployment }]
-              : []),
-            { id: "add", label: "Add deployment…", onPress: actions.onAddDeployment },
-          ],
-    [actions, client, switcher],
-  );
-
   const list = model?.list ?? null;
   const taskWorkspaceId = model?.taskWorkspaceId ?? null;
   // A helper has no row, so the task it works for, or Chat, is the one marked open.
@@ -319,15 +315,16 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const now = Date.now();
   const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf) =>
     tasks.map((task) => (
-      <TaskRowView
-        key={task.threadId}
-        onOpen={openTask}
-        onSetDone={moveTask}
-        row={task}
-        selected={task.threadId === selectedRow.threadId}
-        shelf={shelf}
-        time={taskTime(task, now)}
-      />
+      <Animated.View key={task.threadId} layout={move}>
+        <TaskRowView
+          onOpen={openTask}
+          onSetDone={moveTask}
+          row={task}
+          selected={task.threadId === selectedRow.threadId}
+          shelf={shelf}
+          time={taskTime(task, now)}
+        />
+      </Animated.View>
     ));
 
   return (
@@ -434,58 +431,65 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             </AppText>
           </View>
         ) : (
-          <>
-            {model.list.working.length === 0 ? null : (
-              <>
-                <GroupHead count={model.list.working.length} title="Working" />
-                {taskRows(model.list.working, "open")}
-              </>
-            )}
-            {model.list.ready.length === 0 ? null : (
-              <>
-                <GroupHead title="Ready" />
-                {taskRows(model.list.ready, "open")}
-              </>
-            )}
-            {model.list.working.length === 0 && model.list.ready.length === 0 ? (
-              <AppText role="caption" style={styles.empty} tone="muted">
+          // One keyed run of rows across every shelf, so a task changing shelves
+          // keeps its view and slides to its new place instead of reappearing.
+          [
+            ...[
+              { rows: model.list.working, title: "Working" },
+              { rows: model.list.ready, title: "Ready" },
+            ].flatMap((group) =>
+              group.rows.length === 0
+                ? []
+                : [
+                    <GroupHead
+                      key={`group:${group.title}`}
+                      title={group.title}
+                      {...(group.title === "Working" ? { count: group.rows.length } : {})}
+                    />,
+                    ...taskRows(group.rows, "open"),
+                  ],
+            ),
+            model.list.working.length === 0 && model.list.ready.length === 0 ? (
+              <AppText key="caught-up" role="caption" style={styles.empty} tone="muted">
                 You’re all caught up.
               </AppText>
-            ) : null}
-          </>
-        )}
-
-        {model === null || model.list.done.length === 0 ? null : (
-          <>
-            <Pressable
-              accessibilityLabel={`Done, ${model.list.done.length} ${
-                model.list.done.length === 1 ? "task" : "tasks"
-              }`}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: doneOpen }}
-              onPress={toggleDone}
-              style={({ pressed }) => [styles.shelf, pressed && styles.pressed]}
-            >
-              <View style={styles.shelfMark}>
-                <Symbol
-                  name={doneOpen ? "chevron.down" : "chevron.right"}
-                  size={12}
-                  tint={color.muted}
-                />
-              </View>
-              <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="secondary" tone="muted">
-                Done
-              </AppText>
-              <AppText
-                maxFontSizeMultiplier={controlFontScaleLimit}
-                role="caption"
-                style={styles.count}
+            ) : null,
+            model.list.done.length === 0 ? null : (
+              <Pressable
+                accessibilityLabel={`Done, ${model.list.done.length} ${
+                  model.list.done.length === 1 ? "task" : "tasks"
+                }`}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: doneOpen }}
+                key="done-shelf"
+                onPress={toggleDone}
+                style={({ pressed }) => [styles.shelf, pressed && styles.pressed]}
               >
-                {String(model.list.done.length)}
-              </AppText>
-            </Pressable>
-            {doneOpen ? taskRows(model.list.done, "done") : null}
-          </>
+                <View style={styles.shelfMark}>
+                  <Symbol
+                    name={doneOpen ? "chevron.down" : "chevron.right"}
+                    size={12}
+                    tint={color.muted}
+                  />
+                </View>
+                <AppText
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  role="secondary"
+                  tone="muted"
+                >
+                  Done
+                </AppText>
+                <AppText
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  role="caption"
+                  style={styles.count}
+                >
+                  {String(model.list.done.length)}
+                </AppText>
+              </Pressable>
+            ),
+            ...(doneOpen ? taskRows(model.list.done, "done") : []),
+          ]
         )}
 
         {model === null || !model.list.hasMore ? null : (
@@ -531,56 +535,54 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, space[8]) }]}>
-        <DestinationRow
-          current={false}
-          icon="gearshape"
-          label="Settings"
-          onPress={actions.onSettings}
-        />
-        {switcher === null || row === undefined ? null : (
-          <NativeMenu
-            accessibilityHint="Shows the deployments on this phone"
-            accessibilityLabel={`Deployment: ${switcherAccessibilityLabel(switcher)}`}
-            onPresent={noop}
-            onSettle={noop}
-            options={switcherOptions}
-            title="Deployments"
+        {identity === null || row === undefined ? (
+          <DestinationRow
+            current={false}
+            icon="gearshape"
+            label="Settings"
+            onPress={actions.onSettings}
+          />
+        ) : (
+          // Which Deployment this is, and the way into Settings, where it is
+          // switched on a screen that shows each one's state.
+          <Pressable
+            accessibilityHint="Opens Settings"
+            accessibilityLabel={`Settings. ${identity.name}, ${identity.status}`}
+            accessibilityRole="button"
+            onPress={actions.onSettings}
+            style={({ pressed }) => [styles.deployment, pressed && styles.pressed]}
           >
-            <View style={styles.deployment}>
-              <DeploymentMarkView mark={switcher.mark} />
-              <View style={styles.grow}>
+            <DeploymentMarkView mark={identity.mark} />
+            <View style={styles.grow}>
+              <AppText
+                maxFontSizeMultiplier={controlFontScaleLimit}
+                numberOfLines={1}
+                role="secondaryMedium"
+              >
+                {identity.name}
+              </AppText>
+              <View style={styles.statusLine}>
+                <StatusDot
+                  live={row.status === "connecting" || row.status === "reconnecting"}
+                  tone={statusTone(row.status)}
+                />
                 <AppText
                   maxFontSizeMultiplier={controlFontScaleLimit}
                   numberOfLines={1}
-                  role="secondaryMedium"
+                  role="caption"
+                  tone="muted"
                 >
-                  {switcher.name}
+                  {identity.status}
                 </AppText>
-                <View style={styles.statusLine}>
-                  <StatusDot
-                    live={row.status === "connecting" || row.status === "reconnecting"}
-                    tone={statusTone(row.status)}
-                  />
-                  <AppText
-                    maxFontSizeMultiplier={controlFontScaleLimit}
-                    numberOfLines={1}
-                    role="caption"
-                    tone="muted"
-                  >
-                    {deploymentStatusLabel(row.status)}
-                  </AppText>
-                </View>
               </View>
-              <Symbol name="chevron.down" size={12} tint={color.muted} />
             </View>
-          </NativeMenu>
+            <Symbol name="gearshape" size={17} tint={color.muted} />
+          </Pressable>
         )}
       </View>
     </View>
   );
 });
-
-function noop(): void {}
 
 /**
  * The tabs listed before All tabs: enough to switch between the ones in use

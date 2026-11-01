@@ -26,6 +26,7 @@ export type SFSymbolName =
   | "bolt"
   | "bubble.left"
   | "bubble.left.and.bubble.right"
+  | "calendar"
   | "checklist"
   | "checkmark"
   | "checkmark.circle"
@@ -49,12 +50,14 @@ export type SFSymbolName =
   | "globe"
   | "hand.raised"
   | "house"
+  | "key"
   | "keyboard"
   | "laptopcomputer"
   | "lightbulb"
   | "line.3.horizontal"
   | "line.3.horizontal.decrease"
   | "list.bullet"
+  | "location.fill"
   | "lock"
   | "lock.open"
   | "mic"
@@ -64,6 +67,7 @@ export type SFSymbolName =
   | "pencil"
   | "person.2"
   | "person.crop.circle"
+  | "photo"
   | "plus"
   | "puzzlepiece.extension"
   | "rectangle.on.rectangle"
@@ -173,6 +177,7 @@ const glyph: Record<SFSymbolName, string> = {
   bolt: "ϟ",
   "bubble.left": "✉\uFE0E",
   "bubble.left.and.bubble.right": "◌",
+  calendar: "▦",
   checklist: "☑︎",
   checkmark: "✓",
   "checkmark.circle": "✓",
@@ -196,12 +201,14 @@ const glyph: Record<SFSymbolName, string> = {
   globe: "◍",
   "hand.raised": "✋\uFE0E",
   house: "⌂",
+  key: "⚷",
   keyboard: "⌨",
   laptopcomputer: "⌨",
   lightbulb: "✱",
   "line.3.horizontal": "☰",
   "line.3.horizontal.decrease": "≡",
   "list.bullet": "≔",
+  "location.fill": "➤",
   lock: "⚿",
   "lock.open": "🔓\uFE0E",
   mic: "♩",
@@ -211,6 +218,7 @@ const glyph: Record<SFSymbolName, string> = {
   pencil: "✎",
   "person.2": "☺︎",
   "person.crop.circle": "☻",
+  photo: "▨",
   plus: "+",
   "puzzlepiece.extension": "⧉",
   "rectangle.on.rectangle": "❐",

@@ -1,6 +1,7 @@
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
   computerConnectionsOn,
+  type IntegrationAccess,
   type IntegrationConnectionSummary,
   type IntegrationDefinitionSummaryView,
 } from "@opensteer/client/integrations";
@@ -20,17 +21,13 @@ import {
   SecondaryButton,
   SectionLabel,
   StatusDot,
+  Toggle,
 } from "../ui/primitives.js";
-import { IphoneAccessSheet, IphoneAppRow } from "./app-row.js";
+import { IphoneAppRow } from "./app-row.js";
 import { IphoneApprovalCard } from "./approval-card.js";
 import { useIphoneAppsState } from "./context.js";
+import { iphonePermissionOf, iphoneTurningOn, type IphoneAppsController } from "./controller.js";
 import {
-  iphonePermissionOf,
-  type IphoneAllowOutcome,
-  type IphoneAppsController,
-} from "./controller.js";
-import {
-  iphoneAccessChoices,
   iphoneAllowFailure,
   iphoneAnswerFailure,
   iphoneAppIds,
@@ -38,14 +35,14 @@ import {
   iphoneAppRow,
   iphoneApprovalKeyFailure,
   iphoneAppsFooter,
+  iphoneDefaultAccess,
   iphoneDisclosure,
+  iphoneLevels,
   iphoneRemoveMessage,
   iphoneRemoveTitle,
-  iphoneReview,
   iphoneStatusLine,
   iphoneTaskScope,
   iphoneUnknownChange,
-  type IphoneAccessChoice,
   type IphoneAppRowView,
 } from "./model.js";
 
@@ -55,10 +52,10 @@ import {
  * answer here, and Remove. An app the Host or this build doesn't offer is
  * listed with why, and can't be turned on.
  *
- * Access changes only through an app's sheet: a level is chosen as a draft,
- * reviewed once, and only the review's button sends it. Widening asks iOS
- * after that commit and stops if iOS says no; success is the Host's answer,
- * and an answer that was lost is shown as unverified until it is read back.
+ * Each app's switch and level act on the tap: turning on or widening asks
+ * iOS when it must and stops if iOS says no, and success is the Host's answer;
+ * an answer that was lost is shown as unverified until it is read back.
+ * Turning off or lowering needs only the Host.
  */
 export function IphoneAppsBlock(props: {
   /** False while the Host is unreachable; local removal still stops sharing. */
@@ -79,7 +76,10 @@ export function IphoneAppsBlock(props: {
   const state = useIphoneAppsState(controller);
   const { snapshot } = state;
   const { busy, failureFor, run } = useBlockActions(props.canRespond, props.onChanged);
-  const [open, setOpen] = useState<IphoneAppId | null>(null);
+  // What the person just switched an app to, shown until the change settles.
+  const [intent, setIntent] = useState<{ readonly app: IphoneAppId; readonly on: boolean } | null>(
+    null,
+  );
   const [answers, setAnswers] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [removing, setRemoving] = useState(false);
   const status = iphoneStatusLine(snapshot, props.opensteer);
@@ -95,7 +95,6 @@ export function IphoneAppsBlock(props: {
       {
         connectionId: connection?.id ?? null,
         definition,
-        permission,
         view: iphoneAppRow({
           access: connection?.computer?.access ?? null,
           app,
@@ -105,74 +104,74 @@ export function IphoneAppsBlock(props: {
           locationAccuracy: snapshot.locationAccuracy ?? null,
           opensteer: props.opensteer,
           permission,
+          queued: state.queued.includes(app),
         }),
       },
     ];
   });
-  const opened = open === null ? null : (rows.find(({ view }) => view.app === open) ?? null);
   const disabled = !props.canRespond || busy !== null || removing;
+  // iOS asks about one app at a time, so nothing else is turned on meanwhile.
+  const turningOn = iphoneTurningOn(state);
+  const disabledReason = !props.canRespond
+    ? `${props.opensteer} can't be reached right now.`
+    : busy !== null || removing || turningOn
+      ? "Wait for the current change to finish."
+      : null;
 
-  /** The row's result once a reviewed change settles; only the Host's answer is success. */
-  const settle = (view: IphoneAppRowView, outcome: IphoneAllowOutcome): void => {
-    if (outcome.kind === "allowed") {
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      return;
-    }
-    const failure = iphoneAllowFailure(outcome, view.name, props.opensteer);
-    if (failure !== null) throw new Error(failure);
+  /** Only the Host's answer is success; why it wasn't is kept on the row by the controller. */
+  const allow = (view: IphoneAppRowView, access: IntegrationAccess): void => {
+    run(view.app, async () => {
+      const outcome = await controller.allow({ access, app: view.app, hostClient });
+      if (outcome.kind === "allowed") {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    });
   };
 
-  const commit = (row: (typeof rows)[number], choice: IphoneAccessChoice): void => {
-    setOpen(null);
+  const lower = (view: IphoneAppRowView): void => {
+    run(view.app, async () => {
+      const result = await hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`iphone-app:${view.app}`),
+        input: {
+          access: "read",
+          app: null,
+          definitionId: view.app,
+          kind: "app",
+          runnerId: machine.id,
+        },
+        type: "integration.computer.setup.set",
+      });
+      if (result.type !== "integration.computer.setup.set") {
+        throw new Error(`${view.name} did not change.`);
+      }
+    });
+  };
+
+  const toggle = (row: (typeof rows)[number], on: boolean): void => {
     const { view } = row;
-    switch (choice.action) {
-      case "current":
-        return;
-      case "allow":
-        if (choice.access === null) return;
-        run(view.app, async () => {
-          settle(
-            view,
-            await controller.allow({ access: choice.access ?? "read", app: view.app, hostClient }),
-          );
-        });
-        return;
-      case "lower":
-        run(view.app, async () => {
-          const result = await hostClient.dispatch({
-            idempotencyKey: mutationIdempotencyKey(`iphone-app:${view.app}`),
-            input: {
-              access: "read",
-              app: null,
-              definitionId: view.app,
-              kind: "app",
-              runnerId: machine.id,
-            },
-            type: "integration.computer.setup.set",
-          });
-          if (result.type !== "integration.computer.setup.set") {
-            throw new Error(`${view.name} did not change.`);
-          }
-        });
-        return;
-      case "turn-off":
-        run(view.app, async () => {
-          if (row.connectionId === null) return;
-          const result = await hostClient.dispatch({
-            connectionId: row.connectionId,
-            idempotencyKey: mutationIdempotencyKey(`iphone-app-off:${view.app}`),
-            type: "integration.disconnect",
-          });
-          if (result.type !== "integration.disconnect") {
-            throw new Error(`${view.name} is still on.`);
-          }
-        });
-        return;
+    setIntent({ app: view.app, on });
+    if (on) {
+      allow(view, iphoneDefaultAccess(view.app, row.definition));
+      return;
     }
+    const connectionId = row.connectionId;
+    if (connectionId === null) return;
+    run(view.app, async () => {
+      const result = await hostClient.dispatch({
+        connectionId,
+        idempotencyKey: mutationIdempotencyKey(`iphone-app-off:${view.app}`),
+        type: "integration.disconnect",
+      });
+      if (result.type !== "integration.disconnect") {
+        throw new Error(`${view.name} is still on.`);
+      }
+    });
   };
 
   const check = (view: IphoneAppRowView): void => {
-    run(view.app, async () => settle(view, await controller.check({ app: view.app, hostClient })));
+    run(view.app, async () => {
+      await controller.check({ app: view.app, hostClient });
+    });
   };
 
   const answer = (setupRequestId: string, decision: "allow" | "deny"): void => {
@@ -235,42 +234,98 @@ export function IphoneAppsBlock(props: {
           </View>
         ) : (
           <RowGroup>
-            {rows.map((row) => (
-              <IphoneAppRow
-                disabled={disabled || !row.view.opens}
-                key={row.view.app}
-                line={row.view.line}
-                name={row.view.name}
-                onPress={() => setOpen(row.view.app)}
-                tone={row.view.tone}
-              >
-                <Remedy
-                  onAsk={() =>
-                    run(row.view.app, async () => {
-                      await controller.requestPermission(row.view.app);
-                    })
+            {rows.map((row) => {
+              const { view } = row;
+              const failed = state.failures[view.app] ?? null;
+              const control = view.control;
+              return (
+                <IphoneAppRow
+                  app={view.app}
+                  disabledReason={disabledReason}
+                  key={view.app}
+                  levels={
+                    view.access === null || view.change !== null
+                      ? []
+                      : iphoneLevels({
+                          app: view.app,
+                          current: view.access,
+                          definition: row.definition,
+                          here: view.offered,
+                        })
                   }
-                  onChoose={(picker) =>
-                    run(row.view.app, async () => {
-                      await (picker === "photos"
-                        ? controller.choosePhotos()
-                        : controller.chooseContacts());
-                    })
+                  line={view.line}
+                  name={view.name}
+                  onLevel={(level) => {
+                    setIntent(null);
+                    if (level.action === "lower") lower(view);
+                    else allow(view, level.access);
+                  }}
+                  tone={view.tone}
+                  trailing={
+                    control.kind === "settings" ? (
+                      <SecondaryButton
+                        accessibilityLabel={`Open iPhone Settings for ${view.name}`}
+                        compact
+                        label="Settings"
+                        onPress={openSettings}
+                      />
+                    ) : (
+                      <Toggle
+                        accessibilityHint={view.line}
+                        accessibilityLabel={view.name}
+                        disabled={
+                          disabled || !control.changeable || (view.access === null && turningOn)
+                        }
+                        onChange={(on) => toggle(row, on)}
+                        value={
+                          busy === view.app && intent?.app === view.app ? intent.on : control.on
+                        }
+                      />
+                    )
                   }
-                  onOpenSettings={openSettings}
-                  view={row.view}
-                />
-                <Unverified
-                  busy={busy === row.view.app}
-                  disabled={disabled}
-                  onCheck={() => check(row.view)}
-                  view={row.view}
-                />
-                <FailureText detail={failureFor(row.view.app)} />
-              </IphoneAppRow>
-            ))}
+                >
+                  <Remedy
+                    onAsk={() =>
+                      run(view.app, async () => {
+                        await controller.requestPermission(view.app);
+                      })
+                    }
+                    onChoose={(picker) =>
+                      run(view.app, async () => {
+                        await (picker === "photos"
+                          ? controller.choosePhotos()
+                          : controller.chooseContacts());
+                      })
+                    }
+                    onOpenSettings={openSettings}
+                    view={view}
+                  />
+                  <Unverified
+                    busy={busy === view.app}
+                    disabled={disabled}
+                    onCheck={() => check(view)}
+                    view={view}
+                  />
+                  <FailureText
+                    detail={
+                      failureFor(view.app) ??
+                      // The row's own line already says what an unoffered app
+                      // lacks, and what iPhone Settings refuses an app that is off.
+                      (failed === null ||
+                      view.effect === "unavailable" ||
+                      (failed.kind === "blocked" && view.access === null)
+                        ? null
+                        : iphoneAllowFailure(failed, view.name, props.opensteer))
+                    }
+                  />
+                </IphoneAppRow>
+              );
+            })}
           </RowGroup>
         )}
+        <AppText role="caption" tone="muted">
+          {`${iphoneAppsFooter} ${iphoneDisclosure(props.opensteer)}`}
+        </AppText>
       </View>
 
       {snapshot.approvals.length === 0 ? null : (
@@ -302,10 +357,6 @@ export function IphoneAppsBlock(props: {
         </View>
       )}
 
-      <AppText role="secondary" tone="muted">
-        {iphoneAppsFooter}
-      </AppText>
-
       <SecondaryButton
         busy={removing}
         disabled={removing}
@@ -313,50 +364,6 @@ export function IphoneAppsBlock(props: {
         onPress={remove}
         tone="danger"
       />
-
-      {opened === null ? null : (
-        <IphoneAccessSheet
-          // A change in flight holds the sheet; an unverified one still lets
-          // access be lowered or turned off, but not asked for again.
-          busy={
-            busy !== null || (opened.view.change !== null && opened.view.change.phase !== "unknown")
-          }
-          choices={iphoneAccessChoices({
-            app: opened.view.app,
-            current: opened.view.access,
-            definition: opened.definition,
-            here: opened.view.change === null && opened.view.offered,
-          })}
-          facts={{ access: opened.view.accessLabel, permission: opened.view.permissionLabel }}
-          header={
-            <Unverified
-              busy={busy === opened.view.app}
-              disabled={disabled}
-              onCheck={() => {
-                setOpen(null);
-                check(opened.view);
-              }}
-              view={opened.view}
-            />
-          }
-          name={opened.view.name}
-          onClose={() => setOpen(null)}
-          onCommit={(choice) => commit(opened, choice)}
-          onOpenSettings={openSettings}
-          review={(choice) =>
-            iphoneReview({
-              app: opened.view.app,
-              choice,
-              current: opened.view.access,
-              definition: opened.definition,
-              name: opened.view.name,
-              opensteer: props.opensteer,
-              permission: opened.permission,
-            })
-          }
-          summary={{ text: opened.view.summary, tone: opened.view.tone }}
-        />
-      )}
     </View>
   );
 }

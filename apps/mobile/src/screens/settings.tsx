@@ -24,7 +24,6 @@ import { SettingsForm } from "./settings-form.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import {
   accountSettingsModel,
-  computersSettingsFooterFor,
   computersSettingsRows,
   deploymentSettingsModel,
   engineInstallationUpdateModel,
@@ -58,7 +57,7 @@ export function SettingsScreen(): ReactNode {
   const accountInFlight = useRef(false);
   const notificationInFlight = useRef(false);
 
-  const snapshot = useSelectedHostSnapshot(selection.hostClient);
+  const snapshot = useSettingsHost(selection.hostClient);
   const apps = useComputerUseData(selection.hostClient, snapshot?.machineRevision ?? 0);
   const selectedRow = rows.find((row) => row.deploymentId === selection.deploymentId) ?? null;
   const iphoneApps = useIphoneAppsState(useIphoneApps());
@@ -96,7 +95,7 @@ export function SettingsScreen(): ReactNode {
               removed: iphoneApps.removedFrom?.deploymentId === selection.deploymentId,
               selectedDeploymentId: selection.deploymentId,
             },
-      hostConnected: canRespondToRequests(snapshot),
+      hostConnected: snapshot.hostConnected,
       machines: snapshot.machines,
       publicOrigin: snapshot.identityConfig?.publicOrigin ?? null,
     });
@@ -130,29 +129,35 @@ export function SettingsScreen(): ReactNode {
   );
 
   const accountModel = accountSettingsModel(account.account, accountWorking);
+  const { deploymentId } = selection;
+  const signIns = useMemo(
+    () =>
+      deploymentId === null || selection.hostClient === null
+        ? null
+        : {
+            onBrowserProfiles: () => navigation.navigate("BrowserProfiles", { deploymentId }),
+            onChrome: () => navigation.navigate("Chrome", { deploymentId }),
+            onConnectedApps: () => navigation.navigate("ConnectedApps", { deploymentId }),
+          },
+    [deploymentId, navigation, selection.hostClient],
+  );
   const deploymentModel = deploymentSettingsModel(selectedRow);
   const notificationModel = notificationSettingsModel(registrationState, notificationWorking);
   const engineUpdates = useMemo(() => {
     if (snapshot === null) return [];
-    return snapshot.environments.flatMap((environment) =>
-      environment.harnessDrivers.flatMap((driver) => {
-        const installation = driver.installation;
-        if (!installation) return [];
-        const key = `${environment.id}:${driver.driverKind}`;
-        const model = engineInstallationUpdateModel(installation, key === engineUpdatePending);
-        return [
-          {
-            detail: engineUpdateError?.key === key ? engineUpdateError.detail : model.detail,
-            driverKind: driver.driverKind,
-            environmentId: environment.id,
-            key,
-            name: harnessDriverLabel(driver.driverKind),
-            updateEnabled: snapshot.harnessUpdateAvailable === true && model.updateEnabled,
-            updating: model.updating,
-          },
-        ];
-      }),
-    );
+    return snapshot.engineInstallations.map(({ driverKind, environmentId, installation }) => {
+      const key = `${environmentId}:${driverKind}`;
+      const model = engineInstallationUpdateModel(installation, key === engineUpdatePending);
+      return {
+        detail: engineUpdateError?.key === key ? engineUpdateError.detail : model.detail,
+        driverKind,
+        environmentId,
+        key,
+        name: harnessDriverLabel(driverKind),
+        updateEnabled: snapshot.harnessUpdateAvailable && model.updateEnabled,
+        updating: model.updating,
+      };
+    });
   }, [engineUpdateError, engineUpdatePending, snapshot]);
 
   const runAccount = useCallback((operation: () => Promise<void>, fallback: string) => {
@@ -209,7 +214,7 @@ export function SettingsScreen(): ReactNode {
   }, [client, notifications, runAccount]);
 
   const onAccountAction = useCallback(() => {
-    const action = accountModel.action;
+    const action = accountModel?.action ?? null;
     if (action === null || action.disabled) return;
     if (action.kind === "sign-out") {
       signOut();
@@ -219,16 +224,16 @@ export function SettingsScreen(): ReactNode {
       () => client.signInAccount(),
       "Account sign-in did not finish. Try again and complete the browser sign-in.",
     );
-  }, [accountModel.action, client, runAccount, signOut]);
+  }, [accountModel?.action, client, runAccount, signOut]);
 
   const onNotificationAction = useCallback(() => {
-    const action = notificationModel.action;
+    const action = notificationModel?.action ?? null;
     if (action === null || action.disabled) return;
     runNotification(
       notificationOperation(action, notifications.registration),
       notificationFailure(action),
     );
-  }, [notificationModel.action, notifications.registration, runNotification]);
+  }, [notificationModel?.action, notifications.registration, runNotification]);
 
   const onPreferenceChange = useCallback(
     (kind: "approvals" | "run-outcomes", enabled: boolean) => {
@@ -253,7 +258,6 @@ export function SettingsScreen(): ReactNode {
         accountError={accountError}
         agents={agents}
         computers={computers}
-        computersFooter={computersSettingsFooterFor(computers)}
         deployment={deploymentModel}
         engineUpdates={engineUpdates}
         notificationError={notificationError}
@@ -271,30 +275,6 @@ export function SettingsScreen(): ReactNode {
               );
             });
         }}
-        onChromeAction={
-          selection.deploymentId === null || selection.hostClient === null
-            ? undefined
-            : () => {
-                if (selection.deploymentId === null) return;
-                navigation.navigate("Chrome", { deploymentId: selection.deploymentId });
-              }
-        }
-        onBrowserProfilesAction={
-          selection.deploymentId === null || selection.hostClient === null
-            ? undefined
-            : () => {
-                if (selection.deploymentId === null) return;
-                navigation.navigate("BrowserProfiles", { deploymentId: selection.deploymentId });
-              }
-        }
-        onConnectedAppsAction={
-          selection.deploymentId === null || selection.hostClient === null
-            ? undefined
-            : () => {
-                if (selection.deploymentId === null) return;
-                navigation.navigate("ConnectedApps", { deploymentId: selection.deploymentId });
-              }
-        }
         onComputerAction={(destination) => {
           if (selection.deploymentId === null) return;
           if (destination.kind === "add-iphone") {
@@ -333,6 +313,7 @@ export function SettingsScreen(): ReactNode {
         onPasswordsAction={() => setPasswordsShown(true)}
         onPreferenceChange={onPreferenceChange}
         passwords={passwords}
+        signIns={signIns}
         storageError={storageFailure ?? savedViewFailure}
         version={Constants.expoConfig?.version ?? "unknown"}
       />
@@ -356,16 +337,85 @@ export function SettingsScreen(): ReactNode {
   );
 }
 
+/** What Settings shows of the open Deployment's Host. */
+/** One engine's installation on one computer, as its Update row needs it. */
+interface EngineInstallationRow {
+  readonly driverKind: string;
+  readonly environmentId: string;
+  readonly installation: NonNullable<
+    HostSnapshot["environments"][number]["harnessDrivers"][number]["installation"]
+  >;
+}
+
+interface SettingsHost {
+  readonly deploymentShape: HostSnapshot["deploymentShape"];
+  readonly engineInstallations: readonly EngineInstallationRow[];
+  readonly harnessUpdateAvailable: boolean;
+  readonly hostConnected: boolean;
+  readonly identityConfig: HostSnapshot["identityConfig"];
+  readonly iphoneAppsAvailable: boolean;
+  readonly machineRevision: number;
+  readonly machines: HostSnapshot["machines"];
+  readonly notificationMutes: HostSnapshot["notificationMutes"];
+  readonly workspaces: HostSnapshot["workspaces"];
+}
+
 /**
- * The open Deployment's computers, or none while no Deployment is open.
- * Settings stands over any screen, so it reads the snapshot without loading it.
+ * The open Deployment's Host as Settings needs it, or null while none is open.
+ * Settings stands over any screen, including a reply streaming underneath, so
+ * it reads without loading and re-renders only when something it shows moves.
  */
-function useSelectedHostSnapshot(hostClient: HostClient | null): HostSnapshot | null {
+function useSettingsHost(hostClient: HostClient | null): SettingsHost | null {
+  const cached = useRef<SettingsHost | null>(null);
   const subscribe = useCallback(
     (listener: () => void) => hostClient?.subscribe(listener) ?? (() => undefined),
     [hostClient],
   );
-  const read = useCallback(() => hostClient?.getSnapshot() ?? null, [hostClient]);
+  const read = useCallback((): SettingsHost | null => {
+    if (hostClient === null) return null;
+    const snapshot = hostClient.getSnapshot();
+    const previous = cached.current;
+    const installations = snapshot.environments.flatMap((environment) =>
+      environment.harnessDrivers.flatMap((driver) =>
+        driver.installation
+          ? [
+              {
+                driverKind: driver.driverKind,
+                environmentId: environment.id,
+                installation: driver.installation,
+              },
+            ]
+          : [],
+      ),
+    );
+    // Environments change on every catalog refresh; keep the rows' identity
+    // while nothing an Update row shows has moved.
+    const engineInstallations =
+      previous !== null &&
+      JSON.stringify(previous.engineInstallations) === JSON.stringify(installations)
+        ? previous.engineInstallations
+        : installations;
+    const next: SettingsHost = {
+      deploymentShape: snapshot.deploymentShape,
+      engineInstallations,
+      harnessUpdateAvailable: snapshot.harnessUpdateAvailable === true,
+      hostConnected: canRespondToRequests(snapshot),
+      identityConfig: snapshot.identityConfig,
+      iphoneAppsAvailable: snapshot.iphoneAppsAvailable,
+      machineRevision: snapshot.machineRevision,
+      machines: snapshot.machines,
+      notificationMutes: snapshot.notificationMutes,
+      workspaces: snapshot.workspaces,
+    };
+    if (
+      previous !== null &&
+      (Object.keys(next) as (keyof SettingsHost)[]).every((key) => previous[key] === next[key])
+    ) {
+      return previous;
+    }
+    cached.current = next;
+    return next;
+  }, [hostClient]);
   return useSyncExternalStore(subscribe, read, read);
 }
 

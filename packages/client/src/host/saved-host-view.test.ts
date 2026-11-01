@@ -1,7 +1,13 @@
+import { z } from "zod";
 import { createId } from "@opensteer/core";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { expect, it } from "vitest";
-import { SavedHostViewSchema, projectSavedHome, projectSavedTasks } from "./saved-host-view.js";
+import {
+  SavedTaskSchema,
+  SavedHostViewSchema,
+  projectSavedHome,
+  projectSavedTasks,
+} from "./saved-host-view.js";
 import type { MessageEntry } from "./client.js";
 it("persists only published message text, excluding even finished synthetic streams and every authority field", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
@@ -162,5 +168,14 @@ it("bounds encoded Unicode tails and recent task subjects while retaining histor
       ({ title }) => new TextEncoder().encode(title).byteLength <= 512 && !title.includes("�"),
     ),
   ).toBe(true);
+  client.dispose();
+});
+
+it("loads previous-version saved task subjects in their stored order without timestamps", () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  const tasks = projectSavedTasks(client.getSnapshot());
+  expect(tasks.length).toBeGreaterThan(0);
+  expect(z.array(SavedTaskSchema).parse(JSON.parse(JSON.stringify(tasks)))).toEqual(tasks);
+  expect(tasks.every((task) => !("askedAt" in task))).toBe(true);
   client.dispose();
 });

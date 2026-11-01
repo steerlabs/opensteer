@@ -326,6 +326,13 @@ Triggers. An agent's own Done intent applies only after Assignment settlement
 and only with no pending work or returns; otherwise it is dropped. Reopen
 clears active intents. See [database sources](../packages/database/src).
 
+A task's place in every list changes only when a person asks it for something
+(`Thread.askedAt`): a message that starts or joins its turn, or its creation.
+People find tasks by where they are, and agents work in the background, so agent
+replies, returned results, triggers, titles and settings never move a row, and
+opening one never moves it either. The Host pages by the same order the clients
+draw, so loading more never reshuffles what is shown.
+
 Active work must not depend on how much task history was loaded: clients combine
 the complete active set with their loaded history. Scoped authorization refusal
 clears cached lists. Action confirmations are tied to the reviewed state and

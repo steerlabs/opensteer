@@ -2366,9 +2366,16 @@ export async function enqueueThreadInputInTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  const admittedAt = new Date();
   await transaction
     .updateTable("threads")
-    .set({ nextMessageSequence: sql`next_message_sequence + 1`, updatedAt: new Date() })
+    .set({
+      nextMessageSequence: sql`next_message_sequence + 1`,
+      updatedAt: admittedAt,
+      ...(facts.author.kind === "human" && policy !== "report" && executionValid
+        ? { askedAt: admittedAt }
+        : {}),
+    })
     .where("id", "=", thread.id)
     .executeTakeFirstOrThrow();
   const message = messageFromRow(messageRow);

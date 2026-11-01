@@ -382,9 +382,9 @@ const taskLineSourceCharacters = 2_048;
 
 /**
  * The reader's tasks across every Workspace they actively belong to, or in the
- * one named: listed, unarchived Threads, most recently updated first, each
- * with what it last said and why its latest Run failed when it did, and the
- * reader's read state. A cursor continues only the list it came from.
+ * one named: listed, unarchived Threads, ordered by when a person last asked
+ * each task, newest first, with what it last said, why its latest Run failed
+ * when it did, and the reader's read state. A cursor continues only the list it came from.
  */
 export async function taskPageForUser(
   database: Kysely<DatabaseSchema>,
@@ -402,12 +402,12 @@ export async function taskPageForUser(
   const maxBytes = boundedWindowBytes(input.maxBytes, 256 * 1_024);
   const readerScope = input.workspaceId ? `${input.userId}:${input.workspaceId}` : input.userId;
   const scope = input.active ? `${readerScope}:active` : readerScope;
-  const anchor = input.before ? decodeWindowCursor(input.before, "task", scope) : null;
+  const anchor = input.before ? decodeWindowCursor(input.before, "task-asked", scope) : null;
   if (anchor && !ThreadIdSchema.safeParse(anchor.id).success) throw invalidWindowCursor();
-  // A Thread view carries its update time to the millisecond, so the list is
+  // A Thread view carries its asked time to the millisecond, so the list is
   // ordered at that precision: a cursor then names exactly the place the
-  // reader stopped, even between Threads updated within one millisecond.
-  const updatedAt = sql<Date>`date_trunc('milliseconds', threads.updated_at)`;
+  // reader stopped, even between Threads asked within one millisecond.
+  const askedAt = sql<Date>`date_trunc('milliseconds', threads.asked_at)`;
   return withDatabaseTransaction(
     database,
     async (transaction) => {
@@ -452,12 +452,12 @@ export async function taskPageForUser(
         ]);
       if (anchor) {
         page = page.where(
-          sql<boolean>`(${updatedAt}, threads.id) < (${anchor.timestamp}::timestamptz, ${anchor.id}::text)`,
+          sql<boolean>`(${askedAt}, threads.id) < (${anchor.timestamp}::timestamptz, ${anchor.id}::text)`,
         );
       }
       const [rows, countRow] = await Promise.all([
         page
-          .orderBy(updatedAt, "desc")
+          .orderBy(askedAt, "desc")
           .orderBy("threads.id", "desc")
           .limit(maxItems + 1)
           .execute(),
@@ -494,7 +494,7 @@ export async function taskPageForUser(
           itemCount: window.items.length,
           nextBefore:
             hasMore && oldest
-              ? encodeWindowCursor("task", scope, oldest.updatedAt, oldest.id)
+              ? encodeWindowCursor("task-asked", scope, oldest.askedAt!, oldest.id)
               : null,
           totalItems: safeCount(countRow.count),
         },

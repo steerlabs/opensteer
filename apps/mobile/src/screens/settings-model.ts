@@ -24,7 +24,7 @@ import type {
   NotificationPreferences,
   PushRegistrationState,
 } from "../notifications/push-registration.js";
-import { deploymentMark, type DeploymentMark } from "../threads/deployment-switcher-model.js";
+import { deploymentMark, type DeploymentMark } from "../threads/deployment-identity.js";
 
 interface SettingsActionBase {
   readonly destructive?: boolean;
@@ -110,7 +110,8 @@ export function engineInstallationUpdateModel(
 
 export interface NotificationSettingsModel {
   readonly action: NotificationSettingsActionModel | null;
-  readonly detail: string;
+  /** Why notifications can't reach this phone yet; null once they can. */
+  readonly detail: string | null;
   readonly disabled: boolean;
   /** What notifications on this phone can and cannot reach, stated once. */
   readonly footer: string;
@@ -123,14 +124,14 @@ type AccountState = DesktopAccountAuthState["account"];
 export function deploymentSettingsModel(row: DeploymentRow | null): DeploymentSettingsModel {
   if (row === null) {
     return {
-      action: { disabled: false, kind: "switch-deployment", label: "Choose deployment" },
+      action: { disabled: false, kind: "switch-deployment", label: "Choose" },
       mark: null,
       status: "Choose where your work is running.",
       title: "No deployment selected",
     };
   }
   return {
-    action: { disabled: false, kind: "switch-deployment", label: "Switch deployment" },
+    action: { disabled: false, kind: "switch-deployment", label: "Switch" },
     mark: deploymentMark(row),
     status: deploymentStatusLabel(row.status),
     title: row.name,
@@ -138,10 +139,11 @@ export function deploymentSettingsModel(row: DeploymentRow | null): DeploymentSe
 }
 
 /** The Account section as facts and actions, independent of either platform renderer. */
+/** Null in a build without an Account service, which has nothing to sign in to. */
 export function accountSettingsModel(
   account: AccountState,
   working: boolean,
-): AccountSettingsModel {
+): AccountSettingsModel | null {
   const identity = account.identity;
   if (identity !== null) {
     return {
@@ -159,26 +161,21 @@ export function accountSettingsModel(
     };
   }
 
+  if (!account.available) return null;
   const authorizing = account.status === "authorizing";
-  const available = account.available;
   return {
-    action: available
-      ? {
-          disabled: working || authorizing,
-          kind: "sign-in",
-          label:
-            working || authorizing
-              ? "Signing in…"
-              : account.status === "error"
-                ? "Try Account sign-in again"
-                : "Sign in with Opensteer",
-        }
-      : null,
+    action: {
+      disabled: working || authorizing,
+      kind: "sign-in",
+      label:
+        working || authorizing
+          ? "Signing in…"
+          : account.status === "error"
+            ? "Try Account sign-in again"
+            : "Sign in with Opensteer",
+    },
     detail:
-      account.detail ??
-      (available
-        ? "Sign in to sync the deployments your Account lists and enable notifications."
-        : "This build was made without an Opensteer Account service."),
+      account.detail ?? "Sign in to sync the deployments your Account lists and get notifications.",
     initial: null,
     subtitle: null,
     title: authorizing ? "Finish signing in in your browser" : "No Opensteer Account",
@@ -203,31 +200,27 @@ function accountInitial(identity: string): string | null {
  * than repeated in every state above it: the Account is the only thing that
  * can reach this phone, so a deployment it does not list cannot notify at all.
  */
-const notificationFooter =
-  "Only deployments your Opensteer Account lists can notify this phone. Opening a notification attaches this phone to the deployment it names.";
+const notificationFooter = "Only deployments your Opensteer Account lists can notify this phone.";
 
-/** The notification state machine translated into the one useful next action, if any. */
+/**
+ * The notification state machine translated into the one useful next action,
+ * if any. Null in a build without an Account service, which nothing can notify.
+ */
 export function notificationSettingsModel(
   state: PushRegistrationState,
   working: boolean,
-): NotificationSettingsModel {
+): NotificationSettingsModel | null {
   switch (state.status) {
     case "registered":
       return {
         action: null,
-        detail: "This phone is registered with your Opensteer Account.",
+        detail: null,
         disabled: working,
         footer: notificationFooter,
         preferences: state.preferences,
       };
     case "no-account-service":
-      return {
-        action: null,
-        detail: "This build has no Account service, so nothing can send this phone notifications.",
-        disabled: working,
-        footer: notificationFooter,
-        preferences: null,
-      };
+      return null;
     case "signed-out":
       return {
         action: null,
@@ -312,14 +305,7 @@ function computerUseNow(machine: MachineSummary, hostConnected: boolean): string
  * plugged into — never from this app — so the section says where.
  */
 export const computersSettingsFooter =
-  "To add a computer, open Opensteer on it and choose Add on its Computers page. To add an Android phone, plug it into a computer and choose Add a phone there.";
-
-/** The footer under a list that offers to add this iPhone, which says what that shares. */
-export function computersSettingsFooterFor(rows: readonly ComputerSettingsRow[]): string {
-  return rows.some(({ opens }) => opens?.kind === "add-iphone")
-    ? `Add this iPhone to let agents use its Calendar, Contacts and Reminders while Opensteer is open. ${computersSettingsFooter}`
-    : computersSettingsFooter;
-}
+  "To add a computer, open Opensteer on it and choose Add. To add an Android phone, plug it into a computer and choose Add a phone.";
 
 export const browserProfilesSettingsRow = {
   detail: "Separate browsers with their own sign-ins",
@@ -336,8 +322,9 @@ export const chromeSettingsRow = {
   detail: "Your Chrome and the sites agents can sign in to",
   title: "Chrome",
 } as const;
-export const chromeSettingsFooter =
-  "Agents use websites you’re already signed in to in Chrome. You approve each site once.";
+/** Under the specialists' switches: what muting one silences, and what it never does. */
+export const specialistNotificationsFooter =
+  "Turning one off silences its replies and updates. Approvals and questions still notify you, and its work keeps running.";
 
 /**
  * Passwords live in the Opensteer app on the Mac that runs a Personal
@@ -560,7 +547,7 @@ function thisIphoneRow(
     ? {
         detail: here.removed
           ? `You're here · Removed from ${opensteer}`
-          : "You're here · Not added",
+          : "You're here · Share its Calendar, Contacts and more",
         key: "this-iphone",
         name: here.deviceName,
         opens: { kind: "add-iphone" },

@@ -4670,6 +4670,7 @@ export function migrationProvider() {
         "0120_notification_preview_keys": notificationPreviewKeysMigration,
         "0121_native_browser_profiles": nativeBrowserProfilesMigration,
         "0122_thread_event_history": threadEventHistoryMigration,
+        "0123_thread_asked_at": threadAskedAtMigration,
       };
     },
   };
@@ -6467,6 +6468,32 @@ export const threadEventHistoryMigration: Migration = {
     await sql`
       create index workspace_events_thread_history
         on public.workspace_events (thread_id, sequence) include (type)
+    `.execute(database);
+  },
+};
+
+/**
+ * When a person last asked each Thread for work. History cannot tell an input
+ * refused at admission from one cancelled after it, so every human input that
+ * could start or join a turn counts.
+ */
+export const threadAskedAtMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table threads add column if not exists asked_at timestamptz not null default now();
+      with asked as (
+        select message.thread_id, max(message.created_at) as asked_at
+        from messages as message
+        join thread_inputs as input on input.message_id = message.id
+        where message.kind = 'input' and message.author ->> 'kind' = 'human'
+          and input.policy <> 'report'
+        group by message.thread_id
+      ), times as (
+        select thread.id, date_trunc('milliseconds', coalesce(asked.asked_at, thread.created_at)) as asked_at
+        from threads as thread left join asked on asked.thread_id = thread.id
+      )
+      update threads as thread set asked_at = times.asked_at
+      from times where thread.id = times.id;
     `.execute(database);
   },
 };

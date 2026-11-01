@@ -217,15 +217,16 @@ const RootStack = createNativeStackNavigator({
         title: "Run details",
       },
     },
+    // A long list opens full height like the pages it leads to: a half-height
+    // detent would spend the first scroll on growing the sheet, and the next
+    // on dragging it back down.
     Settings: {
       screen: SettingsScreen,
       options: ({ navigation }) => ({
         ...headerActions({
-          right: { label: "Done", onPress: () => navigation.goBack() },
+          right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
-        presentation: "formSheet",
-        sheetAllowedDetents: [0.6, 0.95],
-        sheetGrabberVisible: true,
+        presentation: "modal",
         title: "Settings",
       }),
     },

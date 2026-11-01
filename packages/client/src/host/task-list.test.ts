@@ -1,3 +1,4 @@
+import { mergeTaskEntries } from "./task-entries.js";
 import { describe, expect, it } from "vitest";
 import {
   createId,
@@ -46,6 +47,7 @@ function entry(
     thread: {
       ...template,
       role: "work",
+      askedAt: hoursAgo(created),
       createdAt: hoursAgo(created),
       id: threadId(index),
       status,
@@ -166,7 +168,7 @@ describe("taskList", () => {
     expect(changed).toMatchObject({
       title: row.title,
       tone: row.tone,
-      updatedAt: row.updatedAt,
+      askedAt: row.askedAt,
       icon: "plane",
       color: "purple",
     });
@@ -200,7 +202,7 @@ describe("taskList", () => {
     expect(list.ready).toEqual([]);
   });
 
-  it("lists finished and failed tasks by when they last changed, so their times read in order", () => {
+  it("lists finished and failed tasks by when a person last asked, so their times read in order", () => {
     const list = taskList(
       snapshot([
         entry(1, "Made first, changed last", "idle", 30, 2),
@@ -209,17 +211,17 @@ describe("taskList", () => {
       ]),
     );
     expect(titles(list.ready)).toEqual([
-      "Made first, changed last",
-      "Failed",
       "Made last, changed first",
+      "Failed",
+      "Made first, changed last",
     ]);
-    expect(list.ready.map((row) => taskTime(row, now))).toEqual(["2h", "10h", "20h"]);
+    expect(list.ready.map((row) => taskTime(row, now))).toEqual(["1h", "5h", "1d"]);
     expect(list.working).toEqual([]);
   });
 
   it("never marks old work Done automatically, and keeps unread shared Done in Ready until read", () => {
     const old = entry(1, "Still open", "idle", 60, 47);
-    const completed = entry(2, "Shared Done", "idle", 60, 48);
+    const completed = entry(2, "Shared Done", "idle", 61, 48);
     const done = { ...completed, thread: { ...completed.thread, doneAt: hoursAgo(1) } };
     const unread = taskList(snapshot([old, done], { unread: [2] }));
     expect(titles(unread.ready)).toEqual(["Still open", "Shared Done"]);
@@ -228,6 +230,26 @@ describe("taskList", () => {
     const read = taskList(snapshot([old, done]));
     expect(titles(read.ready)).toEqual(["Still open"]);
     expect(titles(read.done)).toEqual(["Shared Done"]);
+    // Opened from Ready while unread, reading it does not move it while it is open.
+    const opened = taskList(snapshot([old, done]), {
+      openThreadId: done.thread.id,
+      previous: unread,
+    });
+    expect(titles(opened.ready)).toEqual(["Still open", "Shared Done"]);
+    expect(opened.done).toEqual([]);
+    // Opened from the Done shelf, it is already where it belongs and stays there.
+    const fromShelf = taskList(snapshot([old, done]), {
+      openThreadId: done.thread.id,
+      previous: read,
+    });
+    expect(titles(fromShelf.done)).toEqual(["Shared Done"]);
+    // Marked Done by the reader while open, it goes to Done as they asked.
+    const markedOpen = taskList(snapshot([old, completed]));
+    const marked = taskList(snapshot([old, done]), {
+      openThreadId: done.thread.id,
+      previous: markedOpen,
+    });
+    expect(titles(marked.done)).toEqual(["Shared Done"]);
   });
 
   it("keeps Chat apart from every group, and counts as running only what works now", () => {
@@ -336,7 +358,7 @@ describe("taskTime", () => {
       ),
     );
     expect(list.working.map((row) => taskTime(row, now))).toEqual([null, null, null]);
-    expect(list.ready.map((row) => taskTime(row, now))).toEqual(["3h", "3h"]);
+    expect(list.ready.map((row) => taskTime(row, now))).toEqual(["1h", "1h"]);
   });
 });
 
@@ -511,4 +533,22 @@ describe("threadRequester", () => {
     expect(threadRequester(snapshot([thread(task, "Plan", null)]), task)).toBeNull();
     expect(threadRequester(snapshot([]), task)).toBeNull();
   });
+});
+
+it("moves only for a person's ask, ties by descending id, and merges freshest copies", () => {
+  const a = entry(1, "A", "idle", 3, 2);
+  const b = entry(2, "B", "idle", 3, 1);
+  const titlesOf = (entries: readonly TaskEntry[]) => titles(taskList(snapshot(entries)).ready);
+  expect(titlesOf([a, b])).toEqual(["B", "A"]);
+  const changed = {
+    ...a,
+    thread: { ...a.thread, title: "Edited", icon: "plane" as const, updatedAt: hoursAgo(0) },
+  };
+  expect(titlesOf([changed, b])).toEqual(["B", "Edited"]);
+  const asked = { ...changed, thread: { ...changed.thread, askedAt: hoursAgo(0) } };
+  expect(titlesOf([asked, b])).toEqual(["Edited", "B"]);
+  expect(mergeTaskEntries([a, b], [changed]).map(({ thread }) => thread.title)).toEqual([
+    "B",
+    "Edited",
+  ]);
 });

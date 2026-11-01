@@ -45,6 +45,13 @@ export class IphoneAppsController {
   readonly #answering = new Set<string>();
   /** Access being added from this iPhone, beside (never instead of) the access it has. */
   readonly #changes = new Map<IphoneAppId, IphoneAppChange>();
+  /** How the last change from here settled for an app, when it didn't turn on. */
+  readonly #failures = new Map<IphoneAppId, IphoneAllowFailure>();
+  /** Apps chosen with Add still waiting their turn, in order. */
+  #queued: readonly IphoneAppId[] = [];
+  #sharing = false;
+  /** The last native prompt or picker; the next waits for it, since iOS doesn't queue them. */
+  #iosTurn: Promise<unknown> = Promise.resolve();
   readonly #detachBridge: () => void;
 
   #adding: { readonly deploymentId: string; readonly outcome: Promise<IphoneAddOutcome> } | null =
@@ -173,7 +180,47 @@ export class IphoneAppsController {
   }
 
   /**
-   * Turns an app on or widens it, after the person reviewed it on screen.
+   * Turns on the apps chosen with Add, one at a time, so iOS asks about one
+   * app at a time and each request is signed on its own. Add listed every app
+   * and level it turns on, so its tap is their review. An app that doesn't
+   * turn on keeps why for its row, and the rest go on; stopping the iPhone or
+   * opening another Deployment ends the run.
+   */
+  async share(input: {
+    readonly apps: readonly { readonly access: IntegrationAccess; readonly app: IphoneAppId }[];
+    readonly hostClient: HostClient;
+  }): Promise<void> {
+    if (this.#sharing) return;
+    this.#sharing = true;
+    const fence = this.#fence();
+    this.#queued = input.apps.map(({ app }) => app);
+    this.#publish();
+    try {
+      for (const { access, app } of input.apps) {
+        if (!fence.current()) return;
+        this.#queued = this.#queued.filter((queued) => queued !== app);
+        this.#publish();
+        await this.#allowOne({ access, app, hostClient: input.hostClient }).catch(
+          (error: unknown) => {
+            if (!fence.current()) return;
+            this.#failures.set(app, {
+              kind: "not-allowed",
+              message: error instanceof Error ? error.message : "It wasn't turned on. Try again.",
+            });
+          },
+        );
+      }
+    } finally {
+      // Only one run is ever under way, so what is left of its queue is its own.
+      this.#sharing = false;
+      this.#queued = [];
+      this.#publish();
+    }
+  }
+
+  /**
+   * Turns an app on or widens it, from a person's tap: its switch, its level,
+   * or Add.
    *
    * Both sides must offer the app before iOS is asked anything: this build
    * reports its permission, and the Host's catalog lists its definition (an
@@ -188,6 +235,27 @@ export class IphoneAppsController {
    * stays `unknown` beside the current access until `check` reads them.
    */
   async allow(input: {
+    readonly access: IntegrationAccess;
+    readonly app: IphoneAppId;
+    readonly hostClient: HostClient;
+  }): Promise<IphoneAllowOutcome> {
+    // iOS asks about one app at a time: nothing new starts while Add's apps,
+    // or another app, are still being turned on.
+    if (iphoneTurningOn(this.#state)) return { kind: "busy" };
+    return this.#allowOne(input);
+  }
+
+  async #allowOne(input: {
+    readonly access: IntegrationAccess;
+    readonly app: IphoneAppId;
+    readonly hostClient: HostClient;
+  }): Promise<IphoneAllowOutcome> {
+    if (this.#changes.has(input.app)) return { kind: "busy" };
+    this.#failures.delete(input.app);
+    return this.#remember(input.app, await this.#allow(input));
+  }
+
+  async #allow(input: {
     readonly access: IntegrationAccess;
     readonly app: IphoneAppId;
     readonly hostClient: HostClient;
@@ -214,7 +282,7 @@ export class IphoneAppsController {
       if (!fence.current()) return superseded;
       if (!listed) return { by: "host", kind: "not-offered" };
       this.#setChange(input.app, { access: input.access, phase: "asking-iphone", requestId: null });
-      const permission = await this.#readyPermission(input.app);
+      const permission = await this.#readyPermission(input.app, fence.current);
       if (!fence.current()) return superseded;
       if (permission === "not-offered") return notOfferedHere;
       if (permission !== null) return { kind: "blocked", permission };
@@ -267,16 +335,20 @@ export class IphoneAppsController {
     if (change?.phase !== "unknown") return { kind: "busy" };
     const runnerId = this.#runnerFor(input.hostClient);
     const fence = this.#fence();
+    this.#failures.delete(input.app);
     try {
-      return await this.#reconcile({
-        access: change.access,
-        app: input.app,
-        fence,
-        hostClient: input.hostClient,
-        requestId: change.requestId,
-        resign: true,
-        runnerId,
-      });
+      return this.#remember(
+        input.app,
+        await this.#reconcile({
+          access: change.access,
+          app: input.app,
+          fence,
+          hostClient: input.hostClient,
+          requestId: change.requestId,
+          resign: true,
+          runnerId,
+        }),
+      );
     } finally {
       this.#settleChange(input.app, fence);
     }
@@ -300,6 +372,8 @@ export class IphoneAppsController {
     if (listed === undefined || this.#answering.has(input.setupRequestId)) return noLongerWaiting;
     this.#answering.add(input.setupRequestId);
     this.#markShown(listed);
+    // A request answered here supersedes why its app last didn't turn on.
+    this.#failures.delete(listed.definitionId);
     this.#publish();
     try {
       if (input.decision === "allow") {
@@ -315,7 +389,10 @@ export class IphoneAppsController {
           if (generation !== this.#generation) return noLongerWaiting;
           if (offered === false) return { by: "host", kind: "not-offered" };
         }
-        const permission = await this.#readyPermission(listed.definitionId);
+        const permission = await this.#readyPermission(
+          listed.definitionId,
+          () => generation === this.#generation,
+        );
         if (generation !== this.#generation) return noLongerWaiting;
         if (permission === "not-offered") return notOfferedHere;
         if (permission !== null) return { kind: "blocked", permission };
@@ -361,7 +438,7 @@ export class IphoneAppsController {
    */
   async requestPermission(app: IphoneAppId): Promise<IphonePermission | null> {
     if (iphonePermissionOf(this.#bridge.getSnapshot(), app) === null) return null;
-    return this.#bridge.requestPermission(app);
+    return this.#askIos(() => this.#bridge.requestPermission(app));
   }
 
   /**
@@ -369,7 +446,7 @@ export class IphoneAppsController {
    * iOS's answer read afresh: closing the picker is not a refusal.
    */
   async chooseContacts(): Promise<IphonePermission> {
-    return this.#bridge.chooseContacts();
+    return this.#askIos(() => this.#bridge.chooseContacts());
   }
 
   /**
@@ -380,7 +457,7 @@ export class IphoneAppsController {
   async choosePhotos(): Promise<IphonePermission | null> {
     const current = iphonePermissionOf(this.#bridge.getSnapshot(), "iphone-photos");
     if (current !== "limited") return current;
-    return this.#bridge.choosePhotos();
+    return this.#askIos(() => this.#bridge.choosePhotos());
   }
 
   /** The person saw this request on its own; it is not shown on its own again. */
@@ -539,12 +616,23 @@ export class IphoneAppsController {
   /**
    * Asks iOS when it can still ask, then reads its answer back. Null means iOS
    * lets Opensteer use the app; anything else is the answer that stops here.
-   * A build that doesn't report the app is never asked about it.
+   * A build that doesn't report the app is never asked about it, and a
+   * prompt whose turn comes after its operation was cut off is never shown.
    */
-  async #readyPermission(app: IphoneAppId): Promise<IphonePermission | "not-offered" | null> {
+  async #readyPermission(
+    app: IphoneAppId,
+    current: () => boolean,
+  ): Promise<IphonePermission | "not-offered" | null> {
     let permission = iphonePermissionOf(this.#bridge.getSnapshot(), app);
     if (permission === null) return "not-offered";
-    if (needsPrompt(app, permission)) permission = await this.#bridge.requestPermission(app);
+    if (needsPrompt(app, permission)) {
+      const before = permission;
+      permission = await this.#askIos(async () => {
+        const now = iphonePermissionOf(this.#bridge.getSnapshot(), app) ?? before;
+        // Another prompt may have answered this while it waited its turn.
+        return current() && needsPrompt(app, now) ? this.#bridge.requestPermission(app) : now;
+      });
+    }
     return iphonePermissionAllows(app, permission) ? null : permission;
   }
 
@@ -567,7 +655,7 @@ export class IphoneAppsController {
     // app at another access is another decision, and stays waiting for it.
     if (listed.definitionId !== input.app || listed.access !== input.access) return requestChanged;
     // iPhone Settings may have changed while the request travelled.
-    const permission = await this.#readyPermission(input.app);
+    const permission = await this.#readyPermission(input.app, input.fence.current);
     if (!input.fence.current()) return superseded;
     if (permission === "not-offered") return notOfferedHere;
     if (permission !== null) return { kind: "blocked", permission };
@@ -674,6 +762,35 @@ export class IphoneAppsController {
     }
   }
 
+  /**
+   * Every iOS permission prompt and picker goes through here, one at a time,
+   * whichever path asks: a switch, Add's run, a task's Allow, or a remedy.
+   */
+  #askIos<T>(ask: () => Promise<T>): Promise<T> {
+    const turn = this.#iosTurn.then(ask, ask);
+    this.#iosTurn = turn.catch(() => undefined);
+    return turn;
+  }
+
+  /** Keeps why a change didn't turn its app on, for that app's row, unless the change was cut off. */
+  #remember(app: IphoneAppId, outcome: IphoneAllowOutcome): IphoneAllowOutcome {
+    switch (outcome.kind) {
+      case "blocked":
+      case "not-allowed":
+      case "not-offered":
+      case "waiting":
+        this.#failures.set(app, outcome);
+        this.#publish();
+        break;
+      case "allowed":
+      case "busy":
+      case "superseded":
+      case "unknown":
+        break;
+    }
+    return outcome;
+  }
+
   #setChange(app: IphoneAppId, change: IphoneAppChange): void {
     this.#changes.set(app, change);
     this.#publish();
@@ -696,6 +813,8 @@ export class IphoneAppsController {
     this.#generation += 1;
     this.#adding = null;
     this.#changes.clear();
+    this.#failures.clear();
+    this.#queued = [];
     this.#approvalKey = "idle";
     const ids = this.#bridge.disconnect();
     for (const wake of this.#wakers) wake();
@@ -910,6 +1029,8 @@ export class IphoneAppsController {
       removedFrom: this.#removedFrom,
       snapshot,
       changes: Object.fromEntries(this.#changes),
+      failures: Object.fromEntries(this.#failures),
+      queued: this.#queued,
     };
   }
 }
@@ -951,6 +1072,10 @@ export interface IphoneAppsState {
   readonly snapshot: IphoneAppsSnapshot;
   /** Access being added to an app from here; the app keeps its current access meanwhile. */
   readonly changes: Readonly<Partial<Record<IphoneAppId, IphoneAppChange>>>;
+  /** Why the last change from here didn't turn an app on, until the next one. */
+  readonly failures: Readonly<Partial<Record<IphoneAppId, IphoneAllowFailure>>>;
+  /** Apps chosen with Add still waiting their turn. */
+  readonly queued: readonly IphoneAppId[];
 }
 
 /**
@@ -963,6 +1088,12 @@ export interface IphoneAppChange {
   /** The Host's request, once known: reconciling reads back exactly this one. */
   readonly requestId: string | null;
 }
+
+/** An outcome that leaves its app without the access asked for, and says why on its row. */
+export type IphoneAllowFailure = Extract<
+  IphoneAllowOutcome,
+  { readonly kind: "blocked" | "not-allowed" | "not-offered" | "waiting" }
+>;
 
 export type IphoneAllowOutcome =
   | { readonly kind: "allowed" }
@@ -1160,6 +1291,19 @@ function issueFailure(issue: IphoneAppsIssue, message: string | null): IphoneAdd
  * Photos may be limited to what the person chose. Location has no limited
  * access: Allow Once reads as granted until it ends.
  */
+/**
+ * Whether an app is being turned on or widened from here, or Add's apps are
+ * still waiting their turn. Another can't start meanwhile; turning off can.
+ */
+export function iphoneTurningOn(state: Pick<IphoneAppsState, "changes" | "queued">): boolean {
+  return (
+    state.queued.length > 0 ||
+    Object.values(state.changes).some(
+      (change) => change !== undefined && change.phase !== "unknown",
+    )
+  );
+}
+
 export function iphonePermissionAllows(app: IphoneAppId, permission: IphonePermission): boolean {
   return (
     permission === "granted" ||

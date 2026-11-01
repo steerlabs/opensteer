@@ -54,6 +54,7 @@ export const threadContinuationIdentitySelection = sql<Thread["continuationIdent
 )`.as("continuationIdentity");
 
 type ThreadReadRow = {
+  readonly askedAt: Date;
   readonly doneAt: Date | null;
   readonly inputQueuePaused: boolean;
   readonly accessMode: ThreadAccessMode;
@@ -90,6 +91,7 @@ export function threadsFromRows(rows: readonly ThreadReadRow[]): Thread[] {
 function threadValueFromRow(row: ThreadReadRow) {
   return {
     ...row,
+    askedAt: row.askedAt.toISOString(),
     createdAt: row.createdAt.toISOString(),
     doneAt: row.doneAt?.toISOString() ?? null,
     pendingRequests: row.pendingRequests,

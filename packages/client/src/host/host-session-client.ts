@@ -6680,6 +6680,7 @@ function toThreadSummary(
     accessMode: thread.accessMode,
     continuationIdentity: thread.continuationIdentity,
     providerSessionId: thread.providerSessionId,
+    askedAt: thread.askedAt ?? thread.createdAt,
     createdAt: thread.createdAt,
     environmentId: thread.environmentId,
     harnessInstanceId: thread.harnessInstanceId,

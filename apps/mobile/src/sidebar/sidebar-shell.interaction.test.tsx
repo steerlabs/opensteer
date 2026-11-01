@@ -37,6 +37,7 @@ const harness = vi.hoisted(() => ({
     docked: boolean;
     selectedPlace: unknown;
     selectedThreadId: string | null;
+    openThreadId: string | null;
     visible: boolean;
     actions: {
       onOpenPlace: (destination: object) => void;
@@ -44,6 +45,7 @@ const harness = vi.hoisted(() => ({
       onTabs: () => void;
     };
     scroll: { offset: number };
+    shelves: { list: unknown };
   }[],
   drawer: { lock: "", panel: null as ReactNode },
   openDrawer: vi.fn(),
@@ -77,7 +79,7 @@ vi.mock("@react-navigation/native", () => ({
 vi.mock("react-native-reanimated", () => ({
   default: { View: ({ children }: { children?: ReactNode }) => <div>{children}</div> },
 }));
-vi.mock("../ui/motion.js", () => ({ appear: {}, exit: {} }));
+vi.mock("../ui/motion.js", () => ({ appear: {}, exit: {}, move: undefined }));
 vi.mock("react-native-reserved-regions", () => ({
   ReservedRegionsProvider: (props: {
     children?: ReactNode;
@@ -381,8 +383,14 @@ describe("the sidebar as the window changes shape", () => {
       params: tabBRoute,
     };
     const { render } = await mount([home, page]);
-    expect(lastPanel()).toMatchObject({ docked: true, selectedPlace: tabB, visible: true });
-    // A conversation's own page, opened from it, is the same page and keeps it too.
+    expect(lastPanel()).toMatchObject({
+      docked: true,
+      selectedPlace: tabB,
+      openThreadId: null,
+      visible: true,
+    });
+    // A conversation's own page, opened from it, is the same page and keeps it
+    // too, and its conversation is still on screen, so its task stays put.
     const owned = {
       key: "owned-key",
       name: "WorkspaceBrowser",
@@ -392,6 +400,7 @@ describe("the sidebar as the window changes shape", () => {
     expect(lastPanel()).toMatchObject({
       docked: true,
       selectedPlace: { kind: "browser", sessionId: "s", tabId: "t" },
+      openThreadId: "thread-a",
     });
     await render();
     expect(harness.dispatch).not.toHaveBeenCalled();
@@ -538,17 +547,23 @@ describe("the shell around what the system reserves", () => {
     expect(stackStyle(tab.container)).toMatchObject({ marginBottom: 0, marginTop: 440 });
   });
 
-  it("gives the drawer and the docked column one scroll position, kept by the shell", async () => {
+  it("gives the drawer and the docked column one scroll position and one set of shelves, kept by the shell", async () => {
     const { render } = await mount();
     const drawerScroll = lastPanel().scroll;
     drawerScroll.offset = 480;
+    // An unread Done task opened from Ready keeps its place through a fold.
+    const shelves = lastPanel().shelves;
+    const drawn = { ready: [{ threadId: "thread-a", done: true }] };
+    shelves.list = drawn;
     harness.bounds = { height: 1133, width: 744 };
     await render();
     expect(lastPanel().docked).toBe(true);
     expect(lastPanel().scroll).toBe(drawerScroll);
+    expect(lastPanel().shelves.list).toBe(drawn);
     harness.bounds = { height: 844, width: 390 };
     await render();
     expect(lastPanel().scroll).toBe(drawerScroll);
     expect(lastPanel().scroll.offset).toBe(480);
+    expect(lastPanel().shelves.list).toBe(drawn);
   });
 });

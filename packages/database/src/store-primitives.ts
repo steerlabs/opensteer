@@ -297,6 +297,7 @@ type DurableCursorKind =
   | "message"
   | "owner-thread"
   | "task"
+  | "task-asked"
   | "thread"
   | "workspace";
 
