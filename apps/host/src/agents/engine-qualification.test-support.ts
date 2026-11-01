@@ -17,8 +17,10 @@ import { setFileMode } from "@opensteer/shared/privateFiles";
 export interface QualifiedEngine {
   readonly driverKind: HarnessKind;
   /** Which executable an account on the machine's own sign-in runs. */
-  readonly executable: "installed" | "shipped";
+  readonly executable: "downloaded" | "installed" | "shipped";
   readonly label: string;
+  /** Operator action when the real account has no usable credential. */
+  readonly signInGuidance?: string;
   readonly sourceId: string;
   /** The account's state without a key: the engine's own sign-in, or OpenCode's private one. */
   readonly stateKind: "ambient" | "isolated";
@@ -58,6 +60,7 @@ export async function shippedEnginesFirstOnPath(): Promise<() => Promise<void>> 
 
 /** What `--version` says for the executable an account on this engine runs. */
 export async function qualifiedVersion(engine: QualifiedEngine): Promise<string> {
+  if (engine.executable === "downloaded") return "downloaded release verified by the driver";
   const command = installedCommand(engine.driverKind);
   const account = qualificationAccount(engine);
   const executable =
@@ -79,7 +82,7 @@ export async function qualifiedVersion(engine: QualifiedEngine): Promise<string>
 export function qualificationAccount(engine: QualifiedEngine) {
   const key = engine.apiKey ? process.env[engine.apiKey.variable] : undefined;
   // The person's own CLI only ever runs on the person's own sign-in.
-  if (engine.executable === "shipped" && engine.apiKey && key) {
+  if (engine.executable !== "installed" && engine.apiKey && key) {
     return {
       apiKey: { methodId: engine.apiKey.methodId, value: key },
       config: {},
