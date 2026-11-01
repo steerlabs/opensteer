@@ -82,7 +82,7 @@ export class BrowserRuntimeServer {
     });
     this.httpServer.on("upgrade", (request, socket, head) => {
       const pathname = safePathname(request);
-      if (pathname !== "/v1/browser" && pathname !== "/v1/browser/prepare") {
+      if (pathname !== "/v1/browser") {
         refuseConnection(socket, 404, "Not Found");
         return;
       }
@@ -105,53 +105,6 @@ export class BrowserRuntimeServer {
       const ticket = bearerTicket(request);
       if (!ticket) {
         websocket.close(1008, "attach rejected");
-        return;
-      }
-      if (safePathname(request) === "/v1/browser/prepare") {
-        const cancellation = new AbortController();
-        let prepared: { close(): Promise<void> } | undefined;
-        websocket.once("close", () => {
-          cancellation.abort();
-          void prepared?.close().catch(() => undefined);
-        });
-        websocket.on("message", () => websocket.close(1008, "preparation grants no commands"));
-        void this.runtime
-          .prepareProfile(ticket, {
-            signal: cancellation.signal,
-            passkeys:
-              Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
-            localProfiles:
-              Boolean(this.relayBridge) &&
-              request.headers["x-opensteer-browser-local-profiles"] === "1",
-            profilePrepare:
-              Boolean(this.relayBridge) &&
-              request.headers["x-opensteer-browser-profile-prepare"] === "1",
-          })
-          .then(
-            async (result) => {
-              prepared = result;
-              if (result.retained)
-                void result.closed.then(() => {
-                  if (websocket.readyState === WebSocket.OPEN)
-                    websocket.close(1000, "preparation retired");
-                });
-              if (cancellation.signal.aborted) {
-                await result.close();
-                return;
-              }
-              websocket.send(
-                JSON.stringify({ type: "browser.profile.prepared", retained: result.retained }),
-              );
-            },
-            async (error: unknown) => {
-              await sendProtocolError(
-                new WebSocketBrowserSink(websocket, this.maxBufferedBytes),
-                toBrowserRuntimeError(error),
-              ).catch(() => undefined);
-              if (websocket.readyState === WebSocket.OPEN)
-                websocket.close(1008, "preparation rejected");
-            },
-          );
         return;
       }
       this.accept(websocket, ticket, {

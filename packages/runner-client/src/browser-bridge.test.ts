@@ -56,20 +56,15 @@ async function fixture(capabilities: object = {}) {
 describe("LocalBrowserRuntimeBridge", () => {
   it("advertises only capabilities reported by the prepared runtime, with exact storage identity", async () => {
     const localProfileStorage = { storageInstanceId: randomUUID(), engine: "electron" };
-    const profilePrepareInstanceId = randomUUID();
     const f = await fixture({
       localProfiles: 1,
       localProfileStorage,
       initialNavigationVersion: 1,
-      profilePrepare: 1,
-      profilePrepareInstanceId,
     });
     const old = await fixture();
     try {
       expect(await f.bridge.capabilities()).toEqual({
         localProfiles: 1,
-        profilePrepare: 1,
-        profilePrepareInstanceId,
         localProfileStorage,
         initialNavigationVersion: 1,
       });

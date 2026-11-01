@@ -22,8 +22,6 @@ async function maintenanceFixture() {
           runtimeId: "browser",
           profileSnapshotVersion: 2,
           localProfiles: 1,
-          profilePrepare: 1,
-          profilePrepareInstanceId: crypto.randomUUID(),
           localProfileStorage: { storageInstanceId, engine: "chromium" },
         },
       },
@@ -88,8 +86,6 @@ async function maintenanceFixture() {
           await reply({ ...message, type: "capability.revoked" });
         if (message.type === "browser.attach")
           await reply({ ...message, type: "browser.attached" });
-        if (message.type === "browser.profile.prepare")
-          await reply({ ...message, type: "browser.profile.prepared", retained: true });
         if (message.type === "browser.profile.delete")
           await reply({ ...message, type: "browser.profile.delete.result", state: "deleted" });
       },
@@ -114,47 +110,44 @@ async function maintenanceFixture() {
   };
 }
 
-it.each([false, true])(
-  "waits for a pending renewal before sending an open (preparation=%s)",
-  async (preparation) => {
-    vi.useFakeTimers();
-    const f = await maintenanceFixture();
-    try {
-      const first = f.target.connect("first");
-      first.on("error", () => {});
-      await vi.advanceTimersByTimeAsync(0);
-      f.fixture.intercept = (message) => message.type === "capability.grant";
-      await vi.advanceTimersByTimeAsync(300_000);
-      const renewal = f.sent.at(-1)!;
-      expect(renewal.type).toBe("capability.grant");
-      if (renewal.type !== "capability.grant") throw Error("expected renewal");
-      const second = preparation ? f.target.prepareProfile!("second") : f.target.connect("second");
-      second.on("error", () => {});
-      await vi.advanceTimersByTimeAsync(0);
-      expect(f.sent.at(-1)).toBe(renewal);
-      const capability = {
-        capabilityGeneration: renewal.lease.capabilityGeneration,
-        capabilityLeaseId: renewal.lease.capabilityLeaseId,
-        runtimeId: renewal.lease.runtimeId,
-      };
-      await f.reply({
-        ...f.stream.fence,
-        type: "capability.accepted",
-        requestId: renewal.requestId,
-        capability,
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(f.sent.at(-1)).toMatchObject({
-        type: preparation ? "browser.profile.prepare" : "browser.attach",
-        capability,
-      });
-      expect(second.readyState).toBe(1);
-      expect(first.readyState).toBe(1);
-    } finally {
-      f.router.close();
-    }
-  },
-);
+it("waits for a pending renewal before sending an open", async () => {
+  vi.useFakeTimers();
+  const f = await maintenanceFixture();
+  try {
+    const first = f.target.connect("first");
+    first.on("error", () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    f.fixture.intercept = (message) => message.type === "capability.grant";
+    await vi.advanceTimersByTimeAsync(300_000);
+    const renewal = f.sent.at(-1)!;
+    expect(renewal.type).toBe("capability.grant");
+    if (renewal.type !== "capability.grant") throw Error("expected renewal");
+    const second = f.target.connect("second");
+    second.on("error", () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.sent.at(-1)).toBe(renewal);
+    const capability = {
+      capabilityGeneration: renewal.lease.capabilityGeneration,
+      capabilityLeaseId: renewal.lease.capabilityLeaseId,
+      runtimeId: renewal.lease.runtimeId,
+    };
+    await f.reply({
+      ...f.stream.fence,
+      type: "capability.accepted",
+      requestId: renewal.requestId,
+      capability,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.sent.at(-1)).toMatchObject({
+      type: "browser.attach",
+      capability,
+    });
+    expect(second.readyState).toBe(1);
+    expect(first.readyState).toBe(1);
+  } finally {
+    f.router.close();
+  }
+});
 
 it.each(["result", "error"] as const)(
   "correlates a late erasure %s without disconnecting its sibling and drains the next job",
@@ -481,8 +474,6 @@ it("keeps native execution unavailable until the exact stream completes reconcil
           runtimeId: "native",
           profileSnapshotVersion: 2,
           localProfiles: 1,
-          profilePrepare: 1,
-          profilePrepareInstanceId: "00000000-0000-4000-8000-000000000001",
           localProfileStorage: { storageInstanceId, engine: "electron" },
         },
       },
@@ -533,8 +524,6 @@ it("keeps native execution unavailable until the exact stream completes reconcil
     expect(router.placements()[0]?.available).toBe(true);
     expect(router.resolve({ kind: "runner", runnerId })).toMatchObject({
       localProfileStorage: { storageInstanceId, engine: "electron" },
-      profilePrepare: true,
-      incarnation: "00000000-0000-4000-8000-000000000001",
     });
     hooks.onLost!(stream, "host-shutdown");
     expect(router.placements()[0]?.available).toBe(false);
@@ -576,8 +565,6 @@ it.each(["pending-restart", "deleted", "failed"] as const)(
             runtimeId: "browser",
             profileSnapshotVersion: 2,
             localProfiles: 1,
-            profilePrepare: 1,
-            profilePrepareInstanceId: "00000000-0000-4000-8000-000000000001",
             localProfileStorage: { storageInstanceId, engine: "electron" },
           },
         },
@@ -1069,94 +1056,87 @@ it("reports a rejected attachment's reason before closing its channel", async ()
   }
 });
 
-it.each([false, true])(
-  "gives negotiated attachment/preparation the startup budget: %s",
-  async (preparation) => {
-    vi.useFakeTimers();
-    const runnerId = createId("runner");
-    const stream = {
-      fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
-      identity: {
-        runnerId,
-        modules: {
-          browser: {
-            profileSnapshotVersion: 2,
-            runtimeId: "browser",
-            localProfiles: 1,
-            profilePrepare: 1,
-            profilePrepareInstanceId: "00000000-0000-4000-8000-000000000001",
-            localProfileStorage: {
-              storageInstanceId: "00000000-0000-4000-8000-000000000001",
-              engine: "chromium",
-            },
+it("gives attachment the startup budget", async () => {
+  vi.useFakeTimers();
+  const runnerId = createId("runner");
+  const stream = {
+    fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
+    identity: {
+      runnerId,
+      modules: {
+        browser: {
+          profileSnapshotVersion: 2,
+          runtimeId: "browser",
+          localProfiles: 1,
+          localProfileStorage: {
+            storageInstanceId: "00000000-0000-4000-8000-000000000001",
+            engine: "chromium",
           },
         },
       },
-      streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-    } as unknown as RunnerAuxiliaryStream;
-    let hooks: RunnerBrowserHooks = {};
-    const router = new RunnerBrowserRuntimeRouter({
-      localProfiles: {
-        reconcileInventory: async () => {},
-        jobs: async () => [],
-        acknowledgeDeletion: async () => {},
+    },
+    streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  } as unknown as RunnerAuxiliaryStream;
+  let hooks: RunnerBrowserHooks = {};
+  const router = new RunnerBrowserRuntimeRouter({
+    localProfiles: {
+      reconcileInventory: async () => {},
+      jobs: async () => [],
+      acknowledgeDeletion: async () => {},
+    },
+    registry: {
+      browserStreams: () => [stream],
+      stream: () => stream,
+      subscribe: (value) => {
+        hooks = value;
+        return () => {};
       },
-      registry: {
-        browserStreams: () => [stream],
-        stream: () => stream,
-        subscribe: (value) => {
-          hooks = value;
-          return () => {};
-        },
-        send: async (_runnerId, message) => {
-          if (message.type === "capability.grant")
-            await hooks.onMessage?.(stream, {
+      send: async (_runnerId, message) => {
+        if (message.type === "capability.grant")
+          await hooks.onMessage?.(stream, {
+            ...stream.fence,
+            type: "capability.accepted",
+            requestId: message.requestId,
+            capability: {
+              capabilityGeneration: message.lease.capabilityGeneration,
+              capabilityLeaseId: message.lease.capabilityLeaseId,
+              runtimeId: message.lease.runtimeId,
+            },
+          });
+        if (message.type === "browser.attach")
+          setTimeout(() => {
+            void hooks.onMessage?.(stream, {
               ...stream.fence,
-              type: "capability.accepted",
+              type: "browser.attached",
               requestId: message.requestId,
-              capability: {
-                capabilityGeneration: message.lease.capabilityGeneration,
-                capabilityLeaseId: message.lease.capabilityLeaseId,
-                runtimeId: message.lease.runtimeId,
-              },
+              channelId: message.channelId,
+              capability: message.capability,
             });
-          if (message.type === "browser.attach" || message.type === "browser.profile.prepare")
-            setTimeout(() => {
-              void hooks.onMessage?.(stream, {
-                ...stream.fence,
-                ...(preparation
-                  ? { type: "browser.profile.prepared" as const, retained: true }
-                  : { type: "browser.attached" as const }),
-                requestId: message.requestId,
-                channelId: message.channelId,
-                capability: message.capability,
-              });
-            }, 6000);
-        },
+          }, 6000);
       },
+    },
+  });
+  try {
+    await hooks.onMessage?.(stream, {
+      ...stream.fence,
+      module: "browser",
+      type: "browser.profile.inventory",
+      storageInstanceId: "00000000-0000-4000-8000-000000000001",
+      engine: "chromium",
+      profiles: [],
+      complete: true,
     });
-    try {
-      await hooks.onMessage?.(stream, {
-        ...stream.fence,
-        module: "browser",
-        type: "browser.profile.inventory",
-        storageInstanceId: "00000000-0000-4000-8000-000000000001",
-        engine: "chromium",
-        profiles: [],
-        complete: true,
-      });
-      const target = router.resolve({ kind: "runner", runnerId })!;
-      const connection = preparation ? target.prepareProfile!("ticket") : target.connect("ticket");
-      const error = vi.fn();
-      connection.on("error", error);
-      await vi.advanceTimersByTimeAsync(6000);
-      expect(error).not.toHaveBeenCalled();
-      expect(connection.readyState).toBe(WebSocket.OPEN);
-    } finally {
-      router.close();
-    }
-  },
-);
+    const target = router.resolve({ kind: "runner", runnerId })!;
+    const connection = target.connect("ticket");
+    const error = vi.fn();
+    connection.on("error", error);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(error).not.toHaveBeenCalled();
+    expect(connection.readyState).toBe(WebSocket.OPEN);
+  } finally {
+    router.close();
+  }
+});
 
 it.each(["timeout", "cancel"] as const)(
   "closes only the pending runtime attachment on Host %s with a live sibling",

@@ -8,9 +8,7 @@ import { sessionFilesRoot } from "./browser/session-files.js";
 import { BrowserRuntime, type BrowserOpenTiming } from "./runtime.js";
 import {
   FakeIsolatingLauncher,
-  FakeContext,
   FakePage,
-  FakeLaunchedBrowser,
   FakeProfileStateClient,
   FakeSink,
   FakeTicketVerifier,
@@ -31,7 +29,6 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
   const launcher = Object.assign(new FakeIsolatingLauncher(), {
     localProfiles: {
       engine: "chromium",
-      preparation: 1,
       importAndFlush: vi.fn(async () => {}),
       release: vi.fn<LocalProfileEngine["release"]>(async () => "released"),
     } satisfies LocalProfileEngine,
@@ -98,26 +95,6 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
     });
   };
   return {
-    prepare: (profile: number, signal?: AbortSignal) => {
-      const c = claims(profile, profile);
-      if (c.identity.kind !== "profile-local") throw Error("expected local");
-      const identity = c.identity;
-      verifier.verifyPreparation = vi.fn(async () => ({
-        audience: c.audience,
-        purpose: "profile-prepare" as const,
-        identity,
-        runtimeId: c.runtimeId,
-        subject: c.subject,
-        issuedAt: c.issuedAt,
-        expiresAt: c.expiresAt,
-        nonce: c.nonce,
-      }));
-      return runtime.prepareProfile("prepare", {
-        localProfiles: true,
-        profilePrepare: true,
-        ...(signal ? { signal } : {}),
-      });
-    },
     timings,
     root,
     runtime,
@@ -224,150 +201,6 @@ describe("native profile runtime", () => {
       if (stage === "load") expect(f.launcher.localProfiles.importAndFlush).not.toHaveBeenCalled();
     },
   );
-  it("prepares Chromium conversion without retaining a browser, and ready preparation does no work", async () => {
-    const f = await fixture();
-    Object.assign(f.launcher.localProfiles, { preparation: "conversion" });
-    const held = gate({ label: "conversion-only prepare", deadlineMs: 2000 });
-    f.launcher.localProfiles.importAndFlush.mockImplementationOnce(() => held.enter());
-    const preparing = f.prepare(1);
-    await held.entered;
-    const opening = f.open(1, 2);
-    held.release();
-    expect((await preparing).retained).toBe(false);
-    const tab = await opening;
-    expect(f.initializationClient.load).toHaveBeenCalledTimes(1);
-    expect(f.initializationClient.complete).toHaveBeenCalledTimes(2);
-    expect(f.launcher.localProfiles.importAndFlush).toHaveBeenCalledTimes(1);
-    expect(f.launcher.launchCount).toBe(1);
-    await tab.close();
-    await f.runtime.shutdown();
-    const next = await fixture(8, f.root);
-    Object.assign(next.launcher.localProfiles, { preparation: "conversion" });
-    expect((await next.prepare(1)).retained).toBe(false);
-    expect(next.launcher.launchCount).toBe(0);
-    expect(next.initializationClient.load).not.toHaveBeenCalled();
-    expect(next.launcher.localProfiles.importAndFlush).not.toHaveBeenCalled();
-  });
-  it("prepares without pages or sessions and the first open shares acquisition", async () => {
-    const f = await fixture();
-    const held = gate({ label: "prepared import", deadlineMs: 2000 });
-    f.launcher.localProfiles.importAndFlush.mockImplementationOnce(() => held.enter());
-    let launchSignal: AbortSignal | undefined;
-    vi.spyOn(f.launcher, "launch").mockImplementation(async (request, signal) => {
-      launchSignal = signal;
-      f.launcher.requests.push(request);
-      f.launcher.launchCount++;
-      const browser = new FakeLaunchedBrowser(new FakeContext([]));
-      f.launcher.browsersByPartition.set(request.partitionKey, browser);
-      return browser;
-    });
-    const claims = f.claims(1, 1);
-    if (claims.identity.kind !== "profile-local") throw Error("expected local identity");
-    f.verifier.verifyPreparation = vi.fn(async () => ({
-      audience: "opensteer-browser-runtime" as const,
-      purpose: "profile-prepare" as const,
-      identity: claims.identity as Extract<typeof claims.identity, { kind: "profile-local" }>,
-      runtimeId: claims.runtimeId,
-      subject: claims.subject,
-      nonce: claims.nonce,
-      issuedAt: claims.issuedAt,
-      expiresAt: claims.expiresAt,
-    }));
-    const preparing = f.runtime.prepareProfile("prepare", {
-      localProfiles: true,
-      profilePrepare: true,
-    });
-    await held.entered;
-    const opening = f.open(1, 2);
-    held.release();
-    const prepared = await preparing;
-    expect(f.runtime.health().sessionCount).toBe(0);
-    const tab = await opening;
-    expect(f.launcher.launchCount).toBe(1);
-    expect(f.initializationClient.load).toHaveBeenCalledTimes(1);
-    expect(f.launcher.requests[0]).toMatchObject({ preparation: true });
-    await prepared.close();
-    expect(launchSignal?.aborted, "Transferred preparation aborted its admitted host").toBe(false);
-    expect(f.initializationClient.complete).toHaveBeenCalledTimes(1);
-    expect(f.runtime.health().sessionCount).toBe(1);
-    await tab.close();
-  });
-  it("retains zero pages and bounds speculation without evicting a useful host", async () => {
-    const f = await fixture(1);
-    const active = await f.open(2, 2);
-    const claims = f.claims(1, 1);
-    f.verifier.verifyPreparation = vi.fn(async () => ({
-      audience: claims.audience,
-      runtimeId: claims.runtimeId,
-      subject: claims.subject,
-      nonce: claims.nonce,
-      issuedAt: claims.issuedAt,
-      expiresAt: claims.expiresAt,
-      purpose: "profile-prepare" as const,
-      identity: claims.identity as Extract<typeof claims.identity, { kind: "profile-local" }>,
-    }));
-    const skipped = await f.runtime.prepareProfile("prepare", {
-      localProfiles: true,
-      profilePrepare: true,
-    });
-    expect(f.launcher.launchCount).toBe(1);
-    expect(f.initializationClient.load).toHaveBeenCalledTimes(1);
-    await skipped.close();
-    await active.close();
-  });
-  it("retains a single speculative host with no user pages or sessions", async () => {
-    const f = await fixture();
-    const prepared = await f.prepare(1);
-    expect(prepared.retained).toBe(true);
-    expect(f.runtime.health()).toMatchObject({ profileHostCount: 1, sessionCount: 0 });
-    expect([...f.launcher.browsersByPartition.values()][0]!.context.pages()).toEqual([]);
-    const skipped = await f.prepare(2);
-    expect(skipped.retained).toBe(false);
-    expect(f.launcher.launchCount).toBe(1);
-    await prepared.close();
-    expect(f.runtime.health().profileHostCount).toBe(0);
-    expect((await f.prepare(1)).retained).toBe(false);
-    expect(f.launcher.launchCount).toBe(1);
-  });
-  it.each(["cancel", "delete", "shutdown"] as const)(
-    "%s wins over pending preparation and preserves the failed initialization fence",
-    async (stop) => {
-      const f = await fixture();
-      const held = gate({ label: "preparation import", deadlineMs: 2000 });
-      f.launcher.localProfiles.importAndFlush.mockImplementationOnce(() => held.enter());
-      const cancellation = new AbortController();
-      const preparing = f.prepare(1, cancellation.signal);
-      const refused = expect(preparing).rejects.toThrow();
-      await held.entered;
-      let ending: Promise<unknown> | undefined;
-      if (stop === "cancel") cancellation.abort();
-      else if (stop === "delete")
-        ending = f.runtime.deleteLocalProfile(f.binding(1), "00000000-0000-4000-8000-000000000019");
-      else ending = f.runtime.shutdown();
-      held.release();
-      await refused;
-      await ending;
-      expect(f.initializationClient.complete).not.toHaveBeenCalled();
-      expect(f.launcher.launchCount).toBe(0);
-      if (stop === "cancel")
-        await expect(f.open(1, 3)).rejects.toThrow(/initializ|process|retained|in use/i);
-    },
-  );
-  it("lets an unrelated profile open during speculative conversion", async () => {
-    const f = await fixture();
-    const held = gate({ label: "speculative import", deadlineMs: 2000 });
-    f.launcher.localProfiles.importAndFlush.mockImplementationOnce(() => held.enter());
-    const preparing = f.prepare(1);
-    await held.entered;
-    try {
-      const other = await f.open(2, 3);
-      expect(f.launcher.launchCount).toBe(1);
-      await other.close();
-    } finally {
-      held.release();
-    }
-    await (await preparing).close();
-  });
   it("allows only one runtime to own a storage root", async () => {
     const f = await fixture();
     await expect(fixture(8, f.root)).rejects.toThrow(/in use/);

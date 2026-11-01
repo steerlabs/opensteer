@@ -365,14 +365,6 @@ export function AppShell({
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
-  useEffect(() => {
-    hostClient.prepareBrowserProfile(
-      lastBrowsingChoice({
-        deploymentId: snapshot.deploymentId,
-        userId: snapshot.user?.id ?? null,
-      }),
-    );
-  }, [hostClient, snapshot.connection, snapshot.deploymentId, snapshot.user?.id]);
   const webLinkReady = desktopWebLinksReady(desktopDeployment?.kind === "personal", snapshot);
   useEffect(() => {
     if (

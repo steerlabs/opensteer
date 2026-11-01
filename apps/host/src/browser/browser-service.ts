@@ -494,9 +494,6 @@ export interface BrowserRuntimeTarget {
   readonly placementKey: string;
   readonly runtimeId: string;
   readonly main?: boolean;
-  readonly profilePrepare?: boolean;
-  readonly incarnation?: string;
-  prepareProfile?(ticket: string): BrowserRuntimeConnection;
   readonly localProfileStorage?: { storageInstanceId: string; engine: "electron" | "chromium" };
   readonly initialNavigationVersion?: boolean;
   /** The Runtime accepts `state.import`; one that predates it is never sent the frame. */
@@ -746,12 +743,6 @@ export class BrowserService {
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #repository: BrowserSessionRepository;
   readonly #localProfiles: BrowserLocalProfiles | undefined;
-  readonly #personal: boolean;
-  readonly #preparationAttempts = new Map<
-    RunnerId,
-    { incarnation: string; profiles: Set<string> }
-  >();
-  readonly #preparedProfiles = new Map<BrowserProfileId, BrowserRuntimeConnection>();
   readonly #eraseLocalProfiles: BrowserServiceOptions["eraseLocalProfiles"];
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
   readonly #legacyProfiles: LegacyBrowserProfileAdapter;
@@ -764,7 +755,6 @@ export class BrowserService {
 
   constructor(options: BrowserServiceOptions) {
     this.#localProfiles = options.localProfiles;
-    this.#personal = options.personal === true;
     this.#eraseLocalProfiles = options.eraseLocalProfiles;
     this.#passkeys = options.passkeys === true;
     this.#passkeyOwnOrigins =
@@ -1150,8 +1140,6 @@ export class BrowserService {
       `profile-admission:${input.profileId}`,
       () => this.#repository.deleteBrowserProfile(input),
     );
-    this.#preparedProfiles.get(input.profileId)?.close();
-    this.#preparedProfiles.delete(input.profileId);
     this.invalidatePlaceAuthority();
     const stops = await Promise.allSettled(
       sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
@@ -1473,61 +1461,6 @@ export class BrowserService {
       storage,
       target: this.#resolveTarget(placement)!,
     };
-  }
-
-  async prepareProfile(
-    ownerId: UserId,
-    identity: NonNullable<BrowserTabOpenCommand["identity"]>,
-  ): Promise<void> {
-    if (this.#closed) throw unavailable("The Host browser service is shutting down.");
-    if (identity.kind === "guest") return;
-    await this.#serializeKey(`profile-admission:${identity.profileId}`, async () => {
-      const { profileId, placement, holder, storage, target } = await this.#resolveIdentityOpen(
-        ownerId,
-        { identity },
-      );
-      if (
-        !profileId ||
-        !this.#localProfiles ||
-        !target.profilePrepare ||
-        !target.prepareProfile ||
-        !target.incarnation
-      )
-        return;
-      // Only Personal's Main computer can proactively place/convert an unbound profile.
-      if (storage.kind === "vault" && (!this.#personal || !target.main || holder)) return;
-      let attempts = this.#preparationAttempts.get(placement.runnerId);
-      if (attempts?.incarnation !== target.incarnation) {
-        attempts = { incarnation: target.incarnation, profiles: new Set() };
-        this.#preparationAttempts.set(placement.runnerId, attempts);
-      }
-      if (attempts.profiles.has(profileId)) return;
-      attempts.profiles.add(profileId);
-      const localIdentity = await this.#localProfiles.identity(
-        profileId,
-        placement.runnerId,
-        target,
-      );
-      if (!localIdentity) return;
-      if (this.#closed) return;
-      const connection = target.prepareProfile(
-        this.#signer.issuePreparation({
-          identity: localIdentity,
-          runtimeId: target.runtimeId,
-          subject: ownerId,
-          ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
-        }),
-      );
-      this.#preparedProfiles.get(profileId)?.close();
-      this.#preparedProfiles.set(profileId, connection);
-      connection.on("error", () => {
-        connection.close();
-      });
-      connection.on("close", () => {
-        if (this.#preparedProfiles.get(profileId) === connection)
-          this.#preparedProfiles.delete(profileId);
-      });
-    });
   }
 
   #historyOperation<T>(profileId: BrowserProfileId, operation: () => Promise<T>): Promise<T> {
@@ -3492,8 +3425,6 @@ export class BrowserService {
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
-    for (const connection of this.#preparedProfiles.values()) connection.close();
-    this.#preparedProfiles.clear();
     this.#authorityGeneration++;
     for (const actor of this.#actors.values()) this.#clearActor(actor);
     for (const timer of this.#catalogNotices.values()) clearTimeout(timer);
@@ -3835,10 +3766,6 @@ export class BrowserService {
       try {
         stage = "runtime-readiness";
         await broker.ready();
-        if (profile) {
-          this.#preparedProfiles.get(profile.id)?.close();
-          this.#preparedProfiles.delete(profile.id);
-        }
         if (
           target.workspaceTabRestoreVersion &&
           origin !== "trigger" &&

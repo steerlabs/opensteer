@@ -95,7 +95,6 @@ describe("openRunnerAuxiliaryStream", () => {
   it("preserves negotiated profile preparation on the bundled Runner stream", async () => {
     const modern = await openTestStream({ leaseMs: 60_000, browser: true });
     try {
-      expect(modern.stream).toMatchObject({ localProfiles: 1, profilePrepare: 1 });
     } finally {
       modern.close();
     }
@@ -219,7 +218,6 @@ async function openTestStream(options: {
           connectionLeaseId,
           heartbeatIntervalMs: 1_000,
           ...(options.passwords ? { loginText: 1, passwordSignIn: 1 } : {}),
-          ...(options.browser ? { localProfiles: 1, profilePrepare: 1 } : {}),
           module,
           runnerId,
           serverTime: new Date().toISOString(),

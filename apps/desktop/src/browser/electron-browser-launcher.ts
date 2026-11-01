@@ -142,7 +142,6 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #onLocalProfileOpenTiming: ElectronBrowserLauncherOptions["onLocalProfileOpenTiming"];
   readonly localProfiles: LocalProfileEngine = {
     engine: "electron",
-    preparation: 1,
     release: releaseElectronLocalProfile,
     importAndFlush: async (input) => {
       input.signal.throwIfAborted();

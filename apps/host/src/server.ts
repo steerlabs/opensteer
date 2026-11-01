@@ -2903,9 +2903,6 @@ export async function createHostServer(
         return dependencies.browser.reopenWorkspaceTab(userId, command.idempotencyKey);
       case "workspace.tab.close":
         return dependencies.browser.closeWorkspaceTab(userId, command.tabId);
-      case "browser.profile.prepare":
-        await dependencies.browser.prepareProfile(userId, command.identity);
-        return { type: command.type };
       case "browser.history.remove":
       case "browser.history.clear":
         await dependencies.browser.forgetHistory(userId, command);
@@ -3255,7 +3252,6 @@ export function advertisedCapabilities(
     "ownerViewWindows",
     "browser-target-control-v1",
     "browser-local-profiles-v1",
-    "browser-profile-prepare-v1",
     "browser-initial-navigation-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
     "browser-frame-window-v1",

@@ -1790,7 +1790,6 @@ describe("native Electron profiles", () => {
       launch: async (preparation = false, signal?: AbortSignal) => {
         const browser = await launcher.launch(
           {
-            ...(preparation ? { preparation: true } : {}),
             sessionId,
             partitionKey: `profile:${binding.profileId}`,
             initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
@@ -2274,7 +2273,6 @@ describe("native Electron profiles", () => {
       });
       const start = electron.views.length;
       let browser = await f.launch(true);
-      expect(f.launcher.localProfiles.preparation).toBe(1);
       expect(browser.profile).toBeDefined();
       expect(browser.context.pages()).toEqual([]);
       expect(electron.views).toHaveLength(start);

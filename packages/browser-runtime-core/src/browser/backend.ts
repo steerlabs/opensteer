@@ -134,8 +134,6 @@ export interface NativeProfileConversionEngine {
 }
 
 export interface BrowserLaunchRequest {
-  /** Launch with no eager user page and keep network admission dormant. */
-  preparation?: boolean;
   authenticator?: import("../passkeys/authenticator.js").PasskeyAuthenticator;
   initialViewport: Viewport;
   partitionKey: BrowserPartitionKey;
@@ -207,17 +205,6 @@ export interface LaunchedBrowser {
 
 /** Engine support for profiles stored natively on this computer. */
 export interface LocalProfileEngine extends NativeProfileConversionEngine {
-  /**
-   * Conversion-only preparation closes its importer and never launches a host.
-   * Warm preparation requires page-free launch and separate ready/admit operations.
-   * Electron must await mirror restoration in ready(), leave the Session gate
-   * dormant (cancel requests, never queue them), and open it only on admit().
-   * Preserve synthetic conversion helpers; Network Service recovery must restore
-   * the previous prepared/admitted mode. A prepared launch never eagerly creates
-   * a user page. Revocation retires controllers and fences the retained Session
-   * without deleting its native storage.
-   */
-  readonly preparation?: 1 | "conversion";
   readonly engine: BrowserEngine;
   /**
    * Gives up the engine's hold on a local profile directory so it can be erased.

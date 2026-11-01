@@ -429,7 +429,6 @@ describe("native Chromium profiles", () => {
         { session: { restore_on_startup: 1 } },
       );
       expect(context.newPage).toHaveBeenCalledOnce();
-      expect(launcher.localProfiles.preparation).toBe("conversion");
       expect(launched).not.toHaveProperty("profile");
       expect(context.newPage).toHaveBeenCalledOnce();
       expect(context.newCDPSession).not.toHaveBeenCalled();

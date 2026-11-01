@@ -2924,8 +2924,6 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "browser.profileGrant.revoke":
       await client.revokeBrowserProfileGrant(command.grantId);
       return unsupportedMockRpc();
-    case "browser.profile.prepare":
-      return rpcSuccess({ type: command.type });
     case "browser.history.remove":
       client.places!.removeHistory(command.profileId, command.url);
       return rpcSuccess({ type: command.type });
@@ -3898,7 +3896,6 @@ export class MockHostClient implements HostClient {
     changed: (pendingBrowserTabs) =>
       this.#state.updatePlaces({ ...this.#state.getSnapshot(), pendingBrowserTabs }),
   });
-  prepareBrowserProfile(): void {}
   readonly beginBrowserTabOpen = this.#pendingBrowserTabs.begin;
   readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   readonly openBrowserTab = async (

@@ -181,11 +181,11 @@ export async function probePasskeySecurityState(
 }
 
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
+  private preparation: Promise<void> | undefined;
   private readonly nativeBrowsers = new Map<string, Promise<LaunchedBrowser>>();
   private readonly nativeCloseFailures = new Set<string>();
   readonly localProfiles: LocalProfileEngine = {
     engine: "chromium",
-    preparation: "conversion",
     importAndFlush: async (input) => {
       const snapshot = BrowserProfileSnapshotSchema.parse(input.snapshot);
       const browser = await this.acquireNative(
@@ -209,7 +209,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
   };
   private readonly onNativeOpenTiming: ((timing: NativeProfileOpenTiming) => void) | undefined;
   private readonly probePasskeys: boolean;
-  private preparation: Promise<void> | undefined;
   private securityStateAvailable = false;
   get passkeys(): 1 | undefined {
     return this.securityStateAvailable ? 1 : undefined;

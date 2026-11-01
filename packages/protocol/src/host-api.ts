@@ -164,7 +164,6 @@ import {
   BrowserTabCloseCommandSchema,
   BrowserTabCloseResultSchema,
   BrowserTabOpenCommandSchema,
-  BrowserOpenIdentitySchema,
   BrowserTabOpenResultSchema,
   BrowserTabCatalogInputSchema,
   BrowserTabCatalogViewSchema,
@@ -1004,11 +1003,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.profile.delete"),
   }),
   z.strictObject({
-    type: z.literal("browser.profile.prepare"),
-    idempotencyKey: idempotencyKeySchema,
-    identity: BrowserOpenIdentitySchema,
-  }),
-  z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     sessionId: z.string().min(1),
     type: z.literal("browser.session.close"),
@@ -1346,7 +1340,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.profile.delete"),
     deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
   }),
-  z.object({ type: z.literal("browser.profile.prepare") }),
   z.object({ type: z.literal("browser.session.close") }),
   z.object({ type: z.literal("browser.history.remove") }),
   z.object({ type: z.literal("browser.history.clear") }),

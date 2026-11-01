@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { LocalProfileStore, sameLocalBinding } from "./local-profile-store.js";
 import {
   HttpProfileInitializationClient,
@@ -17,7 +16,6 @@ import {
 } from "@opensteer/browser-core";
 import {
   type BrowserAttachTicketClaims,
-  type BrowserPreparationTicketClaims,
   type BrowserSessionId,
   type BrowserSurfaceId,
   type InitialPageReady,
@@ -101,8 +99,6 @@ export interface BrowserOpenTiming {
 export interface BrowserRuntimeHealth {
   initialNavigationVersion: 1;
   localProfiles?: 1;
-  profilePrepare?: 1;
-  profilePrepareInstanceId?: string;
   localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   checkpointFailures: number;
   profileHostCount: number;
@@ -221,17 +217,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly maxProfileHosts: number;
   private readonly maxSessionsPerProfile: number;
   private readonly lanes = new LifecycleLanes<BrowserPartitionKey>();
-  private readonly profilePrepareInstanceId = randomUUID();
-  private readonly preparationAttempts = new Set<string>();
   private reservations = 0;
-  private speculative:
-    | {
-        controller: AbortController;
-        profileId: string;
-        host: BrowserHost | undefined;
-        consumed: boolean;
-      }
-    | undefined;
   private readonly pendingSessions = new Set<string>();
   private usage = 0;
   private readonly onOpenTiming: NonNullable<BrowserRuntimeOptions["onOpenTiming"]>;
@@ -355,12 +341,6 @@ export class BrowserRuntime implements NativePresentationSource {
         ? {
             localProfiles: 1,
             localProfileStorage: this.localProfileStorage,
-            ...(this.launcher.localProfiles?.preparation
-              ? {
-                  profilePrepare: 1 as const,
-                  profilePrepareInstanceId: this.profilePrepareInstanceId,
-                }
-              : {}),
           }
         : {}),
       checkpointFailures: this.checkpointFailures,
@@ -550,7 +530,6 @@ export class BrowserRuntime implements NativePresentationSource {
       return previous.result;
     }
     this.deletedProfiles.add(binding.profileId);
-    if (this.speculative?.profileId === binding.profileId) this.speculative?.controller.abort();
     const store = this.localStore;
     const durable = store.tombstone(binding, deletionId);
     void durable.catch(() => undefined);
@@ -744,13 +723,12 @@ export class BrowserRuntime implements NativePresentationSource {
         const sessionGeneration = ++this.generation;
         let stage = "profile-state";
         try {
-          const acquired = await wait(this.acquireHost(claims, hostKey, false, signal));
+          const acquired = await wait(this.acquireHost(claims, hostKey, signal));
           if (!acquired.host) throw new Error("Browser acquisition returned no host.");
           host = acquired.host;
-          createdHost = acquired.createdHost || this.speculative?.host === host;
+          createdHost = acquired.createdHost;
           signal.throwIfAborted();
           const acquisition = acquired.acquisition;
-          if (this.speculative?.host === host) this.speculative.consumed = true;
           timing("profile-acquire", acquiring, acquisition);
           pageStarting = performance.now();
           stage = "profile-admission";
@@ -910,9 +888,8 @@ export class BrowserRuntime implements NativePresentationSource {
   }
 
   private async acquireHost(
-    claims: BrowserAttachTicketClaims | BrowserPreparationTicketClaims,
+    claims: BrowserAttachTicketClaims,
     hostKey: BrowserPartitionKey,
-    preparation = false,
     signal: AbortSignal = new AbortController().signal,
   ): Promise<{
     host: BrowserHost | undefined;
@@ -960,8 +937,6 @@ export class BrowserRuntime implements NativePresentationSource {
         stage = "profile-state";
       }
       if (!host) {
-        if (preparation && this.hosts.size + this.reservations >= this.maxProfileHosts)
-          throw new BrowserRuntimeError("conflict", "Browser Runtime host capacity is full.");
         await wait(this.reserveCapacity());
         reserved = true;
         // A fresh identity has no durable state to restore: it starts empty
@@ -1006,11 +981,6 @@ export class BrowserRuntime implements NativePresentationSource {
           localDirectory = await store.requireReady(identity.binding);
         }
         assertCurrent();
-        if (preparation && this.launcher.localProfiles?.preparation === "conversion") {
-          this.reservations--;
-          reserved = false;
-          return { host: undefined, createdHost: false, acquisition };
-        }
         stage = "context-launch";
         const passkeys =
           claims.passkeys === 1
@@ -1041,7 +1011,6 @@ export class BrowserRuntime implements NativePresentationSource {
             initialViewport: this.initialViewport,
             partitionKey: hostKey,
             ...("sessionId" in claims ? { sessionId: claims.sessionId } : {}),
-            ...(preparation ? { preparation: true } : {}),
             storage:
               claims.identity.kind === "profile-local" && localDirectory
                 ? { kind: "local", binding: claims.identity.binding, directory: localDirectory }
@@ -1180,92 +1149,6 @@ export class BrowserRuntime implements NativePresentationSource {
     }
   }
 
-  async prepareProfile(
-    ticket: string,
-    options: {
-      localProfiles?: boolean;
-      profilePrepare?: boolean;
-      passkeys?: boolean;
-      signal?: AbortSignal;
-    } = {},
-  ): Promise<{ retained: boolean; closed: Promise<void>; close(): Promise<void> }> {
-    if (
-      !options.localProfiles ||
-      !options.profilePrepare ||
-      !this.launcher.localProfiles?.preparation ||
-      !this.ticketVerifier.verifyPreparation
-    )
-      throw new BrowserRuntimeError("conflict", "Profile preparation was not negotiated.");
-    const verified = await this.ticketVerifier.verifyPreparation(ticket, {
-      runtimeId: this.runtimeId,
-    });
-    const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
-    options.signal?.throwIfAborted();
-    const profileId = claims.identity.binding.profileId;
-    if (this.preparationAttempts.has(profileId))
-      return { retained: false, closed: Promise.resolve(), close: async () => {} };
-    this.preparationAttempts.add(profileId);
-    if (this.speculative)
-      return { retained: false, closed: Promise.resolve(), close: async () => {} };
-    const ended = Promise.withResolvers<void>();
-    const operation = {
-      controller: new AbortController(),
-      profileId: claims.identity.binding.profileId,
-      consumed: false,
-      host: undefined as BrowserHost | undefined,
-    };
-    this.speculative = operation;
-    const hostKey = `profile:${claims.identity.binding.profileId}` as const;
-    const cancel = () => {
-      if (!operation.consumed) operation.controller.abort();
-    };
-    options.signal?.addEventListener("abort", cancel, { once: true });
-    const close = async () => {
-      cancel();
-      options.signal?.removeEventListener("abort", cancel);
-      ended.resolve();
-      await this.lanes.run(hostKey, async () => {
-        const host = operation.host;
-        if (
-          !operation.consumed &&
-          host &&
-          this.hosts.get(hostKey) === host &&
-          host.sessions.size === 0
-        )
-          await this.cleanupHost(host, false);
-        if (this.speculative === operation) this.speculative = undefined;
-      });
-    };
-    try {
-      await this.lanes.run(hostKey, async () => {
-        operation.controller.signal.throwIfAborted();
-        await this.prepare();
-        if (this.deletedProfiles.has(claims.identity.binding.profileId))
-          throw new BrowserRuntimeError("conflict", "This browser profile has been deleted.");
-        // Speculation never displaces a useful host, including one with another engine policy.
-        if (this.hosts.has(hostKey) || this.hosts.size + this.reservations >= this.maxProfileHosts)
-          return;
-        const acquired = await this.acquireHost(claims, hostKey, true, operation.controller.signal);
-        if (!acquired.host) return;
-        operation.host = acquired.host;
-        acquired.host.browser.onClose(() => {
-          ended.resolve();
-          if (this.speculative === operation && !operation.consumed) this.speculative = undefined;
-        });
-        if (acquired.host.browser.context.pages().length)
-          throw new BrowserRuntimeError(
-            "conflict",
-            "Prepared profiles must not create user pages.",
-          );
-      });
-      if (!operation.host) await close();
-      return { retained: operation.host !== undefined, closed: ended.promise, close };
-    } catch (error) {
-      await close();
-      throw error;
-    }
-  }
-
   private async reserveCapacity(): Promise<void> {
     // Synchronous counters/selection are the entire capacity reservation. No I/O
     // holds this critical section, including an evicted host's process exit.
@@ -1306,7 +1189,6 @@ export class BrowserRuntime implements NativePresentationSource {
   shutdown(): Promise<void> {
     if (this.shutdownResult) return this.shutdownResult;
     this.shuttingDown = true;
-    this.speculative?.controller.abort();
     for (const attempt of this.attempts) attempt.abort();
     for (const host of this.hosts.values()) {
       host.acceptingSessions = false;

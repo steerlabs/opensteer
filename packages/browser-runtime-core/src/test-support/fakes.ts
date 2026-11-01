@@ -5,7 +5,6 @@ import { isRecord } from "@opensteer/shared/isRecord";
 import {
   BrowserAttachTicketClaimsSchema,
   type BrowserAttachTicketClaims,
-  type BrowserPreparationTicketClaims,
   type BrowserAttachTicketIdentity,
   type BrowserServerMessage,
 } from "@opensteer/protocol";
@@ -471,9 +470,7 @@ export class FakeIsolatingLauncher implements BrowserLauncher {
   async launch(request: BrowserLaunchRequest, _signal?: AbortSignal): Promise<LaunchedBrowser> {
     this.launchCount += 1;
     this.requests.push(request);
-    const browser = new FakeLaunchedBrowser(
-      new FakeContext(request.preparation ? [] : [new FakePage()]),
-    );
+    const browser = new FakeLaunchedBrowser(new FakeContext([new FakePage()]));
     this.browsersByPartition.set(request.partitionKey, browser);
     return browser;
   }
@@ -504,8 +501,6 @@ export class FakeTicketVerifier implements AttachTicketVerifier {
   constructor(claims = validClaims()) {
     this.claims = claims;
   }
-
-  verifyPreparation?: (token: string) => Promise<BrowserPreparationTicketClaims>;
 
   async verify(token: string): Promise<BrowserAttachTicketClaims> {
     this.tokens.push(token);

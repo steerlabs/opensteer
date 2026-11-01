@@ -73,7 +73,6 @@ const relayRequestBase = {
 
 export interface BrowserRelayNegotiation {
   readonly localProfiles?: 1;
-  readonly profilePrepare?: 1;
   readonly initialNavigationVersion?: 1;
 }
 
@@ -106,16 +105,6 @@ export type LocalProfileDeletionResult = z.infer<typeof LocalProfileDeletionResu
 
 const HostToBrowserRelayWireSchema = z.discriminatedUnion("type", [
   DeleteLocalProfileSchema,
-  z.strictObject({
-    ...relayRequestBase,
-    type: z.literal("browser.profile.prepare"),
-    capability: BrowserCapabilityReferenceSchema,
-    channelId: BrowserChannelIdSchema,
-    preparationTicket: z
-      .string()
-      .max(16_384)
-      .regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/),
-  }),
   RunnerAuxiliaryChallengeSchema,
   RunnerAuxiliaryWelcomeSchema,
   RunnerAuxiliaryRejectedSchema,
@@ -157,10 +146,7 @@ const HostToBrowserRelayWireSchema = z.discriminatedUnion("type", [
 ]);
 export function createHostToBrowserRelayMessageSchema(negotiation: BrowserRelayNegotiation = {}) {
   return HostToBrowserRelayWireSchema.refine(
-    (message) =>
-      message.type === "browser.profile.prepare"
-        ? negotiation.localProfiles === 1 && negotiation.profilePrepare === 1
-        : message.type !== "browser.profile.delete" || negotiation.localProfiles === 1,
+    (message) => message.type !== "browser.profile.delete" || negotiation.localProfiles === 1,
     "Local profile maintenance requires browser auxiliary negotiation.",
   );
 }
@@ -176,13 +162,6 @@ export type RoutedHostToBrowserRelayMessage = Extract<
 const BrowserRelayToHostWireSchema = z.discriminatedUnion("type", [
   LocalProfileInventorySchema,
   LocalProfileDeletionResultSchema,
-  z.strictObject({
-    ...relayRequestBase,
-    type: z.literal("browser.profile.prepared"),
-    retained: z.boolean(),
-    capability: BrowserCapabilityReferenceSchema,
-    channelId: BrowserChannelIdSchema,
-  }),
   RunnerAuxiliaryHeartbeatSchema,
   z.strictObject({
     ...relayRequestBase,
@@ -238,11 +217,6 @@ const BrowserRelayToHostWireSchema = z.discriminatedUnion("type", [
 ]);
 export function createBrowserRelayToHostMessageSchema(negotiation: BrowserRelayNegotiation = {}) {
   return BrowserRelayToHostWireSchema.superRefine((message, context) => {
-    if (
-      message.type === "browser.profile.prepared" &&
-      (negotiation.localProfiles !== 1 || negotiation.profilePrepare !== 1)
-    )
-      context.addIssue({ code: "custom", message: "Profile preparation was not negotiated." });
     if (
       (message.type === "browser.profile.inventory" ||
         message.type === "browser.profile.delete.result") &&

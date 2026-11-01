@@ -2,7 +2,6 @@ import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   BrowserAttachTicketClaimsSchema,
-  BrowserPreparationTicketClaimsSchema,
   BrowserAttachTicketIdentitySchema,
   BrowserProfileStorageSchema,
   CompleteProfileInitializationSchema,
@@ -64,47 +63,6 @@ const claims = {
 };
 
 describe("native profile contracts", () => {
-  it("negotiates preparation independently and grants no page or session authority", () => {
-    const identity = { kind: "profile-local", binding, initialization };
-    const preparation = {
-      audience: claims.audience,
-      purpose: "profile-prepare",
-      identity,
-      runtimeId: claims.runtimeId,
-      subject: claims.subject,
-      issuedAt: claims.issuedAt,
-      expiresAt: claims.expiresAt,
-      nonce: claims.nonce,
-    };
-    expect(BrowserPreparationTicketClaimsSchema.parse(preparation)).toEqual(preparation);
-    expect(BrowserAttachTicketClaimsSchema.safeParse(preparation).success).toBe(false);
-    for (const extra of [
-      { sessionId: claims.sessionId },
-      { access: "full-control" },
-      { initialNavigation: { operationKey: "x" } },
-    ])
-      expect(
-        BrowserPreparationTicketClaimsSchema.safeParse({ ...preparation, ...extra }).success,
-      ).toBe(false);
-    const message = {
-      ...fence,
-      capability,
-      requestId: "prepare",
-      type: "browser.profile.prepare",
-      channelId: `bch_${uuid}`,
-      preparationTicket: "abc.def.ghi",
-    };
-    expect(createHostToBrowserRelayMessageSchema().safeParse(message).success).toBe(false);
-    expect(
-      createHostToBrowserRelayMessageSchema({ localProfiles: 1 }).safeParse(message).success,
-    ).toBe(false);
-    expect(
-      createHostToBrowserRelayMessageSchema({ profilePrepare: 1 }).safeParse(message).success,
-    ).toBe(false);
-    expect(
-      createHostToBrowserRelayMessageSchema({ localProfiles: 1, profilePrepare: 1 }).parse(message),
-    ).toEqual(message);
-  });
   it("keeps released fresh and profile identities exact", () => {
     for (const identity of [
       { kind: "fresh" },

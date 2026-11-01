@@ -459,7 +459,6 @@ function setup(
   params: Partial<SurfacesRoute> = {},
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
-  state.hostClient.prepareBrowserProfile ??= vi.fn();
   state.hostClient.browserViewerState = () => liveFeed;
   state.hostClient.browserFrames = { subscribe: () => () => undefined };
   state.snapshot = options.snapshot ?? snapshot([]);
