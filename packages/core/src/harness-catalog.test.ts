@@ -28,7 +28,7 @@ describe("harness catalog", () => {
       harnessCatalog
         .filter((entry) => entry.runtime.shape === "installed")
         .map((entry) => entry.kind),
-    ).toEqual(["claude", "cursor"]);
+    ).toEqual(["claude", "muse", "cursor"]);
     expect(shippedHarnessKindRecord((kind) => kind.length)).toEqual({
       codex: 5,
       opencode: 8,
@@ -58,6 +58,12 @@ describe("harness catalog", () => {
       minimumVersion: "2026.09.10",
       shape: "installed",
     });
+    expect(harnessCatalogEntry("muse")?.runtime).toEqual({
+      command: "muse",
+      installUrl: "https://dev.meta.ai/docs/muse-code",
+      minimumVersion: "1.4.14",
+      shape: "installed",
+    });
   });
 
   it("keeps a staged tree's executable inside the directory that travels with it", () => {
@@ -80,14 +86,15 @@ describe("harness catalog", () => {
     }
   });
 
-  it("refuses to state a version for an engine the person installs", () => {
-    // Cursor's CLI self-updates and nothing here pins it, so a caller that
-    // asks is asking about bytes this tree never ships.
-    expect(() => harnessRuntimeExpectedVersion("cursor")).toThrow(
-      "Harness cursor is installed by the person, so nothing pins its version",
-    );
-    expect(() => harnessRuntimeVersion("cursor")).toThrow(
-      "Harness cursor is installed by the person, so nothing pins its version",
-    );
-  });
+  it.each(["cursor", "muse"] as const)(
+    "refuses to state a version for the installed %s engine",
+    (kind) => {
+      expect(() => harnessRuntimeExpectedVersion(kind)).toThrow(
+        `Harness ${kind} is installed by the person, so nothing pins its version`,
+      );
+      expect(() => harnessRuntimeVersion(kind)).toThrow(
+        `Harness ${kind} is installed by the person, so nothing pins its version`,
+      );
+    },
+  );
 });

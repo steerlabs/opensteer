@@ -982,6 +982,9 @@ importers:
       '@opensteer/harness-cursor':
         specifier: workspace:*
         version: link:../../packages/harness-cursor
+      '@opensteer/harness-muse':
+        specifier: workspace:*
+        version: link:../../packages/harness-muse
       '@opensteer/harness-opencode':
         specifier: workspace:*
         version: link:../../packages/harness-opencode
@@ -1767,6 +1770,31 @@ importers:
       '@opensteer/integration-core':
         specifier: workspace:*
         version: link:../integration-core
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.2.0
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+
+  packages/harness-muse:
+    dependencies:
+      '@muse-code/sdk':
+        specifier: 1.4.6
+        version: 1.4.6(@types/node@26.2.0)
+      '@opensteer/core':
+        specifier: workspace:*
+        version: link:../core
+      '@opensteer/harness':
+        specifier: workspace:*
+        version: link:../harness
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../shared
@@ -3781,6 +3809,15 @@ packages:
       zod: ^3.25 || ^4.0
     peerDependenciesMeta:
       '@cfworker/json-schema':
+        optional: true
+
+  '@muse-code/sdk@1.4.6':
+    resolution: {integrity: sha512-pUENCnmn9q4e2xMXicdRbzbSMdH1fiyTIh5fVBXuxNdNP2ZKA0kwQz5fWMxIB8wzxS2ZyH0v27dvfbZuGuoUjg==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@types/node': '>=20'
+    peerDependenciesMeta:
+      '@types/node':
         optional: true
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
@@ -10540,6 +10577,10 @@ snapshots:
       zod-to-json-schema: 3.25.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
+
+  '@muse-code/sdk@1.4.6(@types/node@26.2.0)':
+    optionalDependencies:
+      '@types/node': 26.2.0
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true

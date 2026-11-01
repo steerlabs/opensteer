@@ -150,6 +150,20 @@ export const harnessCatalog = [
     machineAccess: { platforms: ["darwin", "linux"], accessModes: "all" },
   },
   {
+    kind: "muse",
+    label: "Muse Code",
+    brandProviderId: "meta",
+    runtime: {
+      shape: "installed",
+      command: "muse",
+      installUrl: "https://dev.meta.ai/docs/muse-code",
+      minimumVersion: "1.4.14",
+    },
+    userEnvironmentVariables: ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "MUSE_PROJECTS_HOME"],
+    // Muse machine-access relay reachability has not been measured yet.
+    machineAccess: { platforms: [], accessModes: "all" },
+  },
+  {
     kind: "opencode",
     label: "OpenCode",
     brandProviderId: "opencode",
