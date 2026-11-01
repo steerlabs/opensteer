@@ -252,6 +252,8 @@ export function ChoiceRow(props: {
  * a switch that needs one is named wrong.
  */
 export function SwitchRow(props: {
+  /** What turning it on costs or changes, in one line under the label. */
+  readonly detail?: string | null;
   readonly disabled?: boolean;
   readonly label: string;
   readonly onChange: (value: boolean) => void;
@@ -259,10 +261,20 @@ export function SwitchRow(props: {
 }): ReactNode {
   return (
     <View style={styles.switchRow}>
-      <AppText role="body" style={styles.switchLabel}>
-        {props.label}
-      </AppText>
+      {props.detail ? (
+        <View style={styles.switchLabel}>
+          <AppText role="body">{props.label}</AppText>
+          <AppText numberOfLines={1} role="caption" tone="muted">
+            {props.detail}
+          </AppText>
+        </View>
+      ) : (
+        <AppText role="body" style={styles.switchLabel}>
+          {props.label}
+        </AppText>
+      )}
       <Switch
+        {...(props.detail ? { accessibilityHint: props.detail } : {})}
         accessibilityLabel={props.label}
         disabled={props.disabled}
         ios_backgroundColor={color.surfaceRaised}

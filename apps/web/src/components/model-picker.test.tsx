@@ -569,3 +569,65 @@ it("keeps everything on Keep, and asks for an access mode rather than choosing o
     spy.mockRestore();
   }
 });
+
+it("leaves the reasoning slider its own arrow keys inside the menu", async () => {
+  const reasoning = HarnessModelDescriptorSchema.parse({
+    displayName: "GPT-5.6-Sol",
+    isDefault: true,
+    modelId: "gpt-5.6-sol",
+    providerId: "openai",
+    options: [
+      {
+        type: "select",
+        id: "effort",
+        label: "Reasoning",
+        defaultValue: "low",
+        values: [
+          { value: "low", label: "Low" },
+          { value: "high", label: "High" },
+        ],
+      },
+    ],
+  });
+  const codex = placement("Codex", "hin-codex", [reasoning]);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  try {
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <ModelPicker
+            history={[]}
+            onSelect={vi.fn()}
+            placements={[codex]}
+            selection={{
+              environmentId: codex.environmentId,
+              harnessInstanceId: codex.harnessInstanceId,
+              modelSelection: selectionForModel(reasoning),
+            }}
+            settings={{
+              access: null,
+              current: null,
+              options: { model: reasoning, onChange: vi.fn(), values: {} },
+            }}
+          />
+        </MemoryRouter>,
+      ),
+    );
+    await act(async () => container.querySelector<HTMLButtonElement>(".exec-pill")!.click());
+    const slider = document.querySelector<HTMLInputElement>('input[aria-label="Reasoning"]')!;
+    slider.focus();
+    for (const key of ["ArrowUp", "ArrowDown", "Home", "End"]) {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => slider.dispatchEvent(event));
+      // The menu's roving focus must not take a key that steps the slider.
+      expect(event.defaultPrevented, key).toBe(false);
+      expect(document.activeElement).toBe(slider);
+    }
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});

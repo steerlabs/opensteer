@@ -1615,8 +1615,8 @@ fieldset.action-panel {
 
 /* The execution menu: AIs down the side, the browsed AI's models, the
    settings of the model in force, and one line for the conversation. Its
-   height follows its content up to a cap, so a short list leaves no gap; the
-   side list sets its floor, so browsing AIs never shrinks it under the pointer. */
+   height is fixed: browsing AIs with fewer models must never move the menu's
+   edge, or the next AI in the side list slides out from under the pointer. */
 .popover.popover--execution {
   width: min(520px, calc(100vw - 2 * var(--space-10)));
   max-width: none;
@@ -1626,12 +1626,11 @@ fieldset.action-panel {
 }
 .execution-menu {
   display: flex;
-  min-height: 300px;
-  max-height: min(560px, 80dvh);
+  height: min(480px, 80dvh);
 }
 .execution-menu__engines {
   display: flex;
-  flex: 0 0 160px;
+  flex: 0 0 152px;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-8) var(--space-6);
@@ -1710,24 +1709,29 @@ fieldset.action-panel {
   min-height: 0;
 }
 .execution-menu__scroll {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-height: 0;
   padding: var(--space-6);
   overflow: auto;
 }
+/* A model's name is the row; its description is a quiet second line that
+   never outgrows it, so a list reads as names. */
 .execution-menu .picker__row {
   flex: none;
-  min-height: 40px;
-  padding: var(--space-8) var(--space-10);
+  min-height: 36px;
+  padding: var(--space-6) var(--space-10);
   border-radius: var(--radius-xs);
 }
 .execution-menu .picker__label {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
 }
 .execution-menu .picker__detail {
-  font-size: var(--text-sm);
-  line-height: 1.4;
-  white-space: normal;
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+.execution-menu .picker__row[aria-checked="true"] {
+  background-color: var(--fill-match);
 }
 .execution-menu__back {
   display: flex;
@@ -1748,50 +1752,63 @@ fieldset.action-panel {
   height: 14px;
   color: var(--muted);
 }
+/* Settings are one line each, a name on the left and its control on the
+   right, so the band stays short and every row lines up with the next. */
 .execution-menu__settings {
   flex: none;
   max-height: 50%;
-  padding: var(--space-10) var(--space-16) var(--space-8);
+  padding: var(--space-6) var(--space-16);
   border-top: 1px solid var(--line);
   overflow: auto;
 }
-.execution-setting {
-  padding: var(--space-6) 0;
-}
-.execution-setting__label,
-.execution-setting__switch,
-.execution-setting__choice {
+.execution-setting__row {
   display: flex;
   align-items: center;
   gap: var(--space-8);
   width: 100%;
-  color: var(--text);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-medium);
-}
-.execution-setting__switch,
-.execution-setting__choice {
-  padding: var(--space-4) 0;
+  min-height: 34px;
+  padding: 0;
   border: 0;
   background: transparent;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
   text-align: left;
 }
-.execution-setting__switch {
-  justify-content: space-between;
+.execution-setting__name {
+  flex: none;
+  color: var(--text-soft);
+  font-weight: var(--weight-medium);
 }
 .execution-setting__value {
-  margin-left: auto;
-  color: var(--text-soft);
+  color: var(--muted);
   font-size: var(--text-md);
-  font-weight: var(--weight-normal);
+}
+.execution-setting__hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-setting__switch .execution-switch {
+  margin-left: auto;
+}
+.execution-setting__choice .execution-setting__value {
+  margin-left: auto;
 }
 .execution-setting__choice svg {
   width: 14px;
   height: 14px;
   color: var(--muted);
 }
+.execution-setting__switch:hover .execution-setting__name,
+.execution-setting__choice:hover .execution-setting__name {
+  color: var(--text);
+}
 .execution-setting__automatic {
-  padding: var(--space-2) var(--space-8);
+  padding: 1px var(--space-8);
   border: 1px solid var(--rim-plate);
   border-radius: 999px;
   background: var(--sheen) var(--fill-plate);
@@ -1803,40 +1820,268 @@ fieldset.action-panel {
   border-color: var(--rim-selected);
   color: var(--ember);
   background: var(--sheen) var(--fill-plate-hover);
-  box-shadow: var(--edge-plate);
 }
-.execution-setting input[type="range"] {
+/* The reasoning slider: a recessed rail, a notch for every step, and a
+   capsule thumb that turns to glass while held, as the system's own does.
+   Positions are in step units (--slider-at, 0 to 1) so each mark sits where
+   the invisible native range puts that value. */
+.slider {
+  --slider-rail: 10px;
+  --slider-thumb: 26px;
+  --slider-thumb-height: 18px;
+  position: relative;
+  /* Full width when the row has room; narrower, never cramped, when a long
+     name or the automatic choice shares it. */
+  flex: 0 1 150px;
+  min-width: 80px;
+  height: 26px;
+  margin-left: auto;
+}
+.slider::before {
+  content: "";
+  position: absolute;
+  inset: calc(50% - var(--slider-rail) / 2) 0;
+  border-radius: var(--radius-full);
+  background: rgb(var(--light) / 8.5%);
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 50%),
+    0 1px 0 rgb(var(--light) / 4%);
+}
+.slider__fill {
+  position: absolute;
+  top: calc(50% - var(--slider-rail) / 2);
+  left: 0;
+  width: calc(var(--slider-thumb) + var(--slider-at) * (100% - var(--slider-thumb)));
+  height: var(--slider-rail);
+  border-radius: var(--radius-full);
+  background: linear-gradient(rgb(var(--light) / 60%), rgb(var(--light) / 44%));
+  box-shadow: inset 0 1px 0 rgb(var(--light) / 35%);
+  transition: width var(--duration-med) var(--ease-spring);
+}
+.slider__notch {
+  position: absolute;
+  top: calc(50% - 1.5px);
+  left: calc(var(--slider-thumb) / 2 + var(--slider-at) * (100% - var(--slider-thumb)) - 1.5px);
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgb(var(--light) / 28%);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+.slider__notch[data-on] {
+  background: rgb(0 0 0 / 30%);
+}
+.slider__notch[data-hover] {
+  background: var(--text);
+  transform: scale(1.7);
+}
+.slider__notch[data-on][data-hover] {
+  background: rgb(0 0 0 / 55%);
+}
+.slider__thumb {
+  position: absolute;
+  top: calc(50% - var(--slider-thumb-height) / 2);
+  left: calc(var(--slider-thumb) / 2 + var(--slider-at) * (100% - var(--slider-thumb)));
+  width: var(--slider-thumb);
+  height: var(--slider-thumb-height);
+  border-radius: var(--radius-full);
+  background: var(--text);
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 30%),
+    0 1px 2px rgb(0 0 0 / 40%),
+    0 3px 10px rgb(0 0 0 / 30%),
+    inset 0 1px 0 rgb(255 255 255 / 80%);
+  transform: translateX(-50%);
+  transition:
+    left var(--duration-med) var(--ease-spring),
+    transform var(--duration-med) var(--ease-spring),
+    opacity var(--duration-fast) var(--ease-out),
+    background var(--duration-med) var(--ease-out),
+    box-shadow var(--duration-med) var(--ease-out);
+}
+/* Held, the thumb lifts into glass and follows the pointer step by step. */
+.slider:has(input:active) .slider__thumb {
+  background: linear-gradient(rgb(255 255 255 / 36%), rgb(255 255 255 / 10%));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 80%),
+    inset 0 -1px 1px rgb(255 255 255 / 20%),
+    inset 0 0 0 0.5px rgb(255 255 255 / 45%),
+    0 4px 14px rgb(0 0 0 / 45%);
+  backdrop-filter: blur(2px) saturate(1.6);
+  transform: translateX(-50%) scale(1.3);
+}
+.slider:has(input:focus-visible) .slider__thumb {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
+/* While the engine chooses, no step is in force: notches, no thumb. */
+.slider[data-idle] .slider__fill,
+.slider[data-idle] .slider__thumb {
+  opacity: 0;
+}
+.slider[data-idle] .slider__thumb {
+  transform: translateX(-50%) scale(0.6);
+}
+.slider input {
+  position: absolute;
+  inset: -4px 0;
   width: 100%;
-  margin: var(--space-10) 0 var(--space-4);
-  accent-color: var(--text-soft);
+  height: calc(100% + 8px);
+  margin: 0;
+  opacity: 0;
   cursor: pointer;
+  appearance: none;
+  touch-action: none;
 }
-/* While the engine chooses, the ladder has no step in force. */
-.execution-setting input[type="range"][data-idle] {
-  opacity: 0.45;
+.slider input::-webkit-slider-thumb {
+  width: var(--slider-thumb);
+  height: 100%;
+  appearance: none;
 }
-.execution-setting__ends {
-  display: flex;
-  justify-content: space-between;
+.slider input::-moz-range-thumb {
+  width: var(--slider-thumb);
+  height: 100%;
+  border: 0;
+}
+/* Every name the level can take shares one cell, so the widest sets the
+   width and a change of level never moves the slider beside it. */
+.slider__value {
+  display: grid;
+  justify-items: end;
+  max-width: 8em;
+}
+.slider__value > span {
+  grid-area: 1 / 1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(5px);
+  transition:
+    opacity 160ms var(--ease-out),
+    transform var(--duration-med) var(--ease-spring);
+}
+.slider__value > span[data-shown] {
+  opacity: 1;
+  transform: none;
+}
+.slider__value[data-peek] > span[data-shown] {
+  opacity: 0.55;
+}
+@media (prefers-reduced-motion: reduce) {
+  .slider *,
+  .slider__value > span {
+    transition: none;
+  }
+}
+.execution-switch {
+  margin-left: auto;
+}
+.execution-setting__choice .execution-setting__value {
+  margin-left: auto;
+}
+.execution-setting__choice svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.execution-setting__switch:hover .execution-setting__name,
+.execution-setting__choice:hover .execution-setting__name {
+  color: var(--text);
+}
+.execution-setting__automatic {
+  padding: 1px var(--space-8);
+  border: 1px solid var(--rim-plate);
+  border-radius: 999px;
+  background: var(--sheen) var(--fill-plate);
   color: var(--muted);
   font-size: var(--text-2xs);
+  box-shadow: var(--edge-plate);
 }
-.execution-setting .picker__detail {
-  margin: var(--space-2) 0 0;
+.execution-setting__automatic[aria-pressed="true"] {
+  border-color: var(--rim-selected);
+  color: var(--ember);
+  background: var(--sheen) var(--fill-plate-hover);
+}
+/* The reasoning ladder: one rising bar per step, lit up to the step in force.
+   The range over it is invisible; its thumb is one bar's slot wide, so the
+   value under a pointer is the bar under it. */
+.ladder {
+  --ladder-width: 96px;
+  --ladder-bar: 6px;
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  width: var(--ladder-width);
+  height: 18px;
+  margin-left: auto;
+}
+/* Each step owns an equal slot and draws its bar at the slot's centre. */
+.ladder i {
+  display: flex;
+  flex: 1;
+  justify-content: center;
+}
+.ladder i::after {
+  content: "";
+  width: var(--ladder-bar);
+  height: 100%;
+  border-radius: 2px;
+  background: var(--line-hover);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.ladder i[data-on]::after {
+  background: var(--text-soft);
+}
+.ladder:hover i[data-on]::after {
+  background: var(--text);
+}
+/* While the engine chooses, no step is in force. */
+.ladder[data-idle] i::after {
+  background: var(--fill-plate-hover);
+}
+.ladder input {
+  position: absolute;
+  inset: -6px 0;
+  width: 100%;
+  height: calc(100% + 12px);
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+}
+.ladder input::-webkit-slider-thumb {
+  width: calc(var(--ladder-width) / var(--ladder-steps));
+  height: 30px;
+  appearance: none;
+}
+.ladder input::-moz-range-thumb {
+  width: calc(var(--ladder-width) / var(--ladder-steps));
+  height: 30px;
+  border: 0;
+}
+.ladder:has(input:focus-visible) {
+  border-radius: 3px;
+  outline: 2px solid var(--ember);
+  outline-offset: 3px;
 }
 .execution-switch {
   flex: none;
-  width: 32px;
-  height: 19px;
-  padding: var(--space-2);
+  width: 28px;
+  height: 16px;
+  padding: 2px;
   border-radius: 999px;
   background: var(--line-hover);
   transition: background-color var(--duration-fast) var(--ease-out);
 }
 .execution-switch i {
   display: block;
-  width: 15px;
-  height: 15px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: var(--text);
   transition: transform var(--duration-fast) var(--ease-out);
@@ -1845,7 +2090,7 @@ fieldset.action-panel {
   background: var(--ember);
 }
 .execution-switch[data-on="true"] i {
-  transform: translateX(13px);
+  transform: translateX(12px);
 }
 .execution-menu__bottom {
   display: flex;
@@ -1921,8 +2166,7 @@ fieldset.action-panel {
   }
   .execution-menu {
     flex-direction: column;
-    min-height: 0;
-    max-height: 85dvh;
+    height: min(640px, 85dvh);
   }
   .execution-menu__engines {
     flex: none;
@@ -1976,15 +2220,35 @@ fieldset.action-panel {
   .execution-menu .picker__row,
   .execution-menu__back,
   .execution-menu__bottom,
-  .execution-setting__switch,
-  .execution-setting__choice {
+  .execution-setting__row {
     min-height: 44px;
   }
-  .execution-menu .picker__label {
+  .execution-menu .picker__label,
+  .execution-setting__row {
     font-size: var(--display-xs);
   }
-  .execution-menu .picker__detail {
-    font-size: var(--text-lg);
+  .execution-menu .picker__detail,
+  .execution-setting__value,
+  .execution-setting__hint {
+    font-size: var(--text-md);
+  }
+  /* A finger needs a bigger thumb and every point of the row's width. */
+  .slider {
+    --slider-thumb: 34px;
+    --slider-thumb-height: 22px;
+    flex: 1 1 auto;
+    height: 32px;
+  }
+  .execution-switch {
+    width: 40px;
+    height: 24px;
+  }
+  .execution-switch i {
+    width: 20px;
+    height: 20px;
+  }
+  .execution-switch[data-on="true"] i {
+    transform: translateX(16px);
   }
   .assignee__button {
     min-width: 44px;

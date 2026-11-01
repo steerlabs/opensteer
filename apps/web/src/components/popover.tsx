@@ -221,8 +221,12 @@ function PopoverContent({
 
   const handlePanelKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!["ArrowDown", "ArrowUp", "End", "Home"].includes(event.key)) return;
-    // Home/End inside a text field move the caret, not the roving focus.
-    if (event.target instanceof HTMLInputElement && (event.key === "Home" || event.key === "End")) {
+    // A slider's keys all step its value, and Home/End inside a text field
+    // move the caret: neither moves the roving focus.
+    if (
+      event.target instanceof HTMLInputElement &&
+      (event.target.type === "range" || event.key === "Home" || event.key === "End")
+    ) {
       return;
     }
     const panel = panelRef.current;

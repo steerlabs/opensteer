@@ -62,9 +62,11 @@ import {
 } from "../thread/settings/settings-controller.js";
 import { useThreadMutation } from "../thread/thread-mutation-registry.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
+import { ReasoningSlider } from "../thread/settings/reasoning-slider.js";
 import { Symbol } from "../ui/symbol.js";
 
 export type ThreadSettingsScreenProps = StaticScreenProps<{
@@ -916,23 +918,6 @@ function ModelPickerList(
               maxFontSizeMultiplier={controlFontScaleLimit}
             />
           ) : null}
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="This conversation"
-            onPress={props.onConversation}
-            style={({ pressed }) => [styles.conversationRow, pressed && styles.rowPressed]}
-          >
-            <Symbol
-              name={props.accessMode === "full-access" ? "lock.open" : "lock"}
-              size={15}
-              tint={color.muted}
-            />
-            <AppText numberOfLines={1} role="secondary" style={styles.rowCopy} tone="muted">
-              {access?.label ?? props.accessMode} ·{" "}
-              {picker.accounts.find((a) => a.selected)?.title ?? "Choose account"}
-            </AppText>
-            <Symbol name="chevron.right" size={13} tint={color.muted} />
-          </Pressable>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -1008,7 +993,11 @@ function ModelPickerList(
               }}
               disabled={disabled || row.blockedReason !== null}
               onPress={() => props.onModel(row)}
-              style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+              style={({ pressed }) => [
+                styles.row,
+                row.selected && styles.rowSelected,
+                pressed && styles.rowPressed,
+              ]}
             >
               <View style={styles.rowCopy}>
                 <AppText role="secondaryMedium">{row.title}</AppText>
@@ -1024,24 +1013,36 @@ function ModelPickerList(
             </Pressable>
           ))}
           {picker.options.length ? (
-            <View
-              style={{
-                borderTopWidth: StyleSheet.hairlineWidth,
-                borderColor: color.line,
-                paddingTop: 16,
-              }}
-            >
-              {picker.options.map((option) => (
-                <OptionField
-                  key={option.id}
-                  option={option}
-                  busy={props.applyingKey === `option:${option.id}`}
-                  disabledReason={props.disabledReason}
-                  onChange={props.onChangeOption}
-                />
+            <View style={styles.settingsCard}>
+              {picker.options.map((option, index) => (
+                <View key={option.id} style={index > 0 ? styles.settingDivider : null}>
+                  <OptionField
+                    option={option}
+                    busy={props.applyingKey === `option:${option.id}`}
+                    disabledReason={props.disabledReason}
+                    onChange={props.onChangeOption}
+                  />
+                </View>
               ))}
             </View>
           ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="This conversation"
+            onPress={props.onConversation}
+            style={({ pressed }) => [styles.conversationRow, pressed && styles.rowPressed]}
+          >
+            <Symbol
+              name={props.accessMode === "full-access" ? "lock.open" : "lock"}
+              size={15}
+              tint={color.muted}
+            />
+            <AppText numberOfLines={1} role="secondary" style={styles.rowCopy} tone="muted">
+              {access?.label ?? props.accessMode} ·{" "}
+              {picker.accounts.find((a) => a.selected)?.title ?? "Choose account"}
+            </AppText>
+            <Symbol name="chevron.right" size={13} tint={color.muted} />
+          </Pressable>
         </>
       )}
     </ScrollView>
@@ -1487,15 +1488,27 @@ function BarButton(props: {
   readonly label: string;
   readonly onPress: () => void;
 }): ReactNode {
+  const glass = useLiquidGlass();
   return (
     <Pressable
       accessibilityLabel={props.label}
       accessibilityRole="button"
       hitSlop={space[4]}
       onPress={props.onPress}
-      style={({ pressed }) => [styles.barButton, pressed && styles.barButtonPressed]}
+      style={styles.barButtonHit}
     >
-      <Symbol name={props.icon} size={18} weight="semibold" />
+      {({ pressed }) => {
+        const icon = <Symbol name={props.icon} size={17} weight="semibold" />;
+        // The system's own sheet buttons: glass where it draws glass, a quiet
+        // disc everywhere else.
+        return glass ? (
+          <GlassSurface interactive shape="capsule" style={styles.barButtonGlass}>
+            {icon}
+          </GlassSurface>
+        ) : (
+          <View style={[styles.barButton, pressed && styles.barButtonPressed]}>{icon}</View>
+        );
+      }}
     </Pressable>
   );
 }
@@ -1509,32 +1522,30 @@ function OptionField(props: {
   const { option } = props;
   if (option.kind === "switch") {
     return (
-      <View>
-        <View style={[styles.control, styles.toggle]}>
-          <View style={styles.rowCopy}>
-            <SwitchRow
-              disabled={props.disabledReason !== null || props.busy}
-              label={option.label}
-              onChange={(next) => props.onChange(option.id, next)}
-              value={option.on}
-            />
-          </View>
-          {props.busy ? <ActivityIndicator color={color.ember} /> : null}
+      <View style={styles.setting}>
+        <View style={styles.rowCopy}>
+          <SwitchRow
+            detail={option.description}
+            disabled={props.disabledReason !== null || props.busy}
+            label={option.label}
+            onChange={(next) => props.onChange(option.id, next)}
+            value={option.on}
+          />
         </View>
-        {option.description ? (
-          <AppText role="caption" tone="muted">
-            {option.description}
-          </AppText>
-        ) : null}
+        {props.busy ? <ActivityIndicator color={color.ember} /> : null}
       </View>
     );
   }
   if (option.kind === "ladder")
     return (
       <ReasoningLadder
-        option={option}
+        // A different ladder is a different slider: no step under a finger
+        // or on its way carries over to steps that are not there.
+        key={option.steps.map((step) => step.value).join("\n")}
+        busy={props.busy}
         disabled={props.disabledReason !== null || props.busy}
         onChange={props.onChange}
+        option={option}
       />
     );
   // A native menu holds any number of values, where a segmented control
@@ -1557,8 +1568,8 @@ function OptionField(props: {
       style={styles.menuTrigger}
       title={option.label}
     >
-      <View style={styles.control}>
-        <AppText role="body" style={styles.rowCopy}>
+      <View style={styles.setting}>
+        <AppText role="bodyMedium" style={styles.rowCopy}>
           {option.label}
         </AppText>
         {props.busy ? (
@@ -1579,167 +1590,81 @@ function OptionField(props: {
 function noop(): void {}
 
 function ReasoningLadder({
-  option,
+  busy,
   disabled,
   onChange,
+  option,
 }: {
-  option: Extract<ModelSetting, { kind: "ladder" }>;
+  /** This setting's change is on its way to the Host. */
+  busy: boolean;
   disabled: boolean;
   onChange: (id: string, value: string) => void;
+  option: Extract<ModelSetting, { kind: "ladder" }>;
 }): ReactNode {
-  const width = useRef(1);
-  const [dragged, setDragged] = useState<number | undefined>(undefined);
-  const step = dragged ?? option.step;
-  const last = useRef(option.step);
+  // The step under a finger, and a step let go of that is still being applied:
+  // a round trip on a slow link must not snap the slider back meanwhile.
+  const [preview, setPreview] = useState<number | null>(null);
+  const [held, setHeld] = useState<number | null>(null);
   useEffect(() => {
-    last.current = option.step;
-    setDragged(undefined);
-  }, [option.step]);
-  const pick = (x: number) => {
-    if (disabled) return;
-    const step = Math.max(
-      0,
-      Math.min(
-        option.steps.length - 1,
-        Math.round((x / width.current) * (option.steps.length - 1)),
-      ),
-    );
-    if (last.current === step) return;
-    last.current = step;
-    void Haptics.selectionAsync();
-    setDragged(step);
-  };
+    if (!busy) setHeld(null);
+  }, [busy, held]);
+  const applied = held ?? option.step;
+  const shown = preview ?? applied;
+  const valueText = shown === null ? option.valueLabel : option.steps[shown]!.label;
   return (
-    <View style={{ gap: 8, paddingVertical: 12 }}>
-      <View style={styles.control}>
-        <AppText style={styles.rowCopy}>{option.label}</AppText>
-        <AppText tone="muted">
-          {dragged === undefined ? option.valueLabel : option.steps[dragged]?.label}
+    <View style={styles.ladderSetting}>
+      <View style={styles.ladderHead}>
+        <AppText role="bodyMedium">{option.label}</AppText>
+        <AppText style={styles.rowCopy} tone={preview === null ? "muted" : "default"}>
+          {valueText}
         </AppText>
+        {option.automatic ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: option.step === null, disabled }}
+            disabled={disabled}
+            hitSlop={space[8]}
+            onPress={() => {
+              void Haptics.selectionAsync();
+              onChange(option.id, option.automatic!.value);
+            }}
+            style={[styles.automatic, option.step === null && material.selected]}
+          >
+            <AppText role="caption" tone={option.step === null ? "default" : "muted"}>
+              {option.automatic.label}
+            </AppText>
+          </Pressable>
+        ) : null}
       </View>
-      <View
-        accessible
-        accessibilityRole="adjustable"
-        accessibilityLabel={option.label}
-        accessibilityValue={{
-          min: 0,
-          max: option.steps.length - 1,
-          now: option.step ?? 0,
-          text: option.valueLabel,
+      <ReasoningSlider
+        disabled={disabled}
+        label={option.label}
+        onPreview={setPreview}
+        onSettle={(step) => {
+          setPreview(null);
+          if (step === applied) return;
+          setHeld(step);
+          onChange(option.id, option.steps[step]!.value);
         }}
-        accessibilityState={{ disabled }}
-        accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
-        onAccessibilityAction={(event) => {
-          const step = Math.max(
-            0,
-            Math.min(
-              option.steps.length - 1,
-              (option.step ?? 0) + (event.nativeEvent.actionName === "increment" ? 1 : -1),
-            ),
-          );
-          if (!disabled) {
-            void Haptics.selectionAsync();
-            onChange(option.id, option.steps[step]!.value);
-          }
-        }}
-        onLayout={(event) => {
-          width.current = event.nativeEvent.layout.width;
-        }}
-        onStartShouldSetResponder={() => !disabled}
-        onMoveShouldSetResponder={() => !disabled}
-        onResponderGrant={(event) => pick(event.nativeEvent.locationX)}
-        onResponderMove={(event) => pick(event.nativeEvent.locationX)}
-        onResponderRelease={() => {
-          if (last.current !== null && last.current !== option.step)
-            onChange(option.id, option.steps[last.current]!.value);
-          setDragged(undefined);
-        }}
-        onResponderTerminate={() => {
-          last.current = option.step;
-          setDragged(undefined);
-        }}
-        style={styles.track}
-      >
-        {/* Decoration never takes the touch: a press on the thumb would report
-            its position inside the thumb, not along the track. */}
-        <View pointerEvents="none" style={styles.rail} />
-        {step === null ? null : (
-          <View
-            pointerEvents="none"
-            style={[styles.fill, { width: `${(step / (option.steps.length - 1)) * 100}%` }]}
-          />
-        )}
-        {option.steps.map((choice, index) => (
-          <View
-            key={choice.value}
-            pointerEvents="none"
-            style={[
-              styles.tick,
-              { left: `${(index / (option.steps.length - 1)) * 100}%` },
-              step !== null && index <= step && styles.tickFilled,
-            ]}
-          />
-        ))}
-        {step === null ? null : (
-          <View
-            pointerEvents="none"
-            style={[styles.thumb, { left: `${(step / (option.steps.length - 1)) * 100}%` }]}
-          />
-        )}
-      </View>
-      <View style={styles.control}>
-        <AppText role="caption" tone="muted" style={styles.rowCopy}>
-          Quicker
-        </AppText>
-        <AppText role="caption" tone="muted">
-          Deeper
-        </AppText>
-      </View>
-      {option.automatic ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ selected: option.step === null, disabled }}
-          disabled={disabled}
-          onPress={() => {
-            void Haptics.selectionAsync();
-            onChange(option.id, option.automatic!.value);
-          }}
-          style={[styles.chip, option.step === null && material.selected]}
-        >
-          <AppText>{option.automatic.label}</AppText>
-        </Pressable>
-      ) : null}
+        step={shown}
+        steps={option.steps.map((step) => step.label)}
+        valueText={valueText}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  fill: {
-    backgroundColor: color.textSoft,
-    borderRadius: 2,
-    height: 4,
-    left: 0,
-    position: "absolute",
+  automatic: {
+    ...material.quiet,
+    borderColor: "transparent",
+    borderRadius: radius.full,
+    borderWidth: 1,
+    paddingHorizontal: space[10],
+    paddingVertical: space[2],
   },
-  rail: { backgroundColor: color.lineStrong, borderRadius: 2, height: 4 },
-  thumb: {
-    backgroundColor: color.text,
-    borderRadius: 11,
-    height: 22,
-    marginLeft: -11,
-    position: "absolute",
-    width: 22,
-  },
-  tick: {
-    backgroundColor: color.muted,
-    borderRadius: 2,
-    height: 4,
-    marginLeft: -2,
-    position: "absolute",
-    width: 4,
-  },
-  tickFilled: { backgroundColor: color.surface },
-  track: { justifyContent: "center", minHeight: 44 },
+  ladderHead: { alignItems: "center", flexDirection: "row", gap: space[8], minHeight: 28 },
+  ladderSetting: { gap: space[10], paddingVertical: space[12] },
   // Engines are quiet capsules; the one being browsed is lifted, not filled
   // with the accent, which belongs to the action that commits a choice.
   chip: {
@@ -1757,6 +1682,7 @@ const styles = StyleSheet.create({
   chipSelected: { ...material.selected },
   conversationRow: {
     alignItems: "center",
+    marginTop: space[8],
     borderRadius: radius.sm,
     flexDirection: "row",
     gap: space[8],
@@ -1771,15 +1697,20 @@ const styles = StyleSheet.create({
     gap: space[8],
     minHeight: touchTarget,
   },
-  // The system's own sheet buttons: a quiet disc, no rim.
   barButton: {
     ...material.quiet,
     alignItems: "center",
     borderRadius: radius.full,
     height: 36,
     justifyContent: "center",
-    margin: (touchTarget - 36) / 2,
     width: 36,
+  },
+  barButtonGlass: { alignItems: "center", height: 36, justifyContent: "center", width: 36 },
+  barButtonHit: {
+    alignItems: "center",
+    height: touchTarget,
+    justifyContent: "center",
+    width: touchTarget,
   },
   barButtonPressed: { backgroundColor: material.selected.backgroundColor },
   barButtonSpace: { width: touchTarget },
@@ -1808,6 +1739,17 @@ const styles = StyleSheet.create({
   },
   rowCopy: { flex: 1, gap: space[2], minWidth: 0 },
   rowPressed: { ...material.quiet },
+  rowSelected: { ...material.quiet },
+  // A model's settings read as one group: a quiet card, one row per setting,
+  // every name on the same edge.
+  settingsCard: {
+    ...material.quiet,
+    borderRadius: radius.lg,
+    marginTop: space[8],
+    paddingHorizontal: space[16],
+  },
+  setting: { alignItems: "center", flexDirection: "row", gap: space[12], minHeight: 56 },
+  settingDivider: { borderColor: color.line, borderTopWidth: StyleSheet.hairlineWidth },
   // No line height: iOS lifts a text field's glyphs inside a fixed one.
   searchField: {
     color: color.text,
@@ -1817,6 +1759,5 @@ const styles = StyleSheet.create({
   },
   freshStart: { gap: space[8], paddingTop: space[24] },
   startThread: { paddingTop: space[24] },
-  toggle: { paddingVertical: 0 },
   unavailable: { gap: space[12], padding: space[16] },
 });

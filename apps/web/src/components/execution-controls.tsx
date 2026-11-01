@@ -178,9 +178,9 @@ export function ExecutionControls({
     if (route) chooseRoute(route);
   };
 
-  const changeOptions = (options: ModelSelection["options"]) => {
+  const changeOptions = async (options: ModelSelection["options"]) => {
     if (!selection || !current) return;
-    void apply({ ...selection, modelSelection: selectionForModel(current.model, options) });
+    await apply({ ...selection, modelSelection: selectionForModel(current.model, options) });
   };
 
   const controlsDisabled = disabled || pending;
