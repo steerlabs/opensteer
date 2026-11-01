@@ -6480,7 +6480,7 @@ export const threadEventHistoryMigration: Migration = {
 export const threadAskedAtMigration: Migration = {
   async up(database) {
     await sql`
-      alter table public.threads add column if not exists asked_at timestamptz not null default now();
+      alter table threads add column if not exists asked_at timestamptz not null default now();
       with asked as (
         select message.thread_id, max(message.created_at) as asked_at
         from messages as message
@@ -6490,9 +6490,9 @@ export const threadAskedAtMigration: Migration = {
         group by message.thread_id
       ), times as (
         select thread.id, date_trunc('milliseconds', coalesce(asked.asked_at, thread.created_at)) as asked_at
-        from public.threads as thread left join asked on asked.thread_id = thread.id
+        from threads as thread left join asked on asked.thread_id = thread.id
       )
-      update public.threads as thread set asked_at = times.asked_at
+      update threads as thread set asked_at = times.asked_at
       from times where thread.id = times.id;
     `.execute(database);
   },
