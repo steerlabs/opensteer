@@ -45,6 +45,32 @@ function createClient(): MockHostClient {
   return new MockHostClient({ latencyMs: 0, now: () => fixedNow });
 }
 
+it("implements installed-engine update commands in the mock", async () => {
+  const client = createClient();
+  try {
+    const environment = client.getSnapshot().environments[0];
+    if (!environment) throw new Error("Mock environment missing");
+    const result = await client.dispatch({
+      driverKind: "codex",
+      environmentId: environment.id,
+      idempotencyKey: "update-codex",
+      type: "harness.update",
+    });
+    expect(result).toMatchObject({
+      installation: { update: "succeeded", version: "0.163.0" },
+      type: "harness.update",
+    });
+    expect(
+      client
+        .getSnapshot()
+        .environments[0]?.harnessDrivers.find((driver) => driver.driverKind === "codex")
+        ?.installation?.update,
+    ).toBe("succeeded");
+  } finally {
+    client.dispose();
+  }
+});
+
 /**
  * The tuple a composer resolves before starting a Thread. `createThread` fills
  * nothing in, so every test names where work runs, on which account and model.

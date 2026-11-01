@@ -149,6 +149,7 @@ export const bootstrapNoticeSources = [
   "runner.shell-access",
   "runner.disconnect",
   "runner.registered",
+  "harness.update",
   "machine.command",
   "machine.access",
 ] as const;

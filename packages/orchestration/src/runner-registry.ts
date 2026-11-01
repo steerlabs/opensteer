@@ -166,6 +166,10 @@ type RunnerHarnessCatalogInvalidated = Extract<
   RunnerOperationalMessage,
   { readonly type: "runner.harness-catalog-invalidated" }
 >;
+type RunnerHarnessInstallation = Extract<
+  RunnerOperationalMessage,
+  { readonly type: "runner.harness-installation" }
+>;
 
 export interface RunnerRegistryHooks {
   authorize(identity: RunnerIdentity): Promise<void>;
@@ -220,6 +224,10 @@ export interface RunnerRegistryHooks {
   onHarnessCatalogInvalidated?(
     identity: RunnerIdentity,
     invalidation: RunnerHarnessCatalogInvalidated,
+  ): Promise<void>;
+  onHarnessInstallation?(
+    identity: RunnerIdentity,
+    installation: RunnerHarnessInstallation,
   ): Promise<void>;
   onSessionBound?(identity: RunnerIdentity, binding: RunnerSessionBound): Promise<void>;
   onTriggerResult?(identity: RunnerIdentity, result: RunnerTriggerResult): Promise<void>;
@@ -2075,6 +2083,31 @@ export class RunnerRegistry {
           ).catch(() => undefined);
         }
         break;
+      case "runner.harness-installation": {
+        const agents = connection.identity.modules.agents;
+        if (agents) {
+          connection.identity = {
+            ...connection.identity,
+            modules: {
+              ...connection.identity.modules,
+              agents: {
+                ...agents,
+                harnessDrivers: agents.harnessDrivers.map((driver) =>
+                  driver.driverKind === message.driverKind
+                    ? { ...driver, installation: message.installation }
+                    : driver,
+                ),
+              },
+            },
+          };
+        }
+        if (this.#hooks.onHarnessInstallation) {
+          void this.#runHook(() =>
+            this.#hooks.onHarnessInstallation?.(connection.identity, message),
+          ).catch(() => undefined);
+        }
+        break;
+      }
     }
   }
 

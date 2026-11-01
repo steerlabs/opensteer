@@ -1777,6 +1777,9 @@ export async function createHostRuntime(
           return attached.results;
         },
         onAttached: async () => wakeExecutionCoordinator(),
+        onHarnessInstallation: async () => {
+          notifyMachinesChanged(realtime, "harness.update");
+        },
         onHarnessCatalogInvalidated: async (identity, invalidation) => {
           try {
             const harness = await store.getHarnessInstance(invalidation.harnessInstanceId);

@@ -45,6 +45,7 @@ async function mount(environmentId?: string) {
           onAuthenticate={vi.fn()}
           onError={vi.fn()}
           placements={threadPlacementOptions(environments, snapshot.harnesses)}
+          updatesAvailable
         />
       </MemoryRouter>,
     );
@@ -67,6 +68,20 @@ describe("the engines a work location reports", () => {
     expect(
       [...container.querySelectorAll(".settings-engine__title")].map((node) => node.textContent),
     ).toEqual(["Model servers", "Codex", "Claude Code", "OpenCode", "Pi", "Cursor"]);
+  });
+
+  it("offers a capability-gated update for an installed engine", async () => {
+    const { client, container } = await mount();
+    const update = engineCard(container, "codex").querySelector<HTMLButtonElement>(
+      ".settings-engine__update",
+    );
+    if (!update) throw new Error("Codex Update button missing");
+    expect(engineCard(container, "codex").textContent).toContain("Update available");
+    const dispatch = vi.spyOn(client, "dispatch");
+    await act(async () => update.click());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ driverKind: "codex", type: "harness.update" }),
+    );
   });
 
   it("lists every source an engine offers, each with what it talks to", async () => {

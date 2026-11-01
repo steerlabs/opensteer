@@ -128,6 +128,7 @@ import {
   ComputerUseSessionSummarySchema,
   HarnessInstanceCatalogSchema,
   type HarnessInstanceCatalog,
+  type HarnessInstallation,
   type ComputerUseInstalledApp,
   type HarnessModelDescriptor,
   type HarnessSourceDescriptor,
@@ -2678,6 +2679,15 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "harness.delete":
       await client.deleteHarnessInstance(command.environmentId, command.harnessInstanceId);
       return rpcSuccess({ type: command.type });
+    case "harness.update": {
+      const installation = client.updateHarnessInstallation(
+        command.environmentId,
+        command.driverKind,
+      );
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({ installation, type: command.type }),
+      );
+    }
     case "harness.authentication.begin":
       return rpcSuccess({ ...(await client.beginHarnessAuthentication()), type: command.type });
     case "harness.authentication.submit":
@@ -5498,6 +5508,32 @@ class MockHostState {
   }
   updatePlaces(snapshot: HostSnapshot): void {
     this.update(snapshot);
+  }
+
+  updateHarnessInstallation(environmentId: string, driverKind: string) {
+    let installation: HarnessInstallation | undefined;
+    this.update({
+      ...this.snapshot,
+      environments: this.snapshot.environments.map((environment) =>
+        environment.id !== environmentId
+          ? environment
+          : {
+              ...environment,
+              harnessDrivers: environment.harnessDrivers.map((driver) => {
+                if (driver.driverKind !== driverKind || !driver.installation) return driver;
+                installation = {
+                  ...driver.installation,
+                  detail: "Update finished.",
+                  latestVersion: driver.installation.latestVersion ?? driver.installation.version,
+                  update: "succeeded",
+                };
+                return { ...driver, installation };
+              }),
+            },
+      ),
+    });
+    if (!installation) throw new Error("Installed AI engine not found.");
+    return installation;
   }
   readonly getSnapshot = (): HostSnapshot => this.snapshot;
 
@@ -11695,6 +11731,12 @@ function createInitialSnapshot(): HostSnapshot {
           {
             accessModes: [...mockEveryAccessMode],
             driverKind: "codex",
+            installation: {
+              latestVersion: "0.166.0",
+              scope: "ambient",
+              update: "available",
+              version: "0.163.0",
+            },
             readiness: "runtime-check",
             sources: [...mockCodexSources],
           },
@@ -11903,6 +11945,7 @@ function createInitialSnapshot(): HostSnapshot {
     executionPreferences: emptyExecutionPreferences,
     threadRenameAvailable: true,
     taskMarksAvailable: true,
+    harnessUpdateAvailable: true,
     sharedTaskDoneAvailable: true,
     workspaceTabReopenAvailable: true,
     browserProfileManageAvailable: true,

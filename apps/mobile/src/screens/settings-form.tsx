@@ -19,6 +19,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
   const column = useReadingColumn();
   const listInsets = useListContentInsets(space[32]);
   const preferences = props.notifications.preferences;
+  const engineUpdates = props.engineUpdates ?? [];
   return (
     <Screen edgeToEdge>
       <ScrollView contentContainerStyle={[styles.content, column, listInsets]}>
@@ -84,6 +85,35 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
             <AppText role="caption" tone="muted">
               {props.computersFooter}
             </AppText>
+          </View>
+        )}
+
+        {engineUpdates.length === 0 ? null : (
+          <View style={styles.section}>
+            <SectionLabel>AI services</SectionLabel>
+            <RowGroup>
+              {engineUpdates.map((engine) => (
+                <View key={engine.key} style={styles.row}>
+                  <View style={styles.identityText}>
+                    <AppText role="bodyMedium">{engine.name}</AppText>
+                    <AppText role="secondary" tone="soft">
+                      {engine.detail}
+                    </AppText>
+                  </View>
+                  {engine.updateEnabled || engine.updating ? (
+                    <SecondaryButton
+                      busy={engine.updating}
+                      compact
+                      disabled={!engine.updateEnabled}
+                      label="Update"
+                      onPress={() =>
+                        props.onEngineUpdate?.(engine.environmentId, engine.driverKind)
+                      }
+                    />
+                  ) : null}
+                </View>
+              ))}
+            </RowGroup>
           </View>
         )}
 

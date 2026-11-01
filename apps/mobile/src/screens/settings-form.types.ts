@@ -21,6 +21,16 @@ export interface AgentNotificationRow {
   readonly workspaceId: string;
 }
 
+export interface EngineUpdateRow {
+  readonly detail: string;
+  readonly driverKind: string;
+  readonly environmentId: string;
+  readonly key: string;
+  readonly name: string;
+  readonly updateEnabled: boolean;
+  readonly updating: boolean;
+}
+
 export interface SettingsFormActionHandlers {
   readonly onAccountAction: () => void;
   readonly onBrowserProfilesAction?: (() => void) | undefined;
@@ -30,6 +40,7 @@ export interface SettingsFormActionHandlers {
   readonly onConnectedAppsAction?: (() => void) | undefined;
   readonly onComputerAction: (destination: ComputerSettingsDestination) => void;
   readonly onDeploymentAction: () => void;
+  readonly onEngineUpdate?: ((environmentId: string, driverKind: string) => void) | undefined;
   readonly onNotificationAction: () => void;
   readonly onPasswordsAction: () => void;
   readonly onPreferenceChange: (kind: "approvals" | "run-outcomes", enabled: boolean) => void;
@@ -46,6 +57,7 @@ export interface SettingsFormProps extends SettingsFormActionHandlers {
   /** Under the computers: how each kind joins, and this iPhone when it can. */
   readonly computersFooter: string;
   readonly deployment: DeploymentSettingsModel;
+  readonly engineUpdates?: readonly EngineUpdateRow[] | undefined;
   readonly notificationError: string | null;
   readonly notifications: NotificationSettingsModel;
   /** Where saved passwords are kept; null while no Deployment is open. */
