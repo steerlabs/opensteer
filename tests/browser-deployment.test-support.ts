@@ -132,7 +132,7 @@ export async function deployment(
     maxConcurrentRuns: options.maxConcurrentRuns ?? 1,
   });
   addCleanup("deployment", () => stack.close(), 0);
-  // The stack owns browser final-save ordering, including cancellation during startup.
+  // The stack owns browser teardown ordering, including cancellation during startup.
   return stack;
 }
 

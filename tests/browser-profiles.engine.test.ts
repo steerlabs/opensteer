@@ -48,7 +48,7 @@ describe("live agent-created browser profile", () => {
       const browser = await startBrowser();
       let stack: VerticalStack | undefined;
       // Registered before the deployment starts, so a failed start still closes
-      // the Browser Runtime; final profile commits need the Host to outlive it.
+      // the Browser Runtime; its session teardown still needs the Host.
       addCleanup("live profile Browser Runtime, then deployment", async () => {
         try {
           await browser.close();

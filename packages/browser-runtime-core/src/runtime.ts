@@ -458,7 +458,7 @@ export class BrowserRuntime implements NativePresentationSource {
       return Promise.reject(
         new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down."),
       );
-    // Fence immediately, before waiting for already admitted conversion/page work.
+    // Fence immediately, before waiting for already admitted page work.
     if (
       !this.localStore ||
       binding.storageInstanceId !== this.localStore.storageInstanceId ||
