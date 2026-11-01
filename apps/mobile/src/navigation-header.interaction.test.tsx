@@ -148,10 +148,11 @@ describe("the conversation bar's family and tabs", () => {
       { acting: false, glyph: "globe", onPress: vi.fn() },
       {
         action: {
-          icon: "arrow.triangle.branch",
+          icon: "checklist",
           label: "2 tasks running, one needs you, 1 automation",
           badge: "2",
           accessibilityLabel: "2 tasks running, one needs you, 1 automation",
+          accessibilityHint: "Opens this conversation's tasks and automations",
           tintColor: "#amber",
           onPress: open,
         },
@@ -161,8 +162,9 @@ describe("the conversation bar's family and tabs", () => {
     const items = options.unstable_headerRightItems?.({ tintColor: "white", canGoBack: true });
     expect(items).toEqual([
       expect.objectContaining({
-        icon: { name: "arrow.triangle.branch", type: "sfSymbol" },
+        icon: { name: "checklist", type: "sfSymbol" },
         accessibilityLabel: "2 tasks running, one needs you, 1 automation",
+        accessibilityHint: "Opens this conversation's tasks and automations",
         tintColor: "#amber",
         badge: expect.objectContaining({ value: "2" }),
       }),

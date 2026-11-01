@@ -28,7 +28,7 @@ export type HeaderActionSpec = {
   readonly badge?: string;
   readonly disabled?: boolean;
   readonly icon?:
-    | "arrow.triangle.branch"
+    | "checklist"
     | "gearshape"
     | SurfaceGlyph
     | "line.3.horizontal"
