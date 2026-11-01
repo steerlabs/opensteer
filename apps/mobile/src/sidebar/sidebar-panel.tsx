@@ -194,9 +194,9 @@ function useDoneShelf(): readonly [boolean, () => void] {
 
 /**
  * The sidebar is the one place to move between everything: Chat, New task and
- * Specialists; the Deployment's tabs, apps and phones, and All tabs; then the
- * tasks grouped by what each asks of the reader — Working, with anything
- * waiting on them first; Ready; Done — and below them Settings and which
+ * Specialists; tasks grouped by what each asks of the reader — Working, with
+ * anything waiting on them first; Ready; Done — then the Deployment's tabs,
+ * apps and phones, and All tabs; and below them Settings and which
  * Deployment this is. Each row comes from the shared task and place lists, so
  * a task or tab reads the same here as on the web.
  *
@@ -409,24 +409,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           />
         </View>
 
-        <View style={styles.nav}>
-          {hostClient === null || model === null ? (
-            <GroupHead title="Tabs" />
-          ) : (
-            <SidebarTabs
-              hostClient={hostClient}
-              onOpen={actions.onOpenPlace}
-              selected={props.selectedPlace}
-            />
-          )}
-          <DestinationRow
-            current={destination === "Tabs"}
-            icon="rectangle.on.rectangle"
-            label="All tabs"
-            onPress={actions.onTabs}
-          />
-        </View>
-
         {savedTasks.source === "saved" ? (
           <SavedTasks
             tasks={savedTasks.content}
@@ -528,9 +510,27 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             {earlierFailure}
           </AppText>
         )}
+
+        <View style={styles.tabs}>
+          {hostClient === null || model === null ? (
+            <GroupHead title="Tabs" />
+          ) : (
+            <SidebarTabs
+              hostClient={hostClient}
+              onOpen={actions.onOpenPlace}
+              selected={props.selectedPlace}
+            />
+          )}
+          <DestinationRow
+            current={destination === "Tabs"}
+            icon="rectangle.on.rectangle"
+            label="All tabs"
+            onPress={actions.onTabs}
+          />
+        </View>
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: insets.bottom + space[8] }]}>
+      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, space[8]) }]}>
         <DestinationRow
           current={false}
           icon="gearshape"
@@ -883,6 +883,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: touchTarget,
     paddingLeft: taskTextInset,
+  },
+  tabs: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: color.line,
+    gap: space[2],
+    marginTop: space[4],
+    paddingTop: space[8],
   },
   nav: {
     borderBottomWidth: StyleSheet.hairlineWidth,

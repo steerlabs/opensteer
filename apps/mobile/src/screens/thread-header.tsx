@@ -244,10 +244,11 @@ function ThreadTitle(
               action: {
                 // UIKit draws the symbol in place of the label; the badge
                 // counts what is running, and the tint says when one asks.
-                icon: "arrow.triangle.branch" as const,
+                icon: "checklist" as const,
                 label: familyLabel(glance),
                 ...(glance.running > 0 ? { badge: String(glance.running) } : {}),
                 accessibilityLabel: familyLabel(glance),
+                accessibilityHint: "Opens this conversation's tasks and automations",
                 tintColor: glance.needsYou
                   ? color.amber
                   : glance.running > 0
