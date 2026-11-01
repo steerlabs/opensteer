@@ -1889,7 +1889,7 @@ describe("phone display Host sockets", () => {
       await viewer.received(() => viewer.media().length === sequence);
       viewer.send({ type: "display.ack", sequence });
       await viewer.roundTrip();
-      expect(refreshes()).toHaveLength(sequence < 3 ? 0 : 1);
+      expect(refreshes()).toHaveLength(sequence < 5 ? 0 : 1);
     }
     const joined = await f.viewer();
     await joined.received(() => joined.media().length === 4);
@@ -1918,6 +1918,26 @@ describe("phone display Host sockets", () => {
     expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual([]);
   });
 
+  it("retains the API 36 refinement tail without forcing an idle IDR", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    for (const [index, size] of [40_000, 130_400, 774].entries()) {
+      if (index === 2) f.advance(6_000);
+      const sequence = index + 1;
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(size)));
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    f.advance(3_000);
+    f.hub.sweep();
+    const joined = await f.viewer();
+    await joined.received(() => joined.media().length === 3);
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual([]);
+  });
+
   it("bounds motion after an IDR larger than the refresh budget", async () => {
     const f = await fixture();
     const viewer = await f.viewer();
@@ -1926,7 +1946,7 @@ describe("phone display Host sockets", () => {
     const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
     for (let sequence = 1; sequence <= 3; sequence++) {
       phone.socket.send(
-        f.frame(sequence, sequence === 1, 1, new Uint8Array(sequence === 1 ? 300_000 : 70_000)),
+        f.frame(sequence, sequence === 1, 1, new Uint8Array(sequence === 1 ? 300_000 : 140_000)),
       );
       await viewer.received(() => viewer.media().length === sequence);
       viewer.send({ type: "display.ack", sequence });
@@ -1943,7 +1963,7 @@ describe("phone display Host sockets", () => {
     const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
     for (let sequence = 1; sequence <= 8; sequence++) {
       phone.socket.send(
-        f.frame(sequence, sequence === 1 || sequence === 5, 1, new Uint8Array(70_000)),
+        f.frame(sequence, sequence === 1 || sequence === 5, 1, new Uint8Array(100_000)),
       );
       await viewer.received(() => viewer.media().length === sequence);
       viewer.send({ type: "display.ack", sequence });
@@ -1954,7 +1974,7 @@ describe("phone display Host sockets", () => {
     f.hub.sweep();
     expect(refreshes()).toHaveLength(2);
     for (let sequence = 9; sequence <= 12; sequence++) {
-      phone.socket.send(f.frame(sequence, sequence === 9, 1, new Uint8Array(70_000)));
+      phone.socket.send(f.frame(sequence, sequence === 9, 1, new Uint8Array(100_000)));
       await viewer.received(() => viewer.media().length === sequence);
       viewer.send({ type: "display.ack", sequence });
       await viewer.roundTrip();

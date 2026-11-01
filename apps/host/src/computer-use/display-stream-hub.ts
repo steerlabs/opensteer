@@ -51,7 +51,8 @@ import type { ComputerUseService } from "./computer-use-service.js";
 // Host-only retention bound: viewers and phones need no cache-size negotiation.
 const displayGopCacheBytes = 4 * 1_024 * 1_024;
 // Refresh by delta bytes; an unavoidable large IDR must not defeat the bound.
-const displayGopRefreshBytes = 128 * 1_024;
+// Leave room for post-motion refinement before forcing another IDR.
+const displayGopRefreshBytes = 256 * 1_024;
 // Two ten-second GOPs at 30 fps bound metadata and replay work for tiny frames.
 const displayGopCacheFrames = 600;
 // Eight tabs cover ordinary watching while bounding per-session fan-out work.
