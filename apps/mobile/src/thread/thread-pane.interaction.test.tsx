@@ -1238,6 +1238,15 @@ describe("the conversation docked under a page", () => {
       }),
     );
   });
+
+  it("gives the page the latest reply's line before anything has been said", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container } = await mount(host, workId, {
+      withPage: { kind: "docked", page: null, onShowConversation: vi.fn() },
+    });
+    expect(container.querySelector('[data-testid="latest-reply"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Message"]')).not.toBeNull();
+  });
 });
 
 it("does not render the pane for another thread's durable event or streaming append", async () => {

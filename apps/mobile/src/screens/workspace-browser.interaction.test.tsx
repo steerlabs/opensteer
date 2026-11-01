@@ -1490,8 +1490,9 @@ describe("a page beside its conversation", () => {
 
   it("gives the stacked page definite space and sizes the dock and its Pane by content", () => {
     const { container } = openPage();
-    // The page has what the dock leaves, and never so little that it is gone.
-    expect(slot(container, "page").style).toMatchObject({ flex: 1, minHeight: 160 });
+    // The page has what the dock leaves, with no floor that would push the
+    // composer under the keyboard on a short screen.
+    expect(slot(container, "page").style).toMatchObject({ flex: 1, minHeight: 0 });
     // The dock is its content's height, and gives way (its content scrolls) before the page does.
     expect(slot(container, "conversation").style).toMatchObject({ flexShrink: 1 });
     for (const name of ["page", "conversation"] as const) {
