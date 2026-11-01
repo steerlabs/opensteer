@@ -2588,7 +2588,7 @@ describe("RunnerRuntime", () => {
       await runtime.close();
       await rm(temporaryRoot, { force: true, recursive: true });
     }
-  }, 2_000);
+  });
 
   it("cancels provider initialization before a sign-in challenge exists", async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-authentication-startup-"));
