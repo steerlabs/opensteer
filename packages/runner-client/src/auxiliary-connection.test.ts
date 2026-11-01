@@ -8,7 +8,7 @@ import {
   type RunnerAuxiliaryWelcome,
 } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RunnerAuxiliaryFenceLedger } from "./auxiliary-connection.js";
 
 describe("RunnerAuxiliaryFenceLedger", () => {
@@ -27,6 +27,35 @@ describe("RunnerAuxiliaryFenceLedger", () => {
     expect(expirations).toHaveLength(1);
     expect(expirations[0]?.message).toBe("The auxiliary stream lease has expired");
     expect(ledger.expired).toBe(true);
+  });
+
+  it("says the lease ran out only once its own clock agrees", () => {
+    // Timers and the wall clock round differently, so the expiry timer can fire
+    // a millisecond before the clock reaches the lease's end; the owner must
+    // not hear "expired" while the fence still stamps frames.
+    vi.useFakeTimers();
+    try {
+      const now = { value: Date.parse("2026-01-01T00:00:00.000Z") };
+      const ledger = new RunnerAuxiliaryFenceLedger({ now: () => now.value });
+      const expiredWhenTold: boolean[] = [];
+      ledger.onLeaseExpired(() => expiredWhenTold.push(ledger.expired));
+      ledger.adopt(
+        RunnerAuxiliaryWelcomeSchema.parse({
+          ...welcomeFields(),
+          streamLeaseExpiresAt: new Date(now.value + 30).toISOString(),
+        }),
+      );
+
+      now.value += 29;
+      vi.advanceTimersByTime(30);
+      expect(expiredWhenTold).toEqual([]);
+
+      now.value += 1;
+      vi.advanceTimersByTime(1);
+      expect(expiredWhenTold).toEqual([true]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("watches a lease adopted before anyone was listening", async () => {
