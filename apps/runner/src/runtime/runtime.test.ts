@@ -1627,7 +1627,6 @@ describe("RunnerRuntime", () => {
     const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
     await reconcile(registry, execute);
 
-    vi.useFakeTimers({ toFake: ["Date"] });
     try {
       await runtime.handleHarnessAuthentication({
         action: "start",
@@ -1635,6 +1634,16 @@ describe("RunnerRuntime", () => {
         methodId: "device-code",
       });
       await authenticationStarted.promise;
+      await vi.waitFor(async () => {
+        await expect(
+          runtime.handleHarnessAuthentication({
+            action: "read",
+            driverKind,
+            harnessInstanceId: harness.id,
+          }),
+        ).resolves.toMatchObject({ state: { status: "pending" } });
+      });
+      vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(Date.now() + 15 * 60_000 + 1);
 
       await expect(
@@ -1661,6 +1670,272 @@ describe("RunnerRuntime", () => {
     } finally {
       vi.useRealTimers();
       await cancel();
+      await runtime.close();
+    }
+  });
+
+  it("refuses an installed-engine update when its expired sign-in cannot stop", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-auth-stop-failure-test");
+    const authenticationStarted = deferred<void>();
+    let authenticationProcess: ReturnType<typeof spawn> | undefined;
+    const cancel = vi.fn(async () => {
+      throw new Error("sign-in process did not stop");
+    });
+    const driver = {
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], {
+          stdio: "ignore",
+        });
+        authenticationProcess = child;
+        await once(child, "spawn");
+        authenticationStarted.resolve(undefined);
+        return {
+          cancel,
+          challenge: {
+            kind: "device-code" as const,
+            userCode: "OPEN-STEER",
+            verificationUrl: "https://example.test/device",
+          },
+          result: once(child, "exit").then(
+            () => ({ detail: "Sign-in stopped", status: "failed" }) as const,
+          ),
+          status: "pending" as const,
+        };
+      },
+    };
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/test/engine",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    const inspectInstallation = vi
+      .spyOn(registry, "driverInstallation")
+      .mockResolvedValue(undefined);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, driverKind);
+    const harness = { ...execute.context.harness, id: execute.context.harnessInstanceId };
+    const sink: RunnerMessageSink = { send: async () => undefined };
+    await reconcile(registry, execute);
+
+    try {
+      await runtime.handleHarnessAuthentication({
+        action: "start",
+        harness,
+        methodId: "device-code",
+      });
+      await authenticationStarted.promise;
+      await vi.waitFor(async () => {
+        await expect(
+          runtime.handleHarnessAuthentication({
+            action: "read",
+            driverKind,
+            harnessInstanceId: harness.id,
+          }),
+        ).resolves.toMatchObject({ state: { status: "pending" } });
+      });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 15 * 60_000 + 1);
+
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({
+        error: {
+          code: "conflict",
+          message: "Opensteer couldn't stop the sign-in in progress; try again",
+          retryable: true,
+        },
+        status: "rejected",
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(authenticationProcess?.exitCode ?? authenticationProcess?.signalCode).toBeNull();
+      await expect(
+        runtime.handleHarnessAuthentication({
+          action: "read",
+          driverKind,
+          harnessInstanceId: harness.id,
+        }),
+      ).resolves.toMatchObject({ state: { status: "pending" } });
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({
+        error: { code: "conflict", retryable: true },
+        status: "rejected",
+      });
+      expect(inspectInstallation).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      const child = authenticationProcess;
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        await once(child, "exit");
+      }
+      await runtime.close();
+    }
+  });
+
+  it("keeps an expired sign-in reserved after update shutdown times out", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-auth-stop-timeout-test");
+    const authenticationStarted = deferred<void>();
+    const allowShutdown = deferred<void>();
+    let authenticationProcess: ReturnType<typeof spawn> | undefined;
+    const cancel = vi.fn(async () => {
+      await allowShutdown.promise;
+      const child = authenticationProcess;
+      if (!child || child.exitCode !== null || child.signalCode !== null) return;
+      child.kill();
+      await once(child, "exit");
+    });
+    const driver = {
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], {
+          stdio: "ignore",
+        });
+        authenticationProcess = child;
+        await once(child, "spawn");
+        authenticationStarted.resolve(undefined);
+        return {
+          cancel,
+          challenge: {
+            kind: "device-code" as const,
+            userCode: "OPEN-STEER",
+            verificationUrl: "https://example.test/device",
+          },
+          result: once(child, "exit").then(
+            () => ({ detail: "Sign-in stopped", status: "failed" }) as const,
+          ),
+          status: "pending" as const,
+        };
+      },
+    };
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/test/engine",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    vi.spyOn(registry, "driverInstallation").mockImplementation(async () => ({
+      descriptor: {
+        latestVersion: "2.0.0",
+        scope: "all",
+        update: "available",
+        version: "1.0.0",
+      },
+      plan: {
+        args: [
+          "-e",
+          "const pid = Number(process.argv[1]); try { process.kill(pid, 0); process.exit(2); } catch {}",
+          String(authenticationProcess?.pid),
+        ],
+        environment: {},
+        executable: process.execPath,
+        serializationKey: "test:timed-out-auth-update",
+      },
+    }));
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, driverKind);
+    const harness = { ...execute.context.harness, id: execute.context.harnessInstanceId };
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    await reconcile(registry, execute);
+
+    try {
+      await runtime.handleHarnessAuthentication({
+        action: "start",
+        harness,
+        methodId: "device-code",
+      });
+      await authenticationStarted.promise;
+      await vi.waitFor(async () => {
+        await expect(
+          runtime.handleHarnessAuthentication({
+            action: "read",
+            driverKind,
+            harnessInstanceId: harness.id,
+          }),
+        ).resolves.toMatchObject({ state: { status: "pending" } });
+      });
+      vi.useFakeTimers();
+      vi.setSystemTime(Date.now() + 15 * 60_000 + 1);
+
+      const firstUpdate = runtime.handleCommand(updateCommand(environmentId, driverKind), sink);
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({
+        error: { code: "conflict", retryable: true },
+        status: "rejected",
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(firstUpdate).resolves.toMatchObject({
+        error: {
+          code: "conflict",
+          message: "Opensteer couldn't stop the sign-in in progress; try again",
+          retryable: true,
+        },
+        status: "rejected",
+      });
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({
+        error: { code: "conflict", retryable: true },
+        status: "rejected",
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(authenticationProcess?.exitCode ?? authenticationProcess?.signalCode).toBeNull();
+
+      vi.useRealTimers();
+      allowShutdown.resolve(undefined);
+      const child = authenticationProcess;
+      if (!child) throw new Error("Authentication process did not start");
+      if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+      await vi.waitFor(async () => {
+        await expect(
+          runtime.handleHarnessAuthentication({
+            action: "read",
+            driverKind,
+            harnessInstanceId: harness.id,
+          }),
+        ).resolves.toMatchObject({ state: { status: "not-started" } });
+      });
+
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.harness-installation" &&
+            message.installation.update === "succeeded",
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+      allowShutdown.resolve(undefined);
+      await cancel().catch(() => undefined);
       await runtime.close();
     }
   });

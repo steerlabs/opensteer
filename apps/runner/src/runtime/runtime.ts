@@ -197,11 +197,15 @@ type HarnessAuthenticationResponse = Pick<
 
 interface HarnessAuthenticationEntry {
   readonly connectionSlot?: string;
+  /** Settles only after provider startup or a pending sign-in has ended. */
+  readonly completion?: Promise<void>;
   readonly driverKind: HarnessAuthenticationResponse["driverKind"];
   /** Epoch milliseconds after which this interaction may no longer be replayed. */
   readonly expiresAt: number;
   readonly methodId?: string;
   readonly state: HarnessAuthenticationState;
+  /** Resolves once cancellation or natural completion proves the process gone. */
+  readonly stopping?: Promise<void>;
   readonly cancel?: () => Promise<void>;
   readonly submit?: (value: string) => Promise<void>;
 }
@@ -960,6 +964,13 @@ export class RunnerRuntime {
 
     const { harness } = request;
     const existing = this.#harnessAuthentications.get(harness.id);
+    if (this.#driverAuthenticationIsStopping(harness.driverKind)) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This AI engine sign-in is still stopping",
+        retryable: true,
+      });
+    }
     if (existing && existing.expiresAt > Date.now()) {
       if (existing.driverKind !== harness.driverKind) {
         throw new OpensteerError({
@@ -1006,8 +1017,13 @@ export class RunnerRuntime {
       signal,
       startup.signal,
     ]);
+    let finishAuthenticationProcess!: () => void;
+    const authenticationCompletion = new Promise<void>((resolvePromise) => {
+      finishAuthenticationProcess = resolvePromise;
+    });
     const startingEntry: HarnessAuthenticationEntry = {
       cancel: async () => startup.abort(new Error("AI engine sign-in canceled")),
+      completion: authenticationCompletion,
       ...(request.connectionSlot ? { connectionSlot: request.connectionSlot } : {}),
       driverKind: harness.driverKind,
       expiresAt: Date.now() + harnessAuthenticationLifetimeMs,
@@ -1019,13 +1035,19 @@ export class RunnerRuntime {
       try {
         await existing?.cancel?.().catch(() => undefined);
         await priorStartup;
-        if (this.#harnessAuthentications.get(harness.id) !== startingEntry) return;
+        if (this.#harnessAuthentications.get(harness.id) !== startingEntry) {
+          finishAuthenticationProcess();
+          return;
+        }
         if (startupSignal.aborted) throw startupSignal.reason;
         await mkdir(this.#privateStateDirectory, { mode: 0o700, recursive: true });
         await setPrivateDirectoryMode(this.#privateStateDirectory);
         const options = await this.#providerStateOptions(harness.driverKind);
         const { providerState } = await prepareHarnessProviderState(harness, options);
-        if (this.#harnessAuthentications.get(harness.id) !== startingEntry) return;
+        if (this.#harnessAuthentications.get(harness.id) !== startingEntry) {
+          finishAuthenticationProcess();
+          return;
+        }
         if (startupSignal.aborted) throw startupSignal.reason;
         const started = await this.#harnesses.authenticateDefinition(
           harness,
@@ -1039,13 +1061,22 @@ export class RunnerRuntime {
             methodId: request.methodId,
           },
         );
+        if (started.status === "pending") {
+          void started.result.then(finishAuthenticationProcess, finishAuthenticationProcess);
+        } else {
+          finishAuthenticationProcess();
+        }
         if (startupSignal.aborted) {
           this.#failAuthentication(harness.id, startingEntry, startupSignal.reason);
-          if (started.status === "pending") await started.cancel().catch(() => undefined);
+          if (started.status === "pending") {
+            await started.cancel().then(finishAuthenticationProcess, () => undefined);
+          }
           return;
         }
         if (this.#harnessAuthentications.get(harness.id) !== startingEntry) {
-          if (started.status === "pending") await started.cancel().catch(() => undefined);
+          if (started.status === "pending") {
+            await started.cancel().then(finishAuthenticationProcess, () => undefined);
+          }
           return;
         }
         const expiresAt = Date.now() + harnessAuthenticationLifetimeMs;
@@ -1061,6 +1092,7 @@ export class RunnerRuntime {
         }
         const entry: HarnessAuthenticationEntry = {
           cancel: started.cancel,
+          completion: authenticationCompletion,
           ...(request.connectionSlot ? { connectionSlot: request.connectionSlot } : {}),
           driverKind: harness.driverKind,
           expiresAt,
@@ -1079,6 +1111,7 @@ export class RunnerRuntime {
           (error) => this.#failAuthentication(harness.id, entry, error),
         );
       } catch (error) {
+        finishAuthenticationProcess();
         this.#failAuthentication(harness.id, startingEntry, error);
       }
     })();
@@ -1139,31 +1172,108 @@ export class RunnerRuntime {
   ): Promise<HarnessAuthenticationEntry | undefined> {
     const existing = this.#harnessAuthentications.get(harnessInstanceId);
     if (!existing) return undefined;
+    if (existing.stopping) return existing;
     if (existing.expiresAt > Date.now()) return existing;
     await this.#discardAuthentication(harnessInstanceId);
     return undefined;
   }
 
-  /** Cancels and forgets one interaction, leaving no entry behind to replay. */
+  /** Cancels one interaction and forgets it only once its process is gone. */
   async #discardAuthentication(harnessInstanceId: string, awaitStartup = false): Promise<void> {
     const existing = this.#harnessAuthentications.get(harnessInstanceId);
-    this.#harnessAuthentications.delete(harnessInstanceId);
-    const cancellation = existing?.cancel?.().catch(() => undefined);
     const startup = this.#harnessAuthenticationStartupsByInstance.get(harnessInstanceId);
+    if (!existing) {
+      if (awaitStartup && startup) {
+        await withTimeout(startup, runtimeTaskStopWaitMs, {
+          timeoutError: () =>
+            new OpensteerError({
+              code: "conflict",
+              message: "AI engine sign-in did not stop before the maintenance deadline",
+              retryable: true,
+            }),
+        });
+      }
+      return;
+    }
+    if (existing.stopping) {
+      if (!awaitStartup) {
+        await existing.stopping;
+        return;
+      }
+      await withTimeout(existing.stopping, runtimeTaskStopWaitMs, {
+        timeoutError: () =>
+          new OpensteerError({
+            code: "conflict",
+            message: "AI engine sign-in did not stop before the maintenance deadline",
+            retryable: true,
+          }),
+      });
+      return;
+    }
+
+    const cancel = existing.cancel;
+    const cancellation = cancel ? Promise.resolve().then(cancel) : undefined;
+    if (!cancellation && !existing.completion && !startup) {
+      this.#harnessAuthentications.delete(harnessInstanceId);
+      return;
+    }
+    const cancellationProof = cancellation?.then(
+      () => undefined,
+      () => new Promise<void>(() => undefined),
+    );
+    const stopping = startup
+      ? Promise.all(
+          [startup, existing.completion, cancellationProof].filter(
+            (task): task is Promise<void> => task !== undefined,
+          ),
+        ).then(() => undefined)
+      : existing.completion
+        ? Promise.race(
+            [existing.completion, cancellationProof].filter(
+              (task): task is Promise<void> => task !== undefined,
+            ),
+          )
+        : (cancellationProof ?? Promise.resolve());
+    const stoppingEntry: HarnessAuthenticationEntry = { ...existing, stopping };
+    this.#harnessAuthentications.set(harnessInstanceId, stoppingEntry);
+    void stopping.then(() => {
+      if (this.#harnessAuthentications.get(harnessInstanceId) === stoppingEntry) {
+        this.#harnessAuthentications.delete(harnessInstanceId);
+      }
+    });
+
     if (!awaitStartup) {
       await cancellation;
       return;
     }
-    const stopping = [cancellation, startup].filter(
-      (task): task is Promise<void> => task !== undefined,
-    );
-    if (!(await settlesWithin(stopping, runtimeTaskStopWaitMs))) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "AI engine sign-in did not stop before the maintenance deadline",
-        retryable: true,
-      });
+    const shutdown = startup
+      ? Promise.all(
+          [startup, existing.completion, cancellation].filter(
+            (task): task is Promise<void> => task !== undefined,
+          ),
+        ).then(() => undefined)
+      : existing.completion
+        ? Promise.race(
+            [existing.completion, cancellation].filter(
+              (task): task is Promise<void> => task !== undefined,
+            ),
+          )
+        : (cancellation ?? Promise.resolve());
+    await withTimeout(shutdown, runtimeTaskStopWaitMs, {
+      timeoutError: () =>
+        new OpensteerError({
+          code: "conflict",
+          message: "AI engine sign-in did not stop before the maintenance deadline",
+          retryable: true,
+        }),
+    });
+  }
+
+  #driverAuthenticationIsStopping(driverKind: HarnessId): boolean {
+    for (const authentication of this.#harnessAuthentications.values()) {
+      if (authentication.driverKind === driverKind && authentication.stopping) return true;
     }
+    return false;
   }
 
   handleCommand(command: RunnerCommand, sink: RunnerMessageSink): Promise<CommandDecision> {
@@ -1235,8 +1345,22 @@ export class RunnerRuntime {
           !this.#harnesses.installationAffects(driverKind, definition.stateKind)
         )
           continue;
+        if (authentication.stopping)
+          return reject(
+            "conflict",
+            "Opensteer couldn't stop the sign-in in progress; try again",
+            true,
+          );
         if (authentication.expiresAt <= Date.now()) {
-          await this.#discardAuthentication(harnessInstanceId, true);
+          try {
+            await this.#discardAuthentication(harnessInstanceId, true);
+          } catch {
+            return reject(
+              "conflict",
+              "Opensteer couldn't stop the sign-in in progress; try again",
+              true,
+            );
+          }
           continue;
         }
         if (
@@ -1701,6 +1825,9 @@ export class RunnerRuntime {
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#harnessMaintenance.has(command.context.harnessInstanceId)) {
       return reject("conflict", "AI engine profile maintenance is in progress", true);
+    }
+    if (this.#driverAuthenticationIsStopping(command.context.harness.driverKind)) {
+      return reject("conflict", "AI engine sign-in is still stopping", true);
     }
     if (
       this.#driverMaintenance.has(command.context.harness.driverKind) &&
