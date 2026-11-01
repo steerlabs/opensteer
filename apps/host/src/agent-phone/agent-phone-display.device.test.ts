@@ -2443,12 +2443,39 @@ it.each([
           const after = own.view.trace.frames.length;
           await delay(500);
           expect(own.view.trace.frames).toHaveLength(after);
-          const screen = await physicalScreen();
-          await phone.shell(
-            `input swipe ${Math.round(screen.width / 2)} ${Math.round(screen.height * 0.8)} ${Math.round(screen.width / 2)} ${Math.round(screen.height * 0.2)} 300`,
+          await eventually(
+            "keyguard takes focus before opening the PIN bouncer",
+            async () =>
+              /mCurrentFocus=Window\{[^}]*\bNotificationShade\}/u.test(
+                await phone.shell("dumpsys window"),
+              )
+                ? true
+                : undefined,
+            15_000,
+          );
+          await phone.shell("wm dismiss-keyguard");
+          await eventually(
+            "PIN bouncer is showing before entering the PIN",
+            async () =>
+              /isBouncerShowing\(\): true/u.test(
+                await phone.shell("dumpsys activity service com.android.systemui/.SystemUIService"),
+              )
+                ? true
+                : undefined,
+            15_000,
           );
           await phone.shell(`input text ${pin}`);
           await phone.shell("input keyevent KEYCODE_ENTER");
+          await eventually(
+            "keyguard disappears after entering the PIN once",
+            async () =>
+              /KeyguardServiceDelegate[\s\S]*?\bshowing=false/u.test(
+                await phone.shell("dumpsys window policy"),
+              )
+                ? true
+                : undefined,
+            15_000,
+          );
           const resumed = await firstFrame(own.view, after);
           expect(resumed.header.generation).toBeGreaterThan(generation);
           await decodedPixels("locally-unlocked-pin", resumed);
