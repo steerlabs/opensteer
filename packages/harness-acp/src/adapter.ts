@@ -40,6 +40,8 @@ import type {
 } from "./protocol.js";
 import { acpReadTextFileHandler, createAcpProtocolClient } from "./protocol.js";
 import type {
+  AcpErrorContext,
+  AcpErrorInterpretation,
   AcpHarnessOptions,
   AcpNormalizedUpdate,
   AcpPermissionChoice,
@@ -59,6 +61,10 @@ type OpenMode =
 interface ActiveTurn {
   readonly assistant: Map<string, string>;
   readonly completion: Deferred<void>;
+  readonly deferredAssistant: {
+    readonly messageId?: string;
+    readonly text: string;
+  }[];
   readonly nodes: SubagentNodes;
   readonly reasoning: Map<string, string>;
   readonly requestedBy: HarnessRunInput["requestedBy"];
@@ -66,6 +72,7 @@ interface ActiveTurn {
   readonly tools: Map<string, AcpToolCall>;
   interruptRequested: boolean;
   terminal: boolean;
+  stderrStart: number;
   usage?: NonNullable<Awaited<ReturnType<AcpProtocolClient["prompt"]>>["usage"]>;
 }
 
@@ -136,7 +143,9 @@ class AcpHarnessSession implements HarnessSession {
   readonly #process: SupervisedProcess;
   readonly #publisher: TurnPublisher;
   readonly #pending = new Map<RequestId, PendingInteraction>();
-  readonly #stderr: string[] = [];
+  readonly #stderrSecrets: readonly string[];
+  #stderr = "";
+  #stderrDropped = 0;
   readonly #lifetime = new AbortController();
   readonly #abortListener: () => void;
   #active: ActiveTurn | undefined;
@@ -163,6 +172,13 @@ class AcpHarnessSession implements HarnessSession {
       maxBytes: options.maxEventBytes,
       maxItems: options.maxEventItems,
     });
+    this.#stderrSecrets = [
+      context.agentTools.token,
+      context.integrationTools.token,
+      ...Object.entries(context.environment)
+        .filter(([name]) => credentialNamePattern.test(name))
+        .map(([, value]) => value),
+    ].filter((value) => value.length >= 4);
     this.events = this.#publisher.events;
     this.#client = dependencies.createClient({
       handlers: {
@@ -173,7 +189,7 @@ class AcpHarnessSession implements HarnessSession {
           ...context.writableRoots,
           ...(context.attachmentDirectory ? [context.attachmentDirectory] : []),
         ]),
-        update: (_sessionId, update) => this.#handleUpdate(update),
+        update: (sessionId, update) => this.#handleUpdate(sessionId, update),
       },
       process,
       ...(options.hooks.transformStdout
@@ -183,7 +199,7 @@ class AcpHarnessSession implements HarnessSession {
     });
     this.#abortListener = () => void this.stop();
     context.signal.addEventListener("abort", this.#abortListener, { once: true });
-    void this.#drainStderr();
+    process.child.stderr.on("data", (chunk: Buffer | string) => this.#appendStderr(chunk));
     void process.exited.then((exit) => this.#processExited(exit));
   }
 
@@ -209,7 +225,7 @@ class AcpHarnessSession implements HarnessSession {
       return session;
     } catch (error) {
       await session.#stop(false);
-      throw options.hooks.classifyError(error, {
+      throw session.#classifyError(error, {
         operation: mode.type === "resume" ? "resume" : "new",
         stderrTail: session.#stderrTail(),
       });
@@ -235,12 +251,14 @@ class AcpHarnessSession implements HarnessSession {
     const active: ActiveTurn = {
       assistant: new Map(),
       completion: new Deferred<void>(),
+      deferredAssistant: [],
       interruptRequested: run.signal.aborted,
       nodes: new SubagentNodes((event) => this.#publish(event)),
       reasoning: new Map(),
       requestedBy: run.requestedBy,
       runId: run.runId,
       terminal: false,
+      stderrStart: this.#stderrPosition(),
       tools: new Map(),
     };
     this.#active = active;
@@ -256,6 +274,7 @@ class AcpHarnessSession implements HarnessSession {
       }
       const blocks = await this.#promptBlocks(run);
       this.#publish(runStartedEvent());
+      active.stderrStart = this.#stderrPosition();
       // A Run abort is translated through the engine's cancel policy. In
       // particular, resume-based ACP engines keep this RPC alive until their
       // post-cancel prompt outcome arrives.
@@ -265,6 +284,14 @@ class AcpHarnessSession implements HarnessSession {
         this.#lifetime.signal,
       );
       if (result.usage) active.usage = result.usage;
+      await drainPendingProcessOutput();
+      const interpretation = this.#options.hooks.classifyError(undefined, {
+        operation: "prompt-result",
+        providerSessionReference: this.providerSessionReference,
+        stderrTail: this.#stderrSince(active.stderrStart),
+      });
+      this.#flushDeferredAssistant(active, interpretationDiscard(interpretation));
+      if (interpretation) throw interpretationError(interpretation);
       await this.#stopBackgroundChildren(active);
       this.#flushTurn(active);
       this.#finish(active, active.interruptRequested ? "interrupted" : "completed");
@@ -274,12 +301,16 @@ class AcpHarnessSession implements HarnessSession {
         if (active.interruptRequested || run.signal.aborted || this.#closed) {
           this.#finish(active, "interrupted");
         } else {
+          const interpretation = this.#options.hooks.classifyError(error, {
+            operation: "prompt",
+            stderrTail: this.#stderrSince(active.stderrStart),
+          });
+          this.#flushDeferredAssistant(active, interpretationDiscard(interpretation));
           this.#fail(
             active,
-            this.#options.hooks.classifyError(error, {
-              operation: "prompt",
-              stderrTail: this.#stderrTail(),
-            }),
+            interpretation
+              ? interpretationError(interpretation)
+              : toHarnessError(error, `${this.#options.engineLabel} ACP prompt failed`),
           );
         }
       }
@@ -475,8 +506,9 @@ class AcpHarnessSession implements HarnessSession {
     );
   }
 
-  #handleUpdate(update: unknown): void {
+  #handleUpdate(sessionId: string, update: unknown): void {
     if (this.#replaying) return;
+    if (this.#providerSessionReference && sessionId !== this.#providerSessionReference) return;
     const active = this.#active;
     if (!active || active.terminal) return;
     const normalized = this.#options.hooks.normalizeUpdate?.(update) ?? normalizeAcpUpdate(update);
@@ -486,6 +518,13 @@ class AcpHarnessSession implements HarnessSession {
   #applyUpdate(active: ActiveTurn, update: AcpNormalizedUpdate): void {
     switch (update.kind) {
       case "assistant": {
+        if (update.deferUntilPromptSettles) {
+          active.deferredAssistant.push({
+            ...(update.messageId ? { messageId: update.messageId } : {}),
+            text: update.text,
+          });
+          return;
+        }
         const key = update.messageId ?? "assistant";
         active.assistant.set(key, `${active.assistant.get(key) ?? ""}${update.text}`);
         if (update.text) this.#publish({ data: { text: update.text }, type: "assistant.delta" });
@@ -569,6 +608,25 @@ class AcpHarnessSession implements HarnessSession {
     }
   }
 
+  #flushDeferredAssistant(active: ActiveTurn, discardText: string | undefined): void {
+    const discardedKeys = new Set<string>();
+    if (discardText !== undefined) {
+      const grouped = new Map<string, string>();
+      for (const update of active.deferredAssistant) {
+        const key = update.messageId ?? "assistant";
+        grouped.set(key, `${grouped.get(key) ?? ""}${update.text}`);
+      }
+      for (const [key, text] of grouped) {
+        if (this.#sanitizeStderr(text).trim() === discardText.trim()) discardedKeys.add(key);
+      }
+    }
+    for (const update of active.deferredAssistant) {
+      if (discardedKeys.has(update.messageId ?? "assistant")) continue;
+      this.#applyUpdate(active, { ...update, kind: "assistant" });
+    }
+    active.deferredAssistant.length = 0;
+  }
+
   async #interruptActive(active: ActiveTurn): Promise<void> {
     if (active.terminal) return;
     try {
@@ -578,7 +636,7 @@ class AcpHarnessSession implements HarnessSession {
       );
     } catch (error) {
       if (!this.#closed) {
-        const failure = this.#options.hooks.classifyError(error, {
+        const failure = this.#classifyError(error, {
           operation: "cancel",
           stderrTail: this.#stderrTail(),
         });
@@ -725,15 +783,43 @@ class AcpHarnessSession implements HarnessSession {
     this.#publisher.closeStream(error);
   }
 
-  async #drainStderr(): Promise<void> {
-    for await (const chunk of this.#process.stderr) {
-      this.#stderr.push(chunk.toString("utf8"));
-      while (this.#stderr.join("").length > 16_000) this.#stderr.shift();
-    }
+  #appendStderr(chunk: Buffer | string): void {
+    this.#stderr += chunk.toString();
+    if (this.#stderr.length <= 16_000) return;
+    const removed = this.#stderr.length - 16_000;
+    this.#stderr = this.#stderr.slice(removed);
+    this.#stderrDropped += removed;
   }
 
   #stderrTail(): string {
-    return this.#stderr.join("").slice(-16_000);
+    return this.#sanitizeStderr(this.#stderr);
+  }
+
+  #stderrPosition(): number {
+    return this.#stderrDropped + this.#stderr.length;
+  }
+
+  #stderrSince(position: number): string {
+    return this.#sanitizeStderr(this.#stderr.slice(Math.max(0, position - this.#stderrDropped)));
+  }
+
+  #sanitizeStderr(value: string): string {
+    let sanitized = value;
+    for (const secret of this.#stderrSecrets)
+      sanitized = sanitized.replaceAll(secret, "[REDACTED]");
+    return sanitized
+      .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
+      .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
+      .replace(
+        /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*\S+/giu,
+        "$1=[REDACTED]",
+      );
+  }
+
+  #classifyError(error: unknown, context: AcpErrorContext): OpensteerError {
+    const interpretation = this.#options.hooks.classifyError(error, context);
+    if (interpretation) return interpretationError(interpretation);
+    return toHarnessError(error, `${this.#options.engineLabel} ACP operation failed`);
   }
 
   #publish(event: HarnessEvent): void {
@@ -795,6 +881,28 @@ function acpFailure(error: OpensteerError): {
     retryable: error.retryable,
   };
 }
+
+function interpretationError(
+  interpretation: OpensteerError | AcpErrorInterpretation,
+): OpensteerError {
+  return interpretation instanceof OpensteerError ? interpretation : interpretation.error;
+}
+
+function interpretationDiscard(
+  interpretation: OpensteerError | AcpErrorInterpretation | undefined,
+): string | undefined {
+  return interpretation instanceof OpensteerError
+    ? undefined
+    : interpretation?.discardAssistantText;
+}
+
+/** Lets already-written stderr cross its independent pipe before prompt settlement is interpreted. */
+function drainPendingProcessOutput(): Promise<void> {
+  return new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+}
+
+const credentialNamePattern =
+  /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/iu;
 
 export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdate[] {
   if (!isRecord(update) || typeof update.sessionUpdate !== "string") return [];

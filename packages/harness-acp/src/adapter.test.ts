@@ -104,6 +104,18 @@ describe("ACP lifecycle", () => {
     await fixture.adapter.close();
   });
 
+  it("publishes observed usage once before a successful prompt is interpreted as failed", async () => {
+    const fixture = await setup("usage-prompt-result-error");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    await session.execute(fixture.turn("fail after end_turn"));
+    await expectTerminal(observed.events, "run.failed");
+    expectUsageBeforeTerminal(observed.events, "run.failed");
+    await session.stop();
+    await observed.done;
+    await fixture.adapter.close();
+  });
+
   it("publishes observed usage once before an unexpected process exit fails", async () => {
     const fixture = await setup("usage-process-exit");
     const session = await fixture.adapter.startSession(fixture.context);
@@ -248,6 +260,7 @@ type Scenario =
   | "usage-interruption"
   | "usage-process-exit"
   | "usage-prompt-error"
+  | "usage-prompt-result-error"
   | "usage-success";
 
 async function setup(scenario: Scenario) {
@@ -269,13 +282,17 @@ async function setup(scenario: Scenario) {
     },
     engineLabel: "Test ACP",
     hooks: {
-      classifyError: (error) =>
-        error instanceof OpensteerError
-          ? error
-          : new OpensteerError({
-              code: "harness_error",
-              message: error instanceof Error ? error.message : "ACP failed",
-            }),
+      classifyError: (error, context) =>
+        context.operation === "prompt-result"
+          ? scenario === "usage-prompt-result-error"
+            ? new OpensteerError({ code: "harness_error", message: "native end_turn failed" })
+            : undefined
+          : error instanceof OpensteerError
+            ? error
+            : new OpensteerError({
+                code: "harness_error",
+                message: error instanceof Error ? error.message : "ACP failed",
+              }),
       permissionChoices: (request: AcpPermissionRequest) =>
         request.options.map((option) => ({
           hint: option.id === "allow" ? "allow-once" : "reject-once",
