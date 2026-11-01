@@ -6512,6 +6512,7 @@ export const browserNativeOnlyMigration: Migration = {
         (select id from browser_sessions where profile_id in (select id from browser_native_cutover_removed));
       delete from browser_sessions where profile_id in (select id from browser_native_cutover_removed);
       delete from browser_profile_grants where profile_id in (select id from browser_native_cutover_removed);
+      delete from browser_source_imports where profile_id in (select id from browser_native_cutover_removed);
       delete from browser_history_entries where profile_id in (select id from browser_native_cutover_removed);
       delete from browser_history_icons where profile_id in (select id from browser_native_cutover_removed);
       alter table browser_profiles

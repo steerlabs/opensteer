@@ -874,8 +874,7 @@ type BrowserAccessState = {
 };
 
 /**
- * Which saved browser profile a Workspace's agents may use, or the name a
- * fresh session's sign-ins are saved under — the same choice the web offers.
+ * Which browser profile a Workspace's agents may use, including empty creation.
  * Profiles come from the Host snapshot, never from the agent's words; a
  * profile already available to the Workspace says so and completes at once.
  */

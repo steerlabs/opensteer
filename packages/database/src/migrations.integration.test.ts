@@ -5818,7 +5818,7 @@ integration.sequential("browser sign-ins migration", () => {
         select count(*)::text as count from public.browser_source_imports
       `.execute(database)
       ).rows,
-    ).toEqual([{ count: "1" }]);
+    ).toEqual([{ count: "0" }]);
   });
 
   it("accepts the sign-in Request kind and agent action", async () => {

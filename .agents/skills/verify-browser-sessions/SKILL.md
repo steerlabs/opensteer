@@ -36,7 +36,7 @@ pnpm exec vitest run packages/browser-runtime-core/src/native-profiles.test.ts p
 pnpm exec vitest run apps/browser-runtime/src/browser/playwright-launcher.test.ts apps/browser-runtime/src/browser/persistent-launch-cleanup.test.ts
 pnpm exec vitest run apps/desktop/src/browser/electron-browser-launcher.test.ts apps/desktop/src/browser/session-cookie-mirror.test.ts apps/desktop/src/browser/browser-session-policy.test.ts
 pnpm exec vitest run packages/client/src/host/pending-browser-tabs.test.ts packages/client/src/host/browser-presentation-wait.test.ts
-pnpm test:integration -- packages/database/src/browser-native-only-migration.integration.test.ts
+pnpm test:integration -- tests/browser-native-only-migration.integration.test.ts
 pnpm test:integration -- packages/database/src/operation-budget.integration.test.ts
 pnpm test:integration -- tests/browser-native-profiles.integration.test.ts
 pnpm test:integration -- tests/browser-profiles.integration.test.ts

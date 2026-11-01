@@ -490,7 +490,7 @@ reads or rewrites native files or encryption keys. Non-local profiles are remove
 only archived binding/owner stubs required by deletion jobs survive. There is no
 Vault conversion, portable snapshot, seed, checkpoint, lease grace or speculative
 profile preparation. See the [storage contract](../packages/protocol/src/browser-profile-storage.ts)
-and the [native migration proof](../packages/database/src/browser-native-only-migration.integration.test.ts).
+and the [native migration proof](../tests/browser-native-only-migration.integration.test.ts).
 
 Electron roots live beneath its `sessionData` tree, namespaced by Deployment,
 outside disposable Runner slots. The Network Service sandbox receives only that

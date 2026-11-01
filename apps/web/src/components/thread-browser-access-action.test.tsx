@@ -73,5 +73,3 @@ describe("BrowserAccessBody", () => {
     expect(markup).toContain('disabled="" type="button">Allow full control');
   });
 });
-
-describe("resolveBrowserAccess", () => {});
