@@ -365,6 +365,46 @@ describe("Add this iPhone", () => {
     );
   });
 
+  it("shows each app's turn on the iPhone's page, and starts no other app meanwhile", async () => {
+    const phone = await addedIphone();
+    const calendarAnswer = Promise.withResolvers<"granted">();
+    phone.fake.device.answerPermissionWith("apple-calendar", calendarAnswer.promise);
+    await mount(<ThisIphone phone={phone} />);
+
+    const sharing = phone.controller.share({
+      apps: [
+        { access: "read-write", app: "apple-calendar" },
+        { access: "read", app: "apple-contacts" },
+      ],
+      hostClient: phone.host,
+    });
+    await vi.waitFor(() =>
+      expect(rowLabels().slice(0, 2)).toEqual([
+        "Calendar, Waiting for iPhone…",
+        "Contacts, Up next",
+      ]),
+    );
+    expect(switches().slice(0, 2)).toEqual(["Calendar: on", "Contacts: on"]);
+    // Photos can't start a second iOS prompt while Calendar's is open.
+    expect(switchFor("Photos").disabled).toBe(true);
+
+    calendarAnswer.resolve("granted");
+    await sharing;
+    await vi.waitFor(() =>
+      expect(rowLabels().slice(0, 2)).toEqual([
+        "Calendar, Can read and change",
+        "Contacts, Can read",
+      ]),
+    );
+    expect(switchFor("Photos").disabled).toBe(false);
+    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
+      "requestPermission:apple-calendar",
+      expect.stringMatching(/^answerApproval:.+:allow:apple-calendar:read-write$/u),
+      "requestPermission:apple-contacts",
+      expect.stringMatching(/^answerApproval:.+:allow:apple-contacts:read$/u),
+    ]);
+  });
+
   it("goes on past an app iOS refuses, which stays off and says how to allow it", async () => {
     const phone = iphone();
     phone.fake.device.answerPermissionWith("apple-contacts", "denied");

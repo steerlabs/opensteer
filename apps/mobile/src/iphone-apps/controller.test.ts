@@ -820,6 +820,11 @@ describe("the apps chosen with Add", () => {
     // Contacts waits its turn: iOS is never asked about two apps at once.
     expect(controller.getState().queued).toEqual(["apple-contacts"]);
     expect(controller.getState().changes["apple-calendar"]?.phase).toBe("asking-iphone");
+    // Nor can a tap on another app start a second prompt meanwhile.
+    await expect(
+      controller.allow({ access: "read", app: "iphone-photos", hostClient: host.client }),
+    ).resolves.toEqual({ kind: "busy" });
+    expect(fake.device.calls).toEqual(["requestPermission:apple-calendar"]);
 
     controller.owner.stop();
     calendarAnswer.resolve("granted");

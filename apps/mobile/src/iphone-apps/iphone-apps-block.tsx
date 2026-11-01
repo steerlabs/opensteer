@@ -26,7 +26,7 @@ import {
 import { IphoneAppRow } from "./app-row.js";
 import { IphoneApprovalCard } from "./approval-card.js";
 import { useIphoneAppsState } from "./context.js";
-import { iphonePermissionOf, type IphoneAppsController } from "./controller.js";
+import { iphonePermissionOf, iphoneTurningOn, type IphoneAppsController } from "./controller.js";
 import {
   iphoneAllowFailure,
   iphoneAnswerFailure,
@@ -110,9 +110,11 @@ export function IphoneAppsBlock(props: {
     ];
   });
   const disabled = !props.canRespond || busy !== null || removing;
+  // iOS asks about one app at a time, so nothing else is turned on meanwhile.
+  const turningOn = iphoneTurningOn(state);
   const disabledReason = !props.canRespond
     ? `${props.opensteer} can't be reached right now.`
-    : busy !== null || removing
+    : busy !== null || removing || turningOn
       ? "Wait for the current change to finish."
       : null;
 
@@ -271,7 +273,9 @@ export function IphoneAppsBlock(props: {
                       <Toggle
                         accessibilityHint={view.line}
                         accessibilityLabel={view.name}
-                        disabled={disabled || !control.changeable}
+                        disabled={
+                          disabled || !control.changeable || (view.access === null && turningOn)
+                        }
                         onChange={(on) => toggle(row, on)}
                         value={
                           busy === view.app && intent?.app === view.app ? intent.on : control.on

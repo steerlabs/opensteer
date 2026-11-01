@@ -198,13 +198,15 @@ export class IphoneAppsController {
         if (!fence.current()) return;
         this.#queued = this.#queued.filter((queued) => queued !== app);
         this.#publish();
-        await this.allow({ access, app, hostClient: input.hostClient }).catch((error: unknown) => {
-          if (!fence.current()) return;
-          this.#failures.set(app, {
-            kind: "not-allowed",
-            message: error instanceof Error ? error.message : "It wasn't turned on. Try again.",
-          });
-        });
+        await this.#allowOne({ access, app, hostClient: input.hostClient }).catch(
+          (error: unknown) => {
+            if (!fence.current()) return;
+            this.#failures.set(app, {
+              kind: "not-allowed",
+              message: error instanceof Error ? error.message : "It wasn't turned on. Try again.",
+            });
+          },
+        );
       }
     } finally {
       // Only one run is ever under way, so what is left of its queue is its own.
@@ -231,6 +233,17 @@ export class IphoneAppsController {
    * stays `unknown` beside the current access until `check` reads them.
    */
   async allow(input: {
+    readonly access: IntegrationAccess;
+    readonly app: IphoneAppId;
+    readonly hostClient: HostClient;
+  }): Promise<IphoneAllowOutcome> {
+    // iOS asks about one app at a time: nothing new starts while Add's apps,
+    // or another app, are still being turned on.
+    if (iphoneTurningOn(this.#state)) return { kind: "busy" };
+    return this.#allowOne(input);
+  }
+
+  async #allowOne(input: {
     readonly access: IntegrationAccess;
     readonly app: IphoneAppId;
     readonly hostClient: HostClient;
@@ -1252,6 +1265,19 @@ function issueFailure(issue: IphoneAppsIssue, message: string | null): IphoneAdd
  * Photos may be limited to what the person chose. Location has no limited
  * access: Allow Once reads as granted until it ends.
  */
+/**
+ * Whether an app is being turned on or widened from here, or Add's apps are
+ * still waiting their turn. Another can't start meanwhile; turning off can.
+ */
+export function iphoneTurningOn(state: Pick<IphoneAppsState, "changes" | "queued">): boolean {
+  return (
+    state.queued.length > 0 ||
+    Object.values(state.changes).some(
+      (change) => change !== undefined && change.phase !== "unknown",
+    )
+  );
+}
+
 export function iphonePermissionAllows(app: IphoneAppId, permission: IphonePermission): boolean {
   return (
     permission === "granted" ||
