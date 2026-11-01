@@ -19,7 +19,6 @@ const repositoryRoot = path.resolve(import.meta.dirname, "..");
  */
 const vendorPackages = shippedHarnessKinds.map((kind) => {
   const { runtime } = shippedHarnessCatalogEntry(kind);
-  if (runtime.shape === "installed") throw new Error(`${kind} ships no runtime`);
   return runtime.npmPackage;
 });
 
@@ -52,7 +51,7 @@ describe("harness vendor pins", () => {
   });
 
   it("references every vendor package through the pnpm catalog", () => {
-    const vendorNames = new Set(vendorPackages);
+    const vendorNames: ReadonlySet<string> = new Set(vendorPackages);
     for (const manifestPath of packageManifests) {
       const manifest = JSON.parse(
         readFileSync(path.join(repositoryRoot, manifestPath), "utf8"),

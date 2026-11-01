@@ -251,6 +251,8 @@ export function harnessCatalogEntry(driverKind: string): HarnessCatalogEntry | u
  * The entry for a kind this tree ships a driver for. Total, unlike
  * {@link harnessCatalogEntry}, because the kind came from the catalog itself.
  */
+export function shippedHarnessCatalogEntry(kind: ShippedHarnessKind): ShippedHarnessCatalogEntry;
+export function shippedHarnessCatalogEntry(kind: HarnessKind): HarnessCatalogEntry;
 export function shippedHarnessCatalogEntry(kind: HarnessKind): HarnessCatalogEntry {
   const entry = harnessCatalogEntry(kind);
   if (!entry) throw new Error(`No harness catalog entry for ${kind}`);
