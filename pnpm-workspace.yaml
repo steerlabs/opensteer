@@ -51,3 +51,10 @@ overrides:
   "postcss>source-map-js": 1.2.2
   # Vitest pins its own Vite; keep every copy on the patched release.
   "vite@<8.2.4": 8.2.4
+
+# app-builder-lib (desktop release tooling) names Windows and DMG builders as peers;
+# neither target is built from the root.
+peerDependencyRules:
+  ignoreMissing:
+    - dmg-builder
+    - electron-builder-squirrel-windows

@@ -256,3 +256,26 @@ push from this Mac are unavailable. Desktop notifications still work. Managed
 integration OAuth and hosted callback relays are unavailable; API keys and your
 own OAuth apps work where the provider accepts the deployment's callback URL.
 OAuth release identity remains required for Host-native sign-in.
+
+## Account service
+
+The Beta's Account service (`accounts.beta.opensteer.com`) ships from the `account`
+job in [release.yml](../.github/workflows/release.yml) on every eligible main push,
+after the insider preflight and before that insider publishes, so a Beta never
+reaches people ahead of the Account it may depend on. A failed rollout blocks the
+insider. Nobody deploys it by hand, and
+[deploy-account.sh](../.github/scripts/deploy-account.sh) never replaces a newer
+live source with an older one.
+
+The workload lives in [deploy/account](../deploy/account); secrets stay in Secret
+Manager and only their names and versions are here. New pods migrate the database
+at startup while the previous release keeps serving, so every migration must work
+with the previous release: add first, and drop or rename only once no running
+release reads the old shape.
+
+Outside this repo, the GitHub environment `account` (main only) is the only caller
+the Workload Identity provider `github-account-deployer` in `opensteer-admin`'s
+`github` pool admits. Its service account, `gha-account-deployer@opensteer-admin`,
+may push to the `staging` Artifact Registry repository, connect to `cell-1` and
+change only the Account's objects in `opensteer-system`. The cluster, database,
+edge, secrets and that Role stay in `opensteer-infra`.

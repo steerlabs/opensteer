@@ -1,0 +1,323 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: account
+  namespace: opensteer-system
+  annotations:
+    iam.gke.io/gcp-service-account: opensteer-account@opensteer-staging.iam.gserviceaccount.com
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: account-runtime-v9
+  namespace: opensteer-system
+spec:
+  provider: gke
+  parameters:
+    secrets: |
+      - resourceName: "projects/opensteer-staging/secrets/opensteer-account-auth/versions/2"
+        path: "account-auth"
+      - resourceName: "projects/opensteer-staging/secrets/opensteer-account-runtime/versions/9"
+        path: "account-runtime.json"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account
+  namespace: opensteer-system
+spec:
+  selector:
+    app.kubernetes.io/name: account
+  ports:
+    - name: http
+      port: 4142
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account
+  namespace: opensteer-system
+  annotations:
+    # Lets the deploy refuse to replace a newer release with an older one.
+    opensteer.dev/source-revision: "@SOURCE_REVISION@"
+spec:
+  replicas: 2
+  minReadySeconds: 10
+  progressDeadlineSeconds: 600
+  # Each new pod migrates the database at startup while the previous release
+  # keeps serving, so every migration must work with the previous release.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: account
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: account
+    spec:
+      serviceAccountName: account
+      terminationGracePeriodSeconds: 90
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: account
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          minDomains: 2
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy@sha256:10baeffb98e5a0318b03891049c63aec08ecd99b7aae944227d69bc9d0bbf1e6
+          restartPolicy: Always
+          args:
+            - --private-ip
+            - --auto-iam-authn
+            - --structured-logs
+            - --health-check
+            - --http-address=0.0.0.0
+            - --http-port=9801
+            - --address=127.0.0.1
+            - --port=5432
+            - opensteer-staging:us-west1:cell-1-pg
+          startupProbe:
+            httpGet: { path: /startup, port: 9801 }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet: { path: /readiness, port: 9801 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /liveness, port: 9801 }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 250m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+        - name: expand-runtime-secrets
+          image: "@ACCOUNT_IMAGE@"
+          command: ["node", "--input-type=module", "--eval"]
+          args:
+            - |
+              const { chmodSync, mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
+              const document = JSON.parse(readFileSync("/var/run/opensteer-raw/account-runtime.json", "utf8"));
+              const keys = [
+                "OPENSTEER_ADOPTION_OPERATION_KEY",
+                "OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY",
+                "OPENSTEER_GOOGLE_CLIENT_ID",
+                "OPENSTEER_GOOGLE_CLIENT_SECRET",
+                "OPENSTEER_HOSTED_OAUTH_STATE_KEY",
+                "OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY",
+                "OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID",
+                "OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET",
+                "OPENSTEER_HOSTED_OAUTH_GOOGLE_REVISION",
+                "OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID",
+                "OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET",
+                "OPENSTEER_HOSTED_OAUTH_SLACK_REVISION",
+                "OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID",
+                "OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID",
+                "OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET",
+                "OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET",
+                "OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION",
+                "OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION",
+                "OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID",
+                "OPENSTEER_CONNECT_CLOUDFLARE_API_TOKEN",
+                "OPENSTEER_CONNECT_CLOUDFLARE_ZONE_ID",
+                "OPENSTEER_CONNECT_CREDENTIAL_DERIVATION_SECRET",
+                "OPENSTEER_APNS_PRIVATE_KEY"
+              ];
+              mkdirSync("/var/run/opensteer-runtime/secrets", { recursive: true, mode: 0o700 });
+              chmodSync("/var/run/opensteer-runtime/secrets", 0o700);
+              for (const key of keys) {
+                const value = document[key];
+                if (typeof value !== "string" || value.length === 0) throw new Error(`Missing ${key}`);
+                writeFileSync(`/var/run/opensteer-runtime/secrets/${key}`, value, { mode: 0o600 });
+              }
+              for (const name of ["template.json", "operation-key"]) {
+                writeFileSync(`/var/run/opensteer-runtime/${name}`, readFileSync(`/var/run/opensteer-cloud/${name}`), { mode: 0o600 });
+              }
+              writeFileSync(
+                "/var/run/opensteer-runtime/secrets/OPENSTEER_CONTROL_PLANE_AUTH_SECRET",
+                readFileSync("/var/run/opensteer-raw/account-auth"),
+                { mode: 0o600 }
+              );
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 100m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: cloud-hosting, mountPath: /var/run/opensteer-cloud, readOnly: true }
+            - { name: raw-secrets, mountPath: /var/run/opensteer-raw, readOnly: true }
+            - { name: runtime-secrets, mountPath: /var/run/opensteer-runtime }
+      containers:
+        - name: account
+          image: "@ACCOUNT_IMAGE@"
+          envFrom:
+            - configMapRef: { name: account-env }
+          env:
+            - {
+                name: OPENSTEER_CLOUD_TEMPLATE_PATH,
+                value: /var/run/opensteer-runtime/template.json,
+              }
+            - {
+                name: OPENSTEER_CLOUD_OPERATION_KEY_FILE,
+                value: /var/run/opensteer-runtime/operation-key,
+              }
+            - {
+                name: OPENSTEER_CONTROL_PLANE_AUTH_SECRET_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_CONTROL_PLANE_AUTH_SECRET,
+              }
+            - {
+                name: OPENSTEER_ADOPTION_OPERATION_KEY_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_ADOPTION_OPERATION_KEY,
+              }
+            - {
+                name: OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY,
+              }
+            - {
+                name: OPENSTEER_GOOGLE_CLIENT_ID_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_GOOGLE_CLIENT_ID,
+              }
+            - {
+                name: OPENSTEER_GOOGLE_CLIENT_SECRET_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_GOOGLE_CLIENT_SECRET,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_STATE_KEY_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_STATE_KEY,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_GOOGLE_REVISION_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_GOOGLE_REVISION,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_SLACK_REVISION_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_SLACK_REVISION,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION,
+              }
+            - {
+                name: OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION,
+              }
+            - {
+                name: OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID,
+              }
+            - {
+                name: OPENSTEER_CONNECT_CLOUDFLARE_API_TOKEN_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_CONNECT_CLOUDFLARE_API_TOKEN,
+              }
+            - {
+                name: OPENSTEER_CONNECT_CLOUDFLARE_ZONE_ID_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_CONNECT_CLOUDFLARE_ZONE_ID,
+              }
+            - {
+                name: OPENSTEER_CONNECT_CREDENTIAL_DERIVATION_SECRET_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_CONNECT_CREDENTIAL_DERIVATION_SECRET,
+              }
+            - {
+                name: OPENSTEER_APNS_PRIVATE_KEY_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_APNS_PRIVATE_KEY,
+              }
+          ports:
+            - { name: http, containerPort: 4142 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: 500m, memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: runtime-secrets, mountPath: /var/run/opensteer-runtime, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: cloud-hosting
+          secret: { secretName: cloud-hosting, defaultMode: 0440 }
+        - name: raw-secrets
+          csi:
+            driver: secrets-store-gke.csi.k8s.io
+            readOnly: true
+            volumeAttributes: { secretProviderClass: account-runtime-v9 }
+        - { name: runtime-secrets, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: account
+  namespace: opensteer-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: account

@@ -281,6 +281,54 @@ jobs:
           trap 'rm -rf "$RUNNER_TEMP/release-keys"' EXIT
           if [[ -f "$keychain" ]]; then security delete-keychain "$keychain"; fi
           rm -rf "$RUNNER_TEMP/release-keys"
+  account:
+    # The hosted Account service ships before the Beta that may depend on it.
+    needs: preflight
+    if: needs.preflight.outputs.superseded != 'true' && needs.preflight.outputs.channel == 'beta'
+    runs-on: ubuntu-latest
+    environment: account
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      IMAGE: us-west1-docker.pkg.dev/opensteer-admin/staging/control-plane
+      SHA: ${{ needs.preflight.outputs.sha }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: package.json
+      # The image records its release identity, which requires the derived version stamp.
+      - run: node -e 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.env.SHA, process.env.VERSION)'
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: projects/920572344872/locations/global/workloadIdentityPools/github/providers/github-account-deployer
+          service_account: gha-account-deployer@opensteer-admin.iam.gserviceaccount.com
+      - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395
+        with:
+          cluster_name: cell-1
+          location: us-west1
+          project_id: opensteer-staging
+          use_dns_based_endpoint: true
+      - name: Build the Account image
+        run: |
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+          # Tags are immutable, so a rerun reuses the image already built for this commit.
+          if ! gcloud artifacts docker images describe "$IMAGE:$SHA" >/dev/null 2>&1; then
+            docker build --file deploy/container/Containerfile --target control-plane \
+              --platform linux/amd64 --build-arg OPENSTEER_RELEASE_VERSION="$VERSION" \
+              --build-arg OPENSTEER_SOURCE_REVISION="$SHA" --tag "$IMAGE:$SHA" .
+            docker push "$IMAGE:$SHA"
+          fi
+          digest=$(gcloud artifacts docker images describe "$IMAGE:$SHA" --format='value(image_summary.digest)')
+          echo "IMAGE_REF=$IMAGE@$digest" >> "$GITHUB_ENV"
+      - run: bash .github/scripts/deploy-account.sh "$IMAGE_REF" "$SHA"
   draft:
     needs: [preflight, build]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
@@ -309,8 +357,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm desktop:public-release draft --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
   publish-insider:
-    needs: [preflight, discover, draft]
-    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    needs: [preflight, discover, draft, account]
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.account.result == 'success' && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
