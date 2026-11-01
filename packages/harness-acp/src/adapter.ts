@@ -29,6 +29,7 @@ import {
   type HarnessRunInput,
   type HarnessSession,
   type HarnessSessionContext,
+  type HarnessTitleInput,
   type SupervisedProcess,
 } from "@opensteer/harness";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -38,7 +39,12 @@ import type {
   AcpPromptBlock,
   AcpProtocolClient,
 } from "./protocol.js";
-import { acpReadTextFileHandler, createAcpProtocolClient } from "./protocol.js";
+import {
+  acpProtocolOutputBytes,
+  acpReadTextFileHandler,
+  closeAcpSessionBestEffort,
+  createAcpProtocolClient,
+} from "./protocol.js";
 import type {
   AcpErrorContext,
   AcpHeldAssistantDecision,
@@ -138,6 +144,7 @@ export class AcpHarnessAdapter implements HarnessAdapter {
 
 class AcpHarnessSession implements HarnessSession {
   readonly events: AsyncIterable<HarnessEvent>;
+  readonly generateTitle?: (input: HarnessTitleInput) => Promise<string>;
   readonly #context: HarnessSessionContext;
   readonly #client: AcpProtocolClient;
   readonly #onClose: (session: AcpHarnessSession) => void;
@@ -183,6 +190,8 @@ class AcpHarnessSession implements HarnessSession {
         .map(([, value]) => value),
     ].filter((value) => value.length >= 4);
     this.events = this.#publisher.events;
+    const generateTitle = options.hooks.generateTitle;
+    if (generateTitle) this.generateTitle = (input) => generateTitle(context, input);
     this.#client = dependencies.createClient({
       handlers: {
         elicitation: (request, signal) => this.#elicitation(request, signal),
@@ -203,7 +212,10 @@ class AcpHarnessSession implements HarnessSession {
     this.#abortListener = () => void this.stop();
     context.signal.addEventListener("abort", this.#abortListener, { once: true });
     process.child.stderr.on("data", (chunk: Buffer | string) => this.#appendStderr(chunk));
-    void process.exited.then((exit) => this.#processExited(exit));
+    // Nothing awaits this chain: a spawn error surfaces through initialize,
+    // and a publish overflow has already latched the session unusable and
+    // closed its stream with that error.
+    void process.exited.then((exit) => this.#processExited(exit)).catch(() => undefined);
   }
 
   static async open(
@@ -218,7 +230,7 @@ class AcpHarnessSession implements HarnessSession {
     const launch = context.wrapProcessLaunch(rawLaunch);
     const process = dependencies.spawn({
       ...launch,
-      maxOutputBytes: 512 * 1_024,
+      maxOutputBytes: acpProtocolOutputBytes,
       signal: context.signal,
     });
     const session = new AcpHarnessSession(options, dependencies, context, process, onClose);
@@ -300,7 +312,6 @@ class AcpHarnessSession implements HarnessSession {
       }
       this.#flushHeldAssistant(active);
       await this.#stopBackgroundChildren(active);
-      this.#flushTurn(active);
       this.#finish(active, active.interruptRequested ? "interrupted" : "completed");
       await active.completion.promise;
     } catch (error) {
@@ -617,6 +628,11 @@ class AcpHarnessSession implements HarnessSession {
     }
   }
 
+  /**
+   * Saves what the turn streamed as durable events. Every terminal path runs
+   * it: clients drop live text at the terminal event, so a failed or stopped
+   * turn would otherwise lose the partial reply the person already saw.
+   */
   #flushTurn(active: ActiveTurn): void {
     for (const text of active.assistant.values()) {
       if (!text) continue;
@@ -628,6 +644,8 @@ class AcpHarnessSession implements HarnessSession {
     for (const [blockId, text] of active.reasoning) {
       if (text) this.#publish({ data: { blockId, text }, type: "reasoning.completed" });
     }
+    active.assistant.clear();
+    active.reasoning.clear();
   }
 
   #flushHeldAssistant(active: ActiveTurn): void {
@@ -803,6 +821,7 @@ class AcpHarnessSession implements HarnessSession {
 
   #finish(active: ActiveTurn, status: "completed" | "interrupted"): void {
     if (!this.#publisher.claimTerminal(active)) return;
+    this.#flushTurn(active);
     active.nodes.endAll(status === "completed" ? "completed" : "interrupted");
     this.#cancelPending("run-ended");
     this.#publishUsage(active);
@@ -812,6 +831,7 @@ class AcpHarnessSession implements HarnessSession {
 
   #fail(active: ActiveTurn, error: OpensteerError): void {
     if (!this.#publisher.claimTerminal(active)) return;
+    this.#flushTurn(active);
     active.nodes.endAll("failed");
     this.#cancelPending("run-ended");
     this.#publishUsage(active);
@@ -927,7 +947,7 @@ class AcpHarnessSession implements HarnessSession {
     this.#cancelPending("source-closed");
     this.#lifetime.abort(new Error("ACP session stopped"));
     if (this.#providerSessionReference) {
-      await this.#client.closeSession(this.#providerSessionReference).catch(() => undefined);
+      await closeAcpSessionBestEffort(this.#client, this.#providerSessionReference);
     }
     this.#client.close();
     await this.#process.terminate().catch(() => undefined);

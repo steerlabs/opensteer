@@ -116,6 +116,29 @@ export interface AcpProtocolClient {
   closeSession(sessionId: string): Promise<void>;
 }
 
+/**
+ * `spawnSupervised` caps what a stream yields over the whole process life. A
+ * connection that runs ACP sessions must read every message for as long as it
+ * lives, so it is uncapped here; the ACP SDK bounds each message instead.
+ */
+export const acpProtocolOutputBytes = Number.MAX_SAFE_INTEGER;
+
+const closeSessionDeadlineMs = 3_000;
+
+/**
+ * Asks the engine to close a native session without letting a hung engine
+ * hold shutdown open; the caller ends the process either way.
+ */
+export async function closeAcpSessionBestEffort(
+  client: Pick<AcpProtocolClient, "closeSession">,
+  sessionId: string,
+): Promise<void> {
+  await withTimeout(client.closeSession(sessionId), closeSessionDeadlineMs, {
+    timeoutError: () =>
+      new OpensteerError({ code: "timeout", message: "ACP session close timed out" }),
+  }).catch(() => undefined);
+}
+
 const SetModelResponseSchema = z.looseObject({});
 const ExtensionSessionUpdateSchema = z.looseObject({
   sessionId: z.string(),
