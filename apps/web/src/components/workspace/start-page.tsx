@@ -363,7 +363,8 @@ export const StartPage = memo(function StartPage({
   };
 
   const fail = (error: unknown, result: StartPageResult) => {
-    if (!mounted.current) return;
+    // Closing the opening tab is the person's choice, not a refusal to explain.
+    if (!mounted.current || (error instanceof Error && error.name === "AbortError")) return;
     const reason = error instanceof HostClientRequestError ? error.reason : undefined;
     const name = selected.presentation.name;
     if (reason === "browser-placement-ambiguous")

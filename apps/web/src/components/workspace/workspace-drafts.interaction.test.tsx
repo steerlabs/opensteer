@@ -1095,7 +1095,7 @@ describe("a link arriving at the start page", () => {
     const key = client.getSnapshot().pendingBrowserTabs?.[0]?.idempotencyKey;
     expect(key).toBeTruthy();
     expect(element(".place").getAttribute("data-place-key")).toBe(`pending:${key}`);
-    expect(element(".place").textContent).toContain(address);
+    expect(element(".place .browser-address__display").getAttribute("aria-label")).toBe(address);
     expect(element(".place").textContent).toContain("Opening");
     await act(async () => goTo!("/"));
     await act(async () => {
@@ -1121,13 +1121,13 @@ describe("a link arriving at the start page", () => {
       expect.objectContaining({ url: address }),
     );
     // The mock's several computers refuse Guest until the person chooses one.
-    expect(element(".place").textContent).toContain(address);
+    expect(element(".place .browser-address__display").getAttribute("aria-label")).toBe(address);
     expect(element(".place").textContent).toContain("Choose a computer");
     expect(client.getSnapshot().pendingBrowserTabs?.[0]?.state).toBe("failed");
     await act(async () => goTo!("/tasks"));
     await act(async () => goTo!(-1));
     await settle(50);
-    expect(element(".place").textContent).toContain(address);
+    expect(element(".place .browser-address__display").getAttribute("aria-label")).toBe(address);
     expect(open).toHaveBeenCalledTimes(1);
     await click(
       [...document.querySelectorAll<HTMLButtonElement>(".place button")].find(

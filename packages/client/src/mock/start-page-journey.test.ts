@@ -90,14 +90,28 @@ describe("start page mock journey", () => {
       const session = client
         .getSnapshot()
         .browserSessions.find((session) => session.state === "ready")!;
-      const close = vi.spyOn(client, "closeBrowserTab");
+      const closed = Promise.withResolvers<void>();
+      const originalClose = client.closeBrowserTab.bind(client);
+      const close = vi.spyOn(client, "closeBrowserTab").mockImplementation(async (...args) => {
+        const result = await originalClose(...args);
+        closed.resolve();
+        return result;
+      });
       const opening = client.beginBrowserTabOpen(session.id, { idempotencyKey: "mock-pending" });
       expect(client.getSnapshot().pendingBrowserTabs).toHaveLength(1);
+      const dismissed = expect(opening.result).rejects.toMatchObject({ name: "AbortError" });
       client.dismissPendingBrowserTab(opening.idempotencyKey);
       expect(client.getSnapshot().pendingBrowserTabs).toEqual([]);
+      await dismissed;
       gate.resolve();
-      const opened = await opening.result;
-      expect(close).toHaveBeenCalledWith(opened.sessionId, opened.tabId, expect.anything());
+      await withTimeout(closed.promise, 2_000, {
+        timeoutError: () => new Error("The dismissed late tab was never closed."),
+      });
+      expect(close).toHaveBeenCalledExactlyOnceWith(
+        session.id,
+        expect.any(String),
+        expect.anything(),
+      );
       Object.defineProperty(client, "rpc", {
         value: new Proxy(client.rpc, {
           get: (target, name) =>

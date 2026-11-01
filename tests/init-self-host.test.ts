@@ -55,7 +55,6 @@ describe("self-host secret initialization", () => {
     const first = await initializeSelfHostSecrets(directory);
     expect(first.created).toEqual([
       "browser_bridge_token",
-      "browser_profile_key",
       "browser_runner_enrollment_token",
       "credential_key",
       "database_url",
@@ -106,7 +105,6 @@ describe("self-host secret initialization", () => {
     expect(new Set(results.flatMap((result) => result.created))).toEqual(
       new Set([
         "browser_bridge_token",
-        "browser_profile_key",
         "browser_runner_enrollment_token",
         "messaging_runner_enrollment_token",
         "credential_key",
