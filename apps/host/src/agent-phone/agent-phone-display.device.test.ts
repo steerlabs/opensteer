@@ -145,7 +145,7 @@ it.each([
   async function decodedPixels(
     name: string,
     frame: ReceivedFrame,
-    black = false,
+    black: boolean | null = false,
     following: readonly ReceivedFrame[] = [],
   ) {
     const input = join(directory, `${name}.h264`);
@@ -200,7 +200,9 @@ it.each([
       independentDecoder: "ffmpeg",
     };
     if (black) expect(Math.max(...maxima), "protected central pixels are black").toBeLessThan(8);
-    else expect(Math.max(...mean), "real fixture pixels are visible").toBeGreaterThan(8);
+    else if (black === false)
+      expect(Math.max(...mean), "real fixture pixels are visible").toBeGreaterThan(8);
+    return Math.max(...mean);
   }
   async function flush() {
     await json("display.json", {
@@ -939,6 +941,33 @@ it.each([
       if (!frame) throw new Error("Viewer has no picture geometry.");
       return frame;
     };
+    async function visiblePicture(name: string, view: ComputerDisplayViewer, after: number) {
+      // The physical display is briefly black while it wakes.
+      const generation = latest(view).header.generation;
+      const deadline = performance.now() + 15_000;
+      await state(
+        view,
+        0,
+        (message) => message.state === "live" && message.generation === generation,
+      );
+      let decoded = -1;
+      await eventually(
+        `${name}: fresh fixture pixels after live`,
+        async () => {
+          view.check();
+          const frame = latest(view).header;
+          if (view.trace.frames.length <= after || frame.sequence === decoded) return undefined;
+          expect(frame.generation).toBe(generation);
+          const key = view.trace.frames.findLastIndex((picture) => picture.header.key);
+          const pictures = view.trace.frames.slice(key);
+          decoded = frame.sequence;
+          return (
+            (await decodedPixels(name, pictures[0]!, null, pictures.slice(1))) > 8 || undefined
+          );
+        },
+        Math.max(1, deadline - performance.now()),
+      );
+    }
     async function replayPictures(view: ComputerDisplayViewer) {
       const requested =
         view.sent.findLast((entry) => entry.message.type === "display.keyframe")?.sentMs ??
@@ -1957,10 +1986,9 @@ it.each([
           const replay = await replayPictures(view);
           await decodedPixels(`flag-secure-${index}`, replay[0]!, true, replay.slice(1));
         }
+        const after = first.trace.frames.length;
         await phone.shell(`am start -W -n ${fixtureActivities.display}`);
-        await delay(500);
-        const restored = await replayPictures(first);
-        await decodedPixels("secure-fixture-after", restored[0]!, false, restored.slice(1));
+        await visiblePicture("secure-fixture-after", first, after);
       });
 
       await phase("mixed-source-static-sleep-and-local-wake", async () => {
@@ -1989,7 +2017,7 @@ it.each([
           const frame = await firstFrame(view, counts[index]!);
           expect(frame.header.generation).toBeGreaterThan(before[index]!.generation);
           expect(frame.header.key).toBe(true);
-          await decodedPixels(`mixed-static-wake-${index}`, frame);
+          await visiblePicture(`mixed-static-wake-${index}`, view, counts[index]!);
         }
         evidence.sleepSources = {
           owner: protectedOwner.source,
@@ -2478,7 +2506,7 @@ it.each([
           );
           const resumed = await firstFrame(own.view, after);
           expect(resumed.header.generation).toBeGreaterThan(generation);
-          await decodedPixels("locally-unlocked-pin", resumed);
+          await visiblePicture("locally-unlocked-pin", own.view, after);
           await closeOwner(own.source);
           await closed(own.view);
         } finally {
