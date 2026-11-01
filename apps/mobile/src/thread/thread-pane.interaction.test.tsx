@@ -37,6 +37,7 @@ import {
   type ThreadDraftStore,
 } from "../client/thread-drafts.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
+import { Pane } from "../ui/pane.js";
 import { VoiceContext, VoiceOverlay, type VoiceControls } from "../voice/controls.js";
 
 /*
@@ -403,11 +404,18 @@ vi.mock("../screens/deployment-gate.js", () => ({
   DeploymentGate: () => null,
   useAttachedHost: () => harness.activeHost,
 }));
-vi.mock("../ui/pane.js", () => ({
-  useContentInsets: () => harness.insets,
-  usePaneGeometry: () => "",
-  usePaneInView: () => harness.inView,
-}));
+vi.mock("../ui/pane.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../ui/pane.js")>();
+  return {
+    ...actual,
+    useContentInsets: () => harness.insets,
+    usePaneGeometry: () => "",
+    usePaneInView: () => {
+      const inView = actual.usePaneInView();
+      return harness.inView && inView;
+    },
+  };
+});
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
   useGutter: () => 16,
@@ -3574,6 +3582,35 @@ it("docks voice above a task composer, floats without one and ignores unfocused 
   await draw(true);
   expect(container.querySelector('[aria-label="Task"]')?.querySelector(bar)).not.toBeNull();
   expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).toBeNull();
+});
+
+it("floats active voice while its dock's pane is hidden and docks again when visible", async () => {
+  const voice = voiceController("listening");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const { container, root, pane } = await mount(host, workId);
+  const draw = async (hidden: boolean) =>
+    act(async () =>
+      root.render(
+        <VoiceContext value={voice.controller}>
+          <section aria-label="Overlay">
+            <VoiceOverlay />
+          </section>
+          <section aria-label="Task">
+            <Pane hidden={hidden}>{pane(() => undefined)}</Pane>
+          </section>
+        </VoiceContext>,
+      ),
+    );
+  const bar = '[aria-label="Voice: Listening"]';
+  for (const hidden of [true, false, true]) {
+    await draw(hidden);
+    expect(container.querySelector('[aria-label="Task"]')?.querySelector(bar) !== null).toBe(
+      !hidden,
+    );
+    expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar) !== null).toBe(
+      hidden,
+    );
+  }
 });
 
 it("offers voice on Chat's first message but not on a new task composer", async () => {

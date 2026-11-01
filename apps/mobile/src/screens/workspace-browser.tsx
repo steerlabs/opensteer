@@ -897,8 +897,9 @@ function PagePair(
   // narrow for two, as the page does, so its draft, stream and scroll are
   // there when the pair returns. Out of view it is inert: unseen, untouchable,
   // unreachable by a screen reader, and — told by its pane — claiming nothing
-  // and marking nothing read. It keeps the size it had beside the page, so
-  // nothing in it is measured afresh. A phone that never pairs never draws it.
+  // and marking nothing read. It keeps the size it had beside the page, so its
+  // text does not reflow; it still follows its transcript, which is the cost of
+  // keeping it. A phone that never pairs never draws it.
   const beside = pair.mode !== "stacked";
   const kept = useRef(false);
   kept.current = companion !== null && (beside || kept.current);
