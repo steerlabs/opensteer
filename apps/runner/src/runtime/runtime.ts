@@ -337,7 +337,10 @@ export class RunnerRuntime {
   readonly #harnessAuthentications = new Map<string, HarnessAuthenticationEntry>();
   readonly #harnessMaintenance = new Set<HarnessInstanceId>();
   readonly #driverMaintenance = new Set<HarnessId>();
-  readonly #driverInstallations = new Map<HarnessId, HarnessInstallation>();
+  readonly #driverInstallationFacts = new Map<HarnessId, HarnessInstallation>();
+  readonly #driverInstallationInspections = new Map<HarnessId, Promise<void>>();
+  readonly #driverInstallationOperations = new Map<HarnessId, HarnessInstallation>();
+  readonly #pendingDriverInstallationAdvertisements = new Set<HarnessId>();
   readonly #installationQueues = new Map<string, Promise<void>>();
   readonly #installationLifetime = new AbortController();
   readonly #installationTasks = new Set<Promise<void>>();
@@ -515,57 +518,88 @@ export class RunnerRuntime {
   }
 
   async harnessDrivers(): Promise<readonly RunnerHarnessDriver[]> {
-    return Promise.all(
-      this.#harnesses.listDrivers().map(async ({ kind, readiness }) => {
-        const resolved = await this.#harnesses.driverInstallation(kind).catch(() => undefined);
-        const installation = this.#driverInstallations.get(kind) ?? resolved?.descriptor;
-        if (readiness.status === "unavailable") {
-          return {
-            driverKind: kind,
-            ...(installation ? { installation } : {}),
-            readiness: "unavailable" as const,
-            reason: readiness.reason,
-          };
-        }
-        const capabilities = this.#harnesses.driverCapabilities(kind);
-        const nativeImages = capabilities?.messageAttachments?.nativeImages;
+    return this.#harnesses.listDrivers().map(({ kind, readiness }) => {
+      this.#refreshDriverInstallation(kind);
+      const installation =
+        this.#driverInstallationOperations.get(kind) ?? this.#driverInstallationFacts.get(kind);
+      if (readiness.status === "unavailable") {
         return {
-          // A runnable driver always declares at least one access mode; the Host
-          // refuses every mode a driver does not advertise, so an empty list
-          // would leave the engine unable to run any Thread at all.
-          accessModes: [...(this.#harnesses.driverAccessModes(kind) ?? [])],
           driverKind: kind,
           ...(installation ? { installation } : {}),
-          mcpImageContent: capabilities?.mcpImageContent ?? false,
-          ...(this.#canDeliverMessageAttachments(kind)
-            ? {
-                messageAttachments: {
-                  nativeImages: nativeImages
-                    ? {
-                        ...nativeImages,
-                        mediaTypes: [...nativeImages.mediaTypes],
-                      }
-                    : null,
-                },
-              }
-            : {}),
-          ...(readiness.note ? { note: readiness.note } : {}),
-          readiness: readiness.status,
-          steering: capabilities?.steering ?? false,
-          // A runnable driver always declares at least one source; an empty list
-          // would leave clients unable to offer "Add account" for an engine the
-          // Runner is ready to run.
-          sources: (this.#harnesses.driverSources(kind) ?? []).map((source) => ({
-            ...source,
-            fields: source.fields.map(({ options, ...field }) => ({
-              ...field,
-              ...(options ? { options: options.map((option) => ({ ...option })) } : {}),
-            })),
-            stateKinds: [...source.stateKinds],
-          })),
+          readiness: "unavailable" as const,
+          reason: readiness.reason,
         };
-      }),
-    );
+      }
+      const capabilities = this.#harnesses.driverCapabilities(kind);
+      const nativeImages = capabilities?.messageAttachments?.nativeImages;
+      return {
+        // A runnable driver always declares at least one access mode; the Host
+        // refuses every mode a driver does not advertise, so an empty list
+        // would leave the engine unable to run any Thread at all.
+        accessModes: [...(this.#harnesses.driverAccessModes(kind) ?? [])],
+        driverKind: kind,
+        ...(installation ? { installation } : {}),
+        mcpImageContent: capabilities?.mcpImageContent ?? false,
+        ...(this.#canDeliverMessageAttachments(kind)
+          ? {
+              messageAttachments: {
+                nativeImages: nativeImages
+                  ? {
+                      ...nativeImages,
+                      mediaTypes: [...nativeImages.mediaTypes],
+                    }
+                  : null,
+              },
+            }
+          : {}),
+        ...(readiness.note ? { note: readiness.note } : {}),
+        readiness: readiness.status,
+        steering: capabilities?.steering ?? false,
+        // A runnable driver always declares at least one source; an empty list
+        // would leave clients unable to offer "Add account" for an engine the
+        // Runner is ready to run.
+        sources: (this.#harnesses.driverSources(kind) ?? []).map((source) => ({
+          ...source,
+          fields: source.fields.map(({ options, ...field }) => ({
+            ...field,
+            ...(options ? { options: options.map((option) => ({ ...option })) } : {}),
+          })),
+          stateKinds: [...source.stateKinds],
+        })),
+      };
+    });
+  }
+
+  #refreshDriverInstallation(kind: HarnessId): void {
+    if (this.#driverInstallationInspections.has(kind)) return;
+    const inspection = this.#harnesses
+      .driverInstallation(kind)
+      .then(async (resolved) => {
+        if (!resolved) return;
+        const previous = this.#driverInstallationFacts.get(kind);
+        this.#driverInstallationFacts.set(kind, resolved.descriptor);
+        if (
+          this.#driverInstallationOperations.has(kind) ||
+          JSON.stringify(previous) === JSON.stringify(resolved.descriptor)
+        )
+          return;
+        await this.#publishDriverInstallation(kind, resolved.descriptor);
+      })
+      .catch(() => undefined)
+      .finally(() => this.#driverInstallationInspections.delete(kind));
+    this.#driverInstallationInspections.set(kind, inspection);
+  }
+
+  async #publishDriverInstallation(
+    driverKind: HarnessId,
+    installation: HarnessInstallation,
+    fallback?: RunnerMessageSink,
+  ): Promise<void> {
+    this.#pendingDriverInstallationAdvertisements.add(driverKind);
+    const connection = this.#connection ?? fallback;
+    if (!connection) return;
+    await connection.send({ driverKind, installation, type: "runner.harness-installation" });
+    this.#pendingDriverInstallationAdvertisements.delete(driverKind);
   }
 
   #canDeliverMessageAttachments(driverKind: HarnessId): boolean {
@@ -1143,48 +1177,63 @@ export class RunnerRuntime {
     if (this.#driverMaintenance.has(driverKind)) {
       return reject("conflict", "This AI engine is already updating", true);
     }
-    for (const active of this.#runs.values()) {
-      if (
-        active.command.context.harness.driverKind === driverKind &&
-        this.#harnesses.installationAffects(driverKind, active.command.context.harness.stateKind)
-      ) {
-        return reject(
-          "conflict",
-          "This AI engine is in use. End its active run before updating.",
-          true,
-        );
-      }
-    }
-    for (const harnessInstanceId of this.#harnessAuthentications.keys()) {
-      const definition = this.#harnesses.state(harnessInstanceId as HarnessInstanceId)?.definition;
-      if (
-        definition?.driverKind === driverKind &&
-        this.#harnesses.installationAffects(driverKind, definition.stateKind)
-      ) {
-        return reject(
-          "conflict",
-          "This AI engine is signing in. Finish or cancel sign-in before updating.",
-          true,
-        );
-      }
-    }
-    const resolved = await this.#harnesses.driverInstallation(driverKind).catch(() => undefined);
-    if (!resolved) return reject("not_found", "This installed AI engine is not available", false);
-    if (!resolved.plan) {
-      return reject(
-        "conflict",
-        resolved.descriptor.detail ?? "Update this AI engine with the tool that installed it.",
-        false,
-      );
-    }
     this.#driverMaintenance.add(driverKind);
-    const updating: HarnessInstallation = { ...resolved.descriptor, update: "updating" };
-    this.#driverInstallations.set(driverKind, updating);
-    await sink.send({ driverKind, installation: updating, type: "runner.harness-installation" });
-    const task = this.#performHarnessUpdate(driverKind, resolved.plan, resolved.descriptor, sink);
-    this.#installationTasks.add(task);
-    void task.finally(() => this.#installationTasks.delete(task));
-    return { status: "accepted" };
+    let admitted = false;
+    try {
+      for (const active of this.#runs.values()) {
+        if (
+          active.command.context.harness.driverKind === driverKind &&
+          this.#harnesses.installationAffects(driverKind, active.command.context.harness.stateKind)
+        ) {
+          return reject(
+            "conflict",
+            "This AI engine is in use. End its active run before updating.",
+            true,
+          );
+        }
+      }
+      for (const [harnessInstanceId, authentication] of this.#harnessAuthentications) {
+        if (
+          authentication.expiresAt <= Date.now() ||
+          (authentication.state.status !== "not-started" &&
+            authentication.state.status !== "pending")
+        )
+          continue;
+        const definition = this.#harnesses.state(
+          harnessInstanceId as HarnessInstanceId,
+        )?.definition;
+        if (
+          definition?.driverKind === driverKind &&
+          this.#harnesses.installationAffects(driverKind, definition.stateKind)
+        ) {
+          return reject(
+            "conflict",
+            "This AI engine is signing in. Finish or cancel sign-in before updating.",
+            true,
+          );
+        }
+      }
+      const resolved = await this.#harnesses.driverInstallation(driverKind).catch(() => undefined);
+      if (!resolved) return reject("not_found", "This installed AI engine is not available", false);
+      if (!resolved.plan) {
+        return reject(
+          "conflict",
+          resolved.descriptor.detail ?? "Update this AI engine with the tool that installed it.",
+          false,
+        );
+      }
+      this.#driverInstallationFacts.set(driverKind, resolved.descriptor);
+      const updating: HarnessInstallation = { ...resolved.descriptor, update: "updating" };
+      this.#driverInstallationOperations.set(driverKind, updating);
+      await this.#publishDriverInstallation(driverKind, updating, sink);
+      const task = this.#performHarnessUpdate(driverKind, resolved.plan, resolved.descriptor, sink);
+      this.#installationTasks.add(task);
+      void task.finally(() => this.#installationTasks.delete(task));
+      admitted = true;
+      return { status: "accepted" };
+    } finally {
+      if (!admitted) this.#driverMaintenance.delete(driverKind);
+    }
   }
 
   async #performHarnessUpdate(
@@ -1232,12 +1281,12 @@ export class RunnerRuntime {
         detail: "Update finished.",
         update: "succeeded",
       };
-      this.#driverInstallations.set(driverKind, succeeded);
-      await (this.#connection ?? sink).send({
-        driverKind,
-        installation: succeeded,
-        type: "runner.harness-installation",
-      });
+      const current = refreshed?.descriptor ?? previous;
+      this.#driverInstallationFacts.set(driverKind, current);
+      this.#driverInstallationOperations.set(driverKind, succeeded);
+      await this.#publishDriverInstallation(driverKind, succeeded, sink);
+      this.#driverInstallationOperations.delete(driverKind);
+      await this.#publishDriverInstallation(driverKind, current, sink);
       for (const harnessInstanceId of affected) {
         await (this.#connection ?? sink).send({
           harnessInstanceId,
@@ -1250,10 +1299,9 @@ export class RunnerRuntime {
         detail: safeMessage(error, safeMessageOptions).slice(0, 2_000),
         update: "failed",
       };
-      this.#driverInstallations.set(driverKind, failed);
-      await (this.#connection ?? sink)
-        .send({ driverKind, installation: failed, type: "runner.harness-installation" })
-        .catch(() => undefined);
+      this.#driverInstallationOperations.set(driverKind, failed);
+      await this.#publishDriverInstallation(driverKind, failed, sink).catch(() => undefined);
+      this.#driverInstallationOperations.delete(driverKind);
     } finally {
       this.#driverMaintenance.delete(driverKind);
     }
@@ -1401,6 +1449,12 @@ export class RunnerRuntime {
     }
     if (revoked.length > 0) this.revokeRuns(revoked);
     await Promise.all(resumed);
+    for (const driverKind of this.#pendingDriverInstallationAdvertisements) {
+      const installation =
+        this.#driverInstallationOperations.get(driverKind) ??
+        this.#driverInstallationFacts.get(driverKind);
+      if (installation) await this.#publishDriverInstallation(driverKind, installation, sink);
+    }
   }
 
   /** Forgets what the Host has committed; nothing acknowledged is replayed again. */
@@ -1584,6 +1638,7 @@ export class RunnerRuntime {
     await this.#watchSupervisor.close();
     await settlesWithin([...this.#harnessAuthenticationStartups], runtimeTaskStopWaitMs);
     await settlesWithin([...this.#installationTasks], runtimeTaskStopWaitMs);
+    await settlesWithin([...this.#driverInstallationInspections.values()], runtimeTaskStopWaitMs);
     await settlesWithin([this.#warm.close()], runtimeTaskStopWaitMs);
     await this.#sessions.stopAll();
     await this.#workspaceMountRegistry?.detachAll();

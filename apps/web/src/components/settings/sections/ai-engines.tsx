@@ -208,6 +208,25 @@ interface EngineGroup {
   readonly unavailableReason: string | null;
 }
 
+export function installationUpdateLabel(update: HarnessInstallation["update"]): string {
+  switch (update) {
+    case "available":
+      return "Update available";
+    case "current":
+      return "Up to date";
+    case "manual":
+      return "Update on computer";
+    case "unknown":
+      return "Update status unavailable";
+    case "updating":
+      return "Updating…";
+    case "succeeded":
+      return "Updated";
+    case "failed":
+      return "Update failed";
+  }
+}
+
 /**
  * The engines a work location offers, whether or not an account exists for
  * them yet: every driver the Runner advertises as usable, plus any driver an
@@ -955,15 +974,9 @@ export function AiEngineSettings({
                     ? "1 account"
                     : `${engine.profiles.length} accounts`}
                 </span>
-                {engine.installation?.update === "available" ? (
-                  <span className="settings-engine__update-state">Update available</span>
-                ) : engine.installation?.update === "updating" ? (
+                {engine.installation ? (
                   <span className="settings-engine__update-state" role="status">
-                    Updating…
-                  </span>
-                ) : engine.installation?.update === "succeeded" ? (
-                  <span className="settings-engine__update-state" role="status">
-                    Updated
+                    {installationUpdateLabel(engine.installation.update)}
                   </span>
                 ) : null}
                 {updatesAvailable &&
@@ -991,10 +1004,14 @@ export function AiEngineSettings({
                   </button>
                 ) : null}
               </header>
-              {engine.installation?.update === "failed" ||
-              engine.installation?.update === "manual" ? (
+              {engine.installation &&
+              (engine.installation.update === "failed" ||
+                engine.installation.update === "manual") ? (
                 <p className="settings-engine__update-detail" role="status">
-                  {engine.installation.detail}
+                  {engine.installation.detail ??
+                    (engine.installation.update === "manual"
+                      ? "Update this engine on its computer."
+                      : "The update did not finish.")}
                   {engine.installation.manualCommand
                     ? ` Run ${engine.installation.manualCommand}.`
                     : ""}

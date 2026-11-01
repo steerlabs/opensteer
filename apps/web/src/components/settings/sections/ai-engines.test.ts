@@ -18,8 +18,23 @@ import {
   createdHarnessSignInAction,
   endpointAccountName,
   engineGroups,
+  installationUpdateLabel,
   nextAccountName,
 } from "./ai-engines.js";
+
+describe("installed engine update states", () => {
+  it.each([
+    ["available", "Update available"],
+    ["current", "Up to date"],
+    ["manual", "Update on computer"],
+    ["unknown", "Update status unavailable"],
+    ["updating", "Updating…"],
+    ["succeeded", "Updated"],
+    ["failed", "Update failed"],
+  ] as const)("renders %s explicitly", (state, label) => {
+    expect(installationUpdateLabel(state)).toBe(label);
+  });
+});
 
 function placement(
   availability: ThreadPlacementOption["availability"],

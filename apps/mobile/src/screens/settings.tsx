@@ -27,6 +27,7 @@ import {
   computersSettingsFooterFor,
   computersSettingsRows,
   deploymentSettingsModel,
+  engineInstallationUpdateModel,
   notificationSettingsModel,
   passwordsSettingsModel,
   signOutAccountInOrder,
@@ -136,32 +137,18 @@ export function SettingsScreen(): ReactNode {
     return snapshot.environments.flatMap((environment) =>
       environment.harnessDrivers.flatMap((driver) => {
         const installation = driver.installation;
-        if (!installation || installation.update === "current") return [];
+        if (!installation) return [];
         const key = `${environment.id}:${driver.driverKind}`;
-        const detail =
-          key === engineUpdatePending
-            ? "Updating…"
-            : installation.update === "available"
-              ? `Update available${installation.latestVersion ? ` · ${installation.latestVersion}` : ""}`
-              : installation.update === "succeeded"
-                ? "Updated"
-                : (installation.detail ??
-                  (installation.update === "manual"
-                    ? "Update this engine on its computer."
-                    : "Update failed"));
+        const model = engineInstallationUpdateModel(installation, key === engineUpdatePending);
         return [
           {
-            detail: engineUpdateError?.key === key ? engineUpdateError.detail : detail,
+            detail: engineUpdateError?.key === key ? engineUpdateError.detail : model.detail,
             driverKind: driver.driverKind,
             environmentId: environment.id,
             key,
             name: harnessDriverLabel(driver.driverKind),
-            updateEnabled:
-              snapshot.harnessUpdateAvailable === true &&
-              (installation.update === "available" ||
-                installation.update === "unknown" ||
-                installation.update === "failed"),
-            updating: installation.update === "updating" || key === engineUpdatePending,
+            updateEnabled: snapshot.harnessUpdateAvailable === true && model.updateEnabled,
+            updating: model.updating,
           },
         ];
       }),

@@ -161,6 +161,139 @@ describe("EngineInstallationResolver", () => {
       MUSE_SYNC_UPDATE: "1",
     });
   });
+
+  it("passes only engine-update inputs to inspection and update subprocesses", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-engine-installation-"));
+    roots.push(root);
+    const executable = join(root, "codex");
+    await writeFile(executable, "binary");
+    const environments: Readonly<Record<string, string>>[] = [];
+    const resolver = new EngineInstallationResolver({
+      environment: {
+        HOME: root,
+        HTTPS_PROXY: "https://proxy.example.test",
+        MUSE_CHANNEL: "canary",
+        OPENAI_API_KEY: "must-not-leak",
+        PATH: "",
+        UNRELATED_SESSION_TOKEN: "must-not-leak-either",
+      },
+      run: async (_command, _args, environment) => {
+        environments.push(environment);
+        return result("codex-cli 0.160.0");
+      },
+    });
+
+    const resolved = await resolver.resolve(
+      executable,
+      {
+        ...codex,
+        native: { executableBasename: "codex", updateArgs: ["update"] },
+        updateEnvironment: { ENGINE_UPDATE_INPUT: "allowed" },
+      },
+      "ambient",
+    );
+
+    expect(environments).not.toHaveLength(0);
+    for (const environment of environments) {
+      expect(environment).toMatchObject({
+        HOME: root,
+        HTTPS_PROXY: "https://proxy.example.test",
+        MUSE_CHANNEL: "canary",
+      });
+      expect(environment).not.toHaveProperty("OPENAI_API_KEY");
+      expect(environment).not.toHaveProperty("UNRELATED_SESSION_TOKEN");
+    }
+    expect(resolved.plan?.environment).toMatchObject({
+      ENGINE_UPDATE_INPUT: "allowed",
+      HOME: root,
+    });
+    expect(resolved.plan?.environment).not.toHaveProperty("OPENAI_API_KEY");
+    expect(resolved.plan?.environment).not.toHaveProperty("UNRELATED_SESSION_TOKEN");
+  });
+
+  it("cancels a hung version probe at the inspection deadline", async () => {
+    let probeAborted = false;
+    const resolver = new EngineInstallationResolver({
+      environment: { PATH: "" },
+      inspectionTimeoutMs: 20,
+      run: async (_command, _args, _environment, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              probeAborted = true;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        }),
+    });
+
+    await expect(resolver.resolve("/test/codex", codex, "ambient")).rejects.toBeDefined();
+    expect(probeAborted).toBe(true);
+  });
+
+  it("cancels a hung latest-version fetch and keeps the installed version usable", async () => {
+    let fetchAborted = false;
+    const resolver = new EngineInstallationResolver({
+      environment: { PATH: "" },
+      fetchJson: async (_url, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              fetchAborted = true;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        }),
+      inspectionTimeoutMs: 20,
+      run: async () => result("1.2.3-R3"),
+    });
+    const resolved = await resolver.resolve(
+      "/test/muse",
+      {
+        comparison: "revision",
+        executableName: "Muse",
+        latest: {
+          channelEnvironment: "MUSE_CHANNEL",
+          channels: { stable: "muse-stable" },
+          defaultChannel: "stable",
+          kind: "channel-manifest",
+          url: "https://example.test/{channel}",
+          versionField: "version",
+        },
+        minimumVersion: "1.0.0",
+        native: { executableBasename: "muse", updateArgs: ["--version"] },
+        version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+-R\d+)/ },
+      },
+      "all",
+    );
+
+    expect(fetchAborted).toBe(true);
+    expect(resolved.descriptor).toMatchObject({
+      latestVersion: null,
+      update: "unknown",
+      version: "1.2.3-R3",
+    });
+  });
+
+  it("returns a cached inspection without probing the executable again", async () => {
+    let probes = 0;
+    const resolver = new EngineInstallationResolver({
+      environment: { PATH: "" },
+      run: async () => {
+        probes += 1;
+        return result("codex-cli 0.160.0");
+      },
+    });
+
+    await resolver.resolve("/test/codex", codex, "ambient");
+    await resolver.resolve("/test/codex", codex, "ambient");
+
+    expect(probes).toBe(1);
+  });
 });
 
 describe("latest version parsing", () => {
