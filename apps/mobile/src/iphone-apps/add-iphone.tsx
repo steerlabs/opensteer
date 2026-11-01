@@ -1,23 +1,31 @@
 import type { HostClient } from "@opensteer/client/host";
+import type { IntegrationAccess } from "@opensteer/client/integrations";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { space } from "../theme.js";
 import { useHostValue, useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, Field, PrimaryButton, RowGroup, SectionLabel } from "../ui/primitives.js";
+import { AppText, Field, PrimaryButton, RowGroup, SectionLabel, Toggle } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { useIphoneApps, useIphoneAppsState } from "./context.js";
-import type { IphoneAppsController } from "./controller.js";
+import type { IphoneAppId } from "../platform/iphone-apps.js";
+import { IphoneAppRow } from "./app-row.js";
+import { iphonePermissionOf, type IphoneAppsController } from "./controller.js";
 import {
-  addIphoneApps,
-  addIphoneAppsHeading,
-  addIphoneAvailability,
+  addIphoneButton,
+  addIphoneDraft,
   addIphoneFailureText,
+  addIphoneFootnote,
   addIphoneIntro,
   addIphoneNameHint,
   addIphoneNeedsUpdate,
-  addIphoneNothingElse,
+  iphoneAppIds,
   iphoneAppName,
+  iphoneAppSummary,
+  iphoneDefaultAccess,
+  iphoneLevelLabel,
+  iphoneLevels,
   opensteerOn,
 } from "./model.js";
 
@@ -68,9 +76,10 @@ export function AddIphoneScreen(props: AddIphoneScreenProps): ReactNode {
 }
 
 /**
- * What adding shares — nothing until an app is turned on — then the iPhone's
- * name and Add. The Host must say it can take an
- * iPhone before Add is offered at all.
+ * The iPhone's name, then a switch for each app this build can share, then
+ * Add. Switching an app or choosing its level is a draft: the screen lists
+ * every app and level Add turns on, so the one tap on Add is their review.
+ * Once added, iOS is asked about each app in turn on the iPhone's page.
  */
 export function AddIphoneForm(props: {
   readonly controller: IphoneAppsController;
@@ -82,6 +91,15 @@ export function AddIphoneForm(props: {
 }): ReactNode {
   const state = useIphoneAppsState(props.controller);
   const [name, setName] = useState(() => props.controller.getState().snapshot.deviceName);
+  const [draft, setDraft] = useState<Readonly<Partial<Record<IphoneAppId, IntegrationAccess>>>>(
+    () =>
+      Object.fromEntries(
+        iphoneAppIds.flatMap((app) => {
+          const access = addIphoneDraft(app);
+          return access === null ? [] : [[app, access]];
+        }),
+      ),
+  );
   const [failure, setFailure] = useState<string | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
@@ -92,6 +110,12 @@ export function AddIphoneForm(props: {
   }, []);
   const adding = state.adding === props.deploymentId;
   const trimmed = name.trim();
+  // Only apps this build can share are offered; the iPhone's page says why the others aren't.
+  const apps = iphoneAppIds.filter((app) => iphonePermissionOf(state.snapshot, app) !== null);
+  const chosen = apps.flatMap((app) => {
+    const access = draft[app];
+    return access === undefined ? [] : [{ access, app }];
+  });
 
   const add = (): void => {
     if (adding || trimmed === "") return;
@@ -104,17 +128,34 @@ export function AddIphoneForm(props: {
         name: trimmed,
       })
       .then((outcome) => {
-        if (!mounted.current) return;
-        if (outcome.kind === "added") props.onAdded(outcome.runnerId);
-        else if (outcome.kind === "failed") {
+        if (outcome.kind === "added") {
+          // The controller outlives this screen, so the apps go on turning on
+          // while the iPhone's page shows each one.
+          if (chosen.length > 0) {
+            void props.controller.share({ apps: chosen, hostClient: props.hostClient });
+          }
+          if (mounted.current) props.onAdded(outcome.runnerId);
+        } else if (outcome.kind === "failed" && mounted.current) {
           setFailure(addIphoneFailureText(outcome.failure, props.opensteer));
         }
       });
   };
 
+  const choose = (app: IphoneAppId, access: IntegrationAccess | null): void => {
+    void Haptics.selectionAsync();
+    setDraft((current) => {
+      const next = { ...current };
+      if (access === null) delete next[app];
+      else next[app] = access;
+      return next;
+    });
+  };
+
   return (
     <View style={styles.form}>
-      <AppText role="body">{addIphoneIntro(props.opensteer)}</AppText>
+      <AppText role="body" tone="soft">
+        {addIphoneIntro(props.opensteer)}
+      </AppText>
       <Field
         hint={addIphoneNameHint}
         input={{
@@ -128,31 +169,54 @@ export function AddIphoneForm(props: {
         }}
         label="Name"
       />
-      <View style={styles.section}>
-        <SectionLabel>{addIphoneAppsHeading}</SectionLabel>
-        <RowGroup>
-          {addIphoneApps.map((app) => (
-            <View key={app.id} style={styles.app}>
-              <AppText role="body">{iphoneAppName(app.id)}</AppText>
-              <AppText role="secondary" tone="muted">
-                {app.detail}
-              </AppText>
-            </View>
-          ))}
-        </RowGroup>
-        <AppText role="secondary" tone="muted">
-          {addIphoneAvailability}
-        </AppText>
-        <AppText role="secondary" tone="muted">
-          {addIphoneNothingElse}
-        </AppText>
-      </View>
+      {apps.length === 0 ? null : (
+        <View style={styles.section}>
+          <SectionLabel>Share</SectionLabel>
+          <RowGroup>
+            {apps.map((app) => {
+              const access = draft[app] ?? null;
+              const levels =
+                access === null
+                  ? []
+                  : iphoneLevels({ app, current: access, definition: null, here: true });
+              const appName = iphoneAppName(app);
+              return (
+                <IphoneAppRow
+                  app={app}
+                  disabledReason={adding ? "Wait while this iPhone is added." : null}
+                  key={app}
+                  levels={levels}
+                  line={
+                    access !== null && levels.length > 0
+                      ? iphoneLevelLabel(null, access)
+                      : iphoneAppSummary(app, access ?? iphoneDefaultAccess(app, null))
+                  }
+                  name={appName}
+                  onLevel={(level) => choose(app, level.access)}
+                  tone="muted"
+                  trailing={
+                    <Toggle
+                      accessibilityLabel={`Share ${appName}`}
+                      disabled={adding}
+                      onChange={(on) => choose(app, on ? iphoneDefaultAccess(app, null) : null)}
+                      value={access !== null}
+                    />
+                  }
+                />
+              );
+            })}
+          </RowGroup>
+          <AppText role="caption" tone="muted">
+            {addIphoneFootnote(props.opensteer)}
+          </AppText>
+        </View>
+      )}
       {props.iphoneAppsAvailable ? (
         <View style={styles.section}>
           <PrimaryButton
             busy={adding}
             disabled={trimmed === ""}
-            label={adding ? "Adding…" : `Add ${trimmed === "" ? "this iPhone" : trimmed}`}
+            label={addIphoneButton(trimmed, chosen.length)}
             onPress={add}
           />
           {failure === null ? null : (
@@ -171,7 +235,6 @@ export function AddIphoneForm(props: {
 }
 
 const styles = StyleSheet.create({
-  app: { gap: space[2], paddingHorizontal: space[16], paddingVertical: space[10] },
   content: { gap: space[20], paddingTop: space[16] },
   form: { gap: space[20] },
   section: { gap: space[8] },

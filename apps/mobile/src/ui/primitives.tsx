@@ -273,17 +273,36 @@ export function SwitchRow(props: {
           {props.label}
         </AppText>
       )}
-      <Switch
+      <Toggle
         {...(props.detail ? { accessibilityHint: props.detail } : {})}
         accessibilityLabel={props.label}
         disabled={props.disabled}
-        ios_backgroundColor={color.surfaceRaised}
-        onValueChange={props.onChange}
-        thumbColor={color.text}
-        trackColor={{ false: color.surfaceRaised, true: color.ember }}
+        onChange={props.onChange}
         value={props.value}
       />
     </View>
+  );
+}
+
+/** The platform switch in the app's colours, for a row that lays out its own label. */
+export function Toggle(props: {
+  readonly accessibilityHint?: string | undefined;
+  readonly accessibilityLabel: string;
+  readonly disabled?: boolean | undefined;
+  readonly onChange: (value: boolean) => void;
+  readonly value: boolean;
+}): ReactNode {
+  return (
+    <Switch
+      accessibilityHint={props.accessibilityHint}
+      accessibilityLabel={props.accessibilityLabel}
+      disabled={props.disabled}
+      ios_backgroundColor={color.surfaceRaised}
+      onValueChange={props.onChange}
+      thumbColor={color.text}
+      trackColor={{ false: color.surfaceRaised, true: color.ember }}
+      value={props.value}
+    />
   );
 }
 

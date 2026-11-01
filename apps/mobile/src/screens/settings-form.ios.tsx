@@ -4,6 +4,7 @@ import {
   Host,
   HStack,
   Image,
+  LabeledContent,
   Section,
   Spacer,
   Text,
@@ -15,6 +16,7 @@ import {
   accessibilityHidden,
   accessibilityLabel,
   background,
+  contentShape,
   disabled,
   font,
   foregroundStyle,
@@ -25,79 +27,81 @@ import {
 import type { ReactNode } from "react";
 import { StyleSheet } from "react-native";
 import { color, deploymentPaint } from "../theme.js";
-import type { DeploymentMark } from "../threads/deployment-switcher-model.js";
+import type { DeploymentMark } from "../threads/deployment-identity.js";
 import {
-  chromeSettingsFooter,
-  chromeSettingsRow,
   browserProfilesSettingsRow,
+  chromeSettingsRow,
+  computersSettingsFooter,
   connectedAppsSettingsRow,
+  specialistNotificationsFooter,
   type SettingsActionModel,
 } from "./settings-model.js";
+import type { SFSymbolName } from "../ui/symbol.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
 
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
 const footnote = font({ textStyle: "footnote" });
 const error = foregroundStyle(color.red);
 const markSize = 30;
+const tileShape = shapes.roundedRectangle({ cornerRadius: 7, roundedCornerStyle: "continuous" });
 
-/** One SwiftUI host owns the complete iOS Form, including every row and control. */
+/**
+ * One SwiftUI host owns the complete iOS Form, including every row and control.
+ * Sections run from where this phone is pointed, through what agents can
+ * reach, to this phone's own notifications and account.
+ */
 export function SettingsForm(props: SettingsFormProps): ReactNode {
-  const preferences = props.notifications.preferences;
+  const notifications = props.notifications;
+  const preferences = notifications?.preferences ?? null;
   return (
     <Host colorScheme="dark" seedColor={color.ember} style={styles.host} useViewportSizeMeasurement>
       <Form modifiers={[listStyle("insetGrouped")]}>
         <Section title="Deployment">
-          <IdentityRow
-            mark={props.deployment.mark}
-            subtitle={props.deployment.status}
-            title={props.deployment.title}
-          />
-          <ActionButton action={props.deployment.action} onPress={props.onDeploymentAction} />
+          <Button
+            modifiers={[
+              accessibilityLabel(
+                `${props.deployment.title}, ${props.deployment.status}. ${props.deployment.action.label}`,
+              ),
+            ]}
+            onPress={props.onDeploymentAction}
+          >
+            <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
+              <IdentityMark mark={props.deployment.mark} />
+              <Lines detail={props.deployment.status} title={props.deployment.title} />
+              <Spacer />
+              <Text modifiers={[secondary, font({ textStyle: "subheadline" })]}>
+                {props.deployment.action.label}
+              </Text>
+              <Chevron />
+            </HStack>
+          </Button>
         </Section>
 
         {props.computers.length === 0 ? null : (
-          <Section
-            footer={<Text modifiers={[secondary, footnote]}>{props.computersFooter}</Text>}
-            title="Computers"
-          >
+          <Section footer={<Footer text={computersSettingsFooter} />} title="Computers">
             {props.computers.map((computer) => {
+              const opens = computer.opens;
+              const label = accessibilityLabel(`${computer.name}, ${computer.detail}`);
               const row = (
-                <HStack alignment="center" spacing={12}>
-                  <Image
-                    color={color.textSoft}
-                    modifiers={[accessibilityHidden(true), frame({ width: 28 })]}
-                    size={20}
-                    systemName={computer.symbol}
-                  />
-                  <VStack alignment="leading" spacing={2}>
-                    <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.text)]}>
-                      {computer.name}
-                    </Text>
-                    <Text modifiers={[secondary, footnote]}>{computer.detail}</Text>
-                  </VStack>
+                <HStack
+                  alignment="center"
+                  modifiers={[contentShape(shapes.rectangle())]}
+                  spacing={12}
+                >
+                  <Tile symbol={computer.symbol} />
+                  <Lines detail={computer.detail} title={computer.name} />
                   <Spacer />
-                  {computer.opens === null ? null : (
-                    <Image
-                      modifiers={[accessibilityHidden(true)]}
-                      size={13}
-                      systemName="chevron.right"
-                      color={color.muted}
-                    />
-                  )}
+                  {opens === null ? null : <Chevron />}
                 </HStack>
               );
-              const opens = computer.opens;
               return opens === null ? (
-                <HStack
-                  key={computer.key}
-                  modifiers={[accessibilityLabel(`${computer.name}, ${computer.detail}`)]}
-                >
+                <HStack key={computer.key} modifiers={[label]}>
                   {row}
                 </HStack>
               ) : (
                 <Button
                   key={computer.key}
-                  modifiers={[accessibilityLabel(`${computer.name}, ${computer.detail}`)]}
+                  modifiers={[label]}
                   onPress={() => props.onComputerAction(opens)}
                 >
                   {row}
@@ -107,99 +111,67 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {props.onConnectedAppsAction === undefined ? null : (
-          <Section title="Apps">
+        {props.signIns === null ? null : (
+          <Section title="Sign-ins">
             <LinkRow
               detail={connectedAppsSettingsRow.detail}
-              onPress={props.onConnectedAppsAction}
+              onPress={props.signIns.onConnectedApps}
               symbol="puzzlepiece.extension"
               title={connectedAppsSettingsRow.title}
             />
-          </Section>
-        )}
-
-        {props.onChromeAction === undefined &&
-        props.onBrowserProfilesAction === undefined &&
-        props.passwords === null ? null : (
-          <Section
-            footer={<Text modifiers={[secondary, footnote]}>{chromeSettingsFooter}</Text>}
-            title="Browser"
-          >
-            {props.onChromeAction === undefined ? null : (
-              <LinkRow
-                detail={chromeSettingsRow.detail}
-                onPress={props.onChromeAction}
-                symbol="globe"
-                title={chromeSettingsRow.title}
-              />
-            )}
-            {props.onBrowserProfilesAction === undefined ? null : (
-              <LinkRow
-                detail={browserProfilesSettingsRow.detail}
-                onPress={props.onBrowserProfilesAction}
-                symbol="globe"
-                title={browserProfilesSettingsRow.title}
-              />
-            )}
+            <LinkRow
+              detail={chromeSettingsRow.detail}
+              onPress={props.signIns.onChrome}
+              symbol="globe"
+              title={chromeSettingsRow.title}
+            />
+            <LinkRow
+              detail={browserProfilesSettingsRow.detail}
+              onPress={props.signIns.onBrowserProfiles}
+              symbol="rectangle.on.rectangle"
+              title={browserProfilesSettingsRow.title}
+            />
             {props.passwords === null ? null : (
               <LinkRow
                 detail={props.passwords.detail}
                 onPress={props.onPasswordsAction}
-                symbol="lock"
+                symbol="key"
                 title={props.passwords.title}
               />
             )}
           </Section>
         )}
 
-        <Section title="Account">
-          <IdentityRow
-            circular
-            initial={props.account.initial}
-            subtitle={props.account.subtitle}
-            title={props.account.title}
-          />
-          {props.account.detail === null ? null : (
-            <Text modifiers={[secondary, footnote]}>{props.account.detail}</Text>
-          )}
-          <ActionButton action={props.account.action} onPress={props.onAccountAction} />
-          <ErrorText detail={props.accountError} />
-        </Section>
+        {notifications === null ? null : (
+          <Section footer={<Footer text={notifications.footer} />} title="Notifications">
+            {notifications.detail === null ? null : (
+              <Text modifiers={[secondary, footnote]}>{notifications.detail}</Text>
+            )}
+            {preferences === null ? null : (
+              <Toggle
+                isOn={preferences.approvalsEnabled}
+                label="Approvals and questions"
+                modifiers={[disabled(notifications.disabled)]}
+                onIsOnChange={(enabled) => props.onPreferenceChange("approvals", enabled)}
+              />
+            )}
+            {preferences === null ? null : (
+              <Toggle
+                isOn={preferences.runOutcomesEnabled}
+                label="Replies and updates"
+                modifiers={[disabled(notifications.disabled)]}
+                onIsOnChange={(enabled) => props.onPreferenceChange("run-outcomes", enabled)}
+              />
+            )}
+            <ActionButton action={notifications.action} onPress={props.onNotificationAction} />
+            <ErrorText detail={props.notificationError} />
+          </Section>
+        )}
 
-        <Section
-          footer={<Text modifiers={[secondary, footnote]}>{props.notifications.footer}</Text>}
-          title="Notifications"
-        >
-          <Text modifiers={[secondary, footnote]}>{props.notifications.detail}</Text>
-          {preferences === null ? null : (
-            <Toggle
-              isOn={preferences.approvalsEnabled}
-              label="Approvals and questions"
-              modifiers={[disabled(props.notifications.disabled)]}
-              onIsOnChange={(enabled) => props.onPreferenceChange("approvals", enabled)}
-            />
-          )}
-          {preferences === null ? null : (
-            <Toggle
-              isOn={preferences.runOutcomesEnabled}
-              label="Replies and updates"
-              modifiers={[disabled(props.notifications.disabled)]}
-              onIsOnChange={(enabled) => props.onPreferenceChange("run-outcomes", enabled)}
-            />
-          )}
-          <ActionButton action={props.notifications.action} onPress={props.onNotificationAction} />
-          <ErrorText detail={props.notificationError} />
-        </Section>
-
-        {props.agents.length === 0 ? null : (
+        {/* Mutes are kept by the Host, so they don't wait on this phone's registration. */}
+        {notifications === null || props.agents.length === 0 ? null : (
           <Section
-            footer={
-              <Text modifiers={[secondary, footnote]}>
-                Turning one off silences its own conversations and tasks. Approvals and questions
-                still notify you under the setting above, and so does Chat when Opensteer passes
-                something on from it. Its work keeps running.
-              </Text>
-            }
+            footer={<Footer text={specialistNotificationsFooter} />}
             title="Notifications from specialists"
           >
             {props.agents.map((agent) => (
@@ -213,81 +185,106 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
+        {props.account === null ? null : (
+          <Section title="Opensteer Account">
+            <HStack alignment="center" spacing={12}>
+              {props.account.initial === null ? null : (
+                <IdentityMark circular initial={props.account.initial} />
+              )}
+              <Lines detail={props.account.subtitle} title={props.account.title} />
+            </HStack>
+            {props.account.detail === null ? null : (
+              <Text modifiers={[secondary, footnote]}>{props.account.detail}</Text>
+            )}
+            <ActionButton action={props.account.action} onPress={props.onAccountAction} />
+            <ErrorText detail={props.accountError} />
+          </Section>
+        )}
+
         <Section title="About">
-          <Text>Opensteer {props.version}</Text>
-          {props.storageError === null ? null : (
-            <Text
-              modifiers={[
-                footnote,
-                error,
-                accessibilityLabel(`This phone could not save a setting. ${props.storageError}`),
-              ]}
-            >
-              This phone could not save a setting. {props.storageError}
-            </Text>
-          )}
+          <LabeledContent label="Version">
+            <Text modifiers={[secondary]}>{props.version}</Text>
+          </LabeledContent>
+          <ErrorText
+            detail={
+              props.storageError === null
+                ? null
+                : `This phone could not save a setting. ${props.storageError}`
+            }
+          />
         </Section>
       </Form>
     </Host>
   );
 }
 
+/** A name and the line under it, the shape every row in Settings shares. */
+function Lines(props: { readonly detail: string | null; readonly title: string }): ReactNode {
+  return (
+    <VStack alignment="leading" spacing={2}>
+      <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.text)]}>
+        {props.title}
+      </Text>
+      {props.detail === null ? null : <Text modifiers={[secondary, footnote]}>{props.detail}</Text>}
+    </VStack>
+  );
+}
+
+/** A row's glyph on a quiet tile, so the list is scanned by shape before it is read. */
+function Tile(props: { readonly symbol: SFSymbolName }): ReactNode {
+  return (
+    <Image
+      color={color.textSoft}
+      modifiers={[
+        accessibilityHidden(true),
+        frame({ height: markSize, width: markSize }),
+        background(color.surfaceRaised, tileShape),
+      ]}
+      size={15}
+      systemName={props.symbol}
+    />
+  );
+}
+
 /**
- * A row that names a thing and shows its face: the deployment with its mark,
- * the person with their initial. It is the one place Settings stops being a
- * list of switches and says *whose* phone this is and *where* it is pointed.
+ * Whose phone this is and where it is pointed, as a face: the deployment's
+ * coloured mark, the person's round initial.
  */
-function IdentityRow(props: {
+function IdentityMark(props: {
   /** An account is a person, and a person's avatar is round. */
   readonly circular?: boolean;
   readonly initial?: string | null;
   readonly mark?: DeploymentMark | null;
-  readonly subtitle: string | null;
-  readonly title: string;
 }): ReactNode {
   const mark = props.mark ?? null;
   const initial = mark?.initial ?? props.initial ?? null;
+  if (initial === null) return null;
   const palette = mark === null ? null : deploymentPaint[mark.tone];
   return (
-    <HStack alignment="center" spacing={12}>
-      {initial === null ? null : (
-        <Text
-          modifiers={[
-            font({ size: 13, weight: "bold" }),
-            foregroundStyle(palette?.ink ?? color.textSoft),
-            frame({ height: markSize, width: markSize }),
-            background(
-              palette?.fill ?? color.surfaceRaised,
-              props.circular === true
-                ? shapes.circle()
-                : shapes.roundedRectangle({
-                    cornerRadius: 8,
-                    roundedCornerStyle: "continuous",
-                  }),
-            ),
-            // The name is on the line beside it, so a mark announced as a
-            // letter would be that name's first letter read out twice.
-            accessibilityHidden(true),
-          ]}
-        >
-          {initial}
-        </Text>
-      )}
-      <VStack alignment="leading" spacing={2}>
-        <Text modifiers={[font({ textStyle: "body", weight: "medium" })]}>{props.title}</Text>
-        {props.subtitle === null ? null : (
-          <Text modifiers={[secondary, footnote]}>{props.subtitle}</Text>
-        )}
-      </VStack>
-    </HStack>
+    <Text
+      modifiers={[
+        font({ size: 13, weight: "bold" }),
+        foregroundStyle(palette?.ink ?? color.textSoft),
+        frame({ height: markSize, width: markSize }),
+        background(
+          palette?.fill ?? color.surfaceRaised,
+          props.circular === true ? shapes.circle() : tileShape,
+        ),
+        // The name is on the line beside it, so a mark announced as a
+        // letter would be that name's first letter read out twice.
+        accessibilityHidden(true),
+      ]}
+    >
+      {initial}
+    </Text>
   );
 }
 
-/** A row that opens a page or sheet about one thing: its glyph, its name, and a line about it. */
+/** A row that opens a page or sheet about one thing. */
 function LinkRow(props: {
   readonly detail: string;
   readonly onPress: () => void;
-  readonly symbol: "globe" | "lock" | "puzzlepiece.extension";
+  readonly symbol: SFSymbolName;
   readonly title: string;
 }): ReactNode {
   return (
@@ -295,29 +292,29 @@ function LinkRow(props: {
       modifiers={[accessibilityLabel(`${props.title}, ${props.detail}`)]}
       onPress={props.onPress}
     >
-      <HStack alignment="center" spacing={12}>
-        <Image
-          color={color.textSoft}
-          modifiers={[accessibilityHidden(true), frame({ width: 28 })]}
-          size={20}
-          systemName={props.symbol}
-        />
-        <VStack alignment="leading" spacing={2}>
-          <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.text)]}>
-            {props.title}
-          </Text>
-          <Text modifiers={[secondary, footnote]}>{props.detail}</Text>
-        </VStack>
+      <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
+        <Tile symbol={props.symbol} />
+        <Lines detail={props.detail} title={props.title} />
         <Spacer />
-        <Image
-          modifiers={[accessibilityHidden(true)]}
-          size={13}
-          systemName="chevron.right"
-          color={color.muted}
-        />
+        <Chevron />
       </HStack>
     </Button>
   );
+}
+
+function Chevron(): ReactNode {
+  return (
+    <Image
+      color={color.muted}
+      modifiers={[accessibilityHidden(true)]}
+      size={13}
+      systemName="chevron.right"
+    />
+  );
+}
+
+function Footer(props: { readonly text: string }): ReactNode {
+  return <Text modifiers={[secondary, footnote]}>{props.text}</Text>;
 }
 
 function ActionButton(props: {

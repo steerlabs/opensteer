@@ -41,7 +41,6 @@ import {
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
 import { sameDestination } from "../browser/surface-route.js";
 import { tabSiteLabel } from "../browser/tab-tiles.js";
-import { deploymentStatusLabel } from "../client/deployment-rows.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { statusTone } from "../screens/deployment-row.js";
 import {
@@ -53,14 +52,12 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
-import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { DeploymentMarkView } from "../threads/deployment-mark.js";
 import {
-  deploymentSwitcherModel,
-  sameDeploymentSwitcherModel,
-  switcherAccessibilityLabel,
-  type DeploymentSwitcherModel,
-} from "../threads/deployment-switcher-model.js";
+  deploymentIdentity,
+  sameDeploymentIdentity,
+  type DeploymentIdentity,
+} from "../threads/deployment-identity.js";
 import {
   NeedsYouTag,
   setTaskDone,
@@ -82,10 +79,7 @@ export type SidebarDestination = "Home" | "Specialists" | "Tabs";
 export interface SidebarActions {
   /** Closes the sidebar and hands focus back to whatever opened it. */
   readonly close: () => void;
-  readonly onAddDeployment: () => void;
   readonly onChat: () => void;
-  /** Closes the sidebar because the reader is going somewhere else. */
-  readonly onLeave: () => void;
   readonly onNewTask: (deploymentId: string, workspaceId: string) => void;
   /** Shows exactly this tab, app or phone, alone. */
   readonly onOpenPlace: (destination: WorkspaceSurfaceDestination) => void;
@@ -93,7 +87,6 @@ export interface SidebarActions {
   readonly onSearch: (deploymentId: string) => void;
   readonly onSettings: () => void;
   readonly onSpecialists: () => void;
-  readonly onSwitchDeployment: () => void;
   readonly onTabs: () => void;
 }
 
@@ -180,15 +173,15 @@ function useSidebarModel(
   return useSyncExternalStore(subscribe, read, read);
 }
 
-/** The switcher's projection of the catalog, held across unrelated client updates. */
-function useSwitcherModel(deploymentId: string | null): DeploymentSwitcherModel | null {
+/** The open Deployment's identity, held across unrelated client updates. */
+function useDeploymentIdentity(deploymentId: string | null): DeploymentIdentity | null {
   const client = useMobileClient();
-  const cached = useRef<DeploymentSwitcherModel | null>(null);
-  const read = useCallback((): DeploymentSwitcherModel | null => {
+  const cached = useRef<DeploymentIdentity | null>(null);
+  const read = useCallback((): DeploymentIdentity | null => {
     if (deploymentId === null) return null;
-    const next = deploymentSwitcherModel(client.getSnapshot().rows, deploymentId);
+    const next = deploymentIdentity(client.getSnapshot().rows, deploymentId);
     const current = cached.current;
-    if (current !== null && sameDeploymentSwitcherModel(current, next)) return current;
+    if (current !== null && sameDeploymentIdentity(current, next)) return current;
     cached.current = next;
     return next;
   }, [client, deploymentId]);
@@ -252,7 +245,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly visible: boolean;
 }): ReactNode {
   const insets = useContentInsets();
-  const client = useMobileClient();
   const { rows, selection } = useMobileState();
   const { actions, deploymentId, destination, docked, selectedThreadId, visible } = props;
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
@@ -269,7 +261,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     props.openThreadId,
     props.shelves,
   );
-  const switcher = useSwitcherModel(deploymentId);
+  const identity = useDeploymentIdentity(deploymentId);
   const [doneOpen, toggleDone] = useDoneShelf();
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [earlierFailure, setEarlierFailure] = useState<string | null>(null);
@@ -308,35 +300,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       )
       .finally(() => setLoadingEarlier(false));
   }, [hostClient, loadingEarlier]);
-
-  const switcherOptions = useMemo<readonly NativeMenuOption[]>(
-    () =>
-      switcher === null
-        ? []
-        : [
-            ...switcher.items.map((item) => ({
-              id: item.deploymentId,
-              // A state the checkmark cannot say is written beside the name.
-              label:
-                item.current || item.glyph === null ? item.name : `${item.name} — ${item.status}`,
-              onPress: () => {
-                if (item.current) return;
-                actions.onLeave();
-                void AccessibilityInfo.announceForAccessibility("Opening deployment");
-                void client.openDeployment(item.deploymentId).catch(() => {
-                  // The switcher is where a row's status and its repair are stated.
-                  actions.onSwitchDeployment();
-                });
-              },
-              selected: item.current,
-            })),
-            ...(switcher.seeAll
-              ? [{ id: "see-all", label: "See all…", onPress: actions.onSwitchDeployment }]
-              : []),
-            { id: "add", label: "Add deployment…", onPress: actions.onAddDeployment },
-          ],
-    [actions, client, switcher],
-  );
 
   const list = model?.list ?? null;
   const taskWorkspaceId = model?.taskWorkspaceId ?? null;
@@ -572,56 +535,54 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, space[8]) }]}>
-        <DestinationRow
-          current={false}
-          icon="gearshape"
-          label="Settings"
-          onPress={actions.onSettings}
-        />
-        {switcher === null || row === undefined ? null : (
-          <NativeMenu
-            accessibilityHint="Shows the deployments on this phone"
-            accessibilityLabel={`Deployment: ${switcherAccessibilityLabel(switcher)}`}
-            onPresent={noop}
-            onSettle={noop}
-            options={switcherOptions}
-            title="Deployments"
+        {identity === null || row === undefined ? (
+          <DestinationRow
+            current={false}
+            icon="gearshape"
+            label="Settings"
+            onPress={actions.onSettings}
+          />
+        ) : (
+          // Which Deployment this is, and the way into Settings, where it is
+          // switched on a screen that shows each one's state.
+          <Pressable
+            accessibilityHint="Opens Settings"
+            accessibilityLabel={`Settings. ${identity.name}, ${identity.status}`}
+            accessibilityRole="button"
+            onPress={actions.onSettings}
+            style={({ pressed }) => [styles.deployment, pressed && styles.pressed]}
           >
-            <View style={styles.deployment}>
-              <DeploymentMarkView mark={switcher.mark} />
-              <View style={styles.grow}>
+            <DeploymentMarkView mark={identity.mark} />
+            <View style={styles.grow}>
+              <AppText
+                maxFontSizeMultiplier={controlFontScaleLimit}
+                numberOfLines={1}
+                role="secondaryMedium"
+              >
+                {identity.name}
+              </AppText>
+              <View style={styles.statusLine}>
+                <StatusDot
+                  live={row.status === "connecting" || row.status === "reconnecting"}
+                  tone={statusTone(row.status)}
+                />
                 <AppText
                   maxFontSizeMultiplier={controlFontScaleLimit}
                   numberOfLines={1}
-                  role="secondaryMedium"
+                  role="caption"
+                  tone="muted"
                 >
-                  {switcher.name}
+                  {identity.status}
                 </AppText>
-                <View style={styles.statusLine}>
-                  <StatusDot
-                    live={row.status === "connecting" || row.status === "reconnecting"}
-                    tone={statusTone(row.status)}
-                  />
-                  <AppText
-                    maxFontSizeMultiplier={controlFontScaleLimit}
-                    numberOfLines={1}
-                    role="caption"
-                    tone="muted"
-                  >
-                    {deploymentStatusLabel(row.status)}
-                  </AppText>
-                </View>
               </View>
-              <Symbol name="chevron.down" size={12} tint={color.muted} />
             </View>
-          </NativeMenu>
+            <Symbol name="gearshape" size={17} tint={color.muted} />
+          </Pressable>
         )}
       </View>
     </View>
   );
 });
-
-function noop(): void {}
 
 /**
  * The tabs listed before All tabs: enough to switch between the ones in use

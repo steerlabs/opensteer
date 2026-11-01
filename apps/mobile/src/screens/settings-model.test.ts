@@ -2,8 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PushRegistrationState } from "../notifications/push-registration.js";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
-  computersSettingsFooter,
-  computersSettingsFooterFor,
+  accountSettingsModel,
   computersSettingsRows,
   notificationSettingsModel,
   passwordsSettingsModel,
@@ -14,7 +13,6 @@ const preferences = { approvalsEnabled: true, runOutcomesEnabled: false };
 
 describe("settings presentation", () => {
   it.each([
-    ["no-account-service", null],
     ["signed-out", null],
     ["permission-undetermined", "request-permission"],
     ["permission-denied", "open-settings"],
@@ -27,7 +25,27 @@ describe("settings presentation", () => {
       status === "unavailable"
         ? { detail: "The Account did not answer.", preferences, status }
         : { preferences, status };
-    expect(notificationSettingsModel(state, false).action?.kind ?? null).toBe(action);
+    expect(notificationSettingsModel(state, false)?.action?.kind ?? null).toBe(action);
+  });
+
+  it("shows nothing about an Account or notifications in a build without an Account service", () => {
+    expect(
+      notificationSettingsModel({ preferences, status: "no-account-service" }, false),
+    ).toBeNull();
+    expect(
+      accountSettingsModel(
+        { available: false, detail: null, identity: null, status: "signed-out" },
+        false,
+      ),
+    ).toBeNull();
+  });
+
+  it("says nothing more about notifications once they reach this phone", () => {
+    expect(notificationSettingsModel({ preferences, status: "registered" }, false)).toMatchObject({
+      action: null,
+      detail: null,
+      preferences,
+    });
   });
 });
 
@@ -171,19 +189,16 @@ describe("this iPhone in settings", () => {
     status: "online",
   } as unknown as MachineSummary;
 
-  it("offers to add this iPhone right after where Opensteer runs, and says so below", () => {
+  it("offers to add this iPhone right after where Opensteer runs, saying what it shares", () => {
     const rows = computersSettingsRows({ ...server, here: here(), machines: [] });
     expect(rows.map(({ key }) => key)).toEqual(["home", "this-iphone"]);
     expect(rows[1]).toEqual({
-      detail: "You're here · Not added",
+      detail: "You're here · Share its Calendar, Contacts and more",
       key: "this-iphone",
       name: "Alex's iPhone",
       opens: { kind: "add-iphone" },
       symbol: "smartphone",
     });
-    expect(computersSettingsFooterFor(rows)).toBe(
-      "Add this iPhone to let agents use its Calendar, Contacts and Reminders while Opensteer is open. To add a computer, open Opensteer on it and choose Add on its Computers page. To add an Android phone, plug it into a computer and choose Add a phone there.",
-    );
   });
 
   it("says to update an Opensteer that cannot take an iPhone, with nothing to tap", () => {
@@ -196,7 +211,6 @@ describe("this iPhone in settings", () => {
       detail: "You're here · Update Opensteer on Studio to add this iPhone",
       opens: null,
     });
-    expect(computersSettingsFooterFor(rows)).toBe(computersSettingsFooter);
   });
 
   it("lists an added iPhone once, as itself, with what waits for the person", () => {
@@ -227,7 +241,6 @@ describe("this iPhone in settings", () => {
       machines: [iphoneMachine],
     });
     expect(waiting[1]?.detail).toBe("You're here · 2 waiting for you");
-    expect(computersSettingsFooterFor(waiting)).toBe(computersSettingsFooter);
   });
 
   it("hides this iPhone's own pending enrollment while it is being added", () => {
@@ -243,7 +256,7 @@ describe("this iPhone in settings", () => {
     const rows = computersSettingsRows({ ...server, here: here({ heldBy }), machines: [pending] });
     expect(rows.map(({ key }) => key)).toEqual(["home", "this-iphone"]);
     expect(rows[1]).toMatchObject({
-      detail: "You're here · Not added",
+      detail: "You're here · Share its Calendar, Contacts and more",
       opens: { kind: "add-iphone" },
     });
   });

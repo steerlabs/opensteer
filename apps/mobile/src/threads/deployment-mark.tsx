@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { radius, deploymentPaint } from "../theme.js";
-import type { DeploymentMark } from "./deployment-switcher-model.js";
+import type { DeploymentMark } from "./deployment-identity.js";
 
 /**
  * A Deployment's identity: an initial on a tinted rounded square, with its own

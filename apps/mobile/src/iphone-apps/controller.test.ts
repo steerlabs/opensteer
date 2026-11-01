@@ -34,7 +34,9 @@ import { createFakeIphoneApps, type FakeIphoneApps } from "./fake-bridge.js";
  * - a late outcome after the iPhone was stopped changes anything, or an
  *   operation started for one Deployment completes against another;
  * - switching the open Deployment stops the iPhone;
- * - a request is auto-shown twice.
+ * - a request is auto-shown twice;
+ * - Add's apps ask iOS about more than one app at once, stop at the first
+ *   refusal, lose why one didn't turn on, or go on after the iPhone stopped.
  *
  * Location and Photos, written before the controller took them:
  * - B5: iOS is asked, or the Host is sent a request, for an app the attached
@@ -795,6 +797,112 @@ describe("turning an app on from this iPhone", () => {
     expect(await allowing).toEqual({ kind: "superseded" });
     expect(controller.getState().changes).toEqual({});
     expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+  });
+});
+
+describe("the apps chosen with Add", () => {
+  it("turns on one app at a time, and stopping the iPhone ends the run before the next", async () => {
+    const { controller, fake } = open();
+    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    const calendarAnswer = deferred<"granted">();
+    fake.device.answerPermissionWith("apple-calendar", calendarAnswer.promise);
+    const host = fakeHost();
+    controller.attachHost({ deploymentId, hostClient: host.client });
+
+    const sharing = controller.share({
+      apps: [
+        { access: "read-write", app: "apple-calendar" },
+        { access: "read", app: "apple-contacts" },
+      ],
+      hostClient: host.client,
+    });
+    await vi.waitFor(() => expect(fake.device.calls).toEqual(["requestPermission:apple-calendar"]));
+    // Contacts waits its turn: iOS is never asked about two apps at once.
+    expect(controller.getState().queued).toEqual(["apple-contacts"]);
+    expect(controller.getState().changes["apple-calendar"]?.phase).toBe("asking-iphone");
+    // Nor can a tap on another app start a second prompt meanwhile.
+    await expect(
+      controller.allow({ access: "read", app: "iphone-photos", hostClient: host.client }),
+    ).resolves.toEqual({ kind: "busy" });
+    expect(fake.device.calls).toEqual(["requestPermission:apple-calendar"]);
+
+    controller.owner.stop();
+    calendarAnswer.resolve("granted");
+    await sharing;
+
+    expect(controller.getState().queued).toEqual([]);
+    expect(controller.getState().failures).toEqual({});
+    expect(fake.device.calls).toEqual(["requestPermission:apple-calendar", "disconnect"]);
+    expect(host.commands).not.toContain("integration.computer.setup.request");
+  });
+
+  it("lets a task's Allow ask iOS only once Add's prompt is answered", async () => {
+    const { controller, fake } = open();
+    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    const calendarAnswer = deferred<"granted">();
+    fake.device.answerPermissionWith("apple-calendar", calendarAnswer.promise);
+    const host = fakeHost();
+    controller.attachHost({ deploymentId, hostClient: host.client });
+    await controller.load();
+    fake.device.listApprovals([approval("req-photos", "iphone-photos", "read")]);
+
+    const sharing = controller.share({
+      apps: [{ access: "read-write", app: "apple-calendar" }],
+      hostClient: host.client,
+    });
+    await vi.waitFor(() => expect(fake.device.calls).toEqual(["requestPermission:apple-calendar"]));
+    const answering = controller.answer({ decision: "allow", setupRequestId: "req-photos" });
+    await settle();
+    // The task's prompt waits its turn rather than opening over Calendar's.
+    expect(fake.device.calls).toEqual(["requestPermission:apple-calendar"]);
+
+    calendarAnswer.resolve("granted");
+    await answering;
+    await sharing;
+    expect(fake.device.calls.slice(0, 2)).toEqual([
+      "requestPermission:apple-calendar",
+      "requestPermission:iphone-photos",
+    ]);
+  });
+
+  it("keeps why an app didn't turn on for its row, and goes on to the next", async () => {
+    const { controller, fake } = open();
+    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    fake.device.answerPermissionWith("apple-calendar", "denied");
+    const host = fakeHost({
+      dispatch: (command) => {
+        if (command.type !== "integration.computer.setup.request") return undefined;
+        fake.device.listApprovals([approval("req-1", "apple-contacts", "read")]);
+        return { request: { id: "req-1" }, type: "integration.computer.setup.request" };
+      },
+    });
+    controller.attachHost({ deploymentId, hostClient: host.client });
+
+    await controller.share({
+      apps: [
+        { access: "read-write", app: "apple-calendar" },
+        { access: "read", app: "apple-contacts" },
+      ],
+      hostClient: host.client,
+    });
+
+    expect(controller.getState().failures).toEqual({
+      "apple-calendar": { kind: "blocked", permission: "denied" },
+    });
+    expect(fake.device.calls).toEqual([
+      "requestPermission:apple-calendar",
+      "requestPermission:apple-contacts",
+      "answerApproval:req-1:allow:apple-contacts:read",
+    ]);
+    // The next change for that app starts clean.
+    fake.device.setPermission("apple-calendar", "granted");
+    const next = controller.allow({
+      access: "read",
+      app: "apple-calendar",
+      hostClient: host.client,
+    });
+    expect(controller.getState().failures).toEqual({});
+    await next;
   });
 });
 
