@@ -30,7 +30,7 @@ Discovery and local-import require Host API epoch 23; older Runners keep existin
 
 A settled authentication-required catalog is a normal result, not a background retry loop. External CLI sign-in changes require explicit refresh; drivers must not hide refresh behind timed caches. Catalogs and options come from the executing engine or endpoint; an unlistable or oversized catalog fails rather than publishing a different source or partial inventory.
 
-Transient provider retries remain working, not waiting for a person. Only failures another send can overcome are retryable. Capacity exhaustion uses the shared `harness_usage_limit` classification; OpenCode's HTTP 429 and Cursor's text classification remain imperfect provider signals. See the driver implementations in `packages/harness-*`.
+Transient provider retries remain working, not waiting for a person. Only failures another send can overcome are retryable. Capacity exhaustion uses the shared `harness_usage_limit` classification; OpenCode's HTTP 429 and Cursor's text classification remain imperfect provider signals. Antigravity reports a failed model call inside a turn as reply text with a normal `end_turn`; only its stderr markers say the turn failed, so its driver classifies from those and drops the echoed reply. See the driver implementations in `packages/harness-*`.
 
 ## Engine releases and new models
 
@@ -46,7 +46,7 @@ Codex enables only approved features from `packages/harness-codex/src/features.t
 
 ## Shared Runner sandbox
 
-OpenCode and Pi have no per-command sandbox and must refuse shared (`isolated-service`) Runners during both inspection and session creation. Cursor also refuses: its ambient keychain sign-in would spend whichever person's plan the service happens to hold. Cursor API keys cannot safely replace this because model shell commands can read the harness environment. Several upstream OAuth methods also require callback ports unreachable from a Runner; do not advertise a half-working sign-in.
+OpenCode and Pi have no per-command sandbox and must refuse shared (`isolated-service`) Runners during both inspection and session creation. Cursor, Grok, Antigravity and Muse Code also refuse, as do their sign-ins and updates: their sign-ins live in files or keychains of the account the service runs as, so a shared Runner would spend whichever person's plan it happens to hold. Cursor API keys cannot safely replace this because model shell commands can read the harness environment. Several upstream OAuth methods also require callback ports unreachable from a Runner; do not advertise a half-working sign-in.
 
 On shared Runners, per-command isolation denies model commands access to private credential state. Linux additionally hides shared roots and binds only this Run's profile, Thread state, Workspace roots and machine-access launch directory. The outer sandbox does not replace protection from the model's commands. macOS Seatbelt cannot nest; native-user Runners omit both isolation layers because their owner owns the machine and credentials. See `apps/runner/src/sandbox/harness-sandbox.ts`.
 
