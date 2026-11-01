@@ -2,8 +2,10 @@ import type { EnvironmentSummary, HarnessSummary, ThreadSummary } from "./client
 import {
   harnessDisplayRank,
   harnessDriverLabel,
+  modelEffortTiers,
   ModelSelectionSchema,
   sameProviderContinuationIdentity,
+  type ModelEffortTier,
   type ModelSelection,
   type ProviderContinuationIdentity,
   type ThreadAccessMode,
@@ -396,6 +398,41 @@ export function selectionForModel(
     options: Object.fromEntries(options),
     providerId: model.providerId,
   });
+}
+
+/**
+ * Applies a product reasoning preference through the model's own select.
+ * Engines use `effort`; Pi uses `thinking`. Unknown words are not guessed at,
+ * and an unavailable requested tier leaves the engine at its declared default.
+ */
+export function selectionForModelEffort(
+  model: HarnessModelDescriptor,
+  effort: ModelEffortTier | "default" | "highest",
+): ModelSelection {
+  if (effort === "default") return selectionForModel(model);
+  const option = model.options.find(
+    (
+      candidate,
+    ): candidate is Extract<HarnessModelDescriptor["options"][number], { type: "select" }> =>
+      candidate.type === "select" && (candidate.id === "effort" || candidate.id === "thinking"),
+  );
+  if (!option) return selectionForModel(model);
+  const offered: Array<{ readonly tier: ModelEffortTier; readonly value: string }> = [];
+  for (const { value } of option.values) {
+    if (value === "auto" || value === "default") continue;
+    const tier =
+      value === "off" ? "none" : modelEffortTiers.find((candidate) => candidate === value);
+    if (tier === undefined) return selectionForModel(model);
+    offered.push({ tier, value });
+  }
+  const tierRank = (tier: ModelEffortTier) => modelEffortTiers.indexOf(tier);
+  const value =
+    effort === "highest"
+      ? offered.toSorted((left, right) => tierRank(right.tier) - tierRank(left.tier))[0]?.value
+      : offered.find(({ tier }) => tier === effort)?.value;
+  return value === undefined
+    ? selectionForModel(model)
+    : selectionForModel(model, { [option.id]: value });
 }
 
 function environmentRank(environment: EnvironmentSummary): number {

@@ -4181,14 +4181,18 @@ export class MockHostClient implements HostClient {
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
     const thread = this.getSnapshot().threads.find(({ id }) => id === result.thread.id);
     if (!thread) throw new Error("The mock Thread was not projected.");
-    await this.#rememberQuietly({
-      accessMode: input.accessMode,
-      selection: {
-        environmentId: input.environmentId,
-        harnessInstanceId: input.harnessInstanceId,
-        modelSelection: input.modelSelection,
-      },
-    });
+    await this.#rememberQuietly(
+      input.home
+        ? { accessMode: input.accessMode }
+        : {
+            accessMode: input.accessMode,
+            selection: {
+              environmentId: input.environmentId,
+              harnessInstanceId: input.harnessInstanceId,
+              modelSelection: input.modelSelection,
+            },
+          },
+    );
     return thread;
   }
 
@@ -4326,13 +4330,15 @@ export class MockHostClient implements HostClient {
       type: "thread.execution.update",
     });
     if (result.type !== "thread.execution.update") throw new Error("Thread command mismatch.");
-    await this.#rememberQuietly({
-      selection: {
-        environmentId: thread.environmentId,
-        harnessInstanceId: selection.harnessInstanceId,
-        modelSelection: selection.modelSelection,
-      },
-    });
+    if (thread.id !== this.getSnapshot().homeThreadId) {
+      await this.#rememberQuietly({
+        selection: {
+          environmentId: thread.environmentId,
+          harnessInstanceId: selection.harnessInstanceId,
+          modelSelection: selection.modelSelection,
+        },
+      });
+    }
     return this.#projectedThread(threadId);
   }
 

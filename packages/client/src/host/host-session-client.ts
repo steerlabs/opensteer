@@ -3017,14 +3017,18 @@ export class HttpHostClient {
           item.id === thread.workspaceId ? { ...item, homeThreadId: thread.id } : item,
         ),
       });
-    await this.#rememberQuietly({
-      accessMode: input.accessMode,
-      selection: {
-        environmentId: input.environmentId,
-        harnessInstanceId: input.harnessInstanceId,
-        modelSelection: input.modelSelection,
-      },
-    });
+    await this.#rememberQuietly(
+      input.home
+        ? { accessMode: input.accessMode }
+        : {
+            accessMode: input.accessMode,
+            selection: {
+              environmentId: input.environmentId,
+              harnessInstanceId: input.harnessInstanceId,
+              modelSelection: input.modelSelection,
+            },
+          },
+    );
     return thread;
   }
 
@@ -3167,13 +3171,15 @@ export class HttpHostClient {
       this.#snapshot.environments,
       this.#snapshot.harnesses,
     );
-    await this.#rememberQuietly({
-      selection: {
-        environmentId: thread.environmentId,
-        harnessInstanceId: selection.harnessInstanceId,
-        modelSelection: selection.modelSelection,
-      },
-    });
+    if (thread.id !== this.#snapshot.homeThreadId) {
+      await this.#rememberQuietly({
+        selection: {
+          environmentId: thread.environmentId,
+          harnessInstanceId: selection.harnessInstanceId,
+          modelSelection: selection.modelSelection,
+        },
+      });
+    }
     return this.#snapshot.threads.find(({ id }) => id === threadId) ?? updated;
   }
 

@@ -6,15 +6,18 @@ import {
   type HarnessModelDescriptor,
 } from "@opensteer/protocol";
 import {
+  chatExecutionSelection,
   composerExecutionSelection,
   executionEngines,
   findRoute,
   placementAccountDetail,
+  rankedChatExecutionSelection,
   resolveExecutionSelection,
   searchRoutes,
 } from "./model-catalog.js";
 import {
   selectionForModel,
+  selectionForModelEffort,
   threadPlacementOptions,
   type ThreadPlacementOption,
 } from "./thread-placement.js";
@@ -403,6 +406,162 @@ describe("composerExecutionSelection", () => {
         remembered: null,
       }),
     ).toBeNull();
+  });
+});
+
+describe("Chat execution selection", () => {
+  const terraOnGateway = model({
+    displayName: "GPT-6.1-Terra",
+    isDefault: false,
+    modelId: "openai/gpt-6.1-terra",
+    providerId: "openrouter",
+    options: [effortSelect(["low", "medium", "high", "xhigh"], "medium")],
+  });
+  const sonnet = model({
+    displayName: "Claude Sonnet 5.5",
+    isDefault: true,
+    modelId: "claude-sonnet-5-5",
+    providerId: "anthropic",
+    options: [effortSelect(["low", "medium", "high"], "low")],
+  });
+  const gateway = placement({
+    accountName: "OpenRouter",
+    engineLabel: "OpenCode",
+    environmentId: "environment-main",
+    harnessInstanceId: "hin-gateway",
+    models: [terraOnGateway],
+    sourceId: "openrouter",
+    sourceKind: "gateway",
+  });
+  const claude = placement({
+    engineLabel: "Claude Code",
+    environmentId: "environment-main",
+    harnessInstanceId: "hin-claude-55",
+    models: [sonnet],
+  });
+
+  it("matches the best canonical model across engines and sources", () => {
+    const selected = rankedChatExecutionSelection([claude, gateway]);
+
+    expect(selected).toMatchObject({
+      harnessInstanceId: "hin-gateway",
+      modelSelection: {
+        modelId: "openai/gpt-6.1-terra",
+        options: { effort: "high" },
+        providerId: "openrouter",
+      },
+    });
+  });
+
+  it("keeps placement order as the tie breaker", () => {
+    const other = { ...gateway, harnessInstanceId: "hin-gateway-2" };
+    expect(rankedChatExecutionSelection([other, gateway])?.harnessInstanceId).toBe("hin-gateway-2");
+  });
+
+  it("uses explicit then saved choices before the ranked new-Chat default", () => {
+    const explicit = {
+      environmentId: gateway.environmentId,
+      harnessInstanceId: gateway.harnessInstanceId,
+      modelSelection: selectionForModel(terraOnGateway),
+    };
+    const saved = {
+      environmentId: claude.environmentId,
+      harnessInstanceId: claude.harnessInstanceId,
+      modelSelection: selectionForModel(sonnet),
+    };
+
+    expect(
+      chatExecutionSelection({ chosen: explicit, existing: saved, placements: [claude, gateway] })
+        ?.harnessInstanceId,
+    ).toBe("hin-gateway");
+    expect(
+      chatExecutionSelection({ chosen: null, existing: saved, placements: [claude, gateway] })
+        ?.harnessInstanceId,
+    ).toBe("hin-claude-55");
+    expect(
+      chatExecutionSelection({ chosen: null, existing: null, placements: [claude, gateway] })
+        ?.harnessInstanceId,
+    ).toBe("hin-gateway");
+  });
+
+  it("leaves an unavailable saved Chat choice blocked", () => {
+    const saved = {
+      environmentId: claude.environmentId,
+      harnessInstanceId: claude.harnessInstanceId,
+      modelSelection: selectionForModel(sonnet),
+    };
+    expect(
+      chatExecutionSelection({ chosen: null, existing: saved, placements: [gateway] }),
+    ).toBeNull();
+  });
+
+  it("keeps the single-account fallback when no ranked model is offered", () => {
+    expect(
+      chatExecutionSelection({ chosen: null, existing: null, placements: [codexMain] })
+        ?.harnessInstanceId,
+    ).toBe(codexMain.harnessInstanceId);
+    expect(
+      chatExecutionSelection({
+        chosen: null,
+        existing: null,
+        placements: [codexMain, claudeMain],
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("selectionForModelEffort", () => {
+  it("uses offered effort and Pi thinking values, including the highest tier", () => {
+    const effort = model({
+      displayName: "Effort model",
+      isDefault: true,
+      modelId: "effort-model",
+      providerId: "openai",
+      options: [effortSelect(["low", "medium", "high"], "low")],
+    });
+    const thinking = model({
+      displayName: "Thinking model",
+      isDefault: true,
+      modelId: "thinking-model",
+      providerId: "anthropic",
+      options: [
+        {
+          defaultValue: "minimal",
+          id: "thinking",
+          label: "Thinking",
+          type: "select",
+          values: ["off", "minimal", "xhigh", "ultra"].map((value) => ({ label: value, value })),
+        },
+      ],
+    });
+
+    expect(selectionForModelEffort(effort, "high").options).toEqual({ effort: "high" });
+    expect(selectionForModelEffort(thinking, "highest").options).toEqual({ thinking: "ultra" });
+    expect(selectionForModelEffort(thinking, "none").options).toEqual({ thinking: "off" });
+  });
+
+  it("leaves unavailable or unknown effort vocabularies at the engine default", () => {
+    const unknown = model({
+      displayName: "Unknown effort model",
+      isDefault: true,
+      modelId: "unknown-effort",
+      providerId: "custom",
+      options: [effortSelect(["quick", "deep"], "quick")],
+    });
+    expect(selectionForModelEffort(unknown, "highest").options).toEqual({});
+    expect(selectionForModelEffort(unknown, "high").options).toEqual({});
+    expect(
+      selectionForModelEffort(
+        model({
+          displayName: "Mixed effort model",
+          isDefault: true,
+          modelId: "mixed-effort",
+          providerId: "custom",
+          options: [effortSelect(["low", "high", "extreme"], "low")],
+        }),
+        "high",
+      ).options,
+    ).toEqual({});
   });
 });
 

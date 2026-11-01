@@ -1,6 +1,5 @@
 import type { PlaceContentPart } from "@opensteer/core";
-import { lastExecutionSelection } from "../host/execution-preferences.js";
-import { composerExecutionSelection } from "../host/model-catalog.js";
+import { chatExecutionSelection } from "../host/model-catalog.js";
 import { VoiceSessionIdSchema, type VoiceToolCall } from "@opensteer/protocol/voice";
 import { ClientOperationError, classifyClientFailure } from "../connections/operation-error.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
@@ -67,11 +66,16 @@ export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
 
 function chatSelection(snapshot: HostSnapshot) {
   const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
-  const runnable = placements.filter((placement) => placement.available);
-  return composerExecutionSelection({
+  const home = snapshot.homeThreadId ? heldThread(snapshot, snapshot.homeThreadId) : null;
+  return chatExecutionSelection({
     chosen: null,
-    remembered: lastExecutionSelection(snapshot.executionPreferences),
-    defaultPlacement: runnable.length === 1 ? runnable[0] : null,
+    existing: home
+      ? {
+          environmentId: home.environmentId,
+          harnessInstanceId: home.harnessInstanceId,
+          modelSelection: home.modelSelection,
+        }
+      : null,
     placements,
   });
 }
