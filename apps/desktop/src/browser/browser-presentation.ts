@@ -485,6 +485,8 @@ export class DesktopBrowserPresentationManager {
         )
           return;
         page.placement = placement;
+        if (presentation.page === page && owner.current === presentation)
+          this.#placed(presentation, page);
       });
       this.#order(owner);
       native.setStage(this.#dips(presentation), owner.window.isFocused());
