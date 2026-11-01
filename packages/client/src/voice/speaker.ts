@@ -55,7 +55,7 @@ export class VoiceSpeaker {
   readonly #messages = new Set<string>();
   readonly #requests = new Set<string>();
   /**
-   * The newest Chat message the person already had, in the Host's own clock:
+   * The newest Chat activity the person already had, in the Host's own clock:
    * replies at or before it are history, whatever this device's clock says.
    * Undefined until Chat's history has loaded; null when Chat has none.
    */
@@ -150,7 +150,7 @@ export class VoiceSpeaker {
     let since: number | null = null;
     for (const entry of snapshot.transcripts[threadId] ?? []) {
       if (durableReply(entry)) this.#messages.add(entry.id);
-      const at = entry.kind === "message" ? Date.parse(entry.createdAt) : Number.NaN;
+      const at = Date.parse(entry.createdAt);
       if (Number.isFinite(at)) since = Math.max(since ?? at, at);
     }
     this.#since = since;

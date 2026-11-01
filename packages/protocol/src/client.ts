@@ -38,6 +38,12 @@ export const workspaceSnapshotMaxSerializedBytes = 900 * 1_024;
 export const threadPageMaxItems = 100;
 export const messagePageMaxItems = 100;
 export const eventPageMaxItems = 200;
+/**
+ * A page of whole turns (`history-turns-v1`) may hold more events than an
+ * older reader's 200, so only a request that asks for turns receives one.
+ */
+export const turnPageMaxItems = 1_000;
+export const turnPageMaxTurns = 20;
 export const workspacePageMaxItems = 100;
 export const durableWindowCursorMaxCharacters = 512;
 
@@ -258,7 +264,7 @@ export type ThreadMessagePage = z.infer<typeof ThreadMessagePageSchema>;
 export const ThreadEventPageSchema = z.object({
   readState: ThreadReadStateSchema,
   thread: ThreadViewSchema,
-  events: z.array(AgentEventViewSchema).max(eventPageMaxItems),
+  events: z.array(AgentEventViewSchema).max(turnPageMaxItems),
   threadId: ThreadIdSchema,
   window: ThreadMessageWindowSchema,
 });

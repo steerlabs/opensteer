@@ -198,6 +198,7 @@ import {
   DurableWindowSchema,
   TaskPageSchema,
   ThreadEventPageSchema,
+  turnPageMaxTurns,
   ThreadMessagePageSchema,
   WorkspaceCatalogPageSchema,
   WorkspaceViewSchema,
@@ -1677,11 +1678,20 @@ export const hostApi = defineRpc({
   "thread.events.list": declaration(
     "GET",
     z
-      .strictObject({ threadId: ThreadIdSchema, aroundMessageId: MessageIdSchema.optional() })
+      .strictObject({
+        threadId: ThreadIdSchema,
+        aroundMessageId: MessageIdSchema.optional(),
+        /** Whole turns, newest first, up to this many. Needs `history-turns-v1`. */
+        turns: z.number().int().positive().max(turnPageMaxTurns).optional(),
+      })
       .extend(durablePageInputSchema.shape)
       .refine(
         (input) => !input.aroundMessageId || !input.before,
         "An anchored read cannot also page",
+      )
+      .refine(
+        (input) => input.turns === undefined || (!input.aroundMessageId && !input.limit),
+        "A turn page sets its own size",
       ),
     ThreadEventPageSchema,
   ),

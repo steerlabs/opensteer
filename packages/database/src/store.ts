@@ -2131,6 +2131,7 @@ export class OpensteerStore {
     readonly before?: string;
     readonly maxBytes?: number;
     readonly maxItems?: number;
+    readonly maxTurns?: number;
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
   }): Promise<ThreadEventPage | null> {

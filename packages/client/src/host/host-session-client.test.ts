@@ -2513,90 +2513,99 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
-  it("loads an older durable message window through its continuation cursor", async () => {
-    const workspace = makeWorkspace();
-    const thread = makeThread(workspace.id);
-    const recent = makeMessage(thread.id, "assistant", "Recent");
-    const internalResult: Message = {
-      ...recent,
-      content: [{ text: 'Delegated Thread result\n{"outcome":"completed"}', type: "text" }],
-      id: createId("message"),
-      kind: "run-result",
-      sequence: SequenceSchema.parse("2"),
-    };
-    const earlier = makeMessage(thread.id, "input", "Earlier");
-    const sockets: FakeSocket[] = [];
-    const requestedUrls: string[] = [];
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
-      requestedUrls.push(String(input));
-      const path = new URL(String(input)).pathname;
-      if (path === "/v1/rpc/thread.events.list") {
-        return json({
-          thread,
-          events: [
-            agentEvent(workspace.id, thread.id, earlier.runId, "1", "message.created", {
-              input: makeThreadInput(earlier),
-              message: earlier,
-            }),
+  it.each([true, false])(
+    "loads an older durable message window through its continuation cursor (turn pages %s)",
+    async (turnPages) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const recent = makeMessage(thread.id, "assistant", "Recent");
+      const internalResult: Message = {
+        ...recent,
+        content: [{ text: 'Delegated Thread result\n{"outcome":"completed"}', type: "text" }],
+        id: createId("message"),
+        kind: "run-result",
+        sequence: SequenceSchema.parse("2"),
+      };
+      const earlier = makeMessage(thread.id, "input", "Earlier");
+      const sockets: FakeSocket[] = [];
+      const requestedUrls: string[] = [];
+      const eventRequests: Record<string, unknown>[] = [];
+      const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        requestedUrls.push(String(input));
+        const path = new URL(String(input)).pathname;
+        if (path === "/v1/rpc/thread.events.list") {
+          eventRequests.push(rpcPayload(new URL(String(input)), init));
+          return json({
+            thread,
+            events: [
+              agentEvent(workspace.id, thread.id, earlier.runId, "1", "message.created", {
+                input: makeThreadInput(earlier),
+                message: earlier,
+              }),
+            ],
+            threadId: thread.id,
+            window: {
+              byteCount: 256,
+              hasMore: false,
+              itemCount: 1,
+              nextBefore: null,
+              threadId: thread.id,
+              totalItems: 2,
+            },
+          });
+        }
+        return json(bootstrap([workspace]));
+      }) as unknown as typeof globalThis.fetch;
+      const client = createHttpHostClient({
+        capabilities: async () => (turnPages ? ["history-turns-v1"] : []),
+        fetch,
+        refreshIntervalMs: 0,
+        webSocketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      await client.load();
+      const socket = sockets[0]!;
+      socket.open();
+      socket.receive({
+        snapshot: {
+          ...workspaceSnapshot(workspace, "2"),
+          messages: [recent, internalResult],
+          messageWindows: [
+            {
+              byteCount: 256,
+              hasMore: true,
+              itemCount: 1,
+              nextBefore: "message_cursor",
+              threadId: thread.id,
+              totalItems: 2,
+            },
           ],
-          threadId: thread.id,
-          window: {
-            byteCount: 256,
-            hasMore: false,
-            itemCount: 1,
-            nextBefore: null,
-            threadId: thread.id,
-            totalItems: 2,
-          },
-        });
-      }
-      return json(bootstrap([workspace]));
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    await client.load();
-    const socket = sockets[0]!;
-    socket.open();
-    socket.receive({
-      snapshot: {
-        ...workspaceSnapshot(workspace, "2"),
-        messages: [recent, internalResult],
-        messageWindows: [
-          {
-            byteCount: 256,
-            hasMore: true,
-            itemCount: 1,
-            nextBefore: "message_cursor",
-            threadId: thread.id,
-            totalItems: 2,
-          },
-        ],
-        threads: [thread],
-      },
-      type: "host.snapshot",
-    });
+          threads: [thread],
+        },
+        type: "host.snapshot",
+      });
 
-    await client.loadEarlierTranscript(thread.id);
+      await client.loadEarlierTranscript(thread.id);
 
-    expect(
-      client
-        .getSnapshot()
-        .transcripts[thread.id]?.filter((entry) => entry.kind === "message")
-        .map((entry) => entry.body),
-    ).toEqual(["Earlier", "Recent"]);
-    expect(client.getSnapshot().transcriptWindows[thread.id]?.hasMore).toBe(false);
-    expect(requestedUrls).toEqual(
-      expect.arrayContaining([expect.stringContaining("message_cursor")]),
-    );
-    client.dispose();
-  });
+      expect(
+        client
+          .getSnapshot()
+          .transcripts[thread.id]?.filter((entry) => entry.kind === "message")
+          .map((entry) => entry.body),
+      ).toEqual(["Earlier", "Recent"]);
+      expect(client.getSnapshot().transcriptWindows[thread.id]?.hasMore).toBe(false);
+      expect(requestedUrls).toEqual(
+        expect.arrayContaining([expect.stringContaining("message_cursor")]),
+      );
+      expect(eventRequests).toEqual([
+        { before: "message_cursor", threadId: thread.id, ...(turnPages ? { turns: 10 } : {}) },
+      ]);
+      client.dispose();
+    },
+  );
 
   /*
    * History is read over HTTP while the realtime channel keeps delivering. A
@@ -2757,134 +2766,138 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
-  it("rebuilds the transcript from durable event history when a Thread is activated", async () => {
-    const workspace = makeWorkspace();
-    const thread = makeThread(workspace.id);
-    const runId = createId("run");
-    const userMessage = makeMessage(thread.id, "input", "Do the work");
-    const eventRequests: string[] = [];
-    const sockets: FakeSocket[] = [];
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input));
-      if (url.pathname === "/v1/rpc/thread.requests.list") {
-        return json({ nextCursor: null, requests: [], threadId: thread.id });
-      }
-      if (url.pathname === "/v1/rpc/thread.events.list") {
-        eventRequests.push(url.pathname);
-        return json({
-          thread,
-          events: [
-            agentEvent(workspace.id, thread.id, runId, "1", "message.created", {
-              input: makeThreadInput(userMessage),
-              message: userMessage,
-            }),
-            agentEvent(workspace.id, thread.id, runId, "2", "run.started", { status: "running" }),
-            agentEvent(workspace.id, thread.id, runId, "4", "reasoning.completed", {
-              blockId: "block-1",
-              text: "Weighing the options carefully.",
-            }),
-            agentEvent(workspace.id, thread.id, runId, "5", "tool.started", {
-              arguments: { command: "pnpm test" },
-              callId: "shell-1",
-              tool: { name: "shell", namespace: "codex" },
-            }),
-            agentEvent(workspace.id, thread.id, runId, "7", "tool.completed", {
-              callId: "shell-1",
-              isError: false,
-              output: { text: "42 passed\n" },
-            }),
-            agentEvent(workspace.id, thread.id, runId, "8", "assistant.message", {
-              content: [{ text: "All checks pass.", type: "text" }],
-              messageId: createId("message"),
-            }),
-            agentEvent(workspace.id, thread.id, runId, "9", "run.completed", {
-              replyMessageId: null,
-              status: "completed",
-            }),
-          ],
-          threadId: thread.id,
-          window: {
-            byteCount: 512,
-            hasMore: false,
-            itemCount: 7,
-            nextBefore: null,
+  it.each([true, false])(
+    "rebuilds the transcript from durable event history when a Thread is activated (turn pages %s)",
+    async (turnPages) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const runId = createId("run");
+      const userMessage = makeMessage(thread.id, "input", "Do the work");
+      const eventRequests: Record<string, unknown>[] = [];
+      const sockets: FakeSocket[] = [];
+      const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v1/rpc/thread.requests.list") {
+          return json({ nextCursor: null, requests: [], threadId: thread.id });
+        }
+        if (url.pathname === "/v1/rpc/thread.events.list") {
+          eventRequests.push(rpcPayload(url, init));
+          return json({
+            thread,
+            events: [
+              agentEvent(workspace.id, thread.id, runId, "1", "message.created", {
+                input: makeThreadInput(userMessage),
+                message: userMessage,
+              }),
+              agentEvent(workspace.id, thread.id, runId, "2", "run.started", { status: "running" }),
+              agentEvent(workspace.id, thread.id, runId, "4", "reasoning.completed", {
+                blockId: "block-1",
+                text: "Weighing the options carefully.",
+              }),
+              agentEvent(workspace.id, thread.id, runId, "5", "tool.started", {
+                arguments: { command: "pnpm test" },
+                callId: "shell-1",
+                tool: { name: "shell", namespace: "codex" },
+              }),
+              agentEvent(workspace.id, thread.id, runId, "7", "tool.completed", {
+                callId: "shell-1",
+                isError: false,
+                output: { text: "42 passed\n" },
+              }),
+              agentEvent(workspace.id, thread.id, runId, "8", "assistant.message", {
+                content: [{ text: "All checks pass.", type: "text" }],
+                messageId: createId("message"),
+              }),
+              agentEvent(workspace.id, thread.id, runId, "9", "run.completed", {
+                replyMessageId: null,
+                status: "completed",
+              }),
+            ],
             threadId: thread.id,
-            totalItems: 7,
-          },
-        });
-      }
-      return json(bootstrap([workspace]));
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    await client.load();
-    const socket = sockets[0]!;
-    socket.open();
-    socket.receive({
-      snapshot: {
-        ...workspaceSnapshot(workspace, "9"),
-        threads: [thread],
-        threadWindow: {
-          byteCount: 256,
-          hasMore: false,
-          itemCount: 1,
-          nextBefore: null,
-          totalItems: 1,
+            window: {
+              byteCount: 512,
+              hasMore: false,
+              itemCount: 7,
+              nextBefore: null,
+              threadId: thread.id,
+              totalItems: 7,
+            },
+          });
+        }
+        return json(bootstrap([workspace]));
+      }) as unknown as typeof globalThis.fetch;
+      const client = createHttpHostClient({
+        capabilities: async () => (turnPages ? ["history-turns-v1"] : []),
+        fetch,
+        refreshIntervalMs: 0,
+        webSocketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
         },
-      },
-      type: "host.snapshot",
-    });
+      });
+      await client.load();
+      const socket = sockets[0]!;
+      socket.open();
+      socket.receive({
+        snapshot: {
+          ...workspaceSnapshot(workspace, "9"),
+          threads: [thread],
+          threadWindow: {
+            byteCount: 256,
+            hasMore: false,
+            itemCount: 1,
+            nextBefore: null,
+            totalItems: 1,
+          },
+        },
+        type: "host.snapshot",
+      });
 
-    client.activateThread(thread.id);
-    await vi.waitFor(() =>
-      expect(client.getSnapshot().transcripts[thread.id]?.length).toBeGreaterThan(0),
-    );
+      client.activateThread(thread.id);
+      await vi.waitFor(() =>
+        expect(client.getSnapshot().transcripts[thread.id]?.length).toBeGreaterThan(0),
+      );
 
-    const entries = client.getSnapshot().transcripts[thread.id] ?? [];
-    expect(entries.map((entry) => entry.kind)).toEqual([
-      "message",
-      "run",
-      "reasoning",
-      "tool",
-      "message",
-    ]);
-    expect(entries[1]).toMatchObject({ kind: "run", runId, status: "completed" });
-    expect(entries[2]).toMatchObject({
-      id: `reasoning:${runId}:block-1`,
-      kind: "reasoning",
-      state: "done",
-      text: "Weighing the options carefully.",
-    });
-    expect(entries[3]).toMatchObject({
-      arguments: { command: "pnpm test" },
-      id: `tool:${runId}:shell-1`,
-      integration: null,
-      isError: false,
-      kind: "tool",
-      tool: { name: "shell", namespace: "codex" },
-      output: { text: "42 passed\n" },
-      state: "done",
-    });
-    expect(entries[4]).toMatchObject({
-      body: "All checks pass.",
-      kind: "message",
-      messageKind: "assistant",
-    });
-    expect(eventRequests).toEqual(["/v1/rpc/thread.events.list"]);
+      const entries = client.getSnapshot().transcripts[thread.id] ?? [];
+      expect(entries.map((entry) => entry.kind)).toEqual([
+        "message",
+        "run",
+        "reasoning",
+        "tool",
+        "message",
+      ]);
+      expect(entries[1]).toMatchObject({ kind: "run", runId, status: "completed" });
+      expect(entries[2]).toMatchObject({
+        id: `reasoning:${runId}:block-1`,
+        kind: "reasoning",
+        state: "done",
+        text: "Weighing the options carefully.",
+      });
+      expect(entries[3]).toMatchObject({
+        arguments: { command: "pnpm test" },
+        id: `tool:${runId}:shell-1`,
+        integration: null,
+        isError: false,
+        kind: "tool",
+        tool: { name: "shell", namespace: "codex" },
+        output: { text: "42 passed\n" },
+        state: "done",
+      });
+      expect(entries[4]).toMatchObject({
+        body: "All checks pass.",
+        kind: "message",
+        messageKind: "assistant",
+      });
+      expect(eventRequests).toEqual([{ threadId: thread.id, ...(turnPages ? { turns: 10 } : {}) }]);
 
-    // Re-activating a hydrated Thread must not refetch the history.
-    client.activateThread(thread.id);
-    await Promise.resolve();
-    expect(eventRequests).toHaveLength(1);
-    client.dispose();
-  });
+      // Re-activating a hydrated Thread must not refetch the history.
+      client.activateThread(thread.id);
+      await Promise.resolve();
+      expect(eventRequests).toHaveLength(1);
+      client.dispose();
+    },
+  );
 
   it("surfaces a failed deep-link lookup and retries it on the next activation", async () => {
     const workspace = makeWorkspace();

@@ -377,6 +377,7 @@ describe("Host signing keys", () => {
           "task-marks-v1",
           "task-family-v1",
           "snapshot-messages-omit-v1",
+          "history-turns-v1",
           "shared-task-done-v1",
           "iphone-apps-v1",
           "ownerViewWindows",
@@ -439,6 +440,7 @@ describe("Host signing keys", () => {
           "task-marks-v1",
           "task-family-v1",
           "snapshot-messages-omit-v1",
+          "history-turns-v1",
           "shared-task-done-v1",
           "iphone-apps-v1",
           "ownerViewWindows",
@@ -2199,6 +2201,26 @@ describe("thread event history route", () => {
         ownerId,
         threadId,
       });
+
+      const turns = await injectRpcRequest(app, "thread.events.list", {
+        before: "17",
+        threadId,
+        turns: 10,
+      });
+      expect(turns.statusCode).toBe(200);
+      expect(threadEventPageForOwner).toHaveBeenLastCalledWith({
+        before: "17",
+        maxTurns: 10,
+        ownerId,
+        threadId,
+      });
+      // A turn page sizes itself; an event count beside it is a contradiction.
+      const turnsWithLimit = await injectRpcRequest(app, "thread.events.list", {
+        limit: 100,
+        threadId,
+        turns: 10,
+      });
+      expect(turnsWithLimit.statusCode).toBe(400);
 
       const invalidCursor = await injectRpcRequest(app, "thread.events.list", {
         before: "not a cursor",
