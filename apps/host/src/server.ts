@@ -1,3 +1,4 @@
+import { CompleteProfileInitializationSchema } from "@opensteer/protocol";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { createVoiceHandlers } from "./voice/voice-handlers.js";
 import { browserProfileCheckpointHeader } from "@opensteer/protocol";
@@ -859,6 +860,26 @@ export async function createHostServer(
       if (!response.body) return reply.send(Buffer.alloc(0));
       return reply.send(Readable.from(response.body as AsyncIterable<Uint8Array>));
     },
+  );
+
+  app.get<{ Params: { profileId: string } }>(
+    "/v1/browser-profile-initialization/:profileId",
+    async (request, reply) => {
+      void reply.header("cache-control", "private, no-store");
+      return dependencies.browser.loadProfileInitialization(
+        BrowserProfileIdSchema.parse(request.params.profileId),
+        requireBearerToken(request),
+      );
+    },
+  );
+  app.post<{ Params: { profileId: string } }>(
+    "/v1/browser-profile-initialization/:profileId",
+    async (request) =>
+      dependencies.browser.completeProfileInitialization(
+        BrowserProfileIdSchema.parse(request.params.profileId),
+        requireBearerToken(request),
+        CompleteProfileInitializationSchema.parse(request.body),
+      ),
   );
 
   app.get<{ Params: { profileId: string; sessionId: string } }>(
@@ -2731,9 +2752,13 @@ export async function createHostServer(
           }),
           type: command.type,
         };
-      case "browser.profile.delete":
-        await dependencies.browser.deleteProfile({ ownerId: userId, profileId: command.profileId });
-        return { type: command.type };
+      case "browser.profile.delete": {
+        const deletion = await dependencies.browser.deleteProfile({
+          ownerId: userId,
+          profileId: command.profileId,
+        });
+        return { type: command.type, ...(deletion ? { deletion } : {}) };
+      }
       case "browser.profileGrant.revoke": {
         const revoked = await dependencies.store.revokeBrowserProfileGrant(command.grantId, userId);
         await dependencies.browser.detachAgentSessionsForRevokedProfileGrant({
@@ -2787,6 +2812,9 @@ export async function createHostServer(
         return dependencies.browser.reopenWorkspaceTab(userId, command.idempotencyKey);
       case "workspace.tab.close":
         return dependencies.browser.closeWorkspaceTab(userId, command.tabId);
+      case "browser.profile.prepare":
+        await dependencies.browser.prepareProfile(userId, command.identity);
+        return { type: command.type };
       case "browser.history.remove":
       case "browser.history.clear":
         await dependencies.browser.forgetHistory(userId, command);
@@ -3133,6 +3161,9 @@ export function advertisedCapabilities(
     "iphone-apps-v1",
     "ownerViewWindows",
     "browser-target-control-v1",
+    "browser-local-profiles-v1",
+    "browser-profile-prepare-v1",
+    "browser-initial-navigation-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
     "browser-frame-window-v1",
     "browser-raster-demand-v1",

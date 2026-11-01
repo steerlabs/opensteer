@@ -411,6 +411,59 @@ describe("HttpHostClient Workspace files", () => {
   });
 });
 
+describe("profile preparation", () => {
+  it.each([true, false])(
+    "deduplicates per attach, never waits, and gates old Hosts: %s",
+    async (supported) => {
+      const requests: unknown[] = [];
+      const pending = Promise.withResolvers<Response>();
+      const client = createHttpHostClient({
+        capabilities: supported ? ["browser-profile-prepare-v1"] : [],
+        refreshIntervalMs: 0,
+        fetch: async (input, init) => {
+          if (String(input).endsWith("commands.dispatch")) {
+            requests.push(JSON.parse(String(init?.body)));
+            return pending.promise;
+          }
+          return json(
+            bootstrap([makeWorkspace()], {
+              profileGrants: [],
+              available: true,
+              placements: [],
+              profiles: [],
+              sessions: [],
+            }),
+          );
+        },
+      });
+      try {
+        await client.load();
+        const identity = { kind: "profile" as const, profileId: createId("browserProfile") };
+        expect(client.prepareBrowserProfile(identity)).toBeUndefined();
+        client.prepareBrowserProfile(identity);
+        client.prepareBrowserProfile({ kind: "guest" });
+        await vi.waitFor(
+          () =>
+            expect(
+              requests,
+              `snapshot connection: ${client.getSnapshot().connection}`,
+            ).toHaveLength(supported ? 1 : 0),
+          { timeout: 1000 },
+        );
+        expect(client.getSnapshot().session).toBe("authenticated");
+        const other = { kind: "profile" as const, profileId: createId("browserProfile") };
+        client.prepareBrowserProfile(other);
+        await client.refresh();
+        client.prepareBrowserProfile(identity);
+        await vi.waitFor(() => expect(requests).toHaveLength(supported ? 2 : 0), { timeout: 1000 });
+      } finally {
+        pending.resolve(json({ type: "browser.profile.prepare" }));
+        client.dispose();
+      }
+    },
+  );
+});
+
 describe("HttpHostClient authentication and onboarding", () => {
   it("projects, clears, and tolerates an absent authenticated session surface", async () => {
     const remoteBootstrap = { ...bootstrap([]), sessionSurface: "personal-remote" as const };
@@ -6180,6 +6233,56 @@ describe("HttpHostClient browser profiles", () => {
     client.dispose();
   });
 
+  it("keeps pending erasure from delete receipts and bootstrap until completion, including older Hosts", async () => {
+    const profileId = createId("browserProfile");
+    const computerId = createId("runner");
+    const deletion = { profileId, computerId, state: "pending-computer" as const };
+    let browser: HostedBrowserBootstrap = {
+      available: false,
+      placements: [],
+      profiles: [{ id: profileId, name: "Work", revision: 0 }],
+      profileGrants: [],
+      sessions: [],
+    };
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+      fetch: async (input) => {
+        const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+        if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([makeWorkspace()], browser));
+        if (path === "/v1/rpc/commands.dispatch")
+          return json({ type: "browser.profile.delete", deletion });
+        throw new Error(`Unexpected request ${path}`);
+      },
+    });
+    try {
+      await client.load();
+      expect(client.getSnapshot().browserProfileDeletions).toBeUndefined();
+      await client.dispatch({
+        type: "browser.profile.delete",
+        profileId,
+        idempotencyKey: "delete-native-profile",
+      });
+      expect(client.getSnapshot().browserProfiles).toEqual([]);
+      expect(client.getSnapshot().browserProfileDeletions).toEqual([deletion]);
+      browser = {
+        ...browser,
+        profiles: [],
+        profileDeletions: [{ ...deletion, state: "pending-restart" }],
+      };
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toEqual(browser.profileDeletions);
+      browser = { ...browser, profileDeletions: [] };
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toEqual([]);
+      delete browser.profileDeletions;
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toBeUndefined();
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("makes a profile saved from a fresh session immediately selectable", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();
@@ -10522,6 +10625,349 @@ describe("HttpHostClient owner views", () => {
     };
     return { client, commands, connect, host, sockets, workspace };
   }
+  async function browserOpenWorld() {
+    const mock = new MockHostClient({ latencyMs: 0 });
+    try {
+      const session = mock.getSnapshot().browserSessions.find((value) => value.state === "ready")!;
+      return await mock.openBrowserTab(session.id, {
+        url: "https://pending.example/",
+        idempotencyKey: "fixture-open",
+      });
+    } finally {
+      mock.dispose();
+    }
+  }
+
+  it("opens authoritative tabs before loading presentation scope without publishing pending rows", async () => {
+    const opened = await browserOpenWorld();
+    const host = ownerViewHost(
+      () => [],
+      async () => json(opened),
+    );
+    try {
+      const target = { identity: { kind: "guest" as const } };
+      const options = { url: "https://pending.example/", idempotencyKey: "before-load" };
+      const opening = host.client.openBrowserTab(target, options);
+      expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
+      await expect(opening).resolves.toEqual(opened);
+      expect(host.commands).toEqual([{ type: "browser.tab.open", ...target, ...options }]);
+      expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
+      expect(host.sockets).toEqual([]);
+      await host.client.load();
+      expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    } finally {
+      host.client.dispose();
+    }
+  });
+
+  it("publishes a pending browser row synchronously before dispatch and joins the same key", async () => {
+    const opened = await browserOpenWorld();
+    const gate = deferred<void>();
+    const host = ownerViewHost(
+      () => [],
+      async () => {
+        expect(host.client.getSnapshot().pendingBrowserTabs).toMatchObject([
+          { idempotencyKey: "instant", state: "opening", url: "https://pending.example/" },
+        ]);
+        await withTimeout(gate.promise, 2_000, {
+          timeoutError: () => new Error("The delayed browser command was never released."),
+        });
+        return json(opened);
+      },
+    );
+    try {
+      await host.client.load();
+      const handle = host.client.beginBrowserTabOpen(
+        { identity: { kind: "guest" } },
+        {
+          url: "https://pending.example/",
+          idempotencyKey: "instant",
+        },
+      );
+      expect(host.client.getSnapshot().pendingBrowserTabs).toHaveLength(1);
+      const joined = host.client.beginBrowserTabOpen(
+        { identity: { kind: "guest" } },
+        {
+          url: "https://pending.example/",
+          idempotencyKey: "instant",
+        },
+      );
+      expect(joined.result).toBe(handle.result);
+      gate.resolve();
+      await handle.result;
+      expect(host.commands).toHaveLength(1);
+      expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    } finally {
+      gate.resolve();
+      host.client.dispose();
+    }
+  });
+
+  it("retains an uncertain open and retries only its original command key and payload", async () => {
+    const opened = await browserOpenWorld();
+    let uncertain = true;
+    const host = ownerViewHost(
+      () => [],
+      async () => {
+        if (uncertain) throw new TypeError("Connection lost");
+        return json(opened);
+      },
+    );
+    try {
+      await host.client.load();
+      const target = { identity: { kind: "guest" as const } };
+      const options = {
+        url: "https://pending.example/",
+        viewport: { width: 700, height: 500 },
+        idempotencyKey: "uncertain",
+      };
+      await expect(host.client.beginBrowserTabOpen(target, options).result).rejects.toThrow();
+      expect(host.client.getSnapshot().pendingBrowserTabs).toMatchObject([
+        { idempotencyKey: "uncertain", state: "unknown" },
+      ]);
+      uncertain = false;
+      await host.client.beginBrowserTabOpen(target, {
+        url: options.url,
+        idempotencyKey: options.idempotencyKey,
+      }).result;
+      expect(host.commands).toHaveLength(2);
+      expect(host.commands[1]).toEqual(host.commands[0]);
+      expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    } finally {
+      host.client.dispose();
+    }
+  });
+
+  it("keeps a Host's explicit unknown-outcome conflict on the original key", async () => {
+    const host = ownerViewHost(
+      () => [],
+      async () =>
+        json(
+          {
+            error: {
+              code: "conflict",
+              reason: "browser-tab-open-outcome-unknown",
+              message: "The original page outcome is unknown.",
+            },
+          },
+          409,
+        ),
+    );
+    try {
+      await host.client.load();
+      const target = { identity: { kind: "guest" as const } };
+      const options = { idempotencyKey: "host-unknown" };
+      await expect(host.client.beginBrowserTabOpen(target, options).result).rejects.toMatchObject({
+        reason: "browser-tab-open-outcome-unknown",
+      });
+      expect(host.client.getSnapshot().pendingBrowserTabs).toMatchObject([
+        { idempotencyKey: "host-unknown", state: "unknown" },
+      ]);
+      await expect(host.client.beginBrowserTabOpen(target, options).result).rejects.toThrow();
+      expect(host.commands[1]).toEqual(host.commands[0]);
+    } finally {
+      host.client.dispose();
+    }
+  });
+
+  it.each(["inventory-first", "response-first"])(
+    "merges a pending result once with %s inventory",
+    async (order) => {
+      const opened = await browserOpenWorld();
+      const gate = deferred<void>();
+      const host = ownerViewHost(
+        () => [],
+        async () => {
+          await withTimeout(gate.promise, 2_000, {
+            timeoutError: () => new Error("The delayed browser command was never released."),
+          });
+          return json(opened);
+        },
+      );
+      try {
+        const bootstrapAnswer = host.host.bootstrap;
+        await host.client.load();
+        const socket = host.connect();
+        const handle = host.client.beginBrowserTabOpen(
+          { identity: { kind: "guest" } },
+          { idempotencyKey: "merge" },
+        );
+        const inventory = async () => {
+          host.host.bootstrap = async () => {
+            const body = await (await bootstrapAnswer()).json();
+            return json({
+              ...body,
+              browser: {
+                available: true,
+                sessions: [opened.session],
+                profiles: [],
+                placements: [],
+                profileGrants: [],
+              },
+            });
+          };
+          await host.client.refresh();
+          socket.receive({
+            type: "host.browser-tabs-changed",
+            sessionId: opened.sessionId,
+            catalog: { ...opened.catalog, revision: opened.catalog.revision + 1 },
+          });
+        };
+        if (order === "inventory-first") await inventory();
+        gate.resolve();
+        await handle.result;
+        if (order === "response-first") await inventory();
+        expect(
+          host.client
+            .getSnapshot()
+            .browserSessions.filter((value) => value.id === opened.sessionId),
+        ).toHaveLength(1);
+        expect(
+          host.client.getSnapshot().browserSessions.find((value) => value.id === opened.sessionId)
+            ?.tabCatalog?.revision,
+        ).toBe(opened.catalog.revision + 1);
+        expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+      } finally {
+        gate.resolve();
+        host.client.dispose();
+      }
+    },
+  );
+
+  it("dismisses an opening immediately and closes only its exact late result", async () => {
+    const opened = await browserOpenWorld();
+    const gate = deferred<void>();
+    const host = ownerViewHost(
+      () => [],
+      async (command) => {
+        if (command.type === "browser.tab.close")
+          return json({
+            sessionId: opened.sessionId,
+            outcome: "tab-closed",
+            catalog: opened.catalog,
+          });
+        await withTimeout(gate.promise, 2_000, {
+          timeoutError: () => new Error("The delayed browser command was never released."),
+        });
+        return json(opened);
+      },
+    );
+    try {
+      await host.client.load();
+      const close = vi.spyOn(host.client, "closeBrowserTab");
+      const handle = host.client.beginBrowserTabOpen(
+        { identity: { kind: "guest" } },
+        { idempotencyKey: "dismiss" },
+      );
+      host.client.dismissPendingBrowserTab(handle.idempotencyKey);
+      expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+      gate.resolve();
+      await handle.result;
+      expect(close).toHaveBeenCalledExactlyOnceWith(opened.sessionId, opened.tabId, opened.catalog);
+    } finally {
+      gate.resolve();
+      host.client.dispose();
+    }
+  });
+
+  it.each(["sign-out", "person", "deployment"])(
+    "forgets pending browser authority on %s and refuses a late result",
+    async (change) => {
+      const opened = await browserOpenWorld();
+      const gate = deferred<void>();
+      const host = ownerViewHost(
+        () => [],
+        async () => {
+          await withTimeout(gate.promise, 2_000, {
+            timeoutError: () => new Error("The delayed browser command was never released."),
+          });
+          return json(opened);
+        },
+      );
+      try {
+        await host.client.load();
+        const handle = host.client.beginBrowserTabOpen(
+          { identity: { kind: "guest" } },
+          { idempotencyKey: "viewer-open" },
+        );
+        const answer = handle.result.catch((error: unknown) => error);
+        const original = host.host.bootstrap;
+        host.host.bootstrap = async () => {
+          if (change === "sign-out")
+            return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+          const body = await (await original()).json();
+          return json(
+            change === "person"
+              ? { ...body, user: { ...body.user, id: createId("user") } }
+              : { ...body, deploymentId: "dep_00000000-0000-4000-8000-000000000002" },
+          );
+        };
+        if (change === "sign-out") await expect(host.client.refresh()).rejects.toThrow();
+        else await host.client.refresh();
+        expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+        gate.resolve();
+        expect(await answer).toMatchObject({ code: "unauthorized" });
+        expect(
+          host.client
+            .getSnapshot()
+            .browserSessions.some((session) => session.id === opened.sessionId),
+        ).toBe(false);
+      } finally {
+        gate.resolve();
+        host.client.dispose();
+      }
+    },
+  );
+
+  it("does not complete a dismissed opening for a viewer who left during its authorized close", async () => {
+    const opened = await browserOpenWorld();
+    const openingGate = deferred<void>();
+    const closingGate = deferred<void>();
+    const closingStarted = deferred<void>();
+    const host = ownerViewHost(
+      () => [],
+      async (command) => {
+        if (command.type === "browser.tab.close") {
+          closingStarted.resolve();
+          await withTimeout(closingGate.promise, 2_000, {
+            timeoutError: () => new Error("The authorized tab close was never released."),
+          });
+          return json({
+            sessionId: opened.sessionId,
+            outcome: "tab-closed",
+            catalog: opened.catalog,
+          });
+        }
+        await withTimeout(openingGate.promise, 2_000, {
+          timeoutError: () => new Error("The pending tab open was never released."),
+        });
+        return json(opened);
+      },
+    );
+    try {
+      await host.client.load();
+      const handle = host.client.beginBrowserTabOpen(
+        { identity: { kind: "guest" } },
+        { idempotencyKey: "dismiss-and-leave" },
+      );
+      const answer = handle.result.catch((error: unknown) => error);
+      host.client.dismissPendingBrowserTab(handle.idempotencyKey);
+      openingGate.resolve();
+      await withTimeout(closingStarted.promise, 2_000, {
+        timeoutError: () => new Error("The dismissed tab was never closed."),
+      });
+      host.host.bootstrap = async () =>
+        json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+      await expect(host.client.refresh()).rejects.toThrow();
+      closingGate.resolve();
+      expect(await answer).toMatchObject({ code: "unauthorized" });
+    } finally {
+      openingGate.resolve();
+      closingGate.resolve();
+      host.client.dispose();
+    }
+  });
+
   const renewals = (commands: readonly Readonly<Record<string, unknown>>[]) =>
     commands.filter((command) => command.type === "computer.view.renew").length;
 

@@ -3,10 +3,25 @@ import { MockHostClient } from "../mock/mock-host-client.js";
 import {
   browserProfileAccessSummary,
   browserProfileDeleteConsequence,
+  browserProfileDeletionRows,
   browserProfileSettingsRows,
 } from "./browser-profile-settings.js";
 
 describe("browser profile settings", () => {
+  it("handles absent deletion fields and an unavailable computer name", () => {
+    expect(browserProfileDeletionRows({ machines: [] })).toEqual([]);
+    expect(
+      browserProfileDeletionRows({
+        machines: [],
+        browserProfileDeletions: [
+          { profileId: "bpr_deleted", computerId: "rnr_missing", state: "pending-computer" },
+        ],
+      }),
+    ).toEqual([
+      { profileId: "bpr_deleted", status: "Will be erased when its computer is back online" },
+    ]);
+  });
+
   it("lists profiles by name with the specialists allowed and says what deleting takes", () => {
     const mock = new MockHostClient({ latencyMs: 0 });
     try {

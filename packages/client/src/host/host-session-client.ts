@@ -1,3 +1,4 @@
+import { PendingBrowserTabs } from "./pending-browser-tabs.js";
 import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
@@ -748,7 +749,55 @@ export class HttpHostClient {
     }
     return catalog;
   }
+  readonly #pendingBrowserTabs = new PendingBrowserTabs({
+    admitted: () => viewerScopeOf(this.#snapshot) !== null,
+    open: (target, options) => this.#openBrowserTab(target, options),
+    close: (result) =>
+      this.closeBrowserTab(
+        result.sessionId,
+        result.tabId,
+        this.#snapshot.browserSessions.find((session) => session.id === result.sessionId)
+          ?.tabCatalog ?? result.catalog,
+      ),
+    changed: (pendingBrowserTabs) => this.#update({ ...this.#snapshot, pendingBrowserTabs }),
+  });
+  readonly #preparedBrowserProfiles = new Set<string>();
+  prepareBrowserProfile(
+    identity?: import("./start-page-model.js").BrowserIdentityChoice | null,
+  ): void {
+    if (
+      this.#snapshot.session !== "authenticated" ||
+      !this.#snapshot.browserAvailable ||
+      this.#snapshot.connection === "offline" ||
+      !this.#capabilities?.includes("browser-profile-prepare-v1")
+    )
+      return;
+    const choice = identity === undefined ? this.browserPreferences.lastBrowsingChoice : identity;
+    if (!choice || choice.kind === "guest") return;
+    if (this.#preparedBrowserProfiles.has(choice.profileId)) return;
+    this.#preparedBrowserProfiles.add(choice.profileId);
+    void this.rpc["commands.dispatch"]({
+      type: "browser.profile.prepare",
+      identity: choice,
+      idempotencyKey: mutationIdempotencyKey("prepare-profile"),
+    }).catch(() => undefined);
+  }
+  readonly beginBrowserTabOpen: OwnerViewHostClient["beginBrowserTabOpen"] = (target, options) => {
+    if (typeof target !== "string" && "identity" in target)
+      this.browserPreferences.lastBrowsingChoice = target.identity;
+    return this.#pendingBrowserTabs.begin(target, options);
+  };
+  readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
+    // Authenticated RPC callers need not load a workspace's presentation first.
+    if (!viewerScopeOf(this.#snapshot))
+      return this.#openBrowserTab(
+        typeof target === "string" ? { sessionId: target } : target,
+        options,
+      );
+    return this.beginBrowserTabOpen(target, options).result;
+  }
+  async #openBrowserTab(target: BrowserTabOpenInput, options: BrowserTabOpenOptions) {
     const started = this.#viewer.generation;
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
@@ -1398,6 +1447,10 @@ export class HttpHostClient {
           this.#update(
             applyOptimisticCommandPatch(this.#snapshot, {
               profileId: parsedCommand.profileId,
+              deletion:
+                result.deletion && result.deletion.state !== "deleted"
+                  ? { ...result.deletion, state: result.deletion.state }
+                  : undefined,
               type: result.type,
             }),
           );
@@ -3321,6 +3374,7 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
     this.#clearAttachmentReads();
     this.browserHistory.dispose();
@@ -3924,6 +3978,9 @@ export class HttpHostClient {
       browserAvailable: payload.browser.available,
       browserPlacements: payload.browser.placements.map((placement) => ({ ...placement })),
       browserProfiles: payload.browser.profiles.map((profile) => ({ ...profile })),
+      browserProfileDeletions: payload.browser.profileDeletions?.map((deletion) => ({
+        ...deletion,
+      })),
       browserSessions,
       latestPlaces: payload.latestPlaces ?? [],
       connection: workspaces.length ? this.#snapshot.connection : "connected",
@@ -5719,9 +5776,18 @@ export class HttpHostClient {
     ) {
       this.#savedViewReadiness = { ...this.#savedViewReadiness, home: { status: "unknown" } };
     }
+    if (this.#snapshot.connection === "connected" && snapshot.connection !== "connected")
+      this.#preparedBrowserProfiles.clear();
+    const shouldPrepare =
+      snapshot.connection !== this.#snapshot.connection ||
+      snapshot.session !== this.#snapshot.session ||
+      snapshot.homeWorkspaceId !== this.#snapshot.homeWorkspaceId ||
+      snapshot.browserAvailable !== this.#snapshot.browserAvailable;
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      this.#preparedBrowserProfiles.clear();
+      this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
       this.#workspaceTabActivations.clear(false);
       this.#computerViews.clear();
@@ -5731,7 +5797,11 @@ export class HttpHostClient {
         browserTabGroups: this.#tabGroups.receive(snapshot.browserTabGroups),
       };
     }
-    snapshot = { ...snapshot, activatingWorkspaceTabs: this.#workspaceTabActivations.ids };
+    snapshot = {
+      ...snapshot,
+      activatingWorkspaceTabs: this.#workspaceTabActivations.ids,
+      pendingBrowserTabs: this.#pendingBrowserTabs.rows,
+    };
     // A dropped connection pauses the views being watched; it does not end them.
     this.#computerViews.setConnected(scope !== null && snapshot.connection === "connected");
     this.browserHistory.setScope(scope);
@@ -5901,6 +5971,7 @@ export class HttpHostClient {
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
+    if (shouldPrepare) this.prepareBrowserProfile();
   }
 }
 

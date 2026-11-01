@@ -126,7 +126,7 @@ type PostAuthenticationHostMessage = Exclude<
  */
 interface RunnerModuleHandler {
   readonly maxPayloadBytes: number;
-  attach(stream: RunnerModuleStream): void;
+  attach(stream: RunnerModuleStream): Promise<void> | void;
   detach(): Promise<void> | void;
   handleFrame(frame: Buffer, isBinary: boolean): Promise<void>;
 }
@@ -650,6 +650,9 @@ export class ReconnectingHostConnection {
   async #descriptor(): Promise<RunnerDescriptor> {
     const agents = this.#agents;
     await this.#computerUse?.permissions().catch(() => undefined);
+    const browserCapabilities = agents?.browserBridge
+      ? await new LocalBrowserRuntimeBridge(agents.browserBridge).capabilities()
+      : {};
     return {
       bootId: this.#bootId,
       capabilities: [
@@ -666,6 +669,7 @@ export class ReconnectingHostConnection {
           ? {
               browser: {
                 runtimeId: agents.browserBridge.runtimeId,
+                ...browserCapabilities,
                 profileSnapshotVersion: browserProfileSnapshotVersion,
                 // The loopback browser runtime ships in the same release as
                 // this Runner, so it parses every frame this Runner relays.
@@ -799,7 +803,7 @@ export class ReconnectingHostConnection {
       ticket,
     });
     try {
-      handler.attach(opened.stream);
+      await handler.attach(opened.stream);
       await sendWireMessage(socket, {
         ...this.#fence.fence,
         modules: [moduleReadiness(module, "ready")],

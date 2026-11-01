@@ -1,3 +1,6 @@
+import { realpath } from "node:fs/promises";
+import { securePrivateDirectory } from "@opensteer/shared/atomicPrivateFile";
+import { profileFailureDiagnostic } from "../browser/profile-failure-diagnostic.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
@@ -51,18 +54,32 @@ export async function startLocalBrowserRuntime(
   options: LocalBrowserRuntimeOptions,
 ): Promise<PersonalLocalBrowserHandle> {
   assertAbsolutePath(options.profileRoot, "Browser profile root");
+  await securePrivateDirectory(options.profileRoot);
+  // Chromium's macOS sandbox grants paths literally; symlink aliases such as
+  // /var can leave the Network Service unable to write an otherwise valid store.
+  const profileRoot = await realpath(options.profileRoot);
   const bridgeToken = randomBytes(32).toString("base64url");
   const attachKeys = new BrowserAttachKeyRegistry(new Map());
   const ticketVerifier = await Ed25519AttachTicketVerifier.create({
-    replayLedgerPath: defaultAttachTicketReplayLedgerPath(options.profileRoot),
+    replayLedgerPath: defaultAttachTicketReplayLedgerPath(profileRoot),
     resolvePublicKey: (keyId) => attachKeys.resolve(keyId),
   });
   const launcher = new ElectronBrowserLauncher({
     downloads: options.downloads,
+    localProfileRoot: profileRoot,
     pagePolicyPreloadPath: options.pagePolicyPreloadPath,
   });
+  const preparation = launcher.prepare();
   const log = options.logPath ? new RotatingPersonalLog(options.logPath) : null;
   const diagnostics = new BoundedPersonalLog(16 * 1_024, [], (line) => log?.append("stderr", line));
+  await preparation.catch((error: unknown) => {
+    launcher.close();
+    log?.close();
+    throw error;
+  });
+  const profileStorage = launcher.nativeProfilesAvailable
+    ? { localProfiles: { root: profileRoot } }
+    : {};
   const runtime = new BrowserRuntime({
     onCheckpointFailure: ({ error, ...diagnostic }) =>
       logShutdownError(
@@ -75,17 +92,23 @@ export async function startLocalBrowserRuntime(
         error,
         diagnostic.elapsedMs,
       ),
+    onOpenTiming: (timing) =>
+      diagnostics.append(
+        `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
+      ),
     onStartFailure: ({ correlationId, stage, error }) =>
       diagnostics.append(
-        `${JSON.stringify({ event: "browser.session.start.failed", correlationId, stage, error: error instanceof Error ? error.stack : String(error) })}\n`,
+        `${JSON.stringify({ event: "browser.session.start.failed", correlationId, stage, error: profileFailureDiagnostic(error) })}\n`,
       ),
     launcher,
+    // Native data and its exclusive root ownership outlive enrollment slots.
+    ...profileStorage,
     ...(options.checkpointIntervalMs !== undefined
       ? { checkpointIntervalMs: options.checkpointIntervalMs }
       : {}),
     profileStateClient: options.profileStateClient ?? new HttpBrowserProfileStateClient(),
     runtimeId: options.runtimeId,
-    sessionFilesRoot: sessionFilesRoot(options.profileRoot),
+    sessionFilesRoot: sessionFilesRoot(profileRoot),
     ...(options.loginAuthority ? { loginAuthority: options.loginAuthority } : {}),
     ticketVerifier,
   });
@@ -122,6 +145,7 @@ export async function startLocalBrowserRuntime(
     };
   } catch (error) {
     await server.close().catch(() => undefined);
+    launcher.close();
     log?.close();
     throw error;
   }

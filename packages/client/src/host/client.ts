@@ -131,6 +131,20 @@ export interface BrowserTabOpenOptions {
   readonly viewport?: { readonly width: number; readonly height: number };
   readonly idempotencyKey?: string;
 }
+export interface PendingBrowserTab extends Omit<BrowserTabOpenOptions, "idempotencyKey"> {
+  readonly idempotencyKey: string;
+  readonly target: BrowserTabOpenInput;
+  readonly state: "opening" | "unknown" | "failed";
+  readonly error?: { readonly code: string; readonly message: string };
+}
+export interface BrowserTabOpenHandle {
+  readonly idempotencyKey: string;
+  readonly result: Promise<BrowserTabOpenResult>;
+}
+export interface PendingBrowserTabDestination {
+  readonly kind: "pending-browser";
+  readonly idempotencyKey: string;
+}
 export interface ComputerViewMutationOptions {
   readonly idempotencyKey?: string;
 }
@@ -592,6 +606,12 @@ export interface BrowserFrameView {
   header: BrowserBinaryFrameHeader;
 }
 
+export interface BrowserProfileDeletionSummary {
+  profileId: string;
+  computerId: string;
+  state: "pending-computer" | "pending-restart";
+}
+
 export interface BrowserProfileSummary {
   id: string;
   name: string;
@@ -721,6 +741,7 @@ type HostSessionState = "authenticated" | "authentication-required" | "checking"
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
 export interface HostSnapshot {
+  readonly pendingBrowserTabs?: readonly PendingBrowserTab[];
   readonly savedViewReadiness?: SavedViewReadiness;
   readonly latestPlaces?: readonly ThreadPlaceReference[];
   /**
@@ -762,6 +783,7 @@ export interface HostSnapshot {
   browserAvailable: boolean;
   browserPlacements: BrowserPlacementSummary[];
   browserProfiles: BrowserProfileSummary[];
+  browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
   connection: HostConnectionState;
   /** Reachability reported by the platform, distinct from Host availability. */
@@ -1177,6 +1199,12 @@ export interface HostClient {
   latestPlaceOfThread(threadId: string): ThreadPlace | null;
   subscribeLatestPlace(threadId: string, listener: () => void): () => void;
   readBrowserContextCandidate(sessionId: string, tabId: string): Promise<BrowserContextCandidate>;
+  prepareBrowserProfile(identity?: BrowserIdentityChoice | null): void;
+  beginBrowserTabOpen(
+    target: string | BrowserTabOpenInput,
+    options?: BrowserTabOpenOptions,
+  ): BrowserTabOpenHandle;
+  dismissPendingBrowserTab(idempotencyKey: string): void;
   openBrowserTab(
     target: string | BrowserTabOpenInput,
     options?: BrowserTabOpenOptions,

@@ -215,6 +215,12 @@ export async function startFakeHost(testCase: EvalCase) {
                   ? result.$responses[offset]
                   : { status: "unavailable", message: "Case mock response sequence exhausted" };
             }
+            if (isRecord(result) && typeof result.$error === "string") {
+              return {
+                isError: true,
+                content: [{ type: "text", text: result.$error }],
+              };
+            }
             return {
               content: [{ type: "text", text: JSON.stringify(result) }],
               ...(name !== "integration_describe" && isRecord(result)

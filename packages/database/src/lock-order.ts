@@ -157,6 +157,8 @@ export const databaseLockOrder = [
   "integration_skills",
   "thread_state_pending",
   "browser_profile_grants",
+  // Erasure acknowledgements follow profile archival, history cleanup and grant revocation.
+  "browser_profile_deletions",
   "browser_site_grants",
   // Independent credential and access lifecycles have no earlier observed dependencies.
   "credentials",

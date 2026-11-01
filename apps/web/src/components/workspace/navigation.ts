@@ -26,6 +26,7 @@ const placeParams = [
   "panel",
   "browser",
   "browserTab",
+  "pendingBrowserTab",
   "computerSession",
   "app",
   "mac",
@@ -40,10 +41,13 @@ const legacyParams = ["browserWorkspace", "surfaceThread", "surfaces"] as const;
 export type PlaceSelection =
   | { readonly kind: "talk" }
   | { readonly kind: "launcher" }
+  | { readonly kind: "pending"; readonly idempotencyKey: string }
   | { readonly kind: "place"; readonly destination: SurfaceDestination };
 
 export function placeSelection(params: URLSearchParams): PlaceSelection {
   if (!params.has("panel")) return { kind: "talk" };
+  const pending = params.get("pendingBrowserTab");
+  if (pending) return { kind: "pending", idempotencyKey: pending };
   const destination = placeDestination(params);
   return destination ? { kind: "place", destination } : { kind: "launcher" };
 }
@@ -163,6 +167,10 @@ function writePlace(params: URLSearchParams, selection: PlaceSelection): void {
   if (selection.kind === "talk") return;
   params.set("panel", "browser");
   if (selection.kind === "launcher") return;
+  if (selection.kind === "pending") {
+    params.set("pendingBrowserTab", selection.idempotencyKey);
+    return;
+  }
   const { destination } = selection;
   if (destination.kind === "browser") {
     params.set("browser", destination.sessionId);
@@ -392,6 +400,16 @@ export interface WorkspaceNavigation {
     path: string,
     options?: { readonly focusRequest?: string; readonly messageId?: string },
   ) => void;
+  readonly showPendingBrowserTab: (
+    idempotencyKey: string,
+    options?: { readonly replace?: boolean; readonly address?: string },
+  ) => void;
+  readonly replacePendingBrowserTab: (
+    idempotencyKey: string,
+    destination: SurfaceDestination,
+  ) => void;
+  /** Includes synchronous choices made since the last render. */
+  readonly address: () => Address;
   /** Tab row, viewfinder, chip: the place only (opens Work from Talk). */
   readonly showPlace: (destination: SurfaceDestination) => void;
   /** A mark on a tab: that place and that conversation, as one entry. */
@@ -402,6 +420,7 @@ export interface WorkspaceNavigation {
     readonly replace?: boolean;
     /** A web address to open through the start page with its default profile. */
     readonly address?: string;
+    readonly open?: boolean;
   }) => void;
   /** Esc or × on the start page: the place it was opened from, else the conversation alone. */
   readonly leaveLauncher: (from: string | null) => void;
@@ -532,6 +551,31 @@ export function useWorkspaceNavigation(
     },
     [search],
   );
+  const currentScope = useRef({ deploymentId, userId });
+  currentScope.current = { deploymentId, userId };
+  const showPendingBrowserTab = useCallback<WorkspaceNavigation["showPendingBrowserTab"]>(
+    (idempotencyKey, options) =>
+      choosePlace({ kind: "pending", idempotencyKey }, undefined, {
+        ...options,
+        ...(options?.address === undefined
+          ? {}
+          : { state: { startAddress: options.address, startOpen: false } }),
+      }),
+    [choosePlace],
+  );
+  const replacePendingBrowserTab = useCallback<WorkspaceNavigation["replacePendingBrowserTab"]>(
+    (idempotencyKey, destination) => {
+      if (
+        currentScope.current.deploymentId !== deploymentId ||
+        currentScope.current.userId !== userId
+      )
+        return;
+      const selected = placeSelection(new URLSearchParams(latest.current.search));
+      if (selected.kind === "pending" && selected.idempotencyKey === idempotencyKey)
+        choosePlace({ kind: "place", destination }, undefined, { replace: true });
+    },
+    [choosePlace, deploymentId, userId],
+  );
   const showPlace = useCallback(
     (destination: SurfaceDestination) => choosePlace({ kind: "place", destination }),
     [choosePlace],
@@ -560,7 +604,7 @@ export function useWorkspaceNavigation(
           startId: `${Date.now().toString(36)}-${openings}`,
           ...(options.address === undefined
             ? {}
-            : { startAddress: options.address, startOpen: true }),
+            : { startAddress: options.address, startOpen: options.open ?? true }),
         },
       });
     },
@@ -610,8 +654,10 @@ export function useWorkspaceNavigation(
     [choosePlace],
   );
 
+  const address = useCallback(() => latest.current, []);
   return useMemo(
     () => ({
+      address,
       beginPlaceOperation,
       conversationHref,
       hideComputer,
@@ -622,12 +668,15 @@ export function useWorkspaceNavigation(
       placeSearch,
       showComputer,
       showLauncher,
+      showPendingBrowserTab,
+      replacePendingBrowserTab,
       showPlace,
       showPlaceWithConversation,
       succeedPlace,
       threadPath,
     }),
     [
+      address,
       beginPlaceOperation,
       conversationHref,
       hideComputer,
@@ -638,6 +687,8 @@ export function useWorkspaceNavigation(
       placeSearch,
       showComputer,
       showLauncher,
+      showPendingBrowserTab,
+      replacePendingBrowserTab,
       showPlace,
       showPlaceWithConversation,
       succeedPlace,

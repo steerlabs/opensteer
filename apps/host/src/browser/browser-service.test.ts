@@ -1,3 +1,10 @@
+import { EventEmitter } from "node:events";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import {
+  BrowserLocalProfiles,
+  type BrowserLocalProfileRepository,
+} from "./browser-local-profiles.js";
+import { BrowserProfileVault } from "./profile-vault.js";
 import { previousBrowser } from "./test-support/passkey-compatibility/readers.js";
 import { BrowserPasskeyOfferSchema } from "@opensteer/protocol/passkeys";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -66,6 +73,8 @@ const cleanups: Array<() => Promise<void>> = [];
  * belongs to a Runner now, so even the simplest case names a machine.
  */
 function runnerTarget(options: {
+  readonly initialNavigationVersion?: boolean;
+  readonly initialPageMismatch?: boolean;
   readonly navigationVersion?: boolean;
   readonly navigationAttributionVersion?: boolean;
   readonly passkeysEnabled?: boolean;
@@ -105,9 +114,24 @@ function runnerTarget(options: {
                 headers: { authorization: `Bearer ${ticket}` },
                 perMessageDeflate: false,
               });
+              if (options.initialNavigationVersion) {
+                const claims = BrowserAttachTicketClaimsSchema.parse(
+                  JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString("utf8")),
+                );
+                Object.assign(socket, {
+                  initialPage: {
+                    operationKey: options.initialPageMismatch
+                      ? "wrong-operation"
+                      : claims.initialNavigation!.operationKey,
+                    surfaceId: "page-1",
+                    navigation: claims.initialNavigation!.url ? "submitted" : "blank",
+                  },
+                });
+              }
               installWebSocketLiveness(socket);
               return socket;
             },
+            initialNavigationVersion: options.initialNavigationVersion ?? false,
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
@@ -171,6 +195,395 @@ afterEach(async () => {
 });
 
 describe("BrowserService", () => {
+  it("orders profile deletion after startup admission so a late browser cannot escape erasure", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const profile = repository.addHostedProfile("Delete during startup");
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const createSession = repository.createBrowserSession.bind(repository);
+    vi.spyOn(repository, "createBrowserSession").mockImplementation(async (input) => {
+      const result = await createSession(input);
+      entered.resolve();
+      await release.promise;
+      return result;
+    });
+    const deleted = vi.spyOn(repository, "deleteBrowserProfile");
+    const service = freshService({ keys, repository, runtime });
+    const opening = service
+      .start({ ownerId, workspaceId, profileId: profile.id })
+      .catch((error) => error);
+    await withTimeout(entered.promise, 1_000, {
+      timeoutError: () => new Error("startup never reserved its session"),
+    });
+    const deleting = service.deleteProfile({ ownerId, profileId: profile.id });
+    try {
+      expect(deleted).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await deleting;
+      await opening;
+    }
+    expect(deleted).toHaveBeenCalledOnce();
+    expect(await repository.getBrowserProfile(profile.id, ownerId)).toBeNull();
+    expect(
+      (await repository.listBrowserSessions(ownerId)).every((session) => terminal(session.state)),
+    ).toBe(true);
+  });
+
+  it("starts independent profiles without waiting for another runtime's readiness", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      deferInitialSnapshot: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const first = repository.addHostedProfile("First"),
+      second = repository.addHostedProfile("Second");
+    const service = freshService({ keys, repository, runtime });
+    const openings: Promise<unknown>[] = [
+      service.start({ ownerId, workspaceId, profileId: first.id }),
+    ];
+    try {
+      await vi.waitFor(
+        () => expect(runtime.connectionCount(), "first profile did not reach the runtime").toBe(1),
+        { timeout: 1_000 },
+      );
+      openings.push(service.start({ ownerId, workspaceId, profileId: second.id }));
+      await vi.waitFor(
+        () =>
+          expect(
+            runtime.connectionCount(),
+            "independent profile remained behind startup readiness",
+          ).toBe(2),
+        { timeout: 1_000 },
+      );
+    } finally {
+      runtime.releaseInitialSnapshots();
+      await Promise.all(openings);
+    }
+  });
+
+  it("signs initial navigation and returns its existing page without Host CDP navigation", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: runnerTarget({ url: runtime.url, initialNavigationVersion: true }),
+    });
+    cleanups.push(() => service.close());
+    const command = {
+      type: "browser.tab.open" as const,
+      idempotencyKey: randomUUID(),
+      identity: { kind: "guest" as const },
+      url: "https://example.com/start",
+    };
+    const opened = await service.openTab(ownerId, command);
+    expect(runtime.lastClaims()).toMatchObject({
+      initialNavigationVersion: 1,
+      initialNavigation: {
+        operationKey: createHash("sha256")
+          .update(`${ownerId}:${command.idempotencyKey}`)
+          .digest("hex"),
+        url: command.url,
+      },
+    });
+    expect(opened).toMatchObject({ tabId: "page-1" });
+    expect(runtime.receivedCommands().filter((command) => command.type === "cdp.command")).toEqual(
+      [],
+    );
+    expect(await service.openTab(ownerId, command)).toEqual(opened);
+    expect(runtime.connectionCount()).toBe(1);
+  });
+
+  it("records a native initial open only when its attributed document commits", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      navigationAttribution: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+    const profile = repository.addHostedProfile("Native history");
+    const recordVisit = vi.fn<BrowserHistoryStore["recordVisit"]>().mockResolvedValue(true);
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      history: {
+        recordVisit,
+        list: async () => ({ entries: [], icons: [] }),
+      } as unknown as BrowserHistoryStore,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: runnerTarget({
+        url: runtime.url,
+        initialNavigationVersion: true,
+        navigationAttributionVersion: true,
+      }),
+    });
+    cleanups.push(() => service.close());
+    const command = {
+      type: "browser.tab.open" as const,
+      identity: { kind: "profile" as const, profileId: profile.id },
+      idempotencyKey: "native-history",
+      url: "https://history.example/",
+      typed: true,
+    };
+    await service.openTab(ownerId, command);
+    const navigationId = runtime.lastClaims()!.initialNavigation?.navigationId;
+    expect(navigationId).toEqual(expect.any(String));
+    expect(recordVisit).not.toHaveBeenCalled();
+    expect(runtime.receivedCommands().filter((command) => command.type === "cdp.command")).toEqual(
+      [],
+    );
+    runtime.sendServer({
+      type: "navigation.committed",
+      navigationId,
+      surfaceId: "page-1",
+      documentId: "native-document",
+      url: "https://history.example/redirected",
+    });
+    await vi.waitFor(
+      () =>
+        expect(recordVisit).toHaveBeenCalledExactlyOnceWith({
+          profileId: profile.id,
+          ownerId,
+          typed: true,
+          title: "",
+          url: "https://history.example/redirected",
+        }),
+      { timeout: 1000 },
+    );
+    await service.openTab(ownerId, command);
+    expect(recordVisit).toHaveBeenCalledOnce();
+  });
+
+  it("refuses mismatched initial page readiness", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: runnerTarget({
+        url: runtime.url,
+        initialNavigationVersion: true,
+        initialPageMismatch: true,
+      }),
+    });
+    cleanups.push(() => service.close());
+    await expect(service.start({ ownerId, workspaceId, fresh: true })).rejects.toMatchObject({
+      code: "workspace_unavailable",
+    });
+    expect((await repository.listBrowserSessions(ownerId))[0]?.state).toBe("failed");
+  });
+
+  it.each([
+    [true, true, "vault", true],
+    [false, true, "vault", false],
+    [true, false, "vault", false],
+    [false, false, "local", true],
+  ] as const)(
+    "prepares only authorized profiles and limits proactive conversion: personal=%s main=%s storage=%s",
+    async (personal, main, kind, allowed) => {
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user"),
+        workspaceId = createId("workspace"),
+        runnerId = createId("runner");
+      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const profile = repository.addHostedProfile("Prepared");
+      const binding = {
+        version: 1 as const,
+        deploymentId: createId("deployment"),
+        profileId: profile.id,
+        runnerId,
+        storageInstanceId: randomUUID(),
+        bindingId: randomUUID(),
+        engine: "chromium" as const,
+      };
+      const initialization = {
+        seed: { revision: 19, digest: "f".repeat(64) },
+        initializationToken: "x".repeat(43),
+        initializationUrl: "https://host.test/frozen",
+      };
+      const localIdentity = { kind: "profile-local" as const, binding, initialization };
+      const identity = vi.fn(async () => localIdentity);
+      const localProfiles = {
+        storage: async () => (kind === "vault" ? { kind: "vault" } : { kind, binding }),
+        identity,
+      } as unknown as BrowserLocalProfiles;
+      const close = vi.fn();
+      const prepareProfile = vi.fn(
+        (_ticket: string) =>
+          Object.assign(new EventEmitter(), {
+            close,
+          }) as unknown as import("./browser-service.js").BrowserRuntimeConnection,
+      );
+      const target = {
+        placementKey: "prepared",
+        runtimeId: "test",
+        incarnation: "one",
+        main,
+        profilePrepare: true,
+        localProfileStorage: {
+          storageInstanceId: binding.storageInstanceId,
+          engine: binding.engine,
+        },
+        prepareProfile,
+        connect: () => {
+          throw Error("Preparation must not attach");
+        },
+      };
+      const service = new BrowserService({
+        ...profileStateOptions,
+        personal,
+        localProfiles,
+        repository,
+        signer: new BrowserAttachTicketSigner({
+          keyId: "host-primary",
+          privateKey: keys.privateKey,
+        }),
+        targetResolver: {
+          placements: () => [
+            {
+              available: true,
+              environmentIds: [],
+              kind: "runner",
+              label: "Main",
+              runnerId,
+              runtimeId: "test",
+            },
+          ],
+          resolve: () => target,
+        },
+      });
+      cleanups.push(() => service.close());
+      await expect(
+        service.prepareProfile(ownerId, { kind: "profile", profileId: createId("browserProfile") }),
+      ).rejects.toThrow(/unavailable/);
+      await expect(
+        service.prepareProfile(createId("user"), { kind: "profile", profileId: profile.id }),
+      ).rejects.toThrow();
+      await service.prepareProfile(ownerId, { kind: "guest" });
+      expect(prepareProfile).not.toHaveBeenCalled();
+      await service.prepareProfile(ownerId, { kind: "profile", profileId: profile.id });
+      await service.prepareProfile(ownerId, { kind: "profile", profileId: profile.id });
+      expect(prepareProfile).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      expect(identity).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      expect(await repository.listBrowserSessions(ownerId)).toEqual([]);
+      if (allowed) {
+        const ticket = prepareProfile.mock.calls[0]![0];
+        const claims = JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString());
+        expect(claims).toMatchObject({
+          purpose: "profile-prepare",
+          identity: localIdentity,
+          subject: ownerId,
+        });
+        expect(claims).not.toHaveProperty("sessionId");
+        target.incarnation = "two";
+        await service.prepareProfile(ownerId, { kind: "profile", profileId: profile.id });
+        expect(prepareProfile).toHaveBeenCalledTimes(2);
+      }
+    },
+  );
+
+  it("keeps converted profiles on their computer, refuses old runtimes and omits saved site data", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const profile = repository.addHostedProfile("Native");
+    const relay = runnerTarget({ url: runtime.url });
+    const binding = {
+      version: 1 as const,
+      deploymentId: createId("deployment"),
+      profileId: profile.id,
+      runnerId: relay.runnerId,
+      storageInstanceId: randomUUID(),
+      bindingId: randomUUID(),
+      engine: "electron" as const,
+    };
+    const localProfiles = new BrowserLocalProfiles({
+      deploymentId: binding.deploymentId,
+      baseUrl: new URL("https://host.test"),
+      vault: new BrowserProfileVault({
+        key: Buffer.alloc(32, 3),
+        repository: {
+          readBrowserProfileRevision: async () => {
+            throw new Error("Native seed inspected");
+          },
+          commitBrowserProfileRevision: async () => {
+            throw new Error("Native save attempted");
+          },
+        },
+      }),
+      repository: {
+        getBrowserProfileStorage: async () => ({
+          kind: "local",
+          binding,
+          seed: { revision: 0, digest: "a".repeat(64) },
+        }),
+        listPendingBrowserProfileDeletions: async () => [],
+      } as unknown as BrowserLocalProfileRepository,
+    });
+    const service = new BrowserService({
+      ...profileStateOptions,
+      localProfiles,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: relay,
+    });
+    cleanups.push(() => service.close());
+    await expect(service.start({ ownerId, workspaceId, profileId: profile.id })).rejects.toThrow(
+      "Update this computer to open this profile.",
+    );
+    await expect(
+      service.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: randomUUID(),
+        identity: { kind: "profile", profileId: profile.id },
+        placement: { kind: "runner", runnerId: createId("runner") },
+      }),
+    ).rejects.toThrow("owning computer");
+    expect(
+      (
+        await service.profileSiteData({
+          ownerId,
+          profileIds: [profile.id],
+          site: "https://example.com",
+        })
+      ).profiles.has(profile.id),
+    ).toBe(false);
+    expect(runtime.connectionCount()).toBe(0);
+    const offline = new BrowserService({
+      ...profileStateOptions,
+      localProfiles,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: { placements: () => [], resolve: () => undefined },
+    });
+    cleanups.push(() => offline.close());
+    await expect(
+      offline.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: randomUUID(),
+        identity: { kind: "profile", profileId: profile.id },
+      }),
+    ).rejects.toThrow("Waiting for this computer");
+  });
+
   it.each([false, true])(
     "retains the same icon after an agent-only visit and clear/revisit (already present: %s)",
     async (present) => {

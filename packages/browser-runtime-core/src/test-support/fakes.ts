@@ -5,6 +5,7 @@ import { isRecord } from "@opensteer/shared/isRecord";
 import {
   BrowserAttachTicketClaimsSchema,
   type BrowserAttachTicketClaims,
+  type BrowserPreparationTicketClaims,
   type BrowserAttachTicketIdentity,
   type BrowserServerMessage,
 } from "@opensteer/protocol";
@@ -120,6 +121,9 @@ export class FakeCdpSession implements CdpSession {
  * in that live context.
  */
 export class FakePage implements BrowserPage {
+  submitNavigation(url: string): void {
+    void this.cdpSession.send("Page.navigate", { url }).catch(() => undefined);
+  }
   readonly cdpSession: FakeCdpSession;
   closeCount = 0;
   private closed = false;
@@ -450,7 +454,7 @@ export class FakeLauncher implements BrowserLauncher {
     this.browser = browser;
   }
 
-  async launch(request: BrowserLaunchRequest): Promise<LaunchedBrowser> {
+  async launch(request: BrowserLaunchRequest, _signal?: AbortSignal): Promise<LaunchedBrowser> {
     this.launchCount += 1;
     this.lastRequest = request;
     this.requests.push(request);
@@ -464,10 +468,12 @@ export class FakeIsolatingLauncher implements BrowserLauncher {
   launchCount = 0;
   readonly requests: BrowserLaunchRequest[] = [];
 
-  async launch(request: BrowserLaunchRequest): Promise<LaunchedBrowser> {
+  async launch(request: BrowserLaunchRequest, _signal?: AbortSignal): Promise<LaunchedBrowser> {
     this.launchCount += 1;
     this.requests.push(request);
-    const browser = new FakeLaunchedBrowser(new FakeContext([new FakePage()]));
+    const browser = new FakeLaunchedBrowser(
+      new FakeContext(request.preparation ? [] : [new FakePage()]),
+    );
     this.browsersByPartition.set(request.partitionKey, browser);
     return browser;
   }
@@ -498,6 +504,8 @@ export class FakeTicketVerifier implements AttachTicketVerifier {
   constructor(claims = validClaims()) {
     this.claims = claims;
   }
+
+  verifyPreparation?: (token: string) => Promise<BrowserPreparationTicketClaims>;
 
   async verify(token: string): Promise<BrowserAttachTicketClaims> {
     this.tokens.push(token);

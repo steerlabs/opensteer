@@ -340,7 +340,7 @@ export async function runPasskeyProviderScenario(options: {
       sessionId,
       partitionKey: `session:${sessionId}`,
       initialViewport: { width: 1280, height: 720, devicePixelRatio: 1 },
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     const cdp = await browser.context.pages()[0]!.cdp();
     stopDiagnostics = cdp.onEvent((method, parameters) => {
@@ -567,7 +567,7 @@ export async function runPasskeyCertificateErrorScenario(options: {
       sessionId,
       partitionKey: `session:${sessionId}`,
       initialViewport: { width: 1280, height: 720, devicePixelRatio: 1 },
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     const cdp = await browser.context.pages()[0]!.cdp();
     await cdp.send("Page.navigate", { url: `https://untrusted.example.test:${address.port}/` });

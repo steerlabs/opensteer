@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, realpath, rm, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -38,12 +38,13 @@ describe("desktop application paths", () => {
     };
 
     configureDesktopApplicationPaths(application, dataDirectory);
+    const canonical = await realpath(dataDirectory);
     expect(acquireDesktopApplicationLock(application)).toBe(true);
     expect(calls).toEqual([
-      `userData:${dataDirectory}`,
-      `sessionData:${path.join(dataDirectory, "session")}`,
-      `crashDumps:${path.join(dataDirectory, "crash-dumps")}`,
-      `logs:${path.join(dataDirectory, "logs")}`,
+      `userData:${canonical}`,
+      `sessionData:${path.join(canonical, "session")}`,
+      `crashDumps:${path.join(canonical, "crash-dumps")}`,
+      `logs:${path.join(canonical, "logs")}`,
       "lock",
     ]);
   });
@@ -69,7 +70,12 @@ describe("desktop application paths", () => {
     const paths = prepareDesktopDeploymentDirectories(dataDirectory, deploymentId);
 
     expect(paths).toEqual({
-      browserProfilesDirectory: path.join(expectedRoot, "browser-profiles"),
+      browserProfilesDirectory: path.join(
+        dataDirectory,
+        "session",
+        "browser-profiles",
+        deploymentId,
+      ),
       hostDataDirectory: path.join(expectedRoot, "host"),
       logsDirectory: path.join(expectedRoot, "logs"),
       manifestPath: path.join(expectedRoot, "deployment.v1.json"),
@@ -113,4 +119,31 @@ describe("desktop application paths", () => {
       );
     },
   );
+});
+
+it("keeps native browser data outside disposable enrollment slots", () => {
+  const deploymentId = createId("deployment");
+  const root = path.join(tmpdir(), "opensteer-test-paths");
+  const paths = desktopDeploymentPaths(root, deploymentId);
+  const slot = path.join(root, "runner", "deployments", deploymentId);
+  expect(path.relative(slot, paths.browserProfilesDirectory).startsWith(".." + path.sep)).toBe(
+    true,
+  );
+  expect(paths.browserProfilesDirectory).toBe(
+    path.join(root, "session", "browser-profiles", deploymentId),
+  );
+});
+
+it("keeps native stores inside Electron's Network Service grant and isolates Host credentials", async () => {
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), "opensteer-network-paths-"));
+  temporaryDirectories.push(dataDirectory);
+  const setPath = vi.fn();
+  configureDesktopApplicationPaths({ setPath, setAppLogsPath: vi.fn() }, dataDirectory);
+  const canonical = await realpath(dataDirectory);
+  const sessionDirectory = setPath.mock.calls.find(
+    ([name]) => name === "sessionData",
+  )![1] as string;
+  const paths = desktopDeploymentPaths(canonical, createId("deployment"));
+  expect(path.relative(sessionDirectory, paths.browserProfilesDirectory)).not.toMatch(/^\.\./u);
+  expect(path.relative(sessionDirectory, paths.hostDataDirectory)).toMatch(/^\.\./u);
 });

@@ -1,4 +1,5 @@
-import { generateKeyPairSync, verify } from "node:crypto";
+import { ReleasedBrowserAttachTicketClaimsSchema } from "./released-browser-protocol.test-support.js";
+import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
 import { createId } from "@opensteer/core";
 import {
   BrowserAttachTicketClaimsSchema,
@@ -8,6 +9,27 @@ import { describe, expect, it } from "vitest";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 
 describe("BrowserAttachTicketSigner", () => {
+  it("binds initial navigation to the signed ticket", () => {
+    const keys = generateKeyPairSync("ed25519");
+    const initialNavigation = { operationKey: "open:1", url: "https://example.test/" };
+    const ticket = new BrowserAttachTicketSigner({
+      keyId: "host-primary",
+      privateKey: keys.privateKey,
+    }).issue({
+      access: "full-control",
+      identity: { kind: "fresh" },
+      runtimeId: "browser",
+      sessionId: createBrowserSessionId(),
+      subject: "usr_owner",
+      initialNavigationVersion: 1,
+      initialNavigation,
+    });
+    expect(
+      BrowserAttachTicketClaimsSchema.parse(
+        JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString()),
+      ),
+    ).toMatchObject({ initialNavigationVersion: 1, initialNavigation });
+  });
   it("issues a ticket accepted by Browser Runtime's verifier", async () => {
     const keys = generateKeyPairSync("ed25519");
     const now = new Date("2026-08-09T18:00:00.000Z");
@@ -102,4 +124,45 @@ describe("BrowserAttachTicketSigner", () => {
     expect(claims.identity).toEqual({ kind: "fresh" });
     expect(JSON.stringify(claims)).not.toContain("profileLeaseToken");
   });
+});
+
+it("keeps native storage out of the frozen released ticket reader", () => {
+  const keys = generateKeyPairSync("ed25519");
+  const signer = new BrowserAttachTicketSigner({
+    keyId: "host-primary",
+    privateKey: keys.privateKey,
+  });
+  const binding = {
+    version: 1 as const,
+    deploymentId: createId("deployment"),
+    profileId: createId("browserProfile"),
+    runnerId: createId("runner"),
+    storageInstanceId: randomUUID(),
+    bindingId: randomUUID(),
+    engine: "electron" as const,
+  };
+  const ticket = signer.issue({
+    access: "full-control",
+    identity: { kind: "profile-local", binding },
+    runtimeId: "native",
+    sessionId: createBrowserSessionId(),
+    subject: "owner",
+  });
+  const claims = JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString("utf8"));
+  expect(BrowserAttachTicketClaimsSchema.parse(claims).identity).toEqual({
+    kind: "profile-local",
+    binding,
+  });
+  expect(ReleasedBrowserAttachTicketClaimsSchema.safeParse(claims).success).toBe(false);
+  expect(JSON.stringify(claims)).not.toMatch(/profileLeaseToken|profileStateUrl|initialization/);
+  const legacy = {
+    ...claims,
+    identity: {
+      kind: "profile",
+      profileId: binding.profileId,
+      profileLeaseToken: "a".repeat(43),
+      profileStateUrl: "https://host.test/state",
+    },
+  };
+  expect(ReleasedBrowserAttachTicketClaimsSchema.parse(legacy).identity).toEqual(legacy.identity);
 });

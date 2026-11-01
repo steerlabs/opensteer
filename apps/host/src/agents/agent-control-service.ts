@@ -774,7 +774,10 @@ export class AgentControlService {
             });
       return AgentControlResponseSchema.parse({
         profiles: data
-          ? profiles.map((profile) => ({ ...profile, siteData: data.profiles.get(profile.id) }))
+          ? profiles.map((profile) => {
+              const siteData = data.profiles.get(profile.id);
+              return siteData ? { ...profile, siteData } : profile;
+            })
           : profiles,
         ...(data ? { site: data.site } : {}),
         requestId: request.requestId,

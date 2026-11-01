@@ -56,7 +56,10 @@ owns compatibility and authentication.
 
 Persist membership before starting the Runner so exit during join cannot strand a Host row.
 Turning execution off restarts the same identity/data directory/SSH host key. Removal deletes
-them; readding creates a new computer. A slot no longer permitted to execute starts reach-only.
+the enrollment slot; readding creates a new computer. Browser profile data lives outside
+that disposable slot and survives enrollment removal. Erasure requires explicit profile
+deletion; reenrollment cannot rebind a profile to the new identity. See
+[profile state](browser-sessions.md#profile-state). A slot no longer permitted to execute starts reach-only.
 The owner-session Host chooses the enrollment grant and origin, never the desktop.
 
 ## 5. The page

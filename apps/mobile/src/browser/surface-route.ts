@@ -55,7 +55,11 @@ type SurfacesTarget =
  * tab returns to the grid it was opened from and a link names exactly what it
  * opens.
  */
-export type SurfacesRoute = { readonly deploymentId: string } & SurfacesScope & SurfacesTarget;
+export type SurfacesRoute = {
+  readonly deploymentId: string;
+  readonly pendingBrowserTab?: string;
+} & SurfacesScope &
+  SurfacesTarget;
 
 /** One of a conversation's own tabs or apps, over that conversation's sheet. */
 export function surfaceRoute(

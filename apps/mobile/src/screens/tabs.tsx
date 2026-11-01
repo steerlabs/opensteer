@@ -1,3 +1,4 @@
+import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
   canRespondToRequests,
   describeHostConnection,
@@ -123,6 +124,9 @@ function TabsForReader(props: {
   const placements = useHostSelector(hostClient, selectPlacements);
   const loaded = useHostSelector(hostClient, selectLoaded);
   const offline = useHostSelector(hostClient, selectConnection);
+  useEffect(() => {
+    if (props.active && offline === null) hostClient.prepareBrowserProfile();
+  }, [hostClient, props.active, offline]);
   const [agents, setAgents] = useState(false);
   const withAgents = useMemo(() => places.filter(placeHasAgents), [places]);
   useAgentsFilter(agents, agents || withAgents.length > 0, setAgents);
@@ -155,24 +159,27 @@ function TabsForReader(props: {
             : { title: "No tabs yet", detail: "Tabs you and your agents open appear here." }
         }
         header={
-          offline === null && props.failure === null ? undefined : (
-            <View style={styles.notices}>
-              {props.failure === null ? null : (
-                <Notice
-                  title="Tabs could not be refreshed"
-                  detail={props.failure}
-                  action={{ label: "Try again", onPress: props.onRetry }}
-                />
-              )}
-              {offline === null ? null : (
-                <Notice
-                  title={offline}
-                  detail="Tabs reconnect when the deployment is available."
-                  tone="neutral"
-                />
-              )}
-            </View>
-          )
+          <>
+            <PendingBrowserTabRows hostClient={hostClient} deploymentId={deploymentId} />
+            {offline === null && props.failure === null ? null : (
+              <View style={styles.notices}>
+                {props.failure === null ? null : (
+                  <Notice
+                    title="Tabs could not be refreshed"
+                    detail={props.failure}
+                    action={{ label: "Try again", onPress: props.onRetry }}
+                  />
+                )}
+                {offline === null ? null : (
+                  <Notice
+                    title={offline}
+                    detail="Tabs reconnect when the deployment is available."
+                    tone="neutral"
+                  />
+                )}
+              </View>
+            )}
+          </>
         }
         hostClient={hostClient}
         loading={!loaded && tiles.length === 0}

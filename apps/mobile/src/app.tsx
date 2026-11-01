@@ -1,3 +1,4 @@
+import { createBrowsingChoiceStorage } from "./client/browsing-choice-storage.js";
 import { notificationPreviewNative } from "../modules/notification-preview/index.js";
 import { NotificationPreviews } from "./notifications/notification-preview.js";
 import { createExpoSavedViews } from "./platform/expo-saved-views.js";
@@ -233,6 +234,9 @@ function mobileClient(): MobileRoot {
           },
         })
       : createNetworkHostPort({
+          browserPreferencesStorage: createBrowsingChoiceStorage(
+            new File(`${root}${storeName}/browsing-choices.json`),
+          ),
           fetch: mobileHostFetch,
           lifecycle,
           now: () => new Date(),

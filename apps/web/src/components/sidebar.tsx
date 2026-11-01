@@ -1,3 +1,4 @@
+import { PendingBrowserTabRows } from "./workspace/pending-browser-tab.js";
 import { taskMark } from "@opensteer/client/host";
 import { TaskIconEditor } from "./task-icon-editor.js";
 import { ThreadTitleEditor } from "./thread-title-editor.js";
@@ -587,6 +588,7 @@ export function Sidebar({
                       )),
                 ];
               })}
+              <PendingBrowserTabRows hostClient={hostClient} onOpen={onCloseMobile} />
               {strip.native.length > 0 && strip.web.length > 0 ? (
                 <li aria-hidden className="side-divider" data-motion-key="divider" />
               ) : null}

@@ -1,3 +1,4 @@
+import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
 import { NotificationPreviewKeyStore } from "@opensteer/database";
 import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
 import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
@@ -747,13 +748,54 @@ export async function createHostRuntime(
         (await store.getThreadForOwner(threadId, ownerUserId))?.title ?? null,
     });
     const messagingRelay = new MessagingRelayHub();
-    const runnerBrowsers = new RunnerBrowserRuntimeRouter({ registry: browserRelay });
     const browserProfileKey = await loadOrCreateBrowserProfileKey({
       dataDirectory,
       ...(config.browserProfileKeyPath ? { keyPath: config.browserProfileKeyPath } : {}),
     });
     const profileVault = new BrowserProfileVault({ key: browserProfileKey, repository: store });
     browserProfileKey.fill(0);
+    const localProfiles = new BrowserLocalProfiles({
+      deploymentId: deployment.id,
+      repository: store,
+      vault: profileVault,
+      baseUrl: config.canonicalOrigin,
+      ...(deployment.deploymentShape.kind === "personal"
+        ? { beforeProfileOpen: () => runnerBrowsers.requirePersonalProfileInventory() }
+        : {}),
+      onReconciled: async (profileId) => {
+        await browser.fenceLocalProfile(profileId);
+        const profile = await database
+          .selectFrom("browserProfiles")
+          .select("ownerId")
+          .where("id", "=", profileId)
+          .executeTakeFirstOrThrow();
+        const main = await store.findMainWorkspaceForOwner(profile.ownerId);
+        if (main)
+          realtime.publishBrowserSessionsChanged(
+            main.id,
+            [profile.ownerId],
+            "browser.profile-reconciled",
+          );
+      },
+    });
+    const runnerBrowsers = new RunnerBrowserRuntimeRouter({
+      registry: browserRelay,
+      localProfiles,
+      onDeletionsChanged: async (runnerId) => {
+        const owners = await database
+          .selectFrom("browserProfileDeletions as deletion")
+          .innerJoin("browserProfiles as profile", "profile.id", "deletion.profileId")
+          .select("profile.ownerId")
+          .distinct()
+          .where("deletion.runnerId", "=", runnerId)
+          .execute();
+        for (const { ownerId } of owners) {
+          const main = await store.findMainWorkspaceForOwner(ownerId);
+          if (main)
+            realtime.publishBrowserSessionsChanged(main.id, [ownerId], "browser.profile-deletions");
+        }
+      },
+    });
     let reportBrowserPresenceError: (error: unknown) => void = (error) => {
       console.warn("Browser presence delivery failed", error);
     };
@@ -762,6 +804,9 @@ export async function createHostRuntime(
     };
     const browserTabGroups = new BrowserTabGroupStore(database);
     const browser = new BrowserService({
+      personal: deployment.deploymentShape.kind === "personal",
+      localProfiles,
+      eraseLocalProfiles: (runnerId) => runnerBrowsers.resumeDeletions(runnerId),
       passkeys: config.passkeys === true,
       passkeyOwnOrigins: () => [
         config.canonicalOrigin.origin,

@@ -1,3 +1,4 @@
+import { browserSiteFromUrl } from "../packages/browser-profile/src/source-state.js";
 import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
 import {
   executablePath,
@@ -15,11 +16,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
-import { expect } from "vitest";
-import { ModelSelectionSchema, type WorkspaceId } from "../packages/core/src/index.js";
+import { expect, vi } from "vitest";
+import {
+  BrowserProfileIdSchema,
+  ModelSelectionSchema,
+  type WorkspaceId,
+} from "../packages/core/src/index.js";
 import { readImageDimensions } from "../packages/browser-runtime-core/src/index.js";
 import {
   BrowserServerMessageSchema,
+  BrowserSessionIdSchema,
   decodeBrowserFrameEnvelope,
   type BrowserServerMessage,
 } from "../packages/protocol/src/browser.js";
@@ -149,9 +155,43 @@ export async function agentJourney(
     stdout: expect.stringContaining("marketplace_session=signed-in"),
   });
 
-  // The profile saves while in use; Chromium dying afterwards loses nothing.
-  // The next session launches a new Chromium from the Host's saved copy.
-  await waitFor(async () => (await profileRevision(stack, profileId)) > 0, 20_000);
+  const storage = await stack.host.store.getBrowserProfileStorage(
+    BrowserProfileIdSchema.parse(profileId),
+  );
+  expect(storage.kind).toBe(label === "service" ? "local" : "vault");
+  if (storage.kind === "local") {
+    // A controlled sign-in waits for native cookie commit; native profiles never
+    // write legacy checkpoints back to the Host, even while the browser is live.
+    expect(
+      await stack.host.browser.applySiteCookies(
+        BrowserSessionIdSchema.parse(report.profileSession),
+        browserSiteFromUrl(pageOrigin),
+        [
+          {
+            domain: new URL(pageOrigin).hostname,
+            hostOnly: true,
+            name: "marketplace_session",
+            value: "signed-in",
+            path: "/",
+            expires: Math.floor(Date.now() / 1000) + 86400,
+            httpOnly: false,
+            secure: false,
+            sameSite: "Lax",
+          },
+        ],
+      ),
+    ).toBe("applied");
+    expect(await profileRevision(stack, profileId)).toBe(0);
+  } else {
+    await vi.waitFor(
+      async () =>
+        expect(
+          await profileRevision(stack, profileId),
+          "Legacy profile never committed its live checkpoint",
+        ).toBeGreaterThan(0),
+      { timeout: 20_000 },
+    );
+  }
   const savedRevision = await profileRevision(stack, profileId);
   const watch =
     label === "relayed" ? await watchBrowserSession(stack, report.profileSession) : null;
@@ -178,6 +218,12 @@ export async function agentJourney(
   });
   const check = JSON.parse(later.assistantText) as { cookie: string };
   expect(check.cookie).toContain("marketplace_session=signed-in");
+  if (storage.kind === "local") {
+    expect(
+      await stack.host.store.getBrowserProfileStorage(BrowserProfileIdSchema.parse(profileId)),
+    ).toEqual(storage);
+    expect(await profileRevision(stack, profileId)).toBe(savedRevision);
+  }
 
   const reportPath = path.join(
     tmpdir(),

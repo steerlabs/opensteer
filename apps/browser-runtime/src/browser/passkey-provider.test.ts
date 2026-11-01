@@ -76,7 +76,7 @@ it("keeps an executable override to Headless Shell absent after one startup prob
       sessionId: claims.sessionId,
       partitionKey: `session:${claims.sessionId}`,
       initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     const cdp = await browser.context.pages()[0]!.cdp();
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${address.port}/` });

@@ -47,6 +47,23 @@ describe("bootstrap diagnostics", () => {
     }
   });
 
+  it("counts native-profile reconciliation and erasure publications by fixed source", () => {
+    const notices = new BootstrapNoticeDiagnostics();
+    notices.record("host.browser-sessions-changed", "browser.profile-reconciled", 0);
+    notices.record("host.browser-sessions-changed", "browser.profile-deletions", 0);
+    const report = notices.report(
+      JSON.stringify({
+        windowMs: 1,
+        triggers: { "host.browser-sessions-changed": 6 },
+        starts: { "host.browser-sessions-changed": 6 },
+      }),
+      1,
+    );
+    expect(JSON.parse(report!.notices)).toEqual({
+      "host.browser-sessions-changed/browser.profile-reconciled": 1,
+      "host.browser-sessions-changed/browser.profile-deletions": 1,
+    });
+  });
   it("reports broad publication types and sources once per minute, without fanout or payloads", () => {
     const notices = new BootstrapNoticeDiagnostics();
     notices.record("host.browser-sessions-changed", "browser.catalog-flush", 0);

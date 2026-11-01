@@ -158,7 +158,12 @@ describe("PersonalDeploymentSupervisor", () => {
     // The Electron browser has no identity of its own: the Runner reaches it
     // over a loopback bridge, and only the Runner holds an enrollment.
     expect(fixture.localRuntimes.startBrowser).toHaveBeenCalledWith(
-      expect.objectContaining({ runtimeId: "desktop-browser" }),
+      expect.objectContaining({
+        runtimeId: "desktop-browser",
+        paths: expect.objectContaining({
+          browserProfileRoot: fixture.files.paths.browserProfileRoot,
+        }),
+      }),
     );
     expect(runner.environment.OPENSTEER_BROWSER_BRIDGE_URL).toBe("http://127.0.0.1:4399/");
     expect(runner.environment.OPENSTEER_BROWSER_RUNTIME_ID).toBe("desktop-browser");

@@ -6,7 +6,7 @@ import {
   browserSiteForUrl,
   browserTabTitle,
   reviewHostAction,
-  mutationIdempotencyKey,
+  type BrowserTabOpenHandle,
   type BrowserCommand,
   type BrowserSessionSummary,
   type HostClient,
@@ -72,7 +72,7 @@ export function BrowserPage(props: {
   readonly session: BrowserSessionSummary;
   readonly tabId: string;
   readonly editAddress: boolean;
-  readonly onOpenTab: (sessionId: string, tabId: string) => void;
+  readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
   readonly onClosed: () => void;
   /** The browser's Workspace, whose agents may use a site once it is signed in. */
   readonly workspaceName: string;
@@ -90,6 +90,9 @@ export function BrowserPage(props: {
       : undefined);
   const [problem, setProblem] = useState<string | null>(null);
   const [addressOpen, setAddressOpen] = useState(props.editAddress);
+  useEffect(() => {
+    if (addressOpen) hostClient.prepareBrowserProfile();
+  }, [addressOpen, hostClient]);
   // Null shows the page's own address; anything else is the person's, kept
   // until they go there or put it away.
   const [addressDraft, setAddressDraft] = useState<string | null>(null);
@@ -97,20 +100,8 @@ export function BrowserPage(props: {
   const [mayType, setMayType] = useState(false);
   const [typing, setTyping] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
-  /** An open whose answer was lost is retried as the same request, size and all. */
-  const newTabAttempt = useRef<{
-    readonly idempotencyKey: string;
-    readonly viewport?: { readonly height: number; readonly width: number };
-  } | null>(null);
   const openingTab = useRef(false);
-  const presence = useRef(true);
-  useEffect(() => {
-    presence.current = true;
-    return () => {
-      presence.current = false;
-      onTyping(false);
-    };
-  }, [onTyping]);
+  useEffect(() => () => onTyping(false), [onTyping]);
   const area = useRef({ height: 0, width: 0 });
   const [aspect, setAspect] = useState(defaultPageAspect);
   const onPageSize = useCallback((size: { readonly height: number; readonly width: number }) => {
@@ -223,6 +214,9 @@ export function BrowserPage(props: {
     }
     // The address stays as typed until the page has taken it.
     if (!send({ type: "navigation.go", url: url.href, typed: true })) return;
+    hostClient.browserPreferences.lastBrowsingChoice = session.profileId
+      ? { kind: "profile", profileId: session.profileId }
+      : { kind: "guest" };
     setProblem(null);
     setAddressDraft(null);
     setAddressOpen(false);
@@ -240,29 +234,20 @@ export function BrowserPage(props: {
           setProblem(operationDetail(error, "This tab could not be closed.")),
         );
   };
-  const openTab = async () => {
+  const openTab = () => {
     if (openingTab.current) return;
     openingTab.current = true;
-    if (!newTabAttempt.current) {
-      // The new page shows in this same area, and a phone never resizes a page
-      // on its own, so it starts at this area's size.
-      const size = viewport();
-      newTabAttempt.current = {
-        idempotencyKey: mutationIdempotencyKey("browser-tab-open"),
-        ...(size ? { viewport: size } : {}),
-      };
-    }
     try {
-      const result = await hostClient.openBrowserTab(
-        { sessionId: session.id },
-        newTabAttempt.current,
+      const size = viewport();
+      props.onOpenTab(
+        hostClient.beginBrowserTabOpen(
+          { sessionId: session.id },
+          size ? { viewport: size } : undefined,
+        ),
       );
-      newTabAttempt.current = null;
-      if (presence.current) props.onOpenTab(result.sessionId, result.tabId);
     } catch (error) {
-      if (presence.current) setProblem(operationDetail(error, "A new tab could not be opened."));
-    } finally {
       openingTab.current = false;
+      setProblem(operationDetail(error, "A new tab could not be opened."));
     }
   };
 

@@ -1,3 +1,4 @@
+import type { InitialNavigation, InitialPageReady } from "@opensteer/protocol";
 import type { HostRelayAuthenticator } from "../passkeys/host-relay.js";
 import { layoutMetricsSchema, screenshotDensity, visualViewportSchema } from "./layout-metrics.js";
 import { createHash } from "node:crypto";
@@ -232,7 +233,7 @@ export class BrowserController {
   private pendingMessageBytes = 0;
   private pendingMessages = 0;
   private readonly screencast: ScreencastController;
-  private readonly sink: BrowserControllerSink;
+  private sink: BrowserControllerSink;
   private surfaceRevision = 0;
   /** The pages named in the latest surface list viewers were sent, and the one shown. */
   private deliveredSurfaces = new Set<BrowserSurfaceId>();
@@ -341,6 +342,39 @@ export class BrowserController {
     }));
   }
 
+  startInitialNavigation(
+    page: import("./backend.js").BrowserPage,
+    navigation: InitialNavigation,
+  ): InitialPageReady {
+    const surface = this.ledger
+      .snapshot()
+      .find((entry) => this.ledger.binding(entry.id)?.page === page);
+    if (!surface) throw new BrowserRuntimeError("not_found", "The initial browser page closed.");
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify({ url: navigation.url }))
+      .digest("hex");
+    const previous = this.openedTabs.get(navigation.operationKey);
+    if (previous && previous.fingerprint !== fingerprint)
+      throw new BrowserRuntimeError("conflict", "Idempotency key already used.");
+    const result: InitialPageReady = {
+      operationKey: navigation.operationKey,
+      surfaceId: previous?.tabId ?? surface.id,
+      navigation: navigation.url === undefined ? "blank" : "submitted",
+    };
+    if (!previous) {
+      this.openedTabs.set(navigation.operationKey, { fingerprint, tabId: result.surfaceId });
+      // The engine already starts the initial blank document to create its renderer.
+      if (navigation.url === undefined) return result;
+      const url = safeNavigationUrl(navigation.url);
+      if (navigation.navigationId && this.claims.navigationAttributionVersion === 1)
+        void this.ledger
+          .navigate(result.surfaceId, url, navigation.navigationId)
+          .catch(() => undefined);
+      else page.submitNavigation(url);
+    }
+    return result;
+  }
+
   async start(): Promise<void> {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
     this.unsubscribeCdp = this.cdpRouter.onEvent(this.claims.sessionId, (event) => {
@@ -357,6 +391,16 @@ export class BrowserController {
     });
     await this.screencast.start();
     this.initialSnapshotQueued = true;
+    await this.publishSnapshot();
+  }
+
+  async reattach(sink: BrowserControllerSink): Promise<void> {
+    if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
+    this.sink = sink;
+    await this.publishSnapshot();
+  }
+
+  private async publishSnapshot(): Promise<void> {
     const surfaces = this.ledger.snapshot();
     this.deliveredSurfaces = new Set(surfaces.map((surface) => surface.id));
     this.deliveredActive = surfaces.find((surface) => surface.active)?.id ?? null;

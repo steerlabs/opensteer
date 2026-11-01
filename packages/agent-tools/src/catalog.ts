@@ -445,7 +445,7 @@ const definitions = [
       title: "List Browser Profiles",
     },
     description:
-      "To choose an available profile, use browser_profile_list. Main inherits active owner profiles; specialists see granted profiles. Names do not verify identity or login. site adds siteData and savedAt (null if never saved); saved cookies/storage suggest login but do not prove it. Active profiles save about every two minutes. Verify on the website.",
+      "List profiles: Main inherits owner profiles; specialists see grants. Named profiles keep browser data on their owning computer. site may add siteData; missing means unknown, not empty. A name or stored data never proves website login; verify on the website.",
     id: "browser.profile.list",
     inputSchema: z.strictObject({
       site: z
@@ -454,7 +454,7 @@ const definitions = [
         .min(1)
         .max(2_048)
         .optional()
-        .describe("Check each profile's saved data for this website, e.g. brex.com."),
+        .describe("Check website data where available, e.g. brex.com; missing means unknown."),
     }),
     name: "browser_profile_list",
   },
@@ -573,12 +573,12 @@ const definitions = [
       title: "Open Browser Session",
     },
     description:
-      "To attach a session, pass sessionId. For a new session choose profileId (granted profile) or fresh: true (Guest). Exactly one is required; environmentId never chooses identity. Guest needs no grant, can sign in, and loses state on close. profileId/fresh always create another session; a Run may hold several. Drive each returned id with Browser Harness (opensteer-browser). Identity is fixed: open another session to switch profiles. Sessions outlive Runs.",
+      "Attach with sessionId, or create a session with profileId (granted profile) or fresh: true (Guest). Choose exactly one. Guest needs no grant and loses data on close. A Run may hold several sessions; sessions outlive Runs. Drive returned ids with Browser Harness (opensteer-browser). Session identity is fixed; a profile's computer is fixed after first open. Report update refusals; never work around one with another profile, computer or Guest.",
     id: "browser.session.open",
     inputSchema: z
       .strictObject({
         environmentId: EnvironmentIdSchema.optional().describe(
-          "Defaults to this Run's machine, else the only connected browser.",
+          "A placed profile uses its fixed computer. Otherwise defaults to this Run's machine, else the only connected browser; never chooses identity.",
         ),
         fresh: z.literal(true).optional(),
         profileId: BrowserProfileIdSchema.optional(),
@@ -599,7 +599,7 @@ const definitions = [
       title: "Create Browser Profile",
     },
     description:
-      "When the person asks for a new profile or names one they lack, check browser_profile_list then create it with name. Names can repeat and do not imply login. Creation opens nothing: use browser_session_open with returned profile.id, then sign in. The profile retains sign-ins.",
+      "For a requested new or missing profile, list first, then create with name. Names may repeat and never prove login. Creation opens nothing; placement may wait until first open. Open profile.id with browser_session_open, then sign in. Report update refusals; never create replacements.",
     id: "browser.profile.create",
     inputSchema: z.strictObject({
       name: z

@@ -1,3 +1,4 @@
+import { gate } from "@opensteer/shared/test-support/observation";
 import {
   PublicKeyCredentialRequestOptionsJSONSchema,
   serializeClientData,
@@ -63,6 +64,56 @@ describe("BrowserController", () => {
     );
     await ledger.start();
   });
+
+  it.each([false, true])(
+    "records the initial page without waiting for commit (history=%s)",
+    async (history) => {
+      const navigate = vi.spyOn(ledger, "navigate");
+      const held = gate({ label: "initial navigation commit", deadlineMs: 2000 });
+      page.cdpSession.responses.set("Page.navigate", () => held.enter());
+      const controller = new BrowserController({
+        cdpRouter,
+        claims: {
+          ...validClaims(),
+          ...(history ? { navigationAttributionVersion: 1 as const } : {}),
+        },
+        exportSnapshot,
+        files,
+        ledger,
+        replaceSiteCookies,
+        signIns: noSignIns(),
+        sink,
+      });
+      try {
+        await controller.start();
+        const navigation = {
+          operationKey: "initial-open",
+          url: "https://next.test/",
+          ...(history ? { navigationId: "88888888-8888-4888-8888-888888888888" } : {}),
+        };
+        const result = controller.startInitialNavigation(page, navigation);
+        await held.entered;
+        if (history)
+          expect(navigate).toHaveBeenCalledExactlyOnceWith(
+            result.surfaceId,
+            navigation.url,
+            navigation.navigationId,
+          );
+        expect(result).toMatchObject({ operationKey: "initial-open", navigation: "submitted" });
+        expect(controller.startInitialNavigation(page, navigation)).toEqual(result);
+        expect(
+          page.cdpSession.sent.filter((command) => command.method === "Page.navigate"),
+        ).toHaveLength(1);
+        expect(() =>
+          controller.startInitialNavigation(page, { ...navigation, url: "https://other.test/" }),
+        ).toThrow(/Idempotency/);
+      } finally {
+        held.release();
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
 
   it("attributes only viewer input that reaches the page", async () => {
     const passkeys = new HostRelayAuthenticator(() => undefined);

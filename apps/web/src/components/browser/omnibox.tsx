@@ -57,6 +57,9 @@ export function useOmnibox(options: {
     (snapshot) =>
       `${snapshot.deploymentId}:${snapshot.user?.id}:${snapshot.searchSuggestionsAvailable === true}:${snapshot.connection}`,
   );
+  useEffect(() => {
+    hostClient.prepareBrowserProfile();
+  }, [hostClient, scope]);
   const viewer = useHostSelector(hostClient, (snapshot) =>
     JSON.stringify([snapshot.deploymentId, snapshot.user?.id, snapshot.session]),
   );

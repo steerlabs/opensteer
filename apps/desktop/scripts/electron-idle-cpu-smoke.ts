@@ -23,7 +23,7 @@ export async function idleCpuPhase(): Promise<void> {
     initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000044",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000044"),
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
   });
   const page = browser.context.pages()[0];
   assert(page);

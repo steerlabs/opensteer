@@ -1,4 +1,5 @@
 import { iphoneIntegrationsProtocolVersion, iphoneOutdatedReason } from "./iphone-apps.js";
+import { BrowserEngineSchema } from "./browser-profile-storage.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
 import {
@@ -1242,6 +1243,14 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
   .object({
+    localProfiles: z.literal(1).optional().catch(undefined),
+    profilePrepare: z.literal(1).optional().catch(undefined),
+    profilePrepareInstanceId: z.uuid().optional().catch(undefined),
+    localProfileStorage: z
+      .object({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema })
+      .optional()
+      .catch(undefined),
+    initialNavigationVersion: z.literal(1).optional().catch(undefined),
     /** Page-provider contract, available only after the engine Security probe. */
     passkeys: z
       .number()
@@ -1353,14 +1362,33 @@ export const RunnerBrowserModuleSchema = z
     /** Required for editing v2; true means the engine isolates clipboard operations. */
     clipboard: z.boolean().optional(),
   })
-  .transform(({ editing, clipboard, ...module }) => {
-    const version = editing === 2 && clipboard === undefined ? undefined : editing;
-    return {
-      ...module,
-      ...(version ? { editing: version } : {}),
-      ...(version === 2 ? { clipboard } : {}),
-    };
-  });
+  .transform(
+    ({
+      editing,
+      clipboard,
+      localProfiles,
+      localProfileStorage,
+      profilePrepare,
+      profilePrepareInstanceId,
+      ...module
+    }) => {
+      const version = editing === 2 && clipboard === undefined ? undefined : editing;
+      return {
+        ...module,
+        ...(localProfiles === 1 && localProfileStorage
+          ? {
+              localProfiles,
+              localProfileStorage,
+              ...(profilePrepare === 1 && profilePrepareInstanceId
+                ? { profilePrepare, profilePrepareInstanceId }
+                : {}),
+            }
+          : {}),
+        ...(version ? { editing: version } : {}),
+        ...(version === 2 ? { clipboard } : {}),
+      };
+    },
+  );
 export type RunnerBrowserModule = z.infer<typeof RunnerBrowserModuleSchema>;
 
 export const RunnerMessagingModuleSchema = z.object({

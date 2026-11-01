@@ -11,7 +11,7 @@ import {
   webLinkSelection,
   type WebLinkFailureActions,
 } from "../desktop/web-links.js";
-import { lastBrowsingChoice } from "./workspace/start-page.js";
+import { lastBrowsingChoice, openWorkspaceWebLink } from "./workspace/start-page.js";
 import { DownloadFeedback } from "./browser/browser-downloads.js";
 import { provisionalThreadTitle } from "@opensteer/core";
 import { useNativeBrowserOverlay } from "./native-browser-overlays.js";
@@ -46,6 +46,8 @@ import {
   unwrapRpcResult,
   type ExecutionChoice,
   type ExecutionSelection,
+  type PendingBrowserTabDestination,
+  type WorkspaceSurfaceDestination,
   type HostClient,
   type HostSnapshot,
   type LocalRunnerIdentity,
@@ -301,6 +303,10 @@ export function AppShell({
     { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
     snapshot.homeThreadId,
   );
+  const openWebLink = useCallback(
+    (address: string) => openWorkspaceWebLink(hostClient, nav, address, location.state),
+    [hostClient, nav, location.state],
+  );
   const routerNavigate = useNavigate();
   const { controller: dictation } = useDictation();
   const voicePlaces = useBrowserTabStrip(hostClient).ordered;
@@ -342,17 +348,31 @@ export function AppShell({
   }, [voice, location.key]);
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;
-  const webLinkView = useRef({ key: location.key, revision: 0, changedAt: 0 });
+  const webLinkView = useRef({
+    key: location.key,
+    revision: 0,
+    changedAt: 0,
+    pendingBrowserTab: new URLSearchParams(location.search).get("pendingBrowserTab"),
+  });
   if (webLinkView.current.key !== location.key)
     webLinkView.current = {
       key: location.key,
       revision: webLinkView.current.revision + 1,
       changedAt: Date.now(),
+      pendingBrowserTab: new URLSearchParams(location.search).get("pendingBrowserTab"),
     };
   const [webLinkFailure, setWebLinkFailure] = useState<{
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
+  useEffect(() => {
+    hostClient.prepareBrowserProfile(
+      lastBrowsingChoice({
+        deploymentId: snapshot.deploymentId,
+        userId: snapshot.user?.id ?? null,
+      }),
+    );
+  }, [hostClient, snapshot.connection, snapshot.deploymentId, snapshot.user?.id]);
   const webLinkReady = desktopWebLinksReady(desktopDeployment?.kind === "personal", snapshot);
   useEffect(() => {
     if (
@@ -377,7 +397,16 @@ export function AppShell({
         identity: () => lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
       },
       () => {
-        const select = selection(webLinkNavigation.current.beginPlaceOperation());
+        let pendingKey: string | null = null;
+        const select = selection(
+          (destination: PendingBrowserTabDestination | WorkspaceSurfaceDestination) => {
+            if (destination.kind === "pending-browser") {
+              pendingKey = destination.idempotencyKey;
+              webLinkNavigation.current.showPendingBrowserTab(pendingKey);
+            } else if (pendingKey)
+              webLinkNavigation.current.replacePendingBrowserTab(pendingKey, destination);
+          },
+        );
         return (link, acknowledge) =>
           openDesktopWebLink(
             link,
@@ -1011,6 +1040,7 @@ export function AppShell({
         localMachine={localMachine}
         nav={nav}
         openDrawer={openMobileNavigation}
+        openWebLink={openWebLink}
       >
         {webLinkFailure ? (
           <DesktopWebLinkFailureNotice

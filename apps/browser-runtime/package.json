@@ -5,8 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsup",
-    "dev": "tsx watch src/main.ts",
+    "build": "tsup --config tsup.config.ts",
+    "dev": "tsup --watch --onSuccess 'node dist/main.js'",
     "start": "node dist/main.js",
     "test": "pnpm -w exec vitest run apps/browser-runtime",
     "typecheck": "tsc --noEmit"
@@ -21,6 +21,7 @@
     "@opensteer/runner-client": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "devtools-protocol": "0.0.1676105",
+    "fs-native-extensions": "1.5.2",
     "playwright-core": "1.62.1",
     "ws": "catalog:",
     "zod": "catalog:"

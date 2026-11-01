@@ -4668,6 +4668,7 @@ export function migrationProvider() {
         "0118_browser_history": browserHistoryMigration,
         "0119_person_notifications": personNotificationsMigration,
         "0120_notification_preview_keys": notificationPreviewKeysMigration,
+        "0121_native_browser_profiles": nativeBrowserProfilesMigration,
       };
     },
   };
@@ -6402,6 +6403,59 @@ export const notificationPreviewKeysMigration: Migration = {
         primary key (user_id, installation_id)
       );
       create index notification_preview_keys_auth_session_id on notification_preview_keys(auth_session_id);
+    `.execute(database);
+  },
+};
+
+export const nativeBrowserProfilesMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table browser_profiles
+        add column storage_state text not null default 'vault' check (storage_state in ('vault', 'initializing', 'local')),
+        add column storage_binding_version integer check (storage_binding_version = 1),
+        add column storage_deployment_id text references deployments(id),
+        add column storage_runner_id text references runners(id),
+        add column storage_instance_id uuid,
+        add column storage_binding_id uuid unique,
+        add column storage_engine text check (storage_engine in ('electron', 'chromium')),
+        add column frozen_seed_revision bigint check (frozen_seed_revision between 0 and 9007199254740991),
+        add column frozen_seed_digest text check (frozen_seed_digest ~ '^[a-f0-9]{64}$'),
+        add column initialization_token_hash text check (initialization_token_hash ~ '^[a-f0-9]{64}$'),
+        add column initialization_token_expires_at timestamptz,
+        add constraint browser_profiles_storage_binding_check check (
+          (storage_state = 'vault'
+            and storage_binding_version is null and storage_deployment_id is null
+            and storage_runner_id is null and storage_instance_id is null
+            and storage_binding_id is null and storage_engine is null
+            and frozen_seed_revision is null and frozen_seed_digest is null)
+          or (storage_state in ('initializing', 'local')
+            and storage_binding_version is not null and storage_deployment_id is not null
+            and storage_runner_id is not null and storage_instance_id is not null
+            and storage_binding_id is not null and storage_engine is not null
+            and frozen_seed_revision is not null and frozen_seed_digest is not null)
+        ),
+        add constraint browser_profiles_initialization_token_check check (
+          (initialization_token_hash is null and initialization_token_expires_at is null)
+          or (storage_state = 'initializing'
+            and initialization_token_hash is not null and initialization_token_expires_at is not null)
+        );
+      create index browser_profiles_storage_owner on browser_profiles (storage_runner_id, storage_instance_id);
+      create table browser_profile_deletions (
+        deletion_id uuid primary key,
+        profile_id text not null unique references browser_profiles(id),
+        binding_version integer not null check (binding_version = 1),
+        deployment_id text not null references deployments(id),
+        runner_id text not null references runners(id),
+        storage_instance_id uuid not null,
+        binding_id uuid not null,
+        engine text not null check (engine in ('electron', 'chromium')),
+        state text not null check (state in ('pending-computer', 'pending-restart', 'deleted')),
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        deleted_at timestamptz,
+        constraint browser_profile_deletions_completion_check check ((state = 'deleted') = (deleted_at is not null))
+      );
+      create index browser_profile_deletions_pending on browser_profile_deletions (runner_id, storage_instance_id) where state <> 'deleted';
     `.execute(database);
   },
 };

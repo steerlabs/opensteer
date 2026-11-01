@@ -130,6 +130,8 @@ function counts(value: unknown): Counts | null {
 export const bootstrapNoticeSources = [
   "unspecified",
   "browser.profiles",
+  "browser.profile-reconciled",
+  "browser.profile-deletions",
   "browser.tabs",
   "browser.catalog-flush",
   "browser.usage",
