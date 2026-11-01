@@ -12911,7 +12911,7 @@ describe("task marks through the production client and mock transport", () => {
         const assignment = Object.values(client.getSnapshot().assignments)[0]!;
         const sourceAssignment = source.assignments[assignment.id]!;
         expect(assignmentMark(assignment, { threads: [] })).toMatchObject({
-          icon: mode === "legacy" ? "document" : sourceAssignment.workerThread.icon,
+          icon: mode === "legacy" ? null : sourceAssignment.workerThread.icon,
           color: mode === "marks" ? sourceAssignment.workerThread.color : null,
         });
         if (mode !== "legacy") {

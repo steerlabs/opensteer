@@ -26,6 +26,18 @@ import { isThreadUnread } from "./thread-read-state.js";
 /** What a task is doing, in the order a reader has to care. */
 export type TaskTone = "needs-you" | "working" | "waiting" | "failed" | "finished";
 
+/**
+ * A task's mark reads quietly once it is settled and seen, or put in Done;
+ * needing someone or having failed stays loud wherever it sits.
+ */
+export function taskMarkQuiet(row: Pick<TaskRow, "tone" | "unread">, done: boolean): boolean {
+  return (
+    (done || (row.tone === "finished" && !row.unread)) &&
+    row.tone !== "needs-you" &&
+    row.tone !== "failed"
+  );
+}
+
 export interface TaskRow {
   readonly threadId: string;
   readonly workspaceId: string;

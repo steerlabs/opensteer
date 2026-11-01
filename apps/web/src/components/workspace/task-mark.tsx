@@ -9,7 +9,11 @@ import { WorkspaceIconGlyph } from "../workspace-orb.js";
 
 export type TaskMarkSize = 16 | 20 | 22;
 
-/** Subject and identity only; lifecycle belongs beside it. */
+/**
+ * Subject and identity only; lifecycle belongs beside it. A tile tinted with
+ * the task's colour under its symbol, and a neutral tile, empty until the
+ * task has a symbol, where either is missing.
+ */
 export const TaskMark = memo(function TaskMark({
   mark,
   size,
@@ -19,20 +23,16 @@ export const TaskMark = memo(function TaskMark({
   readonly size: TaskMarkSize;
   readonly quiet?: boolean;
 }) {
-  const icon = mark.pending || mark.color === null ? "document" : mark.icon;
+  const paint = mark.icon === null || mark.color === null ? null : markColorPaint[mark.color];
   return (
     <span
       aria-hidden="true"
       className={`task-mark task-mark--${size}${quiet ? " task-mark--quiet" : ""}`}
-      data-icon={icon}
+      data-icon={mark.icon ?? undefined}
       data-color={mark.color ?? "neutral"}
-      data-pending={mark.pending}
-      style={{
-        color:
-          mark.pending || mark.color === null ? "var(--muted)" : markColorPaint[mark.color].glyph,
-      }}
+      style={paint ? { background: paint.wash, color: paint.glyph } : undefined}
     >
-      <WorkspaceIconGlyph icon={icon} />
+      {mark.icon ? <WorkspaceIconGlyph icon={mark.icon} /> : null}
     </span>
   );
 });

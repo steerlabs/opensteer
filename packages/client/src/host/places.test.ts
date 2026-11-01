@@ -127,11 +127,7 @@ describe("place catalog", () => {
         },
       };
       expect(threadMark(task.id, directory)).toEqual(taskMark(task));
-      expect(threadMark("unknown", directory)).toEqual({
-        icon: "document",
-        color: null,
-        pending: true,
-      });
+      expect(threadMark("unknown", directory)).toEqual({ icon: null, color: null });
       const assignment = {
         workerThread: { id: task.id, icon: "hotel" as const, color: "green" as const },
       };
@@ -139,11 +135,10 @@ describe("place catalog", () => {
       expect(assignmentMark(assignment, { threads: [] })).toEqual({
         icon: "hotel",
         color: "green",
-        pending: false,
       });
       expect(
         assignmentMark({ workerThread: { id: task.id, icon: null } }, { threads: [] }),
-      ).toEqual({ icon: "document", color: null, pending: true });
+      ).toEqual({ icon: null, color: null });
     } finally {
       client.dispose();
     }

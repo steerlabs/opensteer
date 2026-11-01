@@ -46,7 +46,7 @@ export function FamilyButton(props: {
       {glance.marks.length > 0 ? (
         <View style={styles.marks}>
           {glance.marks.map((mark, index) => (
-            <View key={index} style={{ marginLeft: index === 0 ? 0 : -8 }}>
+            <View key={index} style={[styles.stacked, index === 0 ? null : styles.overlap]}>
               <TaskMark mark={mark} size={16} />
             </View>
           ))}
@@ -243,6 +243,9 @@ function automationDetail(automation: ThreadAutomation): string {
 const styles = StyleSheet.create({
   button: { flexDirection: "row", alignItems: "center", gap: space[4], minHeight: touchTarget },
   marks: { flexDirection: "row", alignItems: "center" },
+  // The web's cut-out: each tile keeps its edge where the next one overlaps it.
+  stacked: { borderColor: color.background, borderRadius: 7, borderWidth: 2 },
+  overlap: { marginLeft: -8 },
   attention: { width: 6, height: 6, borderRadius: 3, backgroundColor: color.amber },
   section: { paddingHorizontal: space[16], paddingTop: space[24], paddingBottom: space[8] },
   row: {

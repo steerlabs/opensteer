@@ -9,6 +9,7 @@ import {
   type HostSnapshot,
   type TaskRow,
   taskMark,
+  taskMarkQuiet,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { conversationPath } from "../ui-utils.js";
@@ -101,15 +102,7 @@ export const TaskRowLink = memo(function TaskRowLink({
             : conversationPath(row.threadId, null)
         }
       >
-        <TaskMark
-          size={20}
-          mark={taskMark(row)}
-          quiet={
-            (done || (row.tone === "finished" && !row.unread)) &&
-            row.tone !== "needs-you" &&
-            row.tone !== "failed"
-          }
-        />
+        <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, done)} />
         <span className="task-row__text">
           <span className="task-row__title">{row.title}</span>
           {row.tone === "needs-you" ? <span className="task-row__ask">{row.line}</span> : null}

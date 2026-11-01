@@ -648,8 +648,9 @@ describe("task mark bylines", () => {
       ).toBe("hotel");
       await draw({ ...entry, author: { ...author, threadId: createId("thread") } });
       expect(
-        container.querySelector(".msg--assistant__author .task-mark")?.getAttribute("data-pending"),
-      ).toBe("true");
+        container.querySelector(".msg--assistant__author .task-mark")?.hasAttribute("data-icon"),
+      ).toBe(false);
+      expect(container.querySelector(".msg--assistant__author .task-mark svg")).toBeNull();
       await draw({
         ...entry,
         author: {

@@ -187,7 +187,7 @@ function OccupantMark({
         {
           "--acting-hue": home
             ? "var(--ember)"
-            : mark.color === null || mark.pending
+            : mark.color === null || mark.icon === null
               ? "var(--muted)"
               : markColorPaint[mark.color].glyph,
         } as CSSProperties

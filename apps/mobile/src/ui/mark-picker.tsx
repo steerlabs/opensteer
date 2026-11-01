@@ -108,7 +108,7 @@ export function TaskIconPicker(props: {
       <IconChoices
         task
         color={mark.color}
-        value={mark.pending ? null : mark.icon}
+        value={mark.icon}
         disabled={saving}
         onChange={(icon) => void choose(icon)}
       />

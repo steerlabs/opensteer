@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { taskList, markColorPaint, taskMark, type TaskRow } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { workspaceIconNames } from "@opensteer/core";
+import { color } from "../theme.js";
 
 /* Interaction failures: identity disappears behind state; unread replaces state;
  * Done hides a failure; a mark-only update is memoized away; default/search/edit
@@ -272,9 +273,23 @@ it("keeps subject, state, unread, time, quiet styling and long-press actions ind
     );
     expect(view.querySelector("[data-spinner]") !== null).toBe(tone === "working");
   }
+  // The mark reads quietly once settled and seen or put in Done, as on the
+  // web; needing someone or having failed stays loud even in Done.
+  const markQuiet = () =>
+    container.querySelector("svg")!.parentElement!.dataset.style!.includes('"opacity":0.6');
+  for (const [tone, unread, shelf, quiet] of [
+    ["finished", false, "open", true],
+    ["finished", true, "open", false],
+    ["working", false, "open", false],
+    ["waiting", false, "done", true],
+    ["needs-you", false, "done", false],
+    ["failed", false, "done", false],
+  ] as const) {
+    draw(tone, unread, shelf);
+    expect(markQuiet(), `${tone} ${unread ? "unread" : "read"} in ${shelf}`).toBe(quiet);
+  }
   draw("failed", true, "done");
   expect(container.textContent).toContain("Couldn't finish");
-  expect(container.querySelector('[data-style*="0.6"]')).not.toBeNull();
   expect(
     container.querySelector('[data-style*="minHeight"]')?.getAttribute("data-style"),
   ).toContain('"minHeight":48');
@@ -289,7 +304,7 @@ it("keeps subject, state, unread, time, quiet styling and long-press actions ind
   expect(move).toHaveBeenLastCalledWith(expect.objectContaining({ tone: "finished" }), true);
 });
 
-it("repaints a memoized row on icon/color-only arrival and makes pending or colourless marks muted documents", () => {
+it("repaints a memoized row on icon/color-only arrival and leaves unnamed or colourless marks on a neutral tile", () => {
   const original = row();
   const open = vi.fn();
   const move = vi.fn();
@@ -309,10 +324,16 @@ it("repaints a memoized row on icon/color-only arrival and makes pending or colo
   draw({ ...original, icon: "hotel", color: "magenta" });
   expect(container.querySelector("svg")!.innerHTML).not.toBe(art);
   expect(container.querySelector("svg")!.getAttribute("color")).toBe(markColorPaint.magenta.glyph);
+  expect(container.querySelector("svg")!.parentElement!.dataset.style).toContain(
+    markColorPaint.magenta.wash,
+  );
+  const tile = () => container.firstElementChild!.getAttribute("data-style");
   render(<TaskMark mark={taskMark({ icon: "plane", color: null })} />);
-  const fallback = container.querySelector("svg")!.innerHTML;
+  expect(container.querySelector("svg")!.getAttribute("color")).toBe(color.muted);
+  expect(tile()).toContain(color.surfaceRaised);
   render(<TaskMark mark={taskMark({ icon: null, color: "blue" })} />);
-  expect(container.querySelector("svg")!.innerHTML).toBe(fallback);
+  expect(container.querySelector("svg")).toBeNull();
+  expect(tile()).toContain(color.surfaceRaised);
   harness.reducedMotion = true;
   draw({ ...original, tone: "working" });
   expect(container.querySelector("[data-spinner]")).toBeNull();

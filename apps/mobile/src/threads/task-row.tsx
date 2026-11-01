@@ -5,6 +5,7 @@ import {
   sameTaskRow,
   taskUnderWay,
   taskMark,
+  taskMarkQuiet,
   taskRowLabel,
   type HostClient,
   type TaskRow,
@@ -99,7 +100,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
               : styles.pressed),
       ]}
     >
-      <TaskMark mark={taskMark(row)} quiet={props.shelf === "done"} />
+      <TaskMark mark={taskMark(row)} quiet={taskMarkQuiet(row, props.shelf === "done")} />
       <AppText
         maxFontSizeMultiplier={controlFontScaleLimit}
         numberOfLines={1}
