@@ -147,10 +147,11 @@ clear publication and input; protection lift requires a fresh generation. Agent 
 main activity also uses FLAG_SECURE. Control and media sockets are unordered: late state
 must not blank already-arrived media of the same generation or revive an ended generation.
 H.264 must have no B-frames or reordering so clients can display decoded frames immediately.
-Backpressure must recover at a keyframe, including on static screens. Phone replay stays
-intact on join. The Host requests a coalesced refresh after 256 KiB of cached deltas,
-in addition to the unavoidable keyframe; the encoder's configured ten-second GOP avoids frequent idle IDRs. Bitrate reductions
-require sustained viewer queueing; healthy ACK flow allows recovery. Negotiated visible
+Backpressure must recover at a keyframe, including on static screens. A joining viewer
+replays the cached GOP rather than forcing an IDR. The Host bounds that replay by requesting
+a refresh once cached deltas grow large, so the encoder keeps a long GOP and a still screen
+sends almost nothing. Bitrate reductions require sustained viewer queueing, not one slow
+ACK; healthy flow allows recovery. Negotiated visible
 viewers share the slowest viewer's bitrate cap; the phone uses the lower of that cap
 and its own estimate. Only a Host cap allows bitrate below the local 1 Mbps floor.
 Closing a viewer releases its cap; silent screens do not justify increasing bitrate.
