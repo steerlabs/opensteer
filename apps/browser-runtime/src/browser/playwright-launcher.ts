@@ -16,6 +16,7 @@ import {
   browserPagePolicyScriptFor,
 } from "@opensteer/browser-runtime-core/page-policy";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -473,6 +474,8 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         // must not start Chromium's bundled extension workers on every cold open.
         "--disable-extensions",
         "--disable-component-extensions-with-background-pages",
+        "--disable-component-update",
+        "--disable-background-networking",
         "--no-startup-window",
         "--restore-last-session",
         "--no-first-run",
@@ -484,7 +487,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         ...(this.proxyUrl
           ? [
               `--proxy-server=${this.proxyUrl}`,
-              "--disable-background-networking",
               "--disable-quic",
               "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
               "--proxy-bypass-list=<-loopback>",
@@ -538,18 +540,44 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     let stopped: Promise<void> | undefined;
     const owner = {
       close: () => {
-        // Playwright's persistent close sends Browser.close and joins its owned
-        // process (including Network Service flush). Its exceptional timeout
-        // fallback kills only that process; native directories are never removed.
+        // Ask Chromium to close normally; the cleanup deadline must also contain
+        // its background shutdown work. Never release its directory before exit.
         stopped ??= (async () => {
-          try {
-            await context.close();
-          } finally {
+          // Chromium can retain background shutdown work after Browser.close.
+          // Only its captured child may be forced, and the directory remains
+          // owned until the OS confirms that child exited.
+          let forced = false;
+          let failure: unknown;
+          const closing = (async () => {
             try {
-              await browser.close();
+              await context.close();
             } finally {
-              await exited;
+              await browser.close();
             }
+          })();
+          void closing.catch((error: unknown) => {
+            if (!forced) failure = error;
+          });
+          const force = setTimeout(() => {
+            if (ownedProcess.exitCode !== null || ownedProcess.signalCode !== null) return;
+            forced = true;
+            try {
+              // Pinned Playwright starts POSIX browsers as process-group leaders.
+              if (process.platform === "win32") ownedProcess.kill("SIGKILL");
+              else process.kill(-ownedProcess.pid!, "SIGKILL");
+            } catch (error) {
+              if (nodeErrorCode(error) !== "ESRCH") this.nativeCloseFailures.add(directory);
+            }
+          }, 1_000);
+          force.unref?.();
+          try {
+            await withTimeout(exited, 1_800, {
+              timeoutError: () =>
+                new Error("Native Chromium did not exit after owned-process shutdown."),
+            });
+            if (failure) throw failure;
+          } finally {
+            clearTimeout(force);
           }
         })()
           .then(

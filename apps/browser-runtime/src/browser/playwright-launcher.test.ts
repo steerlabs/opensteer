@@ -316,6 +316,7 @@ function hostileEnvironment(
 
 describe("native Chromium profiles", () => {
   it("launches the default context with explicit contained arguments and releases only after orderly close", async () => {
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
     const directory = await mkdtemp(join(tmpdir(), "os-native-options-"));
     const sessions = join(directory, "Default", "Sessions");
     await mkdir(sessions, { recursive: true });
@@ -335,6 +336,7 @@ describe("native Chromium profiles", () => {
     const processHandle = () => {
       const child = new ChildProcess();
       Object.defineProperty(child, "pid", { value: 12345 });
+      child.kill = vi.fn(() => true);
       return child;
     };
     let ownedProcess = processHandle();
@@ -413,6 +415,8 @@ describe("native Chromium profiles", () => {
           "--remote-debugging-pipe",
           "--disable-extensions",
           "--disable-component-extensions-with-background-pages",
+          "--disable-component-update",
+          "--disable-background-networking",
           "--restore-last-session",
           "--no-startup-window",
           "--headless=new",
@@ -465,6 +469,7 @@ describe("native Chromium profiles", () => {
       expect(cdp.detach).toHaveBeenCalledOnce();
       pages.length = 0;
       let released = false;
+      vi.useFakeTimers();
       const releasing = launcher.localProfiles.release(directory).then(() => {
         released = true;
       });
@@ -478,8 +483,14 @@ describe("native Chromium profiles", () => {
       expect(released, "Protocol close must not release a still-running native process").toBe(
         false,
       );
+      expect(kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      if (process.platform === "win32") expect(ownedProcess.kill).toHaveBeenCalledWith("SIGKILL");
+      else expect(kill).toHaveBeenCalledWith(-12345, "SIGKILL");
+      expect(released).toBe(false);
       exit();
       await releasing;
+      vi.useRealTimers();
       expect(browser.close).toHaveBeenCalledOnce();
       await launched.close();
       expect(context.close).toHaveBeenCalledOnce();
@@ -495,6 +506,8 @@ describe("native Chromium profiles", () => {
       exit();
       await reopenedClose;
     } finally {
+      vi.useRealTimers();
+      kill.mockRestore();
       close.resolve();
       exit();
       await launcher.localProfiles.release(directory);

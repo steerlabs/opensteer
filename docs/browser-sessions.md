@@ -505,7 +505,11 @@ Per-profile serialization lets unrelated profiles proceed independently. Closing
 the last tab keeps a native host warm; capacity pressure evicts the least recently
 used idle host. Eviction and failure cleanup never clear native storage. Electron
 releases views/controllers but retains its Session, so eviction does not bound all
-Session memory. The binding-matched `opensteer.v1.json` sentinel remains unchanged.
+Session memory. Shutdown asks Chromium to close normally, then forces its owned
+process group if cleanup expires; the directory stays owned until the child exits.
+Controlled cookie writes have a commit barrier, while uncommitted website activity
+can still be lost on forced exit. The binding-matched `opensteer.v1.json` sentinel
+remains unchanged.
 
 Full Chromium restores session cookies through its native policy, without expiry
 rewriting. Opensteer alone owns tab restoration: the launcher removes recognized
