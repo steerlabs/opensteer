@@ -346,30 +346,32 @@ export function AgentTranscript({
                                   {rows.map(({ group, key }) => (
                                     <Fragment key={key}>
                                       {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
-                                      {group.kind === "turn" ? (
-                                        <TurnView
-                                          turn={group.turn}
-                                          turnKey={group.key}
-                                          reveal={revealMessage}
-                                        />
-                                      ) : group.kind === "delegation" ? (
-                                        <DelegationNotice delegation={group.entry} />
-                                      ) : group.kind === "assignment" ? (
-                                        renderTask?.([group.entry])
-                                      ) : (
-                                        <TranscriptMessage
-                                          joinedRun={group.joinedRun === true}
-                                          reveal={
-                                            revealMessage?.id === group.entry.id
-                                              ? revealMessage
-                                              : null
-                                          }
-                                          message={group.entry}
-                                          askAbout={askAbout}
-                                          viewerUserId={viewerUserId}
-                                          workspaces={workspaces}
-                                        />
-                                      )}
+                                      <div className="transcript__row" data-transcript-row={key}>
+                                        {group.kind === "turn" ? (
+                                          <TurnView
+                                            turn={group.turn}
+                                            turnKey={group.key}
+                                            reveal={revealMessage}
+                                          />
+                                        ) : group.kind === "delegation" ? (
+                                          <DelegationNotice delegation={group.entry} />
+                                        ) : group.kind === "assignment" ? (
+                                          renderTask?.([group.entry])
+                                        ) : (
+                                          <TranscriptMessage
+                                            joinedRun={group.joinedRun === true}
+                                            reveal={
+                                              revealMessage?.id === group.entry.id
+                                                ? revealMessage
+                                                : null
+                                            }
+                                            message={group.entry}
+                                            askAbout={askAbout}
+                                            viewerUserId={viewerUserId}
+                                            workspaces={workspaces}
+                                          />
+                                        )}
+                                      </div>
                                     </Fragment>
                                   ))}
                                   {indicator === null ? null : indicator.kind === "typing" ? (

@@ -52,6 +52,7 @@ import { filterThreads } from "./thread-list-model.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
 import { placeList } from "./places.js";
 import { visibleTranscript } from "./transcript.js";
+import { conversationRows, groupTranscriptEntries } from "./agent-activity-model.js";
 import { projectSavedHome, type SavedViewReadiness } from "./saved-host-view.js";
 
 const now = "2026-08-09T20:00:00.000Z";
@@ -2692,6 +2693,537 @@ describe("HttpHostClient durable realtime", () => {
       client.dispose();
     },
   );
+
+  describe("earlier visible history", () => {
+    async function setupHistory(
+      options: {
+        role?: "conversation" | "work";
+        turnPages?: boolean;
+        steps?: boolean;
+        exhausted?: boolean;
+        stuck?: boolean;
+        holdSecond?: boolean;
+        holdFirst?: boolean;
+        empty?: boolean;
+        folded?: boolean;
+        /** The newest page starts inside a Run a steer split, so no Run entry heads its first trace. */
+        cut?: boolean;
+        longScan?: boolean;
+        shown?: "active" | "observed";
+      } = {},
+    ) {
+      const workspace = makeWorkspace();
+      const thread = { ...makeThread(workspace.id), role: options.role ?? "conversation" };
+      const recent = {
+        ...makeMessage(thread.id, options.folded || options.cut ? "assistant" : "input", "Recent"),
+        runId: options.folded || options.cut ? createId("run") : null,
+      };
+      const steer = { ...makeMessage(thread.id, "input", "Steer"), runId: recent.runId };
+      const earlier = makeMessage(thread.id, "input", "Earlier question");
+      const reply = {
+        ...makeMessage(thread.id, "assistant", "Earlier reply"),
+        runId: earlier.runId,
+      };
+      const silentRun = createId("run");
+      const startedBy = { cause: "task-return", kind: "platform" as const };
+      const silent = [
+        agentEvent(workspace.id, thread.id, silentRun, "4", "run.started", {
+          status: "running",
+          startedBy,
+        }),
+        agentEvent(workspace.id, thread.id, silentRun, "5", "run.completed", {
+          status: "completed",
+          replyMessageId: null,
+        }),
+      ];
+      const visible = [
+        agentEvent(workspace.id, thread.id, earlier.runId, "1", "message.created", {
+          input: makeThreadInput(earlier),
+          message: earlier,
+        }),
+        agentEvent(workspace.id, thread.id, earlier.runId, "2", "message.created", {
+          input: null,
+          message: reply,
+        }),
+        agentEvent(workspace.id, thread.id, earlier.runId, "3", "run.completed", {
+          status: "completed",
+          replyMessageId: reply.id,
+        }),
+      ];
+      const firstAsked = Promise.withResolvers<void>();
+      const firstAnswer = Promise.withResolvers<void>();
+      const secondAsked = Promise.withResolvers<void>();
+      const secondAnswer = Promise.withResolvers<void>();
+      const requests: Record<string, unknown>[] = [];
+      let viewerId = ownerId;
+      let warming =
+        options.empty === true ||
+        options.folded === true ||
+        options.cut === true ||
+        options.shown !== undefined;
+      const socket = new FakeSocket();
+      const client = createHttpHostClient({
+        capabilities: options.turnPages === false ? [] : ["history-turns-v1"],
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          if (url.pathname !== "/v1/rpc/thread.events.list") {
+            const boot = bootstrap([workspace]);
+            return json({ ...boot, user: { ...boot.user, id: viewerId } });
+          }
+          const request = rpcPayload(url, init);
+          if (request.threadId !== thread.id)
+            return json({
+              thread: { ...thread, id: ThreadIdSchema.parse(request.threadId) },
+              threadId: request.threadId,
+              events: [],
+              window: {
+                byteCount: 0,
+                itemCount: 0,
+                totalItems: 0,
+                hasMore: false,
+                nextBefore: null,
+                threadId: request.threadId,
+              },
+            });
+          if (warming) {
+            warming = false;
+            const events = options.empty
+              ? []
+              : options.cut
+                ? [
+                    agentEvent(workspace.id, thread.id, recent.runId, "3", "reasoning.completed", {
+                      blockId: "cut-step",
+                      text: "Work before the steer",
+                    }),
+                    agentEvent(workspace.id, thread.id, recent.runId, "4", "message.created", {
+                      input: makeThreadInput(steer),
+                      message: steer,
+                    }),
+                    agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
+                      status: "completed",
+                      replyMessageId: recent.id,
+                    }),
+                    agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
+                      input: null,
+                      message: recent,
+                    }),
+                  ]
+                : [
+                    ...(options.folded
+                      ? [
+                          agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
+                            status: "completed",
+                            replyMessageId: recent.id,
+                          }),
+                        ]
+                      : []),
+                    agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
+                      input: null,
+                      message: recent,
+                    }),
+                  ];
+            return json({
+              thread,
+              threadId: thread.id,
+              events,
+              window: {
+                byteCount: 0,
+                itemCount: 0,
+                totalItems: 6,
+                threadId: thread.id,
+                hasMore: true,
+                nextBefore: "recent",
+              },
+            });
+          }
+          requests.push(request);
+          const first = requests.length === 1;
+          if (first && options.holdFirst) {
+            firstAsked.resolve();
+            await firstAnswer.promise;
+          }
+          if (requests.length === 2 && options.holdSecond) {
+            secondAsked.resolve();
+            await secondAnswer.promise;
+          }
+          const navigating = !request.before;
+          const events = navigating
+            ? visible
+            : options.longScan && !first
+              ? []
+              : first
+                ? options.steps || options.folded || options.cut
+                  ? [
+                      agentEvent(
+                        workspace.id,
+                        thread.id,
+                        options.folded || options.cut ? recent.runId : silentRun,
+                        "4",
+                        "reasoning.completed",
+                        {
+                          blockId: "older-step",
+                          text: "Older work without a reply",
+                        },
+                      ),
+                    ]
+                  : silent
+                : options.exhausted
+                  ? []
+                  : visible;
+          return json({
+            thread,
+            threadId: thread.id,
+            events,
+            window: {
+              byteCount: 256,
+              itemCount: events.length,
+              totalItems: 6,
+              threadId: thread.id,
+              hasMore:
+                !navigating &&
+                (first || (options.longScan ? requests.length < 5 : options.holdSecond === true)),
+              nextBefore: navigating
+                ? null
+                : first
+                  ? options.stuck
+                    ? "recent"
+                    : "silent"
+                  : options.holdSecond
+                    ? `oldest-${requests.length}`
+                    : null,
+            },
+          });
+        },
+        refreshIntervalMs: 0,
+        webSocketFactory: () => socket,
+      });
+      await client.load();
+      socket.open();
+      socket.receive({
+        type: "host.snapshot",
+        snapshot: {
+          ...workspaceSnapshot(workspace, "6"),
+          threads: [thread],
+          messages: options.empty ? [] : [recent],
+          messageWindows: [
+            {
+              byteCount: 256,
+              hasMore: true,
+              itemCount: 1,
+              nextBefore: "recent",
+              totalItems: 6,
+              threadId: thread.id,
+            },
+          ],
+        },
+      });
+      let release: (() => void) | undefined;
+      if (warming) {
+        await client.loadLatestTranscript(thread.id);
+        if (options.shown === "observed") release = client.observeThread(thread.id);
+        else client.activateThread(thread.id);
+      }
+      return {
+        leave: () =>
+          options.shown === "observed" ? release?.() : client.activateThread(createId("thread")),
+        client,
+        requests,
+        thread,
+        firstAsked,
+        firstAnswer,
+        secondAsked,
+        secondAnswer,
+        receiveHuman: () =>
+          socket.receive({
+            type: "host.events",
+            events: [
+              agentEvent(workspace.id, thread.id, null, "7", "message.created", {
+                input: makeThreadInput(recent),
+                message: { ...recent, sequence: sequence("7") },
+              }),
+            ],
+          }),
+        changeViewer: async () => {
+          viewerId = createId("user");
+          await client.refresh();
+        },
+        replaceWindow: (nextBefore: string) =>
+          socket.receive({
+            type: "host.snapshot",
+            snapshot: {
+              ...workspaceSnapshot(workspace, "7"),
+              threads: [thread],
+              messages: [recent],
+              messageWindows: [
+                {
+                  byteCount: 256,
+                  hasMore: true,
+                  itemCount: 1,
+                  nextBefore,
+                  totalItems: 6,
+                  threadId: thread.id,
+                },
+              ],
+            },
+          }),
+        removeThread: () =>
+          socket.receive({ type: "host.snapshot", snapshot: workspaceSnapshot(workspace, "7") }),
+      };
+    }
+
+    it.each([
+      [true, false],
+      [false, false],
+      [true, true],
+      [false, true],
+    ])(
+      "reads past an invisible Chat page in one call (turn pages %s, only steps %s)",
+      async (turnPages, steps) => {
+        const { client, requests, thread } = await setupHistory({ turnPages, steps });
+        try {
+          await client.loadEarlierTranscript(thread.id);
+          expect(requests.map((request) => request.before)).toEqual(["recent", "silent"]);
+          const rows = conversationRows(
+            groupTranscriptEntries(
+              visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null, {
+                conversation: true,
+              }),
+            ),
+            { live: false, atComputer: () => false },
+          );
+          expect(
+            rows.map(({ group }) =>
+              group.kind === "turn"
+                ? group.turn.reply?.body
+                : group.kind === "message"
+                  ? group.entry.body
+                  : null,
+            ),
+          ).toEqual(["Earlier question", "Earlier reply", "Recent"]);
+        } finally {
+          client.dispose();
+        }
+      },
+    );
+
+    it("does not count a live human message as older-page progress", async () => {
+      const f = await setupHistory({ empty: true, holdFirst: true });
+      try {
+        const loading = f.client.loadEarlierTranscript(f.thread.id);
+        await withTimeout(f.firstAsked.promise, 1000, {
+          timeoutError: () => new Error("The first page was never requested."),
+        });
+        f.receiveHuman();
+        await vi.waitFor(
+          () =>
+            expect(
+              f.client
+                .getSnapshot()
+                .transcripts[f.thread.id]?.some(
+                  (entry) => entry.kind === "message" && entry.body === "Recent",
+                ),
+            ).toBe(true),
+          { timeout: 1000 },
+        );
+        f.firstAnswer.resolve();
+        await loading;
+        expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
+      } finally {
+        f.firstAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it.each([true, false])(
+      "reads past a byte-cut page folded into the first drawn work turn (turn pages %s)",
+      async (turnPages) => {
+        const f = await setupHistory({ role: "work", folded: true, turnPages });
+        try {
+          await f.client.loadEarlierTranscript(f.thread.id);
+          expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
+        } finally {
+          f.client.dispose();
+        }
+      },
+    );
+
+    it.each(["around", "latest"] as const)(
+      "retires a long scan to load %s after its in-flight page",
+      async (destination) => {
+        const f = await setupHistory({ holdSecond: true, longScan: true });
+        try {
+          const loading = f.client.loadEarlierTranscript(f.thread.id);
+          await withTimeout(f.secondAsked.promise, 1000, {
+            timeoutError: () => new Error("The second page was never requested."),
+          });
+          const navigation =
+            destination === "around"
+              ? f.client.loadTranscriptAround(f.thread.id, createId("message"))
+              : f.client.loadLatestTranscript(f.thread.id);
+          f.secondAnswer.resolve();
+          await withTimeout(Promise.all([loading, navigation]), 1000, {
+            timeoutError: () => new Error("Navigation waited beyond the in-flight page."),
+          });
+          expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent", undefined]);
+        } finally {
+          f.secondAnswer.resolve();
+          f.client.dispose();
+        }
+      },
+    );
+
+    it.each(["active", "observed"] as const)(
+      "stops when the reader leaves the %s Thread",
+      async (shown) => {
+        const f = await setupHistory({ shown, holdSecond: true, longScan: true });
+        try {
+          const loading = f.client.loadEarlierTranscript(f.thread.id);
+          await withTimeout(f.secondAsked.promise, 1000, {
+            timeoutError: () => new Error("The second page was never requested."),
+          });
+          f.leave();
+          const before = f.client.getSnapshot().transcripts[f.thread.id];
+          f.secondAnswer.resolve();
+          await loading;
+          expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
+          expect(f.client.getSnapshot().transcripts[f.thread.id]).toBe(before);
+        } finally {
+          f.secondAnswer.resolve();
+          f.client.dispose();
+        }
+      },
+    );
+
+    it("keeps scanning an observed Thread when another Thread becomes active", async () => {
+      const f = await setupHistory({ shown: "observed", holdSecond: true, longScan: true });
+      try {
+        const loading = f.client.loadEarlierTranscript(f.thread.id);
+        await withTimeout(f.secondAsked.promise, 1000, {
+          timeoutError: () => new Error("The second page was never requested."),
+        });
+        f.client.activateThread(createId("thread"));
+        f.secondAnswer.resolve();
+        await loading;
+        expect(f.requests.length).toBeGreaterThan(2);
+      } finally {
+        f.secondAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it("reads past older steps that only rename a split Run's first trace", async () => {
+      const { client, requests, thread } = await setupHistory({ cut: true, role: "work" });
+      try {
+        await client.loadEarlierTranscript(thread.id);
+        expect(requests).toHaveLength(2);
+      } finally {
+        client.dispose();
+      }
+    });
+
+    it("starts afresh when asked again after its scan was retired", async () => {
+      const f = await setupHistory({ shown: "active", holdSecond: true, longScan: true });
+      try {
+        const loading = f.client.loadEarlierTranscript(f.thread.id);
+        await withTimeout(f.secondAsked.promise, 1000, {
+          timeoutError: () => new Error("The second page was never requested."),
+        });
+        f.leave();
+        f.client.activateThread(f.thread.id);
+        const again = f.client.loadEarlierTranscript(f.thread.id);
+        f.secondAnswer.resolve();
+        await Promise.all([loading, again]);
+        expect(f.requests.length).toBeGreaterThan(2);
+      } finally {
+        f.secondAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it("exhausts an entirely invisible remainder", async () => {
+      const { client, requests, thread } = await setupHistory({ exhausted: true });
+      try {
+        await client.loadEarlierTranscript(thread.id);
+        expect(requests).toHaveLength(2);
+        expect(client.getSnapshot().transcriptWindows[thread.id]?.hasMore).toBe(false);
+      } finally {
+        client.dispose();
+      }
+    });
+
+    it("stops at the first added work trace", async () => {
+      const { client, requests, thread } = await setupHistory({ role: "work" });
+      try {
+        await client.loadEarlierTranscript(thread.id);
+        expect(requests).toHaveLength(1);
+      } finally {
+        client.dispose();
+      }
+    });
+
+    it("rejects a continuation cursor that does not advance", async () => {
+      const { client, thread } = await setupHistory({ stuck: true });
+      try {
+        await expect(client.loadEarlierTranscript(thread.id)).rejects.toThrow(
+          "continuation cursor",
+        );
+      } finally {
+        client.dispose();
+      }
+    });
+
+    it.each(["replacement", "silent"])(
+      "stops if a snapshot replaces the window during a read (cursor %s)",
+      async (cursor) => {
+        const { client, requests, thread, secondAsked, secondAnswer, replaceWindow } =
+          await setupHistory({ holdSecond: true });
+        try {
+          const loading = client.loadEarlierTranscript(thread.id);
+          await withTimeout(secondAsked.promise, 1000, {
+            timeoutError: () => new Error("The continuation was never requested."),
+          });
+          replaceWindow(cursor);
+          secondAnswer.resolve();
+          await loading;
+          expect(requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
+          expect(client.getSnapshot().transcriptWindows[thread.id]?.nextBefore).toBe(cursor);
+        } finally {
+          secondAnswer.resolve();
+          client.dispose();
+        }
+      },
+    );
+
+    it.each(["dispose", "viewer", "thread"] as const)(
+      "stops a pending page after %s changes",
+      async (change) => {
+        const { client, requests, thread, secondAsked, secondAnswer, changeViewer, removeThread } =
+          await setupHistory({ holdSecond: true });
+        try {
+          const loading = client.loadEarlierTranscript(thread.id);
+          const concurrent = client.loadEarlierTranscript(thread.id);
+          await withTimeout(secondAsked.promise, 1000, {
+            timeoutError: () => new Error("The invisible page never requested its continuation."),
+          });
+          expect(client.getSnapshot().transcriptWindows[thread.id]?.nextBefore).toBe("silent");
+          expect(
+            client.getSnapshot().transcripts[thread.id]?.some((entry) => entry.kind === "run"),
+          ).toBe(true);
+          if (change === "dispose") client.dispose();
+          else if (change === "viewer") await changeViewer();
+          else removeThread();
+          const before = client.getSnapshot().transcripts[thread.id];
+          secondAnswer.resolve();
+          await Promise.all([loading, concurrent]);
+          expect(requests).toHaveLength(2);
+          expect(client.getSnapshot().transcripts[thread.id]).toBe(before);
+        } finally {
+          secondAnswer.resolve();
+          client.dispose();
+        }
+      },
+    );
+  });
 
   /*
    * History is read over HTTP while the realtime channel keeps delivering. A
