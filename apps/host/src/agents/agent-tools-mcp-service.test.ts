@@ -1,21 +1,21 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createServer, type Server } from "node:http";
-import { createId, type AgentCapabilityProfileId, type Request } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { AgentControlRequestSchema, createBrowserSessionId } from "@opensteer/protocol";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { createId, type AgentCapabilityProfileId, type Request } from "@opensteer/core";
+import { AgentControlRequestSchema, createBrowserSessionId } from "@opensteer/protocol";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentControlService, type AgentControlTokenService } from "./agent-control-service.js";
-import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 import type {
   TriggerControlService,
   TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
+import { AgentControlService, type AgentControlTokenService } from "./agent-control-service.js";
+import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 
 const servers: Server[] = [];
 
@@ -212,18 +212,18 @@ describe("AgentToolsMcpService", () => {
     });
     const client = await connectClient(fixture.url, "run-token");
     const names = async () => (await client.listTools()).tools.map(({ name }) => name);
-    expect(await names()).toEqual(expect.arrayContaining(["browser_profile_save"]));
+    expect(await names()).not.toContain("browser_profile_save");
     // A held session keeps what it was given, whatever the source says while
     // its Runner reconnects.
     advertisesCurrentCatalog = true;
-    expect(await names()).toEqual(expect.arrayContaining(["browser_profile_save"]));
+    expect(await names()).not.toContain("browser_profile_save");
     expect(await names()).toEqual(expect.arrayContaining(["browser_sign_in"]));
     expect(runnerCapabilities).toHaveBeenCalledTimes(1);
 
     // A session the Host forgot asks its Run's Runner again.
     advertisesCurrentCatalog = false;
     await fixture.service.close();
-    expect(await names()).toEqual(expect.arrayContaining(["browser_profile_save"]));
+    expect(await names()).not.toContain("browser_profile_save");
     expect(runnerCapabilities).toHaveBeenCalledTimes(2);
     await client.close();
     await fixture.service.close();
@@ -1231,7 +1231,6 @@ const previousBrowserProfileTools = [
 ] as const;
 const previousWorkspaceProfileTools = [
   ...previousBrowserProfileTools,
-  "browser_profile_save",
   "browser_access_request",
   "browser_session_close",
   "machine_full_disk_access_request",
@@ -1289,83 +1288,6 @@ it.each([
     await fixture.service.close();
   }
 });
-
-/*
- * Inventory failures: current Runners see legacy tools; Main loses create;
- * Workspace/delegated/Trigger gain create; old Runners lose save or sign-in;
- * delegated/Trigger gain save; a listed legacy save is rejected by admission.
- * Runtime wiring must also match the Runner id and boot before using its capability.
- */
-it.each([false, true])(
-  "gates browser profile tools per Runner (previous release: %s)",
-  async (previousRelease) => {
-    for (const profile of ["main", "workspace", "delegated", "trigger"] as const) {
-      const claims = {
-        capabilityProfileId: profile,
-        environmentId: createId("environment"),
-        requestedBy: createId("user"),
-        runId: createId("run"),
-        threadId: createId("thread"),
-        workspaceId: createId("workspace"),
-      };
-      const admitAgentControlRequest = vi.fn(async () => ({
-        actionClass: "browser.profile.save",
-        wasDuplicate: false,
-      }));
-      const requestSaveProfile = vi.fn(async () => ({
-        kind: "browser.profile.save",
-        replayed: false,
-        requestId: createId("request"),
-        status: "pending",
-      }));
-      const control = new AgentControlService({
-        tokens: { authenticate: async () => claims },
-        store: {
-          getThreadForOwner: async () => ({ ...claims, id: claims.threadId }),
-          workspaceMembershipForUser: async () => ({ state: "active", role: "owner" }),
-          admitAgentControlRequest,
-        },
-        browser: { requestSaveProfile },
-      } as unknown as ConstructorParameters<typeof AgentControlService>[0]);
-      const fixture = await startService({
-        agentControl: control,
-        profiles: { token: profile },
-        previousRelease,
-      });
-      const client = await connectClient(fixture.url, "token");
-      try {
-        const names = (await client.listTools()).tools.map(({ name }) => name);
-        expect(names.includes("browser_profile_create")).toBe(profile === "main");
-        expect(names.includes("browser_profile_save")).toBe(
-          previousRelease && (profile === "main" || profile === "workspace"),
-        );
-        expect(names.includes("browser_sign_in")).toBe(previousRelease && profile !== "trigger");
-        const result = await client.callTool({
-          name: "browser_profile_save",
-          arguments: { reason: "Keep this identity", sessionId: createBrowserSessionId() },
-        });
-        if (previousRelease && (profile === "main" || profile === "workspace")) {
-          expect(result.isError).not.toBe(true);
-          expect(result.structuredContent).toMatchObject({
-            kind: "browser.profile.save",
-            status: "pending",
-          });
-          expect(admitAgentControlRequest).toHaveBeenCalledWith(
-            expect.objectContaining({ action: "browser.profile.save", runId: claims.runId }),
-          );
-          expect(requestSaveProfile).toHaveBeenCalledOnce();
-        } else {
-          expect(result.isError).toBe(true);
-          expect(admitAgentControlRequest).not.toHaveBeenCalled();
-          expect(requestSaveProfile).not.toHaveBeenCalled();
-        }
-      } finally {
-        await client.close();
-        await fixture.service.close();
-      }
-    }
-  },
-);
 
 it.each([false, true])(
   "keeps the environment contract independent of browser aliases (legacy browser: %s)",

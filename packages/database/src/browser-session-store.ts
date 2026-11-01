@@ -1,65 +1,63 @@
-import { lockBrowserHistory } from "./browser-history-store.js";
-import { z } from "zod";
-import {
-  lockCommandIdempotency,
-  findCommandByIdempotency,
-  idempotencyConflict,
-  jsonValue,
-  principalIdForUser,
-} from "./store-primitives.js";
-import { withDatabaseTransaction } from "./connection.js";
-import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import {
   type BrowserProfileAccess,
   BrowserProfileAccessSchema,
 } from "@opensteer/browser-profile/grant";
 import {
+  type AgentEvent,
   type BrowserProfileGrantId,
+  BrowserProfileGrantIdSchema,
   type BrowserProfileId,
   BrowserProfileIdSchema,
-  type WorkspaceId,
-  type UserId,
-  type RunnerId,
-  type AgentEvent,
-  BrowserProfileGrantIdSchema,
-  OpensteerError,
-  createId,
-  type RunId,
-  RunIdSchema,
-  nonTerminalRunStatuses,
   type ContentPart,
   IntegrationCallSubjectSchema,
+  OpensteerError,
+  type RunId,
+  RunIdSchema,
+  type RunnerId,
   type ThreadId,
+  type UserId,
+  type WorkspaceId,
+  createId,
+  nonTerminalRunStatuses,
 } from "@opensteer/core";
+import type { LocalProfileBinding } from "@opensteer/protocol";
 import {
   type BrowserSessionId,
   type BrowserSessionOpenerRecord,
-  browserTabOpenReplayWindowMs,
+  type BrowserSessionUsageProjection,
+  BrowserSurfaceIdSchema,
   type BrowserTabOpenBinding,
   BrowserTabOpenBindingSchema,
   type HostedBrowserSessionState,
+  type ThreadPlaceReference,
+  browserPageSite,
   browserSessionMaxAttachedRuns,
-  type BrowserSessionUsageProjection,
+  browserSessionMaxThreads,
+  browserTabOpenReplayWindowMs,
   browserUsageRunBatchSize,
   browserUsageTabsPerRun,
-  BrowserSurfaceIdSchema,
-  browserPageSite,
-  browserSessionMaxThreads,
-  type ThreadPlaceReference,
 } from "@opensteer/protocol";
-import { type Transaction, sql, type ExpressionBuilder, type Kysely } from "kysely";
-import { type DatabaseSchema } from "./schema.js";
-import { cancelPending } from "./request-store.js";
+import { type ExpressionBuilder, type Kysely, type Transaction, sql } from "kysely";
 import { createHash } from "node:crypto";
+import { z } from "zod";
+import { lockBrowserHistory } from "./browser-history-store.js";
 import {
-  profileStorage,
-  recordBrowserProfileDeletion,
-  publicProfileDeletion,
   type NativeProfileDeletionResult,
+  profileStorage,
+  publicProfileDeletion,
+  recordBrowserProfileDeletion,
 } from "./browser-profile-storage-store.js";
-import type { LocalProfileBinding } from "@opensteer/protocol";
-
-export const browserProfileCheckpointGraceMs = 2 * 60_000;
+import { withDatabaseTransaction } from "./connection.js";
+import { databaseOperationOptions } from "./operation-budget.js";
+import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
+import { type DatabaseSchema } from "./schema.js";
+import {
+  findCommandByIdempotency,
+  idempotencyConflict,
+  jsonValue,
+  lockCommandIdempotency,
+  principalIdForUser,
+} from "./store-primitives.js";
 
 export interface ActiveBrowserProfileGrantRecord {
   readonly access: BrowserProfileAccess;
@@ -79,7 +77,6 @@ export interface BrowserProfileRecord {
   readonly id: BrowserProfileId;
   readonly name: string;
   readonly ownerId: UserId;
-  readonly revision: number;
 }
 
 export interface BrowserSessionRecord {
@@ -99,53 +96,6 @@ export interface BrowserSessionRecord {
 
 export interface BrowserSessionWithAttachmentCountRecord extends BrowserSessionRecord {
   readonly activeAttachmentCount: number;
-}
-
-export interface BrowserProfileRevisionRecord {
-  readonly createdAt: Date;
-  readonly ciphertext: Uint8Array;
-  readonly ciphertextSha256: string;
-  readonly revision: number;
-}
-
-/**
- * A Browser Session belongs to the owner of its profile; a fresh session has no
- * profile to own, so its Workspace membership is what binds it to a user.
- */
-async function browserRequestWorkspaces(
-  transaction: Transaction<DatabaseSchema>,
-  sessionIds: readonly BrowserSessionId[],
-) {
-  if (sessionIds.length === 0) return [];
-  return (
-    await transaction
-      .selectFrom("requests")
-      .select(["originatingWorkspaceId", "targetWorkspaceId"])
-      .where("kind", "=", "browser.profile.save")
-      .where("status", "=", "pending")
-      .where(sql<boolean>`requests.payload ->> 'sessionId' in (${sql.join(sessionIds)})`)
-      .execute()
-  ).flatMap((row) => [row.originatingWorkspaceId, row.targetWorkspaceId]);
-}
-
-async function cancelBrowserProfileSaveRequests(
-  transaction: Transaction<DatabaseSchema>,
-  sessionIds: readonly BrowserSessionId[],
-  resolvedAt: Date,
-): Promise<readonly AgentEvent[]> {
-  if (sessionIds.length === 0) return [];
-  const requests = await transaction
-    .selectFrom("requests")
-    .select("id")
-    .where("kind", "=", "browser.profile.save")
-    .where("status", "=", "pending")
-    .where(sql<boolean>`requests.payload ->> 'sessionId' in (${sql.join(sessionIds)})`)
-    .execute();
-  return cancelPending(transaction, {
-    reason: "resource-deleted",
-    requestIds: requests.map(({ id }) => id),
-    resolvedAt,
-  });
 }
 
 export function ownedBrowserSession(
@@ -215,11 +165,11 @@ export async function createBrowserProfile(
         throw idempotencyConflict(input.idempotencyKey);
       const profile = await transaction
         .selectFrom("browserProfiles")
-        .select(["id", "name", "ownerId", "revision"])
+        .select(["id", "name", "ownerId"])
         .where("id", "=", recorded.data.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       // A replay after deletion must not hand the deleted profile back.
       if (!profile) {
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
@@ -228,6 +178,7 @@ export async function createBrowserProfile(
     }
     await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
       transaction,
+      databaseOperationOptions(),
     );
     const existing = await transaction
       .selectFrom("browserProfiles")
@@ -247,7 +198,7 @@ export async function createBrowserProfile(
         ]),
       )
       .limit(128)
-      .execute();
+      .execute(databaseOperationOptions());
     if (existing.length >= 128) {
       throw new OpensteerError({
         code: "conflict",
@@ -262,8 +213,8 @@ export async function createBrowserProfile(
         name: input.name,
         ownerId: input.ownerId,
       })
-      .returning(["id", "name", "ownerId", "revision"])
-      .executeTakeFirstOrThrow();
+      .returning(["id", "name", "ownerId"])
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     await transaction
       .insertInto("commands")
       .values({
@@ -285,68 +236,7 @@ export async function createBrowserProfile(
         threadId: null,
         type: "browser.profile.create",
       })
-      .executeTakeFirstOrThrow();
-    return profile;
-  });
-}
-
-export async function createBrowserProfileWithRevision(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly ciphertext: Uint8Array;
-    readonly ciphertextSha256: string;
-    readonly id: BrowserProfileId;
-    readonly name: string;
-    readonly ownerId: UserId;
-    readonly revision: 1;
-  },
-): Promise<BrowserProfileRecord> {
-  return withDatabaseTransaction(database, async (transaction) => {
-    await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
-      transaction,
-    );
-    const active = await transaction
-      .selectFrom("browserProfiles")
-      .select("id")
-      .where("ownerId", "=", input.ownerId)
-      // Deletion transfers a slot until the owning computer confirms erasure.
-      .where((eb) =>
-        eb.or([
-          eb("archivedAt", "is", null),
-          eb.exists(
-            eb
-              .selectFrom("browserProfileDeletions")
-              .select("profileId")
-              .whereRef("profileId", "=", "browserProfiles.id")
-              .where("state", "!=", "deleted"),
-          ),
-        ]),
-      )
-      .limit(128)
-      .execute();
-    if (active.length >= 128) {
-      throw new OpensteerError({ code: "conflict", message: "Browser profile limit reached" });
-    }
-    const profile = await transaction
-      .insertInto("browserProfiles")
-      .values({
-        archivedAt: null,
-        id: input.id,
-        name: input.name,
-        ownerId: input.ownerId,
-        revision: input.revision,
-      })
-      .returning(["id", "name", "ownerId", "revision"])
-      .executeTakeFirstOrThrow();
-    await transaction
-      .insertInto("browserProfileRevisions")
-      .values({
-        ciphertext: input.ciphertext,
-        ciphertextSha256: input.ciphertextSha256,
-        profileId: input.id,
-        revision: input.revision,
-      })
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     return profile;
   });
 }
@@ -358,11 +248,11 @@ export async function getBrowserProfile(
 ): Promise<BrowserProfileRecord | null> {
   const row = await database
     .selectFrom("browserProfiles")
-    .select(["id", "name", "ownerId", "revision"])
+    .select(["id", "name", "ownerId"])
     .where("id", "=", profileId)
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row ?? null;
 }
 
@@ -372,12 +262,12 @@ export async function listBrowserProfiles(
 ): Promise<readonly BrowserProfileRecord[]> {
   return database
     .selectFrom("browserProfiles")
-    .select(["id", "name", "ownerId", "revision"])
+    .select(["id", "name", "ownerId"])
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
     .orderBy("createdAt", "asc")
     .limit(129)
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 /** A deleted profile, or another person's, is not found. */
@@ -395,8 +285,8 @@ export async function renameBrowserProfile(
     .where("id", "=", input.profileId)
     .where("ownerId", "=", input.ownerId)
     .where("archivedAt", "is", null)
-    .returning(["id", "name", "ownerId", "revision"])
-    .executeTakeFirst();
+    .returning(["id", "name", "ownerId"])
+    .executeTakeFirst(databaseOperationOptions());
   if (!row) throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
   return row;
 }
@@ -432,13 +322,14 @@ export async function deleteBrowserProfileInTransaction(
 ): Promise<NativeProfileDeletionResult> {
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${input.profileId}`}, 0))`.execute(
     transaction,
+    databaseOperationOptions(),
   );
   const owned = await transaction
     .selectFrom("browserProfiles")
     .selectAll()
     .where("id", "=", input.profileId)
     .where("ownerId", "=", input.ownerId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!owned) {
     throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
   }
@@ -466,7 +357,7 @@ export async function deleteBrowserProfileInTransaction(
       ),
     )
     .orderBy("session.tabGroupId")
-    .execute();
+    .execute(databaseOperationOptions());
   const groupIds = lineages.map((lineage) => lineage.tabGroupId);
   const now = new Date();
   if (groupIds.length > 0) {
@@ -477,68 +368,63 @@ export async function deleteBrowserProfileInTransaction(
       .where("id", "in", groupIds)
       .orderBy("id")
       .forNoKeyUpdate()
-      .execute();
+      .execute(databaseOperationOptions());
     await transaction
       .selectFrom("workspaceTabs")
       .select("id")
       .where("groupId", "in", groupIds)
       .orderBy("id")
       .forNoKeyUpdate()
-      .execute();
+      .execute(databaseOperationOptions());
     await transaction
       .updateTable("workspaceTabs")
       .set({ closedAt: now })
       .where("groupId", "in", groupIds)
       .where("closedAt", "is", null)
-      .execute();
+      .execute(databaseOperationOptions());
     await transaction
       .updateTable("browserSessions")
       .set((eb) => ({ tabRevision: eb("tabRevision", "+", 1) }))
       .where("id", "in", groupIds)
-      .execute();
+      .execute(databaseOperationOptions());
   }
   await transaction
     .updateTable("browserProfiles")
     .set({
       archivedAt: now,
       updatedAt: now,
-      initializationTokenHash: null,
-      initializationTokenExpiresAt: null,
     })
     .where("id", "=", input.profileId)
     .where("archivedAt", "is", null)
-    .execute();
+    .execute(databaseOperationOptions());
   await lockBrowserHistory(transaction, input.profileId);
   await transaction
     .deleteFrom("browserHistoryEntries")
     .where("profileId", "=", input.profileId)
-    .execute();
+    .execute(databaseOperationOptions());
   await transaction
     .deleteFrom("browserHistoryIcons")
     .where("profileId", "=", input.profileId)
-    .execute();
-  await transaction
-    .deleteFrom("browserProfileRevisions")
-    .where("profileId", "=", input.profileId)
-    .execute();
+    .execute(databaseOperationOptions());
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-grants:${input.ownerId}`}, 0))`.execute(
     transaction,
+    databaseOperationOptions(),
   );
   await transaction
     .updateTable("browserProfileGrants")
     .set({ revokedAt: now })
     .where("profileId", "=", input.profileId)
     .where("revokedAt", "is", null)
-    .execute();
+    .execute(databaseOperationOptions());
   const live = await transaction
     .selectFrom("browserSessions")
     .select("id")
     .where("profileId", "=", input.profileId)
     .where("state", "not in", ["closed", "failed"])
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   const storage = profileStorage(owned);
-  const binding = input.binding ?? (storage.kind === "vault" ? undefined : storage.binding);
+  const binding = input.binding ?? (storage.kind === "unbound" ? undefined : storage.binding);
   const deletion = binding
     ? publicProfileDeletion(
         await recordBrowserProfileDeletion(transaction, binding, input.deletionId),
@@ -547,152 +433,12 @@ export async function deleteBrowserProfileInTransaction(
   return { sessionIds: live.map((session) => session.id), ...(deletion ? { deletion } : {}) };
 }
 
-/** Legacy snapshot adapter: reads and commits share conversion's authority lock. */
-export async function readBrowserProfileRevision(
-  database: Kysely<DatabaseSchema>,
-  profileId: BrowserProfileId,
-): Promise<BrowserProfileRevisionRecord | null> {
-  return withDatabaseTransaction(database, async (transaction) => {
-    await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${profileId}`}, 0))`.execute(
-      transaction,
-    );
-    const profile = await transaction
-      .selectFrom("browserProfiles")
-      .select(["storageState", "archivedAt"])
-      .where("id", "=", profileId)
-      .executeTakeFirst();
-    if (profile && profile.storageState !== "vault")
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Update this computer to open this profile.",
-      });
-    if (profile?.archivedAt) return null;
-    const row = await transaction
-      .selectFrom("browserProfileRevisions")
-      .select(["ciphertext", "ciphertextSha256", "revision", "createdAt"])
-      .where("profileId", "=", profileId)
-      .orderBy("revision", "desc")
-      .limit(1)
-      .executeTakeFirst();
-    return row ?? null;
-  });
-}
-
-export async function commitBrowserProfileRevision(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly ciphertext: Uint8Array;
-    readonly ciphertextSha256: string;
-    readonly expectedRevision: number;
-    readonly periodic?: boolean;
-    readonly profileId: BrowserProfileId;
-  },
-): Promise<BrowserProfileRevisionRecord> {
-  return withDatabaseTransaction(database, async (transaction) => {
-    await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${input.profileId}`}, 0))`.execute(
-      transaction,
-    );
-    const closingSessions = await transaction
-      .selectFrom("browserSessions")
-      .select("id")
-      .where("profileId", "=", input.profileId)
-      .where("state", "in", ["closed", "failed"])
-      .where("profileLeaseExpiresAt", "is not", null)
-      .orderBy("id", "asc")
-      .forNoKeyUpdate()
-      .execute();
-    const profile = await transaction
-      .selectFrom("browserProfiles")
-      .select(["archivedAt", "revision", "storageState"])
-      .where("id", "=", input.profileId)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (!profile || profile.archivedAt) {
-      throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
-    }
-    if (profile.storageState !== "vault")
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Update this computer to open this profile.",
-      });
-    if (profile.revision !== input.expectedRevision) {
-      throw new OpensteerError({ code: "conflict", message: "Browser profile revision changed" });
-    }
-    const revision = profile.revision + 1;
-    const row = await transaction
-      .insertInto("browserProfileRevisions")
-      .values({
-        ciphertext: input.ciphertext,
-        ciphertextSha256: input.ciphertextSha256,
-        profileId: input.profileId,
-        revision,
-      })
-      .returning(["ciphertext", "ciphertextSha256", "revision", "createdAt"])
-      .executeTakeFirstOrThrow();
-    await transaction
-      .updateTable("browserProfiles")
-      .set({ revision, updatedAt: new Date() })
-      .where("id", "=", input.profileId)
-      .where("revision", "=", input.expectedRevision)
-      .executeTakeFirstOrThrow();
-    // Only the newest revision is ever read, and a profile in use saves
-    // repeatedly; earlier ciphertexts are dead weight.
-    await transaction
-      .deleteFrom("browserProfileRevisions")
-      .where("profileId", "=", input.profileId)
-      .where("revision", "<", revision)
-      .execute();
-    // A session may end during this checkpoint. Release grace only for the rows
-    // locked before the profile, never acquire a new session lock underneath it.
-    if (!input.periodic && closingSessions.length > 0)
-      await transaction
-        .updateTable("browserSessions")
-        .set({ profileLeaseExpiresAt: new Date(), updatedAt: new Date() })
-        .where(
-          "id",
-          "in",
-          closingSessions.map(({ id }) => id),
-        )
-        .execute();
-    return row;
-  });
-}
-
-export async function authorizeBrowserProfileLease(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly leaseTokenHash: string;
-    readonly profileId: BrowserProfileId;
-    readonly sessionId: BrowserSessionId;
-  },
-): Promise<boolean> {
-  const row = await database
-    .selectFrom("browserSessions")
-    .select("id")
-    .where("id", "=", input.sessionId)
-    .where("profileId", "=", input.profileId)
-    .where("leaseTokenHash", "=", input.leaseTokenHash)
-    .where((expression) =>
-      expression.or([
-        expression("state", "in", ["starting", "ready", "closing"]),
-        expression.and([
-          expression("state", "in", ["closed", "failed"]),
-          expression("profileLeaseExpiresAt", ">", new Date()),
-        ]),
-      ]),
-    )
-    .executeTakeFirst();
-  return Boolean(row);
-}
-
 export async function createBrowserSession(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly tabGroupId?: BrowserSessionId;
     readonly opener?: BrowserSessionOpenerRecord | null;
     readonly id: BrowserSessionId;
-    readonly leaseGeneration: number;
-    readonly leaseTokenHash: string | null;
     readonly placementKey: string;
     readonly runnerId: RunnerId;
     readonly origin: "agent" | "trigger" | "workspace";
@@ -708,20 +454,18 @@ export async function createBrowserSession(
     if (profileId !== null) {
       await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${profileId}`}, 0))`.execute(
         transaction,
+        databaseOperationOptions(),
       );
       // Under the lock a deletion takes, so a session cannot outlive its profile.
       const profile = await transaction
         .selectFrom("browserProfiles")
         .select(["archivedAt", "storageState", "storageRunnerId"])
         .where("id", "=", profileId)
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (!profile || profile.archivedAt) {
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
       }
-      if (
-        profile.storageState !== "vault" &&
-        (profile.storageRunnerId !== input.runnerId || input.leaseTokenHash !== null)
-      ) {
+      if (profile.storageState !== "local" || profile.storageRunnerId !== input.runnerId) {
         throw new OpensteerError({
           code: "conflict",
           message: "Open this browser profile on its owning computer with an updated runtime.",
@@ -731,17 +475,9 @@ export async function createBrowserSession(
         .selectFrom("browserSessions")
         .select(["id", "placementKey", "state"])
         .where("profileId", "=", profileId)
-        .where((expression) =>
-          expression.or([
-            expression("state", "in", ["starting", "ready", "closing"]),
-            expression.and([
-              expression("state", "in", ["closed", "failed"]),
-              expression("profileLeaseExpiresAt", ">", new Date()),
-            ]),
-          ]),
-        )
+        .where("state", "in", ["starting", "ready", "closing"])
         .limit(65)
-        .execute();
+        .execute(databaseOperationOptions());
       if (placementHolders.some((session) => session.placementKey !== input.placementKey)) {
         throw new OpensteerError({
           code: "conflict",
@@ -763,11 +499,8 @@ export async function createBrowserSession(
         closedAt: null,
         runnerId: input.runnerId,
         id: input.id,
-        leaseGeneration: input.leaseGeneration,
-        leaseTokenHash: input.leaseTokenHash,
         origin: input.origin,
         opener: input.opener ?? null,
-        profileLeaseExpiresAt: null,
         placementKey: input.placementKey,
         profileId: input.profileId,
         runtimeId: input.runtimeId,
@@ -787,7 +520,7 @@ export async function createBrowserSession(
         "updatedAt",
         "workspaceId",
       ])
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
   });
 }
 
@@ -799,7 +532,7 @@ export async function countBrowserSessionAttachments(
     .selectFrom("browserSessionAttachments")
     .select(({ fn }) => fn.countAll<string>().as("count"))
     .where("sessionId", "=", sessionId)
-    .executeTakeFirstOrThrow();
+    .executeTakeFirstOrThrow(databaseOperationOptions());
   return Number(row.count);
 }
 
@@ -826,7 +559,7 @@ export async function findActiveBrowserSessionForWorkspace(
     .where("origin", "=", "workspace")
     .where("state", "in", ["starting", "ready", "closing"])
     .orderBy("createdAt", "desc")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row ?? null;
 }
 
@@ -856,7 +589,7 @@ export async function listActiveBrowserSessionsForAgentBinding(
     .orderBy("browserSessionAttachments.updatedAt", "desc")
     .orderBy("browserSessionAttachments.sessionId", "desc")
     .limit(100)
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 export async function listAttachedRunIdsForBrowserSessions(
@@ -881,7 +614,7 @@ export async function listAttachedRunIdsForBrowserSessions(
     .select(["ranked.sessionId", "ranked.agentBindingId"])
     .where("ranked.recency", "<=", browserSessionMaxAttachedRuns)
     .orderBy("ranked.recency")
-    .execute();
+    .execute(databaseOperationOptions());
   const attached = new Map<BrowserSessionId, RunId[]>();
   for (const row of rows) {
     const runId = RunIdSchema.safeParse(row.agentBindingId.slice("run:".length));
@@ -911,7 +644,7 @@ export async function authorizedPlaceThreadIds(
     .where("threads.id", "in", threadIds)
     .where("workspaceMemberships.userId", "=", ownerId)
     .where("workspaceMemberships.state", "=", "active")
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
 }
 
@@ -967,7 +700,7 @@ export async function latestNativePlaces(
     where m.user_id = ${ownerId} and m.state = 'active'
       and not exists (select 1 from browser_session_uses b where b.thread_id = a.thread_id and b.last_used_at > a.at)
     order by a.thread_id, a.at desc, a.sequence desc limit 4096
-  `.execute(database);
+  `.execute(database, databaseOperationOptions());
   return result.rows.flatMap((row, order) => {
     const parsed = IntegrationCallSubjectSchema.safeParse(row.integration);
     if (!parsed.success) return [];
@@ -1041,7 +774,7 @@ export async function resolvePlaceActors(
       array(select distinct t2.workspace_id from lineage l2 join threads t2 on t2.id = l2.thread_id where l2.run_id = l.run_id) as lineage_workspace_ids
     from lineage l join threads t on t.id = l.thread_id join workspaces w on w.id = t.workspace_id
     where t.listed or w.home_thread_id = t.id order by l.run_id, l.depth
-  `.execute(database);
+  `.execute(database, databaseOperationOptions());
   if (!lineage.rows.length) return [];
   const members = await database
     .selectFrom("workspaceMemberships")
@@ -1049,7 +782,7 @@ export async function resolvePlaceActors(
     .where("workspaceId", "in", [...new Set(lineage.rows.map((row) => row.workspaceId))])
     .where("userId", "in", input.ownerIds)
     .where("state", "=", "active")
-    .execute();
+    .execute(databaseOperationOptions());
   return lineage.rows.flatMap((row) =>
     members
       .filter((member) => member.workspaceId === row.workspaceId)
@@ -1096,7 +829,7 @@ export async function listBrowserPlaceHoldings(
     .where("r.status", "in", nonTerminalRunStatuses)
     .where("u.tabId", "is not", null)
     .distinct()
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 /**
@@ -1125,7 +858,7 @@ export async function attachBrowserSession(
             .select("status")
             .where("id", "=", runId)
             .forShare()
-            .executeTakeFirst()
+            .executeTakeFirst(databaseOperationOptions())
         : undefined;
       if (!run || !(nonTerminalRunStatuses as readonly string[]).includes(run.status)) {
         return false;
@@ -1150,7 +883,7 @@ export async function attachBrowserSession(
       )
       // An inserted row has no deleting transaction; an updated one does.
       .returning(sql<boolean>`(xmax = 0)`.as("created"))
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     return row.created;
   });
 }
@@ -1208,7 +941,7 @@ export async function recordAgentBrowserUse(
       .select(["id", "threadId", "assignmentId"])
       .where("id", "=", runId)
       .where("requestedBy", "=", input.ownerId)
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     if (!run) return [];
     const ancestors = run.assignmentId
       ? await sql<{ threadId: ThreadId }>`
@@ -1220,7 +953,7 @@ export async function recordAgentBrowserUse(
             from delegations parent join lineage on parent.id = lineage.parent_assignment_id
             where not parent.id = any(lineage.path)
           ) select distinct parent_thread_id as thread_id from lineage
-        `.execute(transaction)
+        `.execute(transaction, databaseOperationOptions())
       : { rows: [] };
     const threadIds = new Set([run.threadId, ...ancestors.rows.map((row) => row.threadId)]);
     return creditedWorkspaces(
@@ -1249,7 +982,7 @@ async function creditedWorkspaces(
     .select(["id as threadId", "workspaceId"])
     .where("id", "in", [...gained.keys()])
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   return threads.map((thread) => ({
     ...thread,
     ...gained.get(thread.threadId)!,
@@ -1294,6 +1027,7 @@ async function writeBrowserSessionUses(
   for (const sessionId of [...new Set(uses.map((use) => use.sessionId))].sort()) {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-session-use:${sessionId}`}, 0))`.execute(
       database,
+      databaseOperationOptions(),
     );
   }
   const projectionKey = (use: BrowserSessionUseWrite) =>
@@ -1362,13 +1096,13 @@ async function browserSessionUseProjection(
       .orderBy("lastUsedAt", "desc")
       .orderBy("id", "desc")
       .limit(browserUsageTabsPerRun)
-      .execute(),
+      .execute(databaseOperationOptions()),
     conversation
       .select(["pageTitle", "pageSite"])
       .where("pageSite", "is not", null)
       .orderBy("lastUsedAt", "desc")
       .orderBy("id", "desc")
-      .executeTakeFirst(),
+      .executeTakeFirst(databaseOperationOptions()),
     // Keep the order before the viewer-specific membership filter: any move
     // can change a viewer's latest sixteen, even below the global sixteenth.
     database
@@ -1379,7 +1113,7 @@ async function browserSessionUseProjection(
       .where("tabId", "is", null)
       .orderBy("lastUsedAt", "desc")
       .orderBy("threadId")
-      .execute(),
+      .execute(databaseOperationOptions()),
   ]);
   const hasPages = pages.some((page) => page.tabId !== null);
   return {
@@ -1420,7 +1154,7 @@ async function upsertBrowserSessionUseRow(
       }),
     )
     .returning(sql<boolean>`(xmax = 0)`.as("created"))
-    .executeTakeFirstOrThrow();
+    .executeTakeFirstOrThrow(databaseOperationOptions());
   return row.created;
 }
 
@@ -1473,7 +1207,7 @@ async function personBrowserThreadWorkspace(
     .where("threads.id", "=", input.threadId)
     .where("workspaceMemberships.userId", "=", input.ownerId)
     .where("workspaceMemberships.state", "=", "active")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return thread?.workspaceId ?? null;
 }
 
@@ -1534,7 +1268,7 @@ export async function listBrowserSessionViewers(
       "browserProfiles.ownerId as profileOwnerId",
     ])
     .where("browserSessions.id", "=", sessionId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!session) return null;
   if (session.profileId !== null) {
     return {
@@ -1547,7 +1281,7 @@ export async function listBrowserSessionViewers(
     .select("userId")
     .where("workspaceId", "=", session.workspaceId)
     .where("state", "=", "active")
-    .execute();
+    .execute(databaseOperationOptions());
   return { userIds: members.map(({ userId }) => userId), workspaceId: session.workspaceId };
 }
 
@@ -1559,7 +1293,7 @@ export async function detachBrowserSessionAttachments(
     .deleteFrom("browserSessionAttachments")
     .where("agentBindingId", "=", agentBindingId)
     .returning("sessionId")
-    .execute();
+    .execute(databaseOperationOptions());
   return detached.map((row) => row.sessionId);
 }
 
@@ -1583,7 +1317,7 @@ export async function detachBrowserSessionAttachmentsForProfileGrant(
     .where("sessionId", "in", sessionIds)
     .where("ownerId", "=", input.ownerId)
     .where("workspaceId", "=", input.workspaceId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return Number(result.numDeletedRows);
 }
 
@@ -1607,17 +1341,9 @@ export async function findBrowserSessionHoldingProfilePlacement(
       "workspaceId",
     ])
     .where("profileId", "=", profileId)
-    .where((expression) =>
-      expression.or([
-        expression("state", "in", ["starting", "ready", "closing"]),
-        expression.and([
-          expression("state", "in", ["closed", "failed"]),
-          expression("profileLeaseExpiresAt", ">", new Date()),
-        ]),
-      ]),
-    )
+    .where("state", "in", ["starting", "ready", "closing"])
     .orderBy("createdAt", "desc")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row ?? null;
 }
 
@@ -1644,7 +1370,7 @@ export async function getBrowserSessionForOwner(
     ])
     .where("browserSessions.id", "=", sessionId)
     .where((expression) => ownedBrowserSession(expression, ownerId))
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row ?? null;
 }
 
@@ -1677,7 +1403,7 @@ export async function listBrowserSessions(
       )
       .orderBy("browserSessions.createdAt", "desc")
       .limit(100)
-      .execute()
+      .execute(databaseOperationOptions())
   );
 }
 
@@ -1714,7 +1440,7 @@ export async function listBrowserSessionThreads(
     .where("ranked.recency", "<=", browserSessionMaxThreads)
     .orderBy("ranked.sessionId")
     .orderBy("ranked.recency")
-    .execute();
+    .execute(databaseOperationOptions());
   const threads = new Map<BrowserSessionId, ThreadId[]>();
   for (const row of rows) {
     threads.set(row.sessionId, [...(threads.get(row.sessionId) ?? []), row.threadId]);
@@ -1795,7 +1521,7 @@ export async function getThreadBrowserUsage(
       ])
       .groupBy(["browserSessionUses.sessionId", "browserSessionUses.threadId"])
       .orderBy("browserSessionUses.sessionId")
-      .execute(),
+      .execute(databaseOperationOptions()),
     database
       .selectFrom(ranked.as("ranked"))
       .select([
@@ -1819,7 +1545,7 @@ export async function getThreadBrowserUsage(
       .orderBy("ranked.sessionId")
       .orderBy("ranked.runId")
       .orderBy("ranked.recency")
-      .execute(),
+      .execute(databaseOperationOptions()),
   ]);
   return [...memberships.map((row) => ({ ...row, runId: null, tabId: null })), ...pages].map(
     (row) => ({
@@ -1867,7 +1593,10 @@ export async function listActiveBrowserSessionsForAgent(
   if (!input.allOwnerWorkspaces) {
     query = query.where("browserSessions.workspaceId", "=", input.workspaceId);
   }
-  const rows = await query.orderBy("browserSessions.createdAt", "desc").limit(100).execute();
+  const rows = await query
+    .orderBy("browserSessions.createdAt", "desc")
+    .limit(100)
+    .execute(databaseOperationOptions());
   return rows.map((row) => ({
     ...row,
     activeAttachmentCount: Number(row.activeAttachmentCount),
@@ -1882,25 +1611,19 @@ export async function failActiveBrowserSessions(
   readonly failed: number;
 }> {
   const now = new Date();
-  const profileLeaseExpiresAt = new Date(now.getTime() + browserProfileCheckpointGraceMs);
   if (placementKey === undefined) {
     await interruptPendingBrowserTabOpens(database);
   }
   let sessionIds: BrowserSessionId[] = [];
   return withRequestWorkspaceLocks(
     database,
-    (transaction) => browserRequestWorkspaces(transaction, sessionIds),
+    async () => [],
     async (transaction) => {
       if (sessionIds.length === 0) return { events: [], failed: 0 };
       let transactionalUpdate = transaction
         .updateTable("browserSessions")
         .set({
           closedAt: now,
-          // A Runtime whose Host disappeared may still hold the newest profile
-          // state. Keep only its narrow profile-state lease alive long enough
-          // to checkpoint after the Host restarts; the Browser Session itself
-          // is failed immediately and cannot be reattached.
-          profileLeaseExpiresAt: sql<Date | null>`case when lease_token_hash is not null then ${profileLeaseExpiresAt}::timestamptz else ${now}::timestamptz end`,
           state: "failed",
           updatedAt: now,
         })
@@ -1909,7 +1632,7 @@ export async function failActiveBrowserSessions(
       if (placementKey) {
         transactionalUpdate = transactionalUpdate.where("placementKey", "=", placementKey);
       }
-      const failed = await transactionalUpdate.returning("id").execute();
+      const failed = await transactionalUpdate.returning("id").execute(databaseOperationOptions());
       if (failed.length > 0) {
         await transaction
           .deleteFrom("browserSessionAttachments")
@@ -1918,14 +1641,10 @@ export async function failActiveBrowserSessions(
             "in",
             failed.map((session) => session.id),
           )
-          .execute();
+          .execute(databaseOperationOptions());
       }
       return {
-        events: await cancelBrowserProfileSaveRequests(
-          transaction,
-          failed.map(({ id }) => id),
-          now,
-        ),
+        events: [],
         failed: failed.length,
       };
     },
@@ -1940,7 +1659,7 @@ export async function failActiveBrowserSessions(
           )
           .orderBy("id", "asc")
           .forNoKeyUpdate()
-          .execute()
+          .execute(databaseOperationOptions())
       ).map(({ id }) => id);
     },
   );
@@ -1959,23 +1678,13 @@ export async function transitionBrowserSession(
 }> {
   return withRequestWorkspaceLocks(
     database,
-    (transaction) => browserRequestWorkspaces(transaction, [input.sessionId]),
+    async () => [],
     async (transaction) => {
       const now = new Date();
-      // Only legacy sessions retain final-save authority. Other sessions keep
-      // the terminal timestamp required by the released database constraint.
-      const profileLeaseExpiresAt =
-        input.state === "closed" || input.state === "failed"
-          ? new Date(now.getTime() + browserProfileCheckpointGraceMs)
-          : null;
       let update = transaction
         .updateTable("browserSessions")
         .set({
           ...(input.state === "closed" || input.state === "failed" ? { closedAt: now } : {}),
-          profileLeaseExpiresAt:
-            profileLeaseExpiresAt === null
-              ? null
-              : sql<Date | null>`case when lease_token_hash is not null then ${profileLeaseExpiresAt}::timestamptz else ${now}::timestamptz end`,
           state: input.state,
           updatedAt: now,
         })
@@ -1996,7 +1705,7 @@ export async function transitionBrowserSession(
           "updatedAt",
           "workspaceId",
         ])
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (row) {
         if (input.state === "closed" || input.state === "failed") {
           await transaction
@@ -2007,17 +1716,14 @@ export async function transitionBrowserSession(
             .orderBy("sessionId", "asc")
             // FOR UPDATE: These attachments are deleted below; lock their keys in order.
             .forUpdate()
-            .execute();
+            .execute(databaseOperationOptions());
           await transaction
             .deleteFrom("browserSessionAttachments")
             .where("sessionId", "=", input.sessionId)
-            .execute();
+            .execute(databaseOperationOptions());
         }
         return {
-          events:
-            input.state === "closing" || input.state === "closed" || input.state === "failed"
-              ? await cancelBrowserProfileSaveRequests(transaction, [input.sessionId], now)
-              : [],
+          events: [],
           session: row,
         };
       }
@@ -2037,7 +1743,7 @@ export async function transitionBrowserSession(
           "workspaceId",
         ])
         .where("id", "=", input.sessionId)
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (!existing) {
         throw new OpensteerError({ code: "not_found", message: "Browser session not found" });
       }
@@ -2046,10 +1752,7 @@ export async function transitionBrowserSession(
       }
       if (existing.state === input.state) {
         return {
-          events:
-            input.state === "closing"
-              ? await cancelBrowserProfileSaveRequests(transaction, [input.sessionId], now)
-              : [],
+          events: [],
           session: existing,
         };
       }
@@ -2064,7 +1767,7 @@ export async function transitionBrowserSession(
         .select("id")
         .where("id", "=", input.sessionId)
         .forNoKeyUpdate()
-        .execute(),
+        .execute(databaseOperationOptions()),
   );
 }
 
@@ -2085,16 +1788,17 @@ export async function createBrowserProfileGrant(
       .select("id")
       .where("id", "=", input.workspaceId)
       .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     const membership = await transaction
       .selectFrom("workspaceMemberships")
       .select(["role", "state"])
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.createdBy)
       .forNoKeyUpdate()
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-grants:${input.createdBy}`}, 0))`.execute(
       transaction,
+      databaseOperationOptions(),
     );
     const [profile, existing, activeOwnerGrants] = await Promise.all([
       // Read under the grant lock a deletion also takes, so a deleted profile is never granted.
@@ -2102,7 +1806,7 @@ export async function createBrowserProfileGrant(
         .selectFrom("browserProfiles")
         .select(["archivedAt", "ownerId"])
         .where("id", "=", input.profileId)
-        .executeTakeFirst(),
+        .executeTakeFirst(databaseOperationOptions()),
       transaction
         .selectFrom("browserProfileGrants")
         .select("id")
@@ -2110,7 +1814,7 @@ export async function createBrowserProfileGrant(
         .where("createdBy", "=", input.createdBy)
         .where("profileId", "=", input.profileId)
         .where("revokedAt", "is", null)
-        .executeTakeFirst(),
+        .executeTakeFirst(databaseOperationOptions()),
       transaction
         .selectFrom("browserProfileGrants")
         .innerJoin("browserProfiles", "browserProfiles.id", "browserProfileGrants.profileId")
@@ -2118,7 +1822,7 @@ export async function createBrowserProfileGrant(
         .where("browserProfileGrants.revokedAt", "is", null)
         .where("browserProfiles.ownerId", "=", input.createdBy)
         .limit(100)
-        .execute(),
+        .execute(databaseOperationOptions()),
     ]);
     if (!profile) {
       throw new OpensteerError({
@@ -2160,7 +1864,7 @@ export async function createBrowserProfileGrant(
         workspaceId: input.workspaceId,
       })
       .returning(["access", "createdAt", "id", "profileId", "workspaceId"])
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     return {
       access: BrowserProfileAccessSchema.parse(row.access),
       createdAt: row.createdAt,
@@ -2182,7 +1886,7 @@ export async function listActiveBrowserProfileGrantsForWorkspace(
     .where("id", "=", workspaceId)
     .where("createdBy", "=", ownerId)
     .where("kind", "=", "main")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (mainWorkspace) {
     const profiles = await database
       .selectFrom("browserProfiles")
@@ -2192,7 +1896,7 @@ export async function listActiveBrowserProfileGrantsForWorkspace(
       .orderBy("createdAt", "asc")
       .orderBy("id", "asc")
       .limit(129)
-      .execute();
+      .execute(databaseOperationOptions());
     return profiles.map((profile) => ({
       access: "full-control" as const,
       createdAt: profile.createdAt,
@@ -2222,7 +1926,7 @@ export async function listActiveBrowserProfileGrantsForWorkspace(
     .where("workspaceMemberships.state", "=", "active")
     .orderBy("browserProfileGrants.createdAt", "asc")
     .limit(129)
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map((row) => ({
     access: BrowserProfileAccessSchema.parse(row.access),
     createdAt: row.createdAt,
@@ -2256,7 +1960,7 @@ export async function listActiveBrowserProfileGrants(
     .where("workspaceMemberships.state", "=", "active")
     .orderBy("browserProfileGrants.createdAt", "asc")
     .limit(101)
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map((row) => ({
     access: BrowserProfileAccessSchema.parse(row.access),
     createdAt: row.createdAt,
@@ -2278,7 +1982,7 @@ export async function revokeBrowserProfileGrant(
     .where("createdBy", "=", revokedBy)
     .where("revokedAt", "is", null)
     .returning(["id", "profileId", "workspaceId"])
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!row) {
     throw new OpensteerError({ code: "not_found", message: "Active grant not found" });
   }
@@ -2299,7 +2003,7 @@ export async function getBrowserTabOpen(
     .select("binding")
     .where("ownerId", "=", ownerId)
     .where("idempotencyKey", "=", idempotencyKey)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row ? BrowserTabOpenBindingSchema.parse(row.binding) : null;
 }
 
@@ -2321,7 +2025,7 @@ export async function bindBrowserTabOpen(
       identityKey: input.identityKey,
       runnerId: input.runnerId,
     })
-    .execute();
+    .execute(databaseOperationOptions());
   // Keep the guaranteed replay window and one successful placement preference per identity.
   await sql`
     with remembered as (
@@ -2335,7 +2039,7 @@ export async function bindBrowserTabOpen(
     where owner_id = ${input.binding.callerUserId}
       and created_at < now() - ${browserTabOpenReplayWindowMs} * interval '1 millisecond'
       and idempotency_key not in (select idempotency_key from remembered)
-  `.execute(database);
+  `.execute(database, databaseOperationOptions());
 }
 
 export async function settleBrowserTabOpen(
@@ -2351,7 +2055,7 @@ export async function settleBrowserTabOpen(
     .where(sql<boolean>`binding ->> 'requestFingerprint' = ${binding.requestFingerprint}`)
     .where(sql<boolean>`binding ->> 'chosenSessionId' = ${binding.chosenSessionId}`)
     .where(sql<boolean>`binding ->> 'initialPageOperationKey' = ${binding.initialPageOperationKey}`)
-    .executeTakeFirstOrThrow();
+    .executeTakeFirstOrThrow(databaseOperationOptions());
 }
 
 export async function rememberedBrowserPlacement(
@@ -2368,7 +2072,7 @@ export async function rememberedBrowserPlacement(
     .orderBy("createdAt", "desc")
     .orderBy("idempotencyKey", "desc")
     .limit(1)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row?.runnerId ?? null;
 }
 
@@ -2395,7 +2099,7 @@ export async function browserSessionOpenerForBinding(
     join workspace_memberships m on m.workspace_id = t.workspace_id
     where (t.listed or w.home_thread_id = t.id) and m.user_id = ${ownerId} and m.state = 'active'
     order by l.depth limit 1
-  `.execute(database);
+  `.execute(database, databaseOperationOptions());
   const row = result.rows[0];
   if (!row) return null;
   return row.home
@@ -2409,5 +2113,8 @@ export async function interruptPendingBrowserTabOpens(
 ): Promise<void> {
   await sql`update browser_tab_opens
     set binding = jsonb_set(binding, '{outcome}', '{"kind":"failed","reason":"interrupted"}'::jsonb)
-    where binding -> 'outcome' ->> 'kind' = 'pending'`.execute(database);
+    where binding -> 'outcome' ->> 'kind' = 'pending'`.execute(
+    database,
+    databaseOperationOptions(),
+  );
 }

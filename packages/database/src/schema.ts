@@ -1,74 +1,9 @@
-import type {
-  AssignmentId,
-  AssignmentOrigin,
-  AssignmentStatus,
-  AssignmentReturnStatus,
-  AuthAccountId,
-  AuthAdmissionId,
-  AuthSessionId,
-  AuthVerificationId,
-  BrowserProfileId,
-  BrowserTabGroupColor,
-  BrowserTabGroupId,
-  BrowserSourceId,
-  BrowserProfileGrantId,
-  CausalChainId,
-  CommandId,
-  CredentialId,
-  DelegationId,
-  DeploymentId,
-  DeploymentShape,
-  EnvironmentId,
-  EventId,
-  ExecutionPreferences,
-  HarnessId,
-  HarnessInstanceId,
-  HarnessInstanceStateKind,
-  HostInstanceId,
-  MessageId,
-  MessageAuthor,
-  MessageKind,
-  ModelSelection,
-  PersonalRemoteSessionDelivery,
-  ProviderContinuationIdentity,
-  ProviderSessionId,
-  Request,
-  RequestId,
-  RunId,
-  RunAttemptId,
-  ExecutionNodeId,
-  GrantId,
-  ReplyTarget,
-  RunFailure,
-  RunnerId,
-  SecurityAuditId,
-  SecurityEffectId,
-  ThreadId,
-  ThreadInputPolicy,
-  ThreadInputState,
-  ThreadTitleSource,
-  ThreadIconSource,
-  MarkColor,
-  WorkspaceIconName,
-  ThreadAccessMode,
-  ThreadRole,
-  TriggerId,
-  TriggerOccurrenceId,
-  TriggerRevisionId,
-  TriggerWatchActivationId,
-  UserId,
-  WorkspaceBacking,
-  WorkspaceCapacityPolicy,
-  WorkspaceId,
-  WorkspaceInvitationId,
-  WorkspaceMembershipId,
-  AgentEvent,
-} from "@opensteer/core";
+import type { BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import type {
   ChannelAccountId,
   ChannelBindingId,
-  ChannelConversationId,
   ChannelConnectionIssueKind,
+  ChannelConversationId,
   ChannelDeliveryId,
   ChannelIdentityId,
   ChannelIngressId,
@@ -77,14 +12,78 @@ import type {
   IntegrationConnectionId,
   PrincipalId,
 } from "@opensteer/channel-core";
-import type { BrowserProfileAccess } from "@opensteer/browser-profile/grant";
+import type {
+  AgentEvent,
+  AssignmentId,
+  AssignmentOrigin,
+  AssignmentReturnStatus,
+  AssignmentStatus,
+  AuthAccountId,
+  AuthAdmissionId,
+  AuthSessionId,
+  AuthVerificationId,
+  BrowserProfileGrantId,
+  BrowserProfileId,
+  BrowserSourceId,
+  BrowserTabGroupColor,
+  BrowserTabGroupId,
+  CausalChainId,
+  CommandId,
+  CredentialId,
+  DelegationId,
+  DeploymentId,
+  DeploymentShape,
+  EnvironmentId,
+  EventId,
+  ExecutionNodeId,
+  ExecutionPreferences,
+  GrantId,
+  HarnessId,
+  HarnessInstanceId,
+  HarnessInstanceStateKind,
+  HostInstanceId,
+  MarkColor,
+  MessageAuthor,
+  MessageId,
+  MessageKind,
+  ModelSelection,
+  PersonalRemoteSessionDelivery,
+  ProviderContinuationIdentity,
+  ProviderSessionId,
+  ReplyTarget,
+  Request,
+  RequestId,
+  RunAttemptId,
+  RunFailure,
+  RunId,
+  RunnerId,
+  SecurityAuditId,
+  SecurityEffectId,
+  ThreadAccessMode,
+  ThreadIconSource,
+  ThreadId,
+  ThreadInputPolicy,
+  ThreadInputState,
+  ThreadRole,
+  ThreadTitleSource,
+  TriggerId,
+  TriggerOccurrenceId,
+  TriggerRevisionId,
+  TriggerWatchActivationId,
+  UserId,
+  WorkspaceBacking,
+  WorkspaceCapacityPolicy,
+  WorkspaceIconName,
+  WorkspaceId,
+  WorkspaceInvitationId,
+  WorkspaceMembershipId,
+} from "@opensteer/core";
 import type {
   ComputerAppIdentity,
-  LocalMcpServerSetup,
+  IntegrationAccess,
   IntegrationApplicationSource,
   IntegrationConnectionMethod,
   IntegrationGrantId,
-  IntegrationAccess,
   IntegrationInstallationId,
   IntegrationInstallManifest,
   IntegrationProvider,
@@ -92,16 +91,17 @@ import type {
   IntegrationServerId,
   IntegrationSkillId,
   IntegrationToolId,
+  LocalMcpServerSetup,
 } from "@opensteer/integration-core";
+import type { IntegrationAdapterSnapshot } from "@opensteer/integration-core/adapter";
 import type {
   IntegrationAuthAttemptFailureReason,
   IntegrationAuthAttemptFlow,
   IntegrationAuthAttemptId,
 } from "@opensteer/integration-core/ports";
-import type { IntegrationAdapterSnapshot } from "@opensteer/integration-core/adapter";
 import type {
-  BrowserSessionId,
   BrowserEngine,
+  BrowserSessionId,
   BrowserSessionOpenerRecord,
   BrowserTabOpenBinding,
   HarnessInstanceCatalog,
@@ -1276,7 +1276,6 @@ export interface AgentControlRequestTable {
     | "browser.access.request"
     | "browser.profile.create"
     | "browser.profile.list"
-    | "browser.profile.save"
     | "browser.sign-in"
     | "browser.session.close"
     | "browser.session.list"
@@ -1304,7 +1303,6 @@ export interface AgentControlRequestTable {
     | "browser.access.request"
     | "browser.profile.create"
     | "browser.profile.list"
-    | "browser.profile.save"
     | "browser.sign-in"
     | "browser.session.close"
     | "browser.session.list"
@@ -1422,18 +1420,14 @@ export interface BrowserProfileTable {
   id: BrowserProfileId;
   ownerId: UserId;
   name: string;
-  revision: Generated<number>;
-  storageState: Generated<"vault" | "initializing" | "local">;
+  storageState: Generated<"unbound" | "local">;
   storageBindingVersion: Generated<1 | null>;
   storageDeploymentId: Generated<DeploymentId | null>;
   storageRunnerId: Generated<RunnerId | null>;
   storageInstanceId: Generated<string | null>;
   storageBindingId: Generated<string | null>;
   storageEngine: Generated<BrowserEngine | null>;
-  frozenSeedRevision: ColumnType<string | null, number | null | undefined, number | null>;
-  frozenSeedDigest: Generated<string | null>;
-  initializationTokenHash: Generated<string | null>;
-  initializationTokenExpiresAt: NullableTimestamp;
+  initialized: Generated<boolean>;
   archivedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
@@ -1471,14 +1465,6 @@ interface BrowserHistoryIconTable {
   favicon: string;
 }
 
-interface BrowserProfileRevisionTable {
-  profileId: BrowserProfileId;
-  revision: number;
-  ciphertext: Uint8Array;
-  ciphertextSha256: string;
-  createdAt: Timestamp;
-}
-
 interface WorkspaceTabTable {
   id: string;
   createdAt: Timestamp;
@@ -1511,9 +1497,6 @@ interface BrowserSessionTable {
   runnerId: RunnerId;
   runtimeId: string;
   state: "starting" | "ready" | "closing" | "closed" | "failed";
-  leaseTokenHash: string | null;
-  leaseGeneration: number;
-  profileLeaseExpiresAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   closedAt: NullableTimestamp;
@@ -2120,7 +2103,6 @@ export interface DatabaseSchema {
   browserProfileDeletions: BrowserProfileDeletionTable;
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;
-  browserProfileRevisions: BrowserProfileRevisionTable;
   browserSessions: BrowserSessionTable;
   workspaceTabs: WorkspaceTabTable;
   browserTabLayouts: {

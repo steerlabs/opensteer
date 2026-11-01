@@ -1,14 +1,14 @@
+import { createId } from "@opensteer/core";
+import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/protocol";
+import * as atomicFiles from "@opensteer/shared/atomicPrivateFile";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createId } from "@opensteer/core";
-import { randomUUID } from "node:crypto";
-import type { LocalProfileBinding } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import * as atomicFiles from "@opensteer/shared/atomicPrivateFile";
-import { SessionCookieMirror } from "./session-cookie-mirror.js";
 import type { DesktopSecretCryptography } from "../secrets/protected-json-file.js";
+import { SessionCookieMirror } from "./session-cookie-mirror.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -105,10 +105,52 @@ async function fixture() {
 }
 
 describe("encrypted Session cookie mirror", () => {
+  it("recovers both fixed pre-cutover profiles without rewriting their encrypted sign-ins", async () => {
+    const golden = JSON.parse(
+      await readFile(
+        new URL("../../../../tests/fixtures/native-browser-mirrors.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      profiles: Array<{ binding: unknown; keyFile: string; mirrorFile: string }>;
+    };
+    for (const [index, profile] of golden.profiles.entries()) {
+      const f = await fixture();
+      const binding = LocalProfileBindingSchema.parse(profile.binding);
+      const keyPath = path.join(f.directory, "session-cookie-key.v1.json");
+      const mirrorPath = path.join(f.directory, "session-cookies.v1.json");
+      await writeFile(keyPath, profile.keyFile, { mode: 0o600 });
+      await writeFile(mirrorPath, profile.mirrorFile, { mode: 0o600 });
+      f.setJar([]);
+      const mirror = new SessionCookieMirror({ ...f.options, binding });
+      try {
+        await expect(mirror.recover()).resolves.toBe(true);
+        expect(f.restore).toHaveBeenCalledWith(
+          expect.arrayContaining([
+            expect.objectContaining({
+              name: "sid",
+              value: `existing-sign-in-${index + 1}`,
+              url: "https://account.test/",
+            }),
+            expect.objectContaining({
+              name: "partitioned",
+              value: `existing-partition-${index + 1}`,
+              partitionKey: { topLevelSite: "https://shop.test", hasCrossSiteAncestor: true },
+            }),
+          ]),
+        );
+        expect(f.writes).toEqual([]);
+        expect(await readFile(keyPath, "utf8")).toBe(profile.keyFile);
+        expect(await readFile(mirrorPath, "utf8")).toBe(profile.mirrorFile);
+      } finally {
+        await mirror.stop();
+      }
+    }
+  });
   it("reads the committed mirror while its OS key is unwrapping, before creating a cookie target", async () => {
     const f = await fixture();
     const first = f.create();
-    await first.initialize(async () => {});
+    await first.initialize();
     await first.stop();
     const entered = deferred();
     const release = deferred();
@@ -141,7 +183,7 @@ describe("encrypted Session cookie mirror", () => {
   it("preserves another writer’s uncommitted sidecars without promoting either", async () => {
     const f = await fixture();
     const first = f.create();
-    await first.initialize(async () => {});
+    await first.initialize();
     await first.stop();
     const mirrorTemporary = path.join(f.directory, `session-cookies.v1.json.tmp-${randomUUID()}`);
     const keyTemporary = path.join(
@@ -179,7 +221,7 @@ describe("encrypted Session cookie mirror", () => {
   it("captures again for changes during capture and publication, with one lane", async () => {
     const f = await fixture();
     const mirror = f.create();
-    await mirror.initialize(async () => {});
+    await mirror.initialize();
     const capturing = deferred();
     const release = deferred();
     f.capture.mockImplementationOnce(async () => {
@@ -217,7 +259,7 @@ describe("encrypted Session cookie mirror", () => {
   it("explicit flush captures after the call even before event delivery; unchanged sets do not write", async () => {
     const f = await fixture();
     const mirror = f.create();
-    await mirror.initialize(async () => {});
+    await mirror.initialize();
     await mirror.flush();
     expect(f.writes).toHaveLength(1);
     f.setJar([cookie("changed")]);
@@ -237,7 +279,7 @@ describe("encrypted Session cookie mirror", () => {
       { ...cookie("opaque"), partitionKeyOpaque: true },
     ]);
     const mirror = f.create();
-    await mirror.initialize(async () => {});
+    await mirror.initialize();
     await mirror.stop();
     f.setJar([
       {
@@ -263,7 +305,7 @@ describe("encrypted Session cookie mirror", () => {
     async (mode) => {
       const f = await fixture();
       const mirror = f.create();
-      await mirror.initialize(async () => {});
+      await mirror.initialize();
       await mirror.stop();
       const file = path.join(f.directory, "session-cookies.v1.json");
       const original = await readFile(file, "utf8");
@@ -288,7 +330,7 @@ describe("encrypted Session cookie mirror", () => {
   it("refuses a locked key store or basic-text backend without deleting sidecars", async () => {
     const f = await fixture();
     const mirror = f.create();
-    await mirror.initialize(async () => {});
+    await mirror.initialize();
     await mirror.stop();
     const key = path.join(f.directory, "session-cookie-key.v1.json");
     const before = await readFile(key, "utf8");
@@ -306,7 +348,7 @@ describe("encrypted Session cookie mirror", () => {
   it("suspends a capture across Network Service loss and never publishes the smaller jar", async () => {
     const f = await fixture();
     const mirror = f.create();
-    await mirror.initialize(async () => {});
+    await mirror.initialize();
     const capturing = deferred();
     const release = deferred();
     f.capture.mockImplementationOnce(async () => {
@@ -329,7 +371,7 @@ describe("encrypted Session cookie mirror", () => {
   it("serializes controlled deletion with publication so logout cannot resurrect cookies", async () => {
     const f = await fixture();
     const mirror = f.create();
-    await mirror.initialize(async () => {});
+    await mirror.initialize();
     await mirror.mutate(async () => {
       f.setJar([]);
     });
@@ -350,7 +392,7 @@ function bounded<T>(promise: Promise<T>, event: string): Promise<T> {
 it("never publishes a rejected restoration or a failed capture across a service restart", async () => {
   const f = await fixture();
   const mirror = f.create();
-  await mirror.initialize(async () => {});
+  await mirror.initialize();
   const entered = deferred();
   const release = deferred();
   f.capture.mockImplementationOnce(async () => {
@@ -377,7 +419,7 @@ it("never publishes a rejected restoration or a failed capture across a service 
 it("fences a write failure and preserves the previously published mirror", async () => {
   const f = await fixture();
   const mirror = f.create();
-  await mirror.initialize(async () => {});
+  await mirror.initialize();
   const before = await readFile(path.join(f.directory, "session-cookies.v1.json"), "utf8");
   f.options.publish.mockRejectedValueOnce(new Error("disk full"));
   f.setJar([cookie("new")]);
@@ -391,7 +433,7 @@ it("fences a write failure and preserves the previously published mirror", async
 it("does not poison persistence when an import deadline aborts before writing", async () => {
   const f = await fixture();
   const mirror = f.create();
-  await mirror.initialize(async () => {});
+  await mirror.initialize();
   const deadline = new AbortController();
   await expect(
     mirror.mutate(async () => {
@@ -407,7 +449,7 @@ it("does not poison persistence when an import deadline aborts before writing", 
 it("authenticates ciphertext against the binding independently of the wrapped key record", async () => {
   const f = await fixture();
   const mirror = f.create();
-  await mirror.initialize(async () => {});
+  await mirror.initialize();
   await mirror.stop();
   const file = path.join(f.directory, "session-cookie-key.v1.json");
   const envelope = JSON.parse(await readFile(file, "utf8")) as { ciphertext: string };

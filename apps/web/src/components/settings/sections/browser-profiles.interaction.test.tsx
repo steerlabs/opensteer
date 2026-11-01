@@ -135,8 +135,8 @@ async function mount(
     browserProfileDeletions: input.deletions,
     machines: [{ ...base.machines[0]!, id: "computer-delete", name: "Studio Mac" }],
     browserProfiles: [
-      { id: "bpr_work", name: "Work", revision: 2 },
-      { id: "bpr_shopping", name: "Shopping", revision: 1 },
+      { id: "bpr_work", name: "Work" },
+      { id: "bpr_shopping", name: "Shopping" },
     ],
     browserProfileGrants: [
       {

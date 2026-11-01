@@ -1,33 +1,17 @@
-import { type ComputerViewNativeResult } from "@opensteer/protocol";
-import { BrowserService } from "../browser/browser-service.js";
-import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
-import { BrowserProfileVault } from "../browser/profile-vault.js";
 import { placeList, type HostSnapshot } from "@opensteer/client/host";
-import { createHostServer } from "../server.js";
-import { hostServerTestDependencies } from "../server/host-server-test-harness.js";
-import { injectRpcRequest } from "../server/test-host-api-request.js";
-import { signHostDiscovery } from "../identity/host-keys.js";
-import { AgentControlService } from "../agents/agent-control-service.js";
-import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
-import { placeInputFailure } from "@opensteer/core";
-import { PlaceContextService } from "../computer-use/place-context-service.js";
-import { resolvedInputParts } from "@opensteer/harness";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { tmpdir } from "node:os";
 import {
-  HarnessIdSchema,
-  SequenceSchema,
-  ModelSelectionSchema,
-  ThreadAccessModeSchema,
   createId,
+  HarnessIdSchema,
+  ModelSelectionSchema,
+  placeInputFailure,
+  SequenceSchema,
+  ThreadAccessModeSchema,
   type AgentEventView as AgentEvent,
   type ContentPart,
   type EnvironmentId,
   type HarnessInstanceId,
-  type RunnerId,
   type RunId,
+  type RunnerId,
   type ThreadId,
   type UserId,
   type WorkspaceId,
@@ -38,34 +22,38 @@ import {
   IntegrationStore,
   OpensteerStore,
 } from "@opensteer/database";
+import { resolvedInputParts } from "@opensteer/harness";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import { type ComputerAppIdentity, type IntegrationDefinition } from "@opensteer/integration-core";
 import {
+  CommandService,
+  KeyedAdmissionQueue,
   RealtimeHub,
   type RealtimeSink,
   type RunnerAuxiliaryStream,
 } from "@opensteer/orchestration";
 import {
-  readComputerUseResultHeadline,
-  WindowInfoSchema,
+  BrowserSurfaceIdSchema,
   ComputerUseObservationSchema,
+  ComputerUseSessionIdSchema,
+  createBrowserSessionId,
+  readComputerUseResultHeadline,
   RunnerAuxiliaryStreamIdSchema,
   RunnerBootIdSchema,
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
-  ComputerUseSessionIdSchema,
-  type ComputerUseSessionId,
+  WindowInfoSchema,
+  type BrowserSessionId,
+  type BrowserSessionOpenerRecord,
+  type BrowserTabOpenBinding,
   type ComputerAppApprovalAnswer,
   type ComputerAppApprovalList,
   type ComputerAppApprovalOutcome,
   type ComputerUseErrorCode,
-  createBrowserSessionId,
-  type BrowserSessionOpenerRecord,
-  type BrowserTabOpenBinding,
-  BrowserSurfaceIdSchema,
-  type BrowserSessionId,
-  type HostIntegrationsComputerView,
+  type ComputerUseSessionId,
+  type ComputerViewNativeResult,
   type HostIntegrationsComputerUse,
+  type HostIntegrationsComputerView,
   type HostIntegrationsOperation,
   type PendingAgentEvent,
   type RunnerAuxiliaryFrameFence,
@@ -74,26 +62,37 @@ import {
 import { createComputerAppApproval } from "@opensteer/runner-auth";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { sql } from "kysely";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgentControlService } from "../agents/agent-control-service.js";
 import {
   continuationMessage,
   type IntegrationInventorySource,
 } from "../agents/continuation-service.js";
+import type { RunCapabilityClaims } from "../agents/run-capability.js";
+import { BrowserService } from "../browser/browser-service.js";
+import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
 import { ComputerAppHub, type ComputerAppControlPeer } from "../computer-apps/computer-app-hub.js";
 import {
-  ComputerUseService,
   computerUseBusyNextStep,
+  ComputerUseService,
 } from "../computer-use/computer-use-service.js";
+import { PlaceContextService } from "../computer-use/place-context-service.js";
+import { signHostDiscovery } from "../identity/host-keys.js";
 import {
   createMachineAccessDatabase,
   resetMachineAccessDatabase,
   startMachineAccessHost,
 } from "../runtime/machine-access.test-support.js";
-import { notifyComputerPresence } from "../shell/machine-access-events.js";
 import { projectMachines } from "../runtime/machines.js";
-import type { RunCapabilityClaims } from "../agents/run-capability.js";
 import { createHostRuntime } from "../runtime/runtime.js";
-import { testRpcData } from "../server/test-host-api-request.js";
+import { createHostServer } from "../server.js";
+import { hostServerTestDependencies } from "../server/host-server-test-harness.js";
+import { injectRpcRequest, testRpcData } from "../server/test-host-api-request.js";
+import { notifyComputerPresence } from "../shell/machine-access-events.js";
 import { IntegrationPlatformService } from "./integration-platform-service.js";
 
 /**
@@ -2011,8 +2010,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const browser = new BrowserService({
       repository: world.store,
       signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
-      profileStateBaseUrl: new URL("https://test-host.invalid"),
-      profileVault: new BrowserProfileVault({ key: Buffer.alloc(32, 7), repository: world.store }),
+      hostOrigin: new URL("https://test-host.invalid"),
       onSessionsChanged: () => undefined,
       onWorkspaceEvent: () => undefined,
     });
@@ -2072,8 +2070,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         await world.store.createBrowserSession({
           id,
           opener,
-          leaseGeneration: 1,
-          leaseTokenHash: null,
           placementKey: `runner:${world.macId}:privacy`,
           runnerId: world.macId,
           origin:

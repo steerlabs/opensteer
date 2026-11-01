@@ -1,24 +1,25 @@
-import { createHash, randomUUID } from "node:crypto";
 import { OpensteerError, browserTabOrderMaxTabs, type UserId } from "@opensteer/core";
 import {
+  BrowserFaviconSchema,
   BrowserSurfaceIdSchema,
   BrowserTabGroupIdSchema,
-  BrowserFaviconSchema,
   browserPageSite,
-  projectBrowserSessionOpener,
-  browserTabOpenReplayWindowMs,
   browserTabGroupMaxTabs,
+  browserTabOpenReplayWindowMs,
+  projectBrowserSessionOpener,
   type BrowserSessionId,
   type BrowserWorkspaceTabDescriptor,
   type WorkspaceTabLineage,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
-import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
-import { lockBrowserTabGroupMembersForTabs } from "./browser-tab-group-locks.js";
+import { createHash, randomUUID } from "node:crypto";
 import { authorizedPlaceThreadIds, getBrowserSessionForOwner } from "./browser-session-store.js";
-import { visibleWorkspaceTabLineages } from "./workspace-tab-visibility.js";
+import { lockBrowserTabGroupMembersForTabs } from "./browser-tab-group-locks.js";
 import { BrowserTabGroupStore } from "./browser-tab-group-store.js";
+import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
+import { databaseOperationOptions } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
+import { visibleWorkspaceTabLineages } from "./workspace-tab-visibility.js";
 
 type Database = Kysely<DatabaseSchema>;
 type TabRow = Selectable<DatabaseSchema["workspaceTabs"]>;
@@ -45,7 +46,7 @@ export class WorkspaceTabStore {
       .where("tabGroupId", "=", groupId)
       .orderBy("createdAt", "desc")
       .orderBy("id", "desc")
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
   }
   async session(ownerId: UserId, groupId: BrowserSessionId, database = this.database) {
     const latest = await this.#latest(groupId, database);
@@ -55,7 +56,7 @@ export class WorkspaceTabStore {
       .select("id")
       .where("id", "=", latest.workspaceId)
       .where("status", "not in", ["deleting", "deleted"])
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     return workspace ? getBrowserSessionForOwner(database, latest.id, ownerId) : null;
   }
   async lineageForSession(sessionId: BrowserSessionId) {
@@ -65,7 +66,7 @@ export class WorkspaceTabStore {
           .selectFrom("browserSessions")
           .select("tabGroupId")
           .where("id", "=", sessionId)
-          .executeTakeFirst()
+          .executeTakeFirst(databaseOperationOptions())
       )?.tabGroupId ?? null
     );
   }
@@ -109,7 +110,7 @@ export class WorkspaceTabStore {
       .orderBy("lineages.createdAt", "desc")
       .orderBy("lineages.id", "desc")
       .limit(100)
-      .execute();
+      .execute(databaseOperationOptions());
     if (!groups.length) return [];
     const rows = await database
       .selectFrom("workspaceTabs")
@@ -132,7 +133,7 @@ export class WorkspaceTabStore {
       )
       .where("closedAt", "is", null)
       .orderBy("order")
-      .execute();
+      .execute(databaseOperationOptions());
     const visibleThreadIds = new Set(
       await authorizedPlaceThreadIds(
         database,
@@ -195,7 +196,7 @@ export class WorkspaceTabStore {
       .selectAll()
       .where("id", "=", id)
       .where("closedAt", "is", null)
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     return row && (await this.session(ownerId, row.groupId)) ? row : null;
   }
   async icon(
@@ -212,7 +213,7 @@ export class WorkspaceTabStore {
       .where("sessionId", "=", sessionId)
       .where("iconRef", "=", iconRef)
       .where("closedAt", "is", null)
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     return row?.favicon ? BrowserFaviconSchema.parse(row.favicon) : null;
   }
   async #turn<T>(
@@ -230,34 +231,34 @@ export class WorkspaceTabStore {
       .select("id")
       .where("id", "=", groupId)
       .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     await tx
       .selectFrom("workspaceTabs")
       .select("id")
       .where("groupId", "=", groupId)
       .orderBy("id")
       .forNoKeyUpdate()
-      .execute();
+      .execute(databaseOperationOptions());
   }
   async #lockLayout(tx: Transaction<DatabaseSchema>, ownerId: UserId) {
     await tx
       .insertInto("browserTabLayouts")
       .values({ ownerId })
       .onConflict((c) => c.column("ownerId").doNothing())
-      .execute();
+      .execute(databaseOperationOptions());
     await tx
       .selectFrom("browserTabLayouts")
       .select("ownerId")
       .where("ownerId", "=", ownerId)
       .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
   }
   async #bump(tx: Transaction<DatabaseSchema>, groupId: BrowserSessionId) {
     await tx
       .updateTable("browserSessions")
       .set((eb) => ({ tabRevision: eb("tabRevision", "+", 1) }))
       .where("id", "=", groupId)
-      .execute();
+      .execute(databaseOperationOptions());
   }
   async record(
     sessionId: BrowserSessionId,
@@ -271,7 +272,7 @@ export class WorkspaceTabStore {
       .selectFrom("browserSessions")
       .selectAll()
       .where("id", "=", sessionId)
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     if (!session || session.origin === "trigger" || session.opener?.kind === "automation")
       return false;
     return this.#turn(session.tabGroupId, async (tx) => {
@@ -281,13 +282,13 @@ export class WorkspaceTabStore {
         .where("tabGroupId", "=", session.tabGroupId)
         .orderBy("createdAt", "desc")
         .orderBy("id", "desc")
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
       if (latest.id !== sessionId) return false;
       const previous = await tx
         .selectFrom("workspaceTabs")
         .selectAll()
         .where("groupId", "=", session.tabGroupId)
-        .execute();
+        .execute(databaseOperationOptions());
       let changed = false;
       if (closed.length) {
         const closedAt = new Date();
@@ -297,7 +298,7 @@ export class WorkspaceTabStore {
           .where("sessionId", "=", sessionId)
           .where("id", "in", closed)
           .where("closedAt", "is", null)
-          .executeTakeFirst();
+          .executeTakeFirst(databaseOperationOptions());
         changed = result.numUpdatedRows > 0n;
         for (const row of previous)
           if (row.sessionId === sessionId && closed.includes(row.id) && !row.closedAt)
@@ -338,7 +339,7 @@ export class WorkspaceTabStore {
             .where("id", "=", held.id)
             .where("sessionId", "=", sessionId)
             .where("closedAt", "is", null)
-            .execute();
+            .execute(databaseOperationOptions());
         } else {
           if (previous.filter((row) => !row.closedAt).length >= 64)
             throw new OpensteerError({
@@ -357,7 +358,7 @@ export class WorkspaceTabStore {
             .insertInto("workspaceTabs")
             .values(inserted)
             .onConflict((c) => c.column("id").doNothing())
-            .execute();
+            .execute(databaseOperationOptions());
           previous.push({
             ...inserted,
             closedBy: null,
@@ -380,14 +381,14 @@ export class WorkspaceTabStore {
         .where("groupId", "=", groupId)
         .where("closedAt", "is", null)
         .where("sessionId", "!=", sessionId)
-        .execute();
+        .execute(databaseOperationOptions());
       await tx
         .updateTable("workspaceTabs")
         .set({ state: "restoring" })
         .where("id", "=", id)
         .where("sessionId", "=", sessionId)
         .where("closedAt", "is", null)
-        .execute();
+        .execute(databaseOperationOptions());
       await this.#bump(tx, groupId);
     });
   }
@@ -400,7 +401,7 @@ export class WorkspaceTabStore {
       .where("state", "!=", "suspended")
       .$if(sessionId !== undefined, (q) => q.where("sessionId", "=", sessionId!))
       .orderBy("groupId")
-      .execute();
+      .execute(databaseOperationOptions());
     for (const { groupId } of groups)
       await this.#turn(groupId, async (tx) => {
         const result = await tx
@@ -410,7 +411,7 @@ export class WorkspaceTabStore {
           .where("closedAt", "is", null)
           .where("state", "!=", "suspended")
           .$if(sessionId !== undefined, (q) => q.where("sessionId", "=", sessionId!))
-          .executeTakeFirst();
+          .executeTakeFirst(databaseOperationOptions());
         if (result.numUpdatedRows > 0n) await this.#bump(tx, groupId);
       });
   }
@@ -419,7 +420,7 @@ export class WorkspaceTabStore {
       .selectFrom("workspaceTabs")
       .selectAll()
       .where("id", "=", id)
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     if (!row || !(await this.session(ownerId, row.groupId))) return null;
     await this.#turn(row.groupId, async (tx) => {
       await this.#lockLayout(tx, ownerId);
@@ -441,7 +442,7 @@ export class WorkspaceTabStore {
         })
         .where("id", "=", id)
         .where("closedAt", "is", null)
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (result.numUpdatedRows > 0n) await this.#bump(tx, row.groupId);
     });
     return row;
@@ -455,7 +456,7 @@ export class WorkspaceTabStore {
       .where("reopenedAt", "is", null)
       .orderBy("closedAt", "desc")
       .orderBy("id", "desc")
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
   }
   async reopen(
     ownerId: UserId,
@@ -467,6 +468,7 @@ export class WorkspaceTabStore {
       async (tx) => {
         await sql`select pg_advisory_xact_lock(hashtextextended(${`workspace-tab-reopen:${ownerId}`}, 0))`.execute(
           tx,
+          databaseOperationOptions(),
         );
         const id = BrowserSurfaceIdSchema.parse(
           `surface_${createHash("sha256")
@@ -477,7 +479,7 @@ export class WorkspaceTabStore {
           .selectFrom("workspaceTabs")
           .selectAll()
           .where("id", "=", id)
-          .executeTakeFirst();
+          .executeTakeFirst(databaseOperationOptions());
         if (replay) {
           await authorize(replay, tx);
           return replay;
@@ -501,7 +503,7 @@ export class WorkspaceTabStore {
           .select("id")
           .where("groupId", "=", source.groupId)
           .where("closedAt", "is", null)
-          .execute();
+          .execute(databaseOperationOptions());
         if (open.length >= 64)
           throw new OpensteerError({ code: "conflict", message: "Browser tab limit reached." });
         const groups = new BrowserTabGroupStore(tx);
@@ -523,7 +525,7 @@ export class WorkspaceTabStore {
                 .select("closedAfterTabId")
                 .where("id", "=", preceding)
                 .where("closedBy", "=", ownerId)
-                .executeTakeFirst()
+                .executeTakeFirst(databaseOperationOptions())
             )?.closedAfterTabId ?? null;
         }
         const group = source.closedTabGroupId
@@ -532,7 +534,7 @@ export class WorkspaceTabStore {
               .select("id")
               .where("ownerId", "=", ownerId)
               .where("id", "=", source.closedTabGroupId)
-              .executeTakeFirst()
+              .executeTakeFirst(databaseOperationOptions())
           : undefined;
         if (group) {
           const members = await tx
@@ -541,7 +543,7 @@ export class WorkspaceTabStore {
             .select("browserTabGroupMembers.tabId")
             .where("browserTabGroupMembers.groupId", "=", group.id)
             .where("workspaceTabs.closedAt", "is", null)
-            .execute();
+            .execute(databaseOperationOptions());
           if (members.length >= browserTabGroupMaxTabs)
             throw new OpensteerError({
               code: "conflict",
@@ -565,7 +567,7 @@ export class WorkspaceTabStore {
             createdAt: new Date(),
           })
           .returningAll()
-          .executeTakeFirstOrThrow();
+          .executeTakeFirstOrThrow(databaseOperationOptions());
         const normal = (await groups.orderedTabs(ownerId, tx)).arrangement.order;
         const order = normal.filter((tabId) => tabId !== id);
         let at = preceding ? order.indexOf(preceding) + 1 : -1;
@@ -576,7 +578,7 @@ export class WorkspaceTabStore {
           await tx
             .insertInto("browserTabGroupMembers")
             .values({ ownerId, tabId: id, groupId: group.id })
-            .execute();
+            .execute(databaseOperationOptions());
         } else if (preceding) {
           const precedingGroup = arrangement.groupOf.get(preceding);
           while (
@@ -595,12 +597,12 @@ export class WorkspaceTabStore {
             revision: eb("revision", "+", 1),
           }))
           .where("ownerId", "=", ownerId)
-          .execute();
+          .execute(databaseOperationOptions());
         await tx
           .updateTable("workspaceTabs")
           .set({ reopenedAt: new Date() })
           .where("id", "=", source.id)
-          .execute();
+          .execute(databaseOperationOptions());
         await this.#bump(tx, source.groupId);
         return row;
       },
@@ -618,14 +620,14 @@ export class WorkspaceTabStore {
         .where("tabGroupId", "=", groupId)
         .orderBy("createdAt", "desc")
         .orderBy("id", "desc")
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
       if (latest.id !== sessionId) return;
       await tx
         .updateTable("workspaceTabs")
         .set({ closedAt: new Date() })
         .where("groupId", "=", groupId)
         .where("closedAt", "is", null)
-        .execute();
+        .execute(databaseOperationOptions());
       await this.#bump(tx, groupId);
     });
   }
@@ -647,11 +649,14 @@ export class WorkspaceTabStore {
         .orderBy("id")
         // FOR UPDATE: Expired closed tabs and their personal group memberships are deleted.
         .forUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
       if (rows.length) {
         const tabIds = rows.map((row) => row.id);
         await lockBrowserTabGroupMembersForTabs(tx, tabIds);
-        await tx.deleteFrom("workspaceTabs").where("id", "in", tabIds).execute();
+        await tx
+          .deleteFrom("workspaceTabs")
+          .where("id", "in", tabIds)
+          .execute(databaseOperationOptions());
       }
     });
   }

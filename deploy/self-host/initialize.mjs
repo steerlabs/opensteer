@@ -23,8 +23,7 @@ for (const name of [
   "initial_owner_enrollment_token",
 ])
   secret(name, randomBytes(48).toString("base64url"));
-for (const name of ["browser_profile_key", "credential_key"])
-  secret(name, randomBytes(32).toString("base64url"));
+for (const name of ["credential_key"]) secret(name, randomBytes(32).toString("base64url"));
 const url = `postgres://opensteer:${encodeURIComponent(password)}@postgres:5432/opensteer`;
 if (secret("database_url", url) !== url)
   throw new Error("database_url disagrees with postgres_password");

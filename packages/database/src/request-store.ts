@@ -1,27 +1,28 @@
-import { runHasActiveGrant } from "./run-grants.js";
-import { withDatabaseTransaction } from "./connection.js";
-import { isDeepStrictEqual } from "node:util";
 import {
-  OpensteerError,
+  AssignmentIdSchema,
   BrowserProfileIdSchema,
+  OpensteerError,
   PendingRequestSchema,
   RequestIdSchema,
   RequestJsonObjectSchema,
   RequestResponseSchema,
   RunnerIdSchema,
+  ThreadIdSchema,
+  browserSessionClosedReason,
   createId,
   type AgentEvent,
   type BrowserProfileGrantId,
   type BrowserProfileId,
   type BrowserSourceId,
+  type HeldAssignment,
   type PendingRequest,
   type Request,
   type RequestCancellationReason,
   type RequestId,
   type RequestPayload,
   type RequestPresentation,
-  type RequestResponse,
   type RequestRequiredActor,
+  type RequestResponse,
   type RunId,
   type RunnerId,
   type ThreadId,
@@ -29,11 +30,30 @@ import {
   type UserId,
   type WaitingRequest,
   type WorkspaceId,
-  type HeldAssignment,
-  AssignmentIdSchema,
-  ThreadIdSchema,
-  browserSessionClosedReason,
 } from "@opensteer/core";
+import {
+  ComputerAppIdentitySchema,
+  IntegrationAccessSchema,
+  IntegrationConnectionIdSchema,
+  IntegrationConnectionRequirementSchema,
+  IntegrationInstallManifestSchema,
+  IntegrationInstallationSchema,
+  computerAppIdentitiesEqual,
+  integrationAccessCovers,
+  integrationInstallManifestSummary,
+  integrationProposalName,
+  type ComputerAppIdentity,
+  type ComputerAppSetupRequest,
+  type IntegrationAccess,
+  type IntegrationConnectionId,
+  type IntegrationConnectionSummary,
+  type IntegrationGrant,
+  type IntegrationInstallManifest,
+  type IntegrationInstallationId,
+  type IntegrationProviderAuthorization,
+  type IntegrationServerId,
+  type IntegrationToolMaterial,
+} from "@opensteer/integration-core";
 import {
   BrowserSessionIdSchema,
   PasswordSignInRequestResponseSchema,
@@ -44,31 +64,25 @@ import {
   BrowserSignInRequestResponseSchema,
   type BrowserSignInRequestResponse,
 } from "@opensteer/protocol/browser-sources";
-import {
-  ComputerAppIdentitySchema,
-  computerAppIdentitiesEqual,
-  integrationAccessCovers,
-  IntegrationConnectionIdSchema,
-  IntegrationConnectionRequirementSchema,
-  IntegrationAccessSchema,
-  IntegrationInstallManifestSchema,
-  IntegrationInstallationSchema,
-  integrationInstallManifestSummary,
-  integrationProposalName,
-  type ComputerAppIdentity,
-  type ComputerAppSetupRequest,
-  type IntegrationConnectionSummary,
-  type IntegrationToolMaterial,
-  type IntegrationConnectionId,
-  type IntegrationAccess,
-  type IntegrationGrant,
-  type IntegrationInstallManifest,
-  type IntegrationInstallationId,
-  type IntegrationProviderAuthorization,
-  type IntegrationServerId,
-} from "@opensteer/integration-core";
 import { sql, type ExpressionBuilder, type Kysely, type Transaction } from "kysely";
-import type { DatabaseSchema, RequestRow } from "./schema.js";
+import { isDeepStrictEqual } from "node:util";
+import {
+  assignmentActivityEventsForRun,
+  assignmentClosedToRequestsMessage,
+  runAssignmentAcceptsRequests,
+} from "./assignment-store.js";
+import {
+  askForComputerAppApprovalInTransaction,
+  computerUsePolicyInTransaction,
+  discoverComputerRequestWorkspaces,
+  lockComputerApprovalScopeInTransaction,
+} from "./computer-app-approvals.js";
+import {
+  computerAppAccessPresentation,
+  computerAppScopeOf,
+  computerAppSetupRequestFromRow,
+} from "./computer-app-setup.js";
+import { withDatabaseTransaction } from "./connection.js";
 import {
   IntegrationGrantStore,
   approveComputerAppAutomaticallyInTransaction,
@@ -78,31 +92,17 @@ import {
   type InstallIntegrationInput,
   type InstallIntegrationMutation,
 } from "./integration-platform-stores.js";
-import {
-  computerAppAccessPresentation,
-  computerAppScopeOf,
-  computerAppSetupRequestFromRow,
-} from "./computer-app-setup.js";
-import {
-  askForComputerAppApprovalInTransaction,
-  computerUsePolicyInTransaction,
-  lockComputerApprovalScopeInTransaction,
-  discoverComputerRequestWorkspaces,
-} from "./computer-app-approvals.js";
 import { machineOwnershipIn } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";
+import { requestFromRow, requestInsert, requestOriginEnvironment } from "./request-persistence.js";
 import {
-  discoverRequestWorkspaces,
   discoverInstallationRequestWorkspaces,
+  discoverRequestWorkspaces,
   lockRequestWorkspaces,
   withRequestWorkspaceLocks,
 } from "./request-workspace-locks.js";
-import {
-  assignmentActivityEventsForRun,
-  assignmentClosedToRequestsMessage,
-  runAssignmentAcceptsRequests,
-} from "./assignment-store.js";
-import { requestFromRow, requestInsert, requestOriginEnvironment } from "./request-persistence.js";
+import { runHasActiveGrant } from "./run-grants.js";
+import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue, safeGeneration } from "./store-primitives.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 
@@ -180,14 +180,6 @@ export interface RequestMutation {
   readonly request: Request;
 }
 
-export interface PreparedBrowserProfile {
-  readonly ciphertext: Uint8Array;
-  readonly ciphertextSha256: string;
-  readonly id: BrowserProfileId;
-  readonly name: string;
-  readonly revision: 1;
-}
-
 export interface ResolvedBrowserRequest {
   readonly events: readonly AgentEvent[];
   readonly grant: {
@@ -201,10 +193,8 @@ export interface ResolvedBrowserRequest {
     readonly id: BrowserProfileId;
     readonly name: string;
     readonly ownerId: UserId;
-    readonly revision: number;
   } | null;
   readonly request: Request;
-  readonly saveSessionId: string | null;
 }
 
 interface PendingRequestContinuation {
@@ -322,22 +312,6 @@ export class RequestStore {
       (transaction) => createRequestInTransaction(transaction, input),
       async (transaction) => {
         await lockRequestOrigin(transaction, input);
-        if (
-          input.kind === "browser.profile.save" &&
-          input.payload.kind === "browser.profile.save"
-        ) {
-          const existing = await transaction
-            .selectFrom("requests")
-            .select("id")
-            .where(callIdentityFilter(input))
-            .executeTakeFirst();
-          if (!existing)
-            await lockSavableBrowserSession(
-              transaction,
-              BrowserSessionIdSchema.parse(input.payload.sessionId),
-              input.requestedBy,
-            );
-        }
       },
     );
   }
@@ -2080,7 +2054,6 @@ export class RequestStore {
   }
 
   async resolveBrowserRequest(input: {
-    readonly preparedProfile?: PreparedBrowserProfile;
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly response: RequestResponse;
@@ -2098,7 +2071,7 @@ export class RequestStore {
           !observed ||
           observed.status !== "pending" ||
           observed.requestedBy !== input.resolvedBy ||
-          (observed.kind !== "browser.access" && observed.kind !== "browser.profile.save")
+          observed.kind !== "browser.access"
         ) {
           throw new OpensteerError({
             code: "conflict",
@@ -2117,7 +2090,7 @@ export class RequestStore {
           !row ||
           row.status !== "pending" ||
           row.requestedBy !== input.resolvedBy ||
-          (row.kind !== "browser.access" && row.kind !== "browser.profile.save")
+          row.kind !== "browser.access"
         ) {
           throw new OpensteerError({
             code: "conflict",
@@ -2133,39 +2106,15 @@ export class RequestStore {
           });
         }
         const decision = parseBrowserDecision(response.value);
-        if (request.kind === "browser.access" && input.preparedProfile) {
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "Browser access cannot carry a prepared profile revision",
-          });
-        }
-        if (decision.decision === "declined" && input.preparedProfile) {
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "A declined Request cannot create a profile",
-          });
-        }
 
         let profile: ResolvedBrowserRequest["profile"] = null;
         let grant: ResolvedBrowserRequest["grant"] = null;
         if (decision.decision === "fulfilled") {
-          if (request.kind === "browser.profile.save") {
-            const prepared = input.preparedProfile;
-            if (!prepared || !("name" in decision) || prepared.name !== decision.name) {
-              throw new OpensteerError({
-                code: "bad_request",
-                message: "A saved Browser Profile requires its prepared first revision",
-              });
-            }
-            profile = await insertBrowserProfile(transaction, {
-              ...prepared,
-              ownerId: input.resolvedBy,
-            });
-          } else if ("profileId" in decision) {
+          if ("profileId" in decision) {
             profile =
               (await transaction
                 .selectFrom("browserProfiles")
-                .select(["id", "name", "ownerId", "revision"])
+                .select(["id", "name", "ownerId"])
                 .where("id", "=", decision.profileId)
                 .where("ownerId", "=", input.resolvedBy)
                 .where("archivedAt", "is", null)
@@ -2177,12 +2126,6 @@ export class RequestStore {
               });
             }
           } else if ("createProfile" in decision) {
-            if (input.preparedProfile) {
-              throw new OpensteerError({
-                code: "bad_request",
-                message: "A fresh profile has no prepared revision",
-              });
-            }
             await assertBrowserProfileCapacity(transaction, input.resolvedBy);
             profile = await transaction
               .insertInto("browserProfiles")
@@ -2191,9 +2134,8 @@ export class RequestStore {
                 id: createId("browserProfile"),
                 name: decision.createProfile.name,
                 ownerId: input.resolvedBy,
-                revision: 0,
               })
-              .returning(["id", "name", "ownerId", "revision"])
+              .returning(["id", "name", "ownerId"])
               .executeTakeFirstOrThrow();
           } else {
             throw new OpensteerError({
@@ -2241,26 +2183,7 @@ export class RequestStore {
           grant,
           profile,
           request: resolved,
-          saveSessionId:
-            request.payload.kind === "browser.profile.save" ? request.payload.sessionId : null,
         };
-      },
-      async (transaction) => {
-        const row = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (row?.kind !== "browser.profile.save" || row.status !== "pending") return;
-        const request = requestFromRow(row);
-        await lockRequestOrigin(transaction, request);
-        if (request.payload.kind === "browser.profile.save") {
-          await lockSavableBrowserSession(
-            transaction,
-            BrowserSessionIdSchema.parse(request.payload.sessionId),
-            input.resolvedBy,
-          );
-        }
       },
     );
   }
@@ -2879,6 +2802,11 @@ async function createRequestInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: CreateRequestInput,
 ): Promise<RequestMutation> {
+  if (input.kind === "browser.profile.save")
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Create a browser profile before signing in. Guest sign-ins cannot be saved.",
+    });
   if (input.callId.length < 1 || input.callId.length > 512 || input.callId.includes("\0")) {
     throw new OpensteerError({
       code: "bad_request",
@@ -2931,16 +2859,6 @@ async function createRequestInTransaction(
   if (origin.runId && !(await runHasActiveGrant(transaction, origin.runId))) {
     throw new OpensteerError({ code: "forbidden", message: "Run tool authority has ended" });
   }
-  // Closure owns the BrowserSession before appending cancellation events in
-  // the Workspace. Save creation and resolution must follow that same order.
-  const saveSession =
-    input.kind === "browser.profile.save" && input.payload.kind === "browser.profile.save"
-      ? await lockSavableBrowserSession(
-          transaction,
-          BrowserSessionIdSchema.parse(input.payload.sessionId),
-          input.requestedBy,
-        )
-      : null;
   const authority = await lockRequestWorkspaceAuthorities(transaction, {
     originatingWorkspaceId: input.originatingWorkspaceId,
     requestedBy: input.requestedBy,
@@ -2965,23 +2883,6 @@ async function createRequestInTransaction(
       code: "bad_request",
       message: "Browser access Requests must target a specialized Workspace",
     });
-  }
-  if (input.kind === "browser.profile.save") {
-    if (input.payload.kind !== "browser.profile.save") {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Browser Profile save Request payload is invalid",
-      });
-    }
-    if (
-      authority.targetWorkspace.kind === "specialized" &&
-      saveSession?.workspaceId !== input.targetWorkspaceId
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Browser Session is outside the target Workspace",
-      });
-    }
   }
   if (input.kind === "browser.sign-in") {
     if (input.payload.kind !== "browser.sign-in") {
@@ -4280,63 +4181,6 @@ async function lockActiveDurableRequestAuthority(
   const authority = await lockRequestWorkspaceAuthorities(transaction, request);
   assertActiveRequestAuthority(authority);
   return authority;
-}
-
-async function lockSavableBrowserSession(
-  transaction: Transaction<DatabaseSchema>,
-  sessionId: ReturnType<typeof BrowserSessionIdSchema.parse>,
-  ownerId: UserId,
-): Promise<{ readonly workspaceId: WorkspaceId }> {
-  const session = await transaction
-    .selectFrom("browserSessions")
-    .innerJoin(
-      "workspaceMemberships",
-      "workspaceMemberships.workspaceId",
-      "browserSessions.workspaceId",
-    )
-    .select("browserSessions.workspaceId")
-    .where("browserSessions.id", "=", sessionId)
-    .where("browserSessions.profileId", "is", null)
-    .where("browserSessions.state", "=", "ready")
-    .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
-    .forNoKeyUpdate("browserSessions")
-    .executeTakeFirst();
-  if (!session) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: "The source Browser Session is no longer available to save",
-    });
-  }
-  return session;
-}
-
-async function insertBrowserProfile(
-  transaction: Transaction<DatabaseSchema>,
-  input: PreparedBrowserProfile & { readonly ownerId: UserId },
-): Promise<NonNullable<ResolvedBrowserRequest["profile"]>> {
-  await assertBrowserProfileCapacity(transaction, input.ownerId);
-  const profile = await transaction
-    .insertInto("browserProfiles")
-    .values({
-      archivedAt: null,
-      id: input.id,
-      name: boundedProfileName(input.name),
-      ownerId: input.ownerId,
-      revision: input.revision,
-    })
-    .returning(["id", "name", "ownerId", "revision"])
-    .executeTakeFirstOrThrow();
-  await transaction
-    .insertInto("browserProfileRevisions")
-    .values({
-      ciphertext: input.ciphertext,
-      ciphertextSha256: input.ciphertextSha256,
-      profileId: input.id,
-      revision: input.revision,
-    })
-    .executeTakeFirstOrThrow();
-  return profile;
 }
 
 async function assertBrowserProfileCapacity(

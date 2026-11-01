@@ -1,17 +1,13 @@
-import { browserProfileSnapshotVersion } from "@opensteer/browser-profile/snapshot";
-import { createPublicKey, type KeyObject } from "node:crypto";
-import type { BrowserAttachPublicKey } from "@opensteer/protocol";
 import {
   BrowserRuntime,
   BrowserRuntimeServer,
   Ed25519AttachTicketVerifier,
-  HttpBrowserProfileStateClient,
-  HttpProfileInitializationClient,
   defaultAttachTicketReplayLedgerPath,
+  nativeProfileReadyClient,
   sessionFilesRoot,
   type BrowserRuntimeOptions,
 } from "@opensteer/browser-runtime-core";
-import { randomUUID } from "node:crypto";
+import type { BrowserAttachPublicKey } from "@opensteer/protocol";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
 import {
   BrowserModuleRelay,
@@ -21,6 +17,7 @@ import {
   RunnerModuleConnection,
   moduleReadiness,
 } from "@opensteer/runner-client";
+import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
 import { PlaywrightChromiumLauncher } from "./browser/playwright-launcher.js";
 import { readBrowserRuntimeConfig } from "./config.js";
 import { acquireProfileRootLock } from "./profile-root-lock.js";
@@ -58,22 +55,10 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
   await launcher.prepare();
   const runtimeOptions: BrowserRuntimeOptions = {
     localProfiles: { root: config.profileRoot },
-    checkpointIntervalMs: config.checkpointIntervalMs,
-    checkpointRetryMs: config.checkpointRetryMs,
-    idleProfileHostTimeoutMs: config.idleProfileHostTimeoutMs,
+    acknowledgeProfileReady: nativeProfileReadyClient(config.profileReadyTrustedHttpOrigin),
     launcher,
     maxProfileHosts: config.maxProfileHosts,
     maxSessionsPerProfile: config.maxSessionsPerProfile,
-    profileStateClient: new HttpBrowserProfileStateClient(
-      config.profileStateTrustedHttpOrigin
-        ? { trustedHttpOrigin: config.profileStateTrustedHttpOrigin }
-        : {},
-    ),
-    initializationClient: new HttpProfileInitializationClient(
-      config.profileStateTrustedHttpOrigin
-        ? { trustedHttpOrigin: config.profileStateTrustedHttpOrigin }
-        : {},
-    ),
     onOpenTiming: (timing) =>
       process.stdout.write(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
@@ -213,7 +198,6 @@ async function startBrowserRelay(options: {
         browser: {
           runtimeId: options.runtimeId,
           ...capabilities,
-          profileSnapshotVersion: browserProfileSnapshotVersion,
           stateImport: true,
           fileStaging: true,
           cdpBoundary: 1,

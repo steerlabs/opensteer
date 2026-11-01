@@ -1,16 +1,11 @@
 import {
-  BootstrapReadDiagnostics,
-  bootstrapDiagnosticHeader,
-} from "@opensteer/shared/bootstrapDiagnostics";
-import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
-import {
+  BrowserTabGroupIdSchema,
+  ModelSelectionSchema,
   SequenceSchema,
+  ThreadAccessModeSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
-  ModelSelectionSchema,
-  ThreadAccessModeSchema,
   createId,
-  BrowserTabGroupIdSchema,
   emptyExecutionPreferences,
   type AgentEventView as AgentEvent,
   type Message,
@@ -18,42 +13,47 @@ import {
   type Request as OpensteerRequest,
   type Thread,
 } from "@opensteer/core";
+import { hostApiVersion } from "@opensteer/deployment-authority";
+import { createIntegrationId } from "@opensteer/integration-core";
 import {
-  hostApi,
-  createBrowserSessionId,
   BrowserSurfaceIdSchema,
+  ComputerViewSchema,
   HostToClientMessageSchema,
   HostedBrowserBootstrapSchema,
-  ComputerViewSchema,
-  type WorkspaceTabLineage,
-  type HostedBrowserBootstrap,
+  createBrowserSessionId,
+  hostApi,
   type HostToClientMessage,
+  type HostedBrowserBootstrap,
+  type WorkspaceTabLineage,
   type WorkspaceView,
 } from "@opensteer/protocol";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import {
+  BootstrapReadDiagnostics,
+  bootstrapDiagnosticHeader,
+} from "@opensteer/shared/bootstrapDiagnostics";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { createIntegrationId } from "@opensteer/integration-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MockHostClient } from "../mock/mock-host-client.js";
+import { assignmentMark } from "./assignment-presentation.js";
+import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
+import { browserTabStrip } from "./browser-tab-strip.js";
+import { HostClientRequestError, type ThreadSummary } from "./client.js";
+import type { ExecutionSelection } from "./execution-preferences.js";
 import {
   HttpHostClient,
   type HttpHostClientOptions,
   type WebSocketClient,
 } from "./host-session-client.js";
-import type { ExecutionSelection } from "./execution-preferences.js";
-import { HostClientRequestError, type ThreadSummary } from "./client.js";
-import { MockHostClient } from "../mock/mock-host-client.js";
 import type { ClientLifecycle, ClientLifecycleSnapshot, ClientNetworkState } from "./lifecycle.js";
-import { threadActivity, threadStopTarget } from "./thread-activity.js";
-import { taskList, workspaceTaskList, sameTaskListSource } from "./task-list.js";
-import { liveWork, sameLiveWorkSource } from "./surfaces.js";
-import { threadMark } from "./task-marks.js";
-import { assignmentMark } from "./assignment-presentation.js";
-import { filterThreads } from "./thread-list-model.js";
-import { browserTabStrip } from "./browser-tab-strip.js";
 import { placeList } from "./places.js";
 import { visibleTranscript } from "./transcript.js";
 import { conversationRows, groupTranscriptEntries } from "./agent-activity-model.js";
 import { projectSavedHome, type SavedViewReadiness } from "./saved-host-view.js";
+import { liveWork, sameLiveWorkSource } from "./surfaces.js";
+import { sameTaskListSource, taskList, workspaceTaskList } from "./task-list.js";
+import { threadMark } from "./task-marks.js";
+import { threadActivity, threadStopTarget } from "./thread-activity.js";
+import { filterThreads } from "./thread-list-model.js";
 
 const now = "2026-08-09T20:00:00.000Z";
 const ownerId = createId("user");
@@ -6126,17 +6126,12 @@ describe("HttpHostClient catalog startup", () => {
               { error: { code: "internal", message: "Catalog unavailable", retryable: true } },
               500,
             );
-          if (!hold)
-            return json(
-              isGroup ? { ...group, revision: 2 } : { generation: 1, revision: 1, tabs: [] },
-            );
+          if (!hold) return json(isGroup ? { ...group } : { generation: 1, revision: 1, tabs: [] });
           concurrent++;
           maximum = Math.max(maximum, concurrent);
           try {
             await new Promise<void>((answer) => pending.push({ answer }));
-            return json(
-              isGroup ? { ...group, revision: 1 } : { generation: 1, revision: 1, tabs: [] },
-            );
+            return json(isGroup ? { ...group } : { generation: 1, revision: 1, tabs: [] });
           } finally {
             concurrent--;
           }
@@ -6346,7 +6341,7 @@ describe("HttpHostClient hosted browser", () => {
           runtimeId: "runtime-1",
         },
       ],
-      profiles: [{ id: profileId, name: "Default browser", revision: 0 }],
+      profiles: [{ id: profileId, name: "Default browser" }],
       sessions: [],
     };
     const fetch = vi.fn(async (input: string | URL | Request) => {
@@ -6513,7 +6508,7 @@ describe("HttpHostClient hosted browser", () => {
               },
             ],
             profileGrants: [],
-            profiles: [{ id: profileId, name: "Default browser", revision: 0 }],
+            profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
                 access: "full-control",
@@ -6600,7 +6595,7 @@ describe("HttpHostClient hosted browser", () => {
               },
             ],
             profileGrants: [],
-            profiles: [{ id: profileId, name: "Default browser", revision: 0 }],
+            profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
                 access: "full-control",
@@ -6667,7 +6662,7 @@ describe("HttpHostClient hosted browser", () => {
               },
             ],
             profileGrants: [],
-            profiles: [{ id: profileId, name: "Default browser", revision: 0 }],
+            profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
                 access: "full-control",
@@ -6819,7 +6814,7 @@ describe("HttpHostClient browser profiles", () => {
     let browser: HostedBrowserBootstrap = {
       available: false,
       placements: [],
-      profiles: [{ id: profileId, name: "Work", revision: 0 }],
+      profiles: [{ id: profileId, name: "Work" }],
       profileGrants: [],
       sessions: [],
     };
@@ -6860,47 +6855,6 @@ describe("HttpHostClient browser profiles", () => {
     } finally {
       client.dispose();
     }
-  });
-
-  it("makes a profile saved from a fresh session immediately selectable", async () => {
-    const workspace = makeWorkspace();
-    const sessionId = createBrowserSessionId();
-    const savedProfileId = createId("browserProfile");
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-      if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([workspace]));
-      if (path === "/v1/rpc/commands.dispatch" && init?.method === "POST") {
-        expect(JSON.parse(String(init.body))).toEqual({
-          idempotencyKey: "browser-session-save-test",
-          input: { name: "Client account" },
-          sessionId,
-          type: "browser.session.profile.save",
-        });
-        return json({ profile: { id: savedProfileId, name: "Client account", revision: 1 } }, 201);
-      }
-      throw new Error(`Unexpected request ${path}`);
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-    });
-    await client.load();
-
-    await expect(
-      client.dispatch({
-        idempotencyKey: "browser-session-save-test",
-        input: { name: "Client account" },
-        sessionId,
-        type: "browser.session.profile.save",
-      }),
-    ).resolves.toMatchObject({
-      profile: { id: savedProfileId, name: "Client account", revision: 1 },
-    });
-    expect(client.getSnapshot().browserProfiles).toEqual([
-      expect.objectContaining({ id: savedProfileId, name: "Client account" }),
-    ]);
-    client.dispose();
   });
 });
 
@@ -8849,7 +8803,7 @@ describe("HttpHostClient command projection", () => {
                 runtimeId: "runtime-1",
               },
             ],
-            profiles: [{ id: profileId, name: "Default browser", revision: 0 }],
+            profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [],
           }),
         );
@@ -9394,7 +9348,7 @@ describe("HttpHostClient lifecycle", () => {
               },
             ],
             profileGrants: [],
-            profiles: [{ id: profileId, name: "Default browser", revision: 0 }],
+            profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
                 access: "full-control",

@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
-import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import { hostEnvironmentKeys } from "@opensteer/config";
+import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 export interface KubernetesObject {
@@ -100,7 +100,6 @@ const PinnedImageSchema = z
 const ManagedRuntimeSecretsSchema = z
   .object({
     "account-bundle.json": z.string().min(1).max(131_072),
-    "browser-profile.key": z.string().min(32).max(4_096),
     "credential.key": z.string().min(32).max(4_096),
     "host-private.pem": z.string().min(1).max(65_536),
     "host-public.pem": z.string().min(1).max(65_536),
@@ -405,7 +404,6 @@ export function kubernetesManagedDeploymentResources(input: {
       },
       stringData: {
         "account-bundle.json": secrets["account-bundle.json"],
-        "browser-profile.key": secrets["browser-profile.key"],
         "credential.key": secrets["credential.key"],
         "host-private.pem": secrets["host-private.pem"],
         "host-public.pem": secrets["host-public.pem"],
@@ -602,10 +600,6 @@ export function kubernetesManagedDeploymentResources(input: {
                     value: "/run/opensteer/account-bundle.json",
                   },
                   { name: "OPENSTEER_CREDENTIAL_KEY_PATH", value: "/run/opensteer/credential.key" },
-                  {
-                    name: "OPENSTEER_BROWSER_PROFILE_KEY_PATH",
-                    value: "/run/opensteer/browser-profile.key",
-                  },
                   { name: "OPENSTEER_BROWSER_ATTACH_KEY_ID", value: "host-v1" },
                   { name: "OPENSTEER_RUNTIME_ORIGIN", value: input.canonicalOrigin },
                   { name: "OPENSTEER_SIGNUP_POLICY", value: "invite-only" },
@@ -1038,10 +1032,6 @@ export function kubernetesManagedTeardownJob(input: {
                   value: "/run/opensteer/account-bundle.json",
                 },
                 { name: "OPENSTEER_BIND_ADDRESS", value: "127.0.0.1" },
-                {
-                  name: "OPENSTEER_BROWSER_PROFILE_KEY_PATH",
-                  value: "/run/opensteer/browser-profile.key",
-                },
                 { name: "OPENSTEER_CANONICAL_ORIGIN", value: input.canonicalOrigin },
                 { name: "OPENSTEER_CREDENTIAL_KEY_PATH", value: "/run/opensteer/credential.key" },
                 { name: "OPENSTEER_DEPLOYMENT_KIND", value: "server" },

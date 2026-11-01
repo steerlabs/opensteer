@@ -1,8 +1,5 @@
-import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { slackChannelProviderManifest } from "@opensteer/channel-core";
+import type { HostConfig } from "@opensteer/config";
 import {
   ModelSelectionSchema,
   WorkspaceIdSchema,
@@ -13,8 +10,7 @@ import {
   type EnvironmentId,
   type HostExposure,
 } from "@opensteer/core";
-import { slackChannelProviderManifest } from "@opensteer/channel-core";
-import type { HostConfig } from "@opensteer/config";
+import { createDatabase, migrateToLatest } from "@opensteer/database";
 import {
   HostDescriptorSchema,
   hostApiVersion,
@@ -28,29 +24,33 @@ import {
   RunnerEnrollmentCredentialSchema,
   SessionExchangeCredentialKindSchema,
   SessionExchangeResponseSchema,
+  hostApiVersionHeader,
   sessionExchangePath,
   type HostToRunnerMessage,
   type RunnerConnectionFence,
   type RunnerLocalStorageInventory,
   type RunnerOperationalMessage,
   type SessionExchangeCredentialKind,
-  hostApiVersionHeader,
 } from "@opensteer/protocol";
 import {
   createRunnerAuthenticationSignature,
   createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
-import { createDatabase, migrateToLatest } from "@opensteer/database";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import type { HTTPMethods } from "fastify";
 import { exportJWK } from "jose";
 import { sql } from "kysely";
-import WebSocket from "ws";
+import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createHostRuntime, type HostRuntime } from "./runtime.js";
-import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
+import WebSocket from "ws";
 import { fetchWithExplicitHost } from "../access/session-exchange.test-support.js";
-import { startPortableFsManagerFake } from "./portablefs-manager.test-support.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
+import { startPortableFsManagerFake } from "./portablefs-manager.test-support.js";
+import { createHostRuntime, type HostRuntime } from "./runtime.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -836,7 +836,6 @@ async function composeHost(
     bindAddress: plan.exposure === "loopback" ? "127.0.0.1" : "0.0.0.0",
     canonicalOrigin,
     browserRuntime: { attachKeyId: "host-browser-v1" },
-    browserProfileKeyPath: undefined,
     credentialKeyPath: undefined,
     databaseUrl: databaseUrl ?? "postgres://unconfigured",
     dataDirectory,
@@ -1122,7 +1121,6 @@ async function resetHostDatabase(): Promise<void> {
       credential_vault_canaries,
       browser_profile_grants,
       browser_sessions,
-      browser_profile_revisions,
       browser_profiles,
       credentials,
       workspace_events,

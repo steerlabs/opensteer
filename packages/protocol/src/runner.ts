@@ -1,58 +1,55 @@
-import { iphoneIntegrationsProtocolVersion, iphoneOutdatedReason } from "./iphone-apps.js";
-import { BrowserEngineSchema } from "./browser-profile-storage.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
-import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
 import {
   AssignmentRunContextSchema,
   CommandIdSchema,
-  type EnvironmentId,
   EnvironmentIdSchema,
+  GeneratedThreadTitleSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   HarnessInstanceStateKindSchema,
   HarnessRuntimeRevisionSchema,
   IsoDateTimeSchema,
   LiveRunProgressSchema,
+  messageAuthorCanWriteKind,
   MessageAuthorSchema,
-  MessageSchema,
-  MessageQuoteSchema,
   MessageContentSchema,
   MessageIdSchema,
   MessageKindSchema,
+  MessageQuoteSchema,
+  MessageSchema,
   ModelIdSchema,
   ModelProviderIdSchema,
+  ModelSelectionSchema,
   ProviderContinuationIdentitySchema,
   ProviderContinuationIdentityViewSchema,
-  ModelSelectionSchema,
   ProviderSessionIdSchema,
   RequestIdSchema,
   RequestResponseSchema,
   RunIdSchema,
-  SequenceSchema,
   RunnerCapabilitySchema,
+  runnerEventDataSchemas,
   RunnerIdSchema,
   RunThreadStateSchema,
-  GeneratedThreadTitleSchema,
-  ThreadIdSchema,
-  ThreadRoleSchema,
+  SequenceSchema,
   ThreadAccessModeSchema,
+  ThreadIdSchema,
+  threadReportBatchMaxEntries,
+  threadReportBatchMaxSerializedBytes,
+  ThreadRoleSchema,
   threadTitleRequestMaxLength,
   TriggerIdSchema,
-  WorkspaceIconNameSchema,
   TriggerOccurrenceIdSchema,
   TriggerRevisionIdSchema,
   TriggerWatchActivationIdSchema,
   UserIdSchema,
-  WorkspaceKindSchema,
-  WorkspaceBackingKindSchema,
-  WorkspaceIdSchema,
-  messageAuthorCanWriteKind,
-  runnerEventDataSchemas,
-  threadReportBatchMaxEntries,
-  threadReportBatchMaxSerializedBytes,
   utf8ByteLength,
+  WorkspaceBackingKindSchema,
+  WorkspaceIconNameSchema,
+  WorkspaceIdSchema,
+  WorkspaceKindSchema,
+  type EnvironmentId,
 } from "@opensteer/core";
-import { RunAttachmentPlanSchema } from "./attachments.js";
+import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
 import {
   TriggerExecutionOutputSchema,
   TriggerProgramEventSchema,
@@ -60,17 +57,19 @@ import {
 } from "@opensteer/triggers";
 import { WorkspaceExecutionAccessPlanSchema } from "@opensteer/workspace";
 import { z } from "zod";
+import { RunEgressPlanSchema } from "./access.js";
 import {
-  VoiceSessionIdSchema,
-  VoiceSdpSchema,
-  VoiceSayTextSchema,
-  VoiceRefusalReasonSchema,
-  VoiceToolCallSchema,
-  voiceAnswerMaxLength,
-  voiceContextMaxLength,
-  voiceToolCallIdSchema,
-} from "./voice.js";
+  RunAgentControlPlanSchema,
+  RunAgentToolsPlanSchema,
+  RunBrowserCdpPlanSchema,
+  RunIntegrationSkillsPlanSchema,
+  RunIntegrationToolsPlanSchema,
+} from "./agent-control.js";
+import { RunAttachmentPlanSchema } from "./attachments.js";
+import { BrowserEngineSchema } from "./browser-profile-storage.js";
 import { CorrelationIdSchema, ProtocolErrorSchema } from "./common.js";
+import { iphoneIntegrationsProtocolVersion, iphoneOutdatedReason } from "./iphone-apps.js";
+import { RunnerAuxiliaryRequestIdSchema, RunnerAuxiliaryTicketSchema } from "./runner-auxiliary.js";
 import {
   RunnerAuxiliaryModuleSchema,
   RunnerBootIdSchema,
@@ -81,21 +80,22 @@ import {
   type RunnerConnectionFence,
   type RunnerModuleName,
 } from "./runner-identity.js";
-import { RunnerAuxiliaryRequestIdSchema, RunnerAuxiliaryTicketSchema } from "./runner-auxiliary.js";
 import { MachineAccessRunContextSchema, RunnerShellModuleSchema } from "./shell.js";
+import {
+  voiceAnswerMaxLength,
+  voiceContextMaxLength,
+  VoiceRefusalReasonSchema,
+  VoiceSayTextSchema,
+  VoiceSdpSchema,
+  VoiceSessionIdSchema,
+  voiceToolCallIdSchema,
+  VoiceToolCallSchema,
+} from "./voice.js";
 import {
   HostWorkspaceLocalRequestSchema,
   RunnerLocalStorageInventorySchema,
   RunnerWorkspaceLocalResultSchema,
 } from "./workspace-local.js";
-import { RunEgressPlanSchema } from "./access.js";
-import {
-  RunAgentControlPlanSchema,
-  RunAgentToolsPlanSchema,
-  RunBrowserCdpPlanSchema,
-  RunIntegrationToolsPlanSchema,
-  RunIntegrationSkillsPlanSchema,
-} from "./agent-control.js";
 
 /** Who an account of an engine talks to; see `HarnessSourceDescriptorSchema`. */
 export const HarnessSourceIdSchema = z
@@ -1264,12 +1264,10 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
   .object({
-    localProfiles: z.literal(1).optional().catch(undefined),
     localProfileStorage: z
       .object({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema })
       .optional()
       .catch(undefined),
-    initialNavigationVersion: z.literal(1).optional().catch(undefined),
     /** Page-provider contract, available only after the engine Security probe. */
     passkeys: z
       .number()
@@ -1298,7 +1296,7 @@ export const RunnerBrowserModuleSchema = z
     // Older signed Runner descriptors have no version. Keep them admissible so
     // their agents, shell and integrations modules continue to work; browser
     // placement checks the capability version before it can be used.
-    profileSnapshotVersion: z.number().int().positive().optional(),
+    wireVersion: z.number().int().positive().optional(),
     runtimeId: z.string().min(1).max(255),
     /**
      * The browser this Runner serves applies a Host-originated `state.import`
@@ -1381,13 +1379,12 @@ export const RunnerBrowserModuleSchema = z
     /** Required for editing v2; true means the engine isolates clipboard operations. */
     clipboard: z.boolean().optional(),
   })
-  .transform(({ editing, clipboard, localProfiles, localProfileStorage, ...module }) => {
+  .transform(({ editing, clipboard, localProfileStorage, ...module }) => {
     const version = editing === 2 && clipboard === undefined ? undefined : editing;
     return {
       ...module,
-      ...(localProfiles === 1 && localProfileStorage
+      ...(localProfileStorage
         ? {
-            localProfiles,
             localProfileStorage,
           }
         : {}),

@@ -1,13 +1,13 @@
-import { generateKeyPairSync } from "node:crypto";
 import { createId, OpensteerError } from "@opensteer/core";
+import { RunnerBootIdSchema } from "@opensteer/protocol";
 import {
   createRunnerAuthenticationSignature,
-  createRunnerEnrollmentSignature,
   createRunnerAuxiliarySignature,
+  createRunnerEnrollmentSignature,
   hashRunnerEnrollmentToken,
   runnerPublicKeyFingerprint,
 } from "@opensteer/runner-auth";
-import { RunnerBootIdSchema } from "@opensteer/protocol";
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { RunnerAuthenticator } from "./runner-authenticator.js";
 
@@ -201,7 +201,7 @@ describe("RunnerAuthenticator enrollment issuance", () => {
       bootId: RunnerBootIdSchema.parse("rbt_11111111-1111-4111-8111-111111111111"),
       connectionGeneration: 1,
       connectionId: "rcn_11111111-1111-4111-8111-111111111111",
-      modules: { browser: { profileSnapshotVersion: 2 as const, runtimeId: "chromium" } },
+      modules: { browser: { wireVersion: 2 as const, runtimeId: "chromium" } },
       runnerId: createId("runner"),
     } as never;
 
@@ -235,7 +235,7 @@ describe("RunnerAuthenticator enrollment issuance", () => {
       bootId,
       connectionGeneration: 3,
       connectionId: "rcn_11111111-1111-4111-8111-111111111111",
-      modules: { browser: { profileSnapshotVersion: 2 as const, runtimeId: "chromium" } },
+      modules: { browser: { wireVersion: 2 as const, runtimeId: "chromium" } },
       runnerId,
     } as never;
     const { ticket } = authenticator.issueAuxiliaryTicket(identity, "browser");
@@ -291,7 +291,7 @@ describe("RunnerAuthenticator identity refusals", () => {
     const descriptor = {
       bootId: RunnerBootIdSchema.parse("rbt_11111111-1111-4111-8111-111111111111"),
       capabilities: [],
-      modules: { browser: { profileSnapshotVersion: 2 as const, runtimeId: "chromium" } },
+      modules: { browser: { wireVersion: 2 as const, runtimeId: "chromium" } },
       name: "Studio Mac",
       runnerId,
       runnerKind: "local" as const,

@@ -1,12 +1,11 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
+import { validClaims } from "@opensteer/browser-runtime-core/test-support";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { nativeProfileRequest } from "./native-profile.test-support.js";
-import { assertImportedCookies } from "./native-profile-storage.js";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { EventEmitter } from "node:events";
-import { ChildProcess } from "node:child_process";
-import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
 import {
   chromium,
   type Browser,
@@ -15,7 +14,8 @@ import {
   type Page,
 } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
-import { validClaims } from "@opensteer/browser-runtime-core/test-support";
+import { assertImportedCookies } from "./native-profile-storage.js";
+import { nativeProfileRequest } from "./native-profile.test-support.js";
 import {
   createChromiumChildEnvironment,
   PlaywrightChromiumLauncher,
@@ -224,7 +224,7 @@ describe("Chromium child environment", () => {
         initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
         partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000001",
         sessionId: claims.sessionId,
-        storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+        storage: { kind: "guest" },
       });
 
       expect(

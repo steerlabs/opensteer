@@ -43,8 +43,7 @@ export function BrowserProfilesSection() {
           {rows.length === 0 && deletions.length === 0 ? (
             <div className="card__form">
               <p className="browser-profile-settings__empty">
-                No profiles yet. Create one, or sign in to sites in a Guest browser and save its
-                sign-ins as a profile.
+                No profiles yet. Create one, then open it to sign in to your sites.
               </p>
             </div>
           ) : (

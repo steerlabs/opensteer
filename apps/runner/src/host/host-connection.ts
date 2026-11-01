@@ -1,17 +1,18 @@
-import { browserProfileSnapshotVersion } from "@opensteer/browser-profile/snapshot";
-import type { EnvironmentId, HarnessId, HarnessInstanceId, RunId } from "@opensteer/core";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { RunnerConfig } from "@opensteer/config";
+import type {
+  EnvironmentId,
+  HarnessId,
+  HarnessInstanceId,
+  RunId,
+  RunnerCapability,
+} from "@opensteer/core";
 import { sameStringSet } from "@opensteer/core";
-import type { RunnerCapability } from "@opensteer/core";
-import { randomUUID } from "node:crypto";
 import {
   HostToRunnerMessageSchema,
   RunnerAuxiliaryRequestIdSchema,
   RunnerOperationalMessageSchema,
   RunnerToHostMessageSchema,
   RunnerWireProofSchema,
-  type RunnerToHostMessage,
   parseJsonFrame,
   runnerEnvironmentIds,
   serializeJsonFrame,
@@ -28,12 +29,10 @@ import {
   type RunnerHarnessDriver,
   type RunnerLocalStorageInventory,
   type RunnerOperationalReport,
+  type RunnerToHostMessage,
   type RunnerWorkspaceMount,
 } from "@opensteer/protocol";
 import { maxBrowserRelayEnvelopeBytes } from "@opensteer/protocol/browser-relay";
-import WebSocket, { type RawData } from "ws";
-import { BoundedRunnerInbox } from "../runtime/bounded-inbox.js";
-import type { LocalWorkspaceService } from "../workspace/local-workspace-service.js";
 import {
   BrowserModuleRelay,
   FencedInboundDispatcher,
@@ -49,22 +48,27 @@ import {
   type RunnerIdentity,
   type RunnerModuleStream,
 } from "@opensteer/runner-client";
-import {
-  errorCatalog,
-  type RefreshedRunCredentials,
-  type RunnerMessageSink,
-  RunnerRuntime,
-} from "../runtime/runtime.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { randomUUID } from "node:crypto";
+import WebSocket, { type RawData } from "ws";
 import { ComputerAppModuleHandler } from "../computer-apps/module-handler.js";
 import type { PreparedIntegrationsModule } from "../computer-apps/prepare.js";
 import type { PreparedMessagingModule } from "../messaging/prepare.js";
-import { ShellModuleHandler } from "../shell/shell-module-handler.js";
-import type { PreparedShellModule } from "../shell/shell-host-key.js";
+import { BoundedRunnerInbox } from "../runtime/bounded-inbox.js";
+import {
+  RunnerRuntime,
+  errorCatalog,
+  type RefreshedRunCredentials,
+  type RunnerMessageSink,
+} from "../runtime/runtime.js";
 import {
   watchFullDiskAccess,
   type FullDiskAccessProbeOptions,
   type FullDiskAccessWatch,
 } from "../shell/full-disk-access.js";
+import type { PreparedShellModule } from "../shell/shell-host-key.js";
+import { ShellModuleHandler } from "../shell/shell-module-handler.js";
+import type { LocalWorkspaceService } from "../workspace/local-workspace-service.js";
 
 const maximumFrameBytes = 1024 * 1024;
 const maximumQueuedInboundBytes = 4 * maximumFrameBytes;
@@ -672,7 +676,6 @@ export class ReconnectingHostConnection {
               browser: {
                 runtimeId: agents.browserBridge.runtimeId,
                 ...browserCapabilities,
-                profileSnapshotVersion: browserProfileSnapshotVersion,
                 // The loopback browser runtime ships in the same release as
                 // this Runner, so it parses every frame this Runner relays.
                 stateImport: true,

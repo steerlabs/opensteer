@@ -34,20 +34,14 @@
  * OPENSTEER_AGENT_CURSOR_EVIDENCE_DIR (default: `opensteer-agent-cursor` in
  * the system temporary directory).
  */
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 
-import { expect, it } from "vitest";
 import { SessionCdpRouter, type CdpParameters } from "@opensteer/browser-core";
-import type {
-  BrowserRuntimeActivity,
-  BrowserServerMessage,
-  BrowserSurfaceId,
-} from "@opensteer/protocol";
 import {
   BrowserController,
   HostSignIns,
@@ -55,6 +49,12 @@ import {
   SurfaceLedger,
 } from "@opensteer/browser-runtime-core";
 import { FakeSink, validClaims } from "@opensteer/browser-runtime-core/test-support";
+import type {
+  BrowserRuntimeActivity,
+  BrowserServerMessage,
+  BrowserSurfaceId,
+} from "@opensteer/protocol";
+import { expect, it } from "vitest";
 import {
   TestChromiumLauncher,
   cleanup,
@@ -260,7 +260,6 @@ it("reports each agent's cursor where a person's pointer would be", async () => 
     ledger,
     files,
     sink,
-    exportSnapshot: () => browser.exportSnapshot(),
     replaceSiteCookies: (site, cookies, signal) =>
       browser.replaceSiteCookies(site, cookies, signal),
     signIns: new HostSignIns({ authority: undefined, runtimeId: "test" }),

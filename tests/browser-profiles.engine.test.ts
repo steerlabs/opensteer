@@ -6,22 +6,20 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { ModelSelectionSchema } from "../packages/core/src/index.js";
-import { nativeUserHarnessRuntimeBoundary } from "../packages/harness/src/index.js";
-import { parseAgentExecutionConfig } from "../apps/runner/src/app-config.js";
-import { createHarnessRegistry } from "../apps/runner/src/harness/harness-registry.js";
 import {
   startVerticalStack,
   type VerticalStack,
 } from "../apps/host/src/agents/vertical-stack.test-support.js";
+import { parseAgentExecutionConfig } from "../apps/runner/src/app-config.js";
+import { createHarnessRegistry } from "../apps/runner/src/harness/harness-registry.js";
+import { ModelSelectionSchema } from "../packages/core/src/index.js";
+import { nativeUserHarnessRuntimeBoundary } from "../packages/harness/src/index.js";
 import {
   addCleanup,
   browserAvailable,
   browserHarness,
   executablePath,
-  profileRevision,
   startBrowser,
-  waitFor,
 } from "./browser-deployment.test-support.js";
 
 /*
@@ -151,18 +149,6 @@ describe("live agent-created browser profile", () => {
 
       const owner = await stack.host.store.firstUser();
       if (!owner) throw new Error("Missing owner");
-      let siteData: unknown;
-      await waitFor(async () => {
-        if ((await profileRevision(stack, work[0]!.id)) === 0) return false;
-        const read = await stack.host.browser.profileSiteData({
-          ownerId: owner.id,
-          profileIds: [work[0]!.id],
-          site: origin,
-        });
-        siteData = read.profiles.get(work[0]!.id);
-        return read.profiles.get(work[0]!.id)?.hasData === true;
-      }, 60_000);
-      evidence.siteData = siteData;
       expect(second.assistantText, "the agent confirms the signed-in account").toMatch(
         /alex@ledger\.test/iu,
       );

@@ -1,19 +1,19 @@
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
-import { androidPhoneDefinitionId } from "@opensteer/protocol";
-import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
-import {
-  PasswordSignInRequestResponseSchema,
-  type PasswordSignInRequestResponse,
-} from "@opensteer/protocol";
 import type { OpensteerStore } from "@opensteer/database";
 import {
   IntegrationConnectionIdSchema,
   type IntegrationReadiness,
 } from "@opensteer/integration-core";
 import type { CommandService } from "@opensteer/orchestration";
+import {
+  androidPhoneDefinitionId,
+  PasswordSignInRequestResponseSchema,
+  type PasswordSignInRequestResponse,
+} from "@opensteer/protocol";
+import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
 import { z } from "zod";
-import { computerToolRefs } from "../integrations/computer-use-discovery.js";
 import type { ComputerAppApprovalService } from "../integrations/computer-app-approval-service.js";
+import { computerToolRefs } from "../integrations/computer-use-discovery.js";
 import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 
 const defaultIntervalMs = 5_000;
@@ -96,6 +96,10 @@ export class ContinuationService {
   async #drainOnce(): Promise<void> {
     const continuations = await this.#requests.listPendingContinuations();
     for (const { request } of continuations) {
+      if (request.kind === "browser.profile.save") {
+        await this.#settleUndeliverable(request, "Guest profile saving has been removed.");
+        continue;
+      }
       const sourceRunId = request.originatingRunId;
       // A Trigger occurrence has no Run and no turn waiting on an answer, so
       // there is nothing to continue. The outbox row is settled here rather
@@ -243,20 +247,8 @@ export async function continuationMessage(
       const { id: profileId, name } = outcome.data.profile;
       return `Request ${request.id} was fulfilled. Browser profile ${JSON.stringify(name)} (${profileId}) is now available to this Workspace. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
     }
-    case "browser.profile.save": {
-      if (request.status === "declined")
-        return `Request ${request.id} was declined by the user. Continue the task without saving this Browser Session as a profile and do not request it again unless the user asks.`;
-      if (request.payload.kind !== "browser.profile.save")
-        throw new Error("Browser profile save Request payload is invalid");
-      const { sessionId } = request.payload;
-      const outcome = BrowserRequestOutcomeSchema.safeParse(
-        request.response.kind === "external" ? request.response.value : undefined,
-      );
-      if (!outcome.success)
-        return `Request ${request.id} was fulfilled. Browser Session ${sessionId}'s state was copied to a new browser profile, and that session stays Guest. browser_profile_list shows the new profile; open it with browser_session_open for work that should persist. Continue the task.`;
-      const { id: profileId, name } = outcome.data.profile;
-      return `Request ${request.id} was fulfilled. Browser Session ${sessionId}'s state was copied to the new browser profile ${JSON.stringify(name)} (${profileId}). That session stays Guest: what happens there now is not saved to the profile. Open the profile with browser_session_open and profileId ${profileId} for work that should persist, then continue the task.`;
-    }
+    case "browser.profile.save":
+      return `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`;
     case "browser.profile.import":
       return request.status === "declined" &&
         request.response.kind === "external" &&

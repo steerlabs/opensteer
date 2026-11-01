@@ -1,7 +1,7 @@
 import {
   CanonicalOriginSchema,
-  DeploymentKindSchema,
   DeploymentIdSchema,
+  DeploymentKindSchema,
   DeploymentShapeSchema,
   HostInstanceIdSchema,
   WorkspaceBackingKindSchema,
@@ -232,7 +232,9 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 // Browser Session and describe consent as browser-only.
 // Shared Done is capability-gated (`shared-task-done-v1`) and uses a distinct
 // command. Epoch-48 read fields remain available as display-only projections.
-export const hostApiVersion = 48;
+// Epoch 49 removes portable browser profiles and Guest saving. Native profiles
+// retain their bindings; earlier clients must update before using this Host.
+export const hostApiVersion = 49;
 
 /**
  * Optional features a Host may or may not serve. A capability is never a
@@ -249,8 +251,6 @@ export const HostCapabilitySchema = z.enum([
   /** Browser viewers can observe a target without requesting pictures. */
   "browser-target-control-v1",
   "browser-passkeys-v1",
-  "browser-local-profiles-v1",
-  "browser-initial-navigation-v1",
   "browser-capture-region-v1",
   "browser-frame-window-v1",
   "browser-raster-demand-v1",

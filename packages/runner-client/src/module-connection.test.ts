@@ -91,7 +91,7 @@ function moduleConnection(
     descriptor: (current): RunnerDescriptor => ({
       bootId,
       capabilities: [],
-      modules: { browser: { profileSnapshotVersion: 2, runtimeId: "browser-runtime-test" } },
+      modules: { browser: { wireVersion: 2, runtimeId: "browser-runtime-test" } },
       name: "Browser runtime",
       runnerId: current.runnerId,
       runnerKind: "managed",

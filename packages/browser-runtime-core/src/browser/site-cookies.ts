@@ -1,9 +1,9 @@
+import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   browserCookieFromCdp,
   browserCookieToCdp,
   type BrowserCdpCookie,
 } from "@opensteer/browser-profile/cookies";
-import type { BrowserCookie } from "@opensteer/browser-profile/snapshot";
 import {
   browserCookieIdentity,
   browserSiteCookieMatches,

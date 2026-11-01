@@ -1,42 +1,42 @@
-import { randomUUID } from "node:crypto";
 import {
-  IntegrationDefinitionSchema,
+  createId,
+  emptyExecutionPreferences,
+  HarnessIdSchema,
+  ModelSelectionSchema,
+  RequestViewSchema,
+  ThreadAccessModeSchema,
+  WorkspaceIdSchema,
+  type RequestId,
+  type Workspace,
+} from "@opensteer/core";
+import {
   createIntegrationId,
+  IntegrationDefinitionSchema,
   integrationDefinitionSummary,
 } from "@opensteer/integration-core";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
-import {
-  emptyExecutionPreferences,
-  HarnessIdSchema,
-  ThreadAccessModeSchema,
-  ModelSelectionSchema,
-  RequestViewSchema,
-  WorkspaceIdSchema,
-  createId,
-  type Workspace,
-  type RequestId,
-} from "@opensteer/core";
 import { createBrowserSessionId, HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
+import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
 import { admitThreadExecution } from "./execution-authority.js";
 import {
   ChannelIngressDeferredError,
   ChannelStore,
-  IntegrationPlatformStore,
   installIntegrationInTransaction,
+  IntegrationPlatformStore,
   OpensteerStore,
 } from "./index.js";
 import {
   describeStore,
-  testModelSelection,
+  enrollTestRunner,
+  testChannelAccessPolicy,
+  testChannelNotices,
   testContinuationIdentity,
   testMessagingRunnerId,
-  testChannelNotices,
-  testChannelAccessPolicy,
-  writeBrowserUsageArtifact,
-  enrollTestRunner,
+  testModelSelection,
   testOpenApiAdapterContract,
+  writeBrowserUsageArtifact,
 } from "./store.integration.test-support.js";
 
 describeStore("PostgreSQL store", (it) => {
@@ -984,7 +984,6 @@ describeStore("PostgreSQL store", (it) => {
       id: createId("browserProfile"),
       name: `Profile ${i}`,
       ownerId: fixture.userId,
-      revision: 0,
     }));
     await database.insertInto("browserProfiles").values(extraProfiles).execute();
     await database
@@ -1046,71 +1045,6 @@ describeStore("PostgreSQL store", (it) => {
     expect((await store.requests.get(forbidden.request.id))?.status).toBe("pending");
   });
 
-  it("avoids a deadlock between browser closure and profile-save resolution", async ({
-    storeFixture,
-  }) => {
-    const { startRunFixture, store, stagedRequestRace } = storeFixture;
-    const fixture = await startRunFixture("request-browser-save");
-    const sessionId = createBrowserSessionId();
-    await store.createBrowserSession({
-      id: sessionId,
-      leaseGeneration: 1,
-      leaseTokenHash: null,
-      origin: "agent",
-      placementKey: `runner:${fixture.runnerId}:request-browser-save`,
-      profileId: null,
-      runnerId: fixture.runnerId,
-      runtimeId: "request-browser-save",
-      workspaceId: fixture.workspace.id,
-    });
-    await store.transitionBrowserSession({
-      from: ["starting"],
-      sessionId,
-      state: "ready",
-    });
-    const requestInput = {
-      callId: "browser-save-call-1",
-      kind: "browser.profile.save" as const,
-      mode: "durable" as const,
-      originatingRunId: fixture.run.id,
-      originatingThreadId: fixture.thread.id,
-      originatingWorkspaceId: fixture.workspace.id,
-      payload: {
-        kind: "browser.profile.save" as const,
-        reason: "Keep the authenticated session",
-        sessionId,
-        suggestedName: "Calendar",
-      },
-      presentation: {
-        kind: "external" as const,
-        subject: { id: sessionId, kind: "browser-session" },
-        title: "Save browser profile",
-      },
-      requestedBy: fixture.userId,
-      requiredActor: "requester" as const,
-      targetWorkspaceId: fixture.workspace.id,
-    };
-    const created = await store.requests.create(requestInput);
-    const results = await stagedRequestRace(
-      (transaction) =>
-        transaction
-          .selectFrom("browserSessions")
-          .select("id")
-          .where("id", "=", sessionId)
-          .forUpdate()
-          .execute(),
-      () => store.transitionBrowserSession({ from: ["ready"], sessionId, state: "closing" }),
-      () =>
-        store.requests.resolveBrowserRequest({
-          requestId: created.request.id,
-          resolvedBy: fixture.userId,
-          response: { kind: "external", value: { decision: "declined" } },
-        }),
-    );
-    expect(results[0]!.status).toBe("fulfilled");
-    expect((await store.requests.get(created.request.id))?.status).toBe("cancelled");
-  });
-
   it.for(["closed", "failed"] as const)(
     "keeps a %s Browser Session immutable through late transitions",
     async (terminal, { storeFixture }) => {
@@ -1119,8 +1053,6 @@ describeStore("PostgreSQL store", (it) => {
       const sessionId = createBrowserSessionId();
       await store.createBrowserSession({
         id: sessionId,
-        leaseGeneration: 1,
-        leaseTokenHash: null,
         origin: "agent",
         placementKey: `runner:${fixture.runnerId}:browser-terminal-${terminal}`,
         profileId: null,
@@ -1160,204 +1092,6 @@ describeStore("PostgreSQL store", (it) => {
       }
     },
   );
-
-  it("atomically fulfills Browser Profile save Requests and rotates continuation attempts", async ({
-    storeFixture,
-  }) => {
-    const { startRunFixture, store, database } = storeFixture;
-    const fixture = await startRunFixture("request-browser-save");
-    const sessionId = createBrowserSessionId();
-    await store.createBrowserSession({
-      id: sessionId,
-      leaseGeneration: 1,
-      leaseTokenHash: null,
-      origin: "agent",
-      placementKey: `runner:${fixture.runnerId}:request-browser-save`,
-      profileId: null,
-      runnerId: fixture.runnerId,
-      runtimeId: "request-browser-save",
-      workspaceId: fixture.workspace.id,
-    });
-    await store.transitionBrowserSession({
-      from: ["starting"],
-      sessionId,
-      state: "ready",
-    });
-    const requestInput = {
-      callId: "browser-save-call-1",
-      kind: "browser.profile.save" as const,
-      mode: "durable" as const,
-      originatingRunId: fixture.run.id,
-      originatingThreadId: fixture.thread.id,
-      originatingWorkspaceId: fixture.workspace.id,
-      payload: {
-        kind: "browser.profile.save" as const,
-        reason: "Keep the authenticated session",
-        sessionId,
-        suggestedName: "Calendar",
-      },
-      presentation: {
-        kind: "external" as const,
-        subject: { id: sessionId, kind: "browser-session" },
-        title: "Save browser profile",
-      },
-      requestedBy: fixture.userId,
-      requiredActor: "requester" as const,
-      targetWorkspaceId: fixture.workspace.id,
-    };
-    const created = await store.requests.create(requestInput);
-    const profileId = createId("browserProfile");
-    const resolved = await store.requests.resolveBrowserRequest({
-      preparedProfile: {
-        ciphertext: Buffer.from("encrypted-browser-profile-revision-v1"),
-        ciphertextSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        id: profileId,
-        name: "Calendar",
-        revision: 1,
-      },
-      requestId: created.request.id,
-      resolvedBy: fixture.userId,
-      response: {
-        kind: "external",
-        value: { decision: "fulfilled", name: "Calendar" },
-      },
-    });
-    expect(resolved).toMatchObject({
-      events: [expect.objectContaining({ type: "request.resolved" })],
-      grant: null,
-      profile: { id: profileId, revision: 1 },
-      request: { status: "fulfilled" },
-      saveSessionId: sessionId,
-    });
-    const expectedResponse = {
-      kind: "external",
-      value: {
-        decision: "fulfilled",
-        name: "Calendar",
-        profile: { id: profileId, name: "Calendar" },
-      },
-    };
-    const reread = await new OpensteerStore(database).requests.get(created.request.id);
-    const raw = await database
-      .selectFrom("requests")
-      .select("response")
-      .where("id", "=", created.request.id)
-      .executeTakeFirstOrThrow();
-    const sourceSession = await database
-      .selectFrom("browserSessions")
-      .select("profileId")
-      .where("id", "=", sessionId)
-      .executeTakeFirstOrThrow();
-    await writeBrowserUsageArtifact("browser-request-save-outcome.json", {
-      resolved,
-      reread,
-      raw,
-      sourceSession,
-    });
-    expect(resolved.request.response).toEqual(expectedResponse);
-    expect(reread?.response).toEqual(expectedResponse);
-    expect(raw.response).toEqual(expectedResponse);
-    expect(sourceSession?.profileId).toBeNull();
-    const declined = await store.requests.create({
-      ...requestInput,
-      callId: "browser-save-declined",
-    });
-    await expect(
-      store.requests.resolveBrowserRequest({
-        requestId: declined.request.id,
-        resolvedBy: fixture.userId,
-        response: {
-          kind: "external",
-          value: {
-            decision: "fulfilled",
-            name: "Calendar",
-            profile: { id: profileId, name: "Forged" },
-          },
-        },
-      }),
-    ).rejects.toMatchObject({ code: "bad_request" });
-    const declinedResult = await store.requests.resolveBrowserRequest({
-      requestId: declined.request.id,
-      resolvedBy: fixture.userId,
-      response: { kind: "external", value: { decision: "declined" } },
-    });
-    expect(declinedResult.profile).toBeNull();
-    expect(
-      (await new OpensteerStore(database).requests.get(declined.request.id))?.response,
-    ).toEqual({
-      kind: "external",
-      value: { decision: "declined" },
-    });
-    await expect(
-      store.requests.recordContinuationAttempt({
-        reason: null,
-        requestId: declined.request.id,
-        status: "queued",
-      }),
-    ).resolves.toBe(true);
-    await expect(store.readBrowserProfileRevision(profileId)).resolves.toMatchObject({
-      ciphertextSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      revision: 1,
-    });
-
-    const cancelled = await store.requests.create({
-      ...requestInput,
-      callId: "browser-save-call-2",
-    });
-    const closed = await store.transitionBrowserSession({
-      from: ["ready"],
-      sessionId,
-      state: "closing",
-    });
-    expect(closed.events).toEqual([
-      expect.objectContaining({
-        data: { reason: "resource-deleted", requestId: cancelled.request.id },
-        type: "request.cancelled",
-      }),
-    ]);
-    await expect(store.requests.get(cancelled.request.id)).resolves.toMatchObject({
-      cancellationReason: "resource-deleted",
-      status: "cancelled",
-    });
-    await expect(
-      store.requests.create({ ...requestInput, callId: "browser-save-call-2" }),
-    ).resolves.toMatchObject({
-      replayed: true,
-      request: { id: cancelled.request.id, status: "cancelled" },
-    });
-    await expect(
-      store.requests.create({ ...requestInput, callId: "browser-save-call-after-close" }),
-    ).rejects.toMatchObject({ code: "conflict" });
-
-    const [continuation] = await store.requests.listPendingContinuations();
-    expect(continuation).toMatchObject({
-      attemptedAt: null,
-      request: { id: created.request.id },
-      status: "waiting",
-    });
-    await expect(
-      store.requests.recordContinuationAttempt({
-        reason: null,
-        requestId: created.request.id,
-        status: "waiting",
-      }),
-    ).resolves.toBe(true);
-    await expect(store.requests.listPendingContinuations()).resolves.toEqual([
-      expect.objectContaining({
-        attemptedAt: expect.any(String),
-        request: expect.objectContaining({ id: created.request.id }),
-        status: "waiting",
-      }),
-    ]);
-    await expect(
-      store.requests.recordContinuationAttempt({
-        reason: null,
-        requestId: created.request.id,
-        status: "queued",
-      }),
-    ).resolves.toBe(true);
-    await expect(store.requests.listPendingContinuations()).resolves.toEqual([]);
-  });
 
   it("binds prepared integration material to the exact approved manifest", async ({
     storeFixture,

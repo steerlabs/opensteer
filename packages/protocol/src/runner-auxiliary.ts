@@ -1,7 +1,7 @@
 import { IsoDateTimeSchema, RunnerIdSchema } from "@opensteer/core";
 import { z } from "zod";
-import { ProtocolErrorSchema } from "./common.js";
 import { BrowserAttachPublicKeysSchema } from "./browser.js";
+import { ProtocolErrorSchema } from "./common.js";
 import {
   RunnerAuxiliaryModuleSchema,
   RunnerAuxiliaryStreamIdSchema,
@@ -72,10 +72,9 @@ export const RunnerAuxiliaryWelcomeSchema = z.strictObject({
    * tickets itself; a messaging stream never receives them.
    */
   browserAttachPublicKeys: BrowserAttachPublicKeysSchema.optional(),
+  browserWireVersion: z.literal(1).optional(),
   /** Opt in only when the descriptor offers it; old Hosts receive no new status fields. */
   passkeys: z.literal(1).optional(),
-  localProfiles: z.literal(1).optional(),
-  initialNavigationVersion: z.literal(1).optional(),
   loginText: z.literal(1).optional(),
   passwordSignIn: z.literal(1).optional(),
   heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),

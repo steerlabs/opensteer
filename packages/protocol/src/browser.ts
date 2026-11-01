@@ -1,87 +1,43 @@
-import { browserBase } from "./browser-message-base.js";
-import {
-  LocalProfileBindingSchema,
-  FrozenProfileSeedSchema,
-  PendingBrowserProfileDeletionSchema,
-} from "./browser-profile-storage.js";
-export * from "./browser-profile-storage.js";
-import {
-  PasskeyCeremonySchema,
-  PasskeyCancelSchema,
-  PasskeyRuntimeCancelSchema,
-  PasskeyResultSchema,
-  BrowserPasskeyRequestSchema,
-  BrowserPasskeyOfferSchema,
-  BrowserPasskeyWithdrawnSchema,
-  BrowserPasskeyNoticeSchema,
-  PasskeyClaimSchema,
-  PasskeyRespondSchema,
-  PasskeyModeSchema,
-} from "./passkeys.js";
-import {
-  BrowserTabGroupColorSchema,
-  browserTabGroupTitleMaxLength,
-  browserTabGroupMaxTabs,
-  browserTabGroupsMaxPerOwner,
-  BrowserTabGroupTitleSchema,
-  BrowserTabGroupTabIdsSchema,
-  BrowserTabMoveSchema,
-  browserTabOrderMaxTabs,
-  BrowserTabWriteInputSchema,
-} from "@opensteer/core";
-export const BrowserRasterDensitySchema = z.union([
-  z.literal(0.75),
-  z.literal(1),
-  z.literal(1.25),
-  z.literal(1.5),
-  z.literal(2),
-]);
-export type BrowserRasterDensity = z.infer<typeof BrowserRasterDensitySchema>;
-
-export {
-  BrowserTabGroupColorSchema,
-  browserTabGroupTitleMaxLength,
-  browserTabGroupMaxTabs,
-  browserTabGroupsMaxPerOwner,
-  BrowserTabGroupTitleSchema,
-  BrowserTabGroupTabIdsSchema,
-  BrowserTabMoveSchema,
-  browserTabOrderMaxTabs,
-  BrowserTabReadInputSchema,
-  BrowserTabWriteInputSchema,
-  type BrowserTabGroupColor,
-  type BrowserTabMove,
-  type BrowserTabReadInput,
-  type BrowserTabWriteInput,
-} from "@opensteer/core";
-import {
-  BrowserProfileIdSchema,
-  BrowserProfileGrantIdSchema,
-  BrowserSessionIdSchema,
-  BrowserSiteSchema,
-  BrowserSurfaceIdSchema,
-  BrowserTabGroupIdSchema,
-  type BrowserSessionId,
-  RunnerIdSchema,
-  RunIdSchema,
-  ThreadIdSchema,
-  EnvironmentIdSchema,
-  IsoDateTimeSchema,
-  WorkspaceIdSchema,
-  UserIdSchema,
-} from "@opensteer/core";
+export const browserRuntimeWireVersion = 1;
+import { browserFrameFits, browserFrameLimits } from "@opensteer/browser-core/frame-limits";
+import { BrowserCookieSchema } from "@opensteer/browser-profile/cookies";
 import {
   BrowserProfileAccessSchema,
   type BrowserProfileAccess,
 } from "@opensteer/browser-profile/grant";
-import {
-  BrowserCookieSchema,
-  BrowserProfileSnapshotSchema,
-} from "@opensteer/browser-profile/snapshot";
 import { maxBrowserSourceCookies } from "@opensteer/browser-profile/source-state";
-import { browserFrameFits, browserFrameLimits } from "@opensteer/browser-core/frame-limits";
+import {
+  BrowserProfileGrantIdSchema,
+  BrowserProfileIdSchema,
+  BrowserSessionIdSchema,
+  BrowserSiteSchema,
+  BrowserSurfaceIdSchema,
+  BrowserTabGroupColorSchema,
+  BrowserTabGroupIdSchema,
+  browserTabGroupMaxTabs,
+  browserTabGroupsMaxPerOwner,
+  BrowserTabGroupTabIdsSchema,
+  browserTabGroupTitleMaxLength,
+  BrowserTabGroupTitleSchema,
+  BrowserTabMoveSchema,
+  browserTabOrderMaxTabs,
+  BrowserTabWriteInputSchema,
+  EnvironmentIdSchema,
+  IsoDateTimeSchema,
+  RunIdSchema,
+  RunnerIdSchema,
+  ThreadIdSchema,
+  UserIdSchema,
+  WorkspaceIdSchema,
+  type BrowserSessionId,
+} from "@opensteer/core";
 import { z } from "zod";
-import { PlaceOccupantSchema } from "./places.js";
+import { browserBase } from "./browser-message-base.js";
+import {
+  LocalProfileBindingSchema,
+  PendingBrowserProfileDeletionSchema,
+} from "./browser-profile-storage.js";
+import { ProtocolErrorSchema } from "./common.js";
 import {
   EditingClipboardItemsSchema,
   EditingClipboardOperationIdSchema,
@@ -93,13 +49,52 @@ import {
   EditingModifiersSchema,
   EditingTextEditSchema,
 } from "./editing.js";
-import { ProtocolErrorSchema } from "./common.js";
 import {
+  BrowserPasskeyNoticeSchema,
+  BrowserPasskeyOfferSchema,
+  BrowserPasskeyRequestSchema,
+  BrowserPasskeyWithdrawnSchema,
+  PasskeyCancelSchema,
+  PasskeyCeremonySchema,
+  PasskeyClaimSchema,
+  PasskeyModeSchema,
+  PasskeyRespondSchema,
+  PasskeyResultSchema,
+  PasskeyRuntimeCancelSchema,
+} from "./passkeys.js";
+import {
+  LoginAuthorizationOutcomeSchema,
   PasswordSignInAvailabilitySchema,
   PasswordSignInCancelReasonSchema,
-  LoginAuthorizationOutcomeSchema,
   PasswordSignInRequesterSchema,
 } from "./password-sign-in.js";
+import { PlaceOccupantSchema } from "./places.js";
+export * from "./browser-profile-storage.js";
+export const BrowserRasterDensitySchema = z.union([
+  z.literal(0.75),
+  z.literal(1),
+  z.literal(1.25),
+  z.literal(1.5),
+  z.literal(2),
+]);
+export type BrowserRasterDensity = z.infer<typeof BrowserRasterDensitySchema>;
+
+export {
+  BrowserTabGroupColorSchema,
+  browserTabGroupMaxTabs,
+  browserTabGroupsMaxPerOwner,
+  BrowserTabGroupTabIdsSchema,
+  browserTabGroupTitleMaxLength,
+  BrowserTabGroupTitleSchema,
+  BrowserTabMoveSchema,
+  browserTabOrderMaxTabs,
+  BrowserTabReadInputSchema,
+  BrowserTabWriteInputSchema,
+  type BrowserTabGroupColor,
+  type BrowserTabMove,
+  type BrowserTabReadInput,
+  type BrowserTabWriteInput,
+} from "@opensteer/core";
 
 export {
   BrowserSessionIdSchema,
@@ -133,36 +128,16 @@ export type BrowserAttachPublicKey = z.infer<typeof BrowserAttachPublicKeySchema
 
 export const BrowserAttachPublicKeysSchema = z.array(BrowserAttachPublicKeySchema).min(1).max(4);
 
-/** Periodic checkpoints preserve, but never extend, final-save lease grace. */
-export const browserProfileCheckpointHeader = "x-opensteer-profile-checkpoint";
-
-/**
- * A Browser Session's identity, chosen when it opens and immutable for its
- * life. A fresh session carries no profile, so it has no state lease and no
- * profile-state endpoint at all.
- */
 export const BrowserAttachTicketIdentitySchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("profile"),
-    profileId: BrowserProfileIdSchema,
-    profileLeaseToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-    profileStateUrl: z.url().max(8_192),
-  }),
   z.strictObject({ kind: z.literal("fresh") }),
   z.strictObject({
     kind: z.literal("profile-local"),
     binding: LocalProfileBindingSchema,
-    initialization: z
-      .strictObject({
-        seed: FrozenProfileSeedSchema,
-        initializationUrl: z.url().max(8_192),
-        initializationToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-      })
-      .optional(),
+    initialized: z.boolean(),
+    readyUrl: z.url().max(8192),
   }),
 ]);
 export type BrowserAttachTicketIdentity = z.infer<typeof BrowserAttachTicketIdentitySchema>;
-
 const BrowserInitialNavigationUrlSchema = z
   .url()
   .max(8_192)
@@ -191,39 +166,11 @@ const BrowserBridgeAttachedWireSchema = z.strictObject({
   type: z.literal("browser.attached"),
   initialPage: InitialPageReadySchema.optional(),
 });
-export function createBrowserBridgeAttachedSchema(
-  negotiation: { readonly initialNavigationVersion?: 1 } = {},
-) {
-  return BrowserBridgeAttachedWireSchema.refine(
-    (message) => message.initialPage === undefined || negotiation.initialNavigationVersion === 1,
-    "Initial page readiness requires browser auxiliary negotiation.",
-  );
+export function createBrowserBridgeAttachedSchema() {
+  return BrowserBridgeAttachedWireSchema;
 }
 export const BrowserBridgeAttachedSchema = createBrowserBridgeAttachedSchema();
 export type BrowserBridgeAttached = z.infer<typeof BrowserBridgeAttachedSchema>;
-
-export const ProfileInitializationSeedResponseSchema = z.object({
-  binding: LocalProfileBindingSchema.strip(),
-  seed: FrozenProfileSeedSchema.strip(),
-  snapshot: BrowserProfileSnapshotSchema,
-});
-export type ProfileInitializationSeedResponse = z.infer<
-  typeof ProfileInitializationSeedResponseSchema
->;
-
-export const CompleteProfileInitializationSchema = z.strictObject({
-  binding: LocalProfileBindingSchema,
-  seed: FrozenProfileSeedSchema,
-});
-export type CompleteProfileInitialization = z.infer<typeof CompleteProfileInitializationSchema>;
-
-export const CompleteProfileInitializationResultSchema = z.object({
-  state: z.literal("local"),
-  binding: LocalProfileBindingSchema.strip(),
-});
-export type CompleteProfileInitializationResult = z.infer<
-  typeof CompleteProfileInitializationResultSchema
->;
 
 export const browserWorkspaceTabUrlMaxLength = 16_384;
 
@@ -242,7 +189,9 @@ export const BrowserAttachTicketClaimsSchema = z
     audience: z.literal("opensteer-browser-runtime"),
     passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
-    initialNavigationVersion: z.literal(1).optional(),
+    wireVersion: z.literal(browserRuntimeWireVersion),
+    operationExpiresAt: IsoDateTimeSchema,
+    remainingBudgetMs: z.number().int().positive().max(20_000),
     initialNavigation: InitialNavigationSchema.optional(),
     /** Host opt-in to navigation IDs and committed-document reports. */
     navigationAttributionVersion: z.literal(1).optional(),
@@ -278,14 +227,6 @@ export const BrowserAttachTicketClaimsSchema = z
       })
       .optional(),
   })
-  .refine(
-    (claims) =>
-      (claims.initialNavigationVersion !== undefined) === (claims.initialNavigation !== undefined),
-    {
-      path: ["initialNavigation"],
-      message: "Initial navigation requires both its version and operation.",
-    },
-  )
   .refine(
     (claims) =>
       claims.editingVersion === 2 ? claims.clipboard !== undefined : claims.clipboard === undefined,
@@ -681,12 +622,6 @@ const BaselineBrowserClientMessageSchema = z
       type: z.literal("cdp.command"),
     }),
     /**
-     * Requires `full-control` access. Returns the live context state through the
-     * same exporter the durable profile checkpoint uses; failures arrive as
-     * `browser.error`.
-     */
-    z.strictObject({ ...browserBase, type: z.literal("state.export") }),
-    /**
      * Host-only; the Host never relays it from a viewer or an agent. Replaces
      * every cookie the site scope covers (`browserSiteCookieMatches`) with
      * `cookies` in the session's browser context. For a profile-backed session
@@ -927,11 +862,6 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...browserBase,
-    snapshot: BrowserProfileSnapshotSchema,
-    type: z.literal("state.exported"),
-  }),
-  z.strictObject({
-    ...browserBase,
     error: ProtocolErrorSchema.nullable(),
     operationId: z.uuid(),
     type: z.literal("state.import.result"),
@@ -1020,7 +950,6 @@ export const browserViewerCloseCodes = {
 export const BrowserProfileSchema = z.object({
   id: BrowserProfileIdSchema,
   name: z.string().min(1).max(120),
-  revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 });
 export type BrowserProfile = z.infer<typeof BrowserProfileSchema>;
 
@@ -1636,14 +1565,6 @@ export const CreateBrowserProfileBodySchema = z.strictObject({
 });
 
 export const CreateBrowserProfileResponseSchema = z.object({
-  profile: BrowserProfileSchema,
-});
-
-export const SaveBrowserSessionProfileBodySchema = z.strictObject({
-  name: BrowserProfileNameSchema,
-});
-
-export const SaveBrowserSessionProfileResponseSchema = z.object({
   profile: BrowserProfileSchema,
 });
 

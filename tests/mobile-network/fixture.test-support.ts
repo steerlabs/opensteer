@@ -1,24 +1,24 @@
 import {
-  createId,
-  AgentEventSchema,
-  MessageSchema,
-  ModelSelectionSchema,
-  HarnessInstanceIdSchema,
-  type AgentEvent,
-  type ThreadId,
-} from "../../packages/core/src/index.js";
-import {
-  BrowserSurfaceIdSchema,
-  createBrowserSessionId,
-} from "../../packages/protocol/src/index.js";
-import { WorkspaceTabStore } from "../../packages/database/src/workspace-tab-store.js";
-import { jsonValue } from "../../packages/database/src/store-primitives.js";
-import {
   connectCallerMachine,
   dispatchCallerRun,
   enrollmentToken,
   type MachineAccessHost,
 } from "../../apps/host/src/runtime/machine-access.test-support.js";
+import {
+  AgentEventSchema,
+  createId,
+  HarnessInstanceIdSchema,
+  MessageSchema,
+  ModelSelectionSchema,
+  type AgentEvent,
+  type ThreadId,
+} from "../../packages/core/src/index.js";
+import { jsonValue } from "../../packages/database/src/store-primitives.js";
+import { WorkspaceTabStore } from "../../packages/database/src/workspace-tab-store.js";
+import {
+  BrowserSurfaceIdSchema,
+  createBrowserSessionId,
+} from "../../packages/protocol/src/index.js";
 
 export type SeedName = "light" | "heavy";
 
@@ -253,8 +253,6 @@ export async function seedWorkspace(
   await host.store.createBrowserSession({
     id: sessionId,
     runnerId: caller.runnerId,
-    leaseGeneration: 1,
-    leaseTokenHash: null,
     origin: "workspace",
     placementKey: "benchmark",
     profileId: null,

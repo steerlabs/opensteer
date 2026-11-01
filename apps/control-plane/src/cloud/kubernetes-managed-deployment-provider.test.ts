@@ -1,9 +1,9 @@
+import { hostEnvironmentKeys } from "@opensteer/config";
+import { createId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createId } from "@opensteer/core";
-import { hostEnvironmentKeys } from "@opensteer/config";
 import { describe, expect, it, vi } from "vitest";
 import {
   GoogleMetadataAccessTokenProvider,
@@ -44,7 +44,6 @@ const template = {
 };
 const managedSecrets = {
   "account-bundle.json": "{}",
-  "browser-profile.key": "b".repeat(32),
   "credential.key": "c".repeat(32),
   "host-private.pem": "private",
   "host-public.pem": "public",

@@ -1,15 +1,12 @@
-import { z } from "zod";
 import {
   BrowserRuntime,
   BrowserRuntimeServer,
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
+import { testSessionFilesRoot } from "@opensteer/browser-runtime-core/test-support";
 import { BrowserAttachTicketClaimsSchema } from "@opensteer/protocol";
-import {
-  FakeProfileStateClient,
-  testSessionFilesRoot,
-} from "@opensteer/browser-runtime-core/test-support";
 import { chromium } from "playwright-core";
+import { z } from "zod";
 import { PlaywrightChromiumLauncher } from "./playwright-launcher.js";
 
 let engine: LaunchedBrowser | undefined;
@@ -56,7 +53,6 @@ const runtime = new BrowserRuntime({
         JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString()),
       ),
   },
-  profileStateClient: new FakeProfileStateClient(),
   sessionFilesRoot: testSessionFilesRoot(),
 });
 const attach = runtime.attach.bind(runtime);

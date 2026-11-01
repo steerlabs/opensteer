@@ -6,11 +6,6 @@ import {
 /** Failure modes: parent locking can leave child cascades unordered; reclamation can
  * hold member A while a cascade holds B; transaction retries can hide the deadlock.
  * Force the first-member interleaving for pruning and Workspace deletion and record it. */
-import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
 import {
   BrowserSurfaceIdSchema,
@@ -19,14 +14,19 @@ import {
   createBrowserSessionId,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { afterEach, describe, expect, it as baseIt } from "vitest";
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, it as baseIt, describe, expect } from "vitest";
 import { createDatabase } from "./connection.js";
 
+import { BrowserTabGroupStore } from "./browser-tab-group-store.js";
+import { pauseAfterLock } from "./lock-race.test-support.js";
 import { jsonValue } from "./store-primitives.js";
 import { OpensteerStore } from "./store.js";
-import { BrowserTabGroupStore } from "./browser-tab-group-store.js";
 import { WorkspaceTabStore } from "./workspace-tab-store.js";
-import { pauseAfterLock } from "./lock-race.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -120,8 +120,6 @@ integration.sequential("durable workspace tabs", () => {
       const session = {
         id: groupId,
         runnerId,
-        leaseGeneration: 1,
-        leaseTokenHash: null,
         origin: "workspace" as const,
         placementKey: "test",
         profileId: null,
@@ -188,7 +186,7 @@ integration.sequential("durable workspace tabs", () => {
           .execute();
         await transaction
           .updateTable("browserSessions")
-          .set({ state: "closed", profileLeaseExpiresAt: new Date() })
+          .set({ state: "closed" })
           .where("id", "=", f.groupId)
           .execute();
         await transaction

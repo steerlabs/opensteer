@@ -1,22 +1,22 @@
-import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
-import { performance } from "node:perf_hooks";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { delay } from "@opensteer/shared/delay";
 import { SessionCdpRouter, type CdpEvent } from "@opensteer/browser-core";
 import type { BrowserServerMessage } from "@opensteer/protocol/browser";
 import type { EditingContext } from "@opensteer/protocol/editing";
+import { delay } from "@opensteer/shared/delay";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { appendFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { performance } from "node:perf_hooks";
 import type { LaunchedBrowser } from "../browser/backend.js";
-import { PageEditingObserver } from "../browser/editing-observer.js";
-import { SurfaceLedger } from "../browser/surface-ledger.js";
 import { BrowserController } from "../browser/controller.js";
+import { editingCommandParameters } from "../browser/editing-commands.js";
+import { PageEditingObserver } from "../browser/editing-observer.js";
 import { HostSignIns } from "../browser/host-sign-ins.js";
 import { SessionFiles } from "../browser/session-files.js";
+import { SurfaceLedger } from "../browser/surface-ledger.js";
 import { freshClaims } from "./fakes.js";
-import { editingCommandParameters } from "../browser/editing-commands.js";
 
 /** The real engine supplies its debugger; no clipboard operation or OS activation is used. */
 export async function runEditingEngineJourney(
@@ -279,7 +279,6 @@ export async function runEditingEngineJourney(
       cdpRouter: router,
       claims,
       clipboard: browser.clipboard,
-      exportSnapshot: () => browser.exportSnapshot(),
       replaceSiteCookies: (...args) => browser.replaceSiteCookies(...args),
       files: new SessionFiles(path.join(evidence, "session-files")),
       ledger,

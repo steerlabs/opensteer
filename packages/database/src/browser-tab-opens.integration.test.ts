@@ -1,13 +1,17 @@
+import { createId } from "@opensteer/core";
+import {
+  BrowserSurfaceIdSchema,
+  createBrowserSessionId,
+  type BrowserTabOpenBinding,
+} from "@opensteer/protocol";
 import { sql } from "kysely";
 import { expect, it } from "vitest";
-import { createId } from "@opensteer/core";
-import { createBrowserSessionId, type BrowserTabOpenBinding } from "@opensteer/protocol";
-import { createDatabase } from "./connection.js";
 import {
   getBrowserTabOpen,
   interruptPendingBrowserTabOpens,
   settleBrowserTabOpen,
 } from "./browser-session-store.js";
+import { createDatabase } from "./connection.js";
 
 it("settles each open once and interrupts pending operations before a new Host admits work", async () => {
   const database = createDatabase({ connectionString: process.env.OPENSTEER_TEST_DATABASE_URL! });
@@ -47,7 +51,7 @@ it("settles each open once and interrupts pending operations before a new Host a
       await settleBrowserTabOpen(tx, { ...binding, outcome: { kind: "failed", reason: "failed" } });
       await settleBrowserTabOpen(tx, {
         ...binding,
-        outcome: { kind: "opened", tabId: "late-page" },
+        outcome: { kind: "opened", tabId: BrowserSurfaceIdSchema.parse("late-page") },
       });
       expect((await read())?.outcome).toEqual({ kind: "failed", reason: "failed" });
       await tx.updateTable("browserTabOpens").set({ binding }).execute();
@@ -55,10 +59,13 @@ it("settles each open once and interrupts pending operations before a new Host a
       expect((await read())?.outcome).toEqual({ kind: "failed", reason: "interrupted" });
       await settleBrowserTabOpen(tx, {
         ...binding,
-        outcome: { kind: "opened", tabId: "old-runtime" },
+        outcome: { kind: "opened", tabId: BrowserSurfaceIdSchema.parse("old-runtime") },
       });
       expect((await read())?.outcome).toEqual({ kind: "failed", reason: "interrupted" });
-      const opened = { ...binding, outcome: { kind: "opened" as const, tabId: "recorded-page" } };
+      const opened = {
+        ...binding,
+        outcome: { kind: "opened" as const, tabId: BrowserSurfaceIdSchema.parse("recorded-page") },
+      };
       await tx.updateTable("browserTabOpens").set({ binding: opened }).execute();
       await interruptPendingBrowserTabOpens(tx);
       await settleBrowserTabOpen(tx, { ...binding, outcome: { kind: "failed", reason: "failed" } });

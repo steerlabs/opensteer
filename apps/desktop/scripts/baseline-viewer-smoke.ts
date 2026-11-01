@@ -4,58 +4,54 @@ import {
   browserViewerMessage,
 } from "../../host/src/browser/browser-viewer-protocol.js";
 /** VM-only baseline Personal browser: real renderer, runtime, Electron engine and native clipboard. */
-import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { once } from "node:events";
-import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
-import { mkdtempSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { app, BrowserWindow, clipboard, ipcMain, Menu, protocol } from "electron";
-import { WebSocketServer, WebSocket } from "ws";
 import {
   BrowserRuntime,
   encodeBrowserFrame,
   type BrowserAttachment,
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
-import {
-  FakeProfileStateClient,
-  FakeTicketVerifier,
-  validClaims,
-} from "@opensteer/browser-runtime-core/test-support";
+import { FakeTicketVerifier, validClaims } from "@opensteer/browser-runtime-core/test-support";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
-  BrowserSessionIdSchema,
   BrowserClientMessageSchema,
+  BrowserSessionIdSchema,
   hostApi,
   hostApiVersionHeader,
   type BrowserServerMessage,
 } from "@opensteer/protocol";
 import {
-  DisplayClientDiagnosticSchema,
-  DesktopOpenHostWebSocketResultSchema,
   DesktopHostWebSocketEventSchema,
-  type DesktopHostHttpRequest,
-  type DesktopOpenHostWebSocketInput,
-  type DesktopHostWebSocketEvent,
-  type DesktopHostWebSocketCommand,
+  DesktopOpenHostWebSocketResultSchema,
+  DisplayClientDiagnosticSchema,
   type DesktopCloseHostWebSocketInput,
+  type DesktopHostHttpRequest,
+  type DesktopHostWebSocketCommand,
+  type DesktopHostWebSocketEvent,
+  type DesktopOpenHostWebSocketInput,
 } from "@opensteer/protocol/desktop";
-import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
-import { viewerClipboardHandlers } from "../src/bridge/methods/viewer-clipboard.js";
-import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
+import { app, BrowserWindow, clipboard, ipcMain, Menu, protocol } from "electron";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdtempSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import { WebSocket, WebSocketServer } from "ws";
+import { registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { assertAuthorizedRenderer, type DesktopBridgeContext } from "../src/bridge/context.js";
+import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
 import {
+  handleCloseHostWebSocket,
   handleHostRequest,
   handleOpenHostWebSocket,
   handleSendHostWebSocket,
-  handleCloseHostWebSocket,
 } from "../src/bridge/methods/host.js";
-import { registerDesktopAppScheme } from "../src/app/app-protocol.js";
+import { viewerClipboardHandlers } from "../src/bridge/methods/viewer-clipboard.js";
+import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 
 if (
   !guestMarkerExists(path.join(process.env.HOME!, ".opensteer-test-guest")) &&
@@ -313,7 +309,6 @@ async function main() {
           return browser;
         },
       },
-      profileStateClient: new FakeProfileStateClient(),
       ticketVerifier: verifier,
       sessionFilesRoot: path.join(scratch, "files"),
     });

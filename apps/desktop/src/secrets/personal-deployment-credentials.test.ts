@@ -1,7 +1,7 @@
+import { createId } from "@opensteer/core";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createId } from "@opensteer/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { NativePersonalDeploymentCredentials } from "./personal-deployment-credentials.js";
 import {
@@ -44,7 +44,7 @@ describe("NativePersonalDeploymentCredentials", () => {
     expect(first.messagingEnrollmentToken).toMatch(/^[A-Za-z0-9_-]{64}$/u);
     expect(second.messagingEnrollmentToken).toBe(first.messagingEnrollmentToken);
     expect(first.hostKeyFingerprint).toMatch(/^sha256:[A-Za-z0-9_-]{43}$/u);
-    for (const keyPath of [paths.browserProfileKeyPath, paths.credentialKeyPath]) {
+    for (const keyPath of [paths.credentialKeyPath]) {
       expect((await readFile(keyPath, "utf8")).trim()).toMatch(/^[A-Za-z0-9_-]{43}$/u);
       if (process.platform !== "win32") expect((await stat(keyPath)).mode & 0o077).toBe(0);
     }
@@ -103,7 +103,7 @@ describe("NativePersonalDeploymentCredentials", () => {
     });
     const created = await files.create(manifest(path.join(root, "Workspaces")));
     const paths = await files.prepare(created);
-    await writeFile(paths.browserProfileKeyPath, "not-a-key\n", { mode: 0o600 });
+    await writeFile(paths.credentialKeyPath, "not-a-key\n", { mode: 0o600 });
 
     await expect(
       new NativePersonalDeploymentCredentials(cryptography()).ensure(created, paths),

@@ -1,31 +1,30 @@
-import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
-import { once } from "node:events";
-import { mkdir, writeFile, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { expect, it, vi } from "vitest";
-import { WebSocket } from "ws";
-import { z } from "zod";
 import {
-  BrowserRuntime,
   BrowserController,
+  BrowserRuntime,
   BrowserRuntimeServer,
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
 import {
-  BrowserServerMessageSchema,
-  BrowserClientMessageSchema,
-  type BrowserServerMessage,
-  type BrowserClientMessage,
-  decodeBrowserFrameEnvelope,
-  editingClipboardPartMaxBytes,
-} from "@opensteer/protocol";
-import {
-  FakeProfileStateClient,
   FakeTicketVerifier,
   testSessionFilesRoot,
   validClaims,
 } from "@opensteer/browser-runtime-core/test-support";
+import {
+  type BrowserClientMessage,
+  BrowserClientMessageSchema,
+  type BrowserServerMessage,
+  BrowserServerMessageSchema,
+  decodeBrowserFrameEnvelope,
+  editingClipboardPartMaxBytes,
+} from "@opensteer/protocol";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { join } from "node:path";
+import { expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
+import { z } from "zod";
 import {
   TestChromiumLauncher,
   cleanup,
@@ -133,7 +132,6 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           },
         },
         runtimeId: claims.runtimeId,
-        profileStateClient: new FakeProfileStateClient(),
         ticketVerifier: verifier,
         sessionFilesRoot: testSessionFilesRoot(),
       });

@@ -5,21 +5,7 @@ import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
  * Uses production Electron launch, router, controller, authority, service and
  * broker client. The fake broker and HTTPS websites contain synthetic data.
  */
-import { execFileSync } from "node:child_process";
-import { createECDH, createHash, randomBytes, randomUUID, X509Certificate } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import { WorkspaceIdSchema } from "@opensteer/core";
-import { app, BrowserWindow, webContents, session as electronSession } from "electron";
-import { z } from "zod";
 import { SessionCdpRouter, type CdpParameters } from "@opensteer/browser-core";
-import {
-  EmptyBrowserProfileSnapshot,
-  type BrowserProfileSnapshot,
-} from "@opensteer/browser-profile";
 import {
   BrowserController,
   HostSignIns,
@@ -27,40 +13,50 @@ import {
   SurfaceLedger,
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
+import { WorkspaceIdSchema } from "@opensteer/core";
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserClientMessageSchema,
   createBrowserSessionId,
-  LoginFillStatusSchema,
-  LoginRefSchema,
-  LoginReceiverKeySchema,
   LoginEnvelopeBindingSchema,
-  PasswordSignInAuthorityResultSchema,
-  type PasswordSignInAuthorityCommand,
-  type PasswordSignInAuthorityEvent,
+  LoginFillStatusSchema,
+  LoginReceiverKeySchema,
+  LoginRefSchema,
   passwordLoginLifetimeMs,
+  PasswordSignInAuthorityResultSchema,
   type BrowserServerMessage,
   type LoginField,
+  type PasswordSignInAuthorityCommand,
+  type PasswordSignInAuthorityEvent,
 } from "@opensteer/protocol";
+import { app, BrowserWindow, session as electronSession, webContents } from "electron";
+import { execFileSync } from "node:child_process";
+import { createECDH, createHash, randomBytes, randomUUID, X509Certificate } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { z } from "zod";
+import { ComputerUseBridgeClient } from "../../runner/src/computer-apps/computer-use-bridge-client.js";
 import {
   ElectronBrowserLauncher,
   electronBrowserPartition,
 } from "../src/browser/electron-browser-launcher.js";
+import {
+  ComputerUseBridgeServer,
+  ComputerUseSessionOwnership,
+} from "../src/computer-use/computer-use-bridge-server.js";
 import { PasswordsLoginAuthority } from "../src/passwords/login-authority.js";
+import { openLoginEnvelope } from "../src/passwords/login-envelope.js";
 import { PasswordsService } from "../src/passwords/passwords-service.js";
-import { PasswordsSignInOperations } from "../src/passwords/sign-in-operations.js";
 import { passwordsBrokerSocketPath } from "../src/passwords/paths.js";
+import { PasswordsSignInOperations } from "../src/passwords/sign-in-operations.js";
 import {
   FakePasswordsBroker,
   verifySameUserPeer,
 } from "../src/passwords/test-support/fake-broker-server.js";
 import { PasswordLoginFixture } from "./electron-passwords-fixture.js";
-import {
-  ComputerUseBridgeServer,
-  ComputerUseSessionOwnership,
-} from "../src/computer-use/computer-use-bridge-server.js";
-import { ComputerUseBridgeClient } from "../../runner/src/computer-apps/computer-use-bridge-client.js";
-import { openLoginEnvelope } from "../src/passwords/login-envelope.js";
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -233,9 +229,7 @@ interface Lease {
   operationId: string;
   loginRef: string;
 }
-async function harness(
-  options: { snapshot?: BrowserProfileSnapshot; profile?: string; workspaceLease?: boolean } = {},
-) {
+async function harness(options: { profile?: string; workspaceLease?: boolean } = {}) {
   setupHealthy = false;
   // Leave room for the production broker path in macOS's 104-byte sun_path.
   const home = mkdtempSync(`${tmpdir()}/`);
@@ -524,7 +518,7 @@ async function harness(
     initialViewport: { width: 900, height: 720, devicePixelRatio: 1 },
     sessionId,
     partitionKey,
-    storage: { kind: "legacy", snapshot: options.snapshot ?? EmptyBrowserProfileSnapshot },
+    storage: { kind: "guest" },
   });
   const page = browser.context.pages()[0]!;
   const targetId = await page.targetId();
@@ -547,6 +541,9 @@ async function harness(
   controller = new BrowserController({
     cdpRouter: router,
     claims: BrowserAttachTicketClaimsSchema.parse({
+      operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+      remainingBudgetMs: 18_000,
+      wireVersion: 1,
       access: "full-control",
       audience: "opensteer-browser-runtime",
       issuedAt: new Date().toISOString(),
@@ -567,7 +564,6 @@ async function harness(
     files,
     ledger,
     signIns,
-    exportSnapshot: () => browser!.exportSnapshot(),
     replaceSiteCookies: (site, cookies, deadline) =>
       browser!.replaceSiteCookies(site, cookies, deadline),
     sink: {
@@ -1074,20 +1070,6 @@ async function run(): Promise<void> {
       await h.screenshot("lease-refusals");
     },
   );
-  await journey("8", "Profile snapshot reopens authenticated server session", async () => {
-    const profile = `bpr_${randomUUID()}`;
-    const h = await harness({ profile });
-    await signIn(h, true);
-    const snapshot = await h.browser.exportSnapshot();
-    await h.cleanup();
-    const reopened = await harness({ profile, snapshot });
-    await reopened.navigate("/account");
-    await identity(reopened);
-    check(
-      "profile-backed session retained authenticated account",
-      (await reopened.evaluate("!!document.querySelector('#identity')")) === true,
-    );
-  });
   await journey(
     "9-oopif",
     "Focus leaves OOPIF while iframe input stays locally active",

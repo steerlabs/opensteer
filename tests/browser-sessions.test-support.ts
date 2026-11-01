@@ -1,12 +1,3 @@
-import { browserSiteFromUrl } from "../packages/browser-profile/src/source-state.js";
-import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
-import {
-  executablePath,
-  addCleanup,
-  grantedProfile,
-  profileRevision,
-  waitFor,
-} from "./browser-deployment.test-support.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -16,21 +7,29 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
-import { expect, vi } from "vitest";
+import { expect } from "vitest";
+import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
+import { type VerticalStack } from "../apps/host/src/agents/vertical-stack.test-support.js";
+import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
+import { browserSiteFromUrl } from "../packages/browser-profile/src/source-state.js";
+import { readImageDimensions } from "../packages/browser-runtime-core/src/index.js";
 import {
   BrowserProfileIdSchema,
   ModelSelectionSchema,
   type WorkspaceId,
 } from "../packages/core/src/index.js";
-import { readImageDimensions } from "../packages/browser-runtime-core/src/index.js";
 import {
   BrowserServerMessageSchema,
   BrowserSessionIdSchema,
   decodeBrowserFrameEnvelope,
   type BrowserServerMessage,
 } from "../packages/protocol/src/browser.js";
-import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
-import { type VerticalStack } from "../apps/host/src/agents/vertical-stack.test-support.js";
+import {
+  addCleanup,
+  executablePath,
+  grantedProfile,
+  waitFor,
+} from "./browser-deployment.test-support.js";
 
 const browserServiceMain = fileURLToPath(
   new URL("../apps/browser-runtime/src/main.ts", import.meta.url),
@@ -158,10 +157,9 @@ export async function agentJourney(
   const storage = await stack.host.store.getBrowserProfileStorage(
     BrowserProfileIdSchema.parse(profileId),
   );
-  expect(storage.kind).toBe(label === "service" ? "local" : "vault");
+  expect(storage.kind).toBe("local");
   if (storage.kind === "local") {
-    // A controlled sign-in waits for native cookie commit; native profiles never
-    // write legacy checkpoints back to the Host, even while the browser is live.
+    // A controlled sign-in waits for native cookie commit before it reports success.
     expect(
       await stack.host.browser.applySiteCookies(
         BrowserSessionIdSchema.parse(report.profileSession),
@@ -181,18 +179,7 @@ export async function agentJourney(
         ],
       ),
     ).toBe("applied");
-    expect(await profileRevision(stack, profileId)).toBe(0);
-  } else {
-    await vi.waitFor(
-      async () =>
-        expect(
-          await profileRevision(stack, profileId),
-          "Legacy profile never committed its live checkpoint",
-        ).toBeGreaterThan(0),
-      { timeout: 20_000 },
-    );
   }
-  const savedRevision = await profileRevision(stack, profileId);
   const watch =
     label === "relayed" ? await watchBrowserSession(stack, report.profileSession) : null;
   if (watch && process.env.OPENSTEER_BROWSER_WATCH_CHROMIUM_ARTIFACT_PATH) {
@@ -222,7 +209,6 @@ export async function agentJourney(
     expect(
       await stack.host.store.getBrowserProfileStorage(BrowserProfileIdSchema.parse(profileId)),
     ).toEqual(storage);
-    expect(await profileRevision(stack, profileId)).toBe(savedRevision);
   }
 
   const reportPath = path.join(
@@ -231,7 +217,7 @@ export async function agentJourney(
   );
   await writeFile(
     reportPath,
-    `${JSON.stringify({ afterCrash: check, report, savedRevision, watch }, null, 2)}\n`,
+    `${JSON.stringify({ afterCrash: check, report, storage, watch }, null, 2)}\n`,
   );
   process.stdout.write(`browser sessions E2E report (${label}): ${reportPath}\n`);
 }

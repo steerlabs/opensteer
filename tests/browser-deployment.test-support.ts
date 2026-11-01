@@ -7,26 +7,25 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
 import { afterEach, describe, expect } from "vitest";
-import {
-  HarnessRegistry,
-  isolatedServiceHarnessRuntimeBoundary,
-} from "../packages/harness/src/index.js";
-import { CodexHarnessDriver } from "../packages/harness-codex/src/codex-driver.js";
-import type { WorkspaceId } from "../packages/core/src/index.js";
-import {
-  BrowserRuntime,
-  BrowserRuntimeServer,
-  defaultAttachTicketReplayLedgerPath,
-  Ed25519AttachTicketVerifier,
-  HttpBrowserProfileStateClient,
-  type LaunchedBrowser,
-  sessionFilesRoot,
-} from "../packages/browser-runtime-core/src/index.js";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import {
   startVerticalStack,
   type VerticalStack,
 } from "../apps/host/src/agents/vertical-stack.test-support.js";
+import {
+  BrowserRuntime,
+  BrowserRuntimeServer,
+  defaultAttachTicketReplayLedgerPath,
+  Ed25519AttachTicketVerifier,
+  sessionFilesRoot,
+  type LaunchedBrowser,
+} from "../packages/browser-runtime-core/src/index.js";
+import type { WorkspaceId } from "../packages/core/src/index.js";
+import { CodexHarnessDriver } from "../packages/harness-codex/src/codex-driver.js";
+import {
+  HarnessRegistry,
+  isolatedServiceHarnessRuntimeBoundary,
+} from "../packages/harness/src/index.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 export const executablePath = [
@@ -155,9 +154,7 @@ export interface Browser {
 /** This computer's Chromium behind the loopback bridge its Runner relays for. */
 export async function startBrowser(
   options: {
-    idleProfileHostTimeoutMs?: number;
     onLaunch?: (browser: LaunchedBrowser) => void;
-    profileStateFetch?: typeof globalThis.fetch;
   } = {},
 ): Promise<Browser> {
   const profileRoot = await mkdtemp(path.join(tmpdir(), "opensteer-browser-e2e-"));
@@ -170,20 +167,15 @@ export async function startBrowser(
     headless: true,
   });
   const runtime = new BrowserRuntime({
-    checkpointIntervalMs: 1_000,
-    ...(options.idleProfileHostTimeoutMs === undefined
-      ? {}
-      : { idleProfileHostTimeoutMs: options.idleProfileHostTimeoutMs }),
+    localProfiles: { root: profileRoot },
     launcher: {
-      launch: async (request) => {
-        const browser = await launcher.launch(request);
+      localProfiles: launcher.localProfiles,
+      launch: async (request, signal) => {
+        const browser = await launcher.launch(request, signal);
         options.onLaunch?.(browser);
         return browser;
       },
     },
-    profileStateClient: new HttpBrowserProfileStateClient(
-      options.profileStateFetch ? { fetch: options.profileStateFetch } : {},
-    ),
     runtimeId: "browser-e2e",
     sessionFilesRoot: sessionFilesRoot(profileRoot),
     ticketVerifier: await Ed25519AttachTicketVerifier.create({
@@ -252,12 +244,6 @@ export async function grantedProfile(
   });
   if (!granted.ok) throw new Error(granted.error.message);
   return created.data.profile.id;
-}
-
-export async function profileRevision(stack: VerticalStack, profileId: string): Promise<number> {
-  const bootstrap = await stack.api["bootstrap.get"]({});
-  if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-  return bootstrap.data.browser.profiles.find((profile) => profile.id === profileId)?.revision ?? 0;
 }
 
 export async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number): Promise<void> {

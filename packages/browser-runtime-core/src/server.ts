@@ -1,25 +1,25 @@
-import { z } from "zod";
-import { createHash, timingSafeEqual } from "node:crypto";
 import {
-  createServer,
-  type IncomingMessage,
-  type ServerResponse,
-  type Server as HttpServer,
-} from "node:http";
-import { once } from "node:events";
-import {
-  BrowserServerMessageSchema,
   BrowserAttachPublicKeysSchema,
+  BrowserServerMessageSchema,
   LocalProfileBindingSchema,
-  type BrowserServerMessage,
   type BrowserAttachPublicKey,
+  type BrowserServerMessage,
 } from "@opensteer/protocol";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { once } from "node:events";
+import {
+  createServer,
+  type Server as HttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
+import { z } from "zod";
 import type { BrowserControllerSink } from "./browser/controller.js";
-import { encodeBrowserFrame, type BrowserFrame } from "./stream/frame.js";
+import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import type { BrowserAttachment, BrowserRuntime } from "./runtime.js";
+import { encodeBrowserFrame, type BrowserFrame } from "./stream/frame.js";
 
 export interface BrowserRuntimeServerOptions {
   relayBridge?: {
@@ -110,12 +110,6 @@ export class BrowserRuntimeServer {
       this.accept(websocket, ticket, {
         passkeys:
           Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
-        localProfiles:
-          Boolean(this.relayBridge) &&
-          request.headers["x-opensteer-browser-local-profiles"] === "1",
-        initialNavigation:
-          Boolean(this.relayBridge) &&
-          request.headers["x-opensteer-browser-initial-navigation"] === "1",
       });
     });
   }
@@ -126,9 +120,7 @@ export class BrowserRuntimeServer {
     if (
       token === undefined &&
       encodedKeys === undefined &&
-      request.headers["x-opensteer-browser-passkeys"] === undefined &&
-      request.headers["x-opensteer-browser-local-profiles"] === undefined &&
-      request.headers["x-opensteer-browser-initial-navigation"] === undefined
+      request.headers["x-opensteer-browser-passkeys"] === undefined
     )
       return;
     const bridge = this.relayBridge;
@@ -163,11 +155,6 @@ export class BrowserRuntimeServer {
       token.length > 4096 ||
       !safeTokenEqual(token, this.relayBridge.token)
     ) {
-      response.writeHead(403);
-      response.end();
-      return;
-    }
-    if (request.headers["x-opensteer-browser-local-profiles"] !== "1") {
       response.writeHead(403);
       response.end();
       return;
@@ -226,11 +213,7 @@ export class BrowserRuntimeServer {
     return closing;
   }
 
-  private accept(
-    websocket: WebSocket,
-    ticket: string,
-    options: { passkeys: boolean; localProfiles: boolean; initialNavigation: boolean },
-  ): void {
+  private accept(websocket: WebSocket, ticket: string, options: { passkeys: boolean }): void {
     const sink = new WebSocketBrowserSink(websocket, this.maxBufferedBytes);
     let attachment: BrowserAttachment | null = null;
     let disconnected = false;
@@ -283,7 +266,7 @@ export class BrowserRuntimeServer {
           await attached.close().catch(() => undefined);
           return;
         }
-        if (options.localProfiles || options.initialNavigation) {
+        if (this.relayBridge) {
           websocket.send(
             JSON.stringify({
               type: "browser.attached",

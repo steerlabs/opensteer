@@ -113,22 +113,14 @@ function isAllowedBrowserRequest(value: string): boolean {
 /** Session-wide: worker requests need the same restoration fence as page requests. */
 export class BrowserSessionRequestGate {
   #mode: "closed" | "dormant" | "open" | "failed" = "closed";
-  readonly #helpers = new Set<number>();
 
   beforeRequest(
-    webContentsId: number | undefined,
+    _webContentsId: number | undefined,
     callback: (response: { cancel: boolean }) => void,
   ): void {
-    callback({
-      cancel:
-        this.#mode !== "open" &&
-        !(
-          this.#mode !== "failed" &&
-          webContentsId !== undefined &&
-          this.#helpers.has(webContentsId)
-        ),
-    });
+    callback({ cancel: this.#mode !== "open" });
   }
+
   close(): void {
     if (this.#mode !== "failed") this.#mode = "closed";
   }
@@ -140,12 +132,5 @@ export class BrowserSessionRequestGate {
   }
   fail(): void {
     this.#mode = "failed";
-  }
-  /** Only synthetic Fetch-fulfilled storage helpers may cross a closed gate. */
-  allowStorageHelper(webContentsId: number): () => void {
-    this.#helpers.add(webContentsId);
-    return () => {
-      this.#helpers.delete(webContentsId);
-    };
   }
 }

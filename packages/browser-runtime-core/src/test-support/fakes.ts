@@ -1,15 +1,14 @@
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { isRecord } from "@opensteer/shared/isRecord";
+import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/browser-core";
+import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserAttachTicketClaimsSchema,
   type BrowserAttachTicketClaims,
-  type BrowserAttachTicketIdentity,
   type BrowserServerMessage,
 } from "@opensteer/protocol";
-import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/browser-core";
-import type { BrowserCookie, BrowserProfileSnapshot } from "@opensteer/browser-profile/snapshot";
+import { isRecord } from "@opensteer/shared/isRecord";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type {
   BrowserContext,
   BrowserLaunchRequest,
@@ -21,11 +20,6 @@ import type {
 import type { BrowserControllerSink } from "../browser/controller.js";
 import type { AttachTicketVerifier } from "../security/attach-ticket.js";
 import type { BrowserFrame } from "../stream/frame.js";
-import type {
-  BrowserProfileAttachTicketClaims,
-  BrowserProfileStateClient,
-} from "../profile-state-client.js";
-
 interface SentCdpCommand {
   method: string;
   parameters: Record<string, unknown> | undefined;
@@ -342,7 +336,6 @@ export class FakeLaunchedBrowser implements LaunchedBrowser {
   readonly closeError: Error | null;
   closeCount = 0;
   readonly context: BrowserContext;
-  snapshot: BrowserProfileSnapshot = { cookies: [], origins: [] };
   private closed = false;
   private readonly closeListeners = new Set<() => void>();
 
@@ -356,10 +349,6 @@ export class FakeLaunchedBrowser implements LaunchedBrowser {
     this.closeCount += 1;
     this.crash();
     if (this.closeError) throw this.closeError;
-  }
-
-  exportSnapshot(): Promise<BrowserProfileSnapshot> {
-    return Promise.resolve(this.snapshot);
   }
 
   async replaceSiteCookies(
@@ -509,46 +498,18 @@ export class FakeTicketVerifier implements AttachTicketVerifier {
   }
 }
 
-export class FakeProfileStateClient implements BrowserProfileStateClient {
-  commits: Array<{ expectedRevision: number; snapshot: BrowserProfileSnapshot }> = [];
-  loads = 0;
-  revision = 0;
-  snapshot: BrowserProfileSnapshot = { cookies: [], origins: [] };
-
-  async load(): Promise<{ revision: number; snapshot: BrowserProfileSnapshot }> {
-    this.loads += 1;
-    return { revision: this.revision, snapshot: this.snapshot };
-  }
-
-  async commit(
-    _claims: BrowserProfileAttachTicketClaims,
-    expectedRevision: number,
-    snapshot: BrowserProfileSnapshot,
-    _periodic?: boolean,
-  ): Promise<number> {
-    if (expectedRevision !== this.revision) throw new Error("stale profile revision");
-    this.commits.push({ expectedRevision, snapshot });
-    this.snapshot = snapshot;
-    this.revision += 1;
-    return this.revision;
-  }
-}
-
 export function validClaims(
   overrides: Partial<BrowserAttachTicketClaims> = {},
 ): BrowserAttachTicketClaims {
   return BrowserAttachTicketClaimsSchema.parse({
+    operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+    remainingBudgetMs: 18_000,
+    wireVersion: 1,
     audience: "opensteer-browser-runtime",
     access: "full-control",
     expiresAt: "2030-01-01T00:05:00.000Z",
     issuedAt: "2030-01-01T00:00:00.000Z",
-    identity: {
-      kind: "profile",
-      profileLeaseToken: "a".repeat(43),
-      profileId: "bpr_00000000-0000-4000-8000-000000000001",
-      profileStateUrl:
-        "https://host.test/v1/browser-profile-state/bpr_00000000-0000-4000-8000-000000000001/bsn_00000000-0000-4000-8000-000000000002",
-    },
+    identity: { kind: "fresh" },
     nonce: "nonce_0123456789abcdef",
     runtimeId: "runtime_test",
     sessionId: "bsn_00000000-0000-4000-8000-000000000002",
@@ -563,24 +524,6 @@ export function freshClaims(
 ): BrowserAttachTicketClaims {
   return validClaims({ identity: { kind: "fresh" }, ...overrides });
 }
-
-/** Claims narrowed to a profile identity, for profile-state client tests. */
-export function validProfileClaims(
-  identityOverrides: Partial<Omit<ProfileIdentity, "kind">> = {},
-  overrides: Partial<BrowserAttachTicketClaims> = {},
-): BrowserProfileAttachTicketClaims {
-  const base = validClaims();
-  if (base.identity.kind !== "profile") throw new Error("Expected profile claims.");
-  const claims = BrowserAttachTicketClaimsSchema.parse({
-    ...base,
-    ...overrides,
-    identity: { ...base.identity, ...identityOverrides },
-  });
-  if (claims.identity.kind !== "profile") throw new Error("Expected profile claims.");
-  return { ...claims, identity: claims.identity };
-}
-
-type ProfileIdentity = Extract<BrowserAttachTicketIdentity, { kind: "profile" }>;
 
 export function jpeg(width: number, height: number): Buffer {
   return Buffer.from([

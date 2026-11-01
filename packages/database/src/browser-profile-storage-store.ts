@@ -1,18 +1,18 @@
-import { randomUUID } from "node:crypto";
 import { OpensteerError, type BrowserProfileId, type RunnerId, type UserId } from "@opensteer/core";
 import {
   BrowserProfileStorageSchema,
   type BrowserProfileStorage,
-  type FrozenProfileSeed,
+  type BrowserSessionId,
   type HeldLocalProfile,
   type LocalProfileBinding,
   type PendingBrowserProfileDeletion,
-  type BrowserSessionId,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
-import { withDatabaseTransaction } from "./connection.js";
-import type { BrowserProfileTable, BrowserProfileDeletionTable, DatabaseSchema } from "./schema.js";
+import { randomUUID } from "node:crypto";
 import { deleteBrowserProfileInTransaction } from "./browser-session-store.js";
+import { withDatabaseTransaction } from "./connection.js";
+import { databaseOperationOptions } from "./operation-budget.js";
+import type { BrowserProfileDeletionTable, BrowserProfileTable, DatabaseSchema } from "./schema.js";
 
 export interface NativeProfileDeletionResult {
   readonly sessionIds: readonly BrowserSessionId[];
@@ -25,13 +25,14 @@ export function lockBrowserProfile(
 ) {
   return sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${profileId}`}, 0))`.execute(
     transaction,
+    databaseOperationOptions(),
   );
 }
 
 export function profileStorage(row: Selectable<BrowserProfileTable>): BrowserProfileStorage {
   return BrowserProfileStorageSchema.parse(
-    row.storageState === "vault"
-      ? { kind: "vault" }
+    row.storageState === "unbound"
+      ? { kind: "unbound" }
       : {
           kind: row.storageState,
           binding: {
@@ -43,7 +44,7 @@ export function profileStorage(row: Selectable<BrowserProfileTable>): BrowserPro
             bindingId: row.storageBindingId,
             engine: row.storageEngine,
           },
-          seed: { revision: Number(row.frozenSeedRevision), digest: row.frozenSeedDigest },
+          initialized: row.initialized,
         },
   );
 }
@@ -59,13 +60,10 @@ export function sameProfileBinding(left: LocalProfileBinding, right: LocalProfil
     left.engine === right.engine
   );
 }
-function sameSeed(left: FrozenProfileSeed, right: FrozenProfileSeed): boolean {
-  return left.revision === right.revision && left.digest === right.digest;
-}
 function conflict(message: string): never {
   throw new OpensteerError({ code: "conflict", message });
 }
-function bindingColumns(binding: LocalProfileBinding, seed: FrozenProfileSeed) {
+function bindingColumns(binding: LocalProfileBinding) {
   return {
     storageBindingVersion: binding.version,
     storageDeploymentId: binding.deploymentId,
@@ -73,8 +71,6 @@ function bindingColumns(binding: LocalProfileBinding, seed: FrozenProfileSeed) {
     storageInstanceId: binding.storageInstanceId,
     storageBindingId: binding.bindingId,
     storageEngine: binding.engine,
-    frozenSeedRevision: seed.revision,
-    frozenSeedDigest: seed.digest,
   };
 }
 
@@ -87,12 +83,12 @@ async function validateBindingOwner(
     .selectFrom("runners")
     .select(["ownerKind", "ownerUserId", "allowedModules", "revokedAt"])
     .where("id", "=", binding.runnerId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   const deployment = await transaction
     .selectFrom("deployments")
     .select("id")
     .where("id", "=", binding.deploymentId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (
     !deployment ||
     !runner ||
@@ -113,169 +109,10 @@ export async function getBrowserProfileStorage(
     .selectFrom("browserProfiles")
     .selectAll()
     .where("id", "=", profileId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!row || row.archivedAt)
     throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
   return profileStorage(row);
-}
-
-export async function reserveBrowserProfileInitialization(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    binding: LocalProfileBinding;
-    seed: FrozenProfileSeed;
-    tokenHash: string;
-    expiresAt: Date;
-    adoptExistingBinding?: boolean;
-  },
-): Promise<BrowserProfileStorage> {
-  return withDatabaseTransaction(database, async (transaction) => {
-    await lockBrowserProfile(transaction, input.binding.profileId);
-    const row = await transaction
-      .selectFrom("browserProfiles")
-      .selectAll()
-      .where("id", "=", input.binding.profileId)
-      .executeTakeFirst();
-    if (!row || row.archivedAt)
-      throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
-    await validateBindingOwner(transaction, input.binding, row.ownerId);
-    const storage = profileStorage(row);
-    if (storage.kind !== "vault") {
-      if (
-        input.adoptExistingBinding &&
-        storage.binding.deploymentId === input.binding.deploymentId &&
-        storage.binding.runnerId === input.binding.runnerId &&
-        storage.binding.storageInstanceId === input.binding.storageInstanceId &&
-        storage.binding.engine === input.binding.engine
-      )
-        return storage;
-      if (
-        !sameProfileBinding(storage.binding, input.binding) ||
-        !sameSeed(storage.seed, input.seed)
-      )
-        conflict("Browser profile binding changed. Open it on its owning computer.");
-      if (storage.kind === "local") return storage;
-    } else {
-      const holder = await transaction
-        .selectFrom("browserSessions")
-        .select("id")
-        .where("profileId", "=", row.id)
-        .where("leaseTokenHash", "is not", null)
-        .where((eb) =>
-          eb.or([
-            eb("state", "in", ["starting", "ready", "closing"]),
-            eb("profileLeaseExpiresAt", ">", new Date()),
-          ]),
-        )
-        .executeTakeFirst();
-      if (holder)
-        conflict(
-          "Close this profile's existing browser and wait for its final save before converting it.",
-        );
-      if (row.revision !== input.seed.revision)
-        conflict("Browser profile revision changed. Open the profile again.");
-    }
-    await transaction
-      .updateTable("browserProfiles")
-      .set({
-        ...bindingColumns(input.binding, input.seed),
-        storageState: "initializing",
-        initializationTokenHash: input.tokenHash,
-        initializationTokenExpiresAt: input.expiresAt,
-        updatedAt: new Date(),
-      })
-      .where("id", "=", row.id)
-      .execute();
-    return { kind: "initializing", binding: input.binding, seed: input.seed };
-  });
-}
-
-export async function readBrowserProfileInitialization(
-  database: Kysely<DatabaseSchema>,
-  input: { profileId: BrowserProfileId; tokenHash: string },
-) {
-  return withDatabaseTransaction(database, async (transaction) => {
-    await lockBrowserProfile(transaction, input.profileId);
-    const row = await transaction
-      .selectFrom("browserProfiles")
-      .selectAll()
-      .where("id", "=", input.profileId)
-      .executeTakeFirst();
-    if (
-      !row ||
-      row.archivedAt ||
-      row.storageState !== "initializing" ||
-      row.initializationTokenHash !== input.tokenHash ||
-      !row.initializationTokenExpiresAt ||
-      row.initializationTokenExpiresAt <= new Date()
-    )
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Profile initialization authorization expired or is no longer valid.",
-      });
-    const storage = profileStorage(row);
-    if (storage.kind !== "initializing") throw new Error("Profile is not initializing");
-    await validateBindingOwner(transaction, storage.binding, row.ownerId);
-    const revision =
-      storage.seed.revision === 0
-        ? null
-        : await transaction
-            .selectFrom("browserProfileRevisions")
-            .selectAll()
-            .where("profileId", "=", input.profileId)
-            .where("revision", "=", storage.seed.revision)
-            .executeTakeFirst();
-    if (storage.seed.revision > 0 && !revision)
-      conflict(
-        "The frozen profile seed is unavailable. Restore this computer's profile storage; another revision cannot be used.",
-      );
-    return { ...storage, revision };
-  });
-}
-
-export async function completeBrowserProfileInitialization(
-  database: Kysely<DatabaseSchema>,
-  input: { binding: LocalProfileBinding; seed: FrozenProfileSeed; tokenHash: string },
-): Promise<BrowserProfileStorage> {
-  return withDatabaseTransaction(database, async (transaction) => {
-    await lockBrowserProfile(transaction, input.binding.profileId);
-    const row = await transaction
-      .selectFrom("browserProfiles")
-      .selectAll()
-      .where("id", "=", input.binding.profileId)
-      .executeTakeFirst();
-    if (!row || row.archivedAt)
-      throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
-    const storage = profileStorage(row);
-    if (
-      storage.kind === "vault" ||
-      !sameProfileBinding(storage.binding, input.binding) ||
-      !sameSeed(storage.seed, input.seed)
-    )
-      conflict("Browser profile initialization binding does not match.");
-    await validateBindingOwner(transaction, storage.binding, row.ownerId);
-    if (storage.kind === "local") return storage;
-    if (
-      row.initializationTokenHash !== input.tokenHash ||
-      !row.initializationTokenExpiresAt ||
-      row.initializationTokenExpiresAt <= new Date()
-    )
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Profile initialization authorization expired.",
-      });
-    await transaction
-      .updateTable("browserProfiles")
-      .set({
-        storageState: "local",
-        initializationTokenHash: null,
-        initializationTokenExpiresAt: null,
-        updatedAt: new Date(),
-      })
-      .where("id", "=", row.id)
-      .execute();
-    return { ...storage, kind: "local" };
-  });
 }
 
 export function deletionBinding(row: Selectable<BrowserProfileDeletionTable>): LocalProfileBinding {
@@ -317,14 +154,14 @@ export async function recordBrowserProfileDeletion(
     })
     .onConflict((oc) => oc.column("profileId").doNothing())
     .returningAll()
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   const deletion =
     row ??
     (await transaction
       .selectFrom("browserProfileDeletions")
       .selectAll()
       .where("profileId", "=", binding.profileId)
-      .executeTakeFirstOrThrow());
+      .executeTakeFirstOrThrow(databaseOperationOptions()));
   if (!sameProfileBinding(deletionBinding(deletion), binding))
     conflict("Browser profile erasure binding does not match.");
   return deletion;
@@ -338,7 +175,7 @@ export async function listBrowserProfileErasureJobs(
     .selectAll()
     .where("runnerId", "=", runnerId)
     .where("state", "!=", "deleted")
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map((row) => ({
     binding: deletionBinding(row),
     deletionId: row.deletionId,
@@ -355,7 +192,7 @@ export async function listPendingBrowserProfileDeletions(
     .select(["deletion.profileId", "deletion.runnerId as computerId", "deletion.state"])
     .where("profile.ownerId", "=", ownerId)
     .where("deletion.state", "!=", "deleted")
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.flatMap((row) => (row.state === "deleted" ? [] : [{ ...row, state: row.state }]));
 }
 export async function acknowledgeBrowserProfileDeletion(
@@ -368,7 +205,7 @@ export async function acknowledgeBrowserProfileDeletion(
       .selectFrom("browserProfileDeletions")
       .selectAll()
       .where("profileId", "=", input.binding.profileId)
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     if (
       !row ||
       row.deletionId !== input.deletionId ||
@@ -384,7 +221,7 @@ export async function acknowledgeBrowserProfileDeletion(
         deletedAt: input.state === "deleted" ? new Date() : null,
       })
       .where("deletionId", "=", row.deletionId)
-      .execute();
+      .execute(databaseOperationOptions());
   });
 }
 
@@ -398,7 +235,7 @@ export async function reconcileBrowserProfileInventory(
       .selectFrom("browserProfiles")
       .selectAll()
       .where("id", "=", claim.binding.profileId)
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     // Inventory is evidence of storage, never authority to create an identity or grant.
     if (!row)
       conflict(
@@ -406,11 +243,7 @@ export async function reconcileBrowserProfileInventory(
       );
     await validateBindingOwner(transaction, claim.binding, row.ownerId);
     const storage = profileStorage(row);
-    if (
-      storage.kind !== "vault" &&
-      (!sameProfileBinding(storage.binding, claim.binding) ||
-        (claim.phase !== "deleted" && !sameSeed(storage.seed, claim.seed)))
-    )
+    if (storage.kind !== "local" || !sameProfileBinding(storage.binding, claim.binding))
       conflict(
         "This computer's browser profile binding conflicts with the Host. Restore the matching storage instance.",
       );
@@ -426,7 +259,7 @@ export async function reconcileBrowserProfileInventory(
         .selectFrom("browserProfileDeletions")
         .selectAll()
         .where("profileId", "=", row.id)
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
       if (deletion.deletionId !== claim.deletionId)
         conflict("This computer's deletion tombstone conflicts with the Host.");
       if (deletion.state !== "deleted")
@@ -438,36 +271,80 @@ export async function reconcileBrowserProfileInventory(
             updatedAt: new Date(),
           })
           .where("profileId", "=", row.id)
-          .execute();
+          .execute(databaseOperationOptions());
       return;
     }
     if (row.archivedAt) {
       await recordBrowserProfileDeletion(transaction, claim.binding);
       return;
     }
-    if (storage.kind === "local") return;
-    // A restored legacy writer must lose both execution and final-save authority.
-    await transaction
-      .updateTable("browserSessions")
-      .set({
-        state: "failed",
-        leaseTokenHash: null,
-        profileLeaseExpiresAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where("profileId", "=", row.id)
-      .where("leaseTokenHash", "is not", null)
-      .execute();
     await transaction
       .updateTable("browserProfiles")
+      .set({ initialized: true })
+      .where("id", "=", row.id)
+      .execute(databaseOperationOptions());
+  });
+}
+
+/** Bind metadata once, before issuing signed first-open authority. */
+export async function bindBrowserProfile(
+  database: Kysely<DatabaseSchema>,
+  binding: LocalProfileBinding,
+) {
+  return withDatabaseTransaction(database, async (transaction) => {
+    await lockBrowserProfile(transaction, binding.profileId);
+    const row = await transaction
+      .selectFrom("browserProfiles")
+      .selectAll()
+      .where("id", "=", binding.profileId)
+      .executeTakeFirst(databaseOperationOptions());
+    if (!row || row.archivedAt)
+      throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+    await validateBindingOwner(transaction, binding, row.ownerId);
+    const storage = profileStorage(row);
+    if (storage.kind === "local") {
+      if (
+        storage.binding.runnerId !== binding.runnerId ||
+        storage.binding.storageInstanceId !== binding.storageInstanceId ||
+        storage.binding.engine !== binding.engine
+      )
+        conflict("This profile is bound to its original computer and storage instance.");
+      return storage;
+    }
+    const bound = await transaction
+      .updateTable("browserProfiles")
       .set({
-        ...bindingColumns(claim.binding, claim.seed),
-        storageState: claim.phase === "ready" ? "local" : "initializing",
-        initializationTokenHash: null,
-        initializationTokenExpiresAt: null,
+        ...bindingColumns(binding),
+        storageState: "local",
+        initialized: false,
         updatedAt: new Date(),
       })
       .where("id", "=", row.id)
-      .execute();
+      .returningAll()
+      .executeTakeFirstOrThrow(databaseOperationOptions());
+    return profileStorage(bound);
+  });
+}
+export async function acknowledgeBrowserProfileReady(
+  database: Kysely<DatabaseSchema>,
+  binding: LocalProfileBinding,
+): Promise<void> {
+  await withDatabaseTransaction(database, async (transaction) => {
+    await lockBrowserProfile(transaction, binding.profileId);
+    const row = await transaction
+      .selectFrom("browserProfiles")
+      .selectAll()
+      .where("id", "=", binding.profileId)
+      .executeTakeFirst(databaseOperationOptions());
+    if (!row || row.archivedAt) conflict("This browser profile is unavailable.");
+    const storage = profileStorage(row);
+    if (storage.kind !== "local" || !sameProfileBinding(storage.binding, binding))
+      conflict("The native browser profile binding does not match.");
+    await validateBindingOwner(transaction, binding, row.ownerId);
+    await transaction
+      .updateTable("browserProfiles")
+      .set({ initialized: true, updatedAt: new Date() })
+      .where("id", "=", row.id)
+      .execute(databaseOperationOptions());
   });
 }

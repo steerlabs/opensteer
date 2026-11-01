@@ -1,62 +1,51 @@
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
-import { z } from "zod";
-import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
-import { createHash, randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
-import path from "node:path";
 import {
-  app,
-  BaseWindow,
-  session as electronSession,
-  WebContentsView,
-  screen,
-  type BrowserWindowConstructorOptions,
-  type Debugger,
-  type Session,
-  type WebContents,
-  type WebPreferences,
-} from "electron";
-import {
-  BrowserOriginStateSchema,
-  BrowserProfileSnapshotSchema,
-  captureBrowserProfileSnapshot,
-  EmptyBrowserProfileSnapshot,
-  type BrowserOriginCaptureFailure,
-  browserStorageOperation,
-  type BrowserCookie,
-  type BrowserOriginState,
-  type BrowserProfileSnapshot,
-} from "@opensteer/browser-profile";
-import {
-  defaultBrowserViewport,
   agentCdpAllowlist,
   ExecutionContextInventory,
   type BrowserCdpBackend,
   type CdpChannel,
   type CdpParameters,
 } from "@opensteer/browser-core";
+import { type BrowserCookie } from "@opensteer/browser-profile";
 import {
-  browserPageDisabledBlinkFeatures,
-  browserPagePolicyScriptFor,
-} from "@opensteer/browser-runtime-core/page-policy";
-import {
+  pageViewport,
   siteCookieReplacementBatch,
   type BrowserContext,
-  type BrowserLaunchRequest,
   type BrowserLauncher,
+  type BrowserLaunchRequest,
   type BrowserPage,
   type BrowserPartitionKey,
   type CdpSession,
   type EngineClipboard,
+  type HumanInputObservation,
   type LaunchedBrowser,
   type LocalProfileEngine,
-  type PageGeometry,
   type PageCapture,
+  type PageGeometry,
   type Viewport,
-  pageViewport,
-  type HumanInputObservation,
 } from "@opensteer/browser-runtime-core";
+import {
+  browserPageDisabledBlinkFeatures,
+  browserPagePolicyScriptFor,
+} from "@opensteer/browser-runtime-core/page-policy";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import {
+  app,
+  BaseWindow,
+  session as electronSession,
+  screen,
+  WebContentsView,
+  type BrowserWindowConstructorOptions,
+  type Debugger,
+  type Session,
+  type WebContents,
+  type WebPreferences,
+} from "electron";
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
+import path from "node:path";
+import { z } from "zod";
+import { desktopBrowserAppShortcut } from "../app/application-menu.js";
+import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import {
   applyBrowserSessionPolicy,
   bindBrowserSessionRequestGate,
@@ -65,28 +54,19 @@ import {
 } from "./browser-session-policy.js";
 import {
   acquireElectronLocalProfile,
+  createEmptySessionCookieMirror,
   electronSessionCookieCommand,
-  requireElectronLocalProfiles,
   releaseElectronLocalProfile,
+  requireElectronLocalProfiles,
   type ElectronLocalProfile,
 } from "./electron-local-profile.js";
-import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 
-import {
-  PasskeyBridge,
-  createPasskeyProviderConfig,
-} from "@opensteer/browser-runtime-core/passkey-bridge";
 import type { BrowserPagePolicyConfig } from "@opensteer/browser-runtime-core/page-policy";
+import {
+  createPasskeyProviderConfig,
+  PasskeyBridge,
+} from "@opensteer/browser-runtime-core/passkey-bridge";
 import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
-
-const storageWorldId = 10_991;
-/**
- * Parallel helper loads for restoring and saving profile storage. Each site
- * load starts a renderer; past three at once they contend for CPU and a cold
- * start gets slower, not faster (measured in the GUI test VM).
- */
-const storageViewConcurrency = 3;
-const blankDocument = Buffer.from("<!doctype html><meta charset=utf-8>", "utf8").toString("base64");
 
 export interface ElectronLocalProfileOpenTiming {
   readonly stage:
@@ -143,68 +123,10 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly localProfiles: LocalProfileEngine = {
     engine: "electron",
     release: releaseElectronLocalProfile,
-    importAndFlush: async (input) => {
-      input.signal.throwIfAborted();
+    createFiles: async (directory, binding, signal) => {
       await requireElectronLocalProfiles();
-      input.signal.throwIfAborted();
-      const profile = acquireElectronLocalProfile({
-        ...input,
-        root: this.#localProfileRoot,
-        configure: (session, gate) => this.#configureSession(session, false, gate),
-        initialize: async (owner) => {
-          const context = this.#context(
-            owner.session,
-            { devicePixelRatio: 1, ...defaultBrowserViewport },
-            undefined,
-            undefined,
-            owner.gate,
-          );
-          const untrack = owner.trackContext(() => context.close());
-          try {
-            await owner.mirror.initialize(
-              async () => {
-                input.signal.throwIfAborted();
-                await context.importSnapshot(input.snapshot);
-                input.signal.throwIfAborted();
-                await context.verifyImportedCookies(input.snapshot);
-                await owner.session.cookies.flushStore();
-              },
-              async () => {
-                if (
-                  [
-                    ...new Map(
-                      input.snapshot.origins.map((origin) => [origin.origin, origin]),
-                    ).values(),
-                  ].some((origin) => origin.localStorage.length > 0)
-                ) {
-                  owner.session.flushStorageData();
-                  // An unloaded origin replies only after the earlier Flush commits on
-                  // the same LocalStorageControl pipe (Electron 44.9.2 / Chromium 152.0.7977.167).
-                  await owner.session.clearStorageData({
-                    origin: `https://${randomUUID()}.invalid`,
-                    storages: ["localstorage"],
-                  });
-                }
-              },
-            );
-            input.signal.throwIfAborted();
-          } finally {
-            await context.close();
-            untrack();
-          }
-        },
-      });
-      const cancel = () => {
-        void profile.retire().catch(() => undefined);
-      };
-      input.signal.addEventListener("abort", cancel, { once: true });
-      if (input.signal.aborted) cancel();
-      try {
-        await profile.ready();
-        input.signal.throwIfAborted();
-      } finally {
-        input.signal.removeEventListener("abort", cancel);
-      }
+      signal.throwIfAborted();
+      await createEmptySessionCookieMirror(directory, binding, signal);
     },
   };
   #preparation: Promise<void> | undefined;
@@ -286,7 +208,6 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
           request.initialViewport,
           request.authenticator ?? this.#authenticator,
           profile,
-          undefined,
           timing,
         );
         const browser = new ElectronLaunchedBrowser(
@@ -312,8 +233,6 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         throw error;
       }
     }
-    const snapshot =
-      request.storage.kind === "legacy" ? request.storage.snapshot : EmptyBrowserProfileSnapshot;
     const authenticator = request.authenticator ?? this.#authenticator;
     const partition = electronBrowserPartition(request.partitionKey);
     const profileSession = electronSession.fromPartition(partition, {
@@ -328,9 +247,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       ...(authenticator ? { authenticator } : {}),
     });
     try {
-      // The first page holds a blank document until launch returns, so it
-      // opens while the saved sites restore; nothing can navigate it before.
-      await joined([context.createPage(), context.importSnapshot(snapshot)]);
+      // Guest begins on a blank page before it receives attach authority.
+      await context.createPage();
       signal?.throwIfAborted();
       return new ElectronLaunchedBrowser(context, profileSession, this.#clipboard);
     } catch (error) {
@@ -345,7 +263,6 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     viewport: Viewport,
     authenticator?: PasskeyAuthenticator,
     localProfile?: ElectronLocalProfile,
-    importGate?: BrowserSessionRequestGate,
     onPageTiming?: PageOpenTiming,
   ): ElectronBrowserContext {
     return new ElectronBrowserContext({
@@ -355,7 +272,6 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       profileSession,
       ...(authenticator ? { authenticator } : {}),
       ...(localProfile ? { localProfile } : {}),
-      ...(importGate ? { importGate } : {}),
       ...(onPageTiming ? { onPageTiming } : {}),
     });
   }
@@ -370,13 +286,13 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       updateBrowserPasskeyPolicy(profileSession, provider);
       return;
     }
-    this.#configuredSessions.add(profileSession);
     applyBrowserSessionPolicy(profileSession, {
       provider,
       downloads: this.#downloads,
       pagePolicyPreloadPath: this.#pagePolicyPreloadPath,
       ...(requestGate ? { requestGate } : {}),
     });
+    this.#configuredSessions.add(profileSession);
   }
 }
 
@@ -563,7 +479,6 @@ class ElectronBrowserViewPool {
 }
 
 type StorageCommand = (method: string, parameters?: Record<string, unknown>) => Promise<unknown>;
-type StorageTask = (contents: WebContents, command: StorageCommand) => Promise<void>;
 
 interface ElectronBrowserViewOptions {
   readonly webContents?: WebContents;
@@ -585,6 +500,7 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
   readonly #onProfileClose: (() => void) | undefined;
   readonly profile?: NonNullable<LaunchedBrowser["profile"]>;
   #admitted = false;
+  #closedNotified = false;
 
   constructor(
     context: ElectronBrowserContext,
@@ -609,14 +525,9 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
         },
       };
     this.context = context;
+    context.onClose(() => this.#notifyClosed());
     this.#profileSession = profileSession;
     this.cdp = new ElectronBrowserCdpBackend(context);
-  }
-
-  exportSnapshot(
-    onOriginFailure?: (failure: BrowserOriginCaptureFailure) => void,
-  ): Promise<BrowserProfileSnapshot> {
-    return this.context.exportSnapshot(onOriginFailure);
   }
 
   replaceSiteCookies(
@@ -642,7 +553,6 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
 
   async #close(): Promise<void> {
     await (this.cdp as ElectronBrowserCdpBackend).close().catch(() => undefined);
-    this.#onProfileClose?.();
     await this.context.close();
     if (this.#localProfile) {
       if (this.#admitted) {
@@ -655,6 +565,13 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
         this.#profileSession.clearStorageData(),
       ]);
     }
+    this.#notifyClosed();
+  }
+
+  #notifyClosed(): void {
+    if (this.#closedNotified) return;
+    this.#closedNotified = true;
+    this.#onProfileClose?.();
     this.#events.emit("close");
     this.#events.removeAllListeners();
   }
@@ -671,7 +588,6 @@ interface ElectronBrowserContextOptions {
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
   readonly profileSession: Session;
   readonly localProfile?: ElectronLocalProfile;
-  readonly importGate?: BrowserSessionRequestGate;
   readonly onPageTiming?: PageOpenTiming;
 }
 
@@ -688,9 +604,7 @@ class ElectronBrowserContext implements BrowserContext {
   readonly #events = new EventEmitter();
   readonly #pages = new Set<ElectronBrowserPage>();
   readonly #profileSession: Session;
-  readonly #visitedOrigins = new Set<string>();
   readonly #localProfile: ElectronLocalProfile | undefined;
-  readonly #importGate: BrowserSessionRequestGate | undefined;
   readonly #untrack: (() => void) | undefined;
   #closed = false;
   #onPageTiming: PageOpenTiming | undefined;
@@ -706,7 +620,6 @@ class ElectronBrowserContext implements BrowserContext {
     this.#createHelper = options.createHelper;
     this.#profileSession = options.profileSession;
     this.#localProfile = options.localProfile;
-    this.#importGate = options.importGate;
     this.#onPageTiming = options.onPageTiming;
     this.#untrack = options.localProfile?.trackContext(() => this.close());
     screen.on("display-metrics-changed", this.#displayChanged);
@@ -759,28 +672,13 @@ class ElectronBrowserContext implements BrowserContext {
     this.#events.off("page", listener);
   }
 
+  onClose(listener: () => void): void {
+    this.#events.on("close", listener);
+  }
+
   onTargetEvent(listener: (method: string, parameters: CdpParameters) => void): () => void {
     this.#events.on("target", listener);
     return () => this.#events.off("target", listener);
-  }
-
-  #lastSnapshot: BrowserProfileSnapshot = EmptyBrowserProfileSnapshot;
-
-  async importSnapshot(snapshot: BrowserProfileSnapshot): Promise<void> {
-    const parsed = BrowserProfileSnapshotSchema.parse(snapshot);
-    this.#lastSnapshot = parsed;
-    // A repeated origin keeps its last state, as a restore in snapshot order would.
-    const latest = new Map(parsed.origins.map((state) => [state.origin, state] as const));
-    const states = new Map([...latest].filter(([, state]) => holdsStorage(state)));
-    const tasks: StorageTask[] = [...states.values()].map((state) => async (contents) => {
-      await loadStorageOrigin(contents, state.origin);
-      await executeStorageOperation(contents, "restore", state);
-    });
-    if (parsed.cookies.length > 0)
-      tasks.unshift(async (_contents, command) => {
-        await command("Network.setCookies", { cookies: parsed.cookies.map(browserCookieToCdp) });
-      });
-    await this.#inStorageViews(tasks);
   }
 
   async replaceSiteCookies(
@@ -792,9 +690,8 @@ class ElectronBrowserContext implements BrowserContext {
     // Invalid sign-in input cannot compromise the persistent store or its mirror lane.
     siteCookieReplacementBatch(site, [], cookies);
     const replace = async () =>
-      this.#withStorageView(async (_view, command) => {
-        // The same page-scoped Network domain exportSnapshot reads: it addresses
-        // this Session's partition, which every page of the profile shares.
+      this.#withCookieTarget(deadline, async (command) => {
+        // This target addresses the Session's complete jar without loading a document.
         const live = asRecord(await command("Network.getAllCookies")).cookies;
         const batch = siteCookieReplacementBatch(site, Array.isArray(live) ? live : [], cookies);
         if (batch.length === 0) return;
@@ -809,88 +706,10 @@ class ElectronBrowserContext implements BrowserContext {
     } else await replace();
   }
 
-  async verifyImportedCookies(snapshot: BrowserProfileSnapshot): Promise<void> {
-    await this.#withStorageView(async (_view, command) => {
-      const live = asRecord(await command("Network.getAllCookies")).cookies;
-      if (!Array.isArray(live))
-        throw new Error("Browser profile cookie import could not be verified.");
-      const actual = live.map(browserCookieFromCdp);
-      const normalize = (cookie: BrowserCookie) => ({
-        ...browserCookieToCdp(cookie),
-        expires: cookie.expires,
-      });
-      const now = Date.now() / 1_000;
-      const canonical = (cookies: BrowserCookie[]) =>
-        [
-          ...new Set(
-            cookies
-              .filter((cookie) => cookie.expires < 0 || cookie.expires > now)
-              .map((cookie) => JSON.stringify(normalize(cookie))),
-          ),
-        ].sort();
-      if (JSON.stringify(canonical(actual)) !== JSON.stringify(canonical(snapshot.cookies))) {
-        throw new Error("Browser profile cookie import could not be verified.");
-      }
-    });
-  }
-
-  async exportSnapshot(
-    onOriginFailure?: (failure: BrowserOriginCaptureFailure) => void,
-  ): Promise<BrowserProfileSnapshot> {
-    // A site gains storage only by running there, but loses it in other ways
-    // too (Clear-Site-Data on a same-site request, eviction), so every site that
-    // holds storage is read again.
-    const origins = [
-      ...new Set([
-        ...this.#lastSnapshot.origins.filter(holdsStorage).map((state) => state.origin),
-        ...this.#visitedOrigins,
-      ]),
-    ].sort();
-    // Electron exposes a page debugger: Network addresses this Session's
-    // partition. Storage defaults to the process's default context and only
-    // accepts browserContextId on a Browser target. The real Electron smoke
-    // verifies this page-scoped API's CHIPS fidelity and cross-profile isolation.
-    let cookies: BrowserCookie[] = [];
-    const collected = new Map<string, unknown>();
-    const failedOrigins: string[] = [];
-    await this.#inStorageViews([
-      async (_contents, command) => {
-        const result = asRecord(await command("Network.getAllCookies")).cookies;
-        cookies = (Array.isArray(result) ? result : []).map(browserCookieFromCdp);
-      },
-      ...origins.map((origin): StorageTask => async (contents) => {
-        try {
-          await loadStorageOrigin(contents, origin);
-          collected.set(origin, {
-            ...(await executeStorageOperation(contents, "collect")),
-            origin,
-          });
-        } catch {
-          failedOrigins.push(origin);
-        }
-      }),
-    ]);
-    const snapshot = captureBrowserProfileSnapshot({
-      cookies,
-      // A site that now holds nothing is left out, which ends its saved state;
-      // an invalid capture stays in, so validation rejects and reports it.
-      origins: origins.flatMap((origin) => {
-        if (!collected.has(origin)) return [];
-        const state = collected.get(origin);
-        const parsed = BrowserOriginStateSchema.safeParse(state);
-        return !parsed.success || holdsStorage(parsed.data) ? [state] : [];
-      }),
-      previous: this.#lastSnapshot,
-      failedOrigins: failedOrigins.sort(),
-      ...(onOriginFailure ? { onOriginFailure } : {}),
-    });
-    this.#lastSnapshot = snapshot;
-    return snapshot;
-  }
-
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#events.emit("close");
     screen.off("display-metrics-changed", this.#displayChanged);
     screen.off("display-added", this.#displayChanged);
     screen.off("display-removed", this.#displayChanged);
@@ -943,11 +762,6 @@ class ElectronBrowserContext implements BrowserContext {
         })
         .catch(() => undefined);
     });
-    if (!this.#localProfile)
-      page.onFrameNavigated((url) => {
-        const origin = httpOrigin(url);
-        if (origin) this.#visitedOrigins.add(origin);
-      });
     const securePreferences = this.#securePreferences();
     page.installPopupHandler(securePreferences, (popupOptions, details) => {
       // A view wrapping existing contents resets their preferences unless it is
@@ -1009,90 +823,43 @@ class ElectronBrowserContext implements BrowserContext {
     };
   }
 
-  async #withStorageView<T>(
-    operation: (view: WebContentsView, command: StorageCommand) => Promise<T>,
+  async #withCookieTarget<T>(
+    deadline: AbortSignal,
+    operation: (command: StorageCommand) => Promise<T>,
   ): Promise<T> {
     await this.#localProfile?.ready();
     this.#assertOpen();
+    deadline.throwIfAborted();
     const view = this.#createHelper({ webPreferences: this.#securePreferences() });
     this.#storageViews.add(view);
     const contents = view.webContents;
     const inspector = contents.debugger;
-    const pending = new Set<Promise<unknown>>();
-    const send = (method: string, parameters?: Record<string, unknown>) =>
-      electronSessionCookieCommand(this.#profileSession, method, () =>
-        inspector.sendCommand(method, parameters),
+    const command: StorageCommand = (method, parameters) => {
+      deadline.throwIfAborted();
+      return withTimeout(
+        electronSessionCookieCommand(this.#profileSession, method, () =>
+          inspector.sendCommand(method, parameters),
+        ),
+        5_000,
+        { signal: deadline, timeoutError: () => new Error("Browser cookie operation timed out.") },
       );
-    const onMessage = (_event: Electron.Event, method: string, parameters: unknown) => {
-      if (method !== "Fetch.requestPaused") return;
-      const requestId = asRecord(parameters).requestId;
-      if (typeof requestId !== "string") return;
-      const response = send("Fetch.fulfillRequest", {
-        body: blankDocument,
-        requestId,
-        responseCode: 200,
-        responseHeaders: [
-          { name: "content-type", value: "text/html; charset=utf-8" },
-          { name: "cache-control", value: "no-store" },
-        ],
-      });
-      pending.add(response);
-      void response.finally(() => pending.delete(response)).catch(() => undefined);
     };
-    let removeHelper: (() => void) | undefined;
     try {
+      // Cookie commands need this exact Session, without a renderer or website request.
       inspector.attach("1.3");
-      inspector.on("message", onMessage);
-      // A worker the site registered this lifetime would otherwise answer the
-      // helper's navigation and run site code here. The Network domain answers
-      // only once the view has a renderer, which a blank document gives it.
-      await contents.loadURL("about:blank");
-      await send("Network.enable");
-      await send("Network.setBypassServiceWorker", { bypass: true });
-      await send("Fetch.enable", {
-        patterns: [{ requestStage: "Request", urlPattern: "*" }],
-      });
-      removeHelper = this.#importGate?.allowStorageHelper(contents.id);
-      return await operation(view, send);
+      return await operation(command);
     } finally {
       this.#storageViews.delete(view);
-      removeHelper?.();
-      await Promise.allSettled(pending);
-      inspector.off("message", onMessage);
-      // Closing also ends the debugger session. Returning only once the helper
-      // is gone keeps its writes from outliving a failed start's cleanup, and
-      // frees its pool slot.
       if (!contents.isDestroyed()) {
         const destroyed = new Promise<void>((resolve) =>
           contents.once("destroyed", () => resolve()),
         );
         contents.close({ waitForBeforeUnload: false });
-        await destroyed;
+        await withTimeout(destroyed, 2_000, {
+          timeoutError: () => new Error("Browser cookie target did not close."),
+        });
       }
     }
-  }
-
-  /**
-   * Runs each task once, spread over up to three storage views: a cross-site
-   * load costs a renderer process, which parallel views hide. Origins are
-   * independent storage keys, and cookies are one more task. The first failure
-   * stops further tasks and rejects after every view is gone.
-   */
-  async #inStorageViews(tasks: readonly StorageTask[]): Promise<void> {
-    const queue = [...tasks];
-    let stopped = false;
-    const stop = (error: unknown): never => {
-      stopped = true;
-      throw error;
-    };
-    await joined(
-      Array.from({ length: Math.min(storageViewConcurrency, queue.length) }, () =>
-        this.#withStorageView(async (view, command) => {
-          while (!stopped && queue.length > 0)
-            await queue.shift()!(view.webContents, command).catch(stop);
-        }).catch(stop),
-      ),
-    );
   }
 
   #assertOpen(): void {
@@ -2838,49 +2605,6 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
 
   #assertOpen(): void {
     if (this.#closed) throw new Error("Electron browser CDP backend is closed.");
-  }
-}
-
-async function loadStorageOrigin(contents: WebContents, origin: string): Promise<void> {
-  const url = new URL("/.opensteer-profile-state", `${origin}/`);
-  await contents.loadURL(url.toString());
-}
-
-async function executeStorageOperation(
-  contents: WebContents,
-  operation: "collect" | "restore",
-  state?: BrowserOriginState,
-): Promise<Omit<BrowserOriginState, "origin">> {
-  const input = state
-    ? { indexedDB: state.indexedDB ?? [], localStorage: state.localStorage }
-    : undefined;
-  const code = `(${browserStorageOperation.toString()})(${JSON.stringify(operation)}, ${JSON.stringify(input)})`;
-  return (await contents.executeJavaScriptInIsolatedWorld(
-    storageWorldId,
-    [{ code, url: "opensteer://browser-profile-storage" }],
-    false,
-  )) as Omit<BrowserOriginState, "origin">;
-}
-
-/** Settles every task before rethrowing the first failure, so none outlives the call. */
-async function joined(tasks: readonly Promise<unknown>[]): Promise<void> {
-  const failure = (await Promise.allSettled(tasks)).find(
-    (result): result is PromiseRejectedResult => result.status === "rejected",
-  );
-  if (failure) throw failure.reason;
-}
-
-/** Restoring a site with no storage changes nothing, so it is neither restored nor kept. */
-function holdsStorage(state: BrowserOriginState): boolean {
-  return state.localStorage.length > 0 || (state.indexedDB?.length ?? 0) > 0;
-}
-
-function httpOrigin(value: string): string | null {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" ? url.origin : null;
-  } catch {
-    return null;
   }
 }
 

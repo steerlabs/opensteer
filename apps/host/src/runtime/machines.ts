@@ -7,20 +7,20 @@ import {
   RunnerModuleNameSchema,
   androidPhoneDefinitionId,
   runnerIntegrationsCompatibilityReason,
-  type ComputerView,
   type ComputerUsePermissions,
   type ComputerUseSessionSummary,
+  type ComputerView,
   type MachineAppStatus,
   type MachineComputerUse,
   type MachineModuleSummary,
   type MachineSummary,
+  type RunnerDevice,
   type RunnerModuleName,
   type RunnerModuleReadiness,
-  type RunnerDevice,
   type RunnerModules,
 } from "@opensteer/protocol";
+import { browserRuntimeCompatibilityReason } from "../browser/browser-runtime-compatibility.js";
 import { unlinkedLocalBindingCount } from "../workspace/runner-local-storage-reconciliation.js";
-import { browserSnapshotCompatibilityReason } from "../browser/browser-snapshot-compatibility.js";
 
 /** The access section of a machine row, as a management viewer sees it. */
 export type MachineAccessView = NonNullable<MachineSummary["access"]>;
@@ -156,7 +156,7 @@ function projectModules(runner: MachineRunnerInput): MachineSummary["modules"] {
     if (runner.modules[name] === undefined) continue;
     const browserIncompatibility =
       name === "browser"
-        ? browserSnapshotCompatibilityReason(runner.modules.browser?.profileSnapshotVersion)
+        ? browserRuntimeCompatibilityReason(runner.modules.browser?.wireVersion)
         : null;
     if (runner.connected && browserIncompatibility !== null) {
       modules.browser = {

@@ -1,21 +1,28 @@
-import { createServer } from "node:http";
 import { once } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
-import { WebSocket } from "ws";
-import { delay } from "@opensteer/shared/delay";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   browserFrameFits,
   browserFrameLimits,
   defaultBrowserViewport,
   type CdpParameters,
 } from "@opensteer/browser-core";
+import { delay } from "@opensteer/shared/delay";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { randomUUID } from "node:crypto";
+import { afterAll, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
 
+import { BrowserRuntime, BrowserRuntimeServer } from "@opensteer/browser-runtime-core";
+import {
+  FakeSink,
+  FakeTicketVerifier,
+  testSessionFilesRoot,
+  validClaims,
+} from "@opensteer/browser-runtime-core/test-support";
 import {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
@@ -23,46 +30,38 @@ import {
   type BrowserServerMessage,
   type BrowserSurfaceId,
 } from "@opensteer/protocol";
-import { BrowserRuntime, BrowserRuntimeServer } from "@opensteer/browser-runtime-core";
-import {
-  FakeProfileStateClient,
-  FakeSink,
-  FakeTicketVerifier,
-  testSessionFilesRoot,
-  validClaims,
-} from "@opensteer/browser-runtime-core/test-support";
 
 import {
   TestChromiumLauncher as PlaywrightChromiumLauncher,
   browserTestSignal,
   cleanup,
-  waitForLedgerState,
   waitForBrowserMessages,
+  waitForLedgerState,
 } from "./browser-test-lifecycle.js";
 
 import {
+  asRecord,
+  closeBackgroundTab,
+  evaluationValue,
   executablePath,
+  expectPictureRepaired,
+  jpegSize,
+  redBoxInFrame,
+  rootCdpNavigate,
+  runHarness,
+  sameShape,
+  sendAsAgent,
+  serveFollowFixture,
+  shownDialog,
+  startFollowSession,
+  startHarnessBridge,
+  waitFor,
+  waitForAsync,
   type PageSizeRequest,
   type PageState,
+  type PictureBox,
   type PointerEntry,
   type TimedFrame,
-  startFollowSession,
-  closeBackgroundTab,
-  expectPictureRepaired,
-  rootCdpNavigate,
-  serveFollowFixture,
-  sameShape,
-  jpegSize,
-  type PictureBox,
-  redBoxInFrame,
-  startHarnessBridge,
-  runHarness,
-  sendAsAgent,
-  evaluationValue,
-  shownDialog,
-  asRecord,
-  waitForAsync,
-  waitFor,
 } from "./chromium.test-support.js";
 /**
  * A page is the size of the person's view, as a window is, and an agent may
@@ -1132,7 +1131,6 @@ describe("real Chromium pages follow the person's view", () => {
         executablePath,
         headless: true,
       }),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: verifier,
@@ -2140,7 +2138,6 @@ describe("real Chromium pages follow the person's view", () => {
         executablePath,
         headless: true,
       }),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: verifier,

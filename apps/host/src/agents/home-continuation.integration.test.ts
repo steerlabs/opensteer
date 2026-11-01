@@ -1,21 +1,15 @@
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
+  AgentEventSchema,
+  createId,
   HarnessIdSchema,
   ModelSelectionSchema,
   ThreadAccessModeSchema,
-  AgentEventSchema,
-  createId,
   type AssignmentId,
   type RunId,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
 import { NotificationStore } from "@opensteer/database";
-import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
   HarnessRegistry,
   isolatedServiceHarnessRuntimeBoundary,
@@ -25,6 +19,12 @@ import {
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
 import { PendingAgentEventSchema, type RunnerDescriptor } from "@opensteer/protocol";
+import { ManualClock } from "@opensteer/shared/test-support/clock";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testRpcRequest } from "../server/test-host-api-request.js";
 import {
@@ -959,13 +959,11 @@ integration("durable Thread changes native continuation", () => {
       machineFullDiskAccess: { request: unexpected },
       browser: {
         createProfile: unexpected,
-        profileSiteData: unexpected,
         closeAgentSession: unexpected,
         listAgentSessions: unexpected,
         listGrantedProfiles: unexpected,
         openAgentSession: unexpected,
         requestAccess: unexpected,
-        requestSaveProfile: unexpected,
       },
       canRunHarness: () => true,
       commands: new CommandService({
@@ -1159,13 +1157,11 @@ integration("durable Thread changes native continuation", () => {
       machineFullDiskAccess: { request: unexpected },
       browser: {
         createProfile: unexpected,
-        profileSiteData: unexpected,
         closeAgentSession: unexpected,
         listAgentSessions: unexpected,
         listGrantedProfiles: unexpected,
         openAgentSession: unexpected,
         requestAccess: unexpected,
-        requestSaveProfile: unexpected,
       },
       canRunHarness: () => true,
       commands: new CommandService({

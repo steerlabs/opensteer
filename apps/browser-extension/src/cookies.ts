@@ -1,4 +1,4 @@
-import type { BrowserCookie } from "@opensteer/browser-profile/snapshot";
+import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserSourceSnapshotSchema,
   browserCookieIdentity,

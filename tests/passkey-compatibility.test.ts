@@ -1,9 +1,10 @@
 import { generateKeyPairSync } from "node:crypto";
-import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { afterEach, expect, it, vi } from "vitest";
-import { runnerAuxiliaryWelcome } from "../apps/host/src/server/runner-auxiliary-welcome.js";
+import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { browserViewerMessage } from "../apps/host/src/browser/browser-viewer-protocol.js";
 import { PasskeyService, type PasskeyViewer } from "../apps/host/src/browser/passkey-service.js";
+
+import { runnerAuxiliaryWelcome } from "../apps/host/src/server/runner-auxiliary-welcome.js";
 import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
 import {
   FakeLauncher,
@@ -13,15 +14,12 @@ import {
   testSessionFilesRoot,
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import {
+  BrowserAttachTicketClaimsSchema,
   BrowserServerMessageSchema,
   createBrowserSessionId,
 } from "../packages/protocol/src/browser.js";
-import { RunnerAuxiliaryFrameFenceSchema } from "../packages/protocol/src/runner-auxiliary.js";
 import type { PasskeyCeremony } from "../packages/protocol/src/passkeys.js";
-import {
-  previousBrowser,
-  previousAuxiliary,
-} from "../apps/host/src/browser/test-support/passkey-compatibility/readers.js";
+import { RunnerAuxiliaryFrameFenceSchema } from "../packages/protocol/src/runner-auxiliary.js";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -49,7 +47,7 @@ it.each([
       modules: {
         browser: {
           runtimeId: "runtime",
-          profileSnapshotVersion: 2,
+          wireVersion: 1,
           ...(advertised ? { passkeys: 1 } : {}),
         },
       },
@@ -73,37 +71,20 @@ it.each([
   const payload: unknown = JSON.parse(
     Buffer.from(ticket.split(".")[1]!, "base64url").toString("utf8"),
   );
-  expect(previousBrowser.BrowserAttachTicketClaimsSchema!.safeParse(payload).success).toBe(
-    !enabled,
-  );
-
-  if (!advertised || flag !== "1")
-    expect(
-      previousAuxiliary.RunnerAuxiliaryWelcomeSchema!.safeParse(JSON.parse(JSON.stringify(welcome)))
-        .success,
-    ).toBe(true);
-  else
-    expect(previousAuxiliary.RunnerAuxiliaryWelcomeSchema!.safeParse(welcome).success).toBe(false);
+  expect(BrowserAttachTicketClaimsSchema.parse(payload).passkeys).toBe(enabled ? 1 : undefined);
+  expect(welcome.browserWireVersion).toBe(1);
 });
 
-it("sends only previous-reader messages from a new runtime when the old Host supplies no signed claim", async () => {
+it("keeps passkeys disabled without a signed page-provider claim", async () => {
   const launcher = new FakeLauncher();
   const sink = new FakeSink();
   const claims = freshClaims();
-  previousBrowser.BrowserAttachTicketClaimsSchema!.parse(JSON.parse(JSON.stringify(claims)));
+  BrowserAttachTicketClaimsSchema.parse(JSON.parse(JSON.stringify(claims)));
   const runtime = new BrowserRuntime({
     launcher,
     runtimeId: claims.runtimeId,
     sessionFilesRoot: testSessionFilesRoot(),
     ticketVerifier: new FakeTicketVerifier(claims),
-    profileStateClient: {
-      load: async () => {
-        throw new Error("Fresh sessions have no profile");
-      },
-      commit: async () => {
-        throw new Error("Fresh sessions have no profile");
-      },
-    },
   });
   try {
     await runtime.attach("ticket", sink, { passkeys: true });
@@ -113,10 +94,10 @@ it("sends only previous-reader messages from a new runtime when the old Host sup
     await runtime.shutdown();
   }
   for (const message of sink.messages)
-    previousBrowser.BrowserServerMessageSchema!.parse(JSON.parse(JSON.stringify(message)));
+    BrowserServerMessageSchema.parse(JSON.parse(JSON.stringify(message)));
 });
 
-it("old viewers parse every emitted frame and never receive ceremony, offer, notice, request or withdrawal kinds", async () => {
+it("keeps ceremony details away from viewers without the capability", async () => {
   const token = "00000000-0000-4000-8000-000000000001";
   const modern = vi.fn();
   const oldFrames: unknown[] = [];
@@ -192,10 +173,8 @@ it("old viewers parse every emitted frame and never receive ceremony, offer, not
     ]);
     expect(oldFrames).toHaveLength(1);
     for (const message of oldFrames)
-      previousBrowser.BrowserServerMessageSchema!.parse(JSON.parse(JSON.stringify(message)));
-    expect(
-      previousBrowser.BrowserServerMessageSchema!.safeParse(modern.mock.calls[0]![0]).success,
-    ).toBe(false);
+      BrowserServerMessageSchema.parse(JSON.parse(JSON.stringify(message)));
+    expect(BrowserServerMessageSchema.safeParse(modern.mock.calls[0]![0]).success).toBe(true);
   } finally {
     service.close();
   }

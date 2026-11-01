@@ -4,10 +4,10 @@ import {
   BrowserAttachPublicKeysSchema,
   BrowserBinaryFrameHeaderSchema,
   BrowserClientMessageSchema,
-  BrowserServerMessageSchema,
-  InitialPageReadySchema,
   BrowserEngineSchema,
+  BrowserServerMessageSchema,
   HeldLocalProfileSchema,
+  InitialPageReadySchema,
   LocalProfileBindingSchema,
 } from "./browser.js";
 import { ProtocolErrorSchema } from "./common.js";
@@ -72,8 +72,7 @@ const relayRequestBase = {
 } as const;
 
 export interface BrowserRelayNegotiation {
-  readonly localProfiles?: 1;
-  readonly initialNavigationVersion?: 1;
+  readonly wireVersion?: 1;
 }
 
 export const LocalProfileInventorySchema = z.strictObject({
@@ -144,11 +143,8 @@ const HostToBrowserRelayWireSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.client-message"),
   }),
 ]);
-export function createHostToBrowserRelayMessageSchema(negotiation: BrowserRelayNegotiation = {}) {
-  return HostToBrowserRelayWireSchema.refine(
-    (message) => message.type !== "browser.profile.delete" || negotiation.localProfiles === 1,
-    "Local profile maintenance requires browser auxiliary negotiation.",
-  );
+export function createHostToBrowserRelayMessageSchema(_negotiation: BrowserRelayNegotiation = {}) {
+  return HostToBrowserRelayWireSchema;
 }
 export const HostToBrowserRelayMessageSchema = createHostToBrowserRelayMessageSchema();
 export type HostToBrowserRelayMessage = z.infer<typeof HostToBrowserRelayMessageSchema>;
@@ -215,30 +211,8 @@ const BrowserRelayToHostWireSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.command-error"),
   }),
 ]);
-export function createBrowserRelayToHostMessageSchema(negotiation: BrowserRelayNegotiation = {}) {
-  return BrowserRelayToHostWireSchema.superRefine((message, context) => {
-    if (
-      (message.type === "browser.profile.inventory" ||
-        message.type === "browser.profile.delete.result") &&
-      negotiation.localProfiles !== 1
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "Local profile maintenance requires browser auxiliary negotiation.",
-      });
-    }
-    if (
-      message.type === "browser.attached" &&
-      message.initialPage !== undefined &&
-      negotiation.initialNavigationVersion !== 1
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["initialPage"],
-        message: "Initial page readiness requires browser auxiliary negotiation.",
-      });
-    }
-  });
+export function createBrowserRelayToHostMessageSchema(_negotiation: BrowserRelayNegotiation = {}) {
+  return BrowserRelayToHostWireSchema;
 }
 export const BrowserRelayToHostMessageSchema = createBrowserRelayToHostMessageSchema();
 export type BrowserRelayToHostMessage = z.infer<typeof BrowserRelayToHostMessageSchema>;

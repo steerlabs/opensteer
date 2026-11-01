@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ComputerAppIdentityViewSchema } from "./computer-app.js";
+import { IdentityEmailSchema, InstanceRoleSchema } from "./identity.js";
 import {
   AssignmentIdSchema,
   BrowserSessionIdSchema,
@@ -7,11 +8,11 @@ import {
   CausalChainIdSchema,
   DeploymentIdSchema,
   EnvironmentIdSchema,
+  ExecutionNodeIdSchema,
   HarnessInstanceIdSchema,
   HostInstanceIdSchema,
   MessageIdSchema,
   ProviderSessionIdSchema,
-  ExecutionNodeIdSchema,
   RunAttemptIdSchema,
   RunIdSchema,
   RunnerIdSchema,
@@ -26,10 +27,9 @@ import {
   WorkspaceBindingIdSchema,
   WorkspaceIdSchema,
 } from "./ids.js";
-import { IdentityEmailSchema, InstanceRoleSchema } from "./identity.js";
+import { MarkColorSchema } from "./marks.js";
 import { isBareOrigin } from "./origins.js";
 import { WorkspaceIconNameSchema } from "./workspace-icons.js";
-import { MarkColorSchema } from "./marks.js";
 
 // Keep accepted instants stable across validator upgrades: seconds are optional.
 export const IsoDateTimeSchema = z
@@ -290,9 +290,7 @@ export const RunnerCapabilitySchema = z.enum([
   // Accepts a `browser-page` content part in a Run's inputs; an older Runner's
   // strict input schema refuses the whole Run.
   "browser-page-input-v1",
-  // Its engines expect the current agent tool catalog: browser_profile_create, and
-  // neither browser_profile_save nor browser_sign_in, which the Host serves only to Runners
-  // without this.
+  // Its engines support creating an empty browser identity before sign-in.
   "browser-profile-create-v1",
   "environment-list-v1",
   // Can parse and execute v3 Trigger and Watch programs; independent of tool discovery.

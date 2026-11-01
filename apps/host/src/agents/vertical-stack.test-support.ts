@@ -1,23 +1,8 @@
-import type { HarnessInstanceCatalog } from "@opensteer/protocol";
-import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { runnerReady, type RunnerReadinessSnapshot } from "./runner-readiness.test-support.js";
-import { EventEmitter } from "node:events";
-import { forkRunnerChild } from "./runner-child.test-support.js";
-import { RunnerWire, type RunnerWireOptions } from "./runner-wire.test-support.js";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Writable } from "node:stream";
-import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
-import { LocalWorkspaceAuthority, NativeFsHelper } from "@opensteer/workspace-local";
-import { nativeFsHelperBinary } from "../runtime/machine-access.test-support.js";
-import type { HostConfig, RunnerConfig } from "@opensteer/config";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
+import type { HostConfig, RunnerConfig } from "@opensteer/config";
 import {
-  createId,
   HarnessIdSchema,
+  createId,
   zeroSequence,
   type AgentEventView as AgentEvent,
   type ArtifactContentPart,
@@ -29,8 +14,8 @@ import {
   type NotificationView,
   type ProviderSessionId,
   type RunId,
-  type ThreadId,
   type ThreadAccessMode,
+  type ThreadId,
   type WorkspaceId,
 } from "@opensteer/core";
 import {
@@ -38,40 +23,55 @@ import {
   failDatabaseContainment,
   type TestDatabase,
 } from "@opensteer/database/test-support/database";
-import { TestRunner } from "vitest";
 import { hostApiVersion, hostKeyFingerprint } from "@opensteer/deployment-authority";
 import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
+import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import {
   HostToClientMessageSchema,
   RunnerBootIdSchema,
   hostApiVersionHeader,
   type HarnessInstanceCatalogView,
   type HarnessModelDescriptor,
-  type HostToClientMessage,
   type HostApiClient,
+  type HostToClientMessage,
 } from "@opensteer/protocol";
 import {
-  ReconnectingHostConnection,
-  ExecutionContainment,
-  executionScopeVariable,
   AttachmentCache,
+  ExecutionContainment,
   FileRunnerIdentityStore,
+  ReconnectingHostConnection,
   RunnerRuntime,
+  executionScopeVariable,
   providerContinuationIdentityProjector,
+  type PreparedIntegrationsModule,
   type RunWorkspaceManager,
+  type RunnerAgentsConnection,
   type RunnerLogger,
   type RunnerRuntimeOptions,
-  type PreparedIntegrationsModule,
-  type RunnerAgentsConnection,
 } from "@opensteer/runner";
+import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+import { LocalWorkspaceAuthority, NativeFsHelper } from "@opensteer/workspace-local";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Writable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { TestRunner } from "vitest";
 import WebSocket, { type RawData } from "ws";
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import { loadOrCreateHostKeys } from "../identity/host-keys.js";
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
-import { NetworkPartition } from "./network-partition.test-support.js";
+import { nativeFsHelperBinary } from "../runtime/machine-access.test-support.js";
 import { startPortableFsManagerFake } from "../runtime/portablefs-manager.test-support.js";
+import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
-import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
+import { NetworkPartition } from "./network-partition.test-support.js";
+import { forkRunnerChild } from "./runner-child.test-support.js";
+import { runnerReady, type RunnerReadinessSnapshot } from "./runner-readiness.test-support.js";
+import { RunnerWire, type RunnerWireOptions } from "./runner-wire.test-support.js";
 
 /*
  * A whole deployment in one process: a Host on a temporary database, one
@@ -1595,7 +1595,6 @@ function hostConfig(input: {
     bindAddress: "127.0.0.1",
     canonicalOrigin: input.publicOrigin,
     browserRuntime: { attachKeyId: "host-browser-v1" },
-    browserProfileKeyPath: undefined,
     credentialKeyPath: undefined,
     databaseUrl: input.databaseUrl,
     dataDirectory: input.dataDirectory,

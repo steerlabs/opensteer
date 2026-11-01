@@ -13,7 +13,7 @@ Every Browser Session has an ID, and every browser command names the session it 
 
 Choose the identity for each piece of work from what the person asked and what you can observe. One conversation may use several profiles.
 
-- **Work as the person, or work they want kept:** use a profile. `browser_profile_list` lists every profile available here without a Request; `site` (such as `brex.com`) adds saved-data inspection where available. Native profiles omit `siteData`: missing means unknown, not empty. Neither a name nor stored data proves an account or current login; verify on the website. Ask the person only when their intent stays ambiguous after looking.
+- **Work as the person, or work they want kept:** use a profile. `browser_profile_list` lists every profile available here without a Request; the list provides identities and grants. A name never proves an account or current login; verify on the website. Ask the person only when their intent stays ambiguous after looking.
 - **A new profile:** when the person asks for one, or names a profile they do not have, call `browser_profile_create` in Main, then open the returned `profile.id` with `browser_session_open` before anyone signs in. In a specialized Workspace, ask with `browser_access_request` and `suggestion: {kind: "new", suggestedName}`; its continuation names the profile to open.
 - **Public or throwaway work:** open a Guest session with `fresh: true`. The person sees it as Guest. It can be signed in to websites, but nothing in it is kept when it closes, so never have the person sign in there for work they expect to keep.
 - **Continue work:** reuse the session ID from earlier in the Thread, or find it with `browser_session_list` (`attached` marks sessions this Run has open). `browser_tab_read` gives every saved tab's `profileId`, asleep tabs included (null is Guest). An ended session is not listed and does not mean its profile went away: open the profile again.
@@ -49,7 +49,7 @@ Named profiles keep browser data on their owning computer; Guest keeps nothing. 
 
 A browser error is about that session, not about profile access: read its message, which says what to do next. Never request profile access because a browser command failed.
 
-When the person already signed in to something in a Guest session and wants to keep it, point them to "Save sign-ins as a profile…" in that tab's menu. It copies those sign-ins once into a new profile; the Guest tab stays Guest, so continue in the new profile.
+Guest sign-ins cannot be saved as a profile. To keep a sign-in, create or choose a named profile before signing in. Never offer conversion, copying, or a Guest-save action.
 
 Name a new profile in one or two words, such as “Work” or “Shopping”, whether you create it with `browser_profile_create` or suggest it with `browser_access_request`.
 

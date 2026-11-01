@@ -1,36 +1,36 @@
-import type { InitialNavigation, InitialPageReady } from "@opensteer/protocol";
-import type { HostRelayAuthenticator } from "../passkeys/host-relay.js";
-import { layoutMetricsSchema, screenshotDensity, visualViewportSchema } from "./layout-metrics.js";
-import { createHash } from "node:crypto";
-import { z } from "zod";
-import { AsyncMutex } from "../async.js";
 import { SessionCdpRouter, SessionCdpRouterError, type CdpCommand } from "@opensteer/browser-core";
+import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
+import type { InitialNavigation, InitialPageReady } from "@opensteer/protocol";
 import {
-  browserHostMethods,
-  LoginRefSchema,
-  LoginFieldSchema,
-  BrowserSurfaceIdSchema,
+  browserCaptureMaxTargets,
   BrowserCdpResultSchema,
   BrowserClientMessageSchema,
-  browserCaptureMaxTargets,
   BrowserContextCandidateSchema,
-  previousReleaseEligibility,
+  browserHostMethods,
   BrowserSessionTabOpenCommandSchema,
-  browserWorkspaceTabUrlMaxLength,
-  browserTabOpenClosedReason,
   browserStateImportRuntimeTimeoutMs,
+  BrowserSurfaceIdSchema,
+  browserTabOpenClosedReason,
+  browserWorkspaceTabUrlMaxLength,
+  LoginFieldSchema,
+  LoginRefSchema,
+  previousReleaseEligibility,
   type BrowserAttachTicketClaims,
   type BrowserClientMessage,
   type BrowserDialog,
   type BrowserServerMessage,
   type BrowserSurfaceId,
 } from "@opensteer/protocol";
-import type { BrowserCookie, BrowserProfileSnapshot } from "@opensteer/browser-profile/snapshot";
+import type { EditingCaret } from "@opensteer/protocol/editing";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { createHash } from "node:crypto";
+import { z } from "zod";
+import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "../errors.js";
-import { BrowserInputLane } from "./input-lane.js";
-import { PageEditingObserver } from "./editing-observer.js";
+import type { HostRelayAuthenticator } from "../passkeys/host-relay.js";
+import { LatestFrameStream, type BrowserFrameSink } from "../stream/latest-frame-stream.js";
+import type { CdpSession, EngineClipboard } from "./backend.js";
 import {
   ClipboardParts,
   engineClipboardCoordinator,
@@ -42,14 +42,14 @@ import {
   editingCommandParameters,
   editingModifiers,
 } from "./editing-commands.js";
-import { keyEventParameters } from "./key-codes.js";
-import type { EditingCaret } from "@opensteer/protocol/editing";
-import { LatestFrameStream, type BrowserFrameSink } from "../stream/latest-frame-stream.js";
-import type { CdpSession, EngineClipboard } from "./backend.js";
-import { ScreencastController } from "./screencast-controller.js";
-import { stageFileMethod, type SessionFiles } from "./session-files.js";
+import { PageEditingObserver } from "./editing-observer.js";
 import type { HostSignIns } from "./host-sign-ins.js";
+import { BrowserInputLane } from "./input-lane.js";
+import { keyEventParameters } from "./key-codes.js";
+import { layoutMetricsSchema, screenshotDensity, visualViewportSchema } from "./layout-metrics.js";
+import { ScreencastController } from "./screencast-controller.js";
 import type { ScriptTarget } from "./script-targets.js";
+import { stageFileMethod, type SessionFiles } from "./session-files.js";
 import type {
   BrowserTargetActivity,
   BrowserTargetResize,
@@ -63,12 +63,11 @@ export interface BrowserControllerSink extends BrowserFrameSink {
 }
 
 interface BrowserControllerOptions {
+  verifyOpenAuthority?: (ticket: string) => Promise<BrowserAttachTicketClaims>;
   passkeys?: HostRelayAuthenticator | undefined;
   cdpRouter: SessionCdpRouter;
   claims: BrowserAttachTicketClaims;
   clipboard?: EngineClipboard | undefined;
-  /** Reads the live state of the host browser this session runs inside. */
-  exportSnapshot: () => Promise<BrowserProfileSnapshot>;
   /** This session's folder for files its pages may receive. */
   files: SessionFiles;
   ledger: SurfaceLedger;
@@ -173,6 +172,8 @@ interface PointerGesture {
 }
 
 export class BrowserController {
+  private readonly openOperations = new Set<AbortController>();
+  private readonly verifyOpenAuthority: BrowserControllerOptions["verifyOpenAuthority"];
   private readonly editing: boolean;
   private readonly clipboard: ReturnType<typeof engineClipboardCoordinator> | undefined;
   private readonly observers = new Map<
@@ -222,7 +223,6 @@ export class BrowserController {
   private disconnected = false;
   private releaseDisconnect: () => void = () => undefined;
   private readonly claims: BrowserAttachTicketClaims;
-  private readonly exportSnapshot: () => Promise<BrowserProfileSnapshot>;
   private readonly files: SessionFiles;
   private readonly ledger: SurfaceLedger;
   private readonly maxPendingCommands: number;
@@ -277,6 +277,7 @@ export class BrowserController {
     return this.send(message);
   }
   constructor(options: BrowserControllerOptions) {
+    this.verifyOpenAuthority = options.verifyOpenAuthority;
     this.#passkeys = options.passkeys;
     this.disconnectPromise = new Promise<void>((resolve) => {
       this.releaseDisconnect = resolve;
@@ -291,7 +292,6 @@ export class BrowserController {
       (options.claims.editingVersion === 1 || options.claims.clipboard === true)
         ? engineClipboardCoordinator(options.clipboard)
         : undefined;
-    this.exportSnapshot = options.exportSnapshot;
     this.files = options.files;
     this.ledger = options.ledger;
     this.platform = options.platform ?? process.platform;
@@ -525,6 +525,9 @@ export class BrowserController {
   }
 
   close(): Promise<void> {
+    for (const opening of this.openOperations)
+      opening.abort(new BrowserRuntimeError("conflict", "The browser session closed."));
+    this.openOperations.clear();
     this.#passkeys?.disconnect(this.claims.sessionId);
     this.closePromise ??= this.closeOnce();
     return this.closePromise;
@@ -1285,21 +1288,6 @@ export class BrowserController {
       } finally {
         this.closingSurfaces.delete(message.surfaceId);
       }
-      return;
-    }
-    if (message.type === "state.export") {
-      // Reading the live context state is a privileged read of everything the
-      // session is signed into, so a view-only attachment cannot ask for it.
-      if (this.claims.access !== "full-control") {
-        throw new BrowserRuntimeError(
-          "forbidden",
-          "Exporting browser state requires full-control access.",
-        );
-      }
-      await this.send({
-        snapshot: await this.exportSnapshot(),
-        type: "state.exported",
-      });
       return;
     }
     if (message.type === "state.import") {
@@ -2552,7 +2540,10 @@ export class BrowserController {
   ): Promise<void> {
     const parameters = message.command.parameters;
     if (message.command.method === browserHostMethods.openTab) {
-      const fields = BrowserSessionTabOpenCommandSchema.omit({ type: true, sessionId: true });
+      const fields = BrowserSessionTabOpenCommandSchema.omit({
+        type: true,
+        sessionId: true,
+      }).extend({ operationAuthority: z.string().max(16384).optional() });
       const parsed = (
         this.claims.workspaceTabRestoreVersion === 1
           ? z.union([
@@ -2566,10 +2557,42 @@ export class BrowserController {
       ).safeParse(parameters);
       if (!parsed.success)
         throw new BrowserRuntimeError("bad_message", "Invalid tab-open parameters.");
-      const { idempotencyKey, url: requestedUrl, viewport } = parsed.data;
+      const { idempotencyKey, url: requestedUrl, viewport, operationAuthority } = parsed.data;
+      const started = Date.now();
+      let remaining = 18_000;
+      if (operationAuthority) {
+        if (!this.verifyOpenAuthority)
+          throw new BrowserRuntimeError("forbidden", "Browser opening authority is unavailable.");
+        const authority = await withTimeout(
+          this.verifyOpenAuthority(operationAuthority),
+          remaining,
+          {
+            timeoutError: () =>
+              new BrowserRuntimeError("conflict", "Browser opening authority timed out."),
+          },
+        );
+        if (
+          authority.sessionId !== this.claims.sessionId ||
+          authority.initialNavigation?.operationKey !== idempotencyKey ||
+          authority.initialNavigation.url !== requestedUrl
+        )
+          throw new BrowserRuntimeError(
+            "forbidden",
+            "Browser opening authority does not match this page operation.",
+          );
+        remaining = Math.min(
+          remaining - (Date.now() - started),
+          authority.remainingBudgetMs,
+          Date.parse(authority.operationExpiresAt) - Date.now(),
+        );
+      }
+      if (remaining <= 0)
+        throw new BrowserRuntimeError("conflict", "The browser opening authority expired.");
+      const opening = new AbortController();
+      const operationSignal = opening.signal;
       const url = requestedUrl === undefined ? undefined : safeNavigationUrl(requestedUrl);
       const fingerprint = createHash("sha256")
-        .update(JSON.stringify({ url: requestedUrl }))
+        .update(JSON.stringify({ url: requestedUrl, viewport }))
         .digest("hex");
       const previous = this.openedTabs.get(idempotencyKey);
       if (previous && previous.fingerprint !== fingerprint)
@@ -2580,11 +2603,30 @@ export class BrowserController {
           this.claims.workspaceTabRestoreVersion === 1
             ? BrowserSurfaceIdSchema.safeParse(parameters?.surfaceId).data
             : undefined;
-        const opened = await this.ledger.openSurface({
-          activate: false,
-          ...(surfaceId ? { surfaceId } : {}),
-          ...(viewport ? { viewport: { devicePixelRatio: 1, ...viewport } } : {}),
-        });
+        this.openOperations.add(opening);
+        const opened = await withTimeout(
+          this.ledger.openSurface({
+            signal: operationSignal,
+            activate: false,
+            ...(surfaceId ? { surfaceId } : {}),
+            ...(viewport ? { viewport: { devicePixelRatio: 1, ...viewport } } : {}),
+          }),
+          remaining,
+          {
+            signal: operationSignal,
+            timeoutError: () => {
+              const error = new BrowserRuntimeError("conflict", "Opening this page timed out.");
+              opening.abort(error);
+              return error;
+            },
+          },
+        )
+          .catch((error) => {
+            opening.abort(error);
+            throw error;
+          })
+          .finally(() => this.openOperations.delete(opening));
+        operationSignal.throwIfAborted();
         tabId = opened.id;
         // Retain the identity before navigation: a lost response must never create another page.
         this.openedTabs.set(idempotencyKey, { fingerprint, tabId });

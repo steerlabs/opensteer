@@ -1,19 +1,13 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
-import { baselineWorkspaceCreateResponse } from "./agent-control-baseline.test-support.js";
-import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   createId,
-  provisionalThreadTitle,
   HarnessIdSchema,
+  ModelSelectionSchema,
+  provisionalThreadTitle,
+  ThreadAccessModeSchema,
   type AgentEvent,
   type Message,
-  ModelSelectionSchema,
-  ThreadAccessModeSchema,
   type Run,
   type Thread,
   type UserId,
@@ -22,12 +16,18 @@ import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/data
 import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
 import { HarnessInputSchema, type RunnerDescriptor } from "@opensteer/protocol";
 import { sql } from "kysely";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { baselineWorkspaceCreateResponse } from "./agent-control-baseline.test-support.js";
 import {
   AgentControlService,
   type AgentControlRunScope,
   type AgentControlTokenService,
 } from "./agent-control-service.js";
+import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 
 const evidenceRoot = join(tmpdir(), "opensteer-title-review", randomUUID());
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -70,13 +70,11 @@ integration("agent-to-agent messaging round trip", () => {
     },
     browser: {
       createProfile: unexpected,
-      profileSiteData: unexpected,
       closeAgentSession: unexpected,
       listAgentSessions: unexpected,
       listGrantedProfiles: unexpected,
       openAgentSession: unexpected,
       requestAccess: unexpected,
-      requestSaveProfile: unexpected,
     },
     canRunHarness: () => true,
     commands,

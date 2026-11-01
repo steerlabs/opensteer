@@ -1,18 +1,18 @@
+import { SessionCdpRouter } from "@opensteer/browser-core";
+import {
+  browserHostMethods,
+  BrowserSessionTabOpenCommandSchema,
+  BrowserSurfaceIdSchema,
+  type BrowserAttachTicketClaims,
+  type BrowserClientMessage,
+} from "@opensteer/protocol";
 import { gate } from "@opensteer/shared/test-support/observation";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HostRelayAuthenticator } from "../passkeys/host-relay.js";
 import {
   PublicKeyCredentialRequestOptionsJSONSchema,
   serializeClientData,
 } from "../passkeys/index.js";
-import { HostRelayAuthenticator } from "../passkeys/host-relay.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  browserHostMethods,
-  BrowserSurfaceIdSchema,
-  BrowserSessionTabOpenCommandSchema,
-  type BrowserAttachTicketClaims,
-  type BrowserClientMessage,
-} from "@opensteer/protocol";
-import type { BrowserProfileSnapshot } from "@opensteer/browser-profile/snapshot";
 import {
   FakeBrowserCdpBackend,
   FakeContext,
@@ -24,7 +24,6 @@ import {
   validClaims,
   withoutTitleSamples,
 } from "../test-support/fakes.js";
-import { SessionCdpRouter } from "@opensteer/browser-core";
 import { BrowserController } from "./controller.js";
 import { HostSignIns, type HostLoginAuthorizeInput } from "./host-sign-ins.js";
 import { SessionFiles } from "./session-files.js";
@@ -36,13 +35,6 @@ describe("BrowserController", () => {
   let ledger: SurfaceLedger;
   let cdpRouter: SessionCdpRouter;
   let sink: FakeSink;
-  const exportedSnapshot: BrowserProfileSnapshot = {
-    cookies: [],
-    origins: [
-      { localStorage: [{ name: "theme", value: "dark" }], origin: "https://example.test/" },
-    ],
-  };
-  const exportSnapshot = () => Promise.resolve(exportedSnapshot);
   const replaceSiteCookies = () => Promise.resolve();
   const files = new SessionFiles(testSessionFilesRoot());
 
@@ -77,7 +69,6 @@ describe("BrowserController", () => {
           ...validClaims(),
           ...(history ? { navigationAttributionVersion: 1 as const } : {}),
         },
-        exportSnapshot,
         files,
         ledger,
         replaceSiteCookies,
@@ -115,6 +106,52 @@ describe("BrowserController", () => {
     },
   );
 
+  it("closes a page that arrives after its additional-open budget expires", async () => {
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<import("./backend.js").BrowserPage>();
+    vi.spyOn(context, "createPage").mockImplementationOnce(() => {
+      entered.resolve();
+      return release.promise;
+    });
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims(),
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+    });
+    await controller.start();
+    vi.useFakeTimers();
+    try {
+      const requestId = globalThis.crypto.randomUUID();
+      const opening = controller.handle({
+        type: "cdp.command",
+        requestId,
+        command: {
+          method: browserHostMethods.openTab,
+          parameters: { idempotencyKey: "hung-additional" },
+        },
+      });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(18_000);
+      await opening;
+      expect(sink.messages).toContainEqual(
+        expect.objectContaining({ type: "cdp.error", requestId }),
+      );
+      const late = new FakePage();
+      release.resolve(late);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(late.closeCount).toBe(1);
+      expect(ledger.snapshot()).toHaveLength(1);
+    } finally {
+      release.resolve(new FakePage());
+      vi.useRealTimers();
+      await controller.close();
+      await ledger.close();
+    }
+  });
   it.each([
     ["initial", "reply"],
     ["initial", "rejection"],
@@ -138,7 +175,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims(),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -191,7 +227,6 @@ describe("BrowserController", () => {
       passkeys,
       cdpRouter,
       claims: validClaims(),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -238,7 +273,6 @@ describe("BrowserController", () => {
       passkeys,
       cdpRouter,
       claims: validClaims(),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -305,7 +339,6 @@ describe("BrowserController", () => {
         passkeys,
         cdpRouter,
         claims: validClaims({ editingVersion: 2, clipboard: false }),
-        exportSnapshot,
         files,
         ledger,
         replaceSiteCookies,
@@ -419,7 +452,6 @@ describe("BrowserController", () => {
       const controller = new BrowserController({
         cdpRouter,
         claims: validClaims({ editingVersion: 2, clipboard: false }),
-        exportSnapshot,
         files,
         ledger,
         replaceSiteCookies,
@@ -492,7 +524,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ editingVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -543,7 +574,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims(),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -611,7 +641,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ editingVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -706,7 +735,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ editingVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -770,7 +798,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ workspaceTabRestoreVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -818,7 +845,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ workspaceTabRestoreVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -2030,7 +2056,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims(),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -2614,30 +2639,6 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
-  it("refuses a state export from a session without full control", async () => {
-    // The protocol's access union has exactly one member today, so a
-    // non-full-control attachment is modelled directly rather than parsed.
-    const controller = new BrowserController({
-      cdpRouter,
-      claims: { ...validClaims(), access: "view-only" } as unknown as BrowserAttachTicketClaims,
-      exportSnapshot,
-      files,
-      ledger,
-      replaceSiteCookies,
-      signIns: noSignIns(),
-      sink,
-    });
-    await controller.start();
-
-    await controller.handle({ type: "state.export" });
-    expect(sink.messages.filter((message) => message.type === "state.exported")).toHaveLength(0);
-    expect(sink.messages.filter((message) => message.type === "browser.error")).toMatchObject([
-      { error: { code: "forbidden" } },
-    ]);
-    await controller.close();
-    await ledger.close();
-  });
-
   function createController(
     maxPendingCommands?: number,
     outputLimits: { maxPendingMessageBytes?: number; maxPendingMessages?: number } = {},
@@ -2646,7 +2647,6 @@ describe("BrowserController", () => {
     return new BrowserController({
       cdpRouter,
       claims,
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -2682,7 +2682,6 @@ describe("BrowserController", () => {
       const controller = new BrowserController({
         cdpRouter,
         claims: validClaims(),
-        exportSnapshot,
         files,
         ledger,
         replaceSiteCookies,

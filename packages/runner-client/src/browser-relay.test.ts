@@ -1,7 +1,3 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
-import { gate } from "@opensteer/shared/test-support/observation";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   LocalProfileBindingSchema,
   RunnerAuxiliaryFrameFenceSchema,
@@ -12,6 +8,10 @@ import {
   BrowserChannelIdSchema,
   createBrowserRelayToHostMessageSchema,
 } from "@opensteer/protocol/browser-relay";
+import { gate } from "@opensteer/shared/test-support/observation";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import { LocalBrowserRuntimeBridge } from "./browser-bridge.js";
 import { BrowserModuleRelay } from "./browser-relay.js";
 import type { RunnerModuleStream } from "./module-connection.js";
@@ -32,6 +32,10 @@ function fixture(negotiated = true) {
     runtimeId: "runtime_test",
     url: new URL("http://127.0.0.1:4312"),
   });
+  vi.spyOn(bridge, "capabilities").mockResolvedValue({
+    wireVersion: 1,
+    localProfileStorage: storage,
+  });
   const relay = new BrowserModuleRelay(bridge);
   const messages: Record<string, unknown>[] = [];
   const notices = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
@@ -46,7 +50,7 @@ function fixture(negotiated = true) {
   });
   const keys = generateKeyPairSync("ed25519");
   const stream: RunnerModuleStream = {
-    ...(negotiated ? { localProfiles: 1, initialNavigationVersion: 1 } : {}),
+    ...(negotiated ? { browserWireVersion: 1 } : {}),
     fence,
     browserAttachPublicKeys: [
       {
@@ -55,9 +59,7 @@ function fixture(negotiated = true) {
       },
     ],
     send: async (frame) => {
-      const message = createBrowserRelayToHostMessageSchema(stream).parse(
-        JSON.parse(String(frame)),
-      );
+      const message = createBrowserRelayToHostMessageSchema().parse(JSON.parse(String(frame)));
       messages.push(message);
       notices.get(message.type)?.resolve();
     },
@@ -100,7 +102,6 @@ describe("BrowserModuleRelay native profiles", () => {
         ...binding,
         profileId: LocalProfileBindingSchema.shape.profileId.parse(`bpr_${randomUUID()}`),
       },
-      seed: { revision: 0, digest: "a".repeat(64) },
     }));
     f.inventory.mockResolvedValue({ storage, profiles });
     try {
@@ -120,7 +121,6 @@ describe("BrowserModuleRelay native profiles", () => {
     const claim: HeldLocalProfile = {
       phase: "ready",
       binding,
-      seed: { revision: 0, digest: "a".repeat(64) },
     };
     f.inventory.mockResolvedValue({ storage, profiles: Array.from({ length: 129 }, () => claim) });
     let batches = 0;
@@ -162,10 +162,10 @@ describe("BrowserModuleRelay native profiles", () => {
       f.relay.detach();
     }
   });
-  it("emits no new frames to a previous Host", async () => {
+  it("refuses an outdated Host before sending inventory", async () => {
     const f = fixture(false);
     try {
-      await f.relay.attach(f.stream);
+      await expect(f.relay.attach(f.stream)).rejects.toThrow("Update this Host");
       expect(f.inventory).not.toHaveBeenCalled();
       expect(f.messages).toHaveLength(0);
     } finally {

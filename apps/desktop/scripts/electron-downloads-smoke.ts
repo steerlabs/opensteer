@@ -1,5 +1,5 @@
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { SessionCdpRouter } from "@opensteer/browser-core";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { z } from "zod";
 /**
  * Failure journeys declared before the owner implementation:
@@ -23,42 +23,42 @@ import { z } from "zod";
  *   leaves one behind;
  * - a valid long host name with a port overflows the list's bounds and stops its publication.
  */
-import assert from "node:assert/strict";
-import { once } from "node:events";
-import { createHash } from "node:crypto";
-import { createServer } from "node:http";
-import {
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  rmSync,
-  readdirSync,
-  statSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
-import { app, BrowserWindow, protocol, session } from "electron";
-import { BrowserSessionIdSchema } from "@opensteer/core";
 import {
   SurfaceLedger,
   type BrowserLaunchRequest,
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
+import { BrowserSessionIdSchema } from "@opensteer/core";
 import {
   DesktopDownloadIdSchema,
   type DesktopDownload,
   type DesktopDownloadsSnapshot,
 } from "@opensteer/protocol/desktop";
-import { DesktopDownloads } from "../src/downloads/desktop-downloads.js";
+import { app, BrowserWindow, protocol, session } from "electron";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { configureDesktopSession } from "../src/app/electron-window.js";
+import { DesktopAppOriginPolicy } from "../src/app/navigation-policy.js";
 import {
   ElectronBrowserLauncher,
   electronBrowserPartition,
 } from "../src/browser/electron-browser-launcher.js";
-import { configureDesktopSession } from "../src/app/electron-window.js";
-import { DesktopAppOriginPolicy } from "../src/app/navigation-policy.js";
+import { DesktopDownloads } from "../src/downloads/desktop-downloads.js";
 
 const artifactDirectory =
   process.env.OPENSTEER_DOWNLOADS_E2E_ARTIFACT_DIR ??
@@ -210,7 +210,7 @@ async function run(): Promise<void> {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000901",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000901"),
-    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+    storage: { kind: "guest" },
   } satisfies BrowserLaunchRequest;
   const launcher = new ElectronBrowserLauncher({
     downloads,

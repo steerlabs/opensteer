@@ -1,36 +1,38 @@
-import { assignmentActivityEventsForRun } from "./assignment-store.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
-import { assertRequestWorkspacesLocked } from "./request-workspace-locks.js";
-import { type ExpressionBuilder } from "kysely";
+import { PrincipalIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
-  type RunRow,
-  type CommandRow,
-  type LegacyLiveEventType,
-  legacyLiveEventTypes,
-  type WorkspaceEventRow,
-} from "./schema.js";
-import { type AgentEvent, AgentEventSchema, IsoDateTimeSchema } from "@opensteer/core";
-import { projectThreadState } from "./thread-status.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
-import { durableWindowCursorMaxCharacters } from "@opensteer/protocol";
-import {
-  WorkspaceSchema,
-  type Workspace,
-  type WorkspaceBacking,
-  type WorkspaceCapacityPolicy,
+  AgentEventSchema,
+  IsoDateTimeSchema,
   OpensteerError,
+  WorkspaceSchema,
+  type AgentEvent,
   type EnvironmentId,
   type ThreadId,
   type UserId,
+  type Workspace,
+  type WorkspaceBacking,
+  type WorkspaceCapacityPolicy,
   type WorkspaceId,
 } from "@opensteer/core";
-import { PrincipalIdSchema, type PrincipalId } from "@opensteer/channel-core";
-import { sql, type Kysely, type Transaction } from "kysely";
+import { durableWindowCursorMaxCharacters } from "@opensteer/protocol";
+import { sql, type ExpressionBuilder, type Kysely, type Transaction } from "kysely";
+import { assignmentActivityEventsForRun } from "./assignment-store.js";
+import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import {
   admitThreadExecution,
   executionEnvironmentIsAvailableToUser,
 } from "./execution-authority.js";
+import { databaseOperationOptions } from "./operation-budget.js";
+import { assertRequestWorkspacesLocked } from "./request-workspace-locks.js";
 import type { DatabaseSchema } from "./schema.js";
+import {
+  legacyLiveEventTypes,
+  type CommandRow,
+  type LegacyLiveEventType,
+  type RunRow,
+  type WorkspaceEventRow,
+} from "./schema.js";
+import { projectThreadState } from "./thread-status.js";
+import { appendHostWorkspaceEvent } from "./workspace-events.js";
 
 export const systemPrincipalId = PrincipalIdSchema.parse(
   "pri_00000000-0000-4000-8000-000000000001",
@@ -100,7 +102,10 @@ export async function lockCommandIdempotency(
   idempotencyKey: string,
 ): Promise<void> {
   const lockKey = JSON.stringify(["command-idempotency", requestedBy, idempotencyKey]);
-  await sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`.execute(transaction);
+  await sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`.execute(
+    transaction,
+    databaseOperationOptions(),
+  );
 }
 
 // See ./lock-order.ts. Request callers reserve their complete Workspace set.
@@ -114,7 +119,7 @@ export async function lockWorkspaceRow(
     .select("id")
     .where("id", "=", workspaceId)
     .forNoKeyUpdate()
-    .executeTakeFirstOrThrow();
+    .executeTakeFirstOrThrow(databaseOperationOptions());
 }
 
 /**
@@ -133,7 +138,7 @@ export async function lockThreadRow(
     .select("id")
     .where("id", "=", threadId)
     .forNoKeyUpdate()
-    .executeTakeFirstOrThrow();
+    .executeTakeFirstOrThrow(databaseOperationOptions());
 }
 
 export async function requireExecutionEnvironmentAccess(
@@ -164,7 +169,7 @@ export async function principalIdForUser(
     .select("id")
     .where("kind", "=", "user")
     .where("userId", "=", userId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!principal) {
     throw new OpensteerError({ code: "internal", message: "User principal is missing" });
   }
@@ -183,7 +188,7 @@ export async function requireActiveWorkspaceMembership(
     .where("workspaceId", "=", workspaceId)
     .where("userId", "=", userId);
   if (lock) query = query.forNoKeyUpdate();
-  const membership = await query.executeTakeFirst();
+  const membership = await query.executeTakeFirst(databaseOperationOptions());
   if (!membership || membership.state !== "active") {
     throw new OpensteerError({
       code: "forbidden",
@@ -210,7 +215,7 @@ export async function returnRunToQueue(
     .set({ bindingGeneration: null, status: "queued" })
     .where("id", "=", input.run.id)
     .where("status", "=", "starting")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (queued.numUpdatedRows !== 1n) {
     throw new OpensteerError({
       code: "conflict",
@@ -242,7 +247,7 @@ export async function findCommandByIdempotency(
     .selectAll()
     .where("requestedBy", "=", requestedBy)
     .where("idempotencyKey", "=", idempotencyKey)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
 }
 
 /**

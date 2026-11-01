@@ -1,0 +1,31 @@
+{
+  "description": "Synthetic fixed keys and AES-GCM ciphertext in the established v1 mirror format. OS encryption is an identity test double.",
+  "profiles": [
+    {
+      "binding": {
+        "version": 1,
+        "deploymentId": "dep_00000000-0000-4000-8000-000000000001",
+        "profileId": "bpr_00000000-0000-4000-8000-000000000001",
+        "runnerId": "rnr_00000000-0000-4000-8000-000000000001",
+        "storageInstanceId": "20000000-0000-4000-8000-000000000001",
+        "bindingId": "10000000-0000-4000-8000-000000000001",
+        "engine": "electron"
+      },
+      "keyFile": "{\"schemaVersion\":1,\"ciphertext\":\"eyJ2ZXJzaW9uIjoxLCJiaW5kaW5nIjp7InZlcnNpb24iOjEsImRlcGxveW1lbnRJZCI6ImRlcF8wMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJwcm9maWxlSWQiOiJicHJfMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwicnVubmVySWQiOiJybnJfMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwic3RvcmFnZUluc3RhbmNlSWQiOiIyMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJiaW5kaW5nSWQiOiIxMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJlbmdpbmUiOiJlbGVjdHJvbiJ9LCJrZXkiOiJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUUVCQVFFPSJ9\"}",
+      "mirrorFile": "{\"version\":1,\"sequence\":7,\"nonce\":\"AQEBAQEBAQEBAQEB\",\"ciphertext\":\"yVvM/xuEbJyEhzWsgh4swHNQB2o23WEZr3vpDNubykIPzudVAPxifAjwl3vvJvrv0AgHcTEgpFxS/9ZfVstanVTT4r8CAty4dxeApt8EUExmmmecNHzHef9Q1i6pHuBzrob3FdOimvZB3gu8IXjb8hPextEoOku03jKGzaiNJn61HkuzL7eRqyFNAik/7hFiQo1Zv9zEFwEkcTrNTE5SphhMqiXLm5hTRC/XFTl/1ebYudSpYpxhIl3QQaq4bT/PJSSaMhFUc8OeQrz5lfCP5pL2Kuo8/jxf8Y/fyCO7GsjNDVgORoGgny3LpWzcMLNkk0Z0cKYbabEMx49tBNWM4kDAYU6vqTxRpwdG1ANMaP17oE1+5DC/QxHUAX/C0BJcEhpXWkqAP36NQfkEhO/jSmfMStZolGmp1CizYQm31RXNy/TheJxzdBWFJqMn1mb0yuKKX9gxK/e/jIQQ6jHAvREIehpaAJQKN6+2GIuTA0gRiuYuQfjF6uL7w26yHMm4s6Fc+yvFMFFCm0C0olv9NtTzE8lPGjB2AEPRBwVO2ixZ6x/0MbboOuxWI4gDQdwAfSZurjC8VnogmdG6XGSP7gkJSXlKl2ETQ5aP7uBeNAi7n9BReL8OKjhvyfJnK2bFA6p+GEu0bKRLpCIhxkvHKAfq4QVbOhfM/59eRabBdcGyfIMH0CS0zOXOWjpga9evN1dfDWDLwZZl5SAYami9rJf7HriEm5dhwfnZyHxroLAyOaLSVaSg1q1WECI+f8PPuYTPnnAUhcWWDEHJDxWxy29S904QCf4s9KD4WJdN2fhF2DPvI6FIVrjJX/1g4vmiwRHnqzTMMzfB9iwsNWjXQqbxbX/lFtKKPpp7OX4mwWitdH12XOcG3l2Ag056Yl7LP8T4YISXm6OXvHLhI/yWzBdBqUUUFQCkacjabdzEPSzh8zxKa9bdQD82iuUMGZN+yXXg3uxrs4XGPpMP7qGry+/o2Hu+t1gKXk0opR92nOKfZhAs1S+WkQuiakSSH+OZ4iazC2ONQlkfsZvIvovDstdv/96di8HwhCexuKzOweTST/rD3nQ1yMg8CApGhHmYI1oi2oZYcA==\",\"tag\":\"LG6vGOXOkU/eHaRgYGFnlQ==\"}"
+    },
+    {
+      "binding": {
+        "version": 1,
+        "deploymentId": "dep_00000000-0000-4000-8000-000000000001",
+        "profileId": "bpr_00000000-0000-4000-8000-000000000002",
+        "runnerId": "rnr_00000000-0000-4000-8000-000000000001",
+        "storageInstanceId": "20000000-0000-4000-8000-000000000001",
+        "bindingId": "10000000-0000-4000-8000-000000000002",
+        "engine": "electron"
+      },
+      "keyFile": "{\"schemaVersion\":1,\"ciphertext\":\"eyJ2ZXJzaW9uIjoxLCJiaW5kaW5nIjp7InZlcnNpb24iOjEsImRlcGxveW1lbnRJZCI6ImRlcF8wMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJwcm9maWxlSWQiOiJicHJfMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAyIiwicnVubmVySWQiOiJybnJfMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwic3RvcmFnZUluc3RhbmNlSWQiOiIyMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJiaW5kaW5nSWQiOiIxMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJlbmdpbmUiOiJlbGVjdHJvbiJ9LCJrZXkiOiJBZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnSUNBZ0lDQWdJPSJ9\"}",
+      "mirrorFile": "{\"version\":1,\"sequence\":7,\"nonce\":\"AgICAgICAgICAgIC\",\"ciphertext\":\"E+YY4OCeEjDaYA6NXvNzsfC9E9yJwK8BPr6xCm/dsEfZuSiXGmQj+pfR3lvm6JwVHwkDIqbSqCB8qVCB6lW5Z1t+JG6X03QW9bKjod1EZobcRVa4ywLUORiWzc04jmPk3OHN/J97zfkP0B6YccgG/8sHUV0uW8DzZZOLUgimu+gsep8lTtRfVIhuWwTObO9qs62lNC9KgE2p79NVy+NietrRHtIBQfH0RifNNiLZ4kuAGj+NUlhLstTnrnD+7gdPyZZrp0CjCsR7VxRbmzkC3rfeOOerTccP90cu7nnpwctkxr3B71K6SPLkNzvjBXP6Wj7C/r374LWc362ln4+uij3xmwuFz4hWJCkTOFQ3f+H9tEN1hb0/dQbqrfcCnCatSltaoxcBMJUooBYKHgnU9oxvMdm4ZePAL5/tiEzlq34bD31fMdinxU9eXRwAeL87RLpXTpKWa9Ln8khQhPXtS5KDh0EYB/XINlip6ec9rwTL+zl5hkAeP5fKv/K9p0of3qZiFjCouCL+LkFhjvp3/iPjUlT2IUuYV4Cflnx7C1LWQNa2Zl0KHCSJsl6i4Ams5qeCr/Xh2OudtlEHYKnKI8lUg4J3BYllTuAIJeR7xqRx2qlHnAwP6oqT/Y1WfInXNB1T+iSKsheJIbkrwNU0SFYZ6ywmNIQ4AZ7Chm78w59PYnhRavbwFJWT/x3hBC+1DQUiNnb/LxJz774X4zXlVIY/uhY8aqkmRSgyXGN4Hao1lqDfuUI0FP1+CDmqXPu2//xXvAlUqgF1OjLeRB7FGPv3tj49kShIplSjo4bhqWeqoNVTgNKYNUAXyP9F623WzsBHi9vc5uW7DvSFrJ2ooKmkV7LzBg6huL6/HD1T3c7302Z7KrRnq/G7gBEgJSDf9drKiCymgUKbcTg8g+GGQzZ+RcEWppX7VzHofJ9U607fm6Ljv9YRfLSgHCxR8IGbGyS/IK1DgDyXcwDorcgP/anNmYQqiVYTPDnuNlBDoYv/9LqYBd5Fcm6hMkrCQ8YV7NYQdkHjITiOpkpdmWG5ulMRoG9jcIMyavBc3qvawfWXKdbrDG+EBSTXiJw3dNDW7HFifC6jXg==\",\"tag\":\"0j9x1ZmDZATC9zmydM7Fsg==\"}"
+    }
+  ]
+}

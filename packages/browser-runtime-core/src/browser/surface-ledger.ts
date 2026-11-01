@@ -1,5 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { z } from "zod";
+import {
+  browserFrameFits,
+  defaultBrowserViewport,
+  type CdpParameters,
+} from "@opensteer/browser-core";
 import {
   BrowserSurfaceIdSchema,
   browserWorkspaceTabUrlMaxLength,
@@ -9,12 +12,10 @@ import {
   type BrowserSurfaceId,
   type BrowserWorkspaceTabDescriptor,
 } from "@opensteer/protocol/browser";
-import {
-  browserFrameFits,
-  defaultBrowserViewport,
-  type CdpParameters,
-} from "@opensteer/browser-core";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError } from "../errors.js";
 import type { BrowserContext, BrowserPage, CdpSession, PageGeometry, Viewport } from "./backend.js";
@@ -740,11 +741,13 @@ export class SurfaceLedger {
    */
   async openSurface(
     options: {
+      readonly signal?: AbortSignal;
       readonly viewport?: Viewport;
       readonly activate?: boolean;
       readonly surfaceId?: BrowserSurfaceId;
     } = {},
   ): Promise<BrowserSurface> {
+    options.signal?.throwIfAborted();
     if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
     if (options.surfaceId && this.records.has(options.surfaceId))
       return this.toSurface(this.records.get(options.surfaceId)!);
@@ -753,15 +756,45 @@ export class SurfaceLedger {
       throw new BrowserRuntimeError("conflict", "The browser cannot open more tabs.");
     }
     // Discovery waits until the creator has assigned the requested identity.
-    await this.creatingPage;
+    await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
+      ...(options.signal ? { signal: options.signal } : {}),
+      timeoutError: () => new BrowserRuntimeError("conflict", "Opening this page timed out."),
+    });
+    options.signal?.throwIfAborted();
     let created: () => void = () => undefined;
     this.creatingPage = new Promise<void>((resolve) => {
       created = resolve;
     });
     let page: BrowserPage;
     try {
-      page = await this.context.createPage();
-      await this.register(page, options.activate ?? true, options.viewport, options.surfaceId);
+      const creating = this.context.createPage();
+      void creating.then(
+        (created) => {
+          if (options.signal?.aborted) void created.close().catch(() => undefined);
+        },
+        () => undefined,
+      );
+      page = await withTimeout(creating, 18_000, {
+        ...(options.signal ? { signal: options.signal } : {}),
+        timeoutError: () => new BrowserRuntimeError("conflict", "Opening this page timed out."),
+      });
+      const abort = () => {
+        void page.close().catch(() => undefined);
+      };
+      options.signal?.addEventListener("abort", abort, { once: true });
+      try {
+        await withTimeout(
+          this.register(page, options.activate ?? true, options.viewport, options.surfaceId),
+          18_000,
+          {
+            ...(options.signal ? { signal: options.signal } : {}),
+            timeoutError: () => new BrowserRuntimeError("conflict", "Opening this page timed out."),
+          },
+        );
+        options.signal?.throwIfAborted();
+      } finally {
+        options.signal?.removeEventListener("abort", abort);
+      }
     } finally {
       this.creatingPage = null;
       created();

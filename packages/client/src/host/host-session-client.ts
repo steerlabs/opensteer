@@ -24,29 +24,28 @@ import type {
   HostClient as OwnerViewHostClient,
 } from "./client.js";
 import {
-  BrowserSurfaceIdSchema,
   AgentEventViewSchema,
-  ThreadViewSchema,
-  ThreadStatusSchema,
-  eventDataSchemas,
-  SequenceSchema,
-  WorkspaceIdSchema,
+  BrowserSurfaceIdSchema,
+  CHAT_THREAD_TITLE,
   LiveItemViewSchema,
   LiveRunProgressViewSchema,
-  liveProgressMaxItems,
+  RunIdSchema,
+  SequenceSchema,
   ThreadIdSchema,
+  ThreadStatusSchema,
   ThreadTitleSchema,
-  defaultTaskSymbol,
-  type WorkspaceIconName,
-  CHAT_THREAD_TITLE,
+  ThreadViewSchema,
+  TimeZoneSchema,
+  WorkspaceIdSchema,
   compareSequence,
+  defaultTaskSymbol,
   emptyExecutionPreferences,
+  eventDataSchemas,
   harnessDisplayRank,
+  liveProgressMaxItems,
   liveStreamKeyId,
   liveStreamKeyOf,
   requestTitleText,
-  RunIdSchema,
-  TimeZoneSchema,
   zeroSequence,
   type AgentEventView as AgentEvent,
   type AssignmentSummary,
@@ -55,50 +54,99 @@ import {
   type ExecutionPreferences,
   type NotificationView,
   type Request,
-  type WaitingRequest,
   type Sequence,
   type Thread,
   type ThreadAccessMode,
   type ThreadId,
   type ThreadInputQueue,
   type ThreadReadState,
+  type WaitingRequest,
+  type WorkspaceIconName,
   type WorkspaceNotificationPreference,
 } from "@opensteer/core";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
-  HarnessModelSettingsMapSchema,
-  BrowserSessionIdSchema,
   BrowserServerMessageSchema,
+  BrowserSessionIdSchema,
+  DisplaySourceSchema,
+  HarnessModelSettingsMapSchema,
   HostToClientMessageSchema,
   WorkspaceSnapshotSchema,
-  workspaceSnapshotMaxThreads,
+  browserTabCatalogMaxBytes,
+  browserUsageRunBatchSize,
+  browserViewerCloseCodes,
+  decodeBrowserFrameEnvelope,
   hostApi,
   threadPageMaxItems,
   workspaceFilePreviewMaxBytes,
-  browserViewerCloseCodes,
-  browserUsageRunBatchSize,
-  decodeBrowserFrameEnvelope,
+  workspaceSnapshotMaxThreads,
+  type BrowserPresence,
   type BrowserServerMessage,
+  type BrowserSessionUsageProjection,
+  type BrowserTabCatalog,
   type DurableWindow,
   type HostApiClient,
   type HostApiCommand,
   type HostApiCommandInput,
   type HostApiCommandOutput,
-  type MachineAccessPolicy,
-  type RpcResult,
-  type HostedBrowserSession,
-  type WorkspaceTabLineage,
-  type BrowserPresence,
-  type BrowserSessionUsageProjection,
-  type MachineSummary,
   type HostToClientMessage,
+  type HostedBrowserSession,
+  type MachineAccessPolicy,
+  type MachineSummary,
+  type RpcResult,
   type WorkspaceSnapshot,
+  type WorkspaceTabLineage,
   type WorkspaceView,
 } from "@opensteer/protocol";
-import { hostApiVersion } from "@opensteer/deployment-authority";
 import { z } from "zod";
+import { BrowserWatchStore } from "./browser-watch.js";
+import type {
+  BrowserCommand,
+  BrowserFrameStore,
+  BrowserFrameView,
+  BrowserPlacementSummary,
+  BrowserSessionSummary,
+  BrowserSessionUseSummary,
+  BrowserStartIdentity,
+  BrowserTabOpenInput,
+  BrowserTabOpenOptions,
+  CreateThreadInput,
+  EnvironmentSummary,
+  HarnessSummary,
+  HostConnectionState,
+  HostSnapshot,
+  MachineAccessHistoryPage,
+  MachineAccessUpdateOutcome,
+  HostClient as OwnerViewHostClient,
+  TaskListState,
+  ThreadSummary,
+  TranscriptEntry,
+  WorkspaceFilePreview,
+  WorkspaceSummary,
+} from "./client.js";
 import { HostClientRequestError, isHostRefusal } from "./client.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
+import { createHttpHostApiClient } from "./host-api-client.js";
+import { threadInDirectory } from "./host-snapshot-selectors.js";
+import { LatestPlaceStore } from "./latest-place.js";
+import {
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
+  socketProbeDeadlineMs,
+  socketTrustWindowMs,
+  type ClientLifecycle,
+  type ClientNetworkState,
+  type ClientVisibility,
+} from "./lifecycle.js";
 import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
+import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
+import { PlaceActivityStore } from "./place-activity.js";
+import { newerBrowserTabCatalog, placeList } from "./places.js";
+import { RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
+import { mergeTaskEntries } from "./task-entries.js";
+import { threadStopTarget } from "./thread-activity.js";
+import { isThreadUnread, mergeThreadReadState } from "./thread-read-state.js";
+import { ThreadStateProjection } from "./thread-state.js";
 import {
   drawnLiveStream,
   foldLiveRun,
@@ -109,49 +157,6 @@ import {
   upsertEntry,
   withoutClosedLiveStreams,
 } from "./transcript.js";
-import type {
-  BrowserCommand,
-  BrowserFrameStore,
-  BrowserFrameView,
-  BrowserPlacementSummary,
-  BrowserSessionSummary,
-  BrowserSessionUseSummary,
-  BrowserStartIdentity,
-  CreateThreadInput,
-  EnvironmentSummary,
-  HarnessSummary,
-  HostConnectionState,
-  HostSnapshot,
-  MachineAccessHistoryPage,
-  MachineAccessUpdateOutcome,
-  TaskListState,
-  ThreadSummary,
-  TranscriptEntry,
-  WorkspaceSummary,
-  WorkspaceFilePreview,
-} from "./client.js";
-import { mergeTaskEntries } from "./task-entries.js";
-import { RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
-import { threadStopTarget } from "./thread-activity.js";
-import { isThreadUnread, mergeThreadReadState } from "./thread-read-state.js";
-import { ThreadStateProjection } from "./thread-state.js";
-import { LatestPlaceStore } from "./latest-place.js";
-import { PlaceActivityStore } from "./place-activity.js";
-import { BrowserWatchStore } from "./browser-watch.js";
-import { newerBrowserTabCatalog, placeList } from "./places.js";
-import { browserTabCatalogMaxBytes, type BrowserTabCatalog } from "@opensteer/protocol";
-import { createHttpHostApiClient } from "./host-api-client.js";
-import {
-  realtimeIdleProbeDeadlineMs,
-  realtimeIdleProbeMs,
-  socketProbeDeadlineMs,
-  socketTrustWindowMs,
-  type ClientLifecycle,
-  type ClientNetworkState,
-  type ClientVisibility,
-} from "./lifecycle.js";
-import { threadInDirectory } from "./host-snapshot-selectors.js";
-import { withThreadNames, applyOptimisticCommandPatch } from "./optimistic-command-patches.js";
 
 const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
 const defaultRefreshIntervalMs = 15_000;
@@ -1434,7 +1439,6 @@ export class HttpHostClient {
         break;
       }
       case "browser.profile.create":
-      case "browser.session.profile.save":
         this.#update(
           applyOptimisticCommandPatch(this.#snapshot, {
             profile: result.profile,

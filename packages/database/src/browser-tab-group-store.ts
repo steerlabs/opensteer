@@ -1,33 +1,34 @@
-import { createHash } from "node:crypto";
 import {
   BrowserTabGroupIdSchema,
+  browserTabOrderMaxTabs,
+  groupBrowserTabs,
+  moveBrowserTabs,
   OpensteerError,
   resolveBrowserTabOrder,
-  moveBrowserTabs,
-  groupBrowserTabs,
   ungroupBrowserTabs,
-  browserTabOrderMaxTabs,
   type BrowserTabArrangement,
   type BrowserTabMove,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
 import {
-  BrowserTabGroupColorSchema,
-  BrowserTabLayoutSchema,
   BrowserSurfaceIdSchema,
-  browserTabGroupsMaxPerOwner,
+  BrowserTabGroupColorSchema,
   browserTabGroupMaxTabs,
-  type BrowserTabLayout,
-  type BrowserTabGroupColor,
+  browserTabGroupsMaxPerOwner,
+  BrowserTabLayoutSchema,
   type BrowserSessionId,
+  type BrowserTabGroupColor,
+  type BrowserTabLayout,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Transaction } from "kysely";
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import { withDatabaseTransaction, TransactionScopeChanged } from "./connection.js";
+import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
+import { databaseOperationOptions } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
-import { visibleWorkspaceTabLineages } from "./workspace-tab-visibility.js";
 import { safeCount } from "./store-primitives.js";
+import { visibleWorkspaceTabLineages } from "./workspace-tab-visibility.js";
 
 type Database = Kysely<DatabaseSchema>;
 type GroupId = z.infer<typeof BrowserTabGroupIdSchema>;
@@ -104,7 +105,7 @@ export class BrowserTabGroupStore {
       .select(["workspaceTabs.id as tabId", "browserSessions.id as latestSessionId"])
       .orderBy("browserTabGroups.id")
       .orderBy("workspaceTabs.id")
-      .execute();
+      .execute(databaseOperationOptions());
     const groups = new Map<
       GroupId,
       {
@@ -148,7 +149,7 @@ export class BrowserTabGroupStore {
         .selectFrom("browserTabLayouts")
         .select(["revision", "tabOrder"])
         .where("ownerId", "=", ownerId)
-        .executeTakeFirst(),
+        .executeTakeFirst(databaseOperationOptions()),
       this.groups(ownerId, database),
     ]);
     const saved = layout?.tabOrder ?? [];
@@ -159,7 +160,7 @@ export class BrowserTabGroupStore {
               .where("workspaceTabs.id", "in", saved)
               .clearSelect()
               .select("workspaceTabs.id")
-              .execute()
+              .execute(databaseOperationOptions())
           ).map((tab) => tab.id)
         : [],
     );
@@ -185,13 +186,13 @@ export class BrowserTabGroupStore {
         .setIsolationLevel("repeatable read")
         .execute((tx) => this.orderedTabs(ownerId, tx));
     const [tabs, groups, layout] = await Promise.all([
-      visibleWorkspaceTabs(database, ownerId).execute(),
+      visibleWorkspaceTabs(database, ownerId).execute(databaseOperationOptions()),
       this.groups(ownerId, database),
       database
         .selectFrom("browserTabLayouts")
         .select("tabOrder")
         .where("ownerId", "=", ownerId)
-        .executeTakeFirst(),
+        .executeTakeFirst(databaseOperationOptions()),
     ]);
     const groupOf = new Map(groups.flatMap((group) => group.tabIds.map((id) => [id, group.id])));
     const order = resolveBrowserTabOrder(
@@ -216,7 +217,7 @@ export class BrowserTabGroupStore {
   ) {
     return visibleWorkspaceTabs(database, ownerId, includeClosed)
       .where("workspaceTabs.id", "in", [...tabIds])
-      .execute();
+      .execute(databaseOperationOptions());
   }
 
   group(
@@ -286,7 +287,7 @@ export class BrowserTabGroupStore {
             .where("browserTabGroupMembers.groupId", "in", involvedGroups)
             .clearSelect()
             .select("workspaceTabs.id")
-            .execute()
+            .execute(databaseOperationOptions())
         : [];
       return [
         ...new Set([
@@ -308,19 +309,19 @@ export class BrowserTabGroupStore {
             .where("id", "in", scope)
             .orderBy("id")
             .forShare()
-            .execute();
+            .execute(databaseOperationOptions());
         }
         await tx
           .insertInto("browserTabLayouts")
           .values({ ownerId })
           .onConflict((c) => c.column("ownerId").doNothing())
-          .execute();
+          .execute(databaseOperationOptions());
         await tx
           .selectFrom("browserTabLayouts")
           .select("ownerId")
           .where("ownerId", "=", ownerId)
           .forNoKeyUpdate()
-          .executeTakeFirstOrThrow();
+          .executeTakeFirstOrThrow(databaseOperationOptions());
         const currentScope = await discover(tx);
         if (
           scope.length !== currentScope.length ||
@@ -349,7 +350,7 @@ export class BrowserTabGroupStore {
           .selectFrom("browserTabGroups")
           .selectAll()
           .where("ownerId", "=", ownerId)
-          .execute();
+          .execute(databaseOperationOptions());
         const target =
           action === "ungroup" || action === "move"
             ? undefined
@@ -360,7 +361,7 @@ export class BrowserTabGroupStore {
               .select("groupId")
               .where("ownerId", "=", ownerId)
               .where("tabId", "in", tabIds)
-              .execute()
+              .execute(databaseOperationOptions())
           : [];
         const affectedGroupIds = [
           ...new Set([...previous.map((member) => member.groupId), ...(target ? [target.id] : [])]),
@@ -405,13 +406,13 @@ export class BrowserTabGroupStore {
                 color,
                 createdByThreadId: input.createdByThreadId ?? null,
               })
-              .execute();
+              .execute(databaseOperationOptions());
           }
           const members = await tx
             .selectFrom("browserTabGroupMembers")
             .select("tabId")
             .where("groupId", "=", groupId)
-            .execute();
+            .execute(databaseOperationOptions());
           const memberIds = new Set(members.map((member) => member.tabId));
           if (new Set([...memberIds, ...tabIds]).size > browserTabGroupMaxTabs)
             throw new OpensteerError({
@@ -425,7 +426,7 @@ export class BrowserTabGroupStore {
               .insertInto("browserTabGroupMembers")
               .values({ ownerId, tabId, groupId })
               .onConflict((c) => c.columns(["ownerId", "tabId"]).doUpdateSet({ groupId }))
-              .execute();
+              .execute(databaseOperationOptions());
           arrangement = groupBrowserTabs(before!, tabIds, groupId);
         } else if (action === "ungroup") {
           const removed = previous.length > 0;
@@ -435,7 +436,7 @@ export class BrowserTabGroupStore {
               .deleteFrom("browserTabGroupMembers")
               .where("ownerId", "=", ownerId)
               .where("tabId", "in", tabIds)
-              .execute();
+              .execute(databaseOperationOptions());
           arrangement = ungroupBrowserTabs(before!, tabIds);
         } else if (action === "move" && move) {
           const result = moveBrowserTabs(before!, move);
@@ -446,7 +447,7 @@ export class BrowserTabGroupStore {
               .selectFrom("browserTabGroupMembers")
               .select("tabId")
               .where("groupId", "=", move.to.groupId)
-              .execute();
+              .execute(databaseOperationOptions());
             if (
               new Set([...members.map((member) => member.tabId), ...tabIds]).size >
               browserTabGroupMaxTabs
@@ -465,7 +466,7 @@ export class BrowserTabGroupStore {
                 .deleteFrom("browserTabGroupMembers")
                 .where("ownerId", "=", ownerId)
                 .where("tabId", "=", tabId)
-                .execute();
+                .execute(databaseOperationOptions());
             else
               await tx
                 .insertInto("browserTabGroupMembers")
@@ -475,7 +476,7 @@ export class BrowserTabGroupStore {
                     .columns(["ownerId", "tabId"])
                     .doUpdateSet({ groupId: BrowserTabGroupIdSchema.parse(destination) }),
                 )
-                .execute();
+                .execute(databaseOperationOptions());
           }
         } else if (
           target &&
@@ -494,7 +495,7 @@ export class BrowserTabGroupStore {
             })
             .where("id", "=", groupId)
             .where("ownerId", "=", ownerId)
-            .execute();
+            .execute(databaseOperationOptions());
         }
         if (arrangement) {
           if (arrangement.order.length > browserTabOrderMaxTabs)
@@ -507,7 +508,7 @@ export class BrowserTabGroupStore {
             .selectFrom("browserTabLayouts")
             .select("tabOrder")
             .where("ownerId", "=", ownerId)
-            .executeTakeFirstOrThrow();
+            .executeTakeFirstOrThrow(databaseOperationOptions());
           if (
             saved.tabOrder === null ||
             saved.tabOrder.length !== arrangement.order.length ||
@@ -518,7 +519,7 @@ export class BrowserTabGroupStore {
               .updateTable("browserTabLayouts")
               .set({ tabOrder: sql`${JSON.stringify(arrangement.order)}::jsonb` })
               .where("ownerId", "=", ownerId)
-              .execute();
+              .execute(databaseOperationOptions());
           }
         }
         if (!changed) return { groupId, layout: await this.layout(ownerId, tx) };
@@ -527,7 +528,7 @@ export class BrowserTabGroupStore {
           .updateTable("browserTabLayouts")
           .set((eb) => ({ revision: eb("revision", "+", 1) }))
           .where("ownerId", "=", ownerId)
-          .execute();
+          .execute(databaseOperationOptions());
         return { groupId, layout: await this.layout(ownerId, tx) };
       },
       undefined,
@@ -555,7 +556,7 @@ export class BrowserTabGroupStore {
           ),
         ),
       )
-      .execute();
+      .execute(databaseOperationOptions());
   }
   async #pruneOwner(
     tx: Transaction<DatabaseSchema>,
@@ -569,14 +570,14 @@ export class BrowserTabGroupStore {
       .orderBy("id")
       // FOR UPDATE: Cleanup and mutations can delete any group losing its last member.
       .forUpdate()
-      .execute();
+      .execute(databaseOperationOptions());
     const closed = await tx
       .selectFrom("browserTabGroupMembers")
       .innerJoin("workspaceTabs", "workspaceTabs.id", "browserTabGroupMembers.tabId")
       .select("browserTabGroupMembers.tabId")
       .where("browserTabGroupMembers.ownerId", "=", ownerId)
       .where("workspaceTabs.closedAt", "is not", null)
-      .execute();
+      .execute(databaseOperationOptions());
     // Closed markers are irreversible; fix this set before locking so later closes cannot add unordered locks.
     const closedIds = closed.map((member) => member.tabId);
     const memberIds = [...new Set([...closedIds, ...tabIds])];
@@ -590,13 +591,13 @@ export class BrowserTabGroupStore {
         .orderBy("tabId")
         // FOR UPDATE: Memberships are deleted by cleanup/ungroup or moved between groups.
         .forUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
     const deletedMembers = closedIds.length
       ? await tx
           .deleteFrom("browserTabGroupMembers")
           .where("ownerId", "=", ownerId)
           .where("tabId", "=", sql<string>`any(${closedIds}::text[])`)
-          .executeTakeFirst()
+          .executeTakeFirst(databaseOperationOptions())
       : undefined;
     const deletedGroups = await this.#deleteEmpty(
       tx,
@@ -613,7 +614,7 @@ export class BrowserTabGroupStore {
       .selectFrom("browserTabLayouts")
       .select("ownerId")
       .orderBy("ownerId")
-      .execute();
+      .execute(databaseOperationOptions());
     for (const { ownerId } of owners)
       await withDatabaseTransaction(this.database, async (tx) => {
         const layout = await tx
@@ -621,7 +622,7 @@ export class BrowserTabGroupStore {
           .select("tabOrder")
           .where("ownerId", "=", ownerId)
           .forNoKeyUpdate()
-          .executeTakeFirst();
+          .executeTakeFirst(databaseOperationOptions());
         const saved = layout?.tabOrder ?? [];
         const remaining = new Set(
           saved.length
@@ -631,7 +632,7 @@ export class BrowserTabGroupStore {
                   .select("id")
                   .where("id", "in", saved)
                   .where("closedAt", "is", null)
-                  .execute()
+                  .execute(databaseOperationOptions())
               ).map((tab) => tab.id)
             : [],
         );
@@ -646,7 +647,7 @@ export class BrowserTabGroupStore {
               ...(orderChanged ? { tabOrder: sql`${JSON.stringify(order)}::jsonb` } : {}),
             }))
             .where("ownerId", "=", ownerId)
-            .execute();
+            .execute(databaseOperationOptions());
       });
   }
 }

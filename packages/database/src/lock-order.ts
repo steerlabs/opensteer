@@ -92,11 +92,10 @@ export const databaseLockOrder = [
   "auth_rate_limits",
   "auth_sso_providers",
   "auth_verifications",
-  // Browser profile mutations reserve their revisions and sources before downstream grants.
+  // Browser identities and sources precede downstream grants.
   "browser_profiles",
   "browser_history_entries",
   "browser_history_icons",
-  "browser_profile_revisions",
   "browser_session_attachments",
   "browser_sign_ins",
   "browser_source_imports",

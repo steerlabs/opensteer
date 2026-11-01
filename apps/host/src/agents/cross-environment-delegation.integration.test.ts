@@ -1,10 +1,7 @@
-import { resolvedInputParts } from "@opensteer/harness";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { assignmentPresentation } from "@opensteer/client/host";
 import {
   assignmentResultMaxBytes,
   createId,
@@ -30,26 +27,29 @@ import {
   migrationProvider,
   OpensteerStore,
 } from "@opensteer/database";
-import { assignmentPresentation } from "@opensteer/client/host";
+import { resolvedInputParts } from "@opensteer/harness";
 import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
 import {
-  HarnessInstanceCatalogSchema,
-  EnvironmentDiscoverySchema,
   AgentControlResponseSchema,
+  EnvironmentDiscoverySchema,
+  HarnessInstanceCatalogSchema,
   type HarnessInstanceCatalog,
   type RunnerCommand,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AgentControlService,
   type AgentControlRunScope,
   type AgentControlTokenService,
 } from "./agent-control-service.js";
+import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 import { ContinuationService } from "./continuation-service.js";
 import { HostCommandDispatcher } from "./dispatcher.js";
-import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -107,13 +107,11 @@ integration("cross-environment delegation reaches the Runner", () => {
     },
     browser: {
       createProfile: unexpected,
-      profileSiteData: unexpected,
       closeAgentSession: unexpected,
       listAgentSessions: unexpected,
       listGrantedProfiles: unexpected,
       openAgentSession: unexpected,
       requestAccess: unexpected,
-      requestSaveProfile: unexpected,
     },
     canRunHarness: () => true,
     commands,

@@ -1,15 +1,13 @@
-import { CompleteProfileInitializationSchema } from "@opensteer/protocol";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
-import { createVoiceHandlers } from "./voice/voice-handlers.js";
-import { browserProfileCheckpointHeader } from "@opensteer/protocol";
-import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
-import { searchSuggestions } from "./browser/search-suggestions.js";
-import type { BrowserTabGroupService } from "./browser/browser-tab-group-service.js";
 import { AgentPhoneUpdateHub } from "./agent-phone/update-hub.js";
 import {
   agentPhoneVersionCode,
   type AgentPhoneUpdateRelease,
 } from "./agent-phone/update-release.js";
+import type { BrowserTabGroupService } from "./browser/browser-tab-group-service.js";
+import { searchSuggestions } from "./browser/search-suggestions.js";
+import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
+import { createVoiceHandlers } from "./voice/voice-handlers.js";
 /**
  * The Host's composition root, and only that.
  *
@@ -35,43 +33,50 @@ import {
 import type { ComputerViewService } from "./computer-use/computer-view-service.js";
 
 import type { PlaceContextService } from "./computer-use/place-context-service.js";
-import { createHash, randomUUID } from "node:crypto";
-import { AttachmentIdSchema, type AgentEvent, isPlaceContentPart } from "@opensteer/core";
-import { Readable } from "node:stream";
 import websocket from "@fastify/websocket";
 import {
+  HostToMessagingRelayMessageSchema,
+  MessagingRelayToHostMessageSchema,
+  type HostToMessagingRelayMessage,
+  type MessagingRelayToHostMessage,
+  type RuntimeChannelRequest,
+} from "@opensteer/channel-protocol";
+import {
+  RevokeConnectRequestSchema,
+  RevokeConnectResponseSchema,
+} from "@opensteer/control-plane-protocol";
+import {
+  AttachmentIdSchema,
   BrowserProfileIdSchema,
   CommandIdSchema,
+  CHAT_THREAD_TITLE,
+  DEFAULT_THREAD_ACCESS_MODE,
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   OpensteerError,
-  CHAT_THREAD_TITLE,
-  DEFAULT_THREAD_ACCESS_MODE,
   RunnerIdSchema,
   TriggerRevisionIdSchema,
   WorkspaceIdSchema,
   deploymentSupportsSharing,
   harnessDriverLabel,
+  isPlaceContentPart,
   unsupportedVersionReason,
   workspaceWakesOnDemand,
-  type EnvironmentId,
+  type AgentEvent,
+  type AuthenticatedSession,
   type DeploymentDisplayKind,
+  type EnvironmentId,
   type ExecutionEnvironmentKind,
+  type HarnessId,
   type HarnessInstanceId,
   type HarnessInstanceStateKind,
-  type HarnessId,
+  type ModelSelection,
   type RunnerId,
-  type AuthenticatedSession,
   type ThreadAccessMode,
   type UserId,
   type Workspace,
   type WorkspaceId,
-  type ModelSelection,
 } from "@opensteer/core";
-import {
-  BrowserProfileSnapshotSchema,
-  maxBrowserProfileSnapshotBytes,
-} from "@opensteer/browser-profile/snapshot";
 import {
   machineIsManagedBy,
   personalRemoteAccessRefusedReason,
@@ -83,10 +88,6 @@ import {
   type WorkspaceInvitationRecord,
 } from "@opensteer/database";
 import {
-  RevokeConnectRequestSchema,
-  RevokeConnectResponseSchema,
-} from "@opensteer/control-plane-protocol";
-import {
   HostDescriptorSchema,
   hostApiVersion,
   hostDiscoveryDefaultWorkspaceBacking,
@@ -94,51 +95,7 @@ import {
   type HostCapability,
   type HostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
-import {
-  clientMacOwnerViewVersion,
-  ConfigurePersonalRemoteAccessRequestSchema,
-  ApprovePersonalHostAccountLinkRequestSchema,
-  ConsumePersonalHostAccountLinkRequestSchema,
-  PublishPersonalConnectProjectionRequestSchema,
-  PersonalHostAccountUnlinkStepRequestSchema,
-} from "@opensteer/protocol";
-import {
-  MessagingRelayToHostMessageSchema,
-  HostToMessagingRelayMessageSchema,
-  type HostToMessagingRelayMessage,
-  type MessagingRelayToHostMessage,
-  type RuntimeChannelRequest,
-} from "@opensteer/channel-protocol";
 import { isRetryableHarnessCatalogStatus } from "@opensteer/harness";
-import { BoundedAsyncInbox } from "@opensteer/shared/boundedAsyncInbox";
-import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
-import {
-  AgentPhoneHostTargetSchema,
-  HostToIntegrationsModuleMessageSchema,
-  IntegrationsModuleEventSchema,
-  RunnerAuxiliaryAuthenticateSchema,
-  RunnerAuxiliaryHeartbeatSchema,
-  RunnerAuxiliaryModuleSchema,
-  RunnerModuleNameSchema,
-  computerAppMaxFrameBytes,
-  type AgentPhoneHostTarget,
-  type HostToIntegrationsModuleMessage,
-  type IntegrationsModuleEvent,
-  type ComputerUseSessionSummary,
-  type MachineAppStatus,
-  type MachineModuleSummary,
-  type RunnerAuxiliaryChallenge,
-  type RunnerAuxiliaryFrameFence,
-  type RunnerAuxiliaryModule,
-  type RunnerModuleName,
-} from "@opensteer/protocol";
-import {
-  BrowserRelayFrameError,
-  browserRelayFrameFence,
-  decodeBrowserRelayFrame,
-  maxBrowserRelayEnvelopeBytes,
-  type HostToBrowserRelayMessage,
-} from "@opensteer/protocol/browser-relay";
 import {
   interactiveRunnerRequestTimeoutMs,
   runnerIdentityRevokedCloseCode,
@@ -152,65 +109,120 @@ import {
   type RunnerRegistry,
 } from "@opensteer/orchestration";
 import {
+  AgentPhoneHostTargetSchema,
+  ApprovePersonalHostAccountLinkRequestSchema,
   BrowserSessionIdSchema,
   CorrelationIdSchema,
   ClientToHostMessageSchema,
+  ConfigurePersonalRemoteAccessRequestSchema,
+  ConsumePersonalHostAccountLinkRequestSchema,
+  HarnessModelSettingsMapSchema,
+  HostBootstrapSchema,
+  HostToClientMessageSchema,
+  HostToIntegrationsModuleMessageSchema,
+  HostToShellModuleMessageSchema,
+  IntegrationsModuleEventSchema,
+  PersonalHostAccountUnlinkStepRequestSchema,
+  PublishPersonalConnectProjectionRequestSchema,
+  RunnerAuxiliaryAuthenticateSchema,
+  RunnerAuxiliaryHeartbeatSchema,
+  RunnerAuxiliaryModuleSchema,
+  RunnerModuleNameSchema,
   RunnerToHostMessageSchema,
   RunnerWireProofSchema,
-  agentPhoneOutdatedReason,
+  ShellModuleToHostMessageSchema,
   WorkspaceFileKeySchema,
-  HostBootstrapSchema,
-  HarnessModelSettingsMapSchema,
+  agentPhoneOutdatedReason,
+  agentToolPayloadMaxSerializedBytes,
+  browserViewerCloseCodes,
+  clientMacOwnerViewVersion,
+  computerAppMaxFrameBytes,
+  eventPageMaxItems,
   hostApi,
   rpcSuccess,
-  type HostApiHandlers,
-  type HostApiServerContext,
-  type HostBootstrapHarness,
-  workspaceDirectoryPageDefaultEntries,
-  eventPageMaxItems,
   threadPageMaxItems,
+  unsupportedVersionCloseCode,
+  workspaceDirectoryPageDefaultEntries,
   workspacePageMaxItems,
   workspaceViewFromWorkspace,
-  agentToolPayloadMaxSerializedBytes,
+  type AgentPhoneHostTarget,
+  type ComputerUseSessionSummary,
   type HarnessAuthenticationState,
-  type HostToClientMessage,
-  HostToClientMessageSchema,
-  type HostToRunnerMessage,
-  ShellModuleToHostMessageSchema,
-  HostToShellModuleMessageSchema,
-  unsupportedVersionCloseCode,
-  browserViewerCloseCodes,
   type HarnessInstanceCatalog,
   type HarnessModelDescriptor,
   type HarnessSourceDescriptor,
+  type HostApiHandlers,
+  type HostApiServerContext,
+  type HostBootstrapHarness,
+  type HostToClientMessage,
+  type HostToIntegrationsModuleMessage,
+  type HostToRunnerMessage,
   type HostToShellModuleMessage,
+  type IntegrationsModuleEvent,
+  type MachineAppStatus,
+  type MachineModuleSummary,
+  type RunnerAuxiliaryChallenge,
+  type RunnerAuxiliaryFrameFence,
+  type RunnerAuxiliaryModule,
+  type RunnerModuleName,
   type ShellModuleEvent,
   type WorkspaceView,
 } from "@opensteer/protocol";
+import {
+  BrowserRelayFrameError,
+  browserRelayFrameFence,
+  decodeBrowserRelayFrame,
+  maxBrowserRelayEnvelopeBytes,
+  type HostToBrowserRelayMessage,
+} from "@opensteer/protocol/browser-relay";
+import { BoundedAsyncInbox } from "@opensteer/shared/boundedAsyncInbox";
+import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
+import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import type WebSocket from "ws";
 import type { RawData } from "ws";
-import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { z } from "zod";
-import type { MachineFullDiskAccessService } from "./shell/machine-full-disk-access-service.js";
 import type { AgentControlService } from "./agents/agent-control-service.js";
 import type { AgentToolsMcpService } from "./agents/agent-tools-mcp-service.js";
-import { HostAuthenticator } from "./identity/auth.js";
 import {
+  type BrowserConsumerAttachment,
   type BrowserConsumerPeer,
   type BrowserService,
-  type BrowserConsumerAttachment,
 } from "./browser/browser-service.js";
 import { createChannelRpcHandlers } from "./channels/channel-handlers.js";
 import type { ChannelService } from "./channels/channel-service.js";
+import type { PlaceContextService } from "./computer-use/place-context-service.js";
+import { HostAuthenticator } from "./identity/auth.js";
+import type { MachineFullDiskAccessService } from "./shell/machine-full-disk-access-service.js";
 
-import type { CredentialService } from "./identity/credential-service.js";
-import type { MessagingRelayHub, MessagingRelayPeer } from "./channels/messaging-relay-hub.js";
 import type {
   RunnerAuxiliaryPeer,
   RunnerAuxiliaryStream,
   RunnerStreamLossReason,
 } from "@opensteer/orchestration";
+import type { PersonalRemoteAccessService } from "./access/personal-remote-access-service.js";
+import {
+  availableSessionExchangeArms,
+  registerSessionExchangeRoute,
+} from "./access/session-exchange-routes.js";
+import type { ContinuationService } from "./agents/continuation-service.js";
+import {
+  HarnessCatalogReconciliationOwner,
+  harnessInspectionDefinition,
+  inspectAndRecordHarnessCatalogs,
+} from "./agents/harness-catalogs.js";
+import {
+  matchModelSelection,
+  modelOptionUnavailableMessage,
+  storedModelSelection,
+} from "./agents/model-selection.js";
+import type { RunnerAuthenticator } from "./agents/runner-authenticator.js";
+import type { SecurityEffectService } from "./agents/security-effect-service.js";
+import type { AttachmentService } from "./attachments/attachment-service.js";
+import { browserRuntimeCompatibilityReason } from "./browser/browser-runtime-compatibility.js";
+import type { BrowserSourceService } from "./browser/browser-source-service.js";
 import type {
   BrowserRelayEvent,
   RunnerBrowserHub,
@@ -220,107 +232,88 @@ import {
   BrowserRuntimeRelayToHostMessageSchema,
   HostToBrowserRuntimeRelayMessageSchema,
 } from "./browser/runner-browser-runtime.js";
+import {
+  registerAgentCdpBridge,
+  registerTriggerCdpBridge,
+  registerWatchCdpBridge,
+} from "./browser/trigger-cdp-bridge.js";
+import type { MessagingRelayHub, MessagingRelayPeer } from "./channels/messaging-relay-hub.js";
+import { sendComputerAppFrame } from "./computer-apps/computer-app-frame-send.js";
 import type { ComputerAppControlPeer, ComputerAppHub } from "./computer-apps/computer-app-hub.js";
 import { registerComputerUseDisplayRoutes } from "./computer-use/computer-use-display-routes.js";
-import type { DisplayStreamHub } from "./computer-use/display-stream-hub.js";
 import type { ComputerUseService } from "./computer-use/computer-use-service.js";
-import { sendComputerAppFrame } from "./computer-apps/computer-app-frame-send.js";
-import { notifyMachinesChanged } from "./shell/machine-access-events.js";
-import type { ShellControlPeer, ShellControlStreamHandler } from "./shell/shell-control-stream.js";
-import { registerShellRoutes } from "./shell/shell-routes.js";
-import type { EgressService } from "./server/egress-service.js";
-import {
-  harnessInspectionDefinition,
-  HarnessCatalogReconciliationOwner,
-  inspectAndRecordHarnessCatalogs,
-} from "./agents/harness-catalogs.js";
+import type { DisplayStreamHub } from "./computer-use/display-stream-hub.js";
+import type { CredentialService } from "./identity/credential-service.js";
 import type { HarnessAuthenticationCoordinator } from "./identity/harness-authentication-coordinator.js";
+import {
+  createIdentityRpcHandlers,
+  registerIdentityRoutes,
+  requireInstanceAdministrator,
+} from "./identity/identity-routes.js";
+import type { MountExchangeService } from "./identity/mount-exchange.js";
+import {
+  sealRequestResponse,
+  type RequestResponseVault,
+} from "./identity/request-response-vault.js";
+import type { IntegrationAuthAttemptLifecycle } from "./integrations/integration-auth-attempt-service.js";
+import {
+  createIntegrationAuthorizationRpcHandlers,
+  registerIntegrationAuthorizationRoutes,
+  type IntegrationAuthorizationRpcOptions,
+} from "./integrations/integration-authorization-routes.js";
+import type { IntegrationDashboardService } from "./integrations/integration-dashboard-service.js";
+import {
+  createIntegrationPlatformRpcHandlers,
+  registerIntegrationPlatformRoutes,
+  type IntegrationPlatformRpcOptions,
+} from "./integrations/integration-platform-routes.js";
+import type { IntegrationPlatformService } from "./integrations/integration-platform-service.js";
+import {
+  createIntegrationRpcHandlers,
+  registerIntegrationRoutes,
+  type IntegrationRpcOptions,
+} from "./integrations/integration-routes.js";
+import type { IntegrationService } from "./integrations/integration-service.js";
+import type { IntegrationToolsMcpService } from "./integrations/integration-tools-mcp-service.js";
+import type { McpOAuthService } from "./integrations/mcp-oauth-service.js";
 import type { LocalBootstrapService } from "./runtime/local-bootstrap.js";
 import {
   projectMachines,
   type MachineAccessView,
   type MachineProjectionInput,
 } from "./runtime/machines.js";
-import type { MountExchangeService } from "./identity/mount-exchange.js";
-import type { RunnerAuthenticator } from "./agents/runner-authenticator.js";
-import type { SecurityEffectService } from "./agents/security-effect-service.js";
-import {
-  matchModelSelection,
-  modelOptionUnavailableMessage,
-  storedModelSelection,
-} from "./agents/model-selection.js";
-import type { WorkspaceDeletionService } from "./workspace/workspace-deletion-service.js";
-import type { WorkspaceService } from "./workspace/workspace-service.js";
-import type { WorkspaceActivityService } from "./workspace/workspace-activity.js";
-import {
-  sealRequestResponse,
-  type RequestResponseVault,
-} from "./identity/request-response-vault.js";
-import {
-  installWebSocketLiveness,
-  scheduleWebSocketExpiration,
-} from "./server/websocket-liveness.js";
-import type { WorkspaceFilesService } from "./workspace/files/workspace-files-service.js";
-import type { WorkspaceWakeService } from "./workspace/workspace-wake-service.js";
-import {
-  createIdentityRpcHandlers,
-  registerIdentityRoutes,
-  requireInstanceAdministrator,
-} from "./identity/identity-routes.js";
-import {
-  createIntegrationRpcHandlers,
-  registerIntegrationRoutes,
-  type IntegrationRpcOptions,
-} from "./integrations/integration-routes.js";
-import {
-  createIntegrationAuthorizationRpcHandlers,
-  registerIntegrationAuthorizationRoutes,
-  type IntegrationAuthorizationRpcOptions,
-} from "./integrations/integration-authorization-routes.js";
-import type { IntegrationAuthAttemptLifecycle } from "./integrations/integration-auth-attempt-service.js";
-import type { IntegrationDashboardService } from "./integrations/integration-dashboard-service.js";
-import type { IntegrationService } from "./integrations/integration-service.js";
-import type { IntegrationPlatformService } from "./integrations/integration-platform-service.js";
-import type { McpOAuthService } from "./integrations/mcp-oauth-service.js";
-import type { ContinuationService } from "./agents/continuation-service.js";
-import {
-  createIntegrationPlatformRpcHandlers,
-  registerIntegrationPlatformRoutes,
-  type IntegrationPlatformRpcOptions,
-} from "./integrations/integration-platform-routes.js";
-import type { IntegrationToolsMcpService } from "./integrations/integration-tools-mcp-service.js";
-import { createTriggerRpcHandlers, registerTriggerRoutes } from "./triggers/trigger-routes.js";
-import type { TriggerService } from "./triggers/trigger-service.js";
-import {
-  registerAgentCdpBridge,
-  registerTriggerCdpBridge,
-  registerWatchCdpBridge,
-} from "./browser/trigger-cdp-bridge.js";
-import type { WatchCapabilityTokenService } from "./triggers/watch-capability.js";
-import type { TriggerControlTokenService } from "./triggers/trigger-control-service.js";
-import type { WatchProgramService } from "./triggers/watch-program-service.js";
-import type { PersonalRemoteAccessService } from "./access/personal-remote-access-service.js";
-import {
-  availableSessionExchangeArms,
-  registerSessionExchangeRoute,
-} from "./access/session-exchange-routes.js";
-import type { HostStaticDistribution } from "./server/static-distribution.js";
-import { drainConnectionsWithin } from "./server/connection-drain.js";
-import { createHostApiHandlers, type CoreCommand } from "./server/host-api-handlers.js";
 import {
   createBrowserSourceRpcHandlers,
   registerBrowserSourceWire,
   setBrowserSourceExtensionCors,
   type BrowserSourceRpcOptions,
 } from "./server/browser-source-registration.js";
-import type { BrowserSourceService } from "./browser/browser-source-service.js";
-import { browserSnapshotCompatibilityReason } from "./browser/browser-snapshot-compatibility.js";
-import { registerResponseCompression } from "./server/response-compression.js";
+import { drainConnectionsWithin } from "./server/connection-drain.js";
+import type { EgressService } from "./server/egress-service.js";
+import { createHostApiHandlers, type CoreCommand } from "./server/host-api-handlers.js";
 import { registerHostApi } from "./server/host-api-registration.js";
-import type { AttachmentService } from "./attachments/attachment-service.js";
 import { normalizeHostError } from "./server/http-errors.js";
-import { requestAbortSignal } from "./server/request-abort-signal.js";
 import { hostInternalRoutePaths } from "./server/internal-routes.js";
+import { requestAbortSignal } from "./server/request-abort-signal.js";
+import { registerResponseCompression } from "./server/response-compression.js";
+import type { HostStaticDistribution } from "./server/static-distribution.js";
+import {
+  installWebSocketLiveness,
+  scheduleWebSocketExpiration,
+} from "./server/websocket-liveness.js";
+import { notifyMachinesChanged } from "./shell/machine-access-events.js";
+import type { ShellControlPeer, ShellControlStreamHandler } from "./shell/shell-control-stream.js";
+import { registerShellRoutes } from "./shell/shell-routes.js";
+import type { TriggerControlTokenService } from "./triggers/trigger-control-service.js";
+import { createTriggerRpcHandlers, registerTriggerRoutes } from "./triggers/trigger-routes.js";
+import type { TriggerService } from "./triggers/trigger-service.js";
+import type { WatchCapabilityTokenService } from "./triggers/watch-capability.js";
+import type { WatchProgramService } from "./triggers/watch-program-service.js";
+import type { WorkspaceFilesService } from "./workspace/files/workspace-files-service.js";
+import type { WorkspaceActivityService } from "./workspace/workspace-activity.js";
+import type { WorkspaceDeletionService } from "./workspace/workspace-deletion-service.js";
+import type { WorkspaceService } from "./workspace/workspace-service.js";
+import type { WorkspaceWakeService } from "./workspace/workspace-wake-service.js";
 
 export { hostInternalRoutePatterns } from "./server/internal-routes.js";
 
@@ -872,55 +865,15 @@ export async function createHostServer(
     },
   );
 
-  app.get<{ Params: { profileId: string } }>(
-    "/v1/browser-profile-initialization/:profileId",
-    async (request, reply) => {
-      void reply.header("cache-control", "private, no-store");
-      return dependencies.browser.loadProfileInitialization(
-        BrowserProfileIdSchema.parse(request.params.profileId),
-        requireBearerToken(request),
-      );
-    },
-  );
   app.post<{ Params: { profileId: string } }>(
-    "/v1/browser-profile-initialization/:profileId",
-    async (request) =>
-      dependencies.browser.completeProfileInitialization(
+    "/v1/browser-profiles/:profileId/ready",
+    async (request, reply) => {
+      await dependencies.browser.acknowledgeNativeProfileReady(
         BrowserProfileIdSchema.parse(request.params.profileId),
         requireBearerToken(request),
-        CompleteProfileInitializationSchema.parse(request.body),
-      ),
-  );
-
-  app.get<{ Params: { profileId: string; sessionId: string } }>(
-    "/v1/browser-profile-state/:profileId/:sessionId",
-    async (request) =>
-      dependencies.browser.loadProfileState({
-        leaseToken: requireBearerToken(request),
-        profileId: BrowserProfileIdSchema.parse(request.params.profileId),
-        sessionId: BrowserSessionIdSchema.parse(request.params.sessionId),
-      }),
-  );
-
-  app.put<{ Params: { profileId: string; sessionId: string } }>(
-    "/v1/browser-profile-state/:profileId/:sessionId",
-    { bodyLimit: maxBrowserProfileSnapshotBytes + 64 * 1_024 },
-    async (request) => {
-      const body = z
-        .strictObject({
-          expectedRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-          snapshot: BrowserProfileSnapshotSchema,
-        })
-        .parse(request.body);
-      const committed = await dependencies.browser.commitProfileState({
-        expectedRevision: body.expectedRevision,
-        periodic: request.headers[browserProfileCheckpointHeader] === "periodic",
-        leaseToken: requireBearerToken(request),
-        profileId: BrowserProfileIdSchema.parse(request.params.profileId),
-        sessionId: BrowserSessionIdSchema.parse(request.params.sessionId),
-        snapshot: body.snapshot,
-      });
-      return { revision: committed.revision };
+        requestAbortSignal(request.raw, reply.raw),
+      );
+      return { ready: true };
     },
   );
 
@@ -1086,10 +1039,7 @@ export async function createHostServer(
         ownerName: runner.ownerName,
         deviceProfile: runner.deviceProfile,
         ownedByViewer: runner.ownerUserId === ownerId,
-        readiness: moduleReadiness(
-          runner.id,
-          runner.moduleDescriptors.browser?.profileSnapshotVersion,
-        ),
+        readiness: moduleReadiness(runner.id, runner.moduleDescriptors.browser?.wireVersion),
         revokedAt: runner.revokedAt,
         // Only a live connection says which build it runs.
         runtimeVersion: dependencies.runners.identityForRunner(runner.id)?.runtimeVersion ?? null,
@@ -1109,7 +1059,7 @@ export async function createHostServer(
       const reported = dependencies.runners.moduleReadiness(runnerId, module);
       if (reported === undefined) continue;
       const browserIncompatibility =
-        module === "browser" ? browserSnapshotCompatibilityReason(browserSnapshotVersion) : null;
+        module === "browser" ? browserRuntimeCompatibilityReason(browserSnapshotVersion) : null;
       if (browserIncompatibility !== null) {
         readiness.set(module, {
           checkedAt: null,
@@ -2215,6 +2165,7 @@ export async function createHostServer(
               case "browser.sign-in":
               case "browser.password-sign-in":
               case "browser.profile.import":
+              case "browser.profile.save":
                 throw new OpensteerError({
                   code: "conflict",
                   message:
@@ -2224,8 +2175,7 @@ export async function createHostServer(
                         ? "Approve a saved-password sign-in on its Mac, or decline it with browser.password-sign-in.decline"
                         : "This Request can no longer be answered",
                 });
-              case "browser.access":
-              case "browser.profile.save": {
+              case "browser.access": {
                 const result = await dependencies.browser.resolveRequest(input);
                 if (result.request.status === "fulfilled")
                   dependencies.integrations.continuations.notify();
@@ -2815,15 +2765,6 @@ export async function createHostServer(
           }),
           type: command.type,
         };
-      case "browser.session.profile.save":
-        return {
-          profile: await dependencies.browser.saveSessionAsProfile({
-            name: command.input.name,
-            ownerId: userId,
-            sessionId: BrowserSessionIdSchema.parse(command.sessionId),
-          }),
-          type: command.type,
-        };
       case "browser.profile.grant":
         return {
           grant: await dependencies.browser.grantProfileToWorkspace({
@@ -3251,8 +3192,6 @@ export function advertisedCapabilities(
     "iphone-apps-v1",
     "ownerViewWindows",
     "browser-target-control-v1",
-    "browser-local-profiles-v1",
-    "browser-initial-navigation-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
     "browser-frame-window-v1",
     "browser-raster-demand-v1",

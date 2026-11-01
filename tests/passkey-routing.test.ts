@@ -1,15 +1,30 @@
+import { decodeBase64Url } from "@opensteer/shared/base64url";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { once } from "node:events";
-import { expect, it } from "vitest";
 import { chromium } from "playwright-core";
+import { expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { z } from "zod";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { decodeBase64Url } from "@opensteer/shared/base64url";
+import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
+import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
+import { PasskeyService, type PasskeyViewer } from "../apps/host/src/browser/passkey-service.js";
+import type {
+  CdpSession,
+  LaunchedBrowser,
+} from "../packages/browser-runtime-core/src/browser/backend.js";
+import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
+import { Ed25519AttachTicketVerifier } from "../packages/browser-runtime-core/src/security/attach-ticket.js";
+import { BrowserRuntimeServer } from "../packages/browser-runtime-core/src/server.js";
+import {
+  PasskeyProviderTestAuthenticator,
+  passkeyProviderChromiumArguments,
+} from "../packages/browser-runtime-core/src/test-support/passkey-provider-scenario.js";
+import { servePasskeyRoutingFixture } from "../packages/browser-runtime-core/src/test-support/passkey-routing-fixture.js";
 import {
   BrowserClientMessageSchema,
   BrowserServerMessageSchema,
@@ -17,27 +32,12 @@ import {
   type BrowserServerMessage,
 } from "../packages/protocol/src/browser.js";
 import {
-  PasskeyClaimSchema,
-  PasskeyRespondSchema,
   NormalizedPasskeyCreationOptionsJSONSchema,
   NormalizedPasskeyRequestOptionsJSONSchema,
+  PasskeyClaimSchema,
+  PasskeyRespondSchema,
   passkeyBytesToJSON,
 } from "../packages/protocol/src/passkeys.js";
-import { PasskeyService, type PasskeyViewer } from "../apps/host/src/browser/passkey-service.js";
-import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
-import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
-import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
-import { BrowserRuntimeServer } from "../packages/browser-runtime-core/src/server.js";
-import { Ed25519AttachTicketVerifier } from "../packages/browser-runtime-core/src/security/attach-ticket.js";
-import type {
-  LaunchedBrowser,
-  CdpSession,
-} from "../packages/browser-runtime-core/src/browser/backend.js";
-import {
-  PasskeyProviderTestAuthenticator,
-  passkeyProviderChromiumArguments,
-} from "../packages/browser-runtime-core/src/test-support/passkey-provider-scenario.js";
-import { servePasskeyRoutingFixture } from "../packages/browser-runtime-core/src/test-support/passkey-routing-fixture.js";
 
 // No persistence is involved: real signed attach, WebSocket codecs, controller,
 // browser, Host routing and RP verification run with a fake opted-in viewer.
@@ -83,14 +83,6 @@ it.each([true, false])(
       runtimeId: "example",
       sessionFilesRoot: path.join(directory, "files"),
       ticketVerifier: verifier,
-      profileStateClient: {
-        load: async () => {
-          throw new Error("Fresh session loaded profile");
-        },
-        commit: async () => {
-          throw new Error("Fresh session committed profile");
-        },
-      },
     });
     const server = new BrowserRuntimeServer({
       runtime,

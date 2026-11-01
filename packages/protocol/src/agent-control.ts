@@ -1,56 +1,52 @@
 import {
+  AgentCapabilityProfileIdSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
-  AgentCapabilityProfileIdSchema,
   BrowserAccessSuggestionSchema,
+  BrowserProfileGrantIdSchema,
   BrowserProfileIdSchema,
-  IsoDateTimeSchema,
+  DelegationModelChoiceSchema,
   EnvironmentIdSchema,
   ExecutionEnvironmentKindSchema,
-  BrowserProfileGrantIdSchema,
-  DelegationModelChoiceSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
-  MessageIdSchema,
-  PersonNotifyMessageSchema,
-  PlaceContentPartSchema,
-  MessageSchema,
+  MarkColorSchema,
   MessageContentSchema,
+  MessageIdSchema,
+  MessageSchema,
   ModelIdSchema,
   ModelProviderIdSchema,
   ModelSelectionSchema,
+  PersonNotifyMessageSchema,
+  PlaceContentPartSchema,
   RequestIdSchema,
   RequestKindSchema,
   RequestSchema,
-  readableRequestList,
   RequestStatusSchema,
   RunSchema,
+  ThreadIdSchema,
   ThreadInputPolicySchema,
   ThreadInputSchema,
-  ThreadIdSchema,
   ThreadSchema,
   ThreadWriteInputSchema,
   WorkspaceBackingKindSchema,
   WorkspaceIconNameSchema,
-  MarkColorSchema,
   WorkspaceIdSchema,
   WorkspaceKindSchema,
+  readableRequestList,
   type Workspace,
 } from "@opensteer/core";
-import { z } from "zod";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
+import { z } from "zod";
+import { AgentBrowserSignInResultSchema } from "./browser-sources.js";
 import {
+  AgentBrowserSessionSummarySchema,
+  BrowserSessionIdSchema,
   BrowserTabReadInputSchema,
   BrowserTabReadResultSchema,
   BrowserTabWriteInputSchema,
   BrowserTabWriteResultSchema,
-  AgentBrowserSessionSummarySchema,
-  BrowserSessionIdSchema,
 } from "./browser.js";
-import { AgentBrowserSignInResultSchema } from "./browser-sources.js";
-import { agentToolPayloadMaxSerializedBytes } from "./common.js";
-import { PasswordSignInCodeSchema } from "./password-sign-in.js";
-import { MachineAliasSchema } from "./shell.js";
 import {
   DurableWindowCursorSchema,
   DurableWindowSchema,
@@ -58,6 +54,9 @@ import {
   WorkspaceViewSchema,
   workspaceViewFromWorkspace,
 } from "./client.js";
+import { agentToolPayloadMaxSerializedBytes } from "./common.js";
+import { PasswordSignInCodeSchema } from "./password-sign-in.js";
+import { MachineAliasSchema } from "./shell.js";
 
 const AgentDurableWindowSchema = z.strictObject(DurableWindowSchema.shape);
 const AgentThreadMessageWindowSchema = z.strictObject({
@@ -247,7 +246,6 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...requestBase,
-    site: z.string().trim().min(1).max(2_048).optional(),
     type: z.literal("browser.profile.list"),
   }),
   z.strictObject({
@@ -304,13 +302,6 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     profileId: BrowserProfileIdSchema.optional(),
     sessionId: BrowserSessionIdSchema.optional(),
     type: z.literal("browser.session.open"),
-  }),
-  z.strictObject({
-    ...requestBase,
-    reason: z.string().trim().min(1).max(500),
-    sessionId: BrowserSessionIdSchema,
-    suggestedName: z.string().trim().min(1).max(120).optional(),
-    type: z.literal("browser.profile.save"),
   }),
   z.strictObject({
     ...requestBase,
@@ -496,9 +487,6 @@ export const AgentThreadSummarySchema = z.strictObject({
 });
 
 const GrantedBrowserProfileSchema = z.strictObject({
-  siteData: z
-    .strictObject({ hasData: z.boolean(), savedAt: IsoDateTimeSchema.nullable() })
-    .optional(),
   access: z.literal("full-control"),
   grantId: BrowserProfileGrantIdSchema,
   id: BrowserProfileIdSchema,
@@ -619,7 +607,6 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...responseBase,
     profiles: z.array(GrantedBrowserProfileSchema).max(128),
-    site: z.string().min(1).max(2_048).optional(),
     type: z.literal("browser.profile.list.result"),
   }),
   z.strictObject({
@@ -636,11 +623,6 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
     ...responseBase,
     result: RequestCreationResultSchema.extend({ kind: z.literal("browser.access") }),
     type: z.literal("browser.access.request.result"),
-  }),
-  z.strictObject({
-    ...responseBase,
-    result: RequestCreationResultSchema.extend({ kind: z.literal("browser.profile.save") }),
-    type: z.literal("browser.profile.save.result"),
   }),
   z.strictObject({
     ...responseBase,

@@ -1,12 +1,12 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import path from "node:path";
-import { z } from "zod";
 import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/protocol";
 import {
   readPrivateFileText,
   replacePrivateFileAtomically,
   serializePrivateFileCommit,
 } from "@opensteer/shared/atomicPrivateFile";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import path from "node:path";
+import { z } from "zod";
 import {
   ProtectedJsonFile,
   ProtectedStateUnreadableError,
@@ -127,19 +127,14 @@ export class SessionCookieMirror {
     });
   }
 
-  /** Only the runtime's positively identified initializing profile may create sidecars. */
-  initialize(
-    importAndFlush: () => Promise<void>,
-    commitStorage?: () => Promise<void>,
-  ): Promise<void> {
+  /** Creates encrypted sidecars for an unpublished empty native profile. */
+  initialize(): Promise<void> {
     const epoch = this.#epoch;
     return this.#enqueue(async () => {
       await this.#loadKey(true);
-      await importAndFlush();
       if (this.#epoch !== epoch) throw unreadable();
       const generation = this.#dirty;
       await this.#capture(epoch, true);
-      await commitStorage?.();
       if (this.#epoch !== epoch) throw unreadable();
       this.#captured = generation;
       this.#suspended = false;

@@ -1,9 +1,3 @@
-import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { expect, it } from "vitest";
 import { SessionCdpRouter, type CdpParameters } from "@opensteer/browser-core";
 import {
   BrowserController,
@@ -13,6 +7,19 @@ import {
 } from "@opensteer/browser-runtime-core";
 import { FakeSink, validClaims } from "@opensteer/browser-runtime-core/test-support";
 import { serveHarnessActionsFixture } from "@opensteer/browser-runtime-core/test-support/harness-actions";
+import { execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { expect, it } from "vitest";
+import {
+  HarnessRunError,
+  harnessScript,
+  runHarness,
+  sendAsAgent,
+  startHarnessBridge,
+} from "./browser-harness.test-support.js";
 import {
   TestChromiumLauncher,
   browserTestSignal,
@@ -21,13 +28,6 @@ import {
   waitForBrowserState,
   withBrowserTestSignal,
 } from "./browser-test-lifecycle.js";
-import {
-  harnessScript,
-  HarnessRunError,
-  runHarness,
-  sendAsAgent,
-  startHarnessBridge,
-} from "./browser-harness.test-support.js";
 
 const executablePath = findChromium();
 const evidenceRoot =
@@ -94,7 +94,6 @@ async function startActionJourney(id: string, report: Record<string, unknown>) {
     files,
     ledger,
     sink,
-    exportSnapshot: () => browser.exportSnapshot(),
     replaceSiteCookies: (site, cookies, signal) =>
       browser.replaceSiteCookies(site, cookies, signal),
     signIns: new HostSignIns({ authority: undefined, runtimeId: "actions-test" }),

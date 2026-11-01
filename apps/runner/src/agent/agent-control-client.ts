@@ -1,4 +1,3 @@
-import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import type { RunnerConfig } from "@opensteer/config";
 import { allowsPlaintextRunnerTransport } from "@opensteer/core";
 import {
@@ -10,6 +9,7 @@ import {
   type AgentControlResponse,
   type RunAgentControlPlan,
 } from "@opensteer/protocol";
+import { readBoundedJson } from "@opensteer/shared/boundedJson";
 
 const maxRequestBytes = agentToolPayloadMaxSerializedBytes;
 const maxResponseBytes = agentControlResponseMaxSerializedBytes;
@@ -144,8 +144,6 @@ function expectedResponseType(type: AgentControlRequest["type"]): AgentControlRe
       return "browser.access.request.result";
     case "machine.full-disk-access.request":
       return "machine.full-disk-access.request.result";
-    case "browser.profile.save":
-      return "browser.profile.save.result";
     case "browser.session.open":
       return "browser.session.open.result";
     case "browser.tab.read":

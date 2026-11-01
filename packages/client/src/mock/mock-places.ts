@@ -1,46 +1,50 @@
-import { browserTabArrangement, browserTabOrderTabs } from "../host/browser-tab-order.js";
-import { nextMarkColor } from "@opensteer/core";
-import { mockBrowserPageImage } from "./mock-browser-frames.js";
-import { BrowserSurfaceIdSchema, RunIdSchema, ThreadIdSchema } from "@opensteer/core";
 import {
+  BrowserSurfaceIdSchema,
+  RunIdSchema,
+  ThreadIdSchema,
+  nextMarkColor,
+} from "@opensteer/core";
+import type { MachineSummary } from "@opensteer/protocol";
+import {
+  BrowserContextCandidateSchema,
+  BrowserHistoryUrlSchema,
+  BrowserProfileSchema,
+  BrowserSessionTabOpenCommandSchema,
+  BrowserTabCatalogSchema,
+  BrowserTabCloseResultSchema,
+  BrowserTabIconInputSchema,
+  BrowserTabIconResultSchema,
+  BrowserTabOpenCommandSchema,
+  BrowserTabOpenResultSchema,
+  ComputerUseSessionSummarySchema,
+  HostedBrowserSessionSchema,
+  PlaceActivitySchema,
+  PlaceIdentitySchema,
   WorkspaceTabActivateResultSchema,
   WorkspaceTabReopenResultSchema,
-  type WorkspaceTabLineage,
-  BrowserContextCandidateSchema,
-  BrowserTabCloseResultSchema,
-  BrowserTabOpenCommandSchema,
-  BrowserSessionTabOpenCommandSchema,
-  BrowserProfileSchema,
-  HostedBrowserSessionSchema,
-  createBrowserSessionId,
-  previousReleaseEligibility,
-  type BrowserTabOpenCommand,
-  BrowserTabOpenResultSchema,
-  type BrowserTabOpenResult,
-  BrowserTabCatalogSchema,
-  BrowserTabIconResultSchema,
-  BrowserTabIconInputSchema,
-  ComputerUseSessionSummarySchema,
-  PlaceIdentitySchema,
-  PlaceActivitySchema,
-  type PlaceOccupant,
-  type BrowserHistory,
-  BrowserHistoryUrlSchema,
   browserHistoryMaxEntries,
   browserHistoryRetentionMs,
+  createBrowserSessionId,
+  previousReleaseEligibility,
+  type BrowserHistory,
+  type BrowserTabOpenCommand,
+  type BrowserTabOpenResult,
+  type PlaceOccupant,
+  type WorkspaceTabLineage,
 } from "@opensteer/protocol";
-import type { MachineSummary } from "@opensteer/protocol";
+import { browserTabArrangement, browserTabOrderTabs } from "../host/browser-tab-order.js";
+import type { BrowserWatchState } from "../host/browser-watch.js";
 import type {
   BrowserCommand,
   BrowserFrameView,
   BrowserSessionSummary,
   HostSnapshot,
 } from "../host/client.js";
-import type { BrowserWatchState } from "../host/browser-watch.js";
-import { PlaceActivityStore } from "../host/place-activity.js";
-import { LatestPlaceStore } from "../host/latest-place.js";
 import { HostClientRequestError } from "../host/client.js";
+import { LatestPlaceStore } from "../host/latest-place.js";
+import { PlaceActivityStore } from "../host/place-activity.js";
 import { placeList } from "../host/places.js";
+import { mockBrowserPageImage } from "./mock-browser-frames.js";
 
 const iconData =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
@@ -529,7 +533,7 @@ export class MockPlaceWorld {
     { fingerprint: string; result: Promise<BrowserTabOpenResult> }
   >();
   readonly #rememberedPlacements = new Map<string, string>();
-  readonly #profileHolders = new Map<string, { runnerId: string; until: number }>();
+  readonly #profileHolders = new Map<string, { runnerId: string }>();
   readonly #openedTabs = new Map<string, { fingerprint: string; result: BrowserTabOpenResult }>();
   readonly #nativeReferences = new Set<string>();
   readonly #watchListeners = new Map<string, Set<() => void>>();
@@ -591,23 +595,14 @@ export class MockPlaceWorld {
     this.#tick();
   }
   #rememberProfileHolders(snapshot: HostSnapshot): void {
-    const now = this.#now().getTime();
-    const live = new Set<string>();
     for (const session of snapshot.browserSessions) {
       if (!session.profileId || !["ready", "starting", "closing"].includes(session.state)) continue;
-      live.add(session.profileId);
       this.#profileHolders.set(session.profileId, {
         runnerId: session.placement.runnerId,
-        until: Infinity,
       });
     }
-    for (const [profileId, holder] of this.#profileHolders) {
-      // The mock has no checkpoint writer; model the existing database's maximum two-minute grace.
-      if (!live.has(profileId) && holder.until === Infinity)
-        this.#profileHolders.set(profileId, { ...holder, until: now + 2 * 60_000 });
-      else if (holder.until <= now) this.#profileHolders.delete(profileId);
-    }
   }
+
   reconcile(): void {
     const snapshot = this.#snapshot();
     this.#rememberProfileHolders(snapshot);

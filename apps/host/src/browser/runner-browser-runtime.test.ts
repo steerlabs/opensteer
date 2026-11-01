@@ -20,8 +20,7 @@ async function maintenanceFixture() {
       modules: {
         browser: {
           runtimeId: "browser",
-          profileSnapshotVersion: 2,
-          localProfiles: 1,
+          wireVersion: 1,
           localProfileStorage: { storageInstanceId, engine: "chromium" },
         },
       },
@@ -278,7 +277,7 @@ it.each(
     identity: {
       runnerId,
       modules: {
-        browser: { profileSnapshotVersion: 2, runtimeId: "browser", [capability]: version },
+        browser: { wireVersion: 1, runtimeId: "browser", [capability]: version },
       },
     },
   } as unknown as RunnerAuxiliaryStream;
@@ -308,7 +307,7 @@ it.each([
   const stream = {
     identity: {
       runnerId,
-      modules: { browser: { profileSnapshotVersion: 2, runtimeId: "browser", editing, clipboard } },
+      modules: { browser: { wireVersion: 1, runtimeId: "browser", editing, clipboard } },
     },
   } as RunnerAuxiliaryStream;
   const registry: RunnerBrowserRegistry = {
@@ -351,21 +350,25 @@ it("lists an older browser as update-required and refuses direct placement", () 
         available: false,
         label: "Older computer",
         runnerId,
-        unavailableReason: expect.stringMatching(/Update the Browser Runtime.*version 2/u),
+        unavailableReason: expect.stringMatching(
+          /Update the Browser Runtime.*current native browser runtime contract/u,
+        ),
       }),
     ]);
-    expect(() => router.resolve({ kind: "runner", runnerId })).toThrow(/version 2/u);
+    expect(() => router.resolve({ kind: "runner", runnerId })).toThrow(
+      /current native browser runtime contract/u,
+    );
   } finally {
     router.close();
   }
 });
 
-it("asks for a Host update when the connected browser advertises a newer snapshot", () => {
+it("refuses a different browser wire contract with an explicit update message", () => {
   const runnerId = createId("runner");
   const stream = {
     identity: {
       environmentIds: [],
-      modules: { browser: { profileSnapshotVersion: 3, runtimeId: "newer-browser" } },
+      modules: { browser: { wireVersion: 3, runtimeId: "newer-browser" } },
       name: "Newer computer",
       runnerId,
     },
@@ -381,11 +384,13 @@ it("asks for a Host update when the connected browser advertises a newer snapsho
     expect(router.placements()).toEqual([
       expect.objectContaining({
         available: false,
-        unavailableReason: expect.stringMatching(/Update this Opensteer Host.*version 3/u),
+        unavailableReason: expect.stringMatching(
+          /Update the Browser Runtime.*current native browser runtime contract/u,
+        ),
       }),
     ]);
     expect(() => router.resolve({ kind: "runner", runnerId })).toThrow(
-      /Update this Opensteer Host/u,
+      /Update the Browser Runtime/u,
     );
   } finally {
     router.close();
@@ -399,7 +404,7 @@ it("closes a browser whose background renewal times out without an unhandled rej
     fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
     identity: {
       runnerId,
-      modules: { browser: { profileSnapshotVersion: 2, runtimeId: "browser" } },
+      modules: { browser: { wireVersion: 1, runtimeId: "browser" } },
     },
     streamLeaseExpiresAt: new Date(Date.now() + 10_000).toISOString(),
   } as RunnerAuxiliaryStream;
@@ -472,8 +477,7 @@ it("keeps native execution unavailable until the exact stream completes reconcil
       modules: {
         browser: {
           runtimeId: "native",
-          profileSnapshotVersion: 2,
-          localProfiles: 1,
+          wireVersion: 1,
           localProfileStorage: { storageInstanceId, engine: "electron" },
         },
       },
@@ -563,14 +567,13 @@ it.each(["pending-restart", "deleted", "failed"] as const)(
         modules: {
           browser: {
             runtimeId: "browser",
-            profileSnapshotVersion: 2,
-            localProfiles: 1,
+            wireVersion: 1,
             localProfileStorage: { storageInstanceId, engine: "electron" },
           },
         },
       },
       streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-    } as RunnerAuxiliaryStream;
+    } as unknown as RunnerAuxiliaryStream;
     let hooks: RunnerBrowserHooks = {};
     const acknowledgeDeletion = vi.fn(async () => undefined);
     const sent: string[] = [];
@@ -680,8 +683,7 @@ it("never admits a failed or truncated inventory as an empty complete inventory"
       modules: {
         browser: {
           runtimeId: "browser",
-          profileSnapshotVersion: 2,
-          localProfiles: 1,
+          wireVersion: 1,
           localProfileStorage: { storageInstanceId, engine: "electron" },
         },
       },
@@ -753,8 +755,7 @@ it("retries the same erasure after a lost acknowledgement on a replacement auxil
       modules: {
         browser: {
           runtimeId: "browser",
-          profileSnapshotVersion: 2,
-          localProfiles: 1,
+          wireVersion: 1,
           localProfileStorage: { storageInstanceId, engine: "electron" },
         },
       },
@@ -854,7 +855,7 @@ it("shares capability acquisition when one of two concurrent attachments is canc
     fence: { runnerId, connectionId: "concurrent", connectionGeneration: 1 },
     identity: {
       runnerId,
-      modules: { browser: { runtimeId: "browser", profileSnapshotVersion: 2 } },
+      modules: { browser: { runtimeId: "browser", wireVersion: 1 } },
     },
     streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
   } as RunnerAuxiliaryStream;
@@ -935,8 +936,7 @@ it("requires Personal's Main inventory before named profiles can open on another
         modules: {
           browser: {
             runtimeId: "browser",
-            profileSnapshotVersion: 2,
-            localProfiles: 1,
+            wireVersion: 1,
             localProfileStorage: { storageInstanceId: crypto.randomUUID(), engine: "electron" },
           },
         },
@@ -988,7 +988,7 @@ it("reports a rejected attachment's reason before closing its channel", async ()
     fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
     identity: {
       runnerId,
-      modules: { browser: { profileSnapshotVersion: 2, runtimeId: "browser" } },
+      modules: { browser: { wireVersion: 1, runtimeId: "browser" } },
     },
     streamLeaseExpiresAt: new Date(Date.now() + 10_000).toISOString(),
   } as RunnerAuxiliaryStream;
@@ -1065,9 +1065,8 @@ it("gives attachment the startup budget", async () => {
       runnerId,
       modules: {
         browser: {
-          profileSnapshotVersion: 2,
+          wireVersion: 1,
           runtimeId: "browser",
-          localProfiles: 1,
           localProfileStorage: {
             storageInstanceId: "00000000-0000-4000-8000-000000000001",
             engine: "chromium",
@@ -1147,7 +1146,7 @@ it.each(["timeout", "cancel"] as const)(
       fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
       identity: {
         runnerId,
-        modules: { browser: { profileSnapshotVersion: 2, runtimeId: "browser" } },
+        modules: { browser: { wireVersion: 1, runtimeId: "browser" } },
       },
       streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     } as RunnerAuxiliaryStream;
@@ -1213,7 +1212,7 @@ it.each(["timeout", "cancel"] as const)(
       await vi.advanceTimersByTimeAsync(0);
       const attach = sent.filter((message) => message.type === "browser.attach").at(-1)!;
       if (cause === "cancel") pending.close();
-      await vi.advanceTimersByTimeAsync(cause === "timeout" ? 1000 : 0);
+      await vi.advanceTimersByTimeAsync(cause === "timeout" ? 20_000 : 0);
       expect(sent.filter((message) => message.type === "browser.close")).toEqual([
         expect.objectContaining({
           channelId: "channelId" in attach ? attach.channelId : undefined,

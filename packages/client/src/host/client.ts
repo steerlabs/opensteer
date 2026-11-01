@@ -1,27 +1,3 @@
-import type { BrowserPasskeys } from "./browser-passkeys.js";
-import type { SavedViewReadiness } from "./saved-host-view.js";
-import type { BrowserEditingStore } from "./browser-editing.js";
-import type { BrowserPreferences } from "./browser-preferences.js";
-import type {
-  BrowserRasterDensity,
-  WorkspaceTabLineage,
-  WorkspaceTabActivateResultSchema,
-  WorkspaceTabReopenResultSchema,
-} from "@opensteer/protocol";
-import type { z } from "zod";
-import type { NativeViewerSource } from "./surfaces.js";
-import type { ComputerViewRetention } from "./computer-view-retention.js";
-import type {
-  HarnessModelSettingsMap,
-  ThreadMessagePage,
-  BrowserSessionOpener,
-  ComputerView,
-  ComputerViewTarget,
-  ApprovedComputerApp,
-  OwnerWindowInfo,
-} from "@opensteer/protocol";
-import type { BrowserHistoryClient } from "./browser-history.js";
-import type { BrowserIdentityChoice } from "./start-page-model.js";
 import type {
   ChannelAccessPolicy,
   ChannelAccount,
@@ -29,95 +5,113 @@ import type {
   IntegrationConnection,
 } from "@opensteer/channel-core";
 import type {
-  MessageQuote,
-  ThreadReadState,
-  Thread,
+  ArtifactContentPart,
   AssignmentSummary,
   AssignmentView,
+  Attachment,
   AuthenticatedUser,
-  DeploymentShape,
+  BrowserPageContentPart,
+  ComputerAppContentPart,
+  ContentPart,
   DelegationDelivery,
   DelegationOutcome,
+  DeploymentShape,
   ExecutionEnvironmentKind,
+  ExecutionPreferences,
   IdentityConfig,
   IntegrationCallSubject,
-  ExecutionPreferences,
-  ModelSelection,
+  MarkColor,
   MessageAuthor,
   MessageKind,
+  MessageQuote,
+  ModelSelection,
   NotificationView,
+  PhoneContentPart,
   ProviderContinuationIdentity,
   Request,
-  WaitingRequest,
   RequestResponse,
-  RunFailure,
   Run,
+  RunFailure,
   RunUsage,
+  Thread,
   ThreadAccessMode,
   ThreadInputPolicy,
   ThreadInputQueue,
+  ThreadReadState,
   ThreadRole,
   ThreadStatus,
   ToolIdentity,
   ToolOutput,
+  WaitingRequest,
   WorkspaceBackingKind,
-  Attachment,
-  ArtifactContentPart,
-  BrowserPageContentPart,
-  ComputerAppContentPart,
-  PhoneContentPart,
-  ContentPart,
   WorkspaceIconName,
-  MarkColor,
 } from "@opensteer/core";
-import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
-import type { WebSocketClient } from "./host-session-client.js";
 import type {
-  BrowserTabLayout,
-  BrowserTabMove,
-  BrowserTabGroupColor,
-  BrowserDialog,
-  BrowserClientMessage,
-  BrowserBinaryFrameHeader,
-  BrowserSurfaceId,
-  HostedBrowserSessionState,
-} from "@opensteer/protocol/browser";
-import type {
+  ApprovedComputerApp,
+  BrowserRasterDensity,
+  BrowserSessionOpener,
+  ComputerView,
+  ComputerViewTarget,
   DurableWindow,
+  HarnessAuthenticationState,
+  HarnessInstanceCatalogView,
+  HarnessModelSettingsMap,
+  HarnessSourceDescriptor,
   HostApiClient,
   HostApiCommandInput,
   HostApiCommandOutput,
   HostEnvironmentStatus,
-  ThreadMessageWindow,
-  WorkspaceFilePreviewMetadata,
-  WorkspaceView,
   MachineAccessPolicy,
   MachineSummary,
+  OwnerWindowInfo,
   ShellSessionHistoryEntry,
+  ThreadMessagePage,
+  ThreadMessageWindow,
+  WorkspaceFilePreviewMetadata,
+  WorkspaceTabActivateResultSchema,
+  WorkspaceTabLineage,
+  WorkspaceTabReopenResultSchema,
+  WorkspaceView,
 } from "@opensteer/protocol";
 import type {
-  HarnessAuthenticationState,
-  HarnessInstanceCatalogView,
-  HarnessSourceDescriptor,
-} from "@opensteer/protocol";
+  BrowserBinaryFrameHeader,
+  BrowserClientMessage,
+  BrowserDialog,
+  BrowserSurfaceId,
+  BrowserTabGroupColor,
+  BrowserTabLayout,
+  BrowserTabMove,
+  HostedBrowserSessionState,
+} from "@opensteer/protocol/browser";
 import type {
   Trigger,
   TriggerOccurrence,
   TriggerRevision,
   TriggerWatchActivation,
 } from "@opensteer/triggers";
+import type { z } from "zod";
+import type { BrowserEditingStore } from "./browser-editing.js";
+import type { BrowserHistoryClient } from "./browser-history.js";
+import type { BrowserPasskeys } from "./browser-passkeys.js";
+import type { BrowserPreferences } from "./browser-preferences.js";
+import type { ComputerViewRetention } from "./computer-view-retention.js";
+import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
+import type { WebSocketClient } from "./host-session-client.js";
+import type { SavedViewReadiness } from "./saved-host-view.js";
+import type { BrowserIdentityChoice } from "./start-page-model.js";
+import type { NativeViewerSource } from "./surfaces.js";
 
-import type { BrowserWatchState } from "./browser-watch.js";
-import type { PlaceActivity } from "./place-activity.js";
-import type { ThreadPlace } from "./places.js";
 import type {
   BrowserContextCandidate,
+  BrowserTabCatalog,
   BrowserTabCloseResult,
   BrowserTabOpenResult,
   ThreadPlaceReference,
-  BrowserTabCatalog,
 } from "@opensteer/protocol";
+import type { BrowserWatchState } from "./browser-watch.js";
 import type { ClientNetworkState } from "./lifecycle.js";
+import type { PlaceActivity } from "./place-activity.js";
+import type { ThreadPlace } from "./places.js";
 
 export type BrowserTabOpenInput =
   | { readonly sessionId: string }
@@ -621,7 +615,6 @@ export interface BrowserProfileDeletionSummary {
 export interface BrowserProfileSummary {
   id: string;
   name: string;
-  revision: number;
 }
 
 /** Every browser runs on a computer, and a computer is a Runner. */

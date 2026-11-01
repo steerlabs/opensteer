@@ -1,4 +1,28 @@
-import { PasskeysEnvironmentSchema } from "./passkeys.js";
+import type { VerifiedDeploymentOwnerProfile } from "@opensteer/control-plane-protocol";
+import { ManagedHostProvisioningBundleSchema } from "@opensteer/control-plane-protocol";
+import {
+  allowsPlaintextRunnerTransport,
+  DeploymentIdSchema,
+  DeploymentKindSchema,
+  DeploymentShapeSchema,
+  EnvironmentIdSchema,
+  HostInstanceIdSchema,
+  HostKeyFingerprintSchema,
+  isLoopbackHostname,
+  localWorkspaceNamespace,
+  opensteerHostNativeOAuthClients,
+  RunnerIdSchema,
+  RuntimeModeSchema,
+  WorkspaceBackingKindSchema,
+  type DeploymentId,
+  type DeploymentShape,
+  type EnvironmentId,
+  type HostExposure,
+  type HostInstanceId,
+  type NativeOAuthClient,
+  type RunnerId,
+  type RuntimeMode,
+} from "@opensteer/core";
 import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import {
   closeSync,
@@ -10,32 +34,8 @@ import {
   readSync,
 } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { ManagedHostProvisioningBundleSchema } from "@opensteer/control-plane-protocol";
-import type { VerifiedDeploymentOwnerProfile } from "@opensteer/control-plane-protocol";
-import {
-  DeploymentShapeSchema,
-  DeploymentKindSchema,
-  DeploymentIdSchema,
-  RuntimeModeSchema,
-  WorkspaceBackingKindSchema,
-  allowsPlaintextRunnerTransport,
-  localWorkspaceNamespace,
-  isLoopbackHostname,
-  HostKeyFingerprintSchema,
-  EnvironmentIdSchema,
-  HostInstanceIdSchema,
-  opensteerHostNativeOAuthClients,
-  RunnerIdSchema,
-  type NativeOAuthClient,
-  type DeploymentId,
-  type DeploymentShape,
-  type EnvironmentId,
-  type HostExposure,
-  type HostInstanceId,
-  type RunnerId,
-  type RuntimeMode,
-} from "@opensteer/core";
 import { z } from "zod";
+import { PasskeysEnvironmentSchema } from "./passkeys.js";
 
 export const hostEnvironmentKeys = {
   defaultWorkspaceBacking: "OPENSTEER_DEFAULT_WORKSPACE_BACKING",
@@ -166,7 +166,6 @@ const HostEnvironmentSchema = z.object({
     .string()
     .regex(/^[A-Za-z0-9._:-]{1,255}$/)
     .default("host-v1"),
-  OPENSTEER_BROWSER_PROFILE_KEY_PATH: optionalPath,
   OPENSTEER_DATABASE_URL: z.string().min(1),
   OPENSTEER_DEPLOYMENT_ID: DeploymentIdSchema.optional(),
   OPENSTEER_DEPLOYMENT_NAME: optionalDeploymentName,
@@ -263,7 +262,6 @@ export interface HostConfig {
    */
   readonly passkeys?: boolean;
   readonly browserRuntime: { readonly attachKeyId: string };
-  readonly browserProfileKeyPath: string | undefined;
   readonly databaseUrl: string;
   readonly credentialKeyPath: string | undefined;
   readonly dataDirectory: string;
@@ -650,7 +648,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     canonicalOrigin,
     browserRuntime,
     passkeys: parsed.OPENSTEER_PASSKEYS,
-    browserProfileKeyPath: parsed.OPENSTEER_BROWSER_PROFILE_KEY_PATH,
     databaseUrl: parsed.OPENSTEER_DATABASE_URL,
     credentialKeyPath: parsed.OPENSTEER_CREDENTIAL_KEY_PATH,
     dataDirectory: parsed.OPENSTEER_HOST_DATA_DIR,
@@ -847,7 +844,6 @@ function requireProductionKeyPair(
   mode: RuntimeMode,
   values: {
     readonly OPENSTEER_CREDENTIAL_KEY_PATH?: string | undefined;
-    readonly OPENSTEER_BROWSER_PROFILE_KEY_PATH?: string | undefined;
     readonly OPENSTEER_HOST_PRIVATE_KEY_PATH?: string | undefined;
     readonly OPENSTEER_HOST_PUBLIC_KEY_PATH?: string | undefined;
     readonly OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH?: string | undefined;
@@ -864,9 +860,6 @@ function requireProductionKeyPair(
   }
   if (mode === "production" && !values.OPENSTEER_CREDENTIAL_KEY_PATH) {
     throw new Error("Production requires OPENSTEER_CREDENTIAL_KEY_PATH");
-  }
-  if (mode === "production" && !values.OPENSTEER_BROWSER_PROFILE_KEY_PATH) {
-    throw new Error("Production requires OPENSTEER_BROWSER_PROFILE_KEY_PATH");
   }
   if (
     mode === "production" &&

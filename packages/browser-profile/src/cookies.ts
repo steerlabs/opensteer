@@ -1,5 +1,19 @@
 import { z } from "zod";
-import { BrowserCookieSchema, type BrowserCookie } from "./snapshot.js";
+export const BrowserCookieSchema = z.strictObject({
+  domain: z.string().min(1).max(4_096),
+  expires: z.number().finite(),
+  httpOnly: z.boolean(),
+  hostOnly: z.boolean().optional(),
+  name: z.string().max(4_096),
+  path: z.string().min(1).max(4_096),
+  partitionKey: z.url().max(16_384).optional(),
+  partitionKeyHasCrossSiteAncestor: z.boolean().optional(),
+  sameSite: z.enum(["Strict", "Lax", "None"]).optional(),
+  secure: z.boolean(),
+  value: z.string().max(64 * 1_024),
+});
+
+export type BrowserCookie = z.infer<typeof BrowserCookieSchema>;
 
 const CdpCookieSchema = z.object({
   domain: z.string(),

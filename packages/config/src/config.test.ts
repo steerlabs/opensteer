@@ -1,12 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { ManagedHostProvisioningBundleSchema } from "@opensteer/control-plane-protocol";
 import {
   createId,
   opensteerHostNativeOAuthClients,
   opensteerMobileHostOAuthCallback,
 } from "@opensteer/core";
-import { ManagedHostProvisioningBundleSchema } from "@opensteer/control-plane-protocol";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertHostConfigInvariants,
@@ -75,7 +75,6 @@ describe("configuration", () => {
   it("allows production HTTP only for an exact loopback Personal Host", () => {
     const personal = {
       ...localHostEnvironment,
-      OPENSTEER_BROWSER_PROFILE_KEY_PATH: "/keys/browser-profiles.key",
       OPENSTEER_CANONICAL_ORIGIN: "http://127.0.0.1:4310",
       OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
       OPENSTEER_DEPLOYMENT_ID: createId("deployment"),
@@ -236,7 +235,6 @@ describe("configuration", () => {
 
     const productionConfig = parseHostConfig({
       ...localHostEnvironment,
-      OPENSTEER_BROWSER_PROFILE_KEY_PATH: "/keys/browser-profiles.key",
       OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
       OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "server",
@@ -253,7 +251,6 @@ describe("configuration", () => {
     expect(
       parseHostConfig({
         ...localHostEnvironment,
-        OPENSTEER_BROWSER_PROFILE_KEY_PATH: "/keys/browser-profiles.key",
         OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
         OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "server",
@@ -423,7 +420,6 @@ describe("configuration", () => {
         OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
         OPENSTEER_DEPLOYMENT_KIND: "server",
         OPENSTEER_ACCOUNT_BUNDLE_PATH: writeManagedAccountBundle(productionBundle),
-        OPENSTEER_BROWSER_PROFILE_KEY_PATH: "/keys/browser-profiles.key",
         OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
         OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
         OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
@@ -833,7 +829,6 @@ describe("configuration", () => {
         OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH: "/keys/product-signing.key",
         OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
         OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
-        OPENSTEER_BROWSER_PROFILE_KEY_PATH: "/keys/browser-profiles.key",
         OPENSTEER_MODE: "production",
         OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
       }),
@@ -873,7 +868,6 @@ describe("configuration", () => {
         ...hostEnvironment,
         OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
         OPENSTEER_DEPLOYMENT_KIND: "server",
-        OPENSTEER_BROWSER_PROFILE_KEY_PATH: "/keys/browser-profiles.key",
         OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
         OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
         OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
@@ -892,7 +886,6 @@ describe("configuration", () => {
     const config = parseHostConfig({
       ...localHostEnvironment,
       OPENSTEER_BIND_ADDRESS: "0.0.0.0",
-      OPENSTEER_BROWSER_PROFILE_KEY_PATH: "/run/secrets/browser-profile.key",
       OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
       OPENSTEER_CREDENTIAL_KEY_PATH: "/run/secrets/credential.key",
       OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",

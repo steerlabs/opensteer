@@ -1,55 +1,53 @@
-import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
-import { runTabRestoreTrial } from "./electron-tab-restore-trial.js";
-import assert from "node:assert/strict";
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
-import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { DeploymentConnectionSchema } from "@opensteer/client/connections";
+import { hostApiVersion, hostKeyFingerprint } from "@opensteer/deployment-authority";
+import { hostApi, hostApiVersionHeader } from "@opensteer/protocol";
+import { DesktopAccessOriginSchema } from "@opensteer/protocol/desktop";
+import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
   app,
   BrowserWindow,
   dialog,
   powerMonitor,
   session,
-  webContents,
   utilityProcess,
+  webContents,
 } from "electron";
+import assert from "node:assert/strict";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { createHash } from "node:crypto";
-import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
-import { HttpBrowserProfileStateClient } from "@opensteer/browser-runtime-core";
-import { readDesktopConfiguration } from "../src/config.js";
-import {
-  LocalRunnerService,
-  electronUtilityProcessFork,
-} from "../src/supervisor/local-runner-service.js";
-import { DesktopAccessOriginSchema } from "@opensteer/protocol/desktop";
-import { DeploymentConnectionSchema } from "@opensteer/client/connections";
-import { hostApi, hostApiVersionHeader } from "@opensteer/protocol";
-import { hostApiVersion, hostKeyFingerprint } from "@opensteer/deployment-authority";
-import { openDesktopPrivateFilesystemSync } from "../src/secrets/desktop-private-files.js";
-import { CloudflaredConnectorSupervisor } from "../src/supervisor/cloudflared-connector-supervisor.js";
-import {
-  PersonalHostConnectOrchestrator,
-  PersonalHostConnectTeardownCoordinator,
-} from "../src/supervisor/personal-host-connect-orchestrator.js";
 import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
 import { DesktopShutdown } from "../src/app/desktop-shutdown.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { electronBrowserPartition } from "../src/browser/electron-browser-launcher.js";
+import { readDesktopConfiguration } from "../src/config.js";
+import { openDesktopPrivateFilesystemSync } from "../src/secrets/desktop-private-files.js";
 import { NativePersonalDeploymentCredentials } from "../src/secrets/personal-deployment-credentials.js";
 import { NativePersonalDeploymentFilesystem } from "../src/secrets/personal-deployment-store.js";
+import { CloudflaredConnectorSupervisor } from "../src/supervisor/cloudflared-connector-supervisor.js";
+import { startLocalBrowserRuntime } from "../src/supervisor/local-browser-runtime.js";
+import {
+  electronUtilityProcessFork,
+  LocalRunnerService,
+} from "../src/supervisor/local-runner-service.js";
 import { PersonalDeploymentSupervisor } from "../src/supervisor/personal-deployment-supervisor.js";
+import {
+  PersonalHostConnectOrchestrator,
+  PersonalHostConnectTeardownCoordinator,
+} from "../src/supervisor/personal-host-connect-orchestrator.js";
 import {
   NativePersonalHostControl,
   NativePersonalRemoteHostControl,
 } from "../src/supervisor/personal-host-control.js";
-import { startLocalBrowserRuntime } from "../src/supervisor/local-browser-runtime.js";
 import {
   NodePersonalProcessPort,
   readPersonalProcessSupervisorRelease,
 } from "../src/supervisor/personal-process-port.js";
+import { runTabRestoreTrial } from "./electron-tab-restore-trial.js";
+import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -103,7 +101,6 @@ async function run(): Promise<void> {
     logsDirectory: path.join(root, "logs"),
     supervisorExecutable: readPersonalProcessSupervisorRelease(resources),
   });
-  const stateClient = new HttpBrowserProfileStateClient();
   let periodicCommits = 0;
   let capturedLargeHash: string | null = null;
   let capturedNormal = false;
@@ -184,29 +181,6 @@ async function run(): Promise<void> {
         const browser = await startLocalBrowserRuntime({
           downloads: smokeDownloads,
           profileRoot: input.paths.browserProfileRoot,
-          checkpointIntervalMs: 1_000,
-          profileStateClient: {
-            load: (...args) => stateClient.load(...args),
-            commit: async (...args) => {
-              const revision = await stateClient.commit(...args);
-              periodicCommits += 1;
-              const entries = args[2].origins.flatMap((state) => state.localStorage);
-              const large = entries.find((entry) => entry.name === "large-proof");
-              capturedLargeHash = large
-                ? createHash("sha256").update(large.value).digest("hex")
-                : null;
-              capturedNormal = entries.some(
-                (entry) => entry.name === "normal-proof" && entry.value === "normal-durable",
-              );
-              log("test.profile-committed", {
-                revision,
-                origins: args[2].origins.length,
-                largeSha256: capturedLargeHash ?? "missing",
-                normal: capturedNormal,
-              });
-              return revision;
-            },
-          },
           runtimeId: input.runtimeId,
           logPath: path.join(root, "logs", "personal-browser.log"),
           pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),

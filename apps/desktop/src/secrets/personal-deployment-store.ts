@@ -1,10 +1,19 @@
-import { setPrivateFileMode } from "@opensteer/shared/privateFiles";
-import { ensurePrivateDirectory as ensureSharedPrivateDirectory } from "@opensteer/shared/privateFiles";
+import {
+  DeploymentIdSchema,
+  EnvironmentIdSchema,
+  HostInstanceIdSchema,
+  HostKeyFingerprintSchema,
+  IsoDateTimeSchema,
+  RunnerIdSchema,
+} from "@opensteer/core";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
-import { noFollowFlag } from "@opensteer/shared/privateFiles";
+import {
+  ensurePrivateDirectory as ensureSharedPrivateDirectory,
+  noFollowFlag,
+  setPrivateFileMode,
+} from "@opensteer/shared/privateFiles";
 import { constants } from "node:fs";
-import os from "node:os";
 import {
   lstat,
   open,
@@ -15,15 +24,8 @@ import {
   statfs,
   type FileHandle,
 } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import {
-  DeploymentIdSchema,
-  EnvironmentIdSchema,
-  HostKeyFingerprintSchema,
-  HostInstanceIdSchema,
-  IsoDateTimeSchema,
-  RunnerIdSchema,
-} from "@opensteer/core";
 import { z } from "zod";
 import {
   desktopDeploymentPaths,
@@ -31,8 +33,8 @@ import {
   preparePrivateDesktopDeploymentDirectories,
   type DesktopDeploymentPaths,
 } from "../app/application-paths.js";
-import type { DesktopPrivateFilesystem } from "./desktop-private-files.js";
 import { snapshotDatabase } from "../supervisor/personal-database-snapshot.js";
+import type { DesktopPrivateFilesystem } from "./desktop-private-files.js";
 
 const RuntimeVersionSchema = z
   .string()
@@ -145,7 +147,6 @@ function refinePersonalDeploymentManifest(
 
 export interface PersonalDeploymentPreparedPaths extends DesktopDeploymentPaths {
   readonly browserProfileRoot: string;
-  readonly browserProfileKeyPath: string;
   readonly credentialKeyPath: string;
   readonly hostPrivateKeyPath: string;
   readonly hostPublicKeyPath: string;
@@ -452,7 +453,6 @@ export class NativePersonalDeploymentFilesystem implements PersonalDeploymentFil
     return {
       ...paths,
       browserProfileRoot: paths.browserProfilesDirectory,
-      browserProfileKeyPath: path.join(paths.hostDataDirectory, "browser-profiles.key"),
       credentialKeyPath: path.join(paths.hostDataDirectory, "credentials.key"),
       hostPrivateKeyPath: path.join(paths.hostDataDirectory, "host-private.pem"),
       hostPublicKeyPath: path.join(paths.hostDataDirectory, "host-public.pem"),

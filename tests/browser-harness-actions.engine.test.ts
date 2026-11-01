@@ -172,7 +172,7 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
       evidence.fixture = { url, sha256: fixture.sha256 };
       const browser = await startBrowser({ onLaunch: (instance) => launched.push(instance) });
       // Registered before stack startup; the Browser Runtime must close while
-      // the Host/vault are still present, even when catalog startup fails.
+      // the Host and native profile are still present, even when catalog startup fails.
       addCleanup("engine journey Browser Runtime, then Host/Runner", async () => {
         try {
           await browser.close();

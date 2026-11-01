@@ -2507,7 +2507,7 @@ async function browserProfilesTurn(input) {
       } while (cursor);
     }
     if (plan.close) report.closed = await call("browser_session_close", { sessionId });
-    report.profiles = await call("browser_profile_list", plan.site ? { site: plan.site } : {});
+    report.profiles = await call("browser_profile_list", {});
   } catch (error) {
     report.error = String(error?.message ?? error);
   }

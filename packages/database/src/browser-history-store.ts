@@ -1,16 +1,17 @@
-import { z } from "zod";
-import { createHash } from "node:crypto";
 import { createId, OpensteerError, type BrowserProfileId, type UserId } from "@opensteer/core";
 import {
   BrowserFaviconSchema,
-  BrowserHistoryUrlSchema,
   browserHistoryMaxEntries,
   browserHistoryRetentionMs,
+  BrowserHistoryUrlSchema,
   type BrowserHistory,
   type BrowserHistoryIcons,
 } from "@opensteer/protocol";
 import type { Kysely, Transaction } from "kysely";
+import { createHash } from "node:crypto";
+import { z } from "zod";
 import { withDatabaseTransaction } from "./connection.js";
+import { databaseOperationOptions } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
   findCommandByIdempotency,
@@ -32,7 +33,7 @@ export async function lockBrowserHistory(
     .orderBy("url")
     // FOR UPDATE: Retention and explicit erasure delete entries.
     .forUpdate()
-    .execute();
+    .execute(databaseOperationOptions());
   await tx
     .selectFrom("browserHistoryIcons")
     .select("origin")
@@ -41,7 +42,7 @@ export async function lockBrowserHistory(
     .orderBy("origin")
     // FOR UPDATE: Removing the last entry of an origin deletes its icon.
     .forUpdate()
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 export class BrowserHistoryStore {
@@ -58,7 +59,7 @@ export class BrowserHistoryStore {
       .where("id", "=", profileId)
       .where("archivedAt", "is", null);
     if (ownerId) query = query.where("ownerId", "=", ownerId);
-    return query.forNoKeyUpdate().executeTakeFirst();
+    return query.forNoKeyUpdate().executeTakeFirst(databaseOperationOptions());
   }
 
   async #prune(tx: Transaction<DatabaseSchema>, profileId: BrowserProfileId, now: Date) {
@@ -66,7 +67,7 @@ export class BrowserHistoryStore {
       .deleteFrom("browserHistoryEntries")
       .where("profileId", "=", profileId)
       .where("lastVisitAt", "<=", new Date(now.getTime() - browserHistoryRetentionMs))
-      .execute();
+      .execute(databaseOperationOptions());
     const excess = await tx
       .selectFrom("browserHistoryEntries")
       .select("url")
@@ -74,7 +75,7 @@ export class BrowserHistoryStore {
       .orderBy("lastVisitAt", "desc")
       .orderBy("url")
       .offset(browserHistoryMaxEntries)
-      .execute();
+      .execute(databaseOperationOptions());
     if (excess.length)
       await tx
         .deleteFrom("browserHistoryEntries")
@@ -84,7 +85,7 @@ export class BrowserHistoryStore {
           "in",
           excess.map(({ url }) => url),
         )
-        .execute();
+        .execute(databaseOperationOptions());
     return tx
       .deleteFrom("browserHistoryIcons")
       .where("profileId", "=", profileId)
@@ -98,7 +99,7 @@ export class BrowserHistoryStore {
           ),
         ),
       )
-      .execute();
+      .execute(databaseOperationOptions());
   }
 
   async #icon(
@@ -114,7 +115,7 @@ export class BrowserHistoryStore {
       .where("profileId", "=", profileId)
       .where("origin", "=", origin)
       .limit(1)
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     if (!visited) return false;
     const iconRef = createHash("sha256").update(favicon).digest("base64url");
     const result = await tx
@@ -126,7 +127,7 @@ export class BrowserHistoryStore {
           .doUpdateSet({ favicon, iconRef })
           .where("browserHistoryIcons.iconRef", "!=", iconRef),
       )
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
   }
 
@@ -163,7 +164,7 @@ export class BrowserHistoryStore {
             visitCount: eb("browserHistoryEntries.visitCount", "+", 1),
           })),
         )
-        .execute();
+        .execute(databaseOperationOptions());
       await this.#prune(tx, input.profileId, now);
       if (input.favicon) await this.#icon(tx, input.profileId, new URL(url).origin, input.favicon);
       return true;
@@ -185,7 +186,7 @@ export class BrowserHistoryStore {
         .where("profileId", "=", input.profileId)
         .where("url", "=", input.url)
         .where("title", "!=", title)
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       return result.numUpdatedRows > 0n;
     });
   }
@@ -214,12 +215,12 @@ export class BrowserHistoryStore {
         .orderBy("url")
         // FOR UPDATE: Global expiry takes the same row order as profile erasure.
         .forUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
       const entries = await tx
         .deleteFrom("browserHistoryEntries")
         .where("lastVisitAt", "<=", cutoff)
         .returning("profileId")
-        .execute();
+        .execute(databaseOperationOptions());
       await tx
         .selectFrom("browserHistoryIcons")
         .select("origin")
@@ -227,7 +228,7 @@ export class BrowserHistoryStore {
         .orderBy("origin")
         // FOR UPDATE: Orphan cleanup can remove icons from several profiles.
         .forUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
       const icons = await tx
         .deleteFrom("browserHistoryIcons")
         .where(({ not, exists, selectFrom }) =>
@@ -241,7 +242,7 @@ export class BrowserHistoryStore {
           ),
         )
         .returning("profileId")
-        .execute();
+        .execute(databaseOperationOptions());
       const ids = [...new Set([...entries, ...icons].map(({ profileId }) => profileId))];
       if (!ids.length) return [];
       return tx
@@ -249,7 +250,7 @@ export class BrowserHistoryStore {
         .select(["id as profileId", "ownerId"])
         .where("id", "in", ids)
         .orderBy("id")
-        .execute();
+        .execute(databaseOperationOptions());
     });
   }
 
@@ -265,7 +266,7 @@ export class BrowserHistoryStore {
         .orderBy("lastVisitAt", "desc")
         .orderBy("url")
         .limit(browserHistoryMaxEntries)
-        .execute();
+        .execute(databaseOperationOptions());
       const origins = [...new Set(rows.map(({ origin }) => origin))];
       const icons = origins.length
         ? await tx
@@ -273,7 +274,7 @@ export class BrowserHistoryStore {
             .select(["origin", "iconRef"])
             .where("profileId", "=", profileId)
             .where("origin", "in", origins)
-            .execute()
+            .execute(databaseOperationOptions())
         : [];
       return {
         entries: rows.map(({ url, title, typedCount, visitCount, lastVisitAt }) => ({
@@ -312,7 +313,7 @@ export class BrowserHistoryStore {
               .where("lastVisitAt", ">", new Date(Date.now() - browserHistoryRetentionMs)),
           ),
         )
-        .execute();
+        .execute(databaseOperationOptions());
       return { icons };
     });
   }
@@ -369,7 +370,7 @@ export class BrowserHistoryStore {
       await lockBrowserHistory(tx, input.profileId);
       let query = tx.deleteFrom("browserHistoryEntries").where("profileId", "=", input.profileId);
       if (input.url !== undefined) query = query.where("url", "=", input.url);
-      const removed = await query.executeTakeFirst();
+      const removed = await query.executeTakeFirst(databaseOperationOptions());
       const pruned = await this.#prune(tx, input.profileId, new Date());
       await tx
         .insertInto("commands")
@@ -388,7 +389,7 @@ export class BrowserHistoryStore {
           threadId: null,
           type,
         })
-        .execute();
+        .execute(databaseOperationOptions());
       return removed.numDeletedRows > 0n || pruned.some((result) => result.numDeletedRows > 0n);
     });
   }

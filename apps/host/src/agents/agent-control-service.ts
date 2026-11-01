@@ -1,32 +1,28 @@
-import { environmentDiscovery } from "./environment-discovery.js";
-import type { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
-import { isPlaceContentPart, provisionalThreadTitle } from "@opensteer/core";
-import type { PlaceContextService } from "../computer-use/place-context-service.js";
-import { createHash } from "node:crypto";
 import {
   AgentToolIdSchema,
   capabilityProfileAcceptsTool,
   type AgentToolId,
 } from "@opensteer/agent-tools";
 import {
-  type AgentEvent,
-  type EnvironmentId,
-  type WorkspaceBackingKind,
+  isPlaceContentPart,
   OpensteerError,
   placeContentLabel,
-  type Message,
+  provisionalThreadTitle,
   ThreadIdSchema,
   threadInReach,
+  workspaceWakesOnDemand,
+  type AgentEvent,
+  type EnvironmentId,
   type HarnessId,
+  type Message,
   type Thread,
   type Workspace,
-  workspaceWakesOnDemand,
+  type WorkspaceBackingKind,
 } from "@opensteer/core";
-import type { WorkspaceStorageChoice } from "@opensteer/workspace";
 import type {
   AgentControlAdmissionResult,
-  BrowserUsageCredit,
   AgentThreadListScope,
+  BrowserUsageCredit,
   OpensteerStore,
 } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
@@ -38,21 +34,26 @@ import {
   type AgentControlResponse,
 } from "@opensteer/protocol";
 import type { TriggerControlInput } from "@opensteer/triggers";
-import type { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
+import type { WorkspaceStorageChoice } from "@opensteer/workspace";
+import { createHash } from "node:crypto";
 import type { BrowserService } from "../browser/browser-service.js";
 import type { BrowserSourceService } from "../browser/browser-source-service.js";
+import type { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
+import type { PlaceContextService } from "../computer-use/place-context-service.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
-import {
-  RunCapabilityTokenService,
-  type RunCapabilityBindingAuthorizer,
-  type RunCapabilityClaims,
-} from "./run-capability.js";
+import type { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
+import { callerWorkspaceStorage } from "../workspace/workspace-service.js";
 import {
   delegationEngines,
   delegationHarnessPage,
   delegationPlacement,
 } from "./delegation-placement.js";
-import { callerWorkspaceStorage } from "../workspace/workspace-service.js";
+import { environmentDiscovery } from "./environment-discovery.js";
+import {
+  RunCapabilityTokenService,
+  type RunCapabilityBindingAuthorizer,
+  type RunCapabilityClaims,
+} from "./run-capability.js";
 
 export type AgentControlRunScope = RunCapabilityClaims<"opensteer-agent-control">;
 
@@ -105,13 +106,11 @@ export class AgentControlService {
   readonly #browser: Pick<
     BrowserService,
     | "createProfile"
-    | "profileSiteData"
     | "closeAgentSession"
     | "listAgentSessions"
     | "listGrantedProfiles"
     | "openAgentSession"
     | "requestAccess"
-    | "requestSaveProfile"
   >;
   readonly #browserTabs: BrowserTabGroupService | undefined;
   readonly #canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
@@ -138,13 +137,11 @@ export class AgentControlService {
     readonly browser: Pick<
       BrowserService,
       | "createProfile"
-      | "profileSiteData"
       | "closeAgentSession"
       | "listAgentSessions"
       | "listGrantedProfiles"
       | "openAgentSession"
       | "requestAccess"
-      | "requestSaveProfile"
     >;
     readonly browserTabs?: BrowserTabGroupService;
     readonly canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
@@ -764,22 +761,8 @@ export class AgentControlService {
         claims.requestedBy,
         claims.workspaceId,
       );
-      const data =
-        request.site === undefined
-          ? undefined
-          : await this.#browser.profileSiteData({
-              ownerId: claims.requestedBy,
-              profileIds: profiles.map(({ id }) => id),
-              site: request.site,
-            });
       return AgentControlResponseSchema.parse({
-        profiles: data
-          ? profiles.map((profile) => {
-              const siteData = data.profiles.get(profile.id);
-              return siteData ? { ...profile, siteData } : profile;
-            })
-          : profiles,
-        ...(data ? { site: data.site } : {}),
+        profiles,
         requestId: request.requestId,
         type: "browser.profile.list.result",
       });
@@ -883,27 +866,6 @@ export class AgentControlService {
           workspaceId: claims.workspaceId,
         }),
         type: "browser.session.list.result",
-      });
-    }
-    if (request.type === "browser.profile.save") {
-      if (claims.capabilityProfileId !== "main" && claims.capabilityProfileId !== "workspace") {
-        throw forbidden("This capability profile cannot save a browser profile");
-      }
-      await this.#admit(claims, request);
-      return AgentControlResponseSchema.parse({
-        result: await this.#browser.requestSaveProfile({
-          callId: request.requestId,
-          originatingWorkspaceId: claims.workspaceId,
-          ownerId: claims.requestedBy,
-          reason: request.reason,
-          runId: claims.runId,
-          sessionId: request.sessionId,
-          ...(request.suggestedName ? { suggestedName: request.suggestedName } : {}),
-          threadId: claims.threadId,
-          workspaceId: claims.workspaceId,
-        }),
-        requestId: request.requestId,
-        type: "browser.profile.save.result",
       });
     }
     if (request.type === "browser.session.open") {
@@ -1062,7 +1024,6 @@ const toolForAction: Readonly<
   "sign-in": "sign-in",
   "browser.profile.create": "browser.profile.create",
   "browser.profile.list": "browser.profile.list",
-  "browser.profile.save": "browser.profile.save",
   "browser.session.close": "browser.session.close",
   "browser.session.list": "browser.session.list",
   "browser.tab.read": "browser.tab.read",

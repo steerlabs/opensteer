@@ -15,11 +15,11 @@ async function fixture(capabilities: object = {}) {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
       JSON.stringify({
+        wireVersion: 1,
         runtimeId: "runtime_test",
         state: "ready",
         sessionCount: 1,
         profileHostCount: 1,
-        checkpointFailures: 0,
         ...capabilities,
       }),
     );
@@ -57,24 +57,21 @@ describe("LocalBrowserRuntimeBridge", () => {
   it("advertises only capabilities reported by the prepared runtime, with exact storage identity", async () => {
     const localProfileStorage = { storageInstanceId: randomUUID(), engine: "electron" };
     const f = await fixture({
-      localProfiles: 1,
       localProfileStorage,
-      initialNavigationVersion: 1,
     });
     const old = await fixture();
     try {
       expect(await f.bridge.capabilities()).toEqual({
-        localProfiles: 1,
+        wireVersion: 1,
         localProfileStorage,
-        initialNavigationVersion: 1,
       });
-      expect(await old.bridge.capabilities()).toEqual({});
+      expect(await old.bridge.capabilities()).toEqual({ wireVersion: 1 });
     } finally {
       await f.close();
       await old.close();
     }
   });
-  it("waits for negotiated readiness rather than the transport upgrade", async () => {
+  it("waits for page readiness rather than the transport upgrade", async () => {
     const f = await fixture();
     const held = gate({ label: "runtime initial page", deadlineMs: 2000 });
     const initialPage = {
@@ -88,7 +85,6 @@ describe("LocalBrowserRuntimeBridge", () => {
         .then(() => socket.send(JSON.stringify({ type: "browser.attached", initialPage })))
         .catch(() => undefined);
     });
-    f.bridge.setNegotiation({ initialNavigationVersion: 1 });
     let attached = false;
     const operation = f.bridge
       .attach(BrowserChannelIdSchema.parse(`bch_${randomUUID()}`), "abc.def.ghi", {

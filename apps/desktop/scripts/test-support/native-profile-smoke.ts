@@ -1,19 +1,21 @@
-import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { watch } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { app } from "electron";
-import { createId } from "@opensteer/core";
-import { LocalProfileBindingSchema, createBrowserSessionId } from "@opensteer/protocol/browser";
-import type { BrowserCookie, BrowserProfileSnapshot } from "@opensteer/browser-profile";
+import type { BrowserCookie } from "@opensteer/browser-profile";
 import {
+  LocalProfileStore,
   type BrowserPage,
   type CdpSession,
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
+import { createId } from "@opensteer/core";
+import { LocalProfileBindingSchema, createBrowserSessionId } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { app } from "electron";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { watch } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { ElectronBrowserLauncher } from "../../src/browser/electron-browser-launcher.js";
+import { isNetworkService } from "../../src/browser/electron-local-profile.js";
 
 export const nativeProfileSmokePhases = [
   "native-create",
@@ -21,8 +23,6 @@ export const nativeProfileSmokePhases = [
   "native-update-reopen",
   "native-crash",
   "native-crash-reopen",
-  "native-convert-crash",
-  "native-convert-reopen",
   "native-network",
   "native-logout",
   "native-logout-reopen",
@@ -83,17 +83,17 @@ export async function runNativeProfileSmokePhase(input: {
   firstRequest(phase: string): string | undefined;
 }): Promise<{ crash: boolean; cookieCount: number; cookieChange?: boolean }> {
   const { phase, state, launcher, origin } = input;
-  const converted = phase.startsWith("native-convert");
   const root = path.join(state, "native-user-data", "session", "browser-profiles");
-  const record = path.join(state, converted ? "converted-binding.json" : "native-binding.json");
-  const initialize = phase === "native-create" || phase === "native-convert-crash";
+  const record = path.join(state, "native-binding.json");
+  const initialize = phase === "native-create";
+  const store = await LocalProfileStore.acquire(root, "electron");
   const binding = initialize
     ? {
         version: 1 as const,
         deploymentId: createId("deployment"),
         profileId: createId("browserProfile"),
         runnerId: createId("runner"),
-        storageInstanceId: randomUUID(),
+        storageInstanceId: store.storageInstanceId,
         bindingId: randomUUID(),
         engine: "electron" as const,
       }
@@ -104,37 +104,15 @@ export async function runNativeProfileSmokePhase(input: {
   const expected = nativeSmokeCookies(origin(0)).filter((cookie) =>
     cleared ? cookie.partitionKey !== undefined : !loggedOut || cookie.name !== "sid",
   );
+  await store.provision(
+    binding,
+    !initialize,
+    (profileDirectory) =>
+      launcher.localProfiles.createFiles(profileDirectory, binding, new AbortController().signal),
+    new AbortController().signal,
+  );
+  await store.close();
   if (initialize) {
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const snapshot: BrowserProfileSnapshot = {
-      cookies: expected,
-      origins: converted
-        ? [0, 2, 4].map((index) => ({
-            origin: origin(index),
-            localStorage: [{ name: "saved", value: `converted-${index}` }],
-            indexedDB: [
-              {
-                name: "native-db",
-                version: 1,
-                stores: [
-                  {
-                    name: "records",
-                    autoIncrement: false,
-                    indexes: [],
-                    records: [{ keyEncoded: "key", valueEncoded: `converted-${index}` }],
-                  },
-                ],
-              },
-            ],
-          }))
-        : [],
-    };
-    await launcher.localProfiles.importAndFlush({
-      directory,
-      binding,
-      snapshot,
-      signal: new AbortController().signal,
-    });
     await writeFile(record, JSON.stringify(binding), { mode: 0o600 });
     // The parent kills/awaits this owned process only after the engine's ready barrier.
     await writeFile(
@@ -142,15 +120,15 @@ export async function runNativeProfileSmokePhase(input: {
       JSON.stringify({ ready: true, pid: process.pid }),
       { mode: 0o600 },
     );
-    if (converted) return { crash: true, cookieCount: expected.length };
   }
   const sessionId = createBrowserSessionId();
-  const browser = await launcher.launch({
+  const request = {
     initialViewport: { width: 640, height: 480, devicePixelRatio: 1 },
     sessionId,
-    partitionKey: `profile:${binding.profileId}`,
-    storage: { kind: "local", directory, binding },
-  });
+    partitionKey: `profile:${binding.profileId}` as const,
+    storage: { kind: "local" as const, directory, binding },
+  };
+  let browser = await launcher.launch(request);
   let crash = false;
   let cookieCount = expected.length;
   try {
@@ -159,9 +137,9 @@ export async function runNativeProfileSmokePhase(input: {
     await load(page, `${origin(0)}/native-page?phase=${encodeURIComponent(phase)}`);
     const first = input.firstRequest(phase);
     assert.ok(first !== undefined, "first outgoing navigation was not observed");
-    if (cleared || loggedOut)
+    if (!initialize && (cleared || loggedOut))
       assert.ok(!first.includes("sid="), "logout resurrected an HttpOnly session cookie");
-    if (!cleared) {
+    if (!initialize && !cleared) {
       if (!loggedOut)
         assert.ok(
           first.includes("sid=session"),
@@ -171,6 +149,20 @@ export async function runNativeProfileSmokePhase(input: {
         first.includes("persistent=persistent"),
         "first navigation missed the persistent cookie",
       );
+    }
+    if (initialize) {
+      const { browserCookieToCdp } = await import("@opensteer/browser-profile/cookies");
+      await (
+        await page.cdp()
+      ).send("Network.setCookies", { cookies: expected.map(browserCookieToCdp) });
+      const { acquireElectronLocalProfile } =
+        await import("../../src/browser/electron-local-profile.js");
+      await acquireElectronLocalProfile({
+        root,
+        directory,
+        binding,
+        configure: () => {},
+      }).mirror.flush();
     }
     await assertCookies(browser, expected);
     if (phase === "native-create") {
@@ -194,17 +186,6 @@ export async function runNativeProfileSmokePhase(input: {
         return true;
       })()`,
       );
-    } else if (converted) {
-      for (const index of [0, 2, 4]) {
-        await load(
-          page,
-          `${origin(index)}/native-page?phase=${encodeURIComponent(phase)}-${index}`,
-        );
-        assert.deepEqual(await readStorage(page), {
-          localStorage: `converted-${index}`,
-          indexedDB: `converted-${index}`,
-        });
-      }
     } else if (!cleared) {
       assert.deepEqual(await readStorage(page), {
         localStorage: "native-value",
@@ -212,7 +193,7 @@ export async function runNativeProfileSmokePhase(input: {
       });
     } else assert.deepEqual(await readStorage(page), { localStorage: null, indexedDB: null });
     let cookieChange: boolean | undefined;
-    if (!converted && !cleared) {
+    if (!cleared) {
       const worker = await evaluate<{
         cookie: string | null;
         cached: string | null;
@@ -249,8 +230,16 @@ export async function runNativeProfileSmokePhase(input: {
       });
       process.kill(utility.pid, "SIGKILL");
       await deadline(gone, "Network Service loss notification");
-      // createPage awaits recovery, including the mirror's readback, rather than polling the jar.
-      const after = await deadline(browser.context.createPage(), "Network Service cookie recovery");
+      await assert.rejects(browser.profile!.ready(), "retired owner remained ready");
+      await assert.rejects(browser.context.createPage(), "retired context accepted a page");
+      assert.equal(
+        await readFile(mirror, "utf8"),
+        before,
+        "Network Service loss changed the committed mirror",
+      );
+      browser = await launcher.launch(request);
+      await browser.profile!.admit();
+      const after = await deadline(browser.context.createPage(), "explicit Network Service reopen");
       await load(after, `${origin(0)}/native-page?phase=native-network-after`);
       assert.ok(
         input.firstRequest("native-network-after")?.includes("sid=session"),
@@ -261,11 +250,11 @@ export async function runNativeProfileSmokePhase(input: {
         cookie: string | null;
         cached: string | null;
         cookieChange: boolean;
-      }>(page, `fetch('/native-worker-state').then(r => r.json())`);
+      }>(after, `fetch('/native-worker-state').then(r => r.json())`);
       assert.equal(
         survivingWorker.cookie,
         "session-visible",
-        "surviving worker missed Network Service cookie recovery",
+        "reopened worker missed Network Service cookie recovery",
       );
       assert.equal(
         survivingWorker.cached,

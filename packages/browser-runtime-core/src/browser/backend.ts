@@ -1,16 +1,12 @@
 import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/browser-core";
-import type { PageSize } from "./surface-ledger.js";
-import type {
-  BrowserCookie,
-  BrowserProfileSnapshot,
-  BrowserOriginCaptureFailure,
-} from "@opensteer/browser-profile/snapshot";
+import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import type {
   BrowserCaptureDescriptor,
   BrowserEngine,
   BrowserSessionId,
   LocalProfileBinding,
 } from "@opensteer/protocol/browser";
+import type { PageSize } from "./surface-ledger.js";
 
 export interface CdpSession extends CdpChannel {
   /** Keeps native compositing demanded across an atomic screencast restart. */
@@ -115,20 +111,10 @@ export interface BrowserContext {
 export type BrowserPartitionKey = `profile:${string}` | `session:${string}`;
 
 export type BrowserLaunchStorage =
-  | { kind: "guest" }
-  | { kind: "legacy"; snapshot: BrowserProfileSnapshot }
-  | { kind: "local"; binding: LocalProfileBinding; directory: string };
-
-export interface NativeProfileConversionEngine {
-  importAndFlush(input: {
-    directory: string;
-    binding: LocalProfileBinding;
-    snapshot: BrowserProfileSnapshot;
-    signal: AbortSignal;
-  }): Promise<void>;
-}
+  { kind: "guest" } | { kind: "local"; binding: LocalProfileBinding; directory: string };
 
 export interface BrowserLaunchRequest {
+  remainingBudgetMs?: number;
   authenticator?: import("../passkeys/authenticator.js").PasskeyAuthenticator;
   initialViewport: Viewport;
   partitionKey: BrowserPartitionKey;
@@ -176,19 +162,13 @@ export interface LaunchedBrowser {
   clipboard?: EngineClipboard;
   close(): Promise<void>;
   context: BrowserContext;
-  /** A partial capture reports rejected origins before returning usable state.
-   * Without an observer, a partial capture throws instead of claiming completeness. */
-  exportSnapshot(
-    onOriginFailure?: (failure: BrowserOriginCaptureFailure) => void,
-  ): Promise<BrowserProfileSnapshot>;
   offClose(listener: () => void): void;
   onClose(listener: () => void): void;
   /**
    * Makes the live context hold exactly `cookies` for `site`, in one cookie
    * write built by `siteCookieReplacementBatch`. Cookies outside the site's
    * scope are untouched. A local profile resolves only once the write, and any
-   * session cookies Opensteer keeps for it, are persisted; a legacy profile
-   * host persists the result at its checkpoint. Nothing is written once
+   * session cookies Opensteer keeps for it, are persisted. Nothing is written once
    * `deadline` has aborted.
    */
   replaceSiteCookies(
@@ -199,7 +179,8 @@ export interface LaunchedBrowser {
 }
 
 /** Engine support for profiles stored natively on this computer. */
-export interface LocalProfileEngine extends NativeProfileConversionEngine {
+export interface LocalProfileEngine {
+  createFiles(directory: string, binding: LocalProfileBinding, signal: AbortSignal): Promise<void>;
   readonly engine: BrowserEngine;
   /**
    * Gives up the engine's hold on a local profile directory so it can be erased.

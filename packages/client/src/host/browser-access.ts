@@ -1,15 +1,13 @@
 import type { BrowserAccessSuggestion, RequestResponse } from "@opensteer/core";
 
 /**
- * The owner's answer to a `browser.access` or `browser.profile.save` Request,
+ * The owner's answer to a `browser.access` Request,
  * shared by every client so the web and the phone ask the same question the
  * same way. The agent's suggestion is advisory: the profile inventory always
  * comes from the Host snapshot, and the owner can choose another profile.
  */
 export type BrowserAccessSelection =
-  | { readonly kind: "existing"; readonly profileId: string }
-  | { readonly kind: "new" }
-  | { readonly kind: "save" };
+  { readonly kind: "existing"; readonly profileId: string } | { readonly kind: "new" };
 
 /** No selection declines; declining never takes away access the Workspace already has. */
 export function browserAccessResponse(
@@ -22,9 +20,6 @@ export function browserAccessResponse(
       kind: "external",
       value: { decision: "fulfilled", profileId: selection.profileId },
     };
-  }
-  if (selection.kind === "save") {
-    return { kind: "external", value: { decision: "fulfilled", name: name.trim() } };
   }
   return {
     kind: "external",
@@ -72,8 +67,4 @@ export function browserAccessAvailableLabel(workspaceName: string): string {
 
 export function browserAccessWarning(workspaceName: string): string {
   return `Agents in ${workspaceName} will have full control of the selected profile, including every signed-in account, cookie, tab, and site the browser can reach.`;
-}
-
-export function browserProfileSavePrompt(workspaceName: string): string {
-  return `${workspaceName} wants to save this browser’s signed-in state as a new profile.`;
 }

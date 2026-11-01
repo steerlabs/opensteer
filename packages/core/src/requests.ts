@@ -1,12 +1,13 @@
 import { z } from "zod";
+import { BrowserSiteSchema, BrowserSourceSiteSchema } from "./browser-sources.js";
 import { ComputerAppIdentitySchema } from "./computer-app.js";
 import {
   AssignmentIdSchema,
   BrowserProfileIdSchema,
   BrowserSourceIdSchema,
   BrowserSurfaceIdSchema,
-  RequestIdSchema,
   ExecutionNodeIdSchema,
+  RequestIdSchema,
   RunIdSchema,
   RunnerIdSchema,
   ThreadIdSchema,
@@ -15,7 +16,6 @@ import {
   WorkspaceIdSchema,
 } from "./ids.js";
 import { causalChainMaxDelegations, IsoDateTimeSchema } from "./models.js";
-import { BrowserSiteSchema, BrowserSourceSiteSchema } from "./browser-sources.js";
 
 const RequestIdentifierSchema = z
   .string()
@@ -27,6 +27,7 @@ export const RequestKindSchema = z.enum([
   "harness.approval",
   "harness.input",
   "browser.access",
+  // Historical payloads/events only; the Host refuses new writes.
   "browser.profile.save",
   "browser.profile.import",
   "browser.sign-in",

@@ -7,9 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./grant": "./src/grant.ts",
-    "./snapshot": "./src/snapshot.ts",
     "./cookies": "./src/cookies.ts",
-    "./storage-operation": "./src/storage-operation.ts",
     "./source-state": "./src/source-state.ts"
   },
   "scripts": {

@@ -28,13 +28,13 @@ describe("readBrowserRuntimeConfig", () => {
     expect(
       readBrowserRuntimeConfig({
         ...base,
-        OPENSTEER_BROWSER_PROFILE_STATE_INTERNAL_URL: "http://host:4310",
+        OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL: "http://host:4310",
         OPENSTEER_BROWSER_PROXY_URL: "http://browser-egress:4313",
         OPENSTEER_CHROMIUM_SANDBOX: "true",
       }),
     ).toMatchObject({
       chromiumSandbox: true,
-      profileStateTrustedHttpOrigin: "http://host:4310",
+      profileReadyTrustedHttpOrigin: "http://host:4310",
       proxyUrl: "http://browser-egress:4313",
     });
   });
@@ -49,13 +49,13 @@ describe("readBrowserRuntimeConfig", () => {
     expect(
       readBrowserRuntimeConfig({
         ...base,
-        OPENSTEER_BROWSER_PROFILE_STATE_INTERNAL_URL: "http://host:4310",
-      }).profileStateTrustedHttpOrigin,
+        OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL: "http://host:4310",
+      }).profileReadyTrustedHttpOrigin,
     ).toBe("http://host:4310");
     expect(() =>
       readBrowserRuntimeConfig({
         ...base,
-        OPENSTEER_BROWSER_PROFILE_STATE_INTERNAL_URL: "http://host:4310/private",
+        OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL: "http://host:4310/private",
       }),
     ).toThrow(/HTTP origin/i);
   });
@@ -77,8 +77,6 @@ describe("readBrowserRuntimeConfig", () => {
     ["invalid public keys", { OPENSTEER_BROWSER_ATTACH_PUBLIC_KEYS: "[]" }],
     ["invalid port", { OPENSTEER_BROWSER_PORT: "70000" }],
     ["invalid boolean", { OPENSTEER_BROWSER_HEADLESS: "yes" }],
-    ["invalid checkpoint retry", { OPENSTEER_BROWSER_CHECKPOINT_RETRY_MS: "999" }],
-    ["invalid idle timeout", { OPENSTEER_BROWSER_IDLE_PROFILE_HOST_TIMEOUT_MS: "-1" }],
     ["invalid profile capacity", { OPENSTEER_BROWSER_MAX_PROFILE_HOSTS: "0" }],
     ["invalid session capacity", { OPENSTEER_BROWSER_MAX_SESSIONS_PER_PROFILE: "129" }],
   ])("rejects %s", (_label, override) => {

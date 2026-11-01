@@ -1,49 +1,49 @@
-import {
-  run,
-  addCleanup,
-  deployment,
-  browserAvailable,
-  startBrowser,
-  killChromium,
-  waitFor,
-} from "./browser-deployment.test-support.js";
-import { injectRpcRequest } from "../apps/host/src/server/test-host-api-request.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { inspect } from "node:util";
 import { expect, it, vi } from "vitest";
-import { createId, UserIdSchema } from "../packages/core/src/index.js";
+import {
+  nextJson,
+  startBrowserRuntime,
+} from "../apps/host/src/browser/browser-runtime.test-support.js";
+import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
+import { injectRpcRequest } from "../apps/host/src/server/test-host-api-request.js";
 import { type LaunchedBrowser } from "../packages/browser-runtime-core/src/index.js";
+import type { BrowserSessionSummary } from "../packages/client/src/host/client.js";
+import {
+  HttpHostClient,
+  type WebSocketClient,
+} from "../packages/client/src/host/host-session-client.js";
+import { placeList } from "../packages/client/src/host/places.js";
+import { createId, UserIdSchema } from "../packages/core/src/index.js";
 import {
   BrowserServerMessageSchema,
   BrowserSessionIdSchema,
 } from "../packages/protocol/src/browser.js";
 import {
-  HttpHostClient,
-  type WebSocketClient,
-} from "../packages/client/src/host/host-session-client.js";
-import type { BrowserSessionSummary } from "../packages/client/src/host/client.js";
-import { placeList } from "../packages/client/src/host/places.js";
-import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
+  addCleanup,
+  browserAvailable,
+  deployment,
+  killChromium,
+  run,
+  startBrowser,
+  waitFor,
+} from "./browser-deployment.test-support.js";
 import {
-  nextJson,
-  startBrowserRuntime,
-} from "../apps/host/src/browser/browser-runtime.test-support.js";
-import {
-  waitForBrowserFrame,
-  startPersonBrowser,
-  openBrowserView,
-  waitForBrowserFrameAt,
-  waitForBrowserClosing,
-  sizeReportingSite,
-  loadingSite,
-  popupDialogSite,
-  type ViewerEntry,
-  recordBrowserView,
   describeViewerEntry,
+  loadingSite,
+  openBrowserView,
+  popupDialogSite,
+  recordBrowserView,
+  sizeReportingSite,
+  startPersonBrowser,
+  waitForBrowserClosing,
+  waitForBrowserFrame,
+  waitForBrowserFrameAt,
   writeViewReport,
+  type ViewerEntry,
 } from "./browser-sessions.test-support.js";
 
 run("Browser Sessions through a whole deployment", () => {
@@ -1507,7 +1507,11 @@ run("Browser Sessions through a whole deployment", () => {
     const older = await journey(false);
     const current = await journey(true);
     expect(older.browserModule).toEqual({
-      profileSnapshotVersion: 2,
+      wireVersion: 1,
+      localProfileStorage: {
+        storageInstanceId: "20000000-0000-4000-8000-000000000001",
+        engine: "chromium",
+      },
       runtimeId: "browser-runtime-integration",
     });
     expect(older.ticketViewport).toBeNull();

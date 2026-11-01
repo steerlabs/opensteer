@@ -53,14 +53,14 @@ describe("DesktopMainProcess", () => {
         start: vi.fn(async () => undefined),
         stop: vi.fn(async () => {
           attempts += 1;
-          if (attempts === 1) throw new Error("profile checkpoint failed");
+          if (attempts === 1) throw new Error("browser process shutdown failed");
         }),
       },
       windows: { create: async () => window },
     });
     await main.start();
 
-    await expect(main.stop()).rejects.toThrow("profile checkpoint failed");
+    await expect(main.stop()).rejects.toThrow("browser process shutdown failed");
     expect(window.isDestroyed()).toBe(false);
     await expect(main.stop()).resolves.toBeUndefined();
     expect(window.isDestroyed()).toBe(true);

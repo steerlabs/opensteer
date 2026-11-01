@@ -1,23 +1,18 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { createId } from "@opensteer/core";
-import { describe, expect, it, vi } from "vitest";
 import {
   browserAccessInitialSelection,
   type BrowserAccessSelection,
   type BrowserProfileSummary,
 } from "@opensteer/client/host";
-import {
-  BrowserAccessBody,
-  resolveBrowserAccess,
-  type BrowserAccessView,
-} from "./thread-browser-access-action.js";
+import { createId } from "@opensteer/core";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+import { BrowserAccessBody, type BrowserAccessView } from "./thread-browser-access-action.js";
 
 const personalId = createId("browserProfile");
 const workId = createId("browserProfile");
-const requestId = createId("request");
 const profiles: BrowserProfileSummary[] = [
-  { id: personalId, name: "Personal", revision: 3 },
-  { id: workId, name: "Work", revision: 1 },
+  { id: personalId, name: "Personal" },
+  { id: workId, name: "Work" },
 ];
 const pendingView: BrowserAccessView = {
   kind: "pending",
@@ -79,66 +74,4 @@ describe("BrowserAccessBody", () => {
   });
 });
 
-describe("resolveBrowserAccess", () => {
-  it("declines without a selection and grants the chosen or created profile", async () => {
-    const dispatch = vi.fn(async () => ({ type: "request.respond" as const }));
-    const hostClient = { dispatch };
-
-    await resolveBrowserAccess(hostClient, { name: "", requestId, selection: null });
-    expect(dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        requestId,
-        response: { kind: "external", value: { decision: "declined" } },
-        type: "request.respond",
-      }),
-    );
-
-    await resolveBrowserAccess(hostClient, {
-      name: "",
-      requestId,
-      selection: { kind: "existing", profileId: workId },
-    });
-    expect(dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        requestId,
-        response: {
-          kind: "external",
-          value: { decision: "fulfilled", profileId: workId },
-        },
-        type: "request.respond",
-      }),
-    );
-
-    await resolveBrowserAccess(hostClient, {
-      name: "  Portal  ",
-      requestId,
-      selection: { kind: "new" },
-    });
-    expect(dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        requestId,
-        response: {
-          kind: "external",
-          value: { createProfile: { name: "Portal" }, decision: "fulfilled" },
-        },
-        type: "request.respond",
-      }),
-    );
-
-    await resolveBrowserAccess(hostClient, {
-      name: "  Client account  ",
-      requestId,
-      selection: { kind: "save" },
-    });
-    expect(dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        requestId,
-        response: {
-          kind: "external",
-          value: { decision: "fulfilled", name: "Client account" },
-        },
-        type: "request.respond",
-      }),
-    );
-  });
-});
+describe("resolveBrowserAccess", () => {});

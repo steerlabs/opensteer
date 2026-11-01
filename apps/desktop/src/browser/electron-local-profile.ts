@@ -1,11 +1,12 @@
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import path from "node:path";
-import { app, session, safeStorage, WebContentsView, type Session } from "electron";
-import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/protocol";
 import { BrowserRuntimeError } from "@opensteer/browser-runtime-core";
+import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/protocol";
+import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { app, safeStorage, session, WebContentsView, type Session } from "electron";
+import path from "node:path";
+import { ProtectedStorageUnavailableError } from "../secrets/protected-json-file.js";
 import { VerifiedDesktopSecretCryptography } from "../secrets/verified-secret-cryptography.js";
 import { BrowserSessionRequestGate } from "./browser-session-policy.js";
-import { ProtectedStorageUnavailableError } from "../secrets/protected-json-file.js";
 import { SessionCookieMirror } from "./session-cookie-mirror.js";
 
 // Electron retains Sessions by path until exit, across logical runtime/host eviction.
@@ -45,6 +46,41 @@ export async function prepareElectronLocalProfiles(): Promise<boolean> {
   );
 }
 
+export async function createEmptySessionCookieMirror(
+  directory: string,
+  binding: LocalProfileBinding,
+  signal: AbortSignal,
+): Promise<void> {
+  const mirror = new SessionCookieMirror({
+    directory,
+    binding,
+    cryptography,
+    capture: async () => [],
+    restore: async () => {},
+    subscribe: () => () => {},
+    onFailure: () => {},
+    publish: async (file, content, assertCurrent) => {
+      signal.throwIfAborted();
+      await replacePrivateFileAtomically(file, content, () => {
+        signal.throwIfAborted();
+        assertCurrent();
+      });
+    },
+  });
+  const abort = () => {
+    void mirror.stop().catch(() => undefined);
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    await withTimeout(mirror.initialize(), 5000, {
+      signal,
+      timeoutError: () => persistenceFailure(),
+    });
+  } finally {
+    signal.removeEventListener("abort", abort);
+    await withTimeout(mirror.stop(), 2000, { timeoutError: () => persistenceFailure() });
+  }
+}
 export async function requireElectronLocalProfiles(): Promise<void> {
   if (!(await prepareElectronLocalProfiles()))
     throw persistenceFailure(
@@ -57,7 +93,6 @@ export function acquireElectronLocalProfile(input: {
   directory: string;
   binding: LocalProfileBinding;
   configure(session: Session, gate: BrowserSessionRequestGate): void;
-  initialize?: (profile: ElectronLocalProfile) => Promise<void>;
 }): ElectronLocalProfile {
   const binding = LocalProfileBindingSchema.parse(input.binding);
   if (
@@ -71,8 +106,7 @@ export function acquireElectronLocalProfile(input: {
   }
   const existing = profiles.get(input.directory);
   if (existing) {
-    if (JSON.stringify(existing.binding) !== JSON.stringify(binding) || input.initialize)
-      throw persistenceFailure();
+    if (JSON.stringify(existing.binding) !== JSON.stringify(binding)) throw persistenceFailure();
     existing.assertUsable();
     return existing;
   }
@@ -88,7 +122,7 @@ export function acquireElectronLocalProfile(input: {
   }
   const profile = new ElectronLocalProfile(input.directory, binding, input.configure);
   profiles.set(input.directory, profile);
-  profile.start(input.initialize);
+  profile.start();
   return profile;
 }
 
@@ -203,12 +237,11 @@ export class ElectronLocalProfile {
     });
   }
 
-  start(initialize?: (profile: ElectronLocalProfile) => Promise<void>): void {
+  start(): void {
     this.#ready = withTimeout(
       Promise.resolve().then(async () => {
         if (sessionMutations.has(this.session)) throw persistenceFailure();
-        if (initialize) await initialize(this);
-        else await this.mirror.recover();
+        await this.mirror.recover();
       }),
       5_000,
       { signal: this.#cancellation.signal, timeoutError: persistenceFailure },
@@ -229,12 +262,7 @@ export class ElectronLocalProfile {
   }
 
   async ready(): Promise<void> {
-    // A loss notification can replace the barrier while an acquisition awaits it.
-    let barrier: Promise<unknown>;
-    do {
-      barrier = this.#ready;
-      await barrier;
-    } while (barrier !== this.#ready);
+    await this.#ready;
     this.assertUsable();
   }
 
@@ -278,23 +306,7 @@ export class ElectronLocalProfile {
     if (this.#admitted) this.gate.close();
     else this.gate.dormant();
   }
-  recoverAfterNetworkLoss(): void {
-    if (this.#failure || this.#retired) return;
-    this.#ready = this.#ready
-      .then(async () => {
-        const restored = await this.mirror.recover();
-        if (restored) {
-          this.#suspended = false;
-          if (this.#admitted) this.gate.open();
-          else this.gate.dormant();
-        }
-      })
-      .catch((error: unknown) => {
-        this.#fail(error);
-        throw this.#failure;
-      });
-    void this.#ready.catch(() => undefined);
-  }
+
   retire(): Promise<void> {
     if (this.#retirement) return this.#retirement;
     this.#retired = true;

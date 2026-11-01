@@ -1,11 +1,6 @@
 import { parse as parseHost } from "tldts";
 import { z } from "zod";
-import {
-  BrowserCookieSchema,
-  encodeBrowserProfileSnapshot,
-  type BrowserCookie,
-  type BrowserProfileSnapshot,
-} from "./snapshot.js";
+import { BrowserCookieSchema, type BrowserCookie } from "./cookies.js";
 
 export const maxBrowserSourceCookies = 1_000;
 export const maxBrowserSourceSnapshotBytes = 1_024 * 1_024;
@@ -85,19 +80,6 @@ export function browserSiteCookieMatches(site: string, cookie: BrowserCookie): b
   return cookie.path.startsWith("/") && !/[\r\n\0]/u.test(cookie.path);
 }
 
-export function browserProfileHoldsSite(snapshot: BrowserProfileSnapshot, site: string): boolean {
-  return (
-    snapshot.cookies.some((cookie) => browserSiteCookieMatches(site, cookie)) ||
-    snapshot.origins.some(({ origin }) => {
-      try {
-        return browserSiteFromUrl(origin) === site;
-      } catch {
-        return false;
-      }
-    })
-  );
-}
-
 /** Identity of one cookie slot; a later cookie with the same identity replaces it. */
 export function browserCookieIdentity(cookie: BrowserCookie): string {
   return JSON.stringify([
@@ -109,10 +91,7 @@ export function browserCookieIdentity(cookie: BrowserCookie): string {
   ]);
 }
 
-export function validateBrowserSourceSnapshot(
-  site: string,
-  value: unknown,
-): BrowserProfileSnapshot {
+export function validateBrowserSourceSnapshot(site: string, value: unknown): BrowserSourceSnapshot {
   siteUrl(site);
   const result = BrowserSourceSnapshotSchema.safeParse(value);
   if (!result.success) throw new Error("Chrome returned invalid browser state.");
@@ -120,9 +99,8 @@ export function validateBrowserSourceSnapshot(
   if (snapshot.cookies.some((cookie) => !browserSiteCookieMatches(site, cookie))) {
     throw new Error("Chrome returned cookies outside the requested website.");
   }
-  const encoded = encodeBrowserProfileSnapshot(snapshot);
-  const tooLarge = encoded.byteLength > maxBrowserSourceSnapshotBytes;
-  encoded.fill(0);
+  const tooLarge =
+    new TextEncoder().encode(JSON.stringify(snapshot)).byteLength > maxBrowserSourceSnapshotBytes;
   if (tooLarge) throw new Error("Chrome's sign-in state exceeds its 1 MiB limit.");
   return snapshot;
 }

@@ -1,12 +1,15 @@
-import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
-import { BrowserTabReadInputSchema, BrowserTabWriteInputSchema } from "@opensteer/protocol";
-import { safeMessage } from "@opensteer/shared/safeMessage";
-import { randomUUID } from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import {
+  isInitializeRequest,
+  ListToolsRequestSchema,
+  type Tool,
+} from "@modelcontextprotocol/sdk/types.js";
 import {
   legacyBrowserSignInTool,
-  legacyBrowserProfileSaveTool,
   previousReleaseToolsForCapabilityProfile,
   toolsForEnvironmentContract,
   type AgentToolName,
@@ -19,39 +22,35 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import { programAllowsTool } from "../triggers/program-authority.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { AgentControlResponse } from "@opensteer/protocol";
+import { BrowserTabReadInputSchema, BrowserTabWriteInputSchema } from "@opensteer/protocol";
+import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
+import { safeMessage } from "@opensteer/shared/safeMessage";
 import {
-  ListToolsRequestSchema,
-  type Tool,
-  isInitializeRequest,
-} from "@modelcontextprotocol/sdk/types.js";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type {
-  AgentControlService,
-  AgentControlTokenService,
-  AgentControlRunScope,
-} from "./agent-control-service.js";
+  requiredTriggerToolField,
+  TriggerProgramSchema,
+  TriggerReadInputSchema,
+  triggerSourceFromInput,
+  TriggerWriteInputSchema,
+  type TriggerControlInput,
+  type TriggerWriteInput,
+} from "@opensteer/triggers";
+import { randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { z } from "zod";
+import { mcpToolCallId } from "../integrations/mcp-call-id.js";
+import { programAllowsTool } from "../triggers/program-authority.js";
 import type {
   TriggerControlService,
   TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
-import type { AgentControlResponse } from "@opensteer/protocol";
-import {
-  requiredTriggerToolField,
-  triggerSourceFromInput,
-  TriggerReadInputSchema,
-  TriggerWriteInputSchema,
-  TriggerProgramSchema,
-  type TriggerControlInput,
-  type TriggerWriteInput,
-} from "@opensteer/triggers";
-import { z } from "zod";
-import { mcpToolCallId } from "../integrations/mcp-call-id.js";
 import type { WatchControlTokenService } from "../triggers/watch-capability.js";
 import type { WatchControlService } from "../triggers/watch-control-service.js";
+import type {
+  AgentControlRunScope,
+  AgentControlService,
+  AgentControlTokenService,
+} from "./agent-control-service.js";
 
 const maximumSessions = 256;
 const sessionIdleLifetimeMs = 30 * 60 * 1_000;
@@ -450,10 +449,7 @@ export class AgentToolsMcpService {
     readonly control: AgentToolControl;
     readonly legacyEnvironment: boolean;
     readonly input: Record<string, unknown>;
-    readonly name:
-      | AgentToolName
-      | typeof legacyBrowserSignInTool.name
-      | typeof legacyBrowserProfileSaveTool.name;
+    readonly name: AgentToolName | typeof legacyBrowserSignInTool.name;
     readonly requestId: string;
     readonly token: string;
   }): Promise<Record<string, unknown>> {
@@ -652,10 +648,9 @@ export class AgentToolsMcpService {
         const response = await control.handle(token, {
           requestId,
           type: "browser.profile.list",
-          ...(input.site ? { site: input.site } : {}),
         });
         if (response.type !== "browser.profile.list.result") throw unexpectedToolResponse();
-        return { profiles: response.profiles, ...(response.site ? { site: response.site } : {}) };
+        return { profiles: response.profiles };
       }
       case "browser_sign_in":
       case "sign_in": {
@@ -689,17 +684,6 @@ export class AgentToolsMcpService {
           ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
         });
         if (response.type !== "browser.access.request.result") throw unexpectedToolResponse();
-        return response.result;
-      }
-      case "browser_profile_save": {
-        const response = await control.handle(token, {
-          reason: input.reason,
-          requestId,
-          sessionId: input.sessionId,
-          ...(input.suggestedName ? { suggestedName: input.suggestedName } : {}),
-          type: "browser.profile.save",
-        });
-        if (response.type !== "browser.profile.save.result") throw unexpectedToolResponse();
         return response.result;
       }
       case "browser_tab_read": {
