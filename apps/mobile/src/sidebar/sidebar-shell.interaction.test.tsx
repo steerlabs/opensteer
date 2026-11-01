@@ -45,6 +45,7 @@ const harness = vi.hoisted(() => ({
       onTabs: () => void;
     };
     scroll: { offset: number };
+    shelves: { list: unknown };
   }[],
   drawer: { lock: "", panel: null as ReactNode },
   openDrawer: vi.fn(),
@@ -547,17 +548,23 @@ describe("the shell around what the system reserves", () => {
     expect(stackStyle(tab.container)).toMatchObject({ marginBottom: 0, marginTop: 440 });
   });
 
-  it("gives the drawer and the docked column one scroll position, kept by the shell", async () => {
+  it("gives the drawer and the docked column one scroll position and one set of shelves, kept by the shell", async () => {
     const { render } = await mount();
     const drawerScroll = lastPanel().scroll;
     drawerScroll.offset = 480;
+    // A Done task opened from the Done shelf keeps that shelf through a fold.
+    const shelves = lastPanel().shelves;
+    const drawn = { done: [{ threadId: "thread-a" }] };
+    shelves.list = drawn;
     harness.bounds = { height: 1133, width: 744 };
     await render();
     expect(lastPanel().docked).toBe(true);
     expect(lastPanel().scroll).toBe(drawerScroll);
+    expect(lastPanel().shelves.list).toBe(drawn);
     harness.bounds = { height: 844, width: 390 };
     await render();
     expect(lastPanel().scroll).toBe(drawerScroll);
     expect(lastPanel().scroll.offset).toBe(480);
+    expect(lastPanel().shelves.list).toBe(drawn);
   });
 });

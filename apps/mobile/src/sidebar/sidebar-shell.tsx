@@ -50,7 +50,12 @@ import {
   SidebarVisibleContext,
   type SidebarControl,
 } from "./sidebar-context.js";
-import { SidebarPanel, type SidebarActions, type SidebarDestination } from "./sidebar-panel.js";
+import {
+  SidebarPanel,
+  type ShelfMemory,
+  type SidebarActions,
+  type SidebarDestination,
+} from "./sidebar-panel.js";
 
 /**
  * The sidebar around the app's one native stack.
@@ -140,6 +145,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // column are different views of it, and the shell outlives both, so a fold
   // that swaps one for the other returns the list where it was.
   const scrollMemory = useRef<ScrollMemory>({ offset: 0 }).current;
+  const shelfMemory = useRef<ShelfMemory>({ list: null }).current;
   const { fontScale } = window;
   const rtl = I18nManager.isRTL;
   const [visible, setVisible] = useState(false);
@@ -267,7 +273,8 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // Another Deployment's list starts at its top.
   useEffect(() => {
     scrollMemory.offset = 0;
-  }, [deploymentId, scrollMemory]);
+    shelfMemory.list = null;
+  }, [deploymentId, scrollMemory, shelfMemory]);
 
   useEffect(() => {
     if (!visible) return;
@@ -427,6 +434,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   destination={destination}
                   docked={false}
                   scroll={scrollMemory}
+                  shelves={shelfMemory}
                   selectedPlace={selectedPlace}
                   selectedThreadId={selectedThreadId}
                   openThreadId={openThreadId}
@@ -463,6 +471,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       destination={destination}
                       docked
                       scroll={scrollMemory}
+                      shelves={shelfMemory}
                       selectedPlace={selectedPlace}
                       selectedThreadId={selectedThreadId}
                       openThreadId={openThreadId}

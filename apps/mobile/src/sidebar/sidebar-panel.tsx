@@ -112,7 +112,7 @@ interface SidebarModel {
 function sidebarModel(
   snapshot: HostSnapshot,
   openThreadId: string | null,
-  previous: TaskList | undefined,
+  previous: Pick<TaskList, "done"> | null,
 ): SidebarModel {
   const main = mainWorkspace(snapshot);
   return {
@@ -126,6 +126,15 @@ function sidebarModel(
 }
 
 /**
+ * The shelves the sidebar last drew, kept by the shell: the drawer and the
+ * docked column are separate panels, and a closed one reads nothing, yet a task
+ * opened from one must keep its shelf in whichever shows next.
+ */
+export interface ShelfMemory {
+  list: Pick<TaskList, "done"> | null;
+}
+
+/**
  * The selected Deployment's work as the sidebar needs it, or null while no
  * Host of that Deployment is attached. It reads without loading: the Host
  * client keeps the task list current, and the screen underneath owns the
@@ -136,6 +145,7 @@ function sidebarModel(
 function useSidebarModel(
   hostClient: HostClient | null,
   openThreadId: string | null,
+  shelves: ShelfMemory,
 ): SidebarModel | null {
   const cached = useRef<{
     readonly model: SidebarModel;
@@ -162,10 +172,11 @@ function useSidebarModel(
     ) {
       return current.model;
     }
-    const model = sidebarModel(snapshot, openThreadId, current?.model.list);
+    const model = sidebarModel(snapshot, openThreadId, shelves.list);
     cached.current = { model, snapshot, openThreadId };
+    shelves.list = model.list;
     return model;
-  }, [hostClient, openThreadId]);
+  }, [hostClient, openThreadId, shelves]);
   return useSyncExternalStore(subscribe, read, read);
 }
 
@@ -231,6 +242,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly docked: boolean;
   /** Where the reader left the list, kept by the shell across the drawer and the column. */
   readonly scroll: ScrollMemory;
+  readonly shelves: ShelfMemory;
   /** The tab, app or phone in front, marked as the one open. */
   readonly selectedPlace: WorkspaceSurfaceDestination | null;
   /** The task in front, marked as the one open. */
@@ -255,6 +267,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const model = useSidebarModel(
     visible && savedTasks.source !== "saved" ? hostClient : null,
     props.openThreadId,
+    props.shelves,
   );
   const switcher = useSwitcherModel(deploymentId);
   const [doneOpen, toggleDone] = useDoneShelf();
