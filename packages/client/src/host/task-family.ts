@@ -224,12 +224,7 @@ function sameAutomation(left: ThreadAutomation, right: ThreadAutomation): boolea
 }
 
 function sameMark(left: TaskMark, right: TaskMark | undefined): boolean {
-  return (
-    right !== undefined &&
-    left.icon === right.icon &&
-    left.color === right.color &&
-    left.pending === right.pending
-  );
+  return right !== undefined && left.icon === right.icon && left.color === right.color;
 }
 
 function sameList<T>(

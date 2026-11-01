@@ -123,7 +123,7 @@ export function NativeAgentCursors({
         const at = point ?? neutralCursorPoint;
         const mark = threadMark(record.threadId, directory.snapshot);
         return {
-          icon: record.home || mark.pending ? null : mark.icon,
+          icon: record.home ? null : mark.icon,
           color: record.home ? null : mark.color,
           home: record.home,
           leaving,

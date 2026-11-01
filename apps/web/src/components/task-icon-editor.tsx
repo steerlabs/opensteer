@@ -25,7 +25,7 @@ export function TaskIconEditor({
           task
           name=""
           color={mark.color}
-          value={mark.pending ? null : mark.icon}
+          value={mark.icon}
           onChange={(icon) => {
             if (saving) return;
             setSaving(true);

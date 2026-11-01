@@ -1,5 +1,5 @@
 import { PendingBrowserTabRows } from "./workspace/pending-browser-tab.js";
-import { taskMark } from "@opensteer/client/host";
+import { taskMark, taskMarkQuiet } from "@opensteer/client/host";
 import { TaskIconEditor } from "./task-icon-editor.js";
 import { ThreadTitleEditor } from "./thread-title-editor.js";
 import { useNativeBrowserLayer, useNativeBrowserOverlay } from "./native-browser-overlays.js";
@@ -872,7 +872,7 @@ const TaskRowItem = memo(function TaskRowItem({
           title={needsYou ? `${row.title}\n${ask}` : row.title}
           to={nav.conversationHref(nav.threadPath(threadId))}
         >
-          <TaskMark size={20} mark={taskMark(row)} quiet={row.tone === "finished" && !row.unread} />
+          <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, false)} />
           <span className="side-task__text">
             <span className="side-task__title">{row.title}</span>
             {needsYou ? <span className="side-task__ask">{ask}</span> : null}

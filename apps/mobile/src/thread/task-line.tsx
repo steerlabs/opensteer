@@ -93,11 +93,7 @@ function HeldThreadMark(props: {
 function sameMark(left: ResolvedTaskMark | null, right: ResolvedTaskMark | null): boolean {
   return (
     left === right ||
-    (left !== null &&
-      right !== null &&
-      left.icon === right.icon &&
-      left.color === right.color &&
-      left.pending === right.pending)
+    (left !== null && right !== null && left.icon === right.icon && left.color === right.color)
   );
 }
 

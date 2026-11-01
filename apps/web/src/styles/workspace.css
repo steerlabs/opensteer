@@ -234,37 +234,46 @@
   flex: none;
   place-items: center;
 }
+/* The neutral tile and its edge; a coloured task's wash and glyph are inline. */
+.task-mark {
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--muted);
+}
 .task-mark--16 {
   width: 16px;
   height: 16px;
+  border-radius: 5px;
 }
 .task-mark--20 {
   width: 20px;
   height: 20px;
+  border-radius: 6px;
 }
 .task-mark--22 {
   width: 22px;
   height: 22px;
+  border-radius: 7px;
 }
 .task-mark > svg {
   display: block;
   overflow: visible;
 }
+/* About 1.4px of stroke at every size, so the smallest glyph does not thin out. */
 .task-mark--16 > svg {
-  width: 16px;
-  height: 16px;
-  stroke-width: 2.25;
+  width: 11px;
+  height: 11px;
+  stroke-width: 3;
 }
-/* A task's mark draws as large as a tab's site icon, in the same 20px column. */
 .task-mark--20 > svg {
-  width: 16px;
-  height: 16px;
-  stroke-width: 2.25;
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.4;
 }
 .task-mark--22 > svg {
-  width: 20px;
-  height: 20px;
-  stroke-width: 2.1;
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.25;
 }
 .task-mark--quiet {
   opacity: 0.6;
@@ -3186,7 +3195,7 @@ html[data-tab-sorting] * {
   position: absolute;
   inset: -3px;
   border: 1.5px solid var(--acting-hue);
-  border-radius: 50%;
+  border-radius: calc(var(--radius-xs) + 3px);
   content: "";
   pointer-events: none;
   animation: occupant-acting 1.6s ease-in-out infinite;
@@ -3358,9 +3367,9 @@ html[data-tab-sorting] * {
 }
 
 .task-family-button__marks .task-mark {
-  border-radius: var(--radius-full);
-  background: var(--surface-raised);
-  box-shadow: 0 0 0 2px var(--ground);
+  box-shadow:
+    inset 0 0 0 1px var(--line),
+    0 0 0 2px var(--ground);
 }
 
 .task-family-button__marks .task-mark + .task-mark {
@@ -3380,7 +3389,7 @@ html[data-tab-sorting] * {
   margin-left: var(--space-2);
 }
 
-.task-family-button svg {
+.task-family-button__automations svg {
   width: 14px;
   height: 14px;
 }

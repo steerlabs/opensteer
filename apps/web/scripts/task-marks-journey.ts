@@ -81,8 +81,8 @@ try {
         observed.titleFits &&
           observed.icon === "plane" &&
           observed.box === 20 &&
-          observed.glyph === 18 &&
-          observed.header === 22 &&
+          observed.glyph === 14 &&
+          observed.header === 20 &&
           observed.state === "working" &&
           observed.aria === "true" &&
           !!observed.headerText?.includes("Travel") &&
