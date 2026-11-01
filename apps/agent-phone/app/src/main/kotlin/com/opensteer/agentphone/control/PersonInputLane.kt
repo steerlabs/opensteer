@@ -9,7 +9,7 @@ class PersonInputLane(
     class Stream { internal var sequence = -1L }
     private sealed interface Entry {
         class Batch(val stamp: Long, val bytes: Int, val events: Int, val action: (() -> Boolean) -> Unit, val refused: (String) -> Unit) : Entry
-        data object Reset : Entry
+        class Reset(val after: MutableList<() -> Unit>) : Entry
     }
     private val queue = ArrayDeque<Entry>()
     private var stamp = 0L
@@ -28,7 +28,7 @@ class PersonInputLane(
         next()
     }
 
-    @Synchronized fun reset() {
+    @Synchronized fun reset(after: (() -> Unit)? = null) {
         stamp++
         val dropped = queue.filterIsInstance<Entry.Batch>()
         queue.removeAll(dropped.toSet())
@@ -37,7 +37,8 @@ class PersonInputLane(
             batch.refused("unavailable")
         }
         interrupt()
-        if (queue.lastOrNull() != Entry.Reset) queue += Entry.Reset
+        val reset = queue.lastOrNull() as? Entry.Reset ?: Entry.Reset(mutableListOf()).also { queue += it }
+        if (after != null) reset.after += after
         next()
     }
 
@@ -48,7 +49,7 @@ class PersonInputLane(
         val entry = queue.removeFirst()
         execute {
             when (entry) {
-                Entry.Reset -> cleanup { finished() }
+                is Entry.Reset -> cleanup { try { entry.after.forEach { it() } } finally { finished() } }
                 is Entry.Batch -> try {
                     if (current(entry.stamp)) entry.action { current(entry.stamp) } else entry.refused("unavailable")
                 } finally {

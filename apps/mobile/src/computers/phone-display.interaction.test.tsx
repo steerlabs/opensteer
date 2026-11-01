@@ -5,10 +5,13 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import type { HostClient, WebSocketClient } from "@opensteer/client/host";
+import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
+  dispatch: vi.fn(),
   os: "android",
+  binaryVersion: 1,
   geometry: "side:display@0",
   epoch: "",
   ready: null as
@@ -26,6 +29,7 @@ const state = vi.hoisted(() => ({
   appState: null as null | ((value: string) => void),
   /** Frames the native decoder received, as bytes or as base64 for an older binary. */
   decoded: [] as { epoch: string; bytes?: number[]; data?: string }[],
+  decodeResult: null as null | (() => Promise<boolean>),
 }));
 vi.mock("../ui/pane.js", () => ({ usePaneGeometry: () => state.geometry }));
 vi.mock("react-native", () => ({
@@ -80,7 +84,7 @@ vi.mock("expo", async () => {
   const React = await import("react");
   return {
     requireOptionalNativeModule: (name: string) =>
-      name === "PhoneDisplay" ? { binaryPresentationVersion: 1 } : null,
+      name === "PhoneDisplay" ? { binaryPresentationVersion: state.binaryVersion } : null,
     requireNativeView: () =>
       React.forwardRef((props: { onReady: typeof state.ready }, ref) => {
         state.ready = props.onReady;
@@ -91,12 +95,12 @@ vi.mock("expo", async () => {
           decode: async (frame: { epoch: string; data: string }) => {
             state.epoch = frame.epoch;
             state.decoded.push({ epoch: frame.epoch, data: frame.data });
-            return true;
+            return state.decodeResult ? state.decodeResult() : true;
           },
           decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
             state.epoch = metadata.epoch;
             state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
-            return true;
+            return state.decodeResult ? state.decodeResult() : true;
           },
         }));
         return <div />;
@@ -118,6 +122,10 @@ vi.mock("../../modules/remote-text-input/src/remote-text-input.js", () => ({
     );
     return <div />;
   },
+}));
+vi.mock("@react-navigation/native", () => ({
+  useNavigation: () => ({ isFocused: () => true, dispatch: state.dispatch }),
+  StackActions: { replace: (name: string, params: unknown) => ({ name, params }) },
 }));
 vi.mock("../browser/surface-header.js", () => ({ useSurfaceHeader: () => undefined }));
 vi.mock("../ui/primitives.js", () => ({
@@ -168,10 +176,13 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   root = null;
   container?.remove();
+  vi.restoreAllMocks();
   state.copy.mockClear();
   state.geometry = "side:display@0";
   state.proxy = null;
   state.decoded = [];
+  state.decodeResult = null;
+  state.binaryVersion = 1;
 });
 async function setup(
   phone = true,
@@ -226,7 +237,47 @@ async function setup(
     subscribeLifecycle: () => () => undefined,
     connectComputerDisplay: connect,
     retainComputerView: () => ({ release: () => undefined }),
+    listApprovedComputerApps: async () => [
+      { machineId: "machine", target: { kind: "phone", display: "main" } },
+    ],
+    openComputerView: vi.fn(async () => ({ viewId: "new-owner", generation: 2 })),
   } as unknown as HostClient;
+  const pool = sharedDisplayStreams(client);
+  const retain = pool.retain.bind(pool);
+  const power = vi.fn(() => true);
+  let override: Partial<DisplaySnapshot> = {};
+  vi.spyOn(pool, "retain").mockImplementation((target) => {
+    const lease = retain(target);
+    return {
+      ...lease,
+      getSnapshot: () => {
+        const value = lease.getSnapshot();
+        return Object.keys(override).length
+          ? cachedBase === value && cachedOverride === override
+            ? cached!
+            : ((cachedBase = value),
+              (cachedOverride = override),
+              (cached = { ...value, ...override }))
+          : value;
+      },
+      power,
+    };
+  });
+  let cachedBase: DisplaySnapshot | null = null;
+  let cachedOverride: Partial<DisplaySnapshot> | null = null;
+  let cached: DisplaySnapshot | null = null;
+  const setDisplay = (next: Partial<DisplaySnapshot>) => {
+    override = next;
+    socket.json({
+      type: "display.state",
+      state: "live",
+      generation: 1,
+      width: 200,
+      height: 400,
+      sharedInput: 1,
+      editingVersion: 1,
+    });
+  };
   const render = async (active = true) =>
     act(async () =>
       root!.render(
@@ -268,7 +319,17 @@ async function setup(
       ),
     );
   await render();
-  if (os === "ios" && !phone) return { connect, render };
+  if (os === "ios" && !phone)
+    return {
+      connect,
+      render,
+      power,
+      setDisplay,
+      endOwner: () => {
+        snapshot.machines[0]!.computerUse.ownerViews[0]!.state = "closed";
+      },
+      client,
+    };
   await act(async () => {
     socket.readyState = 1;
     socket.emit("open", {});
@@ -279,7 +340,7 @@ async function setup(
       width: 200,
       height: 400,
       editingVersion: 1,
-      sharedInput: 1,
+      ...(owner ? {} : { sharedInput: 1 }),
     });
     socket.emit("message", {
       data: encodeDisplayViewerFrame(
@@ -299,7 +360,16 @@ async function setup(
   await act(async () =>
     state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
   );
-  return { connect, render };
+  return {
+    connect,
+    render,
+    power,
+    setDisplay,
+    endOwner: () => {
+      snapshot.machines[0]!.computerUse.ownerViews[0]!.state = "closed";
+    },
+    client,
+  };
 }
 async function press(label: string) {
   const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
@@ -595,15 +665,15 @@ it("keeps passive grid previews free of editing negotiation and take-over contro
   expect(container.querySelector('button[aria-label="Take over"]')).toBeNull();
 });
 
-it("keeps Mac task screens and phone owner screens passive", async () => {
+it("keeps Mac task screens passive and negotiates editing for phone owner screens", async () => {
   let opened = await setup(false, "android", false, true, "task");
   expect(opened.connect.mock.calls[0]?.[1]).toBeUndefined();
   expect(container.querySelector('button[aria-label="Take over"]')).toBeNull();
   await act(async () => root!.unmount());
   root = null;
   opened = await setup(true, "android", true, true, "owner");
-  expect(opened.connect.mock.calls[0]?.[1]).toBeUndefined();
-  expect(container.querySelector('button[aria-label="Take over"]')).toBeNull();
+  expect(opened.connect.mock.calls[0]?.[1]).toEqual({ editing: 1 });
+  expect(container.textContent).toContain("View only");
 });
 
 it("cancels local preedit and resets input when its screen hides", async () => {
@@ -634,6 +704,93 @@ it("cancels local preedit and resets input when its screen hides", async () => {
 it("hands the transport's frame bytes to a binary that takes them, under the epoch it was queued for", async () => {
   await setup();
   expect(state.decoded).toEqual([{ epoch: state.epoch, bytes: [0, 0, 1, 0x65] }]);
+});
+
+it.each([0, 1])(
+  "submits four native frames in order without waiting for bridge replies and acknowledges in order (binary version %i)",
+  async (binaryVersion) => {
+    state.binaryVersion = binaryVersion;
+    await setup();
+    const finish: ((accepted: boolean) => void)[] = [];
+    state.decodeResult = () => new Promise((resolve) => finish.push(resolve));
+    await act(async () => {
+      for (let sequence = 2; sequence <= 5; sequence++)
+        socket.emit("message", {
+          data: encodeDisplayViewerFrame(
+            {
+              generation: 1,
+              sequence,
+              ptsUs: sequence * 1000,
+              width: 200,
+              height: 400,
+              key: false,
+            },
+            Uint8Array.of(sequence),
+          ).slice().buffer,
+        });
+    });
+    expect(
+      state.decoded.slice(1).map((frame) => frame.bytes ?? [...Buffer.from(frame.data!, "base64")]),
+    ).toEqual([[2], [3], [4], [5]]);
+    expect(finish).toHaveLength(4);
+    await act(async () => {
+      finish[3]!(true);
+      finish[1]!(true);
+    });
+    expect(
+      socket.sent
+        .filter((message) => message.type === "display.ack")
+        .map((message) => message.sequence),
+    ).toEqual([1]);
+    await act(async () => finish[0]!(true));
+    expect(
+      socket.sent
+        .filter((message) => message.type === "display.ack")
+        .map((message) => message.sequence),
+    ).toEqual([1, 2, 3]);
+    await act(async () => finish[2]!(true));
+    expect(
+      socket.sent
+        .filter((message) => message.type === "display.ack")
+        .map((message) => message.sequence),
+    ).toEqual([1, 2, 3, 4, 5]);
+  },
+);
+
+it("keeps native submissions bounded with a larger viewer window and fences pending work on hide", async () => {
+  const { render } = await setup();
+  const finish: ((accepted: boolean) => void)[] = [];
+  state.decodeResult = () => new Promise((resolve) => finish.push(resolve));
+  await act(async () => {
+    socket.json({
+      type: "display.state",
+      state: "live",
+      generation: 1,
+      width: 200,
+      height: 400,
+      displayWindow: 1,
+    });
+    for (let sequence = 2; sequence <= 12; sequence++)
+      socket.emit("message", {
+        data: encodeDisplayViewerFrame(
+          { generation: 1, sequence, ptsUs: sequence * 1000, width: 200, height: 400, key: false },
+          Uint8Array.of(sequence),
+        ).slice().buffer,
+      });
+  });
+  expect(finish).toHaveLength(4);
+  expect(state.decoded.slice(1).map((frame) => frame.bytes)).toEqual([[2], [3], [4], [5]]);
+  await act(async () => finish[0]!(true));
+  expect(finish).toHaveLength(5);
+  expect(state.decoded.at(-1)?.bytes).toEqual([6]);
+  await render(false);
+  const count = state.decoded.length;
+  const keyframes = socket.sent.filter((message) => message.type === "display.keyframe").length;
+  await act(async () => finish.slice(1).forEach((resolve) => resolve(false)));
+  expect(state.decoded).toHaveLength(count);
+  expect(socket.sent.filter((message) => message.type === "display.keyframe")).toHaveLength(
+    keyframes,
+  );
 });
 
 it("sends standard padded base64 to a binary that predates byte frames", async () => {
@@ -674,4 +831,94 @@ it("cancels a held display stroke when its pane moves without resizing", async (
     }),
   );
   expect(input()).toHaveLength(count);
+});
+
+it.each(["android", "ios"])(
+  "shows phone owner navigation only with input, wakes screen-off and locks live phones on %s",
+  async (os) => {
+    const { setDisplay, power } = await setup(true, os, true, true, "owner");
+    expect(container.textContent).toContain("View only");
+    expect(container.querySelector('button[aria-label="Back"]')).toBeNull();
+    await act(async () => setDisplay({ input: "available", power: "available" }));
+    expect(container.textContent).not.toContain("View only");
+    expect(container.querySelector('button[aria-label="Back"]')).not.toBeNull();
+    await press("Back");
+    expect(input().at(-1)?.events).toEqual([{ kind: "nav", to: "back" }]);
+    await press("Lock phone");
+    expect(power).toHaveBeenLastCalledWith("lock");
+    await act(async () =>
+      setDisplay({
+        input: "unavailable",
+        power: "available",
+        display: {
+          type: "display.state",
+          state: "screen-off",
+          generation: 1,
+          width: 200,
+          height: 400,
+        },
+      }),
+    );
+    expect(container.textContent).toContain("screen is off");
+    await press("Wake phone");
+    expect(power).toHaveBeenLastCalledWith("wake");
+    await act(async () =>
+      setDisplay({
+        input: "unavailable",
+        power: "available",
+        display: {
+          type: "display.state",
+          state: "protected",
+          reason: "locked-screen",
+          generation: 1,
+          width: 200,
+          height: 400,
+        },
+      }),
+    );
+    expect(container.textContent).toContain("Unlock it on the phone.");
+    expect(container.textContent).not.toContain("Wake phone");
+  },
+);
+
+it("coalesces moves while preserving the latest timestamp before lift and cancellation", async () => {
+  await setup();
+  await act(async () => state.layout?.({ nativeEvent: { layout: { width: 400, height: 400 } } }));
+  const touch = (timestamp: number, y = 200) => ({
+    nativeEvent: { locationX: 200, locationY: y, timestamp, touches: [{}] },
+  });
+  await act(async () => {
+    state.touch?.onTouchStart?.(touch(10));
+    state.touch?.onTouchMove?.(touch(11, 210));
+    state.touch?.onTouchMove?.(touch(12, 220));
+    state.touch?.onTouchEnd?.(touch(13, 230));
+  });
+  expect(input().flatMap((m) => m.events)).toEqual([
+    { kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 10 },
+    { kind: "pointer", phase: "move", x: 0.5, y: 0.55, t: 12 },
+    { kind: "pointer", phase: "up", x: 0.5, y: 0.575, t: 13 },
+  ]);
+});
+
+it("reopens an ended phone owner view through the explicit open path", async () => {
+  const { endOwner, render, client } = await setup(true, "android", true, true, "owner");
+  endOwner();
+  await render();
+  expect(container.textContent).toContain("This view has ended");
+  await press("Reopen phone");
+  expect(client.openComputerView).toHaveBeenCalledWith("machine", {
+    kind: "phone",
+    display: "main",
+  });
+  expect(state.dispatch).toHaveBeenLastCalledWith({
+    name: "WorkspaceBrowser",
+    params: {
+      deploymentId: "deployment",
+      scope: "workspace",
+      phone: true,
+      machineId: "machine",
+      viewId: "new-owner",
+      generation: 2,
+    },
+  });
 });

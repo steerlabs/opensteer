@@ -68,8 +68,8 @@ class PhoneDesk(
     fun displayProtection(): String? = when {
         paused -> "paused"
         ownWindow -> "opensteer-app"
-        ownerDisplay?.locked == true -> "locked-screen"
         ownerDisplay?.interactive == false -> "screen-off"
+        ownerDisplay?.locked == true -> "locked-screen"
         else -> null
     }
 
@@ -88,11 +88,11 @@ class PhoneDesk(
         }
     }
 
-    fun ownerAdmission(sessionId: String, touch: Boolean): Boolean {
-        val session = activeSession ?: return false
+    fun ownerAdmission(sessionId: String?, touch: Boolean, power: Boolean = false): Boolean {
+        val session = if (sessionId != null) activeSession ?: return false else null
         val display = ownerDisplay ?: return false
-        return session.id == sessionId && activeSession == session && refusal(session) == null &&
-            !paused && display.interactive && !display.locked && (!touch || !ownWindow)
+        return (session == null || (session.id == sessionId && activeSession == session && refusal(session) == null)) &&
+            !paused && (power || (display.interactive && !display.locked)) && (!touch || !ownWindow)
     }
 
     /** Refresh on window/power events and a slow safety poll; pointer admission never fetches the tree. */

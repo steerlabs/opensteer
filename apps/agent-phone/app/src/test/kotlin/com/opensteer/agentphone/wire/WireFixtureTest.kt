@@ -71,7 +71,7 @@ object WireFixture {
             RunnerChallenge(it.string("challengeId"), it.string("expiresAt"), it.string("hostSessionId"), it.string("nonce"))
         }
         val descriptor = runner.obj("descriptor").let {
-            RunnerDescriptor(it.string("bootId"), it.string("name"), it.string("runnerId"), it.string("runtimeVersion"))
+            RunnerDescriptor(it.string("bootId"), it.string("name"), it.string("runnerId"), it.string("runtimeVersion"), displayProfile = true)
         }
         val auxiliaryChallenge = auxiliary.obj("challenge").let {
             AuxiliaryChallenge(it.string("challengeId"), it.string("expiresAt"), it.string("hostSessionId"), it.string("module"), it.string("nonce"))
@@ -279,9 +279,21 @@ object WireFixture {
                 source.literal("kind", "owner-view")
                 DisplayWire.sourceEnded(fence, stream, DisplaySource.Owner(source.string("viewId"), source.int("generation")), f.string("reason"))
             }
-            type.endsWith("editing") -> DisplayWire.editingContext(fence, stream, f.string("sessionId"), f.int("geometry"), f.objectValue("context"))
+            type.endsWith("editing") -> {
+                val source = if (f.has("source")) DisplayWire.source(f.raw("source")) else null
+                DisplayWire.editingContext(fence, stream, if (source == null) f.string("sessionId") else null, f.int("geometry"), f.objectValue("context"), source)
+            }
+            type.endsWith("power-result") -> {
+                val source = DisplayWire.source(f.raw("source"))
+                val sequence = f.int("sequence")
+                val dispatched = f.string("outcome") == "dispatched"
+                f.optionalString("reason")
+                DisplayWire.powerResult(DisplayMessage.Power(fence, stream, source, sequence, "wake"), dispatched)
+            }
             type.endsWith("input-result") || type.endsWith("clipboard") -> {
-                val input = DisplayMessage.Input(fence, f.string("sessionId"), stream, f.int("geometry"), f.int("sequence"), emptyList())
+                val source = if (f.has("source")) DisplayWire.source(f.raw("source")) else null
+                val session = if (source == null) f.string("sessionId") else null
+                val input = DisplayMessage.Input(fence, session, stream, f.int("geometry"), f.int("sequence"), emptyList(), source = source ?: DisplaySource.Task(requireNotNull(session)), sourceAddressed = source != null)
                 val fields = linkedMapOf("sequence" to jsonOf(input.sequence), "outcome" to jsonOf(f.string("outcome")))
                 f.optionalString("reason")?.let { fields["reason"] = jsonOf(it) }
                 f.optionalString("text")?.let { fields["text"] = jsonOf(it) }

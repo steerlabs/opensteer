@@ -141,6 +141,11 @@ const streamFence = {
 };
 const displaySessionId = "cus_99999999-9999-4999-8999-999999999999";
 const displayStreamId = "dsp_11111111-1111-4111-8111-111111111111";
+const phoneOwnerSource = {
+  kind: "owner-view" as const,
+  viewId: "cvw_77777777-7777-4777-8777-777777777777",
+  generation: 1,
+};
 const displayEvents = [
   { kind: "pointer", phase: "down", x: 0.25, y: 0.75, t: 1000 },
   { kind: "pointer", phase: "move", x: 0.5, y: 0.5, t: 1032.5 },
@@ -350,6 +355,61 @@ function hostFrames() {
       ],
       type: "host.integrations.display.demand",
     }),
+    stream({
+      ...streamFence,
+      type: "host.integrations.display.start",
+      display: "main",
+      streamId: displayStreamId,
+      dataTicket: auxiliaryTicket,
+      revision: 0,
+      sources: [phoneOwnerSource],
+      inputSources: [phoneOwnerSource],
+      maxLongSide: displayDefaultMaxLongSide,
+      maxFps: displayDefaultMaxFps,
+      sharedInput: 1,
+      editingVersion: 1,
+      displayCut: 1,
+      phoneOwnerControl: 1,
+      displayProfile: 1,
+      maxBitrate: null,
+    }),
+    stream({
+      ...streamFence,
+      type: "host.integrations.display.demand",
+      display: "main",
+      streamId: displayStreamId,
+      revision: 2,
+      sources: [phoneOwnerSource],
+      inputSources: [],
+      maxBitrate: 400_000,
+    }),
+    ...[phoneOwnerSource, { kind: "task-session", sessionId }].flatMap((source) => [
+      stream({
+        ...streamFence,
+        type: "host.integrations.display.input",
+        streamId: displayStreamId,
+        source,
+        geometry: 1,
+        sequence: 2,
+        events: displayEvents,
+      }),
+      stream({
+        ...streamFence,
+        type: "host.integrations.display.input-reset",
+        streamId: displayStreamId,
+        source,
+      }),
+      ...["wake", "lock"].map((action) =>
+        stream({
+          ...streamFence,
+          type: "host.integrations.display.power",
+          streamId: displayStreamId,
+          source,
+          sequence: 3,
+          action,
+        }),
+      ),
+    ]),
     {
       channel: "display-data",
       frame: DisplayDataServerMessageSchema.parse({ type: "display.ack", sequence: 1 }),
@@ -367,7 +427,7 @@ function phoneFrames() {
       ...frame,
     }),
   });
-  return [
+  const frames = [
     stream({
       type: "runner.integrations.display.source-ended",
       display: "main",
@@ -421,6 +481,28 @@ function phoneFrames() {
         caret: { x: 0.25, y: 0.5, height: 0.025 },
       },
     }),
+  ];
+  const addressed = frames
+    .filter(({ frame }) => "sessionId" in frame)
+    .map(({ channel, frame }) => {
+      const { sessionId: _sessionId, ...rest } = frame as typeof frame & { sessionId: string };
+      return {
+        channel,
+        frame: IntegrationsModuleEventSchema.parse({ ...rest, source: phoneOwnerSource }),
+      };
+    });
+  return [
+    ...frames,
+    ...addressed,
+    ...["dispatched", "refused"].map((outcome) =>
+      stream({
+        type: "runner.integrations.display.power-result",
+        source: phoneOwnerSource,
+        sequence: 3,
+        outcome,
+        ...(outcome === "refused" ? { reason: "unavailable" } : {}),
+      }),
+    ),
   ];
 }
 

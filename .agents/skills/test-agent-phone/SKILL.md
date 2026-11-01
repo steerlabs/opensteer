@@ -79,6 +79,22 @@ explicit long-soak purpose, run `OPENSTEER_AGENT_PHONE_API=36 pnpm test:agent-ph
 require at least 99% successful scheduled cycles and no duplicate fixture effects, counting
 missed cycles as failures. See the soak source for duration/seed controls.
 
+For display performance, boot a dedicated emulator first and run
+`ANDROID_SERIAL=emulator-5600 OPENSTEER_AGENT_PHONE_API=33 pnpm bench:phone-display`.
+The benchmark uses the real phone, Host, shared client and headless Chromium WebCodecs;
+install Playwright's pinned Chromium first. It reuses the mobile network proxy's LAN,
+4G and weak-cell profiles without changing system networking. Set
+`OPENSTEER_PHONE_BENCH_WINDOW=1` to measure negotiated viewer credit,
+`OPENSTEER_PHONE_BENCH_WINDOWS=0,1,0,1,0,1` for three alternating comparisons on one boot, and
+`OPENSTEER_PHONE_BENCH_OUT` to an external evidence directory. It cleans up its Host,
+database clones, browser and proxies; the caller still owns the selected emulator.
+Canvas output and relay-to-canvas age do not measure a physical viewer's screen latency.
+For API 36 idle traffic, set `OPENSTEER_PHONE_BENCH_IDLE_MS=240000`. Require multiple
+idle keyframes, one in the second half, and received frames throughout the window.
+Encoders can [convert the I-frame interval to a frame count](https://developer.android.com/reference/android/media/MediaFormat#KEY_I_FRAME_INTERVAL),
+so low static-frame cadence stretches the configured period. Compare payload and wire rates separately.
+The ADB swipe-to-next-frame metric is workload timing, not remote input effect latency.
+
 For manual acceptance/release evidence, set `OPENSTEER_AGENT_PHONE_E2E_ARTIFACT_DIR` outside
 the checkout, separately per suite/API/engine (a suite may clear it). Verify
 `shasum -a 256 -c summary.sha256` or the real-agent `SHA256SUMS`; redact PIN digits.

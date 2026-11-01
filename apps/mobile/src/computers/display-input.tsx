@@ -150,7 +150,24 @@ export function DisplayControls({
       : lease.input(geometry, events));
   const sendOperation = (operation: EditingOperation): boolean =>
     session !== null && submit(() => session.send(operation));
+  const pendingMove = useRef<{ geometry: number; event: DisplayInputEvent } | null>(null);
+  const moveFrame = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
+  const discardMove = () => {
+    if (moveFrame.current !== null) cancelAnimationFrame(moveFrame.current);
+    moveFrame.current = null;
+    pendingMove.current = null;
+  };
+  useEffect(() => {
+    discardMove();
+    return discardMove;
+  }, [held, picture?.generation, lease]);
+  const flushMove = () => {
+    const move = pendingMove.current;
+    discardMove();
+    if (move) send([move.event], move.geometry);
+  };
   const cancelStroke = () => {
+    flushMove();
     const current = stroke.current;
     if (!current) return;
     stroke.current = null;
@@ -205,14 +222,20 @@ export function DisplayControls({
     const x = Math.max(0, Math.min(1, rawX)),
       y = Math.max(0, Math.min(1, rawY));
     const t = Math.max(heldStroke.t, event.nativeEvent.timestamp);
-    const sent = send(
-      [
-        phone
-          ? { kind: "pointer", phase, x, y, t }
-          : { kind: "mouse", phase, x, y, button: "left", modifiers: [], clickCount: 1 },
-      ],
-      heldStroke.generation,
-    );
+    const inputEvent: DisplayInputEvent = phone
+      ? { kind: "pointer", phase, x, y, t }
+      : { kind: "mouse", phase, x, y, button: "left", modifiers: [], clickCount: 1 };
+    let sent = true;
+    if (phase === "move") {
+      pendingMove.current = { geometry: heldStroke.generation, event: inputEvent };
+      moveFrame.current ??= requestAnimationFrame(() => {
+        moveFrame.current = null;
+        flushMove();
+      });
+    } else {
+      flushMove();
+      sent = send([inputEvent], heldStroke.generation);
+    }
     heldStroke.x = x;
     heldStroke.y = y;
     heldStroke.t = t;
@@ -245,7 +268,7 @@ export function DisplayControls({
         onTouchEnd={(event) => touch("up", event)}
         onTouchCancel={(event) => touch("cancel", event)}
       />
-      <View style={styles.controls}>
+      <View style={[styles.controls, phone && { bottom: 56 }]}>
         {held && context?.field ? (
           <Pressable
             accessibilityRole="button"

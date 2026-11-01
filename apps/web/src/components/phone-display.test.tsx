@@ -1143,3 +1143,102 @@ describe("Mac owner viewer", () => {
     expect(sockets[0]!.closed).toBe(true);
   });
 });
+
+describe("phone owner controls", () => {
+  it("follows lease input and power availability through screen-off and a locked screen", async () => {
+    const pool = sharedDisplayStreams(client);
+    const retain = pool.retain.bind(pool);
+    const power = vi.fn(() => true);
+    let available = false;
+    let cached: import("@opensteer/client/integrations").DisplaySnapshot | null = null;
+    let previous: import("@opensteer/client/integrations").DisplaySnapshot | null = null;
+    vi.spyOn(pool, "retain").mockImplementation((target) => {
+      const lease = retain(target);
+      return {
+        ...lease,
+        power,
+        getSnapshot: () => {
+          const snapshot = lease.getSnapshot();
+          if (previous !== snapshot) {
+            previous = snapshot;
+            cached = {
+              ...snapshot,
+              input: available ? "available" : "unavailable",
+              power: available ? "available" : "unavailable",
+            };
+          }
+          return cached!;
+        },
+      };
+    });
+    const { machine } = phone();
+    const approved = await client.listApprovedComputerApps();
+    const target = approved.find(
+      (app) => app.machineId === machine.id && app.target.kind === "phone",
+    )?.target;
+    if (!target) throw new Error("Missing approved phone");
+    const view = await client.openComputerView(machine.id, target);
+    const destination = ownerViewDestination(view);
+    if (destination.kind !== "phone") throw new Error("Missing phone destination");
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() =>
+      root!.render(
+        <OwnerView
+          destination={destination}
+          hostClient={client}
+          hostConnected
+          marks={null}
+          leading={null}
+          trailing={null}
+          place={null}
+        />,
+      ),
+    );
+    await until(() => decoder.outputs.length > 0);
+    expect(container.textContent).toContain("View only");
+    expect(container.querySelector('button[aria-label="Back"]')).toBeNull();
+    available = true;
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.state",
+        state: "live",
+        sharedInput: 1,
+        generation: 1,
+        width: 360,
+        height: 780,
+        editingVersion: 1,
+      }),
+    );
+    expect(container.textContent).not.toContain("View only");
+    act(() => button("Back").click());
+    expect(remoteEvents()).toContainEqual({ kind: "nav", to: "back" });
+    act(() => button("Lock phone").click());
+    expect(power).toHaveBeenLastCalledWith("lock");
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.state",
+        state: "screen-off",
+        generation: 1,
+        width: 360,
+        height: 780,
+      }),
+    );
+    expect(container.textContent).toContain("screen is off");
+    act(() => button("Wake phone").click());
+    expect(power).toHaveBeenLastCalledWith("wake");
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.state",
+        state: "protected",
+        reason: "locked-screen",
+        generation: 1,
+        width: 360,
+        height: 780,
+      }),
+    );
+    expect(container.textContent).toContain("Unlock it on the phone.");
+    expect(container.textContent).not.toContain("Wake phone");
+  });
+});

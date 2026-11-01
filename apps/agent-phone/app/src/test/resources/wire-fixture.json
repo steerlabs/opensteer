@@ -33,6 +33,7 @@
         },
         "modules": {
           "integrations": {
+            "displayProfile": 1,
             "platform": "android",
             "protocolVersion": 4
           }
@@ -42,7 +43,7 @@
         "runnerKind": "local",
         "runtimeVersion": "0.1.117"
       },
-      "signature": "IfvSmo-nCGlTVog7uZecb7Zg5PwaSPzr6Cm3KPsW4USQ6J1ISDuKZugfCOF5jkb0vVL0GaOhh6yl2MJBTEanBg",
+      "signature": "6yAhlPJ4HjYpheO1hkzFsk33-Orfshtlg0MahYfnCrPusurrMdHP2pAoS0NpapzEreyneq9RbI9-Mk3h61GBBw",
       "type": "runner.authenticate"
     },
     "enroll": {
@@ -61,6 +62,7 @@
         },
         "modules": {
           "integrations": {
+            "displayProfile": 1,
             "platform": "android",
             "protocolVersion": 4
           }
@@ -71,7 +73,7 @@
         "runtimeVersion": "0.1.117"
       },
       "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n",
-      "signature": "1kPDZl5ObUqBMuop1MD-DhOSSvqaL5pBxpkQruUKIb3Cz6q5hfL5yCBDVoJFrjFA9TfY9uNjoSjs6kZ00Z1GDw",
+      "signature": "lcNt-20GieG3TKdI4hygyW3UH5BmYM0ZbfRp5pt7YHcdlSZV9xh7cAm5STbX__Ej-mdiW0sBhuez27vmA7RXBQ",
       "type": "runner.enroll"
     },
     "heartbeat": {
@@ -792,6 +794,114 @@
           "height": 0.025
         }
       }
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.input-result",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "source": {
+        "kind": "owner-view",
+        "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+        "generation": 1
+      },
+      "geometry": 1,
+      "sequence": 0,
+      "outcome": "refused",
+      "reason": "unavailable"
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.clipboard",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "source": {
+        "kind": "owner-view",
+        "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+        "generation": 1
+      },
+      "geometry": 1,
+      "sequence": 1,
+      "outcome": "copied",
+      "text": "milk, eggs ✓"
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.editing",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "source": {
+        "kind": "owner-view",
+        "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+        "generation": 1
+      },
+      "geometry": 1,
+      "context": {
+        "contextId": "11111111-1111-4111-8111-111111111111",
+        "field": {
+          "kind": "text",
+          "multiline": false,
+          "sensitive": false,
+          "inputMode": "text"
+        },
+        "caret": {
+          "x": 0.25,
+          "y": 0.5,
+          "height": 0.025
+        }
+      }
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.power-result",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "source": {
+        "kind": "owner-view",
+        "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+        "generation": 1
+      },
+      "sequence": 3,
+      "outcome": "dispatched"
+    },
+    {
+      "bootId": "rbt_22222222-2222-4222-8222-222222222222",
+      "connectionGeneration": 3,
+      "connectionId": "rcn_11111111-1111-4111-8111-111111111111",
+      "connectionLeaseId": "rls_11111111-1111-4111-8111-111111111111",
+      "runnerId": "rnr_33333333-3333-4333-8333-333333333333",
+      "auxiliaryStreamId": "rax_11111111-1111-4111-8111-111111111111",
+      "module": "integrations",
+      "type": "runner.integrations.display.power-result",
+      "streamId": "dsp_11111111-1111-4111-8111-111111111111",
+      "source": {
+        "kind": "owner-view",
+        "viewId": "cvw_77777777-7777-4777-8777-777777777777",
+        "generation": 1
+      },
+      "sequence": 3,
+      "outcome": "refused",
+      "reason": "unavailable"
     }
   ],
   "displayMedia": [

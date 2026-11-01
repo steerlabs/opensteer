@@ -89,6 +89,7 @@ class ProjectionCapture(private val context: Context, private val projection: Me
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, minOf(30, maxFps))
                 setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, minOf(30, maxFps).toFloat())
+                // The Host refreshes byte-heavy replay; periodic IDRs stay rare on a still screen.
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10)
                 setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
                 // The input surface resubmits a still picture at this interval, at most ten times,

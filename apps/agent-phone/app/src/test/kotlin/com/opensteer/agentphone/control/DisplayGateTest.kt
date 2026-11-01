@@ -90,4 +90,17 @@ class DisplayGateTest {
         assertEquals(1L, gate.generation)
     }
 
+    @Test fun hostCapLowersOnlyTheEffectiveBitrateAndClearsWithoutRestart() {
+        val rate = DisplayBitrate()
+        assertTrue(rate.cap(400_000))
+        assertEquals(400_000, rate.value)
+        repeat(10) { rate.congested(it * 1000L) }
+        assertEquals(400_000, rate.value)
+        assertTrue(rate.cap(null))
+        assertEquals(1_000_000, rate.value)
+        assertFalse(rate.cap(4_000_000))
+        assertEquals(1_000_000, rate.value)
+        assertThrows(IllegalArgumentException::class.java) { rate.cap(399_999) }
+    }
+
 }

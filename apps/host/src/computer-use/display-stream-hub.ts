@@ -1,3 +1,4 @@
+import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
@@ -22,6 +23,7 @@ import {
   displaySlowViewerCloseMs,
   displayViewerCreditBytes,
   displayViewerCreditFrames,
+  displayViewerWindowFrames,
   type ComputerUseSessionId,
   type DisplayDataTicketClaims,
   type DisplayViewerClientMessage,
@@ -48,6 +50,9 @@ import type { ComputerUseService } from "./computer-use-service.js";
 
 // Host-only retention bound: viewers and phones need no cache-size negotiation.
 const displayGopCacheBytes = 4 * 1_024 * 1_024;
+// Refresh by delta bytes; an unavoidable large IDR must not defeat the bound.
+// Leave room for post-motion refinement before forcing another IDR.
+const displayGopRefreshBytes = 256 * 1_024;
 // Two ten-second GOPs at 30 fps bound metadata and replay work for tiny frames.
 const displayGopCacheFrames = 600;
 // Eight tabs cover ordinary watching while bounding per-session fan-out work.
@@ -67,6 +72,7 @@ type PhoneEvent = Extract<
   IntegrationsModuleEvent,
   {
     type:
+      | "runner.integrations.display.power-result"
       | "runner.integrations.display.input-result"
       | "runner.integrations.display.editing"
       | "runner.integrations.display.clipboard"
@@ -77,7 +83,11 @@ type PhoneEvent = Extract<
   }
 >;
 interface Viewer {
+  readonly displayWindow: boolean;
+  readonly bitrate: DisplayViewerBitrate;
+  readonly ackDelays: { readonly at: number; readonly delay: number }[];
   readonly sharedInput: boolean;
+  readonly phoneOwnerControl: boolean;
   authorized: boolean;
   inputSequence: number;
   checkedAt: number;
@@ -117,7 +127,12 @@ interface PendingInput {
   readonly cut: boolean;
 }
 interface Stream {
+  readonly displayProfile?: 1;
+  maxBitrate: number | null;
+  bitrateAt: number;
   readonly sharedInput?: 1;
+  readonly phoneOwnerControl?: 1;
+  readonly pendingPower: Map<number, { viewer: Viewer; sequence: number }>;
   holder: Viewer | null;
   /** The person-lane sequence of the holder's latest batch. */
   holderSequence: number;
@@ -200,6 +215,7 @@ export class DisplayStreamHub {
   readonly #now: () => number;
   readonly #timer: NodeJS.Timeout;
   #closed = false;
+  readonly #inputRevisions = new Map<RunnerId, number>();
   constructor(options: DisplayStreamHubOptions) {
     this.#options = options;
     this.#now = options.now ?? Date.now;
@@ -226,6 +242,8 @@ export class DisplayStreamHub {
       readonly editing?: boolean;
       readonly displayCut?: boolean;
       readonly sharedInput?: boolean;
+      readonly phoneOwnerControl?: boolean;
+      readonly displayWindow?: boolean;
     } = {},
   ): Promise<{
     handle: (message: DisplayViewerClientMessage) => void;
@@ -289,6 +307,21 @@ export class DisplayStreamHub {
     }
     if (socket.readyState !== socket.OPEN || !this.#sourceLive(source, actor, runnerId))
       return { handle: () => undefined, close: () => undefined };
+    let authorized = !target && source.kind === "task-session";
+    const inputRevision = this.#inputRevisions.get(runnerId);
+    if (
+      source.kind === "owner-view" &&
+      (target?.editingVersion === 1 || live.phoneOwnerControl === 1)
+    ) {
+      try {
+        authorized =
+          (await this.#options.computerViews.authorizeInput?.(source, actor)) === runnerId;
+      } catch {
+        authorized = false;
+      }
+    }
+    if (inputRevision !== this.#inputRevisions.get(runnerId)) authorized = false;
+    if (this.#closed) throw new OpensteerError({ code: "forbidden", message: "Host stopping" });
     const current = this.#options.computerApps.displayStream(runnerId);
     if (
       !current ||
@@ -363,9 +396,14 @@ export class DisplayStreamHub {
         streamId,
       });
       stream = {
+        ...(live.displayProfile === 1 && !target ? { displayProfile: 1 as const } : {}),
+        maxBitrate: null,
+        bitrateAt: -Infinity,
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
         ...(live.displayCut === 1 && !target ? { displayCut: 1 as const } : {}),
+        ...(live.phoneOwnerControl === 1 && !target ? { phoneOwnerControl: 1 as const } : {}),
+        pendingPower: new Map(),
         authorities: new Map(),
         maxLongSide: displayDefaultMaxLongSide,
         profileAt: null,
@@ -405,6 +443,9 @@ export class DisplayStreamHub {
       start = {
         ...stream.fence,
         type: "host.integrations.display.start",
+        ...(live.displayProfile === 1 && !target
+          ? { displayProfile: 1 as const, maxBitrate: null }
+          : {}),
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
         ...(live.displayCut === 1 && !target ? { displayCut: 1 as const } : {}),
@@ -428,15 +469,6 @@ export class DisplayStreamHub {
     }
     const attached = stream;
     attached.stopAt = null;
-    let authorized = !target && source.kind === "task-session";
-    if (target && source.kind === "owner-view" && target.editingVersion === 1) {
-      try {
-        authorized =
-          (await this.#options.computerViews.authorizeInput?.(source, actor)) === runnerId;
-      } catch {
-        authorized = false;
-      }
-    }
     if (
       this.#streams.get(attached.streamId) !== attached ||
       socket.readyState !== socket.OPEN ||
@@ -446,6 +478,10 @@ export class DisplayStreamHub {
       return { handle: () => undefined, close: () => undefined };
     }
     const viewer: Viewer = {
+      phoneOwnerControl: options.phoneOwnerControl === true,
+      displayWindow: options.displayWindow === true,
+      ackDelays: [],
+      bitrate: new DisplayViewerBitrate(),
       sharedInput: options.sharedInput === true,
       authorized,
       inputSequence: -1,
@@ -474,8 +510,16 @@ export class DisplayStreamHub {
     attached.authorities.set(displaySourceKey(source), { source, actor });
     this.#log(attached, "open");
     if (start) {
-      attached.demandKey = JSON.stringify({ sources: [source] });
-      this.#send(attached, start);
+      const inputSources = this.#inputSources(attached);
+      attached.demandKey = JSON.stringify({
+        sources: [source],
+        ...(attached.phoneOwnerControl === 1 ? { inputSources } : {}),
+        ...(attached.displayProfile === 1 ? { maxBitrate: null } : {}),
+      });
+      this.#send(attached, {
+        ...start,
+        ...(attached.phoneOwnerControl === 1 ? { phoneOwnerControl: 1, inputSources } : {}),
+      });
     } else this.#demand(attached);
     if (!joining || !this.#replay(attached, viewer)) {
       this.#viewerState(attached, viewer, attached.state);
@@ -595,7 +639,11 @@ export class DisplayStreamHub {
             });
           const { streamId: _streamId, ...viewerHeader } = header;
           const envelope = encodeDisplayViewerFrame(viewerHeader, payload);
-          if (header.key) this.#clearCache(stream);
+          if (header.key) {
+            this.#clearCache(stream);
+            stream.refreshPendingAt = null;
+          }
+          const cachedBytes = this.#cachedDeltaBytes(stream);
           if (header.key || stream.cache.length > 0) {
             if (
               stream.cacheBytes + envelope.byteLength > displayGopCacheBytes ||
@@ -609,6 +657,13 @@ export class DisplayStreamHub {
               stream.cacheBytes += envelope.byteLength;
             }
           }
+          if (
+            !stream.target &&
+            !header.key &&
+            cachedBytes <= displayGopRefreshBytes &&
+            this.#cachedDeltaBytes(stream) > displayGopRefreshBytes
+          )
+            this.#refresh(stream);
           for (const viewer of stream.viewers) {
             if (!this.#viewerLive(stream, viewer)) continue;
             if (viewer.replayIndex !== null) {
@@ -617,6 +672,17 @@ export class DisplayStreamHub {
             }
             if (viewer.waiting && !header.key) continue;
             if (!this.#hasCredit(viewer, envelope.byteLength)) {
+              if (viewer.displayWindow) {
+                this.#stall(stream, viewer);
+              }
+              if (!viewer.waiting) {
+                const oldest = viewer.outstanding.values().next().value;
+                this.#options.log?.("computer.display.viewer-credit-stall", {
+                  outstanding: viewer.outstanding.size,
+                  bytes: viewer.bytes,
+                  oldestAckAgeMs: oldest ? this.#now() - oldest.sentAt : 0,
+                });
+              }
               this.#skip(stream, viewer);
               continue;
             }
@@ -658,6 +724,19 @@ export class DisplayStreamHub {
       this.#endUnavailable(stream, "Display fence ended");
       return;
     }
+    if (event.type === "runner.integrations.display.power-result") {
+      const pending = stream.pendingPower.get(event.sequence);
+      if (!pending || !this.#sameSource(event.source, pending.viewer.source)) return;
+      stream.pendingPower.delete(event.sequence);
+      if (this.#viewerLive(stream, pending.viewer))
+        this.#json(pending.viewer.socket, {
+          type: "display.power.result",
+          sequence: pending.sequence,
+          outcome: event.outcome,
+          ...(event.reason ? { reason: event.reason } : {}),
+        });
+      return;
+    }
     if (event.type === "runner.integrations.mac-owner.event") {
       if (!stream.target) return;
       this.#inputEvent(stream, event.message, undefined, event.source);
@@ -669,7 +748,7 @@ export class DisplayStreamHub {
           stream,
           { type: "display.editing", generation: event.geometry, context: event.context },
           event.geometry,
-          { kind: "task-session", sessionId: event.sessionId },
+          event.source ?? { kind: "task-session", sessionId: event.sessionId! },
         );
       return;
     }
@@ -692,10 +771,15 @@ export class DisplayStreamHub {
               outcome: event.outcome,
               ...(event.text !== undefined ? { text: event.text } : {}),
             };
-      this.#inputEvent(stream, message, event.geometry, {
-        kind: "task-session",
-        sessionId: event.sessionId,
-      });
+      this.#inputEvent(
+        stream,
+        message,
+        event.geometry,
+        event.source ?? {
+          kind: "task-session",
+          sessionId: event.sessionId!,
+        },
+      );
       return;
     }
     if (event.type === "runner.integrations.display.source-changed") {
@@ -831,11 +915,15 @@ export class DisplayStreamHub {
       editingVersion: _editingVersion,
       displayCut: _displayCut,
       sharedInput: _sharedInput,
+      phoneOwnerControl: _phoneOwnerControl,
+      displayWindow: _displayWindow,
       ...baseline
     } = state;
     this.#json(viewer.socket, {
       ...baseline,
+      ...(viewer.displayWindow ? { displayWindow: 1 } : {}),
       ...(this.#inputAvailable(stream, viewer) ? { sharedInput: 1 } : {}),
+      ...(this.#powerAvailable(stream, viewer) ? { phoneOwnerControl: 1 } : {}),
       ...(viewer.displayCut && stream.displayCut === 1 && !stream.target ? { displayCut: 1 } : {}),
       ...(viewer.editing &&
       (stream.editingVersion === 1 ||
@@ -869,7 +957,8 @@ export class DisplayStreamHub {
       // precede the reset state on the socket and still receive exactly one ack.
       if (
         viewer.discarded.length + viewer.outstanding.size >
-        displayGopCacheFrames + displayViewerCreditFrames
+        displayGopCacheFrames +
+          (viewer.displayWindow ? displayViewerWindowFrames : displayViewerCreditFrames)
       ) {
         viewer.socket.close(
           displayViewerCloseCodes.tryAgain,
@@ -898,7 +987,27 @@ export class DisplayStreamHub {
       }
       // Only actually sent, unacknowledged sequences can return credit. Replaying
       // a GOP can legitimately output sequences older than a prior acknowledgement.
-      if (!viewer.outstanding.has(message.sequence)) return;
+      const acknowledged = viewer.outstanding.get(message.sequence);
+      if (!acknowledged) return;
+      const acknowledgedBytes = [...viewer.outstanding].reduce(
+        (bytes, [sequence, frame]) => (sequence <= message.sequence ? bytes + frame.bytes : bytes),
+        0,
+      );
+      if (viewer.displayWindow) {
+        const at = this.#now();
+        const delay = at - acknowledged.sentAt;
+        // A monotonic queue keeps the minimum of the recent samples without
+        // letting queued decoder/network work permanently inflate the budget.
+        while (
+          viewer.ackDelays.at(-1)?.delay !== undefined &&
+          viewer.ackDelays.at(-1)!.delay >= delay
+        )
+          viewer.ackDelays.pop();
+        viewer.ackDelays.push({ at, delay });
+        if (viewer.ackDelays.length > displayGopCacheFrames) viewer.ackDelays.shift();
+        viewer.bitrate.ack(at, acknowledgedBytes, delay, viewer.ackDelays[0]!.delay);
+        this.#bitrate(stream);
+      }
       // Decoder outputs in stream order: acknowledgement returns all earlier credits.
       for (const [sequence, frame] of viewer.outstanding)
         if (sequence <= message.sequence) {
@@ -930,6 +1039,31 @@ export class DisplayStreamHub {
           state: "refused",
           reason: "released-by-owner",
         });
+      return;
+    }
+    if (message.type === "display.power") {
+      if (!viewer.phoneOwnerControl || message.sequence <= viewer.inputSequence) return;
+      viewer.inputSequence = message.sequence;
+      if (!this.#powerAvailable(stream, viewer) || stream.pendingPower.size >= 128) {
+        this.#json(viewer.socket, {
+          type: "display.power.result",
+          sequence: message.sequence,
+          outcome: "refused",
+          reason: "unavailable",
+        });
+        return;
+      }
+      if (message.action === "lock") this.#resetInput(stream);
+      const sequence = stream.inputSequence++;
+      stream.pendingPower.set(sequence, { viewer, sequence: message.sequence });
+      this.#send(stream, {
+        ...stream.fence,
+        type: "host.integrations.display.power",
+        streamId: stream.streamId,
+        source: viewer.source,
+        sequence,
+        action: message.action,
+      });
       return;
     }
     if (message.type === "display.input-reset") {
@@ -1000,12 +1134,17 @@ export class DisplayStreamHub {
         sequence,
         events: message.events,
       });
-    } else if (viewer.source.kind === "task-session") {
-      this.#options.computerUse.noteOwnerActivity(viewer.source.sessionId);
+    } else {
+      if (viewer.source.kind === "task-session")
+        this.#options.computerUse.noteOwnerActivity(viewer.source.sessionId);
       this.#send(stream, {
         ...stream.fence,
         type: "host.integrations.display.input",
-        sessionId: viewer.source.sessionId,
+        ...(stream.phoneOwnerControl === 1
+          ? { source: viewer.source }
+          : viewer.source.kind === "task-session"
+            ? { sessionId: viewer.source.sessionId }
+            : {}),
         streamId: stream.streamId,
         geometry: message.geometry,
         sequence,
@@ -1023,6 +1162,7 @@ export class DisplayStreamHub {
       return;
     viewer.authorized = authorized;
     if (!authorized && stream.holder === viewer) this.#resetInput(stream);
+    this.#demand(stream);
     this.#viewerState(stream, viewer, stream.state);
   }
 
@@ -1032,8 +1172,40 @@ export class DisplayStreamHub {
       viewer.authorized &&
       (stream.target
         ? stream.target.editingVersion === 1 && viewer.source.kind === "owner-view"
-        : stream.sharedInput === 1 && viewer.source.kind === "task-session")
+        : stream.sharedInput === 1 &&
+          (viewer.source.kind === "task-session" ||
+            (stream.phoneOwnerControl === 1 && viewer.phoneOwnerControl)))
     );
+  }
+
+  #powerAvailable(stream: Stream, viewer: Viewer): boolean {
+    return (
+      stream.phoneOwnerControl === 1 &&
+      viewer.phoneOwnerControl &&
+      this.#inputAvailable(stream, viewer) &&
+      !["stopped", "failed", "unsupported"].includes(stream.state.state) &&
+      stream.state.reason !== "paused"
+    );
+  }
+
+  #inputSources(stream: Stream): DisplaySource[] {
+    return [
+      ...new Map(
+        [...stream.viewers]
+          .filter((viewer) => this.#inputAvailable(stream, viewer))
+          .map((viewer) => [displaySourceKey(viewer.source), viewer.source]),
+      ).values(),
+    ];
+  }
+
+  /** Called inside the approval mutation's Runner admission turn, before later work can leave. */
+  withdrawOwnerInput(runnerId: RunnerId): void {
+    this.#inputRevisions.set(runnerId, (this.#inputRevisions.get(runnerId) ?? 0) + 1);
+    for (const stream of this.#streams.values()) {
+      if (stream.runnerId !== runnerId) continue;
+      for (const viewer of stream.viewers)
+        if (viewer.source.kind === "owner-view") this.#inputAuthorization(stream, viewer, false);
+    }
   }
 
   #resetInput(stream: Stream): void {
@@ -1048,11 +1220,15 @@ export class DisplayStreamHub {
         streamId: stream.streamId,
         source: holder.source,
       });
-    else if (holder.source.kind === "task-session")
+    else
       this.#send(stream, {
         ...stream.fence,
         type: "host.integrations.display.input-reset",
-        sessionId: holder.source.sessionId,
+        ...(stream.phoneOwnerControl === 1
+          ? { source: holder.source }
+          : holder.source.kind === "task-session"
+            ? { sessionId: holder.source.sessionId }
+            : {}),
         streamId: stream.streamId,
       });
   }
@@ -1071,6 +1247,7 @@ export class DisplayStreamHub {
         if (
           this.#inputAvailable(stream, viewer) &&
           viewer.editing &&
+          (!source || this.#sameSource(source, viewer.source)) &&
           this.#viewerLive(stream, viewer)
         ) {
           this.#json(viewer.socket, message);
@@ -1131,11 +1308,34 @@ export class DisplayStreamHub {
       viewer.waiting = true;
     }
   }
+  #cachedDeltaBytes(stream: Stream): number {
+    return stream.cacheBytes - (stream.cache[0]?.bytes.byteLength ?? 0);
+  }
   #hasCredit(viewer: Viewer, bytes: number, replay = false): boolean {
     return (
-      (replay || viewer.outstanding.size < displayViewerCreditFrames) &&
+      (replay ||
+        (viewer.displayWindow
+          ? viewer.outstanding.size < displayViewerWindowFrames && this.#withinCreditAge(viewer)
+          : viewer.outstanding.size < displayViewerCreditFrames)) &&
       (viewer.outstanding.size === 0 || viewer.bytes + bytes <= displayViewerCreditBytes)
     );
+  }
+  #withinCreditAge(viewer: Viewer): boolean {
+    const now = this.#now();
+    while (viewer.ackDelays[0] && now - viewer.ackDelays[0].at >= 10_000) viewer.ackDelays.shift();
+    const oldest = viewer.outstanding.values().next().value;
+    return (
+      !oldest || now - oldest.sentAt <= Math.min(1_500, (viewer.ackDelays[0]?.delay ?? 400) + 250)
+    );
+  }
+  #stall(stream: Stream, viewer: Viewer): void {
+    const now = this.#now();
+    const oldest = viewer.outstanding.values().next().value;
+    const queued = oldest
+      ? Math.max(0, now - oldest.sentAt - (viewer.ackDelays[0]?.delay ?? 400))
+      : 0;
+    viewer.bitrate.stall(now, queued, oldest?.sentAt ?? now);
+    this.#bitrate(stream);
   }
   #sendFrame(viewer: Viewer, frame: CachedFrame): void {
     viewer.outstanding.set(frame.sequence, {
@@ -1278,11 +1478,12 @@ export class DisplayStreamHub {
         continue;
       }
       for (const viewer of stream.viewers) this.#viewerLive(stream, viewer);
+      this.#bitrate(stream);
       for (const viewer of stream.viewers) {
         // Every owner viewer that can type is rechecked, idle or not, so a
         // granted or removed approval reaches it without a reconnect.
         if (
-          stream.target?.editingVersion !== 1 ||
+          (stream.target?.editingVersion !== 1 && stream.phoneOwnerControl !== 1) ||
           viewer.source.kind !== "owner-view" ||
           !viewer.sharedInput ||
           viewer.checking ||
@@ -1290,9 +1491,13 @@ export class DisplayStreamHub {
         )
           continue;
         viewer.checking = true;
+        const inputRevision = this.#inputRevisions.get(stream.runnerId);
         void this.#options.computerViews
           .authorizeInput?.(viewer.source, viewer.actor)
-          .then((runner) => this.#inputAuthorization(stream, viewer, runner === stream.runnerId))
+          .then((runner) => {
+            if (inputRevision === this.#inputRevisions.get(stream.runnerId))
+              this.#inputAuthorization(stream, viewer, runner === stream.runnerId);
+          })
           .catch(() => this.#inputAuthorization(stream, viewer, false))
           .finally(() => {
             viewer.checkedAt = this.#now();
@@ -1327,7 +1532,10 @@ export class DisplayStreamHub {
         this.#end(stream, displayViewerCloseCodes.ended, "Display demand ended");
         continue;
       }
-      for (const viewer of stream.viewers)
+      for (const viewer of stream.viewers) {
+        if (viewer.displayWindow && viewer.waiting && !this.#withinCreditAge(viewer)) {
+          this.#stall(stream, viewer);
+        }
         if (
           viewer.slowSince !== null &&
           this.#now() - viewer.slowSince >= displaySlowViewerCloseMs
@@ -1335,14 +1543,19 @@ export class DisplayStreamHub {
           viewer.removalTrigger = "slow-viewer";
           viewer.socket.close(displayViewerCloseCodes.tryAgain, "Display viewer stalled");
         }
+      }
       if (
         stream.state.state === "live" &&
         stream.refreshPendingAt !== null &&
-        [...stream.viewers].some((viewer) => viewer.waiting) &&
+        ([...stream.viewers].some((viewer) => viewer.waiting) ||
+          (!stream.target && this.#cachedDeltaBytes(stream) > displayGopRefreshBytes)) &&
         this.#now() >= stream.refreshPendingAt
       )
         this.#refresh(stream);
-      else if (![...stream.viewers].some((viewer) => viewer.waiting))
+      else if (
+        ![...stream.viewers].some((viewer) => viewer.waiting) &&
+        (stream.target || this.#cachedDeltaBytes(stream) <= displayGopRefreshBytes)
+      )
         stream.refreshPendingAt = null;
     }
   }
@@ -1360,6 +1573,26 @@ export class DisplayStreamHub {
       viewer.source.kind === "task-session" ? "session-ended" : "owner-ended",
     );
     return false;
+  }
+  #updateBitrate(stream: Stream): boolean {
+    if (stream.displayProfile !== 1) return false;
+    const caps = [...stream.viewers].flatMap((viewer) =>
+      viewer.displayWindow && viewer.bitrate.cap !== null ? [viewer.bitrate.cap] : [],
+    );
+    const cap = caps.length ? Math.min(...caps) : null;
+    if (cap === stream.maxBitrate || this.#now() - stream.bitrateAt < 2_000) return false;
+    if (
+      cap !== null &&
+      stream.maxBitrate !== null &&
+      Math.abs(cap - stream.maxBitrate) / stream.maxBitrate < 0.15
+    )
+      return false;
+    stream.maxBitrate = cap;
+    stream.bitrateAt = this.#now();
+    return true;
+  }
+  #bitrate(stream: Stream): void {
+    if (this.#updateBitrate(stream)) this.#demand(stream);
   }
   #demand(stream: Stream): void {
     const sources = [
@@ -1385,7 +1618,10 @@ export class DisplayStreamHub {
     const warm = warmSources.length
       ? { sources: warmSources, durationMs: macDisplayWarmMs }
       : undefined;
-    const key = JSON.stringify({ sources, warm });
+    const inputSources = stream.phoneOwnerControl === 1 ? this.#inputSources(stream) : undefined;
+    this.#updateBitrate(stream);
+    const maxBitrate = stream.displayProfile === 1 ? stream.maxBitrate : undefined;
+    const key = JSON.stringify({ sources, warm, inputSources, maxBitrate });
     if (stream.demandKey === key) return;
     stream.demandKey = key;
     if (!sources.length) {
@@ -1416,6 +1652,8 @@ export class DisplayStreamHub {
       streamId: stream.streamId,
       revision: ++stream.revision,
       sources,
+      ...(inputSources ? { inputSources } : {}),
+      ...(maxBitrate !== undefined ? { maxBitrate } : {}),
       ...(warm ? { warm } : {}),
       ...(stream.target ? { maxLongSide: stream.maxLongSide } : {}),
     });
@@ -1444,6 +1682,8 @@ export class DisplayStreamHub {
   ): void {
     const source = viewer.source;
     if (stream.holder === viewer) this.#resetInput(stream);
+    for (const [sequence, pending] of stream.pendingPower)
+      if (pending.viewer === viewer) stream.pendingPower.delete(sequence);
     for (const [sequence, pending] of stream.pending)
       if (pending.viewer === viewer) stream.pending.delete(sequence);
     this.#options.log?.("computer.display.viewer-removed", {

@@ -53,8 +53,11 @@ pairing; stale revocation must never erase a replacement identity. See
 
 Agents cannot launch or operate Agent Phone's own foreground UI. Observations retain
 foreground identity but expose neither tree nor pixels. Agents may navigate away or wake.
-A secure keyguard can be operated with observed controls: locking is not an agent Stop.
-A supplied PIN enters the transcript and, if explicitly remembered, the Workspace; follow
+Agents can operate a secure keyguard with observed controls. The live display keeps it
+protected: Android 13+ hides the bouncer from MediaProjection, so wake dismisses only a
+keyguard that needs no credential and otherwise the person unlocks on the phone. Lock is
+not Stop. Any PIN supplied to an agent enters its transcript and, if remembered, the
+Workspace; follow the existing
 [credential boundaries](../apps/runner/agent-skills/skills/opensteer-integrations/SKILL.md#boundaries).
 
 ## 4. The Runner
@@ -115,15 +118,19 @@ must judge the genuine app, whose association Opensteer cannot verify.
 ### Live display
 
 Upgrade the Host before its phones. Human viewing uses H.264, independently of agent
-screenshots and observation IDs. Viewing never wakes/unlocks or extends the task hold;
-accepted person input does. See [display-stream.ts](../packages/protocol/src/display-stream.ts),
+screenshots and observation IDs. Viewing never wakes or extends the task hold. Explicit
+Open arms one wake on the first authorized attachment; restore, reconnect and foregrounding
+never rearm it. Person power controls can wake or lock without a picture. Viewing does not
+keep the screen on or undo its timeout. Accepted task-view input extends only its task hold. See [display-stream.ts](../packages/protocol/src/display-stream.ts),
 [display](../apps/agent-phone/app/src/main/kotlin/com/opensteer/agentphone/display) and
 [Host hub](../apps/host/src/computer-use/display-stream-hub.ts).
 
 Both viewer routes require an authenticated owner session, effective ownership of the
 computer and current source authorization. Task viewers require the exact held session
 and renewable Run grant. Independent owner
-views require their exact lease generation and remain view-only. Neither authority may
+views require their exact lease generation. Input additionally requires current read-write
+approval and a negotiated input-authorized source; a live read-only lease grants no input
+or power authority. Neither authority may
 revive or follow a replacement. Demand replaces the authority set; frames/acks cannot renew
 it. Task withdrawal removes only task demand; owner closure removes only owner demand.
 Phone connection replacement invalidates both. Recheck authority before media delivery.
@@ -140,12 +147,21 @@ clear publication and input; protection lift requires a fresh generation. Agent 
 main activity also uses FLAG_SECURE. Control and media sockets are unordered: late state
 must not blank already-arrived media of the same generation or revive an ended generation.
 H.264 must have no B-frames or reordering so clients can display decoded frames immediately.
-Backpressure must recover at a keyframe, including on static screens; silent screens do
-not justify increasing bitrate. Data-socket failure must not kill the Runner attempt.
+Backpressure must recover at a keyframe, including on static screens. A joining viewer
+replays the cached GOP rather than forcing an IDR. The Host bounds that replay by requesting
+a refresh once cached deltas grow large, so the encoder keeps a long GOP and a still screen
+sends almost nothing. Bitrate reductions require sustained viewer queueing, not one slow
+ACK; healthy flow allows recovery. Negotiated visible
+viewers share the slowest viewer's bitrate cap; the phone uses the lower of that cap
+and its own estimate. Only a Host cap allows bitrate below the local 1 Mbps floor.
+Closing a viewer releases its cap; silent screens do not justify increasing bitrate.
+Data-socket failure must not kill the Runner attempt.
 
 Person input shares one lane across viewers and arbitrates with agent gestures. Held keys
 or touches block conflicting agent input. Reset is an ordered barrier that releases contacts
-and keys before later work. Android has no accessibility cancel operation: a fresh stroke
+and keys before later work. Lock uses the same barrier, drops queued input, and releases
+contacts before asking Android to lock. Power receipts survive the protected transition.
+Android has no accessibility cancel operation: a fresh stroke
 cancels continued contact; release outside the display to avoid an accidental click.
 Person input does not invalidate agent observations. Never replay uncertain input after reconnect.
 Text edits serialize with agent edits;
@@ -181,7 +197,7 @@ Migration must preserve declines, existing grants and pending settlement links.
 See [computer setup](../apps/host/src/computer-apps).
 
 Off ends task sessions and owner views; lowering to read ends task sessions but keeps the
-owner view. Old sessions/tickets cannot revive. Local Stop binds to the holder the person
+owner view while withdrawing its input immediately. Old sessions/tickets cannot revive. Local Stop binds to the holder the person
 saw, withdraws queued/running work, and refuses later sessions from that Run. A delayed Stop
 must not hit the next holder. Pause stops task work locally, even offline.
 
@@ -260,8 +276,10 @@ decoding. Electron GUI journeys belong in the [VM](testing.md#gui-test-vms).
 
 ## Independent owner views
 
-Owner lifecycle retains the shared version-1 envelope without a phone capability marker;
-support comes from the signed descriptor and authenticated encoder status.
+Owner lifecycle retains its version-1 envelope. Phone owner input and power negotiate
+`phoneOwnerControl: 1` independently across producer, Host and viewer. Unconfirmed peers
+keep baseline task envelopes and owner views remain view-only. Demand carries write
+authority separately from viewing authority; the phone rechecks both before each effect.
 Owner leases are connection-bound and expire on the phone's monotonic clock even if the
 Host is late. No frame or old response may revive a removed generation. Disconnect/restart
 requires explicit reopening. Pause closes publication and task work but preserves an
@@ -269,5 +287,5 @@ unexpired owner lease; local resume can restore it with fresh media.
 
 Android redacts FLAG_SECURE surfaces; accessibility cannot identify every secure window.
 Verify actual stream pixels by independent decoding. Native viewers must clear queued and
-painted pixels on protection/authority loss and release on hide/background. Expo has task
-viewing but no owner-view launcher. See [owner-view wire](computer-use.md#owner-view-wire).
+painted pixels on protection/authority loss and release on hide/background. See
+[owner-view wire](computer-use.md#owner-view-wire).

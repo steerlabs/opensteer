@@ -1,3 +1,5 @@
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
+import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { createDatabase } from "@opensteer/database";
 /**
  * Acceptance written against the locked live-display contract before runtime
@@ -6,7 +8,7 @@ import { createDatabase } from "@opensteer/database";
  */
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunnerId } from "@opensteer/core";
 import {
@@ -14,6 +16,7 @@ import {
   RunnerIntegrationsDisplayStateSchema,
   RunnerIntegrationsComputerUseResultSchema,
   RunnerIntegrationsDisplayInputResultSchema,
+  RunnerIntegrationsDisplayPowerResultSchema,
   agentPhonePackageName,
   androidPhoneDefinitionId,
   androidIntegrationsProtocolVersion,
@@ -90,9 +93,10 @@ const Pointer = z.object({ x: z.number(), y: z.number() });
 const journeyRedaction = new Redaction();
 
 it.each([
-  { name: "live phone display and shared input", editingOnly: false },
-  { name: "native phone editing", editingOnly: true },
-])(`$name on Android API ${api}`, async ({ editingOnly }) => {
+  { name: "live phone display and shared input", editingOnly: false, ownerOnly: false },
+  { name: "native phone editing", editingOnly: true, ownerOnly: false },
+  { name: "phone owner input and power", editingOnly: false, ownerOnly: true },
+])(`$name on Android API ${api}`, async ({ editingOnly, ownerOnly }) => {
   const base =
     process.env.OPENSTEER_AGENT_PHONE_E2E_ARTIFACT_DIR ??
     (await mkdtemp(join(tmpdir(), "opensteer-phone-display-")));
@@ -110,6 +114,7 @@ it.each([
     endedMs: number;
     status: string;
     error?: string;
+    failureLoadAverage?: readonly number[];
   }[] = [];
   const evidence: Record<string, unknown> = {};
   const hostLog: string[] = [];
@@ -124,6 +129,7 @@ it.each([
     reason?: string;
   }[] = [];
   const phoneInputs: z.infer<typeof RunnerIntegrationsDisplayInputResultSchema>[] = [];
+  const phonePowers: z.infer<typeof RunnerIntegrationsDisplayPowerResultSchema>[] = [];
   const descriptors: z.infer<typeof RunnerDescriptorSchema>[] = [];
   const ingressErrors: string[] = [];
   const phoneRefusals: { requestId: string; code: string; receivedMs: number }[] = [];
@@ -208,6 +214,7 @@ it.each([
       cleanupFailures,
       phoneStates,
       phoneInputs,
+      phonePowers,
       ingressErrors,
       phoneRefusals,
       latencyBasis:
@@ -259,6 +266,10 @@ it.each([
     } catch (error) {
       record.status = "failed";
       record.error = redaction.error(error);
+      record.failureLoadAverage = loadavg();
+      process.stdout.write(
+        `Agent Phone phase failed: ${name}; load=${record.failureLoadAverage.join(",")}\n`,
+      );
       throw error;
     } finally {
       record.endedMs = performance.now();
@@ -326,6 +337,8 @@ it.each([
                     .parse(result.value).error?.code;
             if (code) phoneRefusals.push({ requestId, code, receivedMs: performance.now() });
           }
+          if (tagged.type === "runner.integrations.display.power-result")
+            phonePowers.push(RunnerIntegrationsDisplayPowerResultSchema.parse(value));
           if (tagged.type === "runner.integrations.display.state") {
             const { display, streamId, state, generation, reason } =
               RunnerIntegrationsDisplayStateSchema.parse(value);
@@ -465,7 +478,7 @@ it.each([
       await phone.shell("input keyevent KEYCODE_HOME");
     });
 
-    if (!editingOnly) {
+    if (!editingOnly && !ownerOnly) {
       await phase("owner-live-without-a-task-two-clients-and-close", async () => {
         const db = createDatabase({ connectionString: isolated.url });
         try {
@@ -561,6 +574,235 @@ it.each([
           await db.destroy();
         }
       });
+    }
+
+    if (ownerOnly) {
+      await phase("owner-input-power-and-access-without-task", async () => {
+        await phone.shell(`am start -W -n ${fixtureActivities.display}`);
+        await clearReceipts(phone);
+        const client = new HttpHostClient({
+          baseUrl: host.origin,
+          fetch: (resource, init) => {
+            const headers = new Headers(init?.headers);
+            for (const [name, value] of Object.entries(host.ownerHeaders)) headers.set(name, value);
+            return fetch(resource, { ...init, headers });
+          },
+          webSocketFactory: (url) =>
+            new WebSocket(url, {
+              headers: { ...host.ownerHeaders, host: new URL(host.publicOrigin).host },
+            }) as unknown as WebSocketClient,
+        });
+        cleanup.push(async () => client.dispose());
+        const setAccess = async (access: "read" | "read-write") =>
+          testRpcData(
+            host.origin,
+            "commands.dispatch",
+            {
+              type: "integration.computer.setup.set",
+              idempotencyKey: randomUUID(),
+              input: {
+                kind: "app",
+                definitionId: androidPhoneDefinitionId,
+                runnerId,
+                app: null,
+                access,
+              },
+            },
+            owner,
+          );
+        await phone.shell("input keyevent KEYCODE_SLEEP");
+        await eventually(
+          "screen is off before explicit Open",
+          async () =>
+            (await phone.shell("dumpsys power")).includes("mWakefulness=Asleep") ? true : undefined,
+          10000,
+          50,
+        );
+        const opened = await client.openComputerView(runnerId, { kind: "phone", display: "main" });
+        const source = {
+          kind: "owner-view" as const,
+          viewId: opened.viewId,
+          generation: opened.generation,
+        };
+        const pool = sharedDisplayStreams(client);
+        const lease = pool.retain({ scope: "owner-device-acceptance", source, editing: 1 });
+        cleanup.push(async () => {
+          lease.release();
+          pool.dispose();
+        });
+        await eventually(
+          "explicit Open auto-wakes without a task",
+          async () => (lease.getSnapshot().input === "available" ? true : undefined),
+          20000,
+          50,
+        );
+        await eventually(
+          "auto-wake receipt names the exact owner source",
+          async () =>
+            phonePowers.find(
+              (receipt) =>
+                receipt.source.kind === "owner-view" &&
+                receipt.source.viewId === source.viewId &&
+                receipt.outcome === "dispatched",
+            ),
+          10000,
+          50,
+        );
+        const awakeGeneration = lease.getSnapshot().display!.generation;
+        const beforeNoop = phonePowers.length;
+        expect(lease.power("wake")).toBe(true);
+        expect(lease.power("wake")).toBe(true);
+        await eventually(
+          "duplicate awake wakes are acknowledged",
+          async () => (phonePowers.length >= beforeNoop + 2 ? true : undefined),
+          10000,
+          50,
+        );
+        expect(
+          phonePowers.slice(beforeNoop).every((receipt) => receipt.outcome === "dispatched"),
+        ).toBe(true);
+        expect(lease.getSnapshot().display!.generation).toBe(awakeGeneration);
+        expect(await sessions()).toEqual([]);
+        const button = await eventually(
+          "fixture button for owner touch",
+          async () => {
+            const found = await findView(phone, {
+              activity: fixtureActivities.display,
+              viewId: "fixture_button",
+            });
+            return "point" in found ? found.point : undefined;
+          },
+          10000,
+          50,
+        );
+        const screen = /Physical size:\s*(\d+)x(\d+)/u.exec(await phone.shell("wm size"));
+        if (!screen) throw Error("Missing physical phone geometry");
+        const x = button.x / Number(screen[1]);
+        const y = button.y / Number(screen[2]);
+        const send = (phase: "down" | "up") => {
+          const geometry = lease.getSnapshot().display!.generation;
+          expect(
+            lease.input(geometry, [{ kind: "pointer", phase, x, y, t: performance.now() }]),
+          ).toBe(true);
+        };
+        const after = () => readReceipts(phone).then((rows) => rows.at(-1)?.id ?? 0);
+        const receiptAfter = (kind: string, detail: string, baseline: number) =>
+          eventually(
+            `${kind} ${detail} from independent owner`,
+            async () =>
+              (await readReceipts(phone)).find(
+                (row) => row.id > baseline && row.kind === kind && row.detail === detail,
+              ),
+            10000,
+            50,
+          );
+        let before = await after();
+        send("down");
+        send("up");
+        await receiptAfter("button_tap", "", before);
+        before = await after();
+        send("down");
+        await receiptAfter("button_touch", "down", before);
+        const beforeLockReceipt = phonePowers.length;
+        expect(lease.power("lock")).toBe(true);
+        await receiptAfter("button_touch", "cancel", before);
+        await eventually(
+          "lock protects the stream",
+          async () =>
+            ["screen-off", "protected"].includes(lease.getSnapshot().display?.state ?? "")
+              ? true
+              : undefined,
+          10000,
+          50,
+        );
+        expect(
+          (await readReceipts(phone)).some((row) => row.id > before && row.kind === "button_tap"),
+        ).toBe(false);
+        await eventually(
+          "lock receipt survives the protected transition",
+          async () => (phonePowers[beforeLockReceipt]?.outcome === "dispatched" ? true : undefined),
+          10000,
+          50,
+        );
+        expect(lease.power("wake")).toBe(true);
+        await eventually(
+          "wake after lock restores fresh input",
+          async () => (lease.getSnapshot().input === "available" ? true : undefined),
+          20000,
+          50,
+        );
+        before = await after();
+        send("down");
+        await receiptAfter("button_touch", "down", before);
+        await setAccess("read");
+        await eventually(
+          "lowering access withdraws input and power",
+          async () =>
+            lease.getSnapshot().input === "unavailable" &&
+            lease.getSnapshot().power === "unavailable"
+              ? true
+              : undefined,
+          10000,
+          50,
+        );
+        await receiptAfter("button_touch", "cancel", before);
+        expect(lease.power("wake")).toBe(false);
+        expect(lease.getSnapshot().connection).toBe("open");
+        await client.closeComputerView(source.viewId, source.generation);
+        lease.release();
+        const readOnlyPowerStart = frontDoor.displayPowerCommands.length;
+        const readonly = await client.openComputerView(runnerId, {
+          kind: "phone",
+          display: "main",
+        });
+        await phone.shell("input keyevent KEYCODE_SLEEP");
+        const readLease = pool.retain({
+          scope: "owner-read-only",
+          source: { kind: "owner-view", viewId: readonly.viewId, generation: readonly.generation },
+        });
+        cleanup.push(async () => readLease.release());
+        await eventually(
+          "read-only view attaches without wake",
+          async () =>
+            readLease.getSnapshot().display?.state === "screen-off" ||
+            readLease.getSnapshot().display?.reason === "locked-screen"
+              ? true
+              : undefined,
+          10000,
+          50,
+        );
+        expect(readLease.getSnapshot().power).toBe("unavailable");
+        expect(readLease.power("wake")).toBe(false);
+        const powerDump = await phone.shell("dumpsys power");
+        const wakefulness = /\bmWakefulness=(\S+)/u.exec(powerDump)?.[1] ?? "missing";
+        const powerCommands = frontDoor.displayPowerCommands.slice(readOnlyPowerStart);
+        evidence.readOnlyPower = { wakefulness, commands: powerCommands };
+        await writeFile(join(directory, "read-only-power.txt"), redaction.apply(powerDump));
+        process.stdout.write(
+          `Read-only phone: mWakefulness=${wakefulness}, display.power=${JSON.stringify(powerCommands.map(({ action }) => action))}\n`,
+        );
+        expect(powerCommands).toEqual([]);
+        // API 33 may still be Dozing after sleep; viewing must not wake it.
+        expect(wakefulness).not.toBe("missing");
+        expect(wakefulness).not.toBe("Awake");
+        await client.closeComputerView(readonly.viewId, readonly.generation);
+        readLease.release();
+        await setAccess("read-write");
+        expect(await sessions()).toEqual([]);
+        evidence.ownerInputPower = {
+          noTask: true,
+          explicitOpenWake: true,
+          tap: true,
+          heldLockCancel: true,
+          wakeAfterLock: true,
+          lowerMidGesture: true,
+          readOnlyNoWake: true,
+          powerReceipts: phonePowers.length,
+          duplicateAwakeWakeNoop: true,
+        };
+      });
+      completed = true;
+      return;
     }
 
     const caller = await connectAgentComputer(host, {
@@ -2805,6 +3047,7 @@ it.each([
     completed = true;
   } catch (error) {
     failure = redaction.error(error);
+    evidence.failureLoadAverage = loadavg();
     throw error;
   } finally {
     for (const close of cleanup.reverse()) {
@@ -2836,6 +3079,8 @@ it.each([
     await rm(scratch, { force: true, recursive: true });
     await flush();
     await writeDeviceTestManifest(directory, redaction, { completed, cleanupFailures });
+    if (ownerOnly && completed)
+      expect(cleanupFailures, "every owner-control journey resource must stop").toEqual([]);
   }
   expect(cleanupFailures, "every display journey resource must stop").toEqual([]);
   expect(completed).toBe(true);

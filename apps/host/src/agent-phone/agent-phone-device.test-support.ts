@@ -44,6 +44,7 @@ import {
   RunnerAuxiliaryWelcomeSchema,
   RunnerAuxiliaryFrameFenceSchema,
   HostIntegrationsDisplayStartSchema,
+  HostIntegrationsDisplayPowerSchema,
   type HostIntegrationsDisplayStart,
   type HostIntegrationsComputerView,
   type ComputerViewNativeResult,
@@ -938,10 +939,13 @@ export interface FrameInjection {
   readonly frames: readonly string[];
 }
 
+type DisplayPowerCommand = z.infer<typeof HostIntegrationsDisplayPowerSchema>;
+
 export interface TlsFrontDoor {
   /** Faults are applied only by the saved-login receiver journeys. */
   replayPasswordsFrame(frame: Readonly<Record<string, unknown>>): Record<string, unknown>;
   readonly latestDisplayStart: HostIntegrationsDisplayStart | null;
+  readonly displayPowerCommands: readonly DisplayPowerCommand[];
   readonly latestDisplayMedia: Buffer | null;
   replayDisplayMedia(frame: Buffer): void;
   closeDisplayData(): void;
@@ -989,6 +993,8 @@ export async function startTlsFrontDoor(input: {
   readonly authority: TestCertificateAuthority;
   readonly hostPort: number;
   readonly port: number;
+  /** Observe complete access units without changing the relay, for display timing. */
+  readonly onDisplayMedia?: (bytes: Uint8Array) => void;
   readonly passwordsWire?: {
     readonly host: Record<string, unknown>[];
     readonly phone: Record<string, unknown>[];
@@ -1004,6 +1010,7 @@ export async function startTlsFrontDoor(input: {
   const sockets = new Set<Socket>();
   const displaySockets = new Set<Socket>();
   let latestDisplayStart: HostIntegrationsDisplayStart | null = null;
+  const displayPowerCommands: DisplayPowerCommand[] = [];
   let latestDisplayMedia: Buffer | null = null;
   let displayUpstream: Socket | null = null;
   let server: TlsServer | null = null;
@@ -1084,6 +1091,8 @@ export async function startTlsFrontDoor(input: {
         }
         const display = HostIntegrationsDisplayStartSchema.safeParse(parsed);
         if (display.success) latestDisplayStart = display.data;
+        const power = HostIntegrationsDisplayPowerSchema.safeParse(parsed);
+        if (power.success) displayPowerCommands.push(power.data);
         const welcome = RunnerAuxiliaryWelcomeSchema.safeParse(parsed);
         if (welcome.success && welcome.data.module === "integrations") {
           viewStream = {
@@ -1092,7 +1101,11 @@ export async function startTlsFrontDoor(input: {
           };
         }
       });
-      fromPhone.on("message", (bytes: Buffer) => {
+      fromPhone.on("message", (bytes: Buffer, binary: boolean) => {
+        if (binary) {
+          if (displaySockets.has(client)) input.onDisplayMedia?.(bytes);
+          return;
+        }
         let parsed: unknown;
         try {
           parsed = JSON.parse(bytes.toString("utf8"));
@@ -1256,6 +1269,9 @@ export async function startTlsFrontDoor(input: {
         held.clear();
         return count;
       };
+    },
+    get displayPowerCommands() {
+      return displayPowerCommands;
     },
     get latestDisplayStart() {
       return latestDisplayStart;

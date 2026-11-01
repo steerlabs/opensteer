@@ -251,6 +251,7 @@ export interface ComputerAppHubOptions {
       IntegrationsModuleEvent,
       {
         type:
+          | "runner.integrations.display.power-result"
           | "runner.integrations.display.input-result"
           | "runner.integrations.display.editing"
           | "runner.integrations.display.clipboard"
@@ -536,6 +537,7 @@ export class ComputerAppHub {
       return;
     }
     if (
+      message.type === "runner.integrations.display.power-result" ||
       message.type === "runner.integrations.display.input-result" ||
       message.type === "runner.integrations.display.editing" ||
       message.type === "runner.integrations.display.clipboard" ||
@@ -947,6 +949,8 @@ export class ComputerAppHub {
         readonly editingVersion?: 1;
         readonly displayCut?: 1;
         readonly sharedInput?: 1;
+        readonly phoneOwnerControl?: 1;
+        readonly displayProfile?: 1;
       }
     | "unsupported"
     | null {
@@ -971,6 +975,12 @@ export class ComputerAppHub {
       fence: { ...stream.fence, module: stream.fence.module },
       ...(module.platform === "android" && module.sharedInput === 1
         ? { sharedInput: 1 as const }
+        : {}),
+      ...(module.platform === "android" && module.displayProfile === 1
+        ? { displayProfile: 1 as const }
+        : {}),
+      ...(module.platform === "android" && module.phoneOwnerControl === 1
+        ? { phoneOwnerControl: 1 as const }
         : {}),
       ...(module.platform === "darwin" ? { mac: true as const } : {}),
       ...(module.platform === "android" && module.editing === 1 && module.displayCut === 1

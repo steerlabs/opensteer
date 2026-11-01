@@ -376,6 +376,7 @@ export class IntegrationPlatformService {
     readonly mcpOauth: Pick<McpOAuthService, "providerFor">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly onConnectionsChanged: () => void;
+    readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
     readonly onRequestsChanged: () => void;
     readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
     /**
@@ -429,6 +430,9 @@ export class IntegrationPlatformService {
       listCallableTools: (scope) => this.listCallableTools(scope),
       listConnections: this.#listConnections,
       onConnectionsChanged: this.#onConnectionsChanged,
+      ...(options.onInputAccessWithdrawn
+        ? { onInputAccessWithdrawn: options.onInputAccessWithdrawn }
+        : {}),
       onError: (error) => console.warn("Computer app approvals could not reach a Mac", error),
       onLocalServerApproved: (approved) => {
         void this.#discoverComputerServer(approved.serverId).catch((error: unknown) =>

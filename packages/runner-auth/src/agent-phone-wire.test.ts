@@ -11,6 +11,7 @@ import {
   RunnerAuxiliaryHeartbeatSchema,
   RunnerChallengeSchema,
   RunnerToHostMessageSchema,
+  RunnerIntegrationsModuleSchema,
   agentPhonePackageName,
 } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
@@ -100,6 +101,7 @@ describe("agent phone wire fixture", () => {
       device: { form: "phone", platform: "android" },
       modules: {
         integrations: {
+          displayProfile: 1,
           platform: "android",
           protocolVersion: 4,
         },
@@ -292,4 +294,26 @@ describe("agent phone wire fixture", () => {
       if (parsed.pairing) expect(parsed.pairing.deploymentName).toBe("Mac mini");
     }
   });
+});
+
+it("treats unknown phone owner-control versions as unsupported", () => {
+  const baseline = { platform: "android", protocolVersion: 4, sharedInput: 1 };
+  expect(
+    RunnerIntegrationsModuleSchema.parse({ ...baseline, phoneOwnerControl: 1 }).phoneOwnerControl,
+  ).toBe(1);
+  expect(
+    RunnerIntegrationsModuleSchema.parse({ ...baseline, phoneOwnerControl: 2 }).phoneOwnerControl,
+  ).toBeUndefined();
+  expect(RunnerIntegrationsModuleSchema.parse(baseline).phoneOwnerControl).toBeUndefined();
+});
+
+it("ignores unknown display profile versions", () => {
+  const baseline = { platform: "android", protocolVersion: 4 };
+  expect(
+    RunnerIntegrationsModuleSchema.parse({ ...baseline, displayProfile: 1 }).displayProfile,
+  ).toBe(1);
+  expect(
+    RunnerIntegrationsModuleSchema.parse({ ...baseline, displayProfile: 2 }).displayProfile,
+  ).toBeUndefined();
+  expect(RunnerIntegrationsModuleSchema.parse(baseline).displayProfile).toBeUndefined();
 });

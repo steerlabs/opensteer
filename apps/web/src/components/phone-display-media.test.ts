@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import { DisplayStreams } from "@opensteer/client/integrations";
 import type { WebSocketClient } from "@opensteer/client/host";
+import { benchmarkPhoneDecoder } from "./phone-display-decoder.test-support.js";
 import { retainPhoneDisplayPicture, type PhoneDisplayPicture } from "./phone-display-media.js";
 
 /*
@@ -269,6 +270,40 @@ describe("replay hold", () => {
 });
 
 describe("credit", () => {
+  it("the benchmark bridge holds credit until ordered decoder dequeue", () => {
+    vi.stubGlobal("document", {
+      createElement: () => ({ getContext: () => ({ drawImage: vi.fn() }) }),
+      body: { append: vi.fn() },
+    });
+    const dequeued = vi.fn();
+    const bridge = benchmarkPhoneDecoder({ painted: vi.fn(), dequeued, failed: vi.fn() });
+    for (let sequence = 0; sequence < 3; sequence++)
+      bridge.accept({
+        id: sequence,
+        connection: 1,
+        replayed: false,
+        data: "AA==",
+        header: {
+          generation: 1,
+          sequence,
+          ptsUs: sequence,
+          key: sequence === 0,
+          ...(sequence === 0 ? { codec: "avc1.42C01F" } : {}),
+          width: 360,
+          height: 640,
+        },
+      });
+    expect(dequeued).not.toHaveBeenCalled();
+    const decoder = decoders[0]!;
+    decoder.take(2);
+    expect(dequeued.mock.calls).toEqual([[0], [1]]);
+    decoder.output();
+    expect(dequeued.mock.calls).toEqual([[0], [1]]);
+    decoder.take();
+    bridge.close();
+    expect(dequeued.mock.calls).toEqual([[0], [1], [2]]);
+  });
+
   it("acknowledges a frame once the decoder takes it, however long it holds the output", () => {
     socket.state();
     for (let sequence = 0; sequence <= 5; sequence += 1) socket.frame(sequence, sequence === 0);

@@ -47,7 +47,11 @@ class HostFramesTest {
                 IntegrationsMessage.Invoke::class,
                 DisplayMessage.Start::class, DisplayMessage.Stop::class, DisplayMessage.Refresh::class,
                 DisplayMessage.Input::class, DisplayMessage.InputReset::class,
-                DisplayMessage.Demand::class, DisplayAck::class,
+                DisplayMessage.Demand::class,
+                DisplayMessage.Start::class, DisplayMessage.Demand::class,
+                DisplayMessage.Input::class, DisplayMessage.InputReset::class, DisplayMessage.Power::class, DisplayMessage.Power::class,
+                DisplayMessage.Input::class, DisplayMessage.InputReset::class, DisplayMessage.Power::class, DisplayMessage.Power::class,
+                DisplayAck::class,
             ),
             decoded.map { it::class },
         )

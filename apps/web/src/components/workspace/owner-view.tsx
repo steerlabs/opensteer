@@ -112,8 +112,7 @@ export function OwnerView({
   }, [alive, generation, hostClient, owned, viewId, visible]);
 
   const shown = live ? display.picture : null;
-  const canControl = !phone && display.snapshot.input === "available";
-  const inputAvailable = canControl && display.snapshot.input === "available";
+  const inputAvailable = display.snapshot.input === "available";
   useEffect(() => {
     if (!visible) display.lease?.resetInput();
   }, [visible, display.lease]);
@@ -241,7 +240,7 @@ export function OwnerView({
       : display.reason
         ? {
             busy: display.retrying,
-            reopen: !phone && display.snapshot.connection === "closed",
+            reopen: display.snapshot.connection === "closed",
             words: computerReasonWords(display.reason, {
               machine: machineName,
               phone,
@@ -274,7 +273,7 @@ export function OwnerView({
           <span className="computer-watch__app">{targetName}</span>
           {phone ? null : <span className="computer-watch__place">{machineName}</span>}
         </span>
-        {!canControl ? (
+        {!inputAvailable ? (
           <span className="owner-view__view-only" title="You can watch it here, not use it">
             <Icon name="eye" />
             View only
@@ -332,7 +331,7 @@ export function OwnerView({
           </div>
         ) : null}
       </div>
-      {canControl ? <PhoneControlBar display={display} /> : null}
+      {inputAvailable || phone ? <PhoneControlBar display={display} /> : null}
     </section>
   );
 }

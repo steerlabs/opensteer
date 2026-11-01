@@ -181,7 +181,9 @@ export function computerReasonWords(
     case "busy":
       return `Waiting for ${names.phone ? names.machine : names.target}…`;
     case "locked":
-      return `${names.machine} is locked.`;
+      return names.phone
+        ? `${names.machine} is locked. Unlock it on the phone.`
+        : `${names.machine} is locked.`;
     case "minimized":
       return `${names.target} is minimized on ${names.machine}.`;
     case "window-closed":

@@ -120,6 +120,9 @@ async function fixture(
   supported = true,
   kind: {
     sharedInput?: boolean;
+    phoneOwnerControl?: boolean;
+    displayProfile?: boolean;
+    ownerViews?: boolean;
     editing?: boolean;
     displayCut?: boolean;
     mac?: boolean;
@@ -153,6 +156,7 @@ async function fixture(
   let activities = 0;
   let authorizationGate: Promise<void> | undefined;
   let authorizationChecks = 0;
+  let inputAuthorizationChecks = 0;
   let authorizationFailure: Error | undefined;
   const fence = RunnerAuxiliaryFrameFenceSchema.extend({ module: z.literal("integrations") }).parse(
     {
@@ -175,6 +179,8 @@ async function fixture(
           platform: mac ? "darwin" : "android",
           protocolVersion: mac ? 5 : 4,
           ...(!mac && kind.sharedInput !== false ? { sharedInput: 1 } : {}),
+          ...(kind.displayProfile ? { displayProfile: 1 } : {}),
+          ...(kind.phoneOwnerControl ? { phoneOwnerControl: 1 } : {}),
           ...(editing ? { editing: 1 } : {}),
           ...(displayCut ? { displayCut: 1 } : {}),
           ...(mac
@@ -244,16 +250,19 @@ async function fixture(
     computerUse: service,
     computerViews: {
       authorizeDisplay: async () => {
-        if (mac && authorized) return runnerId;
+        if ((mac || kind.ownerViews || kind.phoneOwnerControl) && authorized) return runnerId;
         throw new Error("No owner lease in this task fixture");
       },
       authorizeInput: async () => {
+        inputAuthorizationChecks++;
+        const allowed = inputAuthorized;
         await authorizationGate;
-        if (!mac || !inputAuthorized)
+        if (!(mac || kind.phoneOwnerControl) || !allowed)
           throw new OpensteerError({ code: "forbidden", message: "Read-write approval required" });
         return runnerId;
       },
-      isDisplayLive: () => mac && live && authorized,
+      isDisplayLive: () =>
+        (mac ? live : Boolean(kind.ownerViews || kind.phoneOwnerControl)) && authorized,
       endDisplaySource: () => undefined,
     },
     now: () => now,
@@ -304,9 +313,9 @@ async function fixture(
     await once(socket, "open");
     return result;
   }
-  const viewer = (editing = false, displayCut = false) =>
+  const viewer = (editing = false, displayCut = false, displayWindow = false) =>
     connect(
-      `/v1/computer-use/sessions/${sessionId}/display?sharedInput=1${editing ? "&editing=1" : ""}${displayCut ? "&displayCut=1" : ""}`,
+      `/v1/computer-use/sessions/${sessionId}/display?sharedInput=1${editing ? "&editing=1" : ""}${displayCut ? "&displayCut=1" : ""}${displayWindow ? "&displayWindow=1" : ""}`,
       "owner",
     );
   const start = () =>
@@ -367,9 +376,9 @@ async function fixture(
     app,
     base,
     macSource,
-    macViewer: (editing = false) =>
+    macViewer: (editing = false, phoneOwnerControl = false) =>
       connect(
-        `/v1/computer-use/views/${macSource.viewId}/1/display?sharedInput=1${editing ? "&editing=1" : ""}`,
+        `/v1/computer-use/views/${macSource.viewId}/1/display?sharedInput=1${editing ? "&editing=1" : ""}${phoneOwnerControl ? "&phoneOwnerControl=1&displayCut=1" : ""}`,
         "owner",
       ),
     serverViewers,
@@ -416,6 +425,7 @@ async function fixture(
     },
     activity: () => activities,
     authorizationChecks: () => authorizationChecks,
+    inputAuthorizationChecks: () => inputAuthorizationChecks,
     pauseAuthorization: () => {
       let resume: () => void = () => undefined;
       authorizationGate = new Promise<void>((resolve) => {
@@ -1448,38 +1458,46 @@ describe("phone display Host sockets", () => {
       await until(() => viewer.media().length === 1);
     },
   );
-  it.each([6, 30_000])(
-    "replays 60 frames with byte credit alone and stays live while acking (%i bytes)",
-    async (size) => {
+  it.each([
+    { size: 6, displayWindow: false },
+    { size: 30_000, displayWindow: false },
+    { size: 6, displayWindow: true },
+    { size: 30_000, displayWindow: true },
+  ])(
+    "replays 90 frames with byte credit alone and stays live while acking ($size bytes, window=$displayWindow)",
+    async ({ size, displayWindow }) => {
       const f = await fixture();
       const first = await f.viewer();
       const phone = await f.phone();
       await f.state();
-      for (let sequence = 1; sequence <= 60; sequence++) {
+      for (let sequence = 1; sequence <= 90; sequence++) {
         phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(size)));
         await first.received(() => first.media().length >= sequence);
         first.send({ type: "display.ack", sequence });
         await first.roundTrip();
       }
-      const joined = await f.viewer();
-      const window = size === 6 ? 60 : 34;
+      const joined = await f.viewer(false, false, displayWindow);
+      const window = size === 6 ? 90 : 34;
       await joined.received(() => joined.media().length >= window);
       expect(joined.media()).toHaveLength(window);
-      expect(joined.json()[0]).toMatchObject({ replayThrough: 60 });
-      for (let sequence = 1; sequence <= 60; sequence++) {
+      expect(joined.json()[0]).toMatchObject({ replayThrough: 90 });
+      for (let sequence = 1; sequence <= 90; sequence++) {
         joined.send({ type: "display.ack", sequence });
         await joined.roundTrip();
         f.advance(9_000);
         f.hub.sweep();
       }
-      expect(joined.media()).toHaveLength(60);
-      phone.socket.send(f.frame(61));
-      await joined.received(() => joined.media().length >= 61);
+      expect(joined.media()).toHaveLength(90);
+      phone.socket.send(f.frame(91));
+      await joined.received(() => joined.media().length >= 91);
       expect(joined.media().map((m) => m.header.sequence)).toEqual(
-        Array.from({ length: 61 }, (_, i) => i + 1),
+        Array.from({ length: 91 }, (_, i) => i + 1),
       );
       expect(joined.socket.readyState).toBe(WebSocket.OPEN);
-      expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(0);
+      // The large GOP already requested its byte-bound refresh, independently of joining.
+      expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toHaveLength(
+        size === 6 ? 0 : 1,
+      );
     },
   );
   it.each(["detach", "expired", "command-failed", "data-lost", "start-timeout"] as const)(
@@ -1564,23 +1582,80 @@ describe("phone display Host sockets", () => {
     f.apps.detach(f.peer, "revoked");
     expect(await viewer.closed).toBe(4003);
   });
-  it.each(["retryable", "access", "unknown", "blocked"] as const)(
+  it.each(["retryable", "access", "unknown"] as const)(
     "classifies %s periodic authorization failures",
     async (kind) => {
       vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
       const f = await fixture();
       const viewer = await f.viewer();
-      const resume = kind === "blocked" ? f.pauseAuthorization() : () => undefined;
       if (kind === "retryable")
         f.failAuthorization(new ComputerUseError("failed", "Authority unavailable", true));
       if (kind === "access")
         f.failAuthorization(new ComputerUseError("unsupported", "Owner changed"));
       if (kind === "unknown") f.failAuthorization(new Error("Authority unavailable"));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await viewer.closed).toBe(kind === "access" ? 4003 : 1013);
+    },
+  );
+  it.each(["authorized", "revoked"] as const)(
+    "keeps slow authorization pending without losing or reviving viewing (%s)",
+    async (outcome) => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const f = await fixture();
+      const viewer = await f.viewer();
+      const phone = await f.phone();
+      await f.state();
+      await viewer.roundTrip();
+      let resume!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      let settled = false;
+      const authorization = vi.spyOn(f.hub, "authorize").mockImplementationOnce(async () => {
+        try {
+          await blocked;
+          return f.runnerId;
+        } finally {
+          settled = true;
+        }
+      });
       try {
-        await vi.advanceTimersByTimeAsync(kind === "blocked" ? 10_000 : 5_000);
-        expect(await viewer.closed).toBe(kind === "access" ? 4003 : 1013);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(authorization).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(f.serverViewers[0]!.readyState).toBe(WebSocket.OPEN);
+        expect(authorization).toHaveBeenCalledTimes(1);
+        if (outcome === "revoked") {
+          f.end();
+          await vi.waitFor(
+            () =>
+              expect(viewer.socket.readyState, "revoked viewer did not close").toBe(
+                WebSocket.CLOSED,
+              ),
+            { timeout: 2_000 },
+          );
+        }
+        resume();
+        await vi.waitFor(() => expect(settled, "delayed authorization did not settle").toBe(true), {
+          timeout: 2_000,
+        });
+        if (outcome === "authorized") {
+          await viewer.roundTrip();
+          phone.socket.send(f.frame(1, true));
+          await viewer.received(() => viewer.media().length === 1);
+          expect(viewer.socket.readyState).toBe(WebSocket.OPEN);
+        } else {
+          f.hub.sweep();
+          expect(viewer.socket.readyState).toBe(WebSocket.CLOSED);
+          expect(f.sent.filter((m) => m.type === "host.integrations.display.start")).toHaveLength(
+            1,
+          );
+        }
       } finally {
         resume();
+        await vi.waitFor(() => expect(settled, "delayed authorization did not drain").toBe(true), {
+          timeout: 2_000,
+        });
       }
     },
   );
@@ -1803,6 +1878,115 @@ describe("phone display Host sockets", () => {
     await until(() => joined.media().length === 1);
     expect(joined.media()[0]?.header.sequence).toBe(3);
   });
+  it("refreshes a byte-heavy phone GOP while retaining replay for joins", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    for (let sequence = 1; sequence <= 5; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(70_000)));
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+      expect(refreshes()).toHaveLength(sequence < 5 ? 0 : 1);
+    }
+    const joined = await f.viewer();
+    await joined.received(() => joined.media().length === 4);
+    expect(joined.json()[0]).toMatchObject({ replayThrough: 5 });
+    expect(refreshes()).toHaveLength(1);
+    phone.socket.send(f.frame(6, true));
+    await phone.received(() => phone.json().length === 6);
+    f.advance(2_000);
+    f.hub.sweep();
+    expect(refreshes()).toHaveLength(1);
+  });
+
+  it("keeps a small static GOP without periodic refreshes", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    phone.socket.send(f.frame(1, true, 1, new Uint8Array(40_000)));
+    await viewer.received(() => viewer.media().length === 1);
+    viewer.send({ type: "display.ack", sequence: 1 });
+    await viewer.roundTrip();
+    f.advance(20_000);
+    f.hub.sweep();
+    const joined = await f.viewer();
+    await joined.received(() => joined.media().length === 1);
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual([]);
+  });
+
+  it("retains the API 36 refinement tail without forcing an idle IDR", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    for (const [index, size] of [40_000, 130_400, 774].entries()) {
+      if (index === 2) f.advance(6_000);
+      const sequence = index + 1;
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(size)));
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    f.advance(3_000);
+    f.hub.sweep();
+    const joined = await f.viewer();
+    await joined.received(() => joined.media().length === 3);
+    expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual([]);
+  });
+
+  it("bounds motion after an IDR larger than the refresh budget", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    for (let sequence = 1; sequence <= 3; sequence++) {
+      phone.socket.send(
+        f.frame(sequence, sequence === 1, 1, new Uint8Array(sequence === 1 ? 300_000 : 140_000)),
+      );
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+      expect(refreshes()).toHaveLength(sequence === 3 ? 1 : 0);
+    }
+  });
+
+  it("delivers a coalesced byte refresh even when no viewer is waiting", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    for (let sequence = 1; sequence <= 8; sequence++) {
+      phone.socket.send(
+        f.frame(sequence, sequence === 1 || sequence === 5, 1, new Uint8Array(100_000)),
+      );
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    expect(refreshes()).toHaveLength(1);
+    f.advance(500);
+    f.hub.sweep();
+    expect(refreshes()).toHaveLength(2);
+    for (let sequence = 9; sequence <= 12; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 9, 1, new Uint8Array(100_000)));
+      await viewer.received(() => viewer.media().length === sequence);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    // A fresh IDR also satisfies a deferred byte refresh, even if it is itself large.
+    phone.socket.send(f.frame(13, true, 1, new Uint8Array(300_000)));
+    await viewer.received(() => viewer.media().length === 13);
+    f.advance(500);
+    f.hub.sweep();
+    expect(refreshes()).toHaveLength(2);
+  });
+
   it("invalidates an overflowing GOP until a key and coalesces joins needing refresh", async () => {
     const f = await fixture();
     const viewer = await f.viewer();
@@ -1853,6 +2037,8 @@ describe("phone display Host sockets", () => {
         viewer.send({ type: "display.ack", sequence });
         await delay(5);
       }
+      const refreshes = f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+      expect(refreshes).toHaveLength(size === 6 ? 0 : 1);
       const joined = await f.viewer();
       await until(() => joined.media().length === credit);
       phone.socket.send(f.frame(count + 1, false, 1, new Uint8Array(size)));
@@ -1869,7 +2055,9 @@ describe("phone display Host sockets", () => {
       expect(joined.media().map(({ header }) => header.sequence)).toEqual(
         Array.from({ length: count + 1 }, (_, index) => index + 1),
       );
-      expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual([]);
+      expect(f.sent.filter((m) => m.type === "host.integrations.display.refresh")).toEqual(
+        refreshes,
+      );
     },
   );
   it.each(["key", "generation", "overflow"])(
@@ -1939,6 +2127,87 @@ describe("phone display Host sockets", () => {
     await until(() => phone.json().length === 2);
     expect(joined.media()).toEqual([]);
   });
+  it("negotiates an RTT-sized live window without widening old viewers, and bounds its age", async () => {
+    const f = await fixture();
+    const modern = await f.viewer(false, false, true);
+    const legacy = await f.viewer();
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 12; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1));
+      await phone.received(() => phone.json().length === sequence);
+      f.advance(33);
+    }
+    await modern.roundTrip();
+    await legacy.roundTrip();
+    expect(modern.json().find((message) => message.state === "live")).toMatchObject({
+      displayWindow: 1,
+    });
+    expect(legacy.json().every((message) => message.displayWindow === undefined)).toBe(true);
+    expect(modern.media()).toHaveLength(12);
+    expect(legacy.media()).toHaveLength(4);
+    // Acknowledgement includes the shaped round trip, not decoder output order.
+    modern.send({ type: "display.ack", sequence: 1 });
+    await modern.roundTrip();
+    f.advance(1000);
+    phone.socket.send(f.frame(13));
+    await phone.received(() => phone.json().length === 13);
+    await modern.roundTrip();
+    expect(modern.media()).toHaveLength(12);
+    modern.send({ type: "display.ack", sequence: 12 });
+    await modern.roundTrip();
+    phone.socket.send(f.frame(14, true));
+    await phone.received(() => phone.json().length === 14);
+    await modern.roundTrip();
+    expect(modern.media().at(-1)?.header).toMatchObject({ sequence: 14, key: true });
+  });
+
+  it("expires a fast ACK baseline when the connection becomes slower", async () => {
+    const f = await fixture();
+    const viewer = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    const send = async (sequence: number) => {
+      phone.socket.send(f.frame(sequence, sequence === 1));
+      await phone.received(() => phone.json().length === sequence);
+    };
+    await send(1);
+    f.advance(20);
+    viewer.send({ type: "display.ack", sequence: 1 });
+    await viewer.roundTrip();
+    f.advance(10_001);
+    await send(2);
+    f.advance(600);
+    viewer.send({ type: "display.ack", sequence: 2 });
+    await viewer.roundTrip();
+    await send(3);
+    f.advance(600);
+    await send(4);
+    await viewer.roundTrip();
+    expect(viewer.media()).toHaveLength(4);
+    f.advance(300);
+    await send(5);
+    await viewer.roundTrip();
+    expect(viewer.media()).toHaveLength(4);
+  });
+
+  it.each([6, 600_000])(
+    "bounds negotiated viewer frame metadata and bytes (%i bytes)",
+    async (size) => {
+      const f = await fixture();
+      const viewer = await f.viewer(false, false, true);
+      const phone = await f.phone();
+      await f.state();
+      const limit = size === 6 ? 60 : 1;
+      for (let sequence = 1; sequence <= limit + 1; sequence++) {
+        phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(size).fill(1)));
+        await phone.received(() => phone.json().length === sequence);
+      }
+      await viewer.roundTrip();
+      expect(viewer.media()).toHaveLength(limit);
+    },
+  );
+
   it("enforces independent frame credit and closes viewers that stay over budget", async () => {
     const f = await fixture();
     const slow = await f.viewer();
@@ -2063,7 +2332,7 @@ describe("phone display Host sockets", () => {
     const phone = await f.phone();
     await f.state();
     for (let sequence = 1; sequence <= 5; sequence++)
-      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(100_000)));
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(20_000)));
     await phone.received(() => phone.json().length === 5);
     await viewer.roundTrip();
     f.advance(800);
@@ -2635,5 +2904,383 @@ describe("Mac owner input over authenticated display sockets", () => {
         ),
       );
     }
+  });
+});
+
+describe("phone owner input and power", () => {
+  it("routes source input without a task and keeps owner authority after task close", async () => {
+    const h = await fixture(true, { phoneOwnerControl: true, editing: true, displayCut: true });
+    const owner = await h.macViewer(true, true);
+    await owner.received(() => owner.json().some((m) => m.phoneOwnerControl === 1));
+    expect(h.start()).toMatchObject({ phoneOwnerControl: 1, inputSources: [h.macSource] });
+    await h.state("live");
+    await owner.received(() => owner.json().some((m) => m.state === "live"));
+    const task = await h.viewer(true);
+    await task.received(() => task.json().some((m) => m.state === "live"));
+    owner.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    await owner.roundTrip();
+    const command = h.sent.findLast((m) => m.type === "host.integrations.display.input")!;
+    expect(command).toMatchObject({ source: h.macSource });
+    expect(command).not.toHaveProperty("sessionId");
+    if (command.type !== "host.integrations.display.input") throw Error("Missing input");
+    await h.apps.handleMessage(h.peer, h.stream, {
+      ...h.fence,
+      type: "runner.integrations.display.clipboard",
+      streamId: h.start().streamId,
+      source: h.macSource,
+      geometry: 1,
+      sequence: command.sequence,
+      outcome: "copied",
+      text: "selection",
+    });
+    await owner.received(() => owner.json().some((m) => m.type === "display.clipboard"));
+    await task.roundTrip();
+    expect(task.json().some((m) => m.type === "display.clipboard")).toBe(false);
+    h.end();
+    await task.closed;
+    owner.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 1,
+      events: [{ kind: "nav", to: "home" }],
+    });
+    await owner.roundTrip();
+    expect(h.sent.findLast((m) => m.type === "host.integrations.display.input")).toMatchObject({
+      source: h.macSource,
+      events: [{ kind: "nav", to: "home" }],
+    });
+    expect(h.activity()).toBe(0);
+  });
+
+  it("withdraws held input immediately, fences stale reads, and keeps the read-only view", async () => {
+    const h = await fixture(true, { phoneOwnerControl: true });
+    const owner = await h.macViewer(false, true);
+    await owner.received(() => owner.json().some((m) => m.phoneOwnerControl === 1));
+    await h.state("live");
+    await owner.received(() => owner.json().some((m) => m.state === "live"));
+    owner.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 0,
+      events: [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 0 }],
+    });
+    await owner.roundTrip();
+    const resume = h.pauseAuthorization();
+    h.advance(5001);
+    h.hub.sweep();
+    h.inputAuthorization(false);
+    h.hub.withdrawOwnerInput(h.runnerId);
+    resume();
+    await owner.roundTrip();
+    expect(
+      h.sent.findLast((m) => m.type === "host.integrations.display.input-reset"),
+    ).toMatchObject({ source: h.macSource });
+    expect(h.sent.findLast((m) => m.type === "host.integrations.display.demand")).toMatchObject({
+      sources: [h.macSource],
+      inputSources: [],
+    });
+    expect(owner.json().at(-1)).not.toHaveProperty("sharedInput");
+    expect(owner.json().at(-1)).not.toHaveProperty("phoneOwnerControl");
+    owner.send({ type: "display.power", sequence: 1, action: "wake" });
+    await owner.received(() => owner.json().some((m) => m.type === "display.power.result"));
+    expect(owner.json().at(-1)).toMatchObject({ outcome: "refused" });
+    expect(h.sent.some((m) => m.type === "host.integrations.display.power")).toBe(false);
+    expect(owner.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("admits power before geometry and delivers its private receipt after protection", async () => {
+    const h = await fixture(true, { phoneOwnerControl: true });
+    const owner = await h.macViewer(false, true);
+    const other = await h.macViewer(false, true);
+    await owner.received(() => owner.json().some((m) => m.phoneOwnerControl === 1));
+    owner.send({ type: "display.power", sequence: 0, action: "lock" });
+    await owner.roundTrip();
+    const command = h.sent.findLast((m) => m.type === "host.integrations.display.power");
+    expect(command).toMatchObject({ source: h.macSource, action: "lock" });
+    if (command?.type !== "host.integrations.display.power") throw Error("Missing power");
+    await h.state("protected", 1, "locked-screen");
+    await h.apps.handleMessage(h.peer, h.stream, {
+      ...h.fence,
+      type: "runner.integrations.display.power-result",
+      streamId: h.start().streamId,
+      source: h.macSource,
+      sequence: command.sequence,
+      outcome: "dispatched",
+    });
+    await owner.received(() => owner.json().some((m) => m.type === "display.power.result"));
+    await other.roundTrip();
+    expect(other.json().some((m) => m.type === "display.power.result")).toBe(false);
+    expect(owner.json().at(-1)).toMatchObject({ sequence: 0, outcome: "dispatched" });
+  });
+
+  it("keeps old phones and non-opted-in viewers on the baseline wire", async () => {
+    const old = await fixture(true, { ownerViews: true });
+    const owner = await old.macViewer(false, true);
+    await owner.received(() => owner.json().length > 0);
+    expect(old.start()).not.toHaveProperty("phoneOwnerControl");
+    expect(old.start()).not.toHaveProperty("inputSources");
+    expect(owner.json().at(-1)).not.toHaveProperty("sharedInput");
+    const current = await fixture(true, { phoneOwnerControl: true });
+    const legacy = await current.macViewer();
+    await legacy.received(() => legacy.json().length > 0);
+    expect(legacy.json().at(-1)).not.toHaveProperty("phoneOwnerControl");
+    expect(legacy.json().at(-1)).not.toHaveProperty("sharedInput");
+  });
+});
+
+it("starts the producer before demand when concurrent owner authorization finishes out of order", async () => {
+  const h = await fixture(true, { phoneOwnerControl: true });
+  const resumeFirst = h.pauseAuthorization();
+  const first = await h.macViewer(false, true);
+  await vi.waitFor(() => expect(h.inputAuthorizationChecks()).toBe(1));
+  const resumeSecond = h.pauseAuthorization();
+  const second = await h.macViewer(false, true);
+  await vi.waitFor(() => expect(h.inputAuthorizationChecks()).toBe(2));
+  resumeSecond();
+  await second.received(() => second.json().some((m) => m.phoneOwnerControl === 1));
+  resumeFirst();
+  await first.received(() => first.json().some((m) => m.phoneOwnerControl === 1));
+  expect(
+    h.sent.filter(
+      (m) =>
+        m.type === "host.integrations.display.start" ||
+        m.type === "host.integrations.display.demand",
+    )[0]?.type,
+  ).toBe("host.integrations.display.start");
+});
+
+it("does not create a phone producer when owner input authorization finishes after shutdown", async () => {
+  const h = await fixture(true, { phoneOwnerControl: true });
+  const resume = h.pauseAuthorization();
+  const owner = await h.macViewer(false, true);
+  await vi.waitFor(() => expect(h.inputAuthorizationChecks()).toBe(1));
+  h.hub.close();
+  resume();
+  await vi.waitFor(() => expect(owner.socket.readyState).toBe(WebSocket.CLOSED));
+  expect(h.start()).toBeUndefined();
+});
+
+describe("viewer-driven phone bitrate", () => {
+  it.each([650, 1_200])(
+    "does not cap a %i ms receiver pause through credit age, sweep or the late ACK burst",
+    async (pause) => {
+      const f = await fixture(true, { displayProfile: true });
+      const viewer = await f.viewer(false, false, true);
+      const phone = await f.phone();
+      await f.state();
+      const uncapped = () =>
+        expect(
+          f.sent
+            .filter((m) => m.type === "host.integrations.display.demand")
+            .every((m) => m.maxBitrate === null),
+        ).toBe(true);
+      for (let sequence = 1; sequence <= 8; sequence++) {
+        phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(1_000)));
+        await viewer.received(() => viewer.media().length === sequence);
+        if (sequence <= 5) {
+          f.advance(100);
+          viewer.send({ type: "display.ack", sequence });
+          await viewer.roundTrip();
+        } else if (sequence < 8) f.advance(100);
+      }
+      f.advance(200);
+      phone.socket.send(f.frame(9));
+      await phone.received(() => phone.json().length === 9);
+      uncapped();
+      f.advance(200);
+      f.hub.sweep();
+      uncapped();
+      f.advance(pause - 600);
+      f.hub.sweep();
+      uncapped();
+      for (const sequence of [6, 7, 8]) {
+        viewer.send({ type: "display.ack", sequence });
+        await viewer.roundTrip();
+        uncapped();
+      }
+      phone.socket.send(f.frame(10, true));
+      await viewer.received(() => viewer.media().at(-1)?.header.sequence === 10);
+      f.advance(100);
+      viewer.send({ type: "display.ack", sequence: 10 });
+      await viewer.roundTrip();
+      f.hub.sweep();
+      uncapped();
+    },
+  );
+
+  it("counts existing queue age when a later keyframe confirms sustained credit pressure", async () => {
+    const f = await fixture(true, { displayProfile: true });
+    const viewer = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 6; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(1_000)));
+      await viewer.received(() => viewer.media().length === sequence);
+      if (sequence === 6) break;
+      f.advance(100);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    f.advance(599);
+    phone.socket.send(f.frame(7));
+    await phone.received(() => phone.json().length === 7);
+    const demands = () => f.sent.filter((m) => m.type === "host.integrations.display.demand");
+    expect(demands().every((m) => m.maxBitrate === null)).toBe(true);
+    f.advance(1);
+    f.hub.sweep();
+    expect(demands().every((m) => m.maxBitrate === null)).toBe(true);
+    viewer.send({ type: "display.ack", sequence: 6 });
+    await viewer.roundTrip();
+    expect(demands().every((m) => m.maxBitrate === null)).toBe(true);
+    f.advance(1);
+    phone.socket.send(f.frame(8, true));
+    await viewer.received(() => viewer.media().at(-1)?.header.sequence === 8);
+    f.advance(599);
+    phone.socket.send(f.frame(9));
+    await phone.received(() => phone.json().length === 9);
+    f.hub.sweep();
+    expect(demands().at(-1)?.maxBitrate).not.toBeNull();
+    expect(demands().at(-1)?.maxBitrate).toBeLessThanOrEqual(1_000_000);
+  });
+
+  it("recovers a brief live credit stall without reducing the phone bitrate", async () => {
+    const f = await fixture(true, { displayProfile: true });
+    const viewer = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 6; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(1_000)));
+      await viewer.received(() => viewer.media().length === sequence);
+      if (sequence === 6) break;
+      f.advance(100);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    f.advance(385);
+    phone.socket.send(f.frame(7));
+    await phone.received(() => phone.json().length === 7);
+    viewer.send({ type: "display.ack", sequence: 6 });
+    await viewer.roundTrip();
+    phone.socket.send(f.frame(8, true));
+    await viewer.received(() => viewer.media().at(-1)?.header.sequence === 8);
+    f.advance(100);
+    viewer.send({ type: "display.ack", sequence: 8 });
+    await viewer.roundTrip();
+    expect(
+      f.sent
+        .filter((m) => m.type === "host.integrations.display.demand")
+        .every((m) => m.maxBitrate === null),
+    ).toBe(true);
+  });
+
+  it("ignores healthy jitter, reduces sustained queueing and recovers during healthy flow", async () => {
+    const f = await fixture(true, { displayProfile: true });
+    const viewer = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    const pending: { sequence: number; due: number }[] = [];
+    const caps = () =>
+      f.sent.flatMap((m) =>
+        m.type === "host.integrations.display.demand" && m.maxBitrate !== undefined
+          ? [m.maxBitrate]
+          : [],
+      );
+    let reduced: number | null = null;
+    let previousDue = 0;
+    for (let elapsed = 50; elapsed <= 16_000; elapsed += 50) {
+      f.advance(50);
+      const sequence = elapsed / 50;
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(1_000)));
+      await phone.received(() => phone.json().length === sequence);
+      const delay =
+        (elapsed >= 600 && elapsed <= 800) || (elapsed >= 2_500 && elapsed <= 5_000)
+          ? 300
+          : 100 + (sequence % 3) * 20;
+      previousDue = Math.max(previousDue, elapsed + delay);
+      pending.push({ sequence, due: previousDue });
+      while (pending[0] && pending[0].due <= elapsed)
+        viewer.send({ type: "display.ack", sequence: pending.shift()!.sequence });
+      await viewer.roundTrip();
+      if (elapsed === 2_000) expect(caps().every((cap) => cap === null)).toBe(true);
+      if (elapsed === 5_500) {
+        reduced = caps().at(-1) ?? null;
+        expect(reduced).not.toBeNull();
+      }
+    }
+    expect(caps().at(-1)).toBeGreaterThan(reduced!);
+  });
+
+  it("does not turn a cache rollover into viewer congestion", async () => {
+    const f = await fixture(true, { displayProfile: true });
+    const fast = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 4; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(900_000)));
+      await fast.received(() => fast.media().length === sequence);
+      f.advance(100);
+      fast.send({ type: "display.ack", sequence });
+      await fast.roundTrip();
+    }
+    const joining = await f.viewer(false, false, true);
+    await joining.received(() => joining.media().length === 1);
+    phone.socket.send(f.frame(5, false, 1, new Uint8Array(900_000)));
+    await fast.received(() => fast.media().length === 5);
+    expect(
+      f.sent
+        .filter((m) => m.type === "host.integrations.display.demand")
+        .every((m) => m.maxBitrate === null),
+    ).toBe(true);
+  });
+
+  it("negotiates only with capable phones and clears the slowest attached viewer cap", async () => {
+    const old = await fixture();
+    await old.viewer(false, false, true);
+    expect(old.start()).not.toHaveProperty("maxBitrate");
+    expect(old.start()).not.toHaveProperty("displayProfile");
+    const f = await fixture(true, { displayProfile: true });
+    const slow = await f.viewer(false, false, true);
+    const fast = await f.viewer(false, false, true);
+    const legacy = await f.viewer();
+    expect(f.start()).toMatchObject({ displayProfile: 1, maxBitrate: null });
+    const phone = await f.phone();
+    await f.state();
+    const updates: { at: number; cap: number | null }[] = [];
+    let observedDemands = 0;
+    for (let sequence = 1; sequence <= 70; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence % 10 === 1, 1, new Uint8Array(8_000)));
+      await phone.received(() => phone.json().length === sequence);
+      f.advance(100);
+      fast.send({ type: "display.ack", sequence });
+      legacy.send({ type: "display.ack", sequence });
+      if (sequence <= 5) slow.send({ type: "display.ack", sequence });
+      else if (sequence > 11) slow.send({ type: "display.ack", sequence: sequence - 6 });
+      await fast.roundTrip();
+      await slow.roundTrip();
+      f.hub.sweep();
+      const demands = f.sent.filter(
+        (message) => message.type === "host.integrations.display.demand",
+      );
+      for (const demand of demands.slice(observedDemands)) {
+        if (demand.maxBitrate !== undefined)
+          updates.push({ at: sequence * 100, cap: demand.maxBitrate });
+      }
+      observedDemands = demands.length;
+    }
+    const demands = () => f.sent.filter((m) => m.type === "host.integrations.display.demand");
+    expect(demands().some((m) => m.maxBitrate !== undefined && m.maxBitrate !== null)).toBe(true);
+    for (let index = 1; index < updates.length; index++) {
+      const previous = updates[index - 1]!;
+      const next = updates[index]!;
+      expect(next.at - previous.at).toBeGreaterThanOrEqual(2_000);
+      if (previous.cap !== null && next.cap !== null)
+        expect(Math.abs(next.cap - previous.cap) / previous.cap).toBeGreaterThanOrEqual(0.15);
+    }
+    const removed = once(f.serverViewers[0]!, "close", { signal: AbortSignal.timeout(3_000) });
+    slow.socket.close();
+    await removed;
+    f.advance(2_001);
+    f.hub.sweep();
+    expect(demands().at(-1)).toMatchObject({ maxBitrate: null });
   });
 });

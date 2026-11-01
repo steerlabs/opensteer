@@ -49,11 +49,15 @@ import {
 } from "./computer-use.js";
 import {
   DisplaySourceSchema,
+  type DisplaySource,
   DisplayDemandSchema,
   MacDisplayWarmSchema,
   DisplaySequenceSchema,
   DisplayInputSchema,
   DisplayInputResultSchema,
+  DisplayPowerSchema,
+  DisplayPowerResultSchema,
+  displaySourceKey,
   DisplayEditingSchema,
   DisplayClipboardSchema,
   DisplayMaxFpsSchema,
@@ -380,6 +384,7 @@ export type HostIntegrationsOperation =
   | HostIntegrationsDisplayRefresh
   | HostIntegrationsDisplayInput
   | HostIntegrationsDisplayInputReset
+  | z.infer<typeof HostIntegrationsDisplayPowerSchema>
   | z.infer<typeof HostIntegrationsMacOwnerInputSchema>
   | z.infer<typeof HostIntegrationsMacOwnerInputResetSchema>;
 
@@ -639,6 +644,10 @@ export const HostIntegrationsDisplayStartSchema = z
      * the person's input goes in alongside the agent's acts.
      */
     sharedInput: z.literal(1).optional(),
+    phoneOwnerControl: z.literal(1).optional(),
+    displayProfile: z.literal(1).optional(),
+    maxBitrate: z.number().int().min(400_000).max(4_000_000).nullable().optional(),
+    inputSources: DisplayDemandSchema.optional(),
     /** Remaining resolution-through-first-keyframe budget; Mac only. */
     timeoutMs: z.number().int().positive().max(30_000).optional(),
   })
@@ -648,6 +657,16 @@ export const HostIntegrationsDisplayStartSchema = z
     {
       message: "Mac starts require the remaining startup duration; phone starts do not carry it.",
     },
+  )
+  .refine(
+    (start) =>
+      (start.phoneOwnerControl === 1) === (start.inputSources !== undefined) &&
+      inputSourcesSubset(start),
+    "Phone input sources require negotiation and must belong to demand",
+  )
+  .refine(
+    (start) => (start.displayProfile === 1) === (start.maxBitrate !== undefined),
+    "Bitrate cap requires profile negotiation",
   );
 export type HostIntegrationsDisplayStart = z.infer<typeof HostIntegrationsDisplayStartSchema>;
 export const HostIntegrationsDisplayStopSchema = z.strictObject({
@@ -665,24 +684,59 @@ export const HostIntegrationsDisplayRefreshSchema = z.strictObject({
 });
 export type HostIntegrationsDisplayRefresh = z.infer<typeof HostIntegrationsDisplayRefreshSchema>;
 /** One batch of the stream's person lane; sent only after display.start carried sharedInput. */
-export const HostIntegrationsDisplayInputSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("host.integrations.display.input"),
-  sessionId: ComputerUseSessionIdSchema,
-  streamId: DisplayStreamIdSchema,
-  ...DisplayInputSchema.shape,
-});
+const displayInputAddress = {
+  sessionId: ComputerUseSessionIdSchema.optional(),
+  source: DisplaySourceSchema.optional(),
+};
+function oneDisplayInputAddress(value: { sessionId?: unknown; source?: unknown }): boolean {
+  return (value.sessionId !== undefined) !== (value.source !== undefined);
+}
+function inputSourcesSubset(value: {
+  sources: DisplaySource[];
+  inputSources?: DisplaySource[] | undefined;
+}): boolean {
+  return (
+    value.inputSources?.every((source) =>
+      value.sources.some((item) => displaySourceKey(item) === displaySourceKey(source)),
+    ) ?? true
+  );
+}
+export const HostIntegrationsDisplayInputSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    type: z.literal("host.integrations.display.input"),
+    ...displayInputAddress,
+    streamId: DisplayStreamIdSchema,
+    ...DisplayInputSchema.shape,
+  })
+  .refine(oneDisplayInputAddress, "Exactly one input address is required");
 export type HostIntegrationsDisplayInput = z.infer<typeof HostIntegrationsDisplayInputSchema>;
 /** The viewer holding the person lane left mid-gesture: end the stroke, release held keys, drop queued input. */
-export const HostIntegrationsDisplayInputResetSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("host.integrations.display.input-reset"),
-  sessionId: ComputerUseSessionIdSchema,
-  streamId: DisplayStreamIdSchema,
-});
+export const HostIntegrationsDisplayInputResetSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    type: z.literal("host.integrations.display.input-reset"),
+    ...displayInputAddress,
+    streamId: DisplayStreamIdSchema,
+  })
+  .refine(oneDisplayInputAddress, "Exactly one input address is required");
 export type HostIntegrationsDisplayInputReset = z.infer<
   typeof HostIntegrationsDisplayInputResetSchema
 >;
+export const HostIntegrationsDisplayPowerSchema = z.strictObject({
+  ...integrationsFrameBase,
+  ...DisplayPowerSchema.omit({ type: true }).shape,
+  type: z.literal("host.integrations.display.power"),
+  streamId: DisplayStreamIdSchema,
+  source: DisplaySourceSchema,
+});
+export const RunnerIntegrationsDisplayPowerResultSchema = z.strictObject({
+  ...integrationsFrameBase,
+  ...DisplayPowerResultSchema.omit({ type: true }).shape,
+  type: z.literal("runner.integrations.display.power-result"),
+  streamId: DisplayStreamIdSchema,
+  source: DisplaySourceSchema,
+});
 export const RunnerIntegrationsDisplayStateSchema = z.strictObject({
   ...integrationsFrameBase,
   type: z.literal("runner.integrations.display.state"),
@@ -699,36 +753,46 @@ export type RunnerIntegrationsDisplayState = z.infer<typeof RunnerIntegrationsDi
 /** Editing replies name the stream's person lane and the picture fence of their input. */
 const displayEditingReplyBase = {
   ...integrationsFrameBase,
-  sessionId: ComputerUseSessionIdSchema,
+  ...displayInputAddress,
   streamId: DisplayStreamIdSchema,
   geometry: DisplayInputSchema.shape.geometry,
 };
-export const RunnerIntegrationsDisplayInputResultSchema = z.strictObject({
-  ...DisplayInputResultSchema.omit({ type: true }).shape,
-  ...displayEditingReplyBase,
-  type: z.literal("runner.integrations.display.input-result"),
-});
-export const RunnerIntegrationsDisplayEditingSchema = z.strictObject({
-  ...DisplayEditingSchema.omit({ type: true, generation: true }).shape,
-  ...displayEditingReplyBase,
-  type: z.literal("runner.integrations.display.editing"),
-});
-export const RunnerIntegrationsDisplayClipboardSchema = z.strictObject({
-  ...DisplayClipboardSchema.omit({ type: true }).shape,
-  ...displayEditingReplyBase,
-  type: z.literal("runner.integrations.display.clipboard"),
-});
+export const RunnerIntegrationsDisplayInputResultSchema = z
+  .strictObject({
+    ...DisplayInputResultSchema.omit({ type: true }).shape,
+    ...displayEditingReplyBase,
+    type: z.literal("runner.integrations.display.input-result"),
+  })
+  .refine(oneDisplayInputAddress, "Exactly one input address is required");
+export const RunnerIntegrationsDisplayEditingSchema = z
+  .strictObject({
+    ...DisplayEditingSchema.omit({ type: true, generation: true }).shape,
+    ...displayEditingReplyBase,
+    type: z.literal("runner.integrations.display.editing"),
+  })
+  .refine(oneDisplayInputAddress, "Exactly one input address is required");
+export const RunnerIntegrationsDisplayClipboardSchema = z
+  .strictObject({
+    ...DisplayClipboardSchema.omit({ type: true }).shape,
+    ...displayEditingReplyBase,
+    type: z.literal("runner.integrations.display.clipboard"),
+  })
+  .refine(oneDisplayInputAddress, "Exactly one input address is required");
 
-export const HostIntegrationsDisplayDemandSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("host.integrations.display.demand"),
-  display: z.literal("main"),
-  streamId: DisplayStreamIdSchema,
-  revision: DisplaySequenceSchema,
-  sources: DisplayDemandSchema,
-  warm: MacDisplayWarmSchema.optional(),
-  maxLongSide: DisplayMaxLongSideSchema.optional(),
-});
+export const HostIntegrationsDisplayDemandSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    type: z.literal("host.integrations.display.demand"),
+    display: z.literal("main"),
+    streamId: DisplayStreamIdSchema,
+    revision: DisplaySequenceSchema,
+    sources: DisplayDemandSchema,
+    inputSources: DisplayDemandSchema.optional(),
+    maxBitrate: z.number().int().min(400_000).max(4_000_000).nullable().optional(),
+    warm: MacDisplayWarmSchema.optional(),
+    maxLongSide: DisplayMaxLongSideSchema.optional(),
+  })
+  .refine(inputSourcesSubset, "Input sources must belong to demand");
 export const RunnerIntegrationsDisplaySourceEndedSchema = z.strictObject({
   ...integrationsFrameBase,
   type: z.literal("runner.integrations.display.source-ended"),
@@ -754,6 +818,7 @@ export const HostToIntegrationsModuleMessageSchema = z
     HostIntegrationsDisplayRefreshSchema,
     HostIntegrationsDisplayInputSchema,
     HostIntegrationsDisplayInputResetSchema,
+    HostIntegrationsDisplayPowerSchema,
     HostIntegrationsInvokeSchema,
     HostIntegrationsComputerUseSchema,
     HostIntegrationsComputerAppWindowsSchema,
@@ -780,6 +845,7 @@ export const IntegrationsModuleEventSchema = z
     RunnerIntegrationsDisplayStateSchema,
     RunnerIntegrationsDisplaySourceEndedSchema,
     RunnerIntegrationsDisplayInputResultSchema,
+    RunnerIntegrationsDisplayPowerResultSchema,
     RunnerIntegrationsDisplayEditingSchema,
     RunnerIntegrationsDisplayClipboardSchema,
     RunnerIntegrationsStatusSchema,

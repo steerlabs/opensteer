@@ -3,7 +3,8 @@
 `useComputerDisplay` retains the same `editing: 1` target for both transport and
 shared decoder. The Host's `display.state.editingVersion` selects behavior.
 Baseline phones keep their committed-text input. Baseline Mac app views remain
-view-only; Mac task Watch and phone owner views remain view-only. Shared input is enabled
+view-only; Mac task Watch remains view-only. Phone owner input requires a negotiated lease
+with input available. Shared input is enabled
 by `snapshot.input === "available"`, using current displayed geometry. Pressing the picture
 focuses typing; blur, hide, F6 and leaving reset input and cancel local composition.
 See [the display contract](../../../../docs/computer-use.md#negotiated-mac-owner-input).

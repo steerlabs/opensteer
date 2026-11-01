@@ -1,3 +1,4 @@
+import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { PendingBrowserTabs } from "./pending-browser-tabs.js";
 import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
@@ -700,9 +701,11 @@ export class HttpHostClient {
         : `/v1/computer-use/views/${encodeURIComponent(ref.viewId)}/${ref.generation}/display`;
     const url = new URL(this.#webSocketUrl(path));
     url.searchParams.set("sharedInput", "1");
+    url.searchParams.set("phoneOwnerControl", "1");
+    url.searchParams.set("displayWindow", "1");
     if (options?.editing === 1) {
       url.searchParams.set("editing", "1");
-      if (ref.kind === "task-session") url.searchParams.set("displayCut", "1");
+      url.searchParams.set("displayCut", "1");
     }
     if (ref.kind === "task-session" && ref.appKey !== undefined)
       url.searchParams.set("appKey", ref.appKey);
@@ -1275,11 +1278,29 @@ export class HttpHostClient {
           .flatMap((machine) => machine.computerUse?.ownerViews ?? [])
           .find((view) => view.viewId === viewId),
       () => this.#capabilities?.includes("ownerViewWindows") === true,
+      (viewId, generation) =>
+        sharedDisplayStreams(this).cancelAutoWake({ kind: "owner-view", viewId, generation }),
     );
     this.#computerViews = views;
     this.retainComputerView = views.retainComputerView;
-    this.openComputerView = views.openComputerView;
-    this.closeComputerView = views.closeComputerView;
+    this.openComputerView = async (...args) => {
+      const view = await views.openComputerView(...args);
+      if (view.target.kind === "phone" && view.state === "ready")
+        sharedDisplayStreams(this).armAutoWake({
+          kind: "owner-view",
+          viewId: view.viewId,
+          generation: view.generation,
+        });
+      return view;
+    };
+    this.closeComputerView = (...args) => {
+      sharedDisplayStreams(this).cancelAutoWake({
+        kind: "owner-view",
+        viewId: args[0],
+        generation: args[1],
+      });
+      return views.closeComputerView(...args);
+    };
     this.renewComputerView = views.renewComputerView;
     this.listApprovedComputerApps = views.listApprovedComputerApps;
     this.listComputerAppWindows = views.listComputerAppWindows;

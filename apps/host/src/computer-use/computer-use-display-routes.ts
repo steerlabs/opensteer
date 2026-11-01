@@ -65,11 +65,8 @@ export function registerComputerUseDisplayRoutes(
       },
     );
     const recheck = setInterval(() => {
-      if (checking) {
-        attachment?.close("authorization-unavailable", displayViewerCloseCodes.tryAgain);
-        socket.close(displayViewerCloseCodes.tryAgain, "Display authorization unavailable");
-        return;
-      }
+      // A pending read is not a refusal; source revocation and login expiry still fence delivery.
+      if (checking) return;
       checking = true;
       void (async () => {
         const current = await options.authenticator.authenticateSession(request.headers, {
@@ -133,8 +130,15 @@ export function registerComputerUseDisplayRoutes(
     });
     void (async () => {
       attachment = await options.hub.attachViewer(source, login.user.id, socket, {
+        displayWindow:
+          new URL(request.url ?? "", "http://host.invalid").searchParams.get("displayWindow") ===
+          "1",
         displayCut:
           new URL(request.url ?? "", "http://host.invalid").searchParams.get("displayCut") === "1",
+        phoneOwnerControl:
+          new URL(request.url ?? "", "http://host.invalid").searchParams.get(
+            "phoneOwnerControl",
+          ) === "1",
         sharedInput:
           new URL(request.url ?? "", "http://host.invalid").searchParams.get("sharedInput") === "1",
         editing:

@@ -3,6 +3,7 @@ import type { NativeViewerSource } from "../host/surfaces.js";
 import {
   DisplayInputEventSchema,
   trackHeldDisplayInput,
+  displaySourceKey,
   DisplayClientDiagnosticSchema,
   type DisplayClientDiagnostic,
   DisplayViewerClientMessageSchema,
@@ -68,7 +69,7 @@ export interface DisplayFrame {
    */
   readonly replayed: boolean;
   /**
-   * The decoder output this frame, or the view dropped it unshown. The Host
+   * The decoder took this frame off its submission queue, or the view dropped it. The Host
    * gets the frame's credit back once every view is done; repeats are ignored.
    */
   done(): void;
@@ -88,11 +89,15 @@ export interface DisplaySnapshot {
   /** The Host's latest word on the stream, kept across reconnects so it still says why. */
   readonly display: DisplayViewerState | null;
   readonly input: "available" | "unavailable";
+  readonly power: "available" | "unavailable";
   /** Repeated keyframe requests went unanswered while live; a keyframe clears it. */
   readonly keyframeFailed: boolean;
 }
 
-export type DisplayEditingMessage = Exclude<DisplayViewerServerMessage, { type: "display.state" }>;
+export type DisplayEditingMessage = Exclude<
+  DisplayViewerServerMessage,
+  { type: "display.state" | "display.power.result" }
+>;
 
 /** One view's hold on a pooled phone display socket. */
 export interface DisplayLease {
@@ -103,6 +108,7 @@ export interface DisplayLease {
   /** Private editing context, batch receipts and copy results; never replayed. */
   onEditingMessage(listener: (message: DisplayEditingMessage) => void): () => void;
   resetInput(): void;
+  power(action: "wake" | "lock"): boolean;
   /**
    * Sends input in picture `geometry` while input is available, in batches the
    * contract allows. False otherwise; events are dropped, never queued.
@@ -129,6 +135,7 @@ const emptySnapshot: DisplaySnapshot = {
   closeCode: null,
   display: null,
   input: "unavailable",
+  power: "unavailable",
   keyframeFailed: false,
 };
 
@@ -147,6 +154,7 @@ interface Credit {
 
 interface Connection {
   readonly id: number;
+  confirmed: boolean;
   readonly socket: WebSocketClient;
   /** Unreturned credits in stream order; the Host returns credit cumulatively. */
   readonly credits: Credit[];
@@ -183,6 +191,7 @@ interface Entry {
   /** Increases for every batch this client sends the session, across sockets. */
   inputSequence: number;
   disposed: boolean;
+  autoWake: boolean;
 }
 
 type Received =
@@ -211,6 +220,7 @@ export class DisplayStreams {
   ) => WebSocketClient;
   readonly #retryDelay: (attempt: number) => number;
   readonly #entries = new Map<string, Entry>();
+  readonly #autoWake = new Set<string>();
   readonly #terminal = new Map<string, DisplaySnapshot>();
   #connections = 0;
   #suspended = false;
@@ -249,8 +259,56 @@ export class DisplayStreams {
     }
   }
 
+  /** Explicit Open alone grants a one-use wake intent; retention and reconnect never arm it. */
+  armAutoWake(source: NativeViewerSource): void {
+    if (source.kind !== "owner-view") return;
+    const key = displaySourceKey(source);
+    this.#autoWake.add(key);
+    if (this.#autoWake.size > 256) this.#autoWake.delete(this.#autoWake.values().next().value!);
+    for (const entry of this.#entries.values()) {
+      if (
+        (entry.target.source.kind === "owner-view" ? displaySourceKey(entry.target.source) : "") !==
+        key
+      )
+        continue;
+      this.#autoWake.delete(key);
+      if (entry.snapshot.connection === "closed") {
+        this.#terminal.delete(entry.key);
+        this.#close(entry);
+        entry.snapshot = emptySnapshot;
+        entry.autoWake = true;
+        this.#open(entry);
+        return;
+      }
+      entry.autoWake = true;
+      this.#maybeAutoWake(entry);
+      break;
+    }
+  }
+
+  cancelAutoWake(source: NativeViewerSource): void {
+    if (source.kind !== "owner-view") return;
+    this.#autoWake.delete(displaySourceKey(source));
+    for (const entry of this.#entries.values())
+      if (
+        (entry.target.source.kind === "owner-view" ? displaySourceKey(entry.target.source) : "") ===
+        displaySourceKey(source)
+      )
+        entry.autoWake = false;
+  }
+
+  #maybeAutoWake(entry: Entry): void {
+    if (!entry.autoWake || !entry.snapshot.display || entry.snapshot.connection !== "open") return;
+    entry.autoWake = false;
+    if (entry.snapshot.power === "available") this.#power(entry, "wake");
+  }
+
   retain(target: ComputerDisplayTarget): DisplayLease {
     const key = computerDisplayTargetKey(target);
+    const autoWake = this.#autoWake.delete(
+      target.source.kind === "owner-view" ? displaySourceKey(target.source) : "",
+    );
+    if (autoWake) this.#terminal.delete(key);
     let entry = this.#entries.get(key);
     if (!entry) {
       entry = {
@@ -266,6 +324,7 @@ export class DisplayStreams {
         holderSequence: -1,
         inputSequence: 0,
         disposed: false,
+        autoWake,
       };
       this.#entries.set(key, entry);
     }
@@ -294,6 +353,7 @@ export class DisplayStreams {
         if (!released) lease.editingMessages.add(listener);
         return () => lease.editingMessages.delete(listener);
       },
+      power: (action) => !released && this.#power(current, action),
       resetInput: () => {
         // Never another view's press; with none held a reset only releases
         // what this viewer may still hold at the Host.
@@ -368,6 +428,7 @@ export class DisplayStreams {
    * Its views read it as access ended, so their pictures leave the screen.
    */
   invalidate(allowed: (target: ComputerDisplayTarget) => boolean): void {
+    this.#autoWake.clear();
     for (const [key, entry] of this.#entries) {
       if (allowed(entry.target)) continue;
       this.#entries.delete(key);
@@ -389,6 +450,7 @@ export class DisplayStreams {
   suspend(suspended: boolean): void {
     if (this.#suspended === suspended) return;
     this.#suspended = suspended;
+    if (suspended) this.#autoWake.clear();
     for (const entry of this.#live()) {
       if (suspended) this.#pause(entry, "page-hidden");
       else {
@@ -444,6 +506,7 @@ export class DisplayStreams {
     socket.binaryType = "arraybuffer";
     const connection: Connection = {
       id: this.#connections++,
+      confirmed: false,
       socket,
       credits: [],
       sequence: -1,
@@ -483,6 +546,7 @@ export class DisplayStreams {
         if (received.header.key) this.#keyframeArrived(entry, connection);
         this.#deliver(entry, connection, received);
       } else if (received.message.type === "display.state") {
+        connection.confirmed = true;
         if (received.message.state === "live") entry.attempt = 0;
         if (received.message.replayThrough !== undefined) {
           connection.replayThrough = received.message.replayThrough;
@@ -497,7 +561,8 @@ export class DisplayStreams {
         )
           this.#forgetHeld(entry);
         this.#set(entry, { display: received.message });
-      } else {
+        this.#maybeAutoWake(entry);
+      } else if (received.message.type !== "display.power.result") {
         // As at the Host: a refused latest batch from the holder leaves no press.
         if (
           received.message.type === "display.input.result" &&
@@ -532,6 +597,7 @@ export class DisplayStreams {
    * a transient close is retried; a terminal one is kept to say how it ended.
    */
   #drop(entry: Entry, connection: Connection, code: number): void {
+    entry.autoWake = false;
     if (entry.connection === connection) entry.connection = null;
     stopKeyframeRequests(connection);
     this.#forgetHeld(entry);
@@ -555,6 +621,7 @@ export class DisplayStreams {
   }
 
   #close(entry: Entry, reason: DisplayClientDiagnostic["reason"] = "last-viewer"): void {
+    entry.autoWake = false;
     if (entry.timer) {
       this.#log(entry, { transition: "retry-cancelled", reason });
       clearTimeout(entry.timer);
@@ -642,8 +709,21 @@ export class DisplayStreams {
 
   #resetInput(entry: Entry): void {
     this.#forgetHeld(entry);
-    if (entry.connection?.socket.readyState === 1 && entry.snapshot.display?.sharedInput === 1)
+    if (
+      entry.connection?.confirmed &&
+      entry.connection.socket.readyState === 1 &&
+      entry.snapshot.display?.sharedInput === 1
+    )
       send(entry.connection, { type: "display.input-reset" });
+  }
+
+  #power(entry: Entry, action: "wake" | "lock"): boolean {
+    entry.autoWake = false;
+    const connection = entry.connection;
+    if (entry.snapshot.power !== "available" || connection?.socket.readyState !== 1) return false;
+    if (action === "lock") this.#forgetHeld(entry);
+    send(connection, { type: "display.power", sequence: entry.inputSequence++, action });
+    return true;
   }
 
   #input(
@@ -703,8 +783,17 @@ export class DisplayStreams {
     const next = { ...entry.snapshot, ...patch };
     entry.snapshot = {
       ...next,
+      power:
+        next.connection === "open" &&
+        entry.connection?.confirmed === true &&
+        next.display?.phoneOwnerControl === 1 &&
+        next.display.reason !== "paused" &&
+        !["stopped", "failed", "unsupported"].includes(next.display.state)
+          ? "available"
+          : "unavailable",
       input:
         next.connection === "open" &&
+        entry.connection?.confirmed === true &&
         next.display?.sharedInput === 1 &&
         next.display.state === "live"
           ? "available"

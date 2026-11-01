@@ -51,8 +51,15 @@ class DisplayWindow(private val now: () -> Long) {
 
 /** Congestion reductions are rate limited; a quiet screen cannot accumulate healthy credit. */
 class DisplayBitrate {
-    var value = 2_500_000
-        private set
+    private var estimate = 2_500_000
+    private var hostCap: Int? = null
+    val value: Int get() = minOf(estimate, hostCap ?: 4_000_000)
+    fun cap(value: Int?): Boolean {
+        require(value == null || value in 400_000..4_000_000)
+        val before = this.value
+        hostCap = value
+        return before != this.value
+    }
     private var healthySince: Long? = null
     private var lastFlow: Long? = null
     private var lastReduction: Long? = null
@@ -66,7 +73,7 @@ class DisplayBitrate {
         if (now - since < 8_000) return false
         healthySince = now
         val before = value
-        value = (value * 1.1).toInt().coerceAtMost(4_000_000)
+        estimate = (estimate * 1.1).toInt().coerceAtMost(4_000_000)
         return value != before
     }
     fun congested(now: Long): Boolean {
@@ -74,7 +81,7 @@ class DisplayBitrate {
         if (lastReduction?.let { now - it < 1000 } == true) return false
         lastReduction = now
         val before = value
-        value = (value * 0.75).toInt().coerceAtLeast(1_000_000)
+        estimate = (estimate * 0.75).toInt().coerceAtLeast(1_000_000)
         return before != value
     }
 }
