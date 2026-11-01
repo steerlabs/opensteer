@@ -29,7 +29,7 @@ import { Popover } from "../popover.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
 import { TaskFamilyButton } from "./task-family.js";
 import { sameTaskFamilyGlance, taskFamilyGlance } from "@opensteer/client/host";
-import { TaskBadge, TaskMark, ChatOrb, taskStateWords } from "./task-mark.js";
+import { TaskBadge, TaskMark, ChatOrb, WorkingRing, taskStateWords } from "./task-mark.js";
 import { AreaLink } from "./area-link.js";
 import { destinationPlaceKey, type WorkspaceNavigation } from "./navigation.js";
 import { DrawerButton } from "./place-stage.js";
@@ -94,6 +94,8 @@ export function ConversationHeader({
   );
   const family = useHostSelector(hostClient, selectFamily, sameTaskFamilyGlance);
   const menu = !home || docked;
+  const taskMark = threadMark(threadId, directory.snapshot);
+  const specialistOrb = homeKind === "specialized" && specialist;
   return (
     <header className="conv-header">
       {requester ? (
@@ -120,7 +122,7 @@ export function ConversationHeader({
         <span className="conv-header__mark">
           {home ? (
             <ChatOrb size={20} />
-          ) : homeKind === "specialized" && specialist ? (
+          ) : specialistOrb ? (
             <WorkspaceOrb
               icon={specialist.icon}
               name={specialist.name}
@@ -128,9 +130,13 @@ export function ConversationHeader({
               size="small"
             />
           ) : (
-            <TaskMark size={20} mark={threadMark(threadId, directory.snapshot)} />
+            <TaskMark size={20} mark={taskMark} />
           )}
-          {tone === "working" ? <WorkingRing /> : tone ? <TaskBadge state={tone} /> : null}
+          {tone === "working" ? (
+            <WorkingRing mark={specialistOrb ? null : taskMark} />
+          ) : tone ? (
+            <TaskBadge state={tone} />
+          ) : null}
         </span>
         <div className="conv-header__text">
           <h1 className="conv-header__title" ref={titleRef} tabIndex={-1}>
@@ -505,22 +511,6 @@ function ConversationMenu({
         {actions ? actions(setAsking) : null}
       </div>
     </Popover>
-  );
-}
-
-/** A task at work: a slow arc around its mark, where the eye already is. */
-function WorkingRing() {
-  return (
-    <svg aria-hidden className="conv-header__ring" data-state="working" viewBox="0 0 32 32">
-      <circle cx="16" cy="16" fill="none" r="14.5" stroke="var(--line-strong)" strokeWidth="1.5" />
-      <path
-        d="M16 1.5a14.5 14.5 0 0 1 14.5 14.5"
-        fill="none"
-        stroke="var(--ember)"
-        strokeLinecap="round"
-        strokeWidth="1.5"
-      />
-    </svg>
   );
 }
 

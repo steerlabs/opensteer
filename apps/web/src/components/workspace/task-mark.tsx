@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type CSSProperties } from "react";
 import {
   markColorPaint,
   homeCursorPaint,
@@ -56,16 +56,7 @@ export function TaskState({
   return (
     <span aria-hidden="true" className={`task-state task-state--${state}`} data-state={state}>
       {state === "working" ? (
-        <svg className="task-state__spinner" viewBox="0 0 16 16">
-          <circle cx="8" cy="8" r="5.6" fill="none" stroke="var(--line-strong)" strokeWidth="1.8" />
-          <path
-            d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6"
-            fill="none"
-            stroke="var(--ember)"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-          />
-        </svg>
+        <WorkingRing />
       ) : state === "needs-you" ? (
         <span className="task-state__disc">!</span>
       ) : state === "failed" ? (
@@ -92,6 +83,32 @@ export function TaskState({
         <span className="task-row__unread" />
       ) : null}
     </span>
+  );
+}
+
+/**
+ * Work in progress: one slow arc that traces the mark at work, in the colour
+ * its tile wears, and ember on Chat, a neutral tile or on its own. `settling`
+ * closes it and lets it fade once the work stops.
+ */
+export function WorkingRing({
+  mark,
+  settling = false,
+}: {
+  readonly mark?: ResolvedTaskMark | null;
+  readonly settling?: boolean;
+}) {
+  return (
+    <span
+      aria-hidden="true"
+      className="working-ring"
+      data-settling={settling || undefined}
+      style={
+        mark && mark.icon !== null && mark.color !== null
+          ? ({ "--working-hue": markColorPaint[mark.color].glyph } as CSSProperties)
+          : undefined
+      }
+    />
   );
 }
 
