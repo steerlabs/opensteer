@@ -186,6 +186,11 @@ export async function startBrowserRuntime(
         });
         return;
       }
+      case "browser.profile.delete": {
+        // A native profile is erased on its computer; this one keeps no files.
+        send({ ...message, type: "browser.profile.delete.result", state: "deleted" });
+        return;
+      }
       case "browser.health.request": {
         send({
           browserRuntime: {
