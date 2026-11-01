@@ -1495,6 +1495,27 @@ it.each([
             sendPointer("down", at);
             sendPointer("up", at);
             await receipt("editing_web_focus", before);
+            if (api >= 33) {
+              const started = await receipt("editing_web_input_started", before);
+              await eventually(
+                "IME starts before the WebView exposes its virtual editor",
+                async () => {
+                  const log = await phone.shell(
+                    "logcat -d -v brief -s AgentPhoneFixture:D OpensteerDisplay:D",
+                  );
+                  const marker = `WebView input started ${started.detail}`;
+                  const offset = log.lastIndexOf(marker);
+                  return offset >= 0 &&
+                    log.slice(offset + marker.length).includes("Owner editor started bound=false")
+                    ? true
+                    : undefined;
+                },
+                15_000,
+              );
+              await phone.shell(
+                "am broadcast -a com.opensteer.agentphone.fixture.EXPOSE_WEB_EDITOR -p com.opensteer.agentphone.fixture",
+              );
+            }
           }
           await context(start);
           const typed = "ASCII café 한글 🧑‍💻";
