@@ -2648,11 +2648,13 @@ describe("durable harness catalogs", () => {
       async ({ catalogs }: { readonly catalogs: readonly HarnessInstanceCatalog[] }) => catalogs,
     );
     const reconcileHarnesses = vi.fn(options.reconcileHarnesses ?? (async () => []));
-    const dispatch = vi.fn(async () => ({
-      commandId: createId("command"),
-      correlationId: "harness-update",
-      type: "runner.command-accepted" as const,
-    }));
+    const dispatch = vi.fn(
+      async (_command: { readonly commandId: string }, _signal: AbortSignal) => ({
+        commandId: createId("command"),
+        correlationId: "harness-update",
+        type: "runner.command-accepted" as const,
+      }),
+    );
     const runners = {
       canRunHarness: () => options.connected,
       // A Runner that is away has declared nothing, which is not the same as

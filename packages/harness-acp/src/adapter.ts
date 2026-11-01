@@ -175,6 +175,9 @@ class AcpHarnessSession implements HarnessSession {
         update: (_sessionId, update) => this.#handleUpdate(update),
       },
       process,
+      ...(options.hooks.transformStdout
+        ? { stdout: options.hooks.transformStdout(process.stdout) }
+        : {}),
       version: options.policy.protocolVersion,
     });
     this.#abortListener = () => void this.stop();
@@ -394,23 +397,39 @@ class AcpHarnessSession implements HarnessSession {
     const modelOption = snapshot.configOptions.find(
       (option) => option.category === policy.modelCategory,
     );
-    if (modelOption) {
-      await this.#client.setConfigOption(
-        sessionId,
-        { id: modelOption.id, type: "select", value: modelId },
-        signal,
-      );
-    }
-    const effort = selection.options[policy.effortOptionId];
-    const effortOption = snapshot.configOptions.find(
-      (option) => option.category === policy.effortCategory,
+    const offeredModels = modelOption?.type === "select" ? (modelOption.options ?? []) : [];
+    const offered = offeredModels.some((option) => option.value === modelId);
+    const legacy = policy.legacyModelSuffixes?.some((suffix) =>
+      offeredModels.some((option) => modelId === `${option.value}-${suffix}`),
     );
-    if (effortOption && typeof effort === "string") {
+    if (!modelOption || (!offered && !legacy)) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: `${this.#options.engineLabel} does not offer model ${modelId} in this session`,
+      });
+    }
+    const configured = await this.#client.setConfigOption(
+      sessionId,
+      { id: modelOption.id, type: "select", value: modelId },
+      signal,
+    );
+    const effort = selection.options[policy.effortOptionId];
+    const effortOption = configured.find((option) => option.category === policy.effortCategory);
+    if (
+      effortOption &&
+      typeof effort === "string" &&
+      effortOption.options?.some((option) => option.value === effort)
+    ) {
       await this.#client.setConfigOption(
         sessionId,
         { id: effortOption.id, type: "select", value: effort },
         signal,
       );
+    } else if (typeof effort === "string") {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: `${this.#options.engineLabel} does not offer effort ${effort} for this model`,
+      });
     }
   }
 

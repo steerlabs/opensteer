@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { harnessCatalog, harnessExecutableEnvironmentVariable } from "@opensteer/core";
+import {
+  harnessCatalog,
+  harnessExecutableEnvironmentVariable,
+  shipsHarnessRuntimeBytes,
+} from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   computerConnectionCommands,
@@ -88,7 +92,7 @@ describe("computerConnectionCommands", () => {
     expect(commands.bareHost).toContain('OPENSTEER_AGENT_SKILLS_DIRECTORY="$dir/agent-skills"');
     expect(commands.bareHost).toContain('OPENSTEER_BROWSER_HARNESS="$dir/bin/browser-harness"');
     for (const entry of harnessCatalog) {
-      if (entry.runtime.shape === "installed") {
+      if (!shipsHarnessRuntimeBytes(entry)) {
         expect(commands.bareHost).not.toContain(harnessExecutableEnvironmentVariable(entry.kind));
         continue;
       }
@@ -108,7 +112,7 @@ describe("computerConnectionCommands", () => {
       await mkdir(join(bundle, "bin"), { recursive: true });
       await mkdir(join(bundle, "node/bin"), { recursive: true });
       for (const entry of harnessCatalog) {
-        if (entry.runtime.shape === "installed") continue;
+        if (!shipsHarnessRuntimeBytes(entry)) continue;
         await mkdir(dirname(join(bundle, entry.runtime.path)), { recursive: true });
       }
       await mkdir(join(bundle, "agent-skills"));
@@ -124,7 +128,7 @@ describe("computerConnectionCommands", () => {
         "bin/opensteer-native-fs",
         "bin/browser-harness",
         ...harnessCatalog.flatMap((entry) =>
-          entry.runtime.shape === "installed" ? [] : [entry.runtime.path],
+          shipsHarnessRuntimeBytes(entry) ? [entry.runtime.path] : [],
         ),
         "node/bin/node",
       ]) {
@@ -139,7 +143,7 @@ test -x "$OPENSTEER_BROWSER_HARNESS"
 ${harnessCatalog
   // The command exports nothing for an engine the person installs, so the
   // Runner it starts must not be asked for one either.
-  .filter((entry) => entry.runtime.shape !== "installed")
+  .filter(shipsHarnessRuntimeBytes)
   .map((entry) => `test -e "$${harnessExecutableEnvironmentVariable(entry.kind)}"`)
   .join("\n")}
 test -x "$OPENSTEER_NODE_EXECUTABLE"

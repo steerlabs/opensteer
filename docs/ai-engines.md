@@ -12,7 +12,7 @@ A remembered selection is a decision: keep an unavailable choice visible with it
 
 Use `packages/core/src/harness-catalog.ts` for declarations and `packages/harness/src/types.ts` for contracts. Keep driver imports out of client-bundled core. Launch Node through `HarnessDriverRuntime.nodeExecutable`, since Desktop's `process.execPath` is Electron.
 
-Thread access modes and SSH machine-access modes are different contracts. Refuse an unsupported mode rather than substituting one. OpenCode, Pi and Cursor cannot implement Opensteer's routine-action approval mode. OpenCode's native child-session permissions must remain routable to a person; do not enable child execution without that path.
+Thread access modes and SSH machine-access modes are different contracts. A mode may fall back only to a stricter one; Antigravity's Auto mode uses its approval-prompting default mode. OpenCode, Pi and Cursor cannot implement Opensteer's routine-action approval mode. OpenCode's native child-session permissions must remain routable to a person; do not enable child execution without that path.
 
 Source fields are nonsecret metadata. Reject URL credentials and fragments: credentials there would be stored or logged in clear and do not survive base-URL joining. Managed secrets enter through `secret-input`, travel once from Host to Runner, and are stored by the driver.
 
@@ -39,6 +39,8 @@ Use [upgrade-engines](../.agents/skills/upgrade-engines/SKILL.md) to bump pins, 
 Own-sign-in Codex, Claude and Cursor accounts run the person's installed CLI, so credentials and executable come from the same installation. Never substitute shipped bytes if that CLI is absent. Shared Runners use shipped engines only. Exact shipped pins and installed minimum versions have different meanings; minimums move only when driver compatibility requires it. See `packages/harness/src/registry.ts` and `packages/harness/src/runtime-artifact.ts`.
 
 Installed-engine updates are native-user maintenance. Resolve ownership from the real executable before choosing a package-manager or native updater; a containing Homebrew Node formula does not own an npm global, and an unproved owner gets guidance rather than a guessed command. Fence affected Runs and sign-ins, retire warm sessions, supervise the updater, then invalidate every driver and catalog object that could retain the replaced executable. Update output is bounded and never published because an upstream updater may echo its environment. See `packages/harness/src/engine-installation.ts` and `apps/runner/src/runtime/runtime.ts`.
+
+Antigravity is neither shipped in a distribution nor resolved from the person's `PATH`. Its driver downloads Google's pinned archive into the Runner-owned runtime cache, verifies the complete archive and member manifest, then atomically publishes an immutable SHA-256-addressed release shared by that Runner's accounts. Version 1.4.1 remains pinned because 1.4.2–1.4.4 write a system skill into every Workspace.
 
 Codex enables only approved features from `packages/harness-codex/src/features.ts`. New defaults must stay off until reviewed; effective configuration that forces an unapproved feature on refuses the Run.
 

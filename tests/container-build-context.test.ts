@@ -76,7 +76,6 @@ describe("container build context", () => {
     expect(containerfile).toContain("node dist/verify-harness-runtimes-main.js");
     for (const kind of shippedHarnessKinds) {
       const { runtime } = shippedHarnessCatalogEntry(kind);
-      if (runtime.shape === "installed") throw new Error(`${kind} ships no runtime`);
       expect(containerfile).not.toContain(runtime.expectedVersion);
     }
     for (const entry of harnessCatalog) {

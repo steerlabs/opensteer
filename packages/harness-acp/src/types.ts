@@ -54,6 +54,8 @@ export interface AcpSessionPolicy {
         readonly modelCategory: "model";
         readonly effortCategory: "thought_level";
         readonly effortOptionId: string;
+        /** Suffixes older sessions encoded onto a currently offered model id. */
+        readonly legacyModelSuffixes?: readonly string[];
       };
 }
 
@@ -128,6 +130,8 @@ export interface AcpNativeHooks {
     inspection: AcpInspectionSnapshot,
   ): string | undefined;
   rewritePromptText?(text: string, context: HarnessSessionContext): Promise<string> | string;
+  /** Removes engine-owned non-JSON lines before the ACP SDK sees stdout. */
+  transformStdout?(stdout: AsyncIterable<Buffer>): AsyncIterable<Buffer>;
 }
 
 export interface AcpLaunchOptions {

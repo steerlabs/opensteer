@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import { createHarnessRegistry } from "./harness-registry.js";
 
 const harnessExecutables = harnessKindRecord((kind) => `/opt/fake/${kind}`);
-const harnessRuntime = { nodeExecutable: "/opt/fake/node" };
+const harnessRuntime = {
+  nodeExecutable: "/opt/fake/node",
+  runtimeCacheDirectory: "/opt/fake/runtime-cache",
+};
 
 describe("Runner harness registry", () => {
   it("advertises every catalog engine in catalog order, and nothing else", async () => {

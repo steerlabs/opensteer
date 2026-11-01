@@ -23,6 +23,7 @@ import type {
   HarnessInstalledEngine,
   HarnessInstanceDefinition,
   HarnessInstanceState,
+  HarnessPreparationContext,
   HarnessProviderState,
   HarnessProviderStoreScope,
   HarnessModelCommandContext,
@@ -49,7 +50,7 @@ interface RegistryEntry {
 
 interface PreparationEntry {
   readonly controller: AbortController;
-  readonly instanceId: HarnessInstanceId;
+  readonly instanceIds: Set<HarnessInstanceId>;
   readonly key: string;
   promise: Promise<void>;
   error?: unknown;
@@ -747,29 +748,53 @@ export class HarnessRegistry {
     if (!prepare) return undefined;
     this.#assertOpen();
     this.#assertConfiguredDefinitionMatches(definition, config);
-    const key = preparationFingerprint(
-      definition,
+    const preparationContext = {
       config,
       environment,
-      runtimeBoundary,
       providerState,
+      runtimeBoundary,
+      signal: new AbortController().signal,
+      sourceId: definition.sourceId,
       workingDirectory,
-    );
+    } satisfies HarnessPreparationContext;
+    const sharedKey = driver.preparationKey?.(preparationContext);
+    if (sharedKey !== undefined && sharedKey.length === 0) {
+      throw new TypeError(
+        `Harness driver ${definition.driverKind} returned an empty preparation key`,
+      );
+    }
+    const key =
+      sharedKey === undefined
+        ? preparationFingerprint(
+            definition,
+            config,
+            environment,
+            runtimeBoundary,
+            providerState,
+            workingDirectory,
+          )
+        : `${definition.driverKind}\0${sharedKey}`;
     const configured = this.#instances.get(definition.id);
     const existing = this.#preparations.get(key);
     if (existing) {
+      existing.instanceIds.add(definition.id);
       if (configured) configured.preparationKey = key;
       return existing;
     }
 
-    const superseded = [...this.#preparations.values()].filter(
-      (preparation) => preparation.instanceId === definition.id,
+    const superseded = [...this.#preparations.values()].filter((preparation) =>
+      preparation.instanceIds.has(definition.id),
     );
+    const retired: PreparationEntry[] = [];
     for (const preparation of superseded) {
-      this.#preparations.delete(preparation.key);
-      preparation.controller.abort(new Error("Harness preparation inputs changed"));
+      preparation.instanceIds.delete(definition.id);
+      if (preparation.instanceIds.size === 0) {
+        retired.push(preparation);
+        this.#preparations.delete(preparation.key);
+        preparation.controller.abort(new Error("Harness preparation inputs changed"));
+      }
     }
-    await Promise.allSettled(superseded.map(({ promise }) => promise));
+    await Promise.allSettled(retired.map(({ promise }) => promise));
     this.#assertOpen();
     this.#assertConfiguredDefinitionMatches(definition, config);
     if (configured && this.#instances.get(definition.id) !== configured) {
@@ -784,7 +809,7 @@ export class HarnessRegistry {
     const controller = new AbortController();
     const entry: PreparationEntry = {
       controller,
-      instanceId: definition.id,
+      instanceIds: new Set([definition.id]),
       key,
       promise: Promise.resolve(),
       status: "pending",
@@ -805,13 +830,13 @@ export class HarnessRegistry {
         () => {
           if (this.#preparations.get(key) !== entry) return;
           entry.status = "ready";
-          this.#notifyPreparationSettled(entry.instanceId);
+          for (const instanceId of entry.instanceIds) this.#notifyPreparationSettled(instanceId);
         },
         (error: unknown) => {
           if (this.#preparations.get(key) !== entry) return;
           entry.error = error;
           entry.status = "failed";
-          this.#notifyPreparationSettled(entry.instanceId);
+          for (const instanceId of entry.instanceIds) this.#notifyPreparationSettled(instanceId);
         },
       );
     this.#preparations.set(key, entry);
@@ -819,14 +844,19 @@ export class HarnessRegistry {
   }
 
   async #cancelPreparations(instanceId: HarnessInstanceId): Promise<void> {
-    const preparations = [...this.#preparations.values()].filter(
-      (preparation) => preparation.instanceId === instanceId,
+    const preparations = [...this.#preparations.values()].filter((preparation) =>
+      preparation.instanceIds.has(instanceId),
     );
+    const retired: PreparationEntry[] = [];
     for (const preparation of preparations) {
-      this.#preparations.delete(preparation.key);
-      preparation.controller.abort(new Error("Harness instance preparation was canceled"));
+      preparation.instanceIds.delete(instanceId);
+      if (preparation.instanceIds.size === 0) {
+        retired.push(preparation);
+        this.#preparations.delete(preparation.key);
+        preparation.controller.abort(new Error("Harness instance preparation was canceled"));
+      }
     }
-    await Promise.allSettled(preparations.map(({ promise }) => promise));
+    await Promise.allSettled(retired.map(({ promise }) => promise));
     // Work held for the account waits on its preparation settling, and a
     // cancelled one has settled too.
     if (preparations.length > 0) this.#notifyPreparationSettled(instanceId);

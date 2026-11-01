@@ -81,6 +81,7 @@ export interface AcpProtocolClient {
     readonly signal: AbortSignal;
   }): Promise<AcpInspectionSnapshot>;
   authenticate(methodId: string, signal: AbortSignal): Promise<void>;
+  logout(signal: AbortSignal): Promise<void>;
   newSession(environment: AcpSessionEnvironment, signal: AbortSignal): Promise<AcpSessionSnapshot>;
   resumeSession(
     reference: string,
@@ -145,16 +146,18 @@ const SessionConfigOptionSchema = z.looseObject({
 export function createAcpProtocolClient(options: {
   readonly handlers: AcpProtocolHandlers;
   readonly process: SupervisedProcess;
+  readonly stdout?: AsyncIterable<Buffer>;
   readonly version: AcpProtocolVersion;
 }): AcpProtocolClient {
   return options.version === 1
-    ? createV1Client(options.process, options.handlers)
-    : createV2Client(options.process, options.handlers);
+    ? createV1Client(options.process, options.handlers, options.stdout)
+    : createV2Client(options.process, options.handlers, options.stdout);
 }
 
 function createV1Client(
   process: SupervisedProcess,
   handlers: AcpProtocolHandlers,
+  stdout: AsyncIterable<Buffer> = process.stdout,
 ): AcpProtocolClient {
   const app = acpV1
     .client({ name: "Opensteer" })
@@ -194,7 +197,7 @@ function createV1Client(
   const connection = app.connect(
     acpV1.ndJsonStream(
       Writable.toWeb(process.child.stdin),
-      Readable.toWeb(process.child.stdout) as ReadableStream<Uint8Array>,
+      Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
     ),
   );
   const agent = connection.agent;
@@ -237,6 +240,9 @@ function createV1Client(
         { methodId },
         { cancellationSignal: signal },
       );
+    },
+    logout: async (signal) => {
+      await agent.request<unknown, unknown>("logout", {}, { cancellationSignal: signal });
     },
     newSession: async (environment, signal) =>
       v1Snapshot(
@@ -310,6 +316,7 @@ function createV1Client(
 function createV2Client(
   process: SupervisedProcess,
   handlers: AcpProtocolHandlers,
+  stdout: AsyncIterable<Buffer> = process.stdout,
 ): AcpProtocolClient {
   const idle = new Map<string, { readonly done: Deferred<string>; running: boolean }>();
   const app = acpV2
@@ -337,7 +344,7 @@ function createV2Client(
   const connection = app.connect(
     acpV2.ndJsonStream(
       Writable.toWeb(process.child.stdin),
-      Readable.toWeb(process.child.stdout) as ReadableStream<Uint8Array>,
+      Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
     ),
   );
   const agent = connection.agent;
@@ -380,6 +387,9 @@ function createV2Client(
         { methodId },
         { cancellationSignal: signal },
       );
+    },
+    logout: async (signal) => {
+      await agent.request(acpV2.methods.agent.auth.logout, {}, { cancellationSignal: signal });
     },
     newSession: async (environment, signal) => {
       const response = await agent.request(
@@ -716,7 +726,15 @@ export function acpReadTextFileHandler(roots: readonly string[]) {
         code: "bad_request",
         message: "ACP cannot read binary files as text",
       });
-    const text = bytes.toString("utf8");
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "ACP cannot read binary files as text",
+      });
+    }
     if (line === null || line === undefined) return text;
     const start = Math.max(0, line - 1);
     return text

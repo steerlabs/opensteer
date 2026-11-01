@@ -20,7 +20,7 @@ describe("harness catalog", () => {
     for (const line of imports) expect(line).toMatch(/^\s*import type\b/u);
   });
 
-  it("separates the engines whose bytes a distribution ships from those it does not", () => {
+  it("separates shipped, downloaded, and person-installed runtimes", () => {
     // These CLIs have no established redistribution grant, so the person
     // installs them: nothing here stages, version-asserts or names their bytes.
     expect(shippedHarnessKinds).toEqual(["codex", "opencode", "pi"]);
@@ -29,6 +29,11 @@ describe("harness catalog", () => {
         .filter((entry) => entry.runtime.shape === "installed")
         .map((entry) => entry.kind),
     ).toEqual(["claude", "grok", "muse", "cursor"]);
+    expect(
+      harnessCatalog
+        .filter((entry) => entry.runtime.shape === "downloaded")
+        .map((entry) => entry.kind),
+    ).toEqual(["antigravity"]);
     expect(shippedHarnessKindRecord((kind) => kind.length)).toEqual({
       codex: 5,
       opencode: 8,
@@ -70,6 +75,7 @@ describe("harness catalog", () => {
       minimumVersion: "1.4.14",
       shape: "installed",
     });
+    expect(harnessCatalogEntry("antigravity")?.runtime).toEqual({ shape: "downloaded" });
   });
 
   it("keeps a staged tree's executable inside the directory that travels with it", () => {
@@ -92,14 +98,14 @@ describe("harness catalog", () => {
     }
   });
 
-  it.each(["cursor", "muse"] as const)(
-    "refuses to state a version for the installed %s engine",
+  it.each(["cursor", "grok", "muse", "antigravity"] as const)(
+    "refuses to state a distribution version for the unshipped %s engine",
     (kind) => {
       expect(() => harnessRuntimeExpectedVersion(kind)).toThrow(
-        `Harness ${kind} is installed by the person, so nothing pins its version`,
+        `Harness ${kind} has no runtime bytes in the Opensteer distribution`,
       );
       expect(() => harnessRuntimeVersion(kind)).toThrow(
-        `Harness ${kind} is installed by the person, so nothing pins its version`,
+        `Harness ${kind} has no runtime bytes in the Opensteer distribution`,
       );
     },
   );

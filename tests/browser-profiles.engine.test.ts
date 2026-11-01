@@ -66,7 +66,10 @@ describe("live agent-created browser profile", () => {
         harnessInstance: { config: {}, driverKind, sourceId, stateKind: "ambient" },
         harnesses: createHarnessRegistry(
           parseAgentExecutionConfig(process.env).harnessExecutables,
-          { nodeExecutable: process.execPath },
+          {
+            nodeExecutable: process.execPath,
+            runtimeCacheDirectory: path.join(tmpdir(), "opensteer-test-runtime-cache"),
+          },
         ),
         harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 600_000,

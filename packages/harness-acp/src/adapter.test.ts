@@ -172,6 +172,17 @@ describe("ACP boundaries", () => {
     await expect(read(file, 2, 1)).resolves.toBe("two\n");
     await expect(read(outside)).rejects.toMatchObject({ code: "forbidden" });
   });
+
+  it("refuses invalid UTF-8 as a binary file read", async () => {
+    const root = await temporaryDirectory();
+    const file = join(root, "binary.dat");
+    await writeFile(file, Buffer.from([0xc3, 0x28]));
+
+    await expect(acpReadTextFileHandler([root])(file)).rejects.toMatchObject({
+      code: "bad_request",
+      message: "ACP cannot read binary files as text",
+    });
+  });
 });
 
 type Scenario = "background" | "permission" | "prompt-error" | "replay";
@@ -330,6 +341,7 @@ function fakeClient(
 ): AcpProtocolClient {
   return {
     authenticate: async () => undefined,
+    logout: async () => undefined,
     cancel: async () => undefined,
     close: () => undefined,
     closeSession: async () => undefined,

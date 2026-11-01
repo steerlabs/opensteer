@@ -200,7 +200,6 @@ export function enginePins(workspace: string): Readonly<Record<string, string | 
 
 function enginePackage(kind: ShippedHarnessKind): string {
   const { runtime } = shippedHarnessCatalogEntry(kind);
-  if (runtime.shape === "installed") throw new Error(`${kind} ships no runtime`);
   return runtime.npmPackage;
 }
 

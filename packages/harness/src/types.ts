@@ -789,6 +789,7 @@ export interface HarnessDriver {
    */
   modelCommandLaunch?(context: HarnessModelCommandContext): Promise<HarnessProcessLaunchWrapper>;
   /** One-time, potentially slow preparation required before inspection or use. */
+  preparationKey?(context: HarnessPreparationContext): string;
   prepare?(context: HarnessPreparationContext): Promise<void>;
   inspect?(context: HarnessInspectionContext): Promise<HarnessInspectionResult>;
   create(context: HarnessDriverCreateContext): Promise<HarnessAdapter>;

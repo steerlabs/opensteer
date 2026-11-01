@@ -6,6 +6,7 @@ packages:
 catalog:
   "@agentclientprotocol/sdk": 2.2.0
   "@config-plugins/react-native-webrtc": 15.0.2
+  "@electron-internal/extract-zip": 1.0.5
   react-native-webrtc: 155.0.1
   "@anthropic-ai/claude-agent-sdk": 0.3.295
   "@better-auth/core": 1.7.14
