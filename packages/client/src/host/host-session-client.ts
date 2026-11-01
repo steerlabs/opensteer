@@ -2426,14 +2426,17 @@ export class HttpHostClient {
 
   async loadEarlierTranscript(threadId: string): Promise<void> {
     const existing = this.#messagePageLoads.get(threadId);
-    if (existing) return existing.promise;
+    if (existing && !existing.retired) return existing.promise;
     const scan = { promise: Promise.resolve(), retired: false };
     this.#messagePageLoads.set(threadId, scan);
-    scan.promise = this.#loadEarlierTranscript(threadId, scan).finally(() => {
-      if (this.#messagePageLoads.get(threadId) === scan) {
-        this.#messagePageLoads.delete(threadId);
-      }
-    });
+    // A retired scan still settles its in-flight page; a new request starts after it.
+    scan.promise = (existing?.promise.catch(() => undefined) ?? Promise.resolve())
+      .then(() => this.#loadEarlierTranscript(threadId, scan))
+      .finally(() => {
+        if (this.#messagePageLoads.get(threadId) === scan) {
+          this.#messagePageLoads.delete(threadId);
+        }
+      });
     return scan.promise;
   }
 
@@ -5482,7 +5485,7 @@ export class HttpHostClient {
   ): Promise<void> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
-    const rowKeys = (snapshot: HostSnapshot) => {
+    const drawnRows = (snapshot: HostSnapshot) => {
       const thread = snapshot.threads.find((item) => item.id === threadId);
       return thread
         ? drawnTranscriptRowKeys(snapshot.transcripts[threadId] ?? [], {
@@ -5490,8 +5493,8 @@ export class HttpHostClient {
             inputQueue: snapshot.inputQueues[threadId] ?? null,
             assignments: snapshot.assignments,
             waitingRequests: snapshot.waitingRequests,
-          })
-        : [];
+          }).length
+        : 0;
     };
     while (!scan.retired && this.#viewerStillCurrent(generation, userId)) {
       const thread = this.#snapshot.threads.find((item) => item.id === threadId);
@@ -5520,7 +5523,7 @@ export class HttpHostClient {
       );
       const olderEntries = page.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
       const currentEntries = this.#snapshot.transcripts[threadId] ?? [];
-      const beforeRows = new Set(rowKeys(this.#snapshot));
+      const drawnBefore = drawnRows(this.#snapshot);
       const merged = {
         ...this.#snapshot,
         threads: this.#snapshot.threads.map((thread) =>
@@ -5545,11 +5548,13 @@ export class HttpHostClient {
           [threadId]: page.window,
         },
       };
-      const first = rowKeys(merged)[0];
+      const drawnAfter = drawnRows(merged);
       this.#update(merged);
       if (page.window.hasMore && (!page.window.nextBefore || page.window.nextBefore === before))
         throw new Error("Thread event page is missing its continuation cursor.");
-      if (!page.window.hasMore || (first !== undefined && !beforeRows.has(first))) return;
+      // Rows are counted, not named: an older page can rename the turn it
+      // reaches into without drawing anything new.
+      if (!page.window.hasMore || drawnAfter > drawnBefore) return;
     }
   }
 

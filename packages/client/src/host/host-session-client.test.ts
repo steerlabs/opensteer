@@ -2620,6 +2620,8 @@ describe("HttpHostClient durable realtime", () => {
         holdFirst?: boolean;
         empty?: boolean;
         folded?: boolean;
+        /** The newest page starts inside a Run a steer split, so no Run entry heads its first trace. */
+        cut?: boolean;
         longScan?: boolean;
         shown?: "active" | "observed";
       } = {},
@@ -2627,9 +2629,10 @@ describe("HttpHostClient durable realtime", () => {
       const workspace = makeWorkspace();
       const thread = { ...makeThread(workspace.id), role: options.role ?? "conversation" };
       const recent = {
-        ...makeMessage(thread.id, options.folded ? "assistant" : "input", "Recent"),
-        runId: options.folded ? createId("run") : null,
+        ...makeMessage(thread.id, options.folded || options.cut ? "assistant" : "input", "Recent"),
+        runId: options.folded || options.cut ? createId("run") : null,
       };
+      const steer = { ...makeMessage(thread.id, "input", "Steer"), runId: recent.runId };
       const earlier = makeMessage(thread.id, "input", "Earlier question");
       const reply = {
         ...makeMessage(thread.id, "assistant", "Earlier reply"),
@@ -2668,7 +2671,10 @@ describe("HttpHostClient durable realtime", () => {
       const requests: Record<string, unknown>[] = [];
       let viewerId = ownerId;
       let warming =
-        options.empty === true || options.folded === true || options.shown !== undefined;
+        options.empty === true ||
+        options.folded === true ||
+        options.cut === true ||
+        options.shown !== undefined;
       const socket = new FakeSocket();
       const client = createHttpHostClient({
         capabilities: options.turnPages === false ? [] : ["history-turns-v1"],
@@ -2697,20 +2703,39 @@ describe("HttpHostClient durable realtime", () => {
             warming = false;
             const events = options.empty
               ? []
-              : [
-                  ...(options.folded
-                    ? [
-                        agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
-                          status: "completed",
-                          replyMessageId: recent.id,
-                        }),
-                      ]
-                    : []),
-                  agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
-                    input: null,
-                    message: recent,
-                  }),
-                ];
+              : options.cut
+                ? [
+                    agentEvent(workspace.id, thread.id, recent.runId, "3", "reasoning.completed", {
+                      blockId: "cut-step",
+                      text: "Work before the steer",
+                    }),
+                    agentEvent(workspace.id, thread.id, recent.runId, "4", "message.created", {
+                      input: makeThreadInput(steer),
+                      message: steer,
+                    }),
+                    agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
+                      status: "completed",
+                      replyMessageId: recent.id,
+                    }),
+                    agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
+                      input: null,
+                      message: recent,
+                    }),
+                  ]
+                : [
+                    ...(options.folded
+                      ? [
+                          agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
+                            status: "completed",
+                            replyMessageId: recent.id,
+                          }),
+                        ]
+                      : []),
+                    agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
+                      input: null,
+                      message: recent,
+                    }),
+                  ];
             return json({
               thread,
               threadId: thread.id,
@@ -2741,12 +2766,12 @@ describe("HttpHostClient durable realtime", () => {
             : options.longScan && !first
               ? []
               : first
-                ? options.steps || options.folded
+                ? options.steps || options.folded || options.cut
                   ? [
                       agentEvent(
                         workspace.id,
                         thread.id,
-                        options.folded ? recent.runId : silentRun,
+                        options.folded || options.cut ? recent.runId : silentRun,
                         "4",
                         "reasoning.completed",
                         {
@@ -2993,6 +3018,35 @@ describe("HttpHostClient durable realtime", () => {
         f.client.activateThread(createId("thread"));
         f.secondAnswer.resolve();
         await loading;
+        expect(f.requests.length).toBeGreaterThan(2);
+      } finally {
+        f.secondAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it("reads past older steps that only rename a split Run's first trace", async () => {
+      const { client, requests, thread } = await setupHistory({ cut: true, role: "work" });
+      try {
+        await client.loadEarlierTranscript(thread.id);
+        expect(requests).toHaveLength(2);
+      } finally {
+        client.dispose();
+      }
+    });
+
+    it("starts afresh when asked again after its scan was retired", async () => {
+      const f = await setupHistory({ shown: "active", holdSecond: true, longScan: true });
+      try {
+        const loading = f.client.loadEarlierTranscript(f.thread.id);
+        await withTimeout(f.secondAsked.promise, 1000, {
+          timeoutError: () => new Error("The second page was never requested."),
+        });
+        f.leave();
+        f.client.activateThread(f.thread.id);
+        const again = f.client.loadEarlierTranscript(f.thread.id);
+        f.secondAnswer.resolve();
+        await Promise.all([loading, again]);
         expect(f.requests.length).toBeGreaterThan(2);
       } finally {
         f.secondAnswer.resolve();

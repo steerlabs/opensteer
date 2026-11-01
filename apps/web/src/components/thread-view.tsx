@@ -200,6 +200,7 @@ function ThreadView({
   const earlierAnchor = useRef<{
     readonly scroller: HTMLElement;
     readonly key: string | null;
+    readonly messageId: string | null;
     readonly top: number;
     readonly rows: ReadonlySet<string>;
   } | null>(null);
@@ -493,21 +494,28 @@ function ThreadView({
     const held = earlierAnchor.current;
     if (!held) return;
     const { scroller, top } = held;
+    // A message keeps its id when an older page renames the turn row it sits in.
     const element =
-      held.key === null
+      (held.messageId === null
+        ? null
+        : scroller.querySelector<HTMLElement>(
+            `[data-message-id="${CSS.escape(held.messageId)}"]`,
+          )) ??
+      (held.key === null
         ? null
         : scroller.querySelector<HTMLElement>(
             `[data-transcript-row="${CSS.escape(held.key)}"]:not(:empty)`,
-          );
-    if (element?.isConnected) scroller.scrollTop += element.getBoundingClientRect().top - top;
+          ));
+    if (element) scroller.scrollTop += element.getBoundingClientRect().top - top;
     if (loadingEarlier) return;
     earlierAnchor.current = null;
+    if (!element) return;
     const rows = [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")];
     const newestEarlier = rows.findLast(
       (row) =>
         !held.rows.has(row.dataset.transcriptRow!) &&
-        (element === null ||
-          Boolean(row.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        !row.contains(element) &&
+        Boolean(row.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING),
     );
     if (!newestEarlier) return;
     const from = scroller.scrollTop;
@@ -546,17 +554,23 @@ function ThreadView({
     if (loadingEarlier) return;
     const scroller = currentScroller();
     const top = scroller?.getBoundingClientRect().top ?? 0;
-    const anchor = scroller
+    const visible = (element: HTMLElement) => element.getBoundingClientRect().bottom > top;
+    const anchorRow = scroller
       ? [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")].find(
-          (element) => element.getBoundingClientRect().bottom > top,
+          visible,
         )
       : undefined;
+    const anchorMessage = anchorRow
+      ? [...anchorRow.querySelectorAll<HTMLElement>("[data-message-id]")].find(visible)
+      : undefined;
+    const anchor = anchorMessage ?? anchorRow;
     const button = scroller?.querySelector<HTMLElement>(".transcript__load-earlier") ?? null;
     earlierMotion.current?.cancel();
     if (scroller)
       earlierAnchor.current = {
         scroller,
-        key: anchor?.dataset.transcriptRow ?? null,
+        key: anchorRow?.dataset.transcriptRow ?? null,
+        messageId: anchorMessage?.dataset.messageId ?? null,
         top: anchor?.getBoundingClientRect().top ?? top,
         rows: new Set(
           [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")].map(
