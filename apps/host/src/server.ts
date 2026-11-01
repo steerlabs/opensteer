@@ -32,7 +32,6 @@ import { createVoiceHandlers } from "./voice/voice-handlers.js";
  */
 import type { ComputerViewService } from "./computer-use/computer-view-service.js";
 
-import type { PlaceContextService } from "./computer-use/place-context-service.js";
 import websocket from "@fastify/websocket";
 import {
   HostToMessagingRelayMessageSchema,
@@ -179,7 +178,7 @@ import { BoundedAsyncInbox } from "@opensteer/shared/boundedAsyncInbox";
 import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type WebSocket from "ws";
 import type { RawData } from "ws";
