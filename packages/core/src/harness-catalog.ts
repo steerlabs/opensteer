@@ -150,6 +150,19 @@ export const harnessCatalog = [
     machineAccess: { platforms: ["darwin", "linux"], accessModes: "all" },
   },
   {
+    kind: "grok",
+    label: "Grok",
+    brandProviderId: "xai",
+    runtime: {
+      command: "grok",
+      installUrl: "https://x.ai/cli",
+      minimumVersion: "1.0.70",
+      shape: "installed",
+    },
+    userEnvironmentVariables: ["GROK_HOME"],
+    machineAccess: { platforms: [], accessModes: [] },
+  },
+  {
     kind: "muse",
     label: "Muse Code",
     brandProviderId: "meta",
@@ -160,8 +173,7 @@ export const harnessCatalog = [
       minimumVersion: "1.4.14",
     },
     userEnvironmentVariables: ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "MUSE_PROJECTS_HOME"],
-    // Muse machine-access relay reachability has not been measured yet.
-    machineAccess: { platforms: [], accessModes: "all" },
+    machineAccess: { platforms: [], accessModes: [] },
   },
   {
     kind: "opencode",

@@ -7,6 +7,7 @@ import {
 } from "@opensteer/harness-claude";
 import { CodexHarnessDriver, packagedCodexExecutable } from "@opensteer/harness-codex";
 import { CursorHarnessDriver, installedCursorExecutable } from "@opensteer/harness-cursor";
+import { GrokHarnessDriver, installedGrokExecutable } from "@opensteer/harness-grok";
 import { MuseHarnessDriver, installedMuseExecutable } from "@opensteer/harness-muse";
 import { OpencodeHarnessDriver, packagedOpencodeExecutable } from "@opensteer/harness-opencode";
 import { PiHarnessDriver, packagedPiExecutable } from "@opensteer/harness-pi";
@@ -69,6 +70,10 @@ export const harnessDriverFactories: Record<HarnessKind, HarnessDriverFactory> =
     create: (executable, runtime) =>
       new CursorHarnessDriver({ executable, nodeExecutable: runtime.nodeExecutable }),
     defaultExecutable: installedCursorExecutable,
+  },
+  grok: {
+    create: (executable) => new GrokHarnessDriver({ executable }),
+    defaultExecutable: installedGrokExecutable,
   },
   muse: {
     create: (executable) => new MuseHarnessDriver({ executable }),

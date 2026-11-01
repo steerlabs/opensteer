@@ -39,6 +39,7 @@
     "@opensteer/harness-claude": "workspace:*",
     "@opensteer/harness-codex": "workspace:*",
     "@opensteer/harness-cursor": "workspace:*",
+    "@opensteer/harness-grok": "workspace:*",
     "@opensteer/harness-muse": "workspace:*",
     "@opensteer/harness-opencode": "workspace:*",
     "@opensteer/harness-pi": "workspace:*",

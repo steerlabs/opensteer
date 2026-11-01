@@ -27,26 +27,27 @@ export function createHarnessRegistry(
         : "installed" in entry
           ? entry.installed
           : undefined;
-    const update = installedEngineUpdateFacts[entry.kind];
     registry.registerDriver(
       factory.create(executables[entry.kind], runtime),
       {
         note: `${entry.label} availability and models are inspected per configured engine`,
         status: "runtime-check",
       },
-      installed &&
-        update && {
-          // The Runner's PATH is the one every engine process inherits; on a
-          // person's own computer it is their login shell's.
-          locate: () => findExecutableOnPath(installed.command, process.env.PATH),
-          create: (executable) => factory.create(executable, runtime),
-          missing:
-            entry.kind === "claude"
-              ? claudeInstallGuidance
-              : `${entry.label}'s CLI is not installed on this computer. Install it from ${installed.installUrl}, or add an Opensteer-managed ${entry.label} account.`,
-          scope: entry.runtime.shape === "installed" ? "all" : "ambient",
-          update,
+      installed && {
+        // The Runner's PATH is the one every engine process inherits; on a
+        // person's own computer it is their login shell's.
+        locate: () => findExecutableOnPath(installed.command, process.env.PATH),
+        create: (executable) => factory.create(executable, runtime),
+        missing:
+          entry.kind === "claude"
+            ? claudeInstallGuidance
+            : `${entry.label}'s CLI is not installed on this computer. Install it from ${installed.installUrl}, or add an Opensteer-managed ${entry.label} account.`,
+        scope: entry.runtime.shape === "installed" ? "all" : "ambient",
+        update: {
+          ...installedEngineUpdateFacts[entry.kind as keyof typeof installedEngineUpdateFacts],
+          minimumVersion: installed.minimumVersion,
         },
+      },
     );
   }
   return registry;
