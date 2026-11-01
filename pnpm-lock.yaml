@@ -30,6 +30,9 @@ catalogs:
     '@earendil-works/pi-coding-agent':
       specifier: 0.87.1
       version: 0.87.1
+    '@electron-internal/extract-zip':
+      specifier: 1.0.5
+      version: 1.0.5
     '@fastify/compress':
       specifier: 9.3.0
       version: 9.3.0
@@ -1671,6 +1674,31 @@ importers:
       yaml:
         specifier: 'catalog:'
         version: 2.9.0
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.2.0
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+
+  packages/harness-antigravity:
+    dependencies:
+      '@electron-internal/extract-zip':
+        specifier: 'catalog:'
+        version: 1.0.5
+      '@opensteer/core':
+        specifier: workspace:*
+        version: link:../core
+      '@opensteer/harness':
+        specifier: workspace:*
+        version: link:../harness
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../shared
       zod:
         specifier: 'catalog:'
         version: 4.6.7

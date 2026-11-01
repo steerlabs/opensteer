@@ -7,7 +7,7 @@ import {
   type ShippedHarnessKind,
 } from "@opensteer/core";
 import { engineArtifactPackageVersion } from "@opensteer/harness";
-import { harnessDriverFactories } from "./harness-drivers.js";
+import { defaultHarnessExecutable, harnessDriverFactories } from "./harness-drivers.js";
 
 export interface HarnessRuntimeVersionMismatch {
   readonly kind: ShippedHarnessKind;
@@ -43,7 +43,7 @@ export async function harnessRuntimeArtifactVersionMismatches(): Promise<
   for (const kind of shippedHarnessKinds) {
     let executable: string | undefined;
     try {
-      executable = harnessDriverFactories[kind].defaultExecutable();
+      executable = defaultHarnessExecutable(kind);
       const actual = await artifactVersions[kind](executable);
       const expected = harnessRuntimeExpectedVersion(kind);
       if (actual !== expected) mismatches.push({ actual, executable, expected, kind });
@@ -69,7 +69,7 @@ export async function harnessRuntimeVersionMismatches(
 ): Promise<readonly HarnessRuntimeVersionMismatch[]> {
   const results = await Promise.all(
     shippedHarnessKinds.map(async (kind) => {
-      const executable = harnessDriverFactories[kind].defaultExecutable();
+      const executable = defaultHarnessExecutable(kind);
       const script = shippedHarnessCatalogEntry(kind).runtime.shape === "script";
       const { stdout } = await promisify(execFile)(
         script ? nodeExecutable : executable,

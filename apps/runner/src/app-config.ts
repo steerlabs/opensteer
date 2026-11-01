@@ -3,10 +3,11 @@ import { fileURLToPath } from "node:url";
 import {
   harnessExecutableEnvironmentVariable,
   harnessKindRecord,
+  shippedHarnessCatalogEntry,
   type HarnessKind,
 } from "@opensteer/core";
 import { z } from "zod";
-import { harnessDriverFactories } from "./harness/harness-drivers.js";
+import { defaultHarnessExecutable } from "./harness/harness-drivers.js";
 
 const defaultNativeFsHelperBinary = fileURLToPath(
   new URL(
@@ -123,12 +124,15 @@ const AgentExecutionEnvironmentSchema = z.object({
  */
 const harnessExecutableSchemas = harnessKindRecord((kind) => {
   const variable = harnessExecutableEnvironmentVariable(kind);
+  if (shippedHarnessCatalogEntry(kind).runtime.shape === "downloaded") {
+    return z.literal("").default("");
+  }
   return z
     .string()
     .trim()
     .min(1)
     .refine(isAbsolute, `${variable} must be an absolute path`)
-    .default(() => harnessDriverFactories[kind].defaultExecutable());
+    .default(() => defaultHarnessExecutable(kind));
 });
 
 export interface AgentExecutionConfig {
@@ -142,8 +146,12 @@ export function parseAgentExecutionConfig(environment: NodeJS.ProcessEnv): Agent
   return {
     agentSkillsDirectory: parsed.OPENSTEER_AGENT_SKILLS_DIRECTORY,
     browserHarnessExecutable: parsed.OPENSTEER_BROWSER_HARNESS,
-    harnessExecutables: harnessKindRecord((kind) =>
-      harnessExecutableSchemas[kind].parse(environment[harnessExecutableEnvironmentVariable(kind)]),
-    ),
+    harnessExecutables: harnessKindRecord((kind) => {
+      const value =
+        shippedHarnessCatalogEntry(kind).runtime.shape === "downloaded"
+          ? undefined
+          : environment[harnessExecutableEnvironmentVariable(kind)];
+      return harnessExecutableSchemas[kind].parse(value);
+    }),
   };
 }

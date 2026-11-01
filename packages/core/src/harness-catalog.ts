@@ -24,6 +24,10 @@ import type { ThreadAccessMode } from "./models.js";
  * Node program shipped as a tree and run by the Runner's own interpreter,
  * because the engine is published as JavaScript rather than as a binary.
  *
+ * A `downloaded` runtime is fetched and verified by its driver into the
+ * Runner's writable runtime cache. It has no distribution path or installed
+ * command: its one release manifest belongs to the driver that prepares it.
+ *
  * An `installed` runtime is one the product does not ship at all: no
  * redistribution grant has been established for the engine, so the person
  * installs it and the Runner finds it. Nothing pins its version, so the entry
@@ -60,6 +64,7 @@ export type HarnessRuntimeDescriptor =
       readonly shape: "script";
       readonly treeRoot: string;
     }
+  | { readonly shape: "downloaded" }
   | (HarnessInstalledRuntimeDescriptor & { readonly shape: "installed" });
 
 /** An engine as the person installed it, found on their own PATH. */
@@ -150,6 +155,16 @@ export const harnessCatalog = [
     machineAccess: { platforms: ["darwin", "linux"], accessModes: "all" },
   },
   {
+    kind: "antigravity",
+    label: "Antigravity",
+    brandProviderId: "google",
+    runtime: { shape: "downloaded" },
+    userEnvironmentVariables: [],
+    // Machine access stays denied until the agent's command sandbox has been
+    // measured on each platform and access mode.
+    machineAccess: { platforms: [], accessModes: [] },
+  },
+  {
     kind: "opencode",
     label: "OpenCode",
     brandProviderId: "opencode",
@@ -217,7 +232,11 @@ export type ShippedHarnessKind = ShippedHarnessCatalogEntry["kind"];
 export function shipsHarnessRuntimeBytes(
   entry: (typeof harnessCatalog)[number],
 ): entry is ShippedHarnessCatalogEntry {
-  return entry.runtime.shape !== "installed";
+  return (
+    entry.runtime.shape === "file" ||
+    entry.runtime.shape === "script" ||
+    entry.runtime.shape === "tree"
+  );
 }
 
 export const shippedHarnessKinds: readonly ShippedHarnessKind[] = harnessCatalog
@@ -270,8 +289,8 @@ export function harnessDisplayRank(driverKind: string): number {
  */
 export function harnessRuntimeExpectedVersion(kind: HarnessKind): string {
   const { runtime } = shippedHarnessCatalogEntry(kind);
-  if (runtime.shape === "installed") {
-    throw new Error(`Harness ${kind} is installed by the person, so nothing pins its version`);
+  if (runtime.shape !== "file" && runtime.shape !== "script" && runtime.shape !== "tree") {
+    throw new Error(`Harness ${kind} has no runtime bytes in the Opensteer distribution`);
   }
   return runtime.expectedVersion;
 }
@@ -297,6 +316,9 @@ export function harnessMinimumVersion(kind: HarnessKind): string {
   const entry = shippedHarnessCatalogEntry(kind);
   if (entry.installed) return entry.installed.minimumVersion;
   if (entry.runtime.shape === "installed") return entry.runtime.minimumVersion;
+  if (entry.runtime.shape === "downloaded") {
+    throw new Error(`Harness ${kind} keeps its release version in its driver manifest`);
+  }
   return harnessRuntimeVersion(kind);
 }
 

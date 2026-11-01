@@ -20,7 +20,7 @@ describe("harness catalog", () => {
     for (const line of imports) expect(line).toMatch(/^\s*import type\b/u);
   });
 
-  it("separates the engines whose bytes a distribution ships from the one it does not", () => {
+  it("separates shipped, downloaded, and person-installed runtimes", () => {
     // Cursor's CLI has no established redistribution grant, so the person
     // installs it: nothing here stages, version-asserts or names its bytes.
     expect(shippedHarnessKinds).toEqual(["codex", "opencode", "pi"]);
@@ -29,6 +29,11 @@ describe("harness catalog", () => {
         .filter((entry) => entry.runtime.shape === "installed")
         .map((entry) => entry.kind),
     ).toEqual(["claude", "cursor"]);
+    expect(
+      harnessCatalog
+        .filter((entry) => entry.runtime.shape === "downloaded")
+        .map((entry) => entry.kind),
+    ).toEqual(["antigravity"]);
     expect(shippedHarnessKindRecord((kind) => kind.length)).toEqual({
       codex: 5,
       opencode: 8,
@@ -58,6 +63,7 @@ describe("harness catalog", () => {
       minimumVersion: "2026.09.10",
       shape: "installed",
     });
+    expect(harnessCatalogEntry("antigravity")?.runtime).toEqual({ shape: "downloaded" });
   });
 
   it("keeps a staged tree's executable inside the directory that travels with it", () => {
@@ -80,14 +86,17 @@ describe("harness catalog", () => {
     }
   });
 
-  it("refuses to state a version for an engine the person installs", () => {
+  it("refuses to state a distribution version for unshipped engines", () => {
     // Cursor's CLI self-updates and nothing here pins it, so a caller that
     // asks is asking about bytes this tree never ships.
     expect(() => harnessRuntimeExpectedVersion("cursor")).toThrow(
-      "Harness cursor is installed by the person, so nothing pins its version",
+      "Harness cursor has no runtime bytes in the Opensteer distribution",
     );
     expect(() => harnessRuntimeVersion("cursor")).toThrow(
-      "Harness cursor is installed by the person, so nothing pins its version",
+      "Harness cursor has no runtime bytes in the Opensteer distribution",
+    );
+    expect(() => harnessRuntimeExpectedVersion("antigravity")).toThrow(
+      "Harness antigravity has no runtime bytes in the Opensteer distribution",
     );
   });
 });

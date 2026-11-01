@@ -3,6 +3,7 @@ import {
   harnessExecutableEnvironmentVariable,
   harnessKindRecord,
   harnessKinds,
+  shippedHarnessCatalogEntry,
   shippedHarnessKinds,
 } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
@@ -25,10 +26,20 @@ describe("Runner application configuration", () => {
     );
 
     expect(parseAgentExecutionConfig(named).harnessExecutables).toEqual(
-      harnessKindRecord((kind) => `/opt/opensteer/bin/${kind}`),
+      harnessKindRecord((kind) =>
+        shippedHarnessCatalogEntry(kind).runtime.shape === "downloaded"
+          ? ""
+          : `/opt/opensteer/bin/${kind}`,
+      ),
     );
     for (const kind of harnessKinds) {
       const variable = harnessExecutableEnvironmentVariable(kind);
+      if (shippedHarnessCatalogEntry(kind).runtime.shape === "downloaded") {
+        expect(
+          parseAgentExecutionConfig({ [variable]: "relative-path" }).harnessExecutables[kind],
+        ).toBe("");
+        continue;
+      }
       expect(() => parseAgentExecutionConfig({ [variable]: kind })).toThrow(
         new RegExp(`${variable} must be an absolute path`, "u"),
       );

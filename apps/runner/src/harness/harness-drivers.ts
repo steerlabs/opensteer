@@ -23,6 +23,12 @@ export interface HarnessDriverRuntime {
    */
   readonly nodeExecutable: string;
   /**
+   * Writable storage owned by this Runner installation. Downloaded engines
+   * publish immutable verified releases here; distributions never package it,
+   * and drivers never search the person's PATH for it.
+   */
+  readonly runtimeCacheDirectory: string;
+  /**
    * Where model server apps keep their own settings — the person's home on
    * their own computer. Tests point it at a temporary home.
    */
@@ -39,7 +45,14 @@ export interface HarnessDriverFactory {
    * the driver package knows it, so it is declared beside the factory rather
    * than restated in the configuration.
    */
-  readonly defaultExecutable: () => string;
+  readonly defaultExecutable?: () => string;
+}
+
+/** The distribution or installed-CLI executable for a non-downloaded engine. */
+export function defaultHarnessExecutable(kind: HarnessKind): string {
+  const executable = harnessDriverFactories[kind].defaultExecutable?.();
+  if (!executable) throw new Error(`${kind} has no distribution executable`);
+  return executable;
 }
 
 /**

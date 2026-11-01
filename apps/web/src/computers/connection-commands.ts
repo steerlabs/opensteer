@@ -1,6 +1,7 @@
 import {
   harnessCatalog,
   harnessExecutableEnvironmentVariable,
+  shipsHarnessRuntimeBytes,
   type DeploymentShape,
 } from "@opensteer/core";
 
@@ -210,14 +211,15 @@ function installScript(distribution: string | null, dataDirectory: string): stri
     'export OPENSTEER_AGENT_SKILLS_DIRECTORY="$dir/agent-skills"',
     'export OPENSTEER_NODE_EXECUTABLE="$dir/node/bin/node"',
     'export OPENSTEER_BROWSER_HARNESS="$dir/bin/browser-harness"',
-    // An engine the product does not ship (an `installed` runtime) is found by
-    // the Runner on the computer itself, so the archive names nothing for it.
+    // Only bytes carried by the distribution get an executable path. Installed
+    // engines come from the computer; downloaded engines prepare themselves in
+    // the Runner's writable cache.
     ...harnessCatalog.flatMap((entry) =>
-      entry.runtime.shape === "installed"
-        ? []
-        : [
+      shipsHarnessRuntimeBytes(entry)
+        ? [
             `export ${harnessExecutableEnvironmentVariable(entry.kind)}="$dir/${entry.runtime.path}"`,
-          ],
+          ]
+        : [],
     ),
     'exec "$dir/bin/opensteer-runner"',
   ].join("\n");

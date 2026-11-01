@@ -71,6 +71,39 @@ describe("HarnessRegistry inspection contract", () => {
     expect(inspectDriver).toHaveBeenCalledTimes(1);
   });
 
+  it("shares driver-keyed preparation across accounts without one account cancelling it", async () => {
+    const registry = new HarnessRegistry();
+    let finish!: () => void;
+    const prepared = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const prepare = vi.fn(async ({ signal }: HarnessPreparationContext) => {
+      expect(signal.aborted).toBe(false);
+      await prepared;
+    });
+    registry.registerDriver(
+      driver({
+        inspect: async () => ({ models: [model], status: "ready" }),
+        preparationKey: () => "shared-release",
+        prepare,
+      }),
+    );
+    const second = { ...definition, id: createId("harnessInstance"), name: "Second account" };
+    registry.configureInstance(definition);
+    registry.configureInstance(second);
+
+    await expect(inspect(registry, definition)).resolves.toMatchObject({ status: "preparing" });
+    await expect(inspect(registry, second)).resolves.toMatchObject({ status: "preparing" });
+    expect(prepare).toHaveBeenCalledTimes(1);
+
+    await registry.removeInstance(definition.id);
+    expect(prepare.mock.calls[0]?.[0].signal.aborted).toBe(false);
+    finish();
+    await prepared;
+    await nextTask();
+    await expect(inspect(registry, second)).resolves.toMatchObject({ status: "ready" });
+  });
+
   it("notifies subscribers once for current preparation and cleans subscriptions up", async () => {
     const registry = new HarnessRegistry();
     const releases: Array<() => void> = [];
