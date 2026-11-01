@@ -77,7 +77,7 @@ export async function prepareAntigravityLaunch(input: {
   readonly config: AntigravityHarnessConfig;
   readonly nodeExecutable: string;
   readonly providerState: HarnessProviderState;
-  readonly runtime: PreparedAntigravityRuntime;
+  readonly runtime: Pick<PreparedAntigravityRuntime, "executable" | "harness">;
 }): Promise<AntigravityLaunch> {
   if (input.providerState.kind !== "isolated" || !input.providerState.providerHomeDirectory) {
     throw new Error("Antigravity requires an isolated account profile");

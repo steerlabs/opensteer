@@ -77,4 +77,22 @@ describe("Antigravity browser OAuth", () => {
     );
     expect(received).toBe("/?code=secret-code&state=state-1");
   });
+
+  it("cancels a pending loopback forward", async () => {
+    const server = createServer((_request, _response) => undefined);
+    servers.push(server);
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP listener");
+    const controller = new AbortController();
+    const forwarding = forwardAntigravityCallback(
+      new URL(`http://127.0.0.1:${address.port}/?code=secret-code&state=state-1`),
+      controller.signal,
+    );
+
+    controller.abort();
+
+    await expect(forwarding).rejects.toThrow("Could not deliver the sign-in response");
+  });
 });

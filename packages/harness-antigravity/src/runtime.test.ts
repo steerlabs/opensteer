@@ -38,6 +38,7 @@ describe("Antigravity downloaded runtime", () => {
     });
     const validate = vi.fn(async (runtime: { readonly version: string }) => {
       expect(runtime.version).toBe("1.4.1");
+      return { protocolVersion: 1 as const };
     });
     const options = {
       asset,
@@ -68,6 +69,7 @@ describe("Antigravity downloaded runtime", () => {
       ),
     ).toEqual({
       archiveSha256: asset.archive.sha256,
+      protocolVersion: 1,
       version: "1.4.1",
     });
   });
@@ -92,7 +94,7 @@ describe("Antigravity downloaded runtime", () => {
         extract: vi.fn(),
         fetch: async () => new Response("bad"),
         signal: new AbortController().signal,
-        validate: vi.fn(),
+        validate: vi.fn(async () => ({ protocolVersion: 1 as const })),
         version: "1.4.1",
       }),
     ).rejects.toThrow("SHA-256");

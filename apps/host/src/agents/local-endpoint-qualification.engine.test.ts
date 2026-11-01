@@ -554,7 +554,10 @@ qualification("local endpoint qualification", () => {
           },
           harnesses: createHarnessRegistry(
             parseAgentExecutionConfig(process.env).harnessExecutables,
-            { nodeExecutable: process.execPath },
+            {
+              nodeExecutable: process.execPath,
+              runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+            },
           ),
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 30_000,
@@ -681,7 +684,10 @@ qualification("local endpoint qualification", () => {
       const fixture = await startVisionWireFixture();
       const harnesses = createHarnessRegistry(
         parseAgentExecutionConfig(process.env).harnessExecutables,
-        { nodeExecutable: process.execPath },
+        {
+          nodeExecutable: process.execPath,
+          runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+        },
       );
       const evidence: Record<string, unknown> = {
         engine: engine.driverKind,
@@ -820,7 +826,10 @@ qualification("local endpoint qualification", () => {
             },
             harnesses: createHarnessRegistry(
               parseAgentExecutionConfig(process.env).harnessExecutables,
-              { nodeExecutable: process.execPath },
+              {
+                nodeExecutable: process.execPath,
+                runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+              },
             ),
             harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 180_000,
@@ -914,7 +923,10 @@ qualification("local endpoint qualification", () => {
             },
             harnesses: createHarnessRegistry(
               parseAgentExecutionConfig(process.env).harnessExecutables,
-              { nodeExecutable: process.execPath },
+              {
+                nodeExecutable: process.execPath,
+                runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+              },
             ),
             harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 180_000,
@@ -1040,7 +1052,10 @@ qualification("local endpoint qualification", () => {
             },
             harnesses: createHarnessRegistry(
               parseAgentExecutionConfig(process.env).harnessExecutables,
-              { nodeExecutable: process.execPath },
+              {
+                nodeExecutable: process.execPath,
+                runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+              },
             ),
             harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 120_000,
@@ -1111,7 +1126,10 @@ qualification("local endpoint qualification", () => {
           },
           harnesses: createHarnessRegistry(
             parseAgentExecutionConfig(process.env).harnessExecutables,
-            { nodeExecutable: process.execPath },
+            {
+              nodeExecutable: process.execPath,
+              runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+            },
           ),
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 30_000,
@@ -1237,7 +1255,11 @@ qualification("local endpoint qualification", () => {
           },
           harnesses: createHarnessRegistry(
             parseAgentExecutionConfig(process.env).harnessExecutables,
-            { modelServerHome: home, nodeExecutable: process.execPath },
+            {
+              modelServerHome: home,
+              nodeExecutable: process.execPath,
+              runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+            },
           ),
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           modelServerHome: home,
@@ -1420,7 +1442,10 @@ qualification("local endpoint qualification", () => {
             },
             harnesses: createHarnessRegistry(
               parseAgentExecutionConfig(process.env).harnessExecutables,
-              { nodeExecutable: process.execPath },
+              {
+                nodeExecutable: process.execPath,
+                runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+              },
             ),
             harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 300_000,

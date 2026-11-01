@@ -137,7 +137,10 @@ describe("engine qualification", () => {
       }
       const harnesses = createHarnessRegistry(
         parseAgentExecutionConfig(process.env).harnessExecutables,
-        { nodeExecutable: process.execPath },
+        {
+          nodeExecutable: process.execPath,
+          runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+        },
       );
       stack = await startVerticalStack({
         catalogTimeoutMs: 180_000,
@@ -424,6 +427,7 @@ describe("engine qualification", () => {
         parseAgentExecutionConfig(process.env).harnessExecutables,
         {
           nodeExecutable: process.execPath,
+          runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
         },
       );
       stack = await startVerticalStack({
@@ -806,6 +810,7 @@ describe.each([
           parseAgentExecutionConfig(process.env).harnessExecutables,
           {
             nodeExecutable: process.execPath,
+            runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
           },
         ),
         harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
@@ -985,6 +990,7 @@ describe("live Home handoff between native engines", () => {
       harnessInstance: qualificationAccount(codex),
       harnesses: createHarnessRegistry(parseAgentExecutionConfig(process.env).harnessExecutables, {
         nodeExecutable: process.execPath,
+        runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
       }),
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       runTimeoutMs: 300_000,

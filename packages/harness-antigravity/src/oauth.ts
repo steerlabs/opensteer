@@ -119,13 +119,22 @@ export function validateAntigravityCallbackUrl(
 }
 
 /** Sends one callback directly to the loopback listener without proxies or redirects. */
-export function forwardAntigravityCallback(callback: URL): Promise<void> {
+export function forwardAntigravityCallback(callback: URL, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const failed = () =>
       new OpensteerError({
         code: "harness_error",
         message: "Could not deliver the sign-in response. Start sign-in again",
       });
+    let settled = false;
+    const finish = (result?: OpensteerError) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      if (result) reject(result);
+      else resolve();
+    };
+    const abort = () => request.destroy(failed());
     const request = httpRequest(
       {
         agent: false,
@@ -136,17 +145,18 @@ export function forwardAntigravityCallback(callback: URL): Promise<void> {
         protocol: "http:",
       },
       (response) => {
-        response.once("error", () => reject(failed()));
+        response.once("error", () => finish(failed()));
         response.once("end", () => {
           const status = response.statusCode ?? 0;
-          if (status >= 200 && status < 300) resolve();
-          else reject(failed());
+          finish(status >= 200 && status < 300 ? undefined : failed());
         });
         response.resume();
       },
     );
     request.setTimeout(10_000, () => request.destroy(failed()));
-    request.once("error", () => reject(failed()));
+    request.once("error", () => finish(failed()));
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
     request.end();
   });
 }

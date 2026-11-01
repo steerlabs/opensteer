@@ -24,6 +24,7 @@ import {
 const completeMarkerName = ".opensteer-antigravity-release.json";
 const CompleteMarkerSchema = z.strictObject({
   archiveSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  protocolVersion: z.union([z.literal(1), z.literal(2)]),
   version: z.string().min(1),
 });
 
@@ -31,7 +32,12 @@ export interface PreparedAntigravityRuntime {
   readonly directory: string;
   readonly executable: string;
   readonly harness: string;
+  readonly protocolVersion: 1 | 2;
   readonly version: string;
+}
+
+export interface AntigravityRuntimeIdentity {
+  readonly protocolVersion: 1 | 2;
 }
 
 export interface PrepareAntigravityRuntimeOptions {
@@ -40,7 +46,10 @@ export interface PrepareAntigravityRuntimeOptions {
   readonly platform?: AntigravityPlatform;
   readonly signal: AbortSignal;
   /** The ACP initialize check that must pass before immutable publication. */
-  readonly validate: (runtime: PreparedAntigravityRuntime, signal: AbortSignal) => Promise<void>;
+  readonly validate: (
+    runtime: Omit<PreparedAntigravityRuntime, "protocolVersion">,
+    signal: AbortSignal,
+  ) => Promise<AntigravityRuntimeIdentity>;
 }
 
 export interface PrepareAntigravityRuntimeReleaseOptions extends PrepareAntigravityRuntimeOptions {
@@ -49,7 +58,10 @@ export interface PrepareAntigravityRuntimeReleaseOptions extends PrepareAntigrav
   readonly version: string;
 }
 
-function releasePaths(directory: string, version: string): PreparedAntigravityRuntime {
+function releasePaths(
+  directory: string,
+  version: string,
+): Omit<PreparedAntigravityRuntime, "protocolVersion"> {
   return {
     directory,
     executable: join(directory, "agy_acp_server.par"),
@@ -86,7 +98,7 @@ async function assertReleaseDirectory(
       throw new Error(`The cached Antigravity member ${member.name} is invalid`);
     }
   }
-  return releasePaths(directory, version);
+  return { ...releasePaths(directory, version), protocolVersion: marker.protocolVersion };
 }
 
 async function downloadArchive(
@@ -95,7 +107,11 @@ async function downloadArchive(
   request: typeof fetch,
   signal: AbortSignal,
 ): Promise<void> {
-  const response = await request(asset.archive.url, { redirect: "error", signal });
+  const response = await request(asset.archive.url, {
+    headers: { "accept-encoding": "identity" },
+    redirect: "error",
+    signal,
+  });
   if (!response.ok || !response.body) {
     throw new Error(`Antigravity download failed with HTTP ${response.status}`);
   }
@@ -188,11 +204,12 @@ export async function prepareAntigravityRuntimeRelease(
     await (options.extract ?? extractZip)(archive, { dir: extracted });
     await inspectExtractedRelease(extracted, asset);
     const runtime = releasePaths(extracted, options.version);
-    await options.validate(runtime, signal);
+    const identity = await options.validate(runtime, signal);
     await writeFile(
       join(extracted, completeMarkerName),
       `${JSON.stringify({
         archiveSha256: asset.archive.sha256,
+        protocolVersion: identity.protocolVersion,
         version: options.version,
       })}\n`,
       { flag: "wx", mode: 0o600 },

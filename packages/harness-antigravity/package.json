@@ -15,6 +15,7 @@
     "@electron-internal/extract-zip": "catalog:",
     "@opensteer/core": "workspace:*",
     "@opensteer/harness": "workspace:*",
+    "@opensteer/harness-acp": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "zod": "catalog:"
   },

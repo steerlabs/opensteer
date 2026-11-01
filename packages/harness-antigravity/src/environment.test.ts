@@ -38,10 +38,8 @@ describe("Antigravity launch environment", () => {
         store: { directory: join(root, "profile"), id: "profile-1" },
       },
       runtime: {
-        directory: join(root, "runtime"),
         executable: join(root, "runtime", "agy_acp_server.par"),
         harness: join(root, "runtime", "localharness_external"),
-        version: "1.4.1",
       },
     });
 

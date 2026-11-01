@@ -36,6 +36,7 @@
     "@opensteer/messaging-module": "workspace:*",
     "@opensteer/channel-imessage": "workspace:*",
     "@opensteer/harness": "workspace:*",
+    "@opensteer/harness-antigravity": "workspace:*",
     "@opensteer/harness-claude": "workspace:*",
     "@opensteer/harness-codex": "workspace:*",
     "@opensteer/harness-cursor": "workspace:*",

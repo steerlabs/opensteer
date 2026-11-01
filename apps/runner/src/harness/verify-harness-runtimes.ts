@@ -7,7 +7,7 @@ import {
   type ShippedHarnessKind,
 } from "@opensteer/core";
 import { engineArtifactPackageVersion } from "@opensteer/harness";
-import { defaultHarnessExecutable, harnessDriverFactories } from "./harness-drivers.js";
+import { defaultHarnessExecutable } from "./harness-drivers.js";
 
 export interface HarnessRuntimeVersionMismatch {
   readonly kind: ShippedHarnessKind;

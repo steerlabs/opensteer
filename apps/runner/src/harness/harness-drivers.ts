@@ -1,5 +1,6 @@
 import type { HarnessKind } from "@opensteer/core";
 import type { HarnessDriver } from "@opensteer/harness";
+import { AntigravityHarnessDriver } from "@opensteer/harness-antigravity";
 import {
   ClaudeHarnessDriver,
   claudeAgentSdk,
@@ -61,6 +62,13 @@ export function defaultHarnessExecutable(kind: HarnessKind): string {
  * this side a compile error rather than a kind that silently never registers.
  */
 export const harnessDriverFactories: Record<HarnessKind, HarnessDriverFactory> = {
+  antigravity: {
+    create: (_executable, runtime) =>
+      new AntigravityHarnessDriver({
+        nodeExecutable: runtime.nodeExecutable,
+        runtimeCacheDirectory: runtime.runtimeCacheDirectory,
+      }),
+  },
   claude: {
     create: (executable, runtime) =>
       new ClaudeHarnessDriver({
