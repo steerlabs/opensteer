@@ -301,6 +301,31 @@ describe("engineGroups", () => {
     ).toBe(true);
   });
 
+  // A fresh computer without Cursor's CLI must still show Cursor, with how to
+  // install it, instead of hiding that the product supports it.
+  it("keeps a product engine the Runner cannot run listed with its reason", () => {
+    const reason = "Cursor's CLI is not installed on this computer.";
+    const groups = engineGroups(
+      {
+        ...environment,
+        harnessDrivers: environment.harnessDrivers.map((driver) =>
+          driver.driverKind === "cursor"
+            ? { driverKind: "cursor", readiness: "unavailable", reason }
+            : driver,
+        ),
+      },
+      [],
+    );
+
+    expect(groups.find((group) => group.driverKind === "cursor")).toMatchObject({
+      addable: false,
+      profiles: [],
+      sources: [],
+      unavailableReason: reason,
+    });
+    expect(groups.some((group) => group.driverKind === "legacy-engine")).toBe(false);
+  });
+
   it("offers no adding where the work location cannot hold a private sign-in", () => {
     const groups = engineGroups({ ...environment, providerStateModes: ["ambient"] }, []);
 
