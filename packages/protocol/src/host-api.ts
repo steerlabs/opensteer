@@ -221,7 +221,11 @@ import {
   computerUseMaxInstalledApps,
 } from "./computer-use.js";
 import { MachineSummarySchema } from "./machines.js";
-import { HarnessAuthenticationStateViewSchema, HarnessSourceIdSchema } from "./runner.js";
+import {
+  HarnessAuthenticationStateViewSchema,
+  HarnessInstallationSchema,
+  HarnessSourceIdSchema,
+} from "./runner.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
 import {
   MachineAccessPolicySchema,
@@ -635,6 +639,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     harnessInstanceId: HarnessInstanceIdSchema,
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("harness.delete"),
+  }),
+  z.strictObject({
+    driverKind: HarnessIdSchema,
+    environmentId: EnvironmentIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("harness.update"),
   }),
   z.strictObject({
     connectionSlot: z.string().min(1).max(100).optional(),
@@ -1160,6 +1170,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
+  z.object({ installation: HarnessInstallationSchema, type: z.literal("harness.update") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.rename") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.model.configure") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.enabled.set") }),

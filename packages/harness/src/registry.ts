@@ -6,6 +6,10 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import {
+  EngineInstallationResolver,
+  type ResolvedEngineInstallation,
+} from "./engine-installation.js";
 import { profileHarnessProviderStoreScope } from "./types.js";
 import type {
   HarnessAdapter,
@@ -57,6 +61,7 @@ export class HarnessRegistry {
   readonly #instances = new Map<HarnessInstanceId, RegistryEntry>();
   readonly #preparations = new Map<string, PreparationEntry>();
   readonly #preparationListeners = new Set<(instanceId: HarnessInstanceId) => void>();
+  readonly #installationResolver = new EngineInstallationResolver();
   #closed = false;
   /**
    * Every instance mutation and adapter creation runs on this one chain, so a
@@ -99,7 +104,11 @@ export class HarnessRegistry {
     registered: RegisteredDriver,
     stateKind: HarnessProviderState["kind"],
   ): HarnessDriver | { readonly unavailable: string } {
-    if (stateKind !== "ambient" || !registered.installed) return registered.driver;
+    if (
+      !registered.installed ||
+      ((registered.installed.scope ?? "ambient") === "ambient" && stateKind !== "ambient")
+    )
+      return registered.driver;
     const executable = registered.installed.locate();
     if (!executable) return { unavailable: registered.installed.missing };
     let driver = registered.installedDrivers.get(executable);
@@ -202,6 +211,51 @@ export class HarnessRegistry {
       kind,
       readiness: entry.readiness,
     }));
+  }
+
+  installationAffects(kind: HarnessId, stateKind: HarnessProviderState["kind"]): boolean {
+    const installed = this.#drivers.get(kind)?.installed;
+    return (
+      installed?.scope === "all" ||
+      (installed !== undefined &&
+        (installed.scope ?? "ambient") === "ambient" &&
+        stateKind === "ambient")
+    );
+  }
+
+  async driverInstallation(kind: HarnessId): Promise<ResolvedEngineInstallation | undefined> {
+    const installed = this.#drivers.get(kind)?.installed;
+    const executable = installed?.locate();
+    if (!installed?.update || !executable) return undefined;
+    return this.#installationResolver.resolve(
+      executable,
+      installed.update,
+      installed.scope ?? "ambient",
+    );
+  }
+
+  /** Retires every cached object that could still point at the replaced bytes. */
+  invalidateDriver(kind: HarnessId): Promise<readonly HarnessInstanceId[]> {
+    return this.#serialize(async () => {
+      const registered = this.#drivers.get(kind);
+      if (!registered?.installed) return [];
+      const affected: HarnessInstanceId[] = [];
+      for (const [instanceId, entry] of this.#instances) {
+        if (
+          entry.definition.driverKind !== kind ||
+          !this.installationAffects(kind, entry.definition.stateKind)
+        )
+          continue;
+        affected.push(instanceId);
+        await this.#cancelPreparations(instanceId);
+        if (entry.adapterPromise) await closeRegistryEntry(entry);
+        delete entry.adapterPromise;
+        delete entry.preparationKey;
+      }
+      registered.installedDrivers.clear();
+      this.#installationResolver.invalidate(registered.installed.locate());
+      return affected;
+    });
   }
 
   canRunDriver(kind: HarnessId): boolean {

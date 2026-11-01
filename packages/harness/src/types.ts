@@ -32,6 +32,7 @@ import type {
   RunInitialContext,
 } from "@opensteer/protocol";
 import type { z } from "zod";
+import type { InstalledEngineUpdateFacts } from "./engine-installation.js";
 
 interface AgentControlClient {
   request(input: AgentControlRequest, signal: AbortSignal): Promise<AgentControlResponse>;
@@ -806,6 +807,9 @@ export interface HarnessInstalledEngine {
   readonly create: (executable: string) => HarnessDriver;
   /** Why an account using the person's own sign-in cannot run on this computer. */
   readonly missing: string;
+  /** Which profiles use this executable: shipped alternatives are ambient-only. */
+  readonly scope?: "ambient" | "all";
+  readonly update?: InstalledEngineUpdateFacts;
 }
 
 /**

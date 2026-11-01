@@ -43,6 +43,7 @@ const markSize = 30;
 /** One SwiftUI host owns the complete iOS Form, including every row and control. */
 export function SettingsForm(props: SettingsFormProps): ReactNode {
   const preferences = props.notifications.preferences;
+  const engineUpdates = props.engineUpdates ?? [];
   return (
     <Host colorScheme="dark" seedColor={color.ember} style={styles.host} useViewportSizeMeasurement>
       <Form modifiers={[listStyle("insetGrouped")]}>
@@ -104,6 +105,29 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
                 </Button>
               );
             })}
+          </Section>
+        )}
+
+        {engineUpdates.length === 0 ? null : (
+          <Section title="AI services">
+            {engineUpdates.map((engine) => (
+              <HStack key={engine.key} alignment="center" spacing={12}>
+                <VStack alignment="leading" spacing={2}>
+                  <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.text)]}>
+                    {engine.name}
+                  </Text>
+                  <Text modifiers={[secondary, footnote]}>{engine.detail}</Text>
+                </VStack>
+                <Spacer />
+                {engine.updateEnabled || engine.updating ? (
+                  <Button
+                    label={engine.updating ? "Updating…" : "Update"}
+                    modifiers={[disabled(!engine.updateEnabled || engine.updating)]}
+                    onPress={() => props.onEngineUpdate?.(engine.environmentId, engine.driverKind)}
+                  />
+                ) : null}
+              </HStack>
+            ))}
           </Section>
         )}
 

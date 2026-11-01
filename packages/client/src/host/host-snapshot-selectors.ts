@@ -58,6 +58,7 @@ export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapsho
       previous.threadRenameAvailable === next.threadRenameAvailable &&
       previous.taskMarksAvailable === next.taskMarksAvailable &&
       previous.sharedTaskDoneAvailable === next.sharedTaskDoneAvailable &&
+      previous.harnessUpdateAvailable === next.harnessUpdateAvailable &&
       previous.iphoneAppsAvailable === next.iphoneAppsAvailable &&
       previous.workspaceWindow === next.workspaceWindow &&
       sameThreadsIgnoringActivityTime(previous.threads, next.threads) &&

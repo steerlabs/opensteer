@@ -25,6 +25,7 @@ import {
   type RunnerConnectionFence,
   type RunnerDescriptor,
   type RunnerEnrollmentCredential,
+  type RunnerHarnessDriver,
   type RunnerLocalStorageInventory,
   type RunnerOperationalReport,
   type RunnerWorkspaceMount,
@@ -649,6 +650,7 @@ export class ReconnectingHostConnection {
   /** Exactly the modules this process runs, and nothing it merely could run. */
   async #descriptor(): Promise<RunnerDescriptor> {
     const agents = this.#agents;
+    const harnessDrivers = agents ? await agents.runtime.harnessDrivers() : [];
     await this.#computerUse?.permissions().catch(() => undefined);
     const browserCapabilities = agents?.browserBridge
       ? await new LocalBrowserRuntimeBridge(agents.browserBridge).capabilities()
@@ -657,14 +659,14 @@ export class ReconnectingHostConnection {
       bootId: this.#bootId,
       capabilities: [
         ...runnerCapabilities(),
-        ...(agents?.runtime.harnessDrivers().some((driver) => driver.driverKind === "codex")
+        ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-v1" as const, "voice-agent-v1" as const]
           : []),
         ...(agents?.earlierBootsContained ? ["earlier-boots-contained-v1" as const] : []),
       ],
       ...(this.#device ? { device: this.#device } : {}),
       modules: {
-        ...(agents ? { agents: await this.#agentsModule(agents) } : {}),
+        ...(agents ? { agents: await this.#agentsModule(agents, harnessDrivers) } : {}),
         ...(agents?.browserBridge
           ? {
               browser: {
@@ -701,14 +703,17 @@ export class ReconnectingHostConnection {
     };
   }
 
-  async #agentsModule(agents: RunnerAgentsConnection): Promise<RunnerAgentsModule> {
+  async #agentsModule(
+    agents: RunnerAgentsConnection,
+    harnessDrivers: readonly RunnerHarnessDriver[],
+  ): Promise<RunnerAgentsModule> {
     const environmentId = this.#identity.environmentId;
     if (!environmentId) {
       throw new Error("This Runner executes agents and needs a work location");
     }
     return {
       environmentIds: [environmentId],
-      harnessDrivers: [...agents.runtime.harnessDrivers()],
+      harnessDrivers: [...harnessDrivers],
       localStorage: (await agents.localWorkspaces?.inventory()) ?? null,
       loginFill: 1,
       computerTool: 1,
@@ -1870,6 +1875,8 @@ function runnerCommandEffectScope(command: RunnerCommand): string | undefined {
       return `watch-environment:${command.environmentId}`;
     case "workspace.detach":
       return undefined;
+    case "harness.update":
+      return `harness-update:${command.environmentId}:${command.driverKind}`;
   }
 }
 

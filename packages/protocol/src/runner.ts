@@ -442,6 +442,12 @@ const DetachWorkspaceSchema = runnerCommandBase.extend({
   workspaceId: WorkspaceIdSchema,
 });
 
+const UpdateHarnessSchema = runnerCommandBase.extend({
+  driverKind: HarnessIdSchema,
+  environmentId: EnvironmentIdSchema,
+  type: z.literal("harness.update"),
+});
+
 export const runnerCommandMaxSerializedBytes = 1_024 * 1_024 - 4 * 1_024;
 
 export const RunnerCommandSchema = z
@@ -455,6 +461,7 @@ export const RunnerCommandSchema = z
     SteerExecutionSchema,
     MountWorkspaceSchema,
     DetachWorkspaceSchema,
+    UpdateHarnessSchema,
   ])
   .refine(
     (command) =>
@@ -587,6 +594,16 @@ export const HarnessSourceDescriptorSchema = z.object({
 });
 export type HarnessSourceDescriptor = z.infer<typeof HarnessSourceDescriptorSchema>;
 
+export const HarnessInstallationSchema = z.object({
+  detail: z.string().trim().min(1).max(2_000).optional(),
+  latestVersion: z.string().trim().min(1).max(120).nullable(),
+  manualCommand: z.string().trim().min(1).max(500).optional(),
+  scope: z.enum(["ambient", "all"]),
+  update: z.enum(["available", "current", "manual", "unknown", "updating", "succeeded", "failed"]),
+  version: z.string().trim().min(1).max(120),
+});
+export type HarnessInstallation = z.infer<typeof HarnessInstallationSchema>;
+
 const runnableHarnessDriver = z.object({
   /**
    * The Thread access modes this engine can enforce for a Run. The Host refuses
@@ -624,6 +641,8 @@ const runnableHarnessDriver = z.object({
     })
     .optional(),
   note: z.string().trim().min(1).max(500).optional(),
+  /** Absent on Runners that predate installed-engine maintenance. */
+  installation: HarnessInstallationSchema.optional(),
   readiness: z.enum(["configured", "runtime-check"]),
   /** Absent on an older Runner and therefore treated as unsupported. */
   steering: z.boolean().optional(),
@@ -673,6 +692,8 @@ const runnableHarnessDriver = z.object({
 });
 const unavailableHarnessDriver = z.object({
   driverKind: HarnessIdSchema,
+  /** A below-minimum installation remains repairable while the driver is unavailable. */
+  installation: HarnessInstallationSchema.optional(),
   readiness: z.literal("unavailable"),
   reason: z.string().trim().min(1).max(500),
 });
@@ -1900,6 +1921,12 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     ...fencedMessageBase,
     harnessInstanceId: HarnessInstanceIdSchema,
     type: z.literal("runner.harness-catalog-invalidated"),
+  }),
+  z.strictObject({
+    ...fencedMessageBase,
+    driverKind: HarnessIdSchema,
+    installation: HarnessInstallationSchema,
+    type: z.literal("runner.harness-installation"),
   }),
   /**
    * Every Run this Runner holds — executing, or ended with events the Host has

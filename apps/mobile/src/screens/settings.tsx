@@ -1,6 +1,8 @@
 import Constants from "expo-constants";
 import { useNavigation } from "@react-navigation/native";
 import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import { harnessDriverLabel } from "@opensteer/core";
+import { mutationIdempotencyKey } from "@opensteer/client/host";
 import {
   useCallback,
   useMemo,
@@ -47,6 +49,11 @@ export function SettingsScreen(): ReactNode {
   const [notificationError, setNotificationError] = useState<string | null>(null);
   const [notificationWorking, setNotificationWorking] = useState(false);
   const [passwordsShown, setPasswordsShown] = useState(false);
+  const [engineUpdatePending, setEngineUpdatePending] = useState<string | null>(null);
+  const [engineUpdateError, setEngineUpdateError] = useState<{
+    detail: string;
+    key: string;
+  } | null>(null);
   const accountInFlight = useRef(false);
   const notificationInFlight = useRef(false);
 
@@ -124,6 +131,42 @@ export function SettingsScreen(): ReactNode {
   const accountModel = accountSettingsModel(account.account, accountWorking);
   const deploymentModel = deploymentSettingsModel(selectedRow);
   const notificationModel = notificationSettingsModel(registrationState, notificationWorking);
+  const engineUpdates = useMemo(() => {
+    if (snapshot === null) return [];
+    return snapshot.environments.flatMap((environment) =>
+      environment.harnessDrivers.flatMap((driver) => {
+        const installation = driver.installation;
+        if (!installation || installation.update === "current") return [];
+        const key = `${environment.id}:${driver.driverKind}`;
+        const detail =
+          key === engineUpdatePending
+            ? "Updating…"
+            : installation.update === "available"
+              ? `Update available${installation.latestVersion ? ` · ${installation.latestVersion}` : ""}`
+              : installation.update === "succeeded"
+                ? "Updated"
+                : (installation.detail ??
+                  (installation.update === "manual"
+                    ? "Update this engine on its computer."
+                    : "Update failed"));
+        return [
+          {
+            detail: engineUpdateError?.key === key ? engineUpdateError.detail : detail,
+            driverKind: driver.driverKind,
+            environmentId: environment.id,
+            key,
+            name: harnessDriverLabel(driver.driverKind),
+            updateEnabled:
+              snapshot.harnessUpdateAvailable === true &&
+              (installation.update === "available" ||
+                installation.update === "unknown" ||
+                installation.update === "failed"),
+            updating: installation.update === "updating" || key === engineUpdatePending,
+          },
+        ];
+      }),
+    );
+  }, [engineUpdateError, engineUpdatePending, snapshot]);
 
   const runAccount = useCallback((operation: () => Promise<void>, fallback: string) => {
     if (accountInFlight.current) return;
@@ -225,6 +268,7 @@ export function SettingsScreen(): ReactNode {
         computers={computers}
         computersFooter={computersSettingsFooterFor(computers)}
         deployment={deploymentModel}
+        engineUpdates={engineUpdates}
         notificationError={notificationError}
         notifications={notificationModel}
         onAccountAction={onAccountAction}
@@ -276,6 +320,28 @@ export function SettingsScreen(): ReactNode {
           });
         }}
         onDeploymentAction={() => navigation.navigate("DeploymentSwitcher")}
+        onEngineUpdate={(environmentId, driverKind) => {
+          const hostClient = selection.hostClient;
+          if (!hostClient || engineUpdatePending) return;
+          const key = `${environmentId}:${driverKind}`;
+          setEngineUpdatePending(key);
+          setEngineUpdateError(null);
+          void hostClient
+            .dispatch({
+              driverKind,
+              environmentId,
+              idempotencyKey: mutationIdempotencyKey(`harness-update:${key}`),
+              type: "harness.update",
+            })
+            .then(() => hostClient.refresh())
+            .catch((error: unknown) =>
+              setEngineUpdateError({
+                detail: operationDetail(error, "Update failed. Try again."),
+                key: `${environmentId}:${driverKind}`,
+              }),
+            )
+            .finally(() => setEngineUpdatePending(null));
+        }}
         onNotificationAction={onNotificationAction}
         onPasswordsAction={() => setPasswordsShown(true)}
         onPreferenceChange={onPreferenceChange}
