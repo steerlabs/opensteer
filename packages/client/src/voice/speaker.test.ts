@@ -133,6 +133,16 @@ describe("VoiceSpeaker", () => {
       run,
       { ...run, id: "run:older", createdAt: new Date(voiceTestNow - 1_000).toISOString() },
       { ...run, id: "run:invalid", createdAt: "invalid" },
+      // A live stream is stamped by this device, whose clock runs an hour ahead.
+      {
+        completedAt: null,
+        createdAt: new Date(voiceTestNow + 3_600_000).toISOString(),
+        id: "reasoning:history:block",
+        kind: "reasoning" as const,
+        runId: "history",
+        state: "streaming" as const,
+        text: "Thinking",
+      },
     ];
     f.publish({ transcripts: { [f.id]: history } });
     const speaker = f.make();

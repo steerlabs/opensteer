@@ -729,7 +729,10 @@ async function newestTurns(
     .selectFrom("workspaceEvents")
     .select([
       "sequence",
-      sql<number>`octet_length(data::text)`.as("dataBytes"),
+      // Stored JSON is written with `, ` and `: `, the wire's without spaces.
+      // Dropping them keeps the estimate under what is sent, so the exact pass
+      // below only ever trims and never loses a turn that fits.
+      sql<number>`octet_length(replace(replace(data::text, ', ', ','), ': ', ':'))`.as("dataBytes"),
       turnStartSelection.as("turnStart"),
     ])
     .where("threadId", "=", threadId)
@@ -753,7 +756,7 @@ async function newestTurns(
     .where("sequence", ">=", oldest.sequence);
   if (before !== null) rowsQuery = rowsQuery.where("sequence", "<", before);
   const candidates = (await rowsQuery.orderBy("sequence", "desc").execute()).map(eventFromRow);
-  // The estimate reads stored JSON; the page is bounded by what it sends.
+  // The page is bounded by what it sends, never by the estimate.
   const kept = historyPageLength(
     candidates.map((event, index) => ({
       bytes: Buffer.byteLength(JSON.stringify(event), "utf8"),

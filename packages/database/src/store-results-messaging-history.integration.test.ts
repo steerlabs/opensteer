@@ -2538,7 +2538,7 @@ describeStore("PostgreSQL store", (it) => {
     const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
     const { environmentId, runnerId, thread, userId, workspace } =
       await createRunFixture("turn_history");
-    const runTurn = async (index: number, outputs: readonly string[]) => {
+    const runTurn = async (index: number, outputs: readonly string[], toolArguments = {}) => {
       const turn = await enqueueHumanTrigger({
         content: [{ type: "text", text: `Turn ${index}` }],
         idempotencyKey: `turn-history-${index}`,
@@ -2595,7 +2595,11 @@ describeStore("PostgreSQL store", (it) => {
         await commit(
           pendingEvent({
             ...base,
-            data: { arguments: {}, callId, tool: { name: "read_file", namespace: "test" } },
+            data: {
+              arguments: toolArguments,
+              callId,
+              tool: { name: "read_file", namespace: "test" },
+            },
             ordinal: ordinal++,
             type: "tool.started",
           }),
@@ -2621,7 +2625,8 @@ describeStore("PostgreSQL store", (it) => {
     const large = "x".repeat(40_000);
     await runTurn(1, ["a", "b"]);
     await runTurn(2, ["c", large, "d"]);
-    await runTurn(3, ["e"]);
+    // Stored JSON spells this a third longer than the wire does.
+    await runTurn(3, ["e"], { values: Array.from({ length: 20_000 }, () => 1) });
     const page = (input: {
       before?: string;
       maxBytes?: number;
@@ -2650,6 +2655,14 @@ describeStore("PostgreSQL store", (it) => {
     const oldest = (await page({ before: newest.window.nextBefore!, maxTurns: 2 }))!;
     expect(oldest.events).toEqual(all.events.slice(0, second));
     expect(oldest.window).toMatchObject({ hasMore: false, nextBefore: null });
+
+    // A turn that fits what is sent is never cut for how it is stored.
+    const newestTurn = all.events.slice(third);
+    const fitted = (await page({
+      maxBytes: Buffer.byteLength(JSON.stringify(newestTurn), "utf8"),
+      maxTurns: 1,
+    }))!;
+    expect(fitted.events).toEqual(newestTurn);
 
     // An event-count page ends at a turn rather than splitting the next one.
     const counted = (await page({ maxItems: all.events.length - second + 2 }))!;

@@ -27,6 +27,15 @@ function durableReply(entry: TranscriptEntry): entry is MessageEntry {
   );
 }
 
+/**
+ * Whether the Host stamped this entry's time. A live stream's reply, reasoning
+ * or tool call keeps the moment this device first drew it, even once settled.
+ */
+function hostStamped(entry: TranscriptEntry): boolean {
+  if (entry.kind === "reasoning" || entry.kind === "tool") return false;
+  return entry.kind !== "message" || (entry.streaming !== true && !entry.id.startsWith("stream:"));
+}
+
 type Speech =
   | { readonly kind: "reply"; readonly text: string; readonly runId: string | null }
   | { readonly kind: "request"; readonly requestId: string };
@@ -150,7 +159,7 @@ export class VoiceSpeaker {
     let since: number | null = null;
     for (const entry of snapshot.transcripts[threadId] ?? []) {
       if (durableReply(entry)) this.#messages.add(entry.id);
-      const at = Date.parse(entry.createdAt);
+      const at = hostStamped(entry) ? Date.parse(entry.createdAt) : Number.NaN;
       if (Number.isFinite(at)) since = Math.max(since ?? at, at);
     }
     this.#since = since;
