@@ -836,6 +836,35 @@ describe("the apps chosen with Add", () => {
     expect(host.commands).not.toContain("integration.computer.setup.request");
   });
 
+  it("lets a task's Allow ask iOS only once Add's prompt is answered", async () => {
+    const { controller, fake } = open();
+    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    const calendarAnswer = deferred<"granted">();
+    fake.device.answerPermissionWith("apple-calendar", calendarAnswer.promise);
+    const host = fakeHost();
+    controller.attachHost({ deploymentId, hostClient: host.client });
+    await controller.load();
+    fake.device.listApprovals([approval("req-photos", "iphone-photos", "read")]);
+
+    const sharing = controller.share({
+      apps: [{ access: "read-write", app: "apple-calendar" }],
+      hostClient: host.client,
+    });
+    await vi.waitFor(() => expect(fake.device.calls).toEqual(["requestPermission:apple-calendar"]));
+    const answering = controller.answer({ decision: "allow", setupRequestId: "req-photos" });
+    await settle();
+    // The task's prompt waits its turn rather than opening over Calendar's.
+    expect(fake.device.calls).toEqual(["requestPermission:apple-calendar"]);
+
+    calendarAnswer.resolve("granted");
+    await answering;
+    await sharing;
+    expect(fake.device.calls.slice(0, 2)).toEqual([
+      "requestPermission:apple-calendar",
+      "requestPermission:iphone-photos",
+    ]);
+  });
+
   it("keeps why an app didn't turn on for its row, and goes on to the next", async () => {
     const { controller, fake } = open();
     fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });

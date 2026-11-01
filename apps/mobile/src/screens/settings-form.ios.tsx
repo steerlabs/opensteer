@@ -168,7 +168,8 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {preferences === null || props.agents.length === 0 ? null : (
+        {/* Mutes are kept by the Host, so they don't wait on this phone's registration. */}
+        {notifications === null || props.agents.length === 0 ? null : (
           <Section
             footer={<Footer text={specialistNotificationsFooter} />}
             title="Notifications from specialists"

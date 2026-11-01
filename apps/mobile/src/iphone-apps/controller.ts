@@ -50,6 +50,8 @@ export class IphoneAppsController {
   /** Apps chosen with Add still waiting their turn, in order. */
   #queued: readonly IphoneAppId[] = [];
   #sharing = false;
+  /** The last native prompt or picker; the next waits for it, since iOS doesn't queue them. */
+  #iosTurn: Promise<unknown> = Promise.resolve();
   readonly #detachBridge: () => void;
 
   #adding: { readonly deploymentId: string; readonly outcome: Promise<IphoneAddOutcome> } | null =
@@ -280,7 +282,7 @@ export class IphoneAppsController {
       if (!fence.current()) return superseded;
       if (!listed) return { by: "host", kind: "not-offered" };
       this.#setChange(input.app, { access: input.access, phase: "asking-iphone", requestId: null });
-      const permission = await this.#readyPermission(input.app);
+      const permission = await this.#readyPermission(input.app, fence.current);
       if (!fence.current()) return superseded;
       if (permission === "not-offered") return notOfferedHere;
       if (permission !== null) return { kind: "blocked", permission };
@@ -387,7 +389,10 @@ export class IphoneAppsController {
           if (generation !== this.#generation) return noLongerWaiting;
           if (offered === false) return { by: "host", kind: "not-offered" };
         }
-        const permission = await this.#readyPermission(listed.definitionId);
+        const permission = await this.#readyPermission(
+          listed.definitionId,
+          () => generation === this.#generation,
+        );
         if (generation !== this.#generation) return noLongerWaiting;
         if (permission === "not-offered") return notOfferedHere;
         if (permission !== null) return { kind: "blocked", permission };
@@ -433,7 +438,7 @@ export class IphoneAppsController {
    */
   async requestPermission(app: IphoneAppId): Promise<IphonePermission | null> {
     if (iphonePermissionOf(this.#bridge.getSnapshot(), app) === null) return null;
-    return this.#bridge.requestPermission(app);
+    return this.#askIos(() => this.#bridge.requestPermission(app));
   }
 
   /**
@@ -441,7 +446,7 @@ export class IphoneAppsController {
    * iOS's answer read afresh: closing the picker is not a refusal.
    */
   async chooseContacts(): Promise<IphonePermission> {
-    return this.#bridge.chooseContacts();
+    return this.#askIos(() => this.#bridge.chooseContacts());
   }
 
   /**
@@ -452,7 +457,7 @@ export class IphoneAppsController {
   async choosePhotos(): Promise<IphonePermission | null> {
     const current = iphonePermissionOf(this.#bridge.getSnapshot(), "iphone-photos");
     if (current !== "limited") return current;
-    return this.#bridge.choosePhotos();
+    return this.#askIos(() => this.#bridge.choosePhotos());
   }
 
   /** The person saw this request on its own; it is not shown on its own again. */
@@ -611,12 +616,23 @@ export class IphoneAppsController {
   /**
    * Asks iOS when it can still ask, then reads its answer back. Null means iOS
    * lets Opensteer use the app; anything else is the answer that stops here.
-   * A build that doesn't report the app is never asked about it.
+   * A build that doesn't report the app is never asked about it, and a
+   * prompt whose turn comes after its operation was cut off is never shown.
    */
-  async #readyPermission(app: IphoneAppId): Promise<IphonePermission | "not-offered" | null> {
+  async #readyPermission(
+    app: IphoneAppId,
+    current: () => boolean,
+  ): Promise<IphonePermission | "not-offered" | null> {
     let permission = iphonePermissionOf(this.#bridge.getSnapshot(), app);
     if (permission === null) return "not-offered";
-    if (needsPrompt(app, permission)) permission = await this.#bridge.requestPermission(app);
+    if (needsPrompt(app, permission)) {
+      const before = permission;
+      permission = await this.#askIos(async () => {
+        const now = iphonePermissionOf(this.#bridge.getSnapshot(), app) ?? before;
+        // Another prompt may have answered this while it waited its turn.
+        return current() && needsPrompt(app, now) ? this.#bridge.requestPermission(app) : now;
+      });
+    }
     return iphonePermissionAllows(app, permission) ? null : permission;
   }
 
@@ -639,7 +655,7 @@ export class IphoneAppsController {
     // app at another access is another decision, and stays waiting for it.
     if (listed.definitionId !== input.app || listed.access !== input.access) return requestChanged;
     // iPhone Settings may have changed while the request travelled.
-    const permission = await this.#readyPermission(input.app);
+    const permission = await this.#readyPermission(input.app, input.fence.current);
     if (!input.fence.current()) return superseded;
     if (permission === "not-offered") return notOfferedHere;
     if (permission !== null) return { kind: "blocked", permission };
@@ -744,6 +760,16 @@ export class IphoneAppsController {
         .catch(() => undefined)
         .finally(() => this.#settleChange(app, fence));
     }
+  }
+
+  /**
+   * Every iOS permission prompt and picker goes through here, one at a time,
+   * whichever path asks: a switch, Add's run, a task's Allow, or a remedy.
+   */
+  #askIos<T>(ask: () => Promise<T>): Promise<T> {
+    const turn = this.#iosTurn.then(ask, ask);
+    this.#iosTurn = turn.catch(() => undefined);
+    return turn;
   }
 
   /** Keeps why a change didn't turn its app on, for that app's row, unless the change was cut off. */
