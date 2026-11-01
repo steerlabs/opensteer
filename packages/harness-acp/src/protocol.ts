@@ -716,7 +716,15 @@ export function acpReadTextFileHandler(roots: readonly string[]) {
         code: "bad_request",
         message: "ACP cannot read binary files as text",
       });
-    const text = bytes.toString("utf8");
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "ACP cannot read binary files as text",
+      });
+    }
     if (line === null || line === undefined) return text;
     const start = Math.max(0, line - 1);
     return text
