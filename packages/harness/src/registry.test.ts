@@ -830,23 +830,81 @@ describe("HarnessRegistry installed engines", () => {
     await expect(registry.adapter(ambient.id)).rejects.toMatchObject({ message: missing });
   });
 
-  it("offers the person's own sign-in only while their CLI is installed", async () => {
-    const registry = new HarnessRegistry();
-    let installed: string | undefined;
-    const { engine } = installedEngine(() => installed);
-    registry.registerDriver(shipped, { status: "runtime-check" }, engine);
+  it.each([
+    { scope: "ambient", ambientOnly: false },
+    { scope: "ambient", ambientOnly: true },
+    { scope: "all", ambientOnly: false },
+  ] as const)(
+    "advertises only runnable sources and recovers profiles (%j)",
+    async ({ scope, ambientOnly }) => {
+      const registry = new HarnessRegistry();
+      let installed: string | undefined;
+      const { engine } = installedEngine(() => installed);
+      const sources = ambientOnly
+        ? testSources.map((source) => ({ ...source, stateKinds: ["ambient"] as const }))
+        : testSources;
+      registry.registerDriver(
+        {
+          ...shipped,
+          configSchema: z.strictObject({ timeout: z.number().default(30_000) }),
+          sources,
+        },
+        { status: "runtime-check" },
+        { ...engine, scope },
+      );
+      const runnableWithoutInstall = scope === "ambient" && !ambientOnly;
+      const missingReadiness = runnableWithoutInstall
+        ? { status: "runtime-check" }
+        : { reason: missing, status: "unavailable" };
+      const configured = { ...ambient, config: { timeout: 30_000 } };
 
-    expect(registry.driverSources(driverKind)?.map((source) => source.stateKinds)).toEqual([
-      ["isolated"],
-    ]);
-    installed = "/home/person/bin/engine";
-    expect(registry.driverSources(driverKind)?.map((source) => source.stateKinds)).toEqual([
-      ["ambient", "isolated"],
-    ]);
-    await expect(
-      inspect(registry, ambient, undefined, ambientProviderState),
-    ).resolves.toMatchObject({ status: "ready" });
-  });
+      expect(registry.listDrivers()).toEqual([{ kind: driverKind, readiness: missingReadiness }]);
+      expect(registry.canRunDriver(driverKind)).toBe(runnableWithoutInstall);
+      expect(registry.driverSources(driverKind)?.map((source) => source.stateKinds)).toEqual(
+        runnableWithoutInstall ? [["isolated"]] : undefined,
+      );
+      expect(registry.driverAccessModes(driverKind)).toEqual(
+        runnableWithoutInstall ? shipped.accessModes : undefined,
+      );
+      expect(registry.driverCapabilities(driverKind)).toEqual(
+        runnableWithoutInstall ? shipped.capabilities : undefined,
+      );
+      await registry.reconcileInstances([ambient]);
+      expect(registry.state(ambient.id)?.definition).toEqual(configured);
+
+      installed = "/home/person/bin/engine";
+      expect(registry.listDrivers()).toEqual([
+        { kind: driverKind, readiness: { status: "runtime-check" } },
+      ]);
+      expect(registry.driverSources(driverKind)).toEqual(sources);
+      expect(registry.driverAccessModes(driverKind)).toEqual(shipped.accessModes);
+      expect(registry.driverCapabilities(driverKind)).toEqual(shipped.capabilities);
+      // Installing the CLI needs no reconciliation: availability is read live.
+      expect(registry.state(ambient.id)).toEqual({ definition: configured, status: "available" });
+      await expect(
+        inspect(registry, ambient, undefined, ambientProviderState),
+      ).resolves.toMatchObject({ status: "ready" });
+
+      installed = undefined;
+      await registry.reconcileInstances([ambient]);
+      expect(registry.listDrivers()).toEqual([{ kind: driverKind, readiness: missingReadiness }]);
+      expect(registry.state(ambient.id)?.definition).toEqual(configured);
+      await expect(inspect(registry, ambient, undefined, ambientProviderState)).resolves.toEqual({
+        detail: missing,
+        status: "unavailable",
+      });
+      await expect(registry.adapter(ambient.id)).rejects.toMatchObject({ message: missing });
+
+      // Reconciled while the CLI was missing, then restored: nothing stale remains.
+      installed = "/home/person/bin/engine";
+      expect(registry.listInstances()).toEqual([{ definition: configured, status: "available" }]);
+      await expect(
+        inspect(registry, ambient, undefined, ambientProviderState),
+      ).resolves.toMatchObject({ status: "ready" });
+      await registry.adapter(ambient.id);
+      await registry.close();
+    },
+  );
 });
 
 function driver(overrides: Partial<HarnessDriver>): HarnessDriver {

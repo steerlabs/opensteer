@@ -570,9 +570,8 @@ export class RunnerRuntime {
         ...(readiness.note ? { note: readiness.note } : {}),
         readiness: readiness.status,
         steering: capabilities?.steering ?? false,
-        // A runnable driver always declares at least one source; an empty list
-        // would leave clients unable to offer "Add account" for an engine the
-        // Runner is ready to run.
+        // The registry marks an engine unavailable when no source can run on
+        // this computer, so runnable advertisements always have a source.
         sources: (this.#harnesses.driverSources(kind) ?? []).map((source) => ({
           ...source,
           fields: source.fields.map(({ options, ...field }) => ({

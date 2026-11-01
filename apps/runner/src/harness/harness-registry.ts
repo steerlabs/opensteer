@@ -41,7 +41,7 @@ export function createHarnessRegistry(
         missing:
           entry.kind === "claude"
             ? claudeInstallGuidance
-            : `${entry.label}'s CLI is not installed on this computer. Install it from ${installed.installUrl}, or add an Opensteer-managed ${entry.label} account.`,
+            : `${entry.label}'s CLI is not installed on this computer. Install it from ${installed.installUrl}${entry.runtime.shape === "installed" ? ", then restart Opensteer." : `, or add an Opensteer-managed ${entry.label} account.`}`,
         scope: entry.runtime.shape === "installed" ? "all" : "ambient",
         update: {
           ...installedEngineUpdateFacts[entry.kind as keyof typeof installedEngineUpdateFacts],

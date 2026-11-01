@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
-import { harnessDisplayRank, harnessDriverLabel } from "@opensteer/core";
+import { harnessCatalogEntry, harnessDisplayRank, harnessDriverLabel } from "@opensteer/core";
 import type {
   HarnessAuthKind,
   HarnessObservedConnection,
@@ -229,10 +229,11 @@ export function installationUpdateLabel(update: HarnessInstallation["update"]): 
 
 /**
  * The engines a work location offers, whether or not an account exists for
- * them yet: every driver the Runner advertises as usable, plus any driver an
- * existing account still names. A driver the Runner reports as unavailable
- * is skipped unless an account of it already exists — that account then
- * shows the reason on its own row.
+ * them yet: every product engine the Runner advertises, plus any driver an
+ * existing account still names. A product engine the Runner cannot run, such
+ * as one whose CLI is not installed, stays listed with the Runner's reason, so
+ * the person learns how to make it runnable. An unavailable driver the
+ * product no longer names is skipped unless an account of it still exists.
  */
 export function engineGroups(
   environment: EnvironmentSummary,
@@ -240,7 +241,12 @@ export function engineGroups(
 ): EngineGroup[] {
   const kinds = new Set<string>();
   for (const driver of environment.harnessDrivers) {
-    if (driver.readiness !== "unavailable" || driver.installation) kinds.add(driver.driverKind);
+    if (
+      driver.readiness !== "unavailable" ||
+      driver.installation ||
+      harnessCatalogEntry(driver.driverKind)
+    )
+      kinds.add(driver.driverKind);
   }
   for (const profile of profiles) kinds.add(profile.driverKind);
   const canAddAccounts =
@@ -1024,7 +1030,8 @@ export function AiEngineSettings({
                 <p className="card__empty">
                   {engine.addable
                     ? `No ${engine.engineName} account yet. Add one to start Threads with it here.`
-                    : `No ${engine.engineName} account on this work location.`}
+                    : (engine.unavailableReason ??
+                      `No ${engine.engineName} account on this work location.`)}
                 </p>
               ) : null}
             </section>

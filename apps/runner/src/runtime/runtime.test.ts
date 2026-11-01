@@ -13,6 +13,8 @@ import {
   OpensteerError,
   ThreadAccessModeSchema,
   createId,
+  harnessCatalog,
+  harnessKindRecord,
   requestChoiceTextMaxLength,
   requestLabelMaxLength,
   requestTextMaxLength,
@@ -54,6 +56,7 @@ import {
   PendingAgentEventSchema,
   RunnerCommandSchema,
   RunnerConnectionFenceSchema,
+  RunnerAgentsModuleSchema,
   type HarnessInstanceCatalog,
   type RunnerCommand,
   type RunnerOperationalReport,
@@ -64,6 +67,7 @@ import { delay } from "@opensteer/shared/delay";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getCurrentTest } from "vitest/suite";
 import { prepareHarnessProviderState } from "../harness/harness-provider-state.js";
+import { createHarnessRegistry } from "../harness/harness-registry.js";
 import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
 import { RunnerRuntime, type RunnerMessageSink } from "./runtime.js";
@@ -1362,6 +1366,50 @@ describe("RunnerRuntime", () => {
       );
       await waitUntil(() => runtime.activeRunIds().length === 0);
       await runtime.close();
+    }
+  });
+
+  it("advertises a valid engine inventory on a computer with no CLIs on PATH", async () => {
+    vi.stubEnv("PATH", "");
+    const registry = createHarnessRegistry(
+      harnessKindRecord((kind) => `/opt/fake/${kind}`),
+      { nodeExecutable: process.execPath, runtimeCacheDirectory: testPrivateStateRoot },
+    );
+    const runtime = configuredRuntime({ environmentId: createId("environment"), registry });
+    try {
+      const drivers = await runtime.harnessDrivers();
+      expect(RunnerAgentsModuleSchema.shape.harnessDrivers.parse(drivers)).toHaveLength(
+        harnessCatalog.length,
+      );
+      for (const entry of harnessCatalog) {
+        const advertised = drivers.find(({ driverKind }) => driverKind === entry.kind);
+        if (entry.runtime.shape === "installed") {
+          expect(advertised).toEqual({
+            driverKind: entry.kind,
+            readiness: "unavailable",
+            reason: expect.stringContaining(entry.runtime.installUrl),
+          });
+          expect(advertised).not.toHaveProperty("sources");
+          expect(advertised).not.toHaveProperty("accessModes");
+          expect(advertised).not.toHaveProperty("steering");
+          if (advertised?.readiness === "unavailable") {
+            expect(advertised.reason).not.toContain("managed");
+          }
+        } else {
+          expect(advertised).toMatchObject({ readiness: "runtime-check" });
+        }
+      }
+      expect(registry.driverSources(HarnessIdSchema.parse("codex"))).toEqual(
+        expect.arrayContaining([expect.objectContaining({ stateKinds: ["isolated"] })]),
+      );
+      expect(
+        registry
+          .driverSources(HarnessIdSchema.parse("codex"))
+          ?.some((source) => source.stateKinds.includes("ambient")),
+      ).toBe(false);
+    } finally {
+      await runtime.close();
+      vi.unstubAllEnvs();
     }
   });
 

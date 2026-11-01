@@ -1,5 +1,8 @@
 import { HarnessIdSchema, createId, harnessCatalog, harnessKindRecord } from "@opensteer/core";
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHarnessRegistry } from "./harness-registry.js";
 
 const harnessExecutables = harnessKindRecord((kind) => `/opt/fake/${kind}`);
@@ -9,6 +12,23 @@ const harnessRuntime = {
 };
 
 describe("Runner harness registry", () => {
+  let path: string;
+  beforeAll(async () => {
+    path = await mkdtemp(join(tmpdir(), "opensteer-engine-path-"));
+    for (const entry of harnessCatalog) {
+      const installed =
+        entry.runtime.shape === "installed"
+          ? entry.runtime
+          : "installed" in entry
+            ? entry.installed
+            : undefined;
+      if (installed) await writeFile(join(path, installed.command), "", { mode: 0o700 });
+    }
+  });
+  beforeEach(() => vi.stubEnv("PATH", path));
+  afterEach(() => vi.unstubAllEnvs());
+  afterAll(async () => rm(path, { recursive: true, force: true }));
+
   it("advertises every catalog engine in catalog order, and nothing else", async () => {
     const harnesses = createHarnessRegistry(harnessExecutables, harnessRuntime);
     expect(harnesses.listDrivers()).toEqual(

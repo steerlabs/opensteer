@@ -72,8 +72,8 @@ export class HarnessRegistry {
   #mutations: Promise<unknown> = Promise.resolve();
 
   /**
-   * `installed` is the person's own install of this engine. Accounts using the
-   * person's own sign-in run it; every other account runs `driver`.
+   * `installed` is the person's own install of this engine. Its scope says
+   * whether every account or only the person's own sign-in needs that install.
    */
   registerDriver(
     driver: HarnessDriver,
@@ -120,6 +120,33 @@ export class HarnessRegistry {
     return driver;
   }
 
+  #availability(registered: RegisteredDriver): {
+    readonly readiness: HarnessDriverReadiness;
+    readonly sources: readonly HarnessSourceDescriptor[];
+  } {
+    if (registered.readiness.status === "unavailable") {
+      return { readiness: registered.readiness, sources: [] };
+    }
+    const installed = registered.installed;
+    if (!installed || installed.locate()) {
+      return { readiness: registered.readiness, sources: registered.driver.sources };
+    }
+    const sources =
+      installed.scope === "all"
+        ? []
+        : registered.driver.sources.flatMap((source) => {
+            const stateKinds = source.stateKinds.filter((stateKind) => stateKind !== "ambient");
+            return stateKinds.length > 0 ? [{ ...source, stateKinds }] : [];
+          });
+    return {
+      readiness:
+        sources.length > 0
+          ? registered.readiness
+          : normalizeReadiness({ reason: installed.missing, status: "unavailable" }),
+      sources,
+    };
+  }
+
   environmentVariables(kind: HarnessId): readonly string[] {
     return this.#drivers.get(kind)?.environmentVariables ?? [];
   }
@@ -164,7 +191,8 @@ export class HarnessRegistry {
    */
   driverCapabilities(kind: HarnessId): HarnessCapabilities | undefined {
     const registered = this.#drivers.get(kind);
-    if (!registered || registered.readiness.status === "unavailable") return undefined;
+    if (!registered || this.#availability(registered).readiness.status === "unavailable")
+      return undefined;
     return registered.driver.capabilities;
   }
 
@@ -177,12 +205,9 @@ export class HarnessRegistry {
    */
   driverSources(kind: HarnessId): readonly HarnessSourceDescriptor[] | undefined {
     const registered = this.#drivers.get(kind);
-    if (!registered || registered.readiness.status === "unavailable") return undefined;
-    if (!registered.installed || registered.installed.locate()) return registered.driver.sources;
-    return registered.driver.sources.flatMap((source) => {
-      const stateKinds = source.stateKinds.filter((stateKind) => stateKind !== "ambient");
-      return stateKinds.length > 0 ? [{ ...source, stateKinds }] : [];
-    });
+    if (!registered) return undefined;
+    const { readiness, sources } = this.#availability(registered);
+    return readiness.status === "unavailable" ? undefined : sources;
   }
 
   /**
@@ -192,7 +217,8 @@ export class HarnessRegistry {
    */
   driverAccessModes(kind: HarnessId): readonly ThreadAccessMode[] | undefined {
     const registered = this.#drivers.get(kind);
-    if (!registered || registered.readiness.status === "unavailable") return undefined;
+    if (!registered || this.#availability(registered).readiness.status === "unavailable")
+      return undefined;
     return registered.driver.accessModes;
   }
 
@@ -210,7 +236,7 @@ export class HarnessRegistry {
   listDrivers(): readonly HarnessDriverState[] {
     return [...this.#drivers.entries()].map(([kind, entry]) => ({
       kind,
-      readiness: entry.readiness,
+      readiness: this.#availability(entry).readiness,
     }));
   }
 
@@ -261,7 +287,7 @@ export class HarnessRegistry {
 
   canRunDriver(kind: HarnessId): boolean {
     const driver = this.#drivers.get(kind);
-    return driver !== undefined && driver.readiness.status !== "unavailable";
+    return driver !== undefined && this.#availability(driver).readiness.status !== "unavailable";
   }
 
   async inspectDefinition(
@@ -274,11 +300,12 @@ export class HarnessRegistry {
   ): Promise<HarnessInspectionResult> {
     this.#assertOpen();
     const registered = this.#drivers.get(definition.driverKind);
-    if (!registered || registered.readiness.status === "unavailable") {
+    const readiness = registered && this.#availability(registered).readiness;
+    if (!registered || readiness?.status === "unavailable") {
       return {
         detail:
-          registered?.readiness.status === "unavailable"
-            ? registered.readiness.reason
+          readiness?.status === "unavailable"
+            ? readiness.reason
             : `Harness driver ${definition.driverKind} is not installed`,
         status: "unavailable",
       };
@@ -356,12 +383,13 @@ export class HarnessRegistry {
   ): Promise<HarnessAuthenticationStart> {
     this.#assertOpen();
     const registered = this.#drivers.get(definition.driverKind);
-    if (!registered || registered.readiness.status === "unavailable") {
+    const readiness = registered && this.#availability(registered).readiness;
+    if (!registered || readiness?.status === "unavailable") {
       throw new OpensteerError({
         code: "harness_error",
         message:
-          registered?.readiness.status === "unavailable"
-            ? registered.readiness.reason
+          readiness?.status === "unavailable"
+            ? readiness.reason
             : `Harness driver ${definition.driverKind} is not installed`,
       });
     }
@@ -421,12 +449,13 @@ export class HarnessRegistry {
   ): Promise<void> {
     await this.closeInstance(definition.id);
     const registered = this.#drivers.get(definition.driverKind);
-    if (!registered || registered.readiness.status === "unavailable") {
+    const readiness = registered && this.#availability(registered).readiness;
+    if (!registered || readiness?.status === "unavailable") {
       throw new OpensteerError({
         code: "harness_error",
         message:
-          registered?.readiness.status === "unavailable"
-            ? registered.readiness.reason
+          readiness?.status === "unavailable"
+            ? readiness.reason
             : `Harness driver ${definition.driverKind} is not installed`,
       });
     }
@@ -470,7 +499,7 @@ export class HarnessRegistry {
   ): Promise<void> {
     await this.closeInstance(definition.id);
     const registered = this.#drivers.get(definition.driverKind);
-    if (!registered || registered.readiness.status === "unavailable") return;
+    if (!registered || this.#availability(registered).readiness.status === "unavailable") return;
     const driver = this.#runningDriver(registered, definition.stateKind);
     if ("unavailable" in driver) return;
     const removeProfile = driver.removeProfile;
@@ -506,32 +535,47 @@ export class HarnessRegistry {
         message: `Harness instance ${definition.id} is already configured`,
       });
     }
+    const state = this.#definitionState(definition);
+    const entry = { definition: state.definition, state };
+    this.#instances.set(definition.id, entry);
+    return this.#currentState(entry);
+  }
+
+  /** What the definition itself allows, independent of what is installed right now. */
+  #definitionState(definition: HarnessInstanceDefinition): HarnessInstanceState {
     const registered = this.#drivers.get(definition.driverKind);
-    let state: HarnessInstanceState;
     if (!registered) {
-      state = {
+      return {
         definition,
         reason: `Driver ${definition.driverKind} is not installed`,
         status: "unavailable",
       };
-    } else if (registered.readiness.status === "unavailable") {
-      state = {
-        definition,
-        reason: registered.readiness.reason,
-        status: "unavailable",
-      };
-    } else {
-      const parsed = registered.driver.configSchema.safeParse(definition.config);
-      state = parsed.success
-        ? { definition: { ...definition, config: parsed.data }, status: "available" }
-        : {
-            definition,
-            reason: parsed.error.issues.map((issue) => issue.message).join("; "),
-            status: "unavailable",
-          };
     }
-    this.#instances.set(definition.id, { definition: state.definition, state });
-    return state;
+    if (registered.readiness.status === "unavailable") {
+      return { definition, reason: registered.readiness.reason, status: "unavailable" };
+    }
+    const parsed = registered.driver.configSchema.safeParse(definition.config);
+    return parsed.success
+      ? { definition: { ...definition, config: parsed.data }, status: "available" }
+      : {
+          definition,
+          reason: parsed.error.issues.map((issue) => issue.message).join("; "),
+          status: "unavailable",
+        };
+  }
+
+  /**
+   * An instance's state as of now. A person's CLI can be removed or restored at
+   * any moment, so installation is read on every use instead of being stored
+   * with the instance, where it would outlive the install it described.
+   */
+  #currentState(entry: RegistryEntry): HarnessInstanceState {
+    if (entry.state.status === "unavailable") return entry.state;
+    const registered = this.#drivers.get(entry.definition.driverKind);
+    const readiness = registered && this.#availability(registered).readiness;
+    return readiness?.status === "unavailable"
+      ? { definition: entry.state.definition, reason: readiness.reason, status: "unavailable" }
+      : entry.state;
   }
 
   /**
@@ -572,7 +616,7 @@ export class HarnessRegistry {
         existing.state.status === "available"
           ? { definition: nextDefinition, status: "available" }
           : { definition: nextDefinition, reason: existing.state.reason, status: "unavailable" };
-      return existing.state;
+      return this.#currentState(existing);
     }
 
     // The doomed entry leaves the lookup table before its adapter is awaited,
@@ -639,11 +683,12 @@ export class HarnessRegistry {
   }
 
   listInstances(): readonly HarnessInstanceState[] {
-    return [...this.#instances.values()].map((entry) => entry.state);
+    return [...this.#instances.values()].map((entry) => this.#currentState(entry));
   }
 
   state(instanceId: HarnessInstanceId): HarnessInstanceState | undefined {
-    return this.#instances.get(instanceId)?.state;
+    const entry = this.#instances.get(instanceId);
+    return entry && this.#currentState(entry);
   }
 
   adapter(instanceId: HarnessInstanceId): Promise<HarnessAdapter> {
@@ -658,15 +703,20 @@ export class HarnessRegistry {
         message: `Harness instance ${instanceId} is not configured`,
       });
     }
-    if (entry.state.status === "unavailable") {
-      throw new OpensteerError({ code: "harness_error", message: entry.state.reason });
+    const state = this.#currentState(entry);
+    if (state.status === "unavailable") {
+      throw new OpensteerError({ code: "harness_error", message: state.reason });
     }
     if (entry.adapterPromise) return entry.adapterPromise;
     const registered = this.#drivers.get(entry.definition.driverKind);
-    if (!registered || registered.readiness.status === "unavailable") {
+    const readiness = registered && this.#availability(registered).readiness;
+    if (!registered || readiness?.status === "unavailable") {
       throw new OpensteerError({
         code: "harness_error",
-        message: `Harness driver ${entry.definition.driverKind} is unavailable`,
+        message:
+          readiness?.status === "unavailable"
+            ? readiness.reason
+            : `Harness driver ${entry.definition.driverKind} is unavailable`,
       });
     }
     const driver = this.#runningDriver(registered, entry.definition.stateKind);
