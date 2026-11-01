@@ -41,7 +41,7 @@ import type {
 import { acpReadTextFileHandler, createAcpProtocolClient } from "./protocol.js";
 import type {
   AcpErrorContext,
-  AcpErrorInterpretation,
+  AcpHeldAssistantDecision,
   AcpHarnessOptions,
   AcpNormalizedUpdate,
   AcpPermissionChoice,
@@ -61,7 +61,7 @@ type OpenMode =
 interface ActiveTurn {
   readonly assistant: Map<string, string>;
   readonly completion: Deferred<void>;
-  readonly deferredAssistant: {
+  readonly heldAssistant: {
     readonly messageId?: string;
     readonly text: string;
   }[];
@@ -70,6 +70,8 @@ interface ActiveTurn {
   readonly requestedBy: HarnessRunInput["requestedBy"];
   readonly runId: HarnessRunInput["runId"];
   readonly tools: Map<string, AcpToolCall>;
+  assistantHoldActive: boolean;
+  heldAssistantCharacters: number;
   interruptRequested: boolean;
   terminal: boolean;
   stderrStart: number;
@@ -155,6 +157,7 @@ class AcpHarnessSession implements HarnessSession {
   #expectedProcessExit = false;
   #providerSessionReference: string | undefined;
   #replaying = false;
+  readonly #stderrWaiters = new Set<() => void>();
   #stopPromise: Promise<void> | undefined;
 
   private constructor(
@@ -250,8 +253,10 @@ class AcpHarnessSession implements HarnessSession {
     assertSameEnvironment(this.#context.environment, run.environment);
     const active: ActiveTurn = {
       assistant: new Map(),
+      assistantHoldActive: this.#options.hooks.holdAssistant !== undefined,
       completion: new Deferred<void>(),
-      deferredAssistant: [],
+      heldAssistant: [],
+      heldAssistantCharacters: 0,
       interruptRequested: run.signal.aborted,
       nodes: new SubagentNodes((event) => this.#publish(event)),
       reasoning: new Map(),
@@ -284,14 +289,15 @@ class AcpHarnessSession implements HarnessSession {
         this.#lifetime.signal,
       );
       if (result.usage) active.usage = result.usage;
-      await drainPendingProcessOutput();
-      const interpretation = this.#options.hooks.classifyError(undefined, {
-        operation: "prompt-result",
-        providerSessionReference: this.providerSessionReference,
-        stderrTail: this.#stderrSince(active.stderrStart),
-      });
-      this.#flushDeferredAssistant(active, interpretationDiscard(interpretation));
-      if (interpretation) throw interpretationError(interpretation);
+      const heldFailure = await this.#settleHeldAssistant(active);
+      if (active.terminal) return;
+      if (heldFailure) {
+        active.heldAssistant.length = 0;
+        this.#fail(active, heldFailure);
+        await active.completion.promise;
+        return;
+      }
+      this.#flushHeldAssistant(active);
       await this.#stopBackgroundChildren(active);
       this.#flushTurn(active);
       this.#finish(active, active.interruptRequested ? "interrupted" : "completed");
@@ -303,15 +309,11 @@ class AcpHarnessSession implements HarnessSession {
         } else {
           const interpretation = this.#options.hooks.classifyError(error, {
             operation: "prompt",
+            providerSessionReference: this.providerSessionReference,
             stderrTail: this.#stderrSince(active.stderrStart),
           });
-          this.#flushDeferredAssistant(active, interpretationDiscard(interpretation));
-          this.#fail(
-            active,
-            interpretation
-              ? interpretationError(interpretation)
-              : toHarnessError(error, `${this.#options.engineLabel} ACP prompt failed`),
-          );
+          active.heldAssistant.length = 0;
+          this.#fail(active, interpretation);
         }
       }
     } finally {
@@ -516,13 +518,24 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #applyUpdate(active: ActiveTurn, update: AcpNormalizedUpdate): void {
+    if (active.assistantHoldActive && update.kind !== "assistant") {
+      this.#flushHeldAssistant(active);
+      active.assistantHoldActive = false;
+    }
     switch (update.kind) {
       case "assistant": {
-        if (update.deferUntilPromptSettles) {
-          active.deferredAssistant.push({
+        if (active.assistantHoldActive) {
+          active.heldAssistant.push({
             ...(update.messageId ? { messageId: update.messageId } : {}),
             text: update.text,
           });
+          active.heldAssistantCharacters += update.text.length;
+          if (
+            active.heldAssistantCharacters > (this.#options.hooks.holdAssistant?.maxCharacters ?? 0)
+          ) {
+            this.#flushHeldAssistant(active);
+            active.assistantHoldActive = false;
+          }
           return;
         }
         const key = update.messageId ?? "assistant";
@@ -608,23 +621,53 @@ class AcpHarnessSession implements HarnessSession {
     }
   }
 
-  #flushDeferredAssistant(active: ActiveTurn, discardText: string | undefined): void {
-    const discardedKeys = new Set<string>();
-    if (discardText !== undefined) {
-      const grouped = new Map<string, string>();
-      for (const update of active.deferredAssistant) {
-        const key = update.messageId ?? "assistant";
-        grouped.set(key, `${grouped.get(key) ?? ""}${update.text}`);
-      }
-      for (const [key, text] of grouped) {
-        if (this.#sanitizeStderr(text).trim() === discardText.trim()) discardedKeys.add(key);
-      }
-    }
-    for (const update of active.deferredAssistant) {
-      if (discardedKeys.has(update.messageId ?? "assistant")) continue;
+  #flushHeldAssistant(active: ActiveTurn): void {
+    active.assistantHoldActive = false;
+    const held = active.heldAssistant.splice(0);
+    active.heldAssistantCharacters = 0;
+    for (const update of held) {
       this.#applyUpdate(active, { ...update, kind: "assistant" });
     }
-    active.deferredAssistant.length = 0;
+  }
+
+  async #settleHeldAssistant(active: ActiveTurn): Promise<OpensteerError | undefined> {
+    const hold = this.#options.hooks.holdAssistant;
+    if (!hold || !active.assistantHoldActive || active.heldAssistant.length === 0) return undefined;
+    const deadline = Date.now() + hold.deadlineMs;
+    let decision = this.#heldAssistantDecision(active);
+    while (decision.status === "pending" && !this.#processEnded && !active.terminal) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await this.#waitForStderrOrProcessExit(remaining);
+      decision = this.#heldAssistantDecision(active);
+    }
+    return decision.status === "failed" ? decision.error : undefined;
+  }
+
+  #heldAssistantDecision(active: ActiveTurn): AcpHeldAssistantDecision {
+    const hold = this.#options.hooks.holdAssistant;
+    if (!hold) return { status: "succeeded" };
+    return hold.settle({
+      assistantText: this.#sanitizeStderr(
+        active.heldAssistant.map((update) => update.text).join(""),
+      ).trim(),
+      providerSessionReference: this.providerSessionReference,
+      stderrTail: this.#stderrSince(active.stderrStart),
+    });
+  }
+
+  #waitForStderrOrProcessExit(deadlineMs: number): Promise<void> {
+    if (this.#processEnded) return Promise.resolve();
+    return new Promise((resolve) => {
+      let timer: NodeJS.Timeout | undefined;
+      const done = () => {
+        if (timer) clearTimeout(timer);
+        this.#stderrWaiters.delete(done);
+        resolve();
+      };
+      this.#stderrWaiters.add(done);
+      timer = setTimeout(done, deadlineMs);
+    });
   }
 
   async #interruptActive(active: ActiveTurn): Promise<void> {
@@ -770,6 +813,7 @@ class AcpHarnessSession implements HarnessSession {
     readonly signal: NodeJS.Signals | null;
   }): void {
     this.#processEnded = true;
+    this.#wakeStderrWaiters();
     if (this.#expectedProcessExit) return;
     if (this.#closed || this.#opening) return;
     const error = new OpensteerError({
@@ -785,10 +829,15 @@ class AcpHarnessSession implements HarnessSession {
 
   #appendStderr(chunk: Buffer | string): void {
     this.#stderr += chunk.toString();
+    this.#wakeStderrWaiters();
     if (this.#stderr.length <= 16_000) return;
     const removed = this.#stderr.length - 16_000;
     this.#stderr = this.#stderr.slice(removed);
     this.#stderrDropped += removed;
+  }
+
+  #wakeStderrWaiters(): void {
+    for (const wake of this.#stderrWaiters) wake();
   }
 
   #stderrTail(): string {
@@ -811,15 +860,13 @@ class AcpHarnessSession implements HarnessSession {
       .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
       .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
       .replace(
-        /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*\S+/giu,
+        /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^,\s]+/giu,
         "$1=[REDACTED]",
       );
   }
 
   #classifyError(error: unknown, context: AcpErrorContext): OpensteerError {
-    const interpretation = this.#options.hooks.classifyError(error, context);
-    if (interpretation) return interpretationError(interpretation);
-    return toHarnessError(error, `${this.#options.engineLabel} ACP operation failed`);
+    return this.#options.hooks.classifyError(error, context);
   }
 
   #publish(event: HarnessEvent): void {
@@ -880,25 +927,6 @@ function acpFailure(error: OpensteerError): {
     message: error.message,
     retryable: error.retryable,
   };
-}
-
-function interpretationError(
-  interpretation: OpensteerError | AcpErrorInterpretation,
-): OpensteerError {
-  return interpretation instanceof OpensteerError ? interpretation : interpretation.error;
-}
-
-function interpretationDiscard(
-  interpretation: OpensteerError | AcpErrorInterpretation | undefined,
-): string | undefined {
-  return interpretation instanceof OpensteerError
-    ? undefined
-    : interpretation?.discardAssistantText;
-}
-
-/** Lets already-written stderr cross its independent pipe before prompt settlement is interpreted. */
-function drainPendingProcessOutput(): Promise<void> {
-  return new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
 }
 
 const credentialNamePattern =

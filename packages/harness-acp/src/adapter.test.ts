@@ -32,6 +32,7 @@ import type {
 const directories: string[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.allSettled(
     directories.splice(0).map((path) => rm(path, { force: true, recursive: true })),
   );
@@ -104,13 +105,34 @@ describe("ACP lifecycle", () => {
     await fixture.adapter.close();
   });
 
-  it("publishes observed usage once before a successful prompt is interpreted as failed", async () => {
-    const fixture = await setup("usage-prompt-result-error");
+  it("publishes observed usage once before a held assistant reply is interpreted as failed", async () => {
+    const fixture = await setup("usage-held-assistant-error");
     const session = await fixture.adapter.startSession(fixture.context);
     const observed = observe(session.events);
     await session.execute(fixture.turn("fail after end_turn"));
     await expectTerminal(observed.events, "run.failed");
     expectUsageBeforeTerminal(observed.events, "run.failed");
+    await session.stop();
+    await observed.done;
+    await fixture.adapter.close();
+  });
+
+  it("publishes held assistant chunks in order after the bounded stderr deadline", async () => {
+    const fixture = await setup("held-assistant-deadline");
+    const session = await fixture.adapter.startSession(fixture.context);
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    const observed = observe(session.events);
+    const execution = session.execute(fixture.turn("finish without stderr"));
+    await fixture.heldAssistantReached;
+    await vi.advanceTimersByTimeAsync(500);
+    await execution;
+    vi.useRealTimers();
+    await expectTerminal(observed.events, "run.completed");
+    expect(
+      observed.events
+        .flatMap((event) => (event.type === "assistant.delta" ? [event.data.text] : []))
+        .join(""),
+    ).toBe("The error is fixed.");
     await session.stop();
     await observed.done;
     await fixture.adapter.close();
@@ -254,13 +276,14 @@ describe("ACP boundaries", () => {
 
 type Scenario =
   | "background"
+  | "held-assistant-deadline"
   | "permission"
   | "prompt-error"
   | "replay"
   | "usage-interruption"
   | "usage-process-exit"
   | "usage-prompt-error"
-  | "usage-prompt-result-error"
+  | "usage-held-assistant-error"
   | "usage-success";
 
 async function setup(scenario: Scenario) {
@@ -269,6 +292,10 @@ async function setup(scenario: Scenario) {
   await mkdir(workspacePath);
   const instanceId = createId("harnessInstance") as HarnessInstanceId;
   const selectedPermissions: string[] = [];
+  let notifyHeldAssistantReached: () => void = () => undefined;
+  const heldAssistantReached = new Promise<void>((resolve) => {
+    notifyHeldAssistantReached = resolve;
+  });
   const options: AcpHarnessOptions = {
     capabilities: {
       approvals: true,
@@ -282,17 +309,39 @@ async function setup(scenario: Scenario) {
     },
     engineLabel: "Test ACP",
     hooks: {
-      classifyError: (error, context) =>
-        context.operation === "prompt-result"
-          ? scenario === "usage-prompt-result-error"
-            ? new OpensteerError({ code: "harness_error", message: "native end_turn failed" })
-            : undefined
-          : error instanceof OpensteerError
-            ? error
-            : new OpensteerError({
-                code: "harness_error",
-                message: error instanceof Error ? error.message : "ACP failed",
+      classifyError: (error) =>
+        error instanceof OpensteerError
+          ? error
+          : new OpensteerError({
+              code: "harness_error",
+              message: error instanceof Error ? error.message : "ACP failed",
+            }),
+      ...(scenario === "usage-held-assistant-error"
+        ? {
+            holdAssistant: {
+              deadlineMs: 500,
+              maxCharacters: 2_048,
+              settle: () => ({
+                error: new OpensteerError({
+                  code: "harness_error",
+                  message: "native end_turn failed",
+                }),
+                status: "failed" as const,
               }),
+            },
+          }
+        : scenario === "held-assistant-deadline"
+          ? {
+              holdAssistant: {
+                deadlineMs: 500,
+                maxCharacters: 2_048,
+                settle: () => {
+                  notifyHeldAssistantReached();
+                  return { status: "pending" as const };
+                },
+              },
+            }
+          : {}),
       permissionChoices: (request: AcpPermissionRequest) =>
         request.options.map((option) => ({
           hint: option.id === "allow" ? "allow-once" : "reject-once",
@@ -390,6 +439,7 @@ async function setup(scenario: Scenario) {
   return {
     adapter,
     context,
+    heldAssistantReached,
     selectedPermissions,
     turn(text: string, signal = new AbortController().signal): HarnessRunInput {
       return {
@@ -442,6 +492,27 @@ function fakeClient(
     }),
     newSession: async () => ({ configOptions: [], metadata: {}, sessionId: "new-session" }),
     prompt: async () => {
+      if (scenario === "held-assistant-deadline") {
+        handlers.update("new-session", {
+          content: { text: "The error", type: "text" },
+          sessionUpdate: "agent_message_chunk",
+        });
+        handlers.update("new-session", {
+          content: { text: " is fixed.", type: "text" },
+          sessionUpdate: "agent_message_chunk",
+        });
+        return { stopReason: "end_turn" };
+      }
+      if (scenario === "usage-held-assistant-error") {
+        handlers.update("new-session", {
+          content: { text: "native provider error", type: "text" },
+          sessionUpdate: "agent_message_chunk",
+        });
+        return {
+          stopReason: "end_turn",
+          usage: { inputTokens: 11, outputTokens: 7, reasoningTokens: 3 },
+        };
+      }
       if (scenario.startsWith("usage-")) {
         handlers.update("new-session", {
           sessionUpdate: "usage_update",
