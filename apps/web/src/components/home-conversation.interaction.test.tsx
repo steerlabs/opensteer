@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import type {
+  HostSnapshot,
   MessageEntry,
   RunEntry,
   TranscriptEntry,
@@ -530,6 +531,184 @@ describe("Home conversation", () => {
     );
     expect(node.querySelector('[aria-label="Talk to Opensteer"]')).not.toBeNull();
     expect(node.querySelector(".voice-dock")).not.toBeNull();
+  });
+
+  it.each([
+    "animate",
+    "reduced",
+    "empty",
+    "trace",
+    "outcome",
+    "wheel",
+    "touch",
+    "keyboard",
+    "scrollbar",
+    "latest",
+  ] as const)("loads earlier Chat messages in place and preserves focus (%s)", async (mode) => {
+    stubLayoutApis();
+    vi.mocked(window.matchMedia).mockImplementation((query) =>
+      Object.assign(new EventTarget(), {
+        matches: mode === "reduced" && query === "(prefers-reduced-motion: reduce)",
+        media: query,
+        onchange: null,
+        addListener() {},
+        removeListener() {},
+      }),
+    );
+    const client = new MockHostClient({ latencyMs: 0 });
+    clients.push(client);
+    const base = client.getSnapshot();
+    const home = base.homeThreadId!;
+    const moved = ["wheel", "touch", "keyboard", "scrollbar", "latest"].includes(mode);
+    const recent = { ...answer, id: "recent", runId: null };
+    const earlier = { ...answer, id: "earlier", runId: null, body: "The earlier answer" };
+    let snapshot: HostSnapshot = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === home && mode === "trace" ? { ...thread, role: "work" } : thread,
+      ),
+      transcripts: { ...base.transcripts, [home]: [recent] },
+      transcriptWindows: {
+        ...base.transcriptWindows,
+        [home]: {
+          byteCount: 200,
+          itemCount: 1,
+          totalItems: 3,
+          hasMore: true,
+          nextBefore: "older",
+          threadId: home,
+        },
+      },
+    };
+    vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
+    const page = Promise.withResolvers<void>();
+    const load = vi.spyOn(client, "loadEarlierTranscript").mockReturnValue(page.promise);
+    const { node, root } = setup();
+    const draw = () =>
+      act(async () =>
+        root.render(
+          <ToastProvider>
+            <MemoryRouter initialEntries={["/"]}>
+              <Routes>
+                <Route element={<AppShell hostClient={client} loadError={null} />}>
+                  <Route index element={<HomeRoute />} />
+                </Route>
+              </Routes>
+            </MemoryRouter>
+          </ToastProvider>,
+        ),
+      );
+    await draw();
+    const scroller = node.querySelector<HTMLElement>(".transcript-scroll")!;
+    Object.defineProperty(scroller, "clientHeight", { value: 400, configurable: true });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const hasEarlier =
+        node.querySelector('[data-message-id="earlier"], .work, .run-note--worked') !== null;
+      if (
+        this.dataset.messageId === "recent" ||
+        (this.dataset.transcriptRow !== undefined &&
+          this.querySelector('[data-message-id="recent"]'))
+      )
+        return new DOMRect(0, (hasEarlier ? 350 : 50) - scroller.scrollTop, 500, 100);
+      if (
+        this.dataset.messageId === "earlier" ||
+        this.classList.contains("work") ||
+        this.classList.contains("run-note--worked") ||
+        (this.dataset.transcriptRow !== undefined &&
+          this.querySelector('[data-message-id="earlier"], .work, .run-note--worked'))
+      )
+        return new DOMRect(0, 250 - scroller.scrollTop, 500, 100);
+      return new DOMRect(0, 0, 500, 400);
+    });
+    const animate = vi.fn(() => ({ cancel: vi.fn() }));
+    const transcript = node.querySelector<HTMLElement>(".transcript")!;
+    Object.defineProperty(transcript, "animate", { value: animate });
+    transcript.style.setProperty("--duration-med", "220ms");
+    transcript.style.setProperty("--ease-out", "cubic-bezier(0.22, 1, 0.36, 1)");
+    scroller.scrollTop = 0;
+    const earlierButton = button(node, "Earlier messages");
+    earlierButton.focus();
+    await act(async () => earlierButton.click());
+    expect(load).toHaveBeenCalledExactlyOnceWith(home);
+    expect(earlierButton.disabled).toBe(true);
+    expect(earlierButton.getAttribute("aria-label")).toBe("Loading earlier messages");
+    expect(earlierButton.querySelector(".spinner")).not.toBeNull();
+    expect(
+      earlierButton.querySelector('.transcript__earlier-label > [aria-hidden="true"]')?.textContent,
+    ).toContain("Earlier messages");
+    if (moved) {
+      Object.defineProperty(scroller, "scrollHeight", { value: 1200, configurable: true });
+      scroller.scrollTop = 120;
+      await act(async () => {
+        if (mode === "latest") button(node, "Jump to latest").click();
+        else if (mode === "keyboard")
+          scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }));
+        else
+          scroller.dispatchEvent(
+            new Event(
+              mode === "wheel" ? "wheel" : mode === "touch" ? "touchstart" : "pointerdown",
+              { bubbles: true },
+            ),
+          );
+        if (mode !== "latest") scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+      });
+    }
+    // An invisible transport page does not finish the operation or remove its control.
+    if (mode !== "trace")
+      snapshot = {
+        ...snapshot,
+        transcripts: {
+          ...snapshot.transcripts,
+          [home]: [
+            { ...homeRun, startedBy: report.author },
+            { ...recent, ...(moved ? { body: "Streaming update", streaming: true } : {}) },
+          ],
+        },
+      };
+    await draw();
+    expect(earlierButton.isConnected).toBe(true);
+    expect(scroller.scrollTop).toBe(mode === "latest" ? 1200 : moved ? 120 : 0);
+    // The final page either adds a reply or exhausts the invisible remainder.
+    snapshot = {
+      ...snapshot,
+      transcripts: {
+        ...snapshot.transcripts,
+        [home]:
+          mode === "outcome"
+            ? [homeRun, recent]
+            : mode === "empty"
+              ? [recent]
+              : mode === "trace"
+                ? [researchStep, recent]
+                : [earlier, recent],
+      },
+      transcriptWindows: {
+        ...snapshot.transcriptWindows,
+        [home]: {
+          ...snapshot.transcriptWindows[home]!,
+          hasMore: false,
+          nextBefore: null,
+        },
+      },
+    };
+    await draw();
+    expect(scroller.scrollTop).toBe(
+      mode === "latest" ? 1200 : moved ? 120 : mode === "empty" ? 0 : 300,
+    );
+    await act(async () => page.resolve());
+    expect(earlierButton.isConnected).toBe(false);
+    expect(scroller.scrollTop).toBe(
+      mode === "latest" ? 1200 : moved ? 120 : mode === "empty" ? 0 : 184,
+    );
+    expect(document.activeElement).toBe(scroller);
+    if (mode === "animate" || mode === "trace" || mode === "outcome")
+      expect(animate).toHaveBeenCalledWith(
+        [{ transform: "translateY(-116px)" }, { transform: "translateY(0)" }],
+        { duration: 220, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+      );
+    else expect(animate).not.toHaveBeenCalled();
   });
 
   it("uses the routed Home's real settings and opens a task as its own conversation", async () => {
